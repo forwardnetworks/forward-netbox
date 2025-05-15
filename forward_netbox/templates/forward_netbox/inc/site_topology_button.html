@@ -1,0 +1,96 @@
+{% if object.custom_field_data.forward_source %}
+<div
+    class="btn-group"
+    role="group"
+    aria-label="Button group with nested dropdown"
+>
+    <div class="btn-group" role="group">
+        <button
+            id="btnGroupDrop1"
+            type="button"
+            class="btn btn-sm btn-success dropdown-toggle"
+            data-bs-toggle="dropdown"
+            aria-expanded="false"
+        >
+            Forward Networks Topology
+        </button>
+        <ul class="dropdown-menu" aria-labelledby="btnGroupDrop1">
+            <li>
+                <a
+                    href="#"
+                    hx-get="{% url 'plugins:forward_netbox:forwardsource_topology' pk=object.pk site=object.pk %}?snapshot=$last&source={{ object.custom_field_data.forward_source }}"
+                    hx-target="#topology-modal-content"
+                    data-bs-toggle="modal"
+                    data-bs-target="#topology-modal"
+                    class="dropdown-item"
+                >
+                    Last Snapshot
+                </a>
+            </li>
+            <li>
+                <a
+                    href="#"
+                    hx-get="{% url 'plugins:forward_netbox:forwardsource_topology' pk=object.pk site=object.pk %}?snapshot=$prev&source={{ object.custom_field_data.forward_source }}"
+                    hx-target="#topology-modal-content"
+                    data-bs-toggle="modal"
+                    data-bs-target="#topology-modal"
+                    class="dropdown-item"
+                >
+                    Previous Snapshot
+                </a>
+            </li>
+        </ul>
+    </div>
+</div>
+
+<div class="modal fade" id="topology-modal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">{{ object.name }} Topology</h5>
+                <button
+                    type="button"
+                    class="btn-close"
+                    data-bs-dismiss="modal"
+                    aria-label="Close"
+                ></button>
+            </div>
+            <div id="topology-modal-content">
+                <div class="modal-body">
+                    <div class="d-flex align-items-center">
+                        <strong role="status">Loading...</strong>
+                        <div
+                            class="spinner-border ms-auto"
+                            aria-hidden="true"
+                        ></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %} {% block javascript %}
+<script>
+    document.addEventListener("DOMContentLoaded", function () {
+        var myModal = document.getElementById("topology-modal");
+        var modalBody = document.getElementById("topology-modal-content");
+        console.log(myModal);
+        myModal.addEventListener("hidden.bs.modal", function () {
+            // Clear modal content on close
+            console.log("Modal close");
+            modalBody.innerHTML = createLoadingContent();
+        });
+    });
+
+    function createLoadingContent() {
+        return `
+      <div class="modal-body">
+        <div class="d-flex align-items-center">
+          <strong role="status">Loading...</strong>
+          <div class="spinner-border ms-auto" aria-hidden="true"></div>
+        </div>
+      </div>
+    `;
+    }
+</script>
+{% endblock %}

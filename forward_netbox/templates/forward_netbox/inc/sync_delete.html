@@ -1,0 +1,30 @@
+{% comment %}
+    Custom deletion warning for objects in a NetBox Branching context.
+    When X-NetBox-Branch is active, UI-based deletions will not work.
+{% endcomment %}
+
+{% if request.headers.X_NETBOX_BRANCH %}
+  <div class="alert alert-warning" role="alert">
+    <strong>Deletion Disabled in Branch Mode</strong><br>
+    This object exists in an active NetBox branch and cannot be deleted through the UI due to a known limitation in NetBox's branching system.<br><br>
+
+    <strong>To delete this object:</strong>
+    <pre><code>
+# Example Django shell snippet
+from netbox_branching.models import Branch
+from netbox_branching.contextvars import active_branch
+from dcim.models import Site
+
+branch = Branch.objects.get(name="your-branch-name")
+token = active_branch.set(branch)
+try:
+    Site.objects.get(slug="your-site-slug").delete()
+finally:
+    active_branch.reset(token)
+    </code></pre>
+
+    Replace <code>your-branch-name</code> and <code>your-site-slug</code> with your actual values.
+  </div>
+{% else %}
+  {% include "core/inc/sync_delete.html" %}
+{% endif %}

@@ -1,0 +1,51 @@
+{% extends 'generic/object.html' %}
+{% load static %}
+{% load helpers %}
+{% load plugins %}
+{% load render_table from django_tables2 %}
+{% load perms %}
+
+{% block extra_controls %}
+  <button type="button"
+          class="btn btn-warning"
+          data-bs-toggle="modal"
+          data-bs-target="#htmx-modal"
+          hx-get="{% url 'plugins:forward_netbox:forwardnqemap_restore' %}"
+          hx-target="#htmx-modal-content"
+          hx-swap="innerHTML">
+    <span class="mdi mdi-file-restore" aria-hidden="true"></span>&nbsp;Restore Default Maps
+  </button>
+{% endblock %}
+
+{% block content %}
+<div class="row mb-3">
+  <div class="col col-md-12">
+    <div class="card">
+      <h5 class="card-header">NQE Mapping Details</h5>
+      <div class="card-body">
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">Name</th>
+            <td>{{ object.name }}</td>
+          </tr>
+          <tr>
+            <th scope="row">NQE Query ID</th>
+            <td>{{ object.query_id }}</td>
+          </tr>
+          <tr>
+            <th scope="row">NetBox Model</th>
+            <td>{{ object.netbox_model }}</td>
+          </tr>
+        </table>
+      </div>
+    </div>
+    {% include 'inc/panels/tags.html' %}
+    {% include 'inc/panels/comments.html' %}
+    {% plugin_full_width_page object %}
+  </div>
+</div>
+{% endblock %}
+
+{% block modals %}
+  {% include 'inc/htmx_modal.html' %}
+{% endblock %}

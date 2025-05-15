@@ -1,0 +1,38 @@
+[tool.poetry]
+name = "forward_netbox"
+version = "0.9.0"
+description = "NetBox plugin to sync Forward Networks data into NetBox via NQE"
+authors = ["Craig Johnson <craigjohnson@forwardnetworks.com>"]
+license = "MIT"
+readme = "README.md"
+homepage = "https://github.com/forwardnetworks/forward-netbox"
+repository = "https://github.com/forwardnetworks/forward-netbox"
+keywords = ["netbox", "forward networks", "plugin", "nqe", "sync"]
+classifiers = [
+    "Framework :: Django",
+    "Framework :: Django :: 4",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Environment :: Web Environment",
+    "Topic :: System :: Networking",
+    "Development Status :: 5 - Production/Stable",
+]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+netutils = "*"
+netboxlabs-netbox-branching = "*"
+
+[tool.poetry.group.dev.dependencies]
+invoke = "^2.2.0"
+pre-commit = "^4.0.1"
+python-dotenv = "^1.0.1"
+
+[[tool.poetry.packages]]
+include = "forward_netbox"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

@@ -1,0 +1,72 @@
+<div class="modal-content" id="htmx-modal-content">
+<div class="modal-header">
+    <h5 class="modal-title">Change Diff {{ change }}</h5>
+    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+</div>
+<div class="modal-body">
+    <div class="row mb-3">
+        <div class="col-6">
+            <div class="card">
+                <h5 class="card-header">Pre-Change Data</h5>
+                <div class="card-body">
+                    {% if prechange_data %}
+                    <pre class="change-data">{% for k, v in prechange_data.items %}{% spaceless %}
+                        <span{% if k in diff_removed %} class="removed"{% endif %}>{{ k }}: {{ v|json }}</span>
+                    {% endspaceless %}{% endfor %}
+                </pre>
+                    {% else %}
+                    <span class="text-muted">None</span>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+        <div class="col-6">
+            <div class="card">
+                <h5 class="card-header">Post-Change Data</h5>
+                <div class="card-body">
+                    {% if postchange_data %}
+                    <pre class="change-data">{% for k, v in postchange_data.items %}{% spaceless %}
+                        <span{% if k in diff_removed %} class="added"{% endif %}>{{ k }}: {{ v|json }}</span>
+                        {% endspaceless %}{% endfor %}{% endif %}
+                </div>
+            </div>
+      </div>
+    </div>
+    <div class="row">
+        <div class="col">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="d-inline">Difference</h5>
+                    <!-- <div class="btn-group btn-group-sm float-end noprint">
+                            <a {% if prev_change %}href="{% url 'extras:objectchange' pk=prev_change.pk %}"{% else %}disabled{% endif %} class="btn btn-outline-secondary">
+                                <i class="mdi mdi-chevron-left" aria-hidden="true"></i> Previous
+                            </a>
+                            <a {% if next_change %}href="{% url 'extras:objectchange' pk=next_change.pk %}"{% else %}disabled{% endif %} class="btn btn-outline-secondary">
+                                Next <i class="mdi mdi-chevron-right" aria-hidden="true"></i>
+                            </a>
+                        </div> -->
+                </div>
+                <div class="card-body">
+                    {% if diff_added == diff_removed %}
+                    <span class="text-muted" style="margin-left: 10px;">
+                        {% if object.action == 'create' %}
+                        Object Created
+                        {% elif object.action == 'delete' %}
+                        Object Deleted
+                        {% else %}
+                        No Changes
+                        {% endif %}
+                    </span>
+                    {% else %}
+                    <pre class="change-diff change-removed">{{ diff_removed|json }}</pre>
+                    <pre class="change-diff change-added">{{ diff_added|json }}</pre>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal-footer">
+</div>
+</div>

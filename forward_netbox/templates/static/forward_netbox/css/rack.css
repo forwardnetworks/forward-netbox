@@ -1,0 +1,9 @@
+.loader{
+    display:none;
+}
+.htmx-request .loader{
+    display:inline;
+}
+.htmx-request.loader{
+    display:inline;
+}

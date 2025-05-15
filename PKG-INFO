@@ -1,0 +1,74 @@
+Metadata-Version: 2.3
+Name: forward-netbox
+Version: 0.9.0
+Summary: NetBox plugin to sync Forward Networks data into NetBox using NQE and native APIs.
+License: Apache-2.0
+Keywords: netbox,forwardnetworks,plugin,network visibility,snapshot sync
+Author: Craig Johnson, Principal Solutions Architect
+Author-email: craigjohnson@forwardnetworks.com
+Home-page: https://github.com/forwardnetworks/forward-netbox
+Requires-Python: >=3.10
+Classifier: Development Status :: 5 - Production/Stable
+Classifier: Intended Audience :: System Administrators
+Classifier: Topic :: System :: Networking
+Classifier: Topic :: Internet :: WWW/HTTP :: Dynamic Content
+Classifier: Programming Language :: Python :: 3
+Classifier: Framework :: Django
+Classifier: Framework :: Django :: 4
+Classifier: License :: OSI Approved :: Apache Software License
+Classifier: Operating System :: OS Independent
+
+Requires-Dist: netbox (>=4.3.0)
+Requires-Dist: netbox-plugin-extensions
+
+Project-URL: Bug Tracker, https://github.com/forwardnetworks/forward-netbox/issues
+Description-Content-Type: text/markdown
+
+Description:
+  # Forward Networks NetBox Plugin
+
+  ## Forward Networks
+
+  Forward Networks is a vendor-neutral network assurance platform that automates the
+  holistic discovery, verification, visualization, and documentation of
+  large-scale enterprise networks, reducing the associated costs and required
+  resources whilst improving security and efficiency.
+
+  It supports your engineering and operations teams, underpinning migration and
+  transformation projects. Forward Networks will revolutionize how you approach network
+  visibility and assurance, security assurance, automation, multi-cloud
+  networking, and trouble resolution.
+
+  **Integrations or scripts should not be installed directly on the Forward Networks VM unless directly communicated from the
+  Forward Networks Support or Solution Architect teams. Any action on the Command-Line Interface (CLI) using the root, osadmin,
+  or autoboss account may cause irreversible, detrimental changes to the product and can render the system unusable.**
+
+  ## Overview
+
+  This plugin allows the integration and data synchronization between Forward Networks and NetBox.
+
+  It uses Forward's Network Query Engine (NQE) to gather structured intent-based data directly from your modeled network,
+  and uses NetBox’s Staged Changes and Background Tasks capabilities to safely sync that data into NetBox.
+
+  - Multiple Forward Networks Sources
+  - Scheduled Ingestion (Adhoc or Periodic)
+  - Full Snapshot View
+  - Diff and Job Logging Views
+  - Topology Buttons and Detail View Integration
+
+  ## NetBox Compatibility
+
+  | NetBox Version | Plugin Version |
+  |----------------|----------------|
+  | 4.3.0 and up   | 0.9.0 and up   |
+
+  ## Documentation
+
+  Full documentation for this plugin can be found at [Forward Networks Docs](https://docs.forward.io/main/integrations/netbox/).
+
+  - User Guide
+  - Administrator Guide
+
+  ## Contributing
+
+  Please see the [GitHub repo](https://github.com/forwardnetworks/forward-netbox) and [CONTRIBUTING.md](https://github.com/forwardnetworks/forward-netbox/blob/main/CONTRIBUTING.md) for contribution details.
