@@ -1,6 +1,7 @@
 import django_filters
 from core.choices import DataSourceStatusChoices
 from core.choices import ObjectChangeActionChoices
+from django.contrib.contenttypes.models import ContentType
 from django.db.models import Q
 from django.utils.translation import gettext as _
 from netbox.filtersets import BaseFilterSet
@@ -11,6 +12,7 @@ from netbox_branching.models import ChangeDiff
 from .models import ForwardData
 from .models import ForwardIngestion
 from .models import ForwardIngestionIssue
+from .models import ForwardNQEQuery
 from .models import ForwardSnapshot
 from .models import ForwardSource
 from .models import ForwardSync
@@ -76,6 +78,32 @@ class ForwardDataFilterSet(BaseFilterSet):
         if not value.strip():
             return queryset
         return queryset.filter(Q(snapshot_data__icontains=value))
+
+
+class ForwardNQEQueryFilterSet(NetBoxModelFilterSet):
+    q = django_filters.CharFilter(method="search")
+    content_type = django_filters.ModelMultipleChoiceFilter(
+        queryset=ContentType.objects.filter(app_label__in=["dcim", "ipam"]),
+        label=_("Model"),
+    )
+
+    class Meta:
+        model = ForwardNQEQuery
+        fields = (
+            "id",
+            "content_type",
+            "enabled",
+        )
+
+    def search(self, queryset, name, value):
+        if not value.strip():
+            return queryset
+        return queryset.filter(
+            Q(content_type__app_label__icontains=value)
+            | Q(content_type__model__icontains=value)
+            | Q(query_id__icontains=value)
+            | Q(description__icontains=value)
+        )
 
 
 class ForwardSnapshotFilterSet(ChangeLoggedModelFilterSet):

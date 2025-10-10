@@ -664,9 +664,20 @@ class ForwardSyncRunner(object):
 
     def collect_and_sync(self, ingestion=None) -> None:
         self.logger.log_info("Starting data sync.", obj=self.sync)
-        for model_key in self.NQE_SEQUENCE:
-            short_model = model_key.split(".", 1)[1]
-            if not self.settings.get(short_model):
+        sequence = list(self.NQE_SEQUENCE)
+        for extra_key in sorted(self.nqe_map.keys()):
+            if extra_key not in sequence:
+                sequence.append(extra_key)
+
+        for model_key in sequence:
+            if "." in model_key:
+                short_model = model_key.split(".", 1)[1]
+            else:
+                short_model = model_key
+            enabled_setting = self.settings.get(short_model)
+            if enabled_setting is None:
+                enabled_setting = True
+            if not enabled_setting:
                 self.logger.log_info(
                     f"Skipping `{model_key}` - disabled for this sync.", obj=self.sync
                 )

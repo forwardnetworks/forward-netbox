@@ -11,6 +11,7 @@ description: v5 Release Notes
 - Replaced the legacy SDK integration with a REST client that talks directly to Forward Networks, keeping the SDK optional for deployments that still rely on it.
 - Updated runtime ingest and topology helpers to use the new REST client for snapshots, inventory collection, and diagrams.
 - Added a configurable Forward Networks network ID on sources so REST calls can be scoped per network.
+- Introduced a dedicated NQE Map UI for managing the default Forward Enterprise queries and enabling additional DCIM/IPAM models.
 - Updated developer tooling and docs to reference Forward Networks resources, streamlining installation and support workflows.
 
 #### Upgrade Notes

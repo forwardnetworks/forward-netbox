@@ -2,7 +2,7 @@ from core.choices import ObjectChangeActionChoices
 from dcim.models import Device
 from dcim.models import Site
 from django.contrib import messages
-from django.contrib.auth.mixins import LoginRequiredMixin
+from django.contrib.auth.mixins import LoginRequiredMixin, PermissionRequiredMixin
 from django.core.cache import cache
 from django.core.exceptions import ValidationError
 from django.db import models
@@ -33,11 +33,13 @@ from .filtersets import ForwardDataFilterSet
 from .filtersets import ForwardIngestionChangeFilterSet
 from .filtersets import ForwardIngestionFilterSet
 from .filtersets import ForwardIngestionIssueFilterSet
+from .filtersets import ForwardNQEQueryFilterSet
 from .filtersets import ForwardSnapshotFilterSet
 from .filtersets import ForwardSourceFilterSet
 from .filtersets import ForwardSyncFilterSet
 from .forms import ForwardIngestionFilterForm
 from .forms import ForwardIngestionMergeForm
+from .forms import ForwardNQEQueryForm
 from .forms import ForwardSnapshotFilterForm
 from .forms import ForwardSourceFilterForm
 from .forms import ForwardSourceForm
@@ -46,6 +48,7 @@ from .forms import ForwardTableForm
 from .models import ForwardData
 from .models import ForwardIngestion
 from .models import ForwardIngestionIssue
+from .models import ForwardNQEQuery
 from .models import ForwardSnapshot
 from .models import ForwardSource
 from .models import ForwardSync
@@ -54,10 +57,59 @@ from .tables import ForwardDataTable
 from .tables import ForwardIngestionChangesTable
 from .tables import ForwardIngestionIssuesTable
 from .tables import ForwardIngestionTable
+from .tables import ForwardNQEQueryTable
 from .tables import ForwardSnapshotTable
 from .tables import ForwardSourceTable
 from .tables import ForwardSyncTable
 from .utilities.fwdutils import Forward
+from .utilities.nqe_map import restore_default_nqe_map
+
+
+# NQE Map
+
+
+class ForwardNQEQueryListView(generic.ObjectListView):
+    queryset = ForwardNQEQuery.objects.select_related("content_type")
+    table = ForwardNQEQueryTable
+    filterset = ForwardNQEQueryFilterSet
+    template_name = "forward_netbox/forwardnqequery_list.html"
+
+
+@register_model_view(ForwardNQEQuery)
+class ForwardNQEQueryView(generic.ObjectView):
+    queryset = ForwardNQEQuery.objects.select_related("content_type")
+
+
+@register_model_view(ForwardNQEQuery, "edit")
+class ForwardNQEQueryEditView(generic.ObjectEditView):
+    queryset = ForwardNQEQuery.objects.select_related("content_type")
+    form = ForwardNQEQueryForm
+
+
+class ForwardNQEQueryDeleteView(generic.ObjectDeleteView):
+    queryset = ForwardNQEQuery.objects.all()
+    default_return_url = "plugins:forward_netbox:forwardnqequery_list"
+
+
+class ForwardNQEQueryBulkDeleteView(generic.BulkDeleteView):
+    queryset = ForwardNQEQuery.objects.all()
+    filterset = ForwardNQEQueryFilterSet
+    table = ForwardNQEQueryTable
+
+
+class ForwardNQEQueryRestoreView(PermissionRequiredMixin, View):
+    template_name = "forward_netbox/forwardnqequery_restore.html"
+    permission_required = "forward_netbox.add_forwardnqequery"
+    raise_exception = True
+
+    def get(self, request):
+        form = ConfirmationForm(initial=request.GET)
+        return render(request, self.template_name, {"form": form})
+
+    def post(self, request):
+        restore_default_nqe_map()
+        messages.success(request, "Forward NQE map restored to defaults.")
+        return redirect("plugins:forward_netbox:forwardnqequery_list")
 
 
 # Snapshot

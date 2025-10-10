@@ -1,9 +1,12 @@
+from django.contrib.contenttypes.models import ContentType
 from django.test import TestCase
 
+from forward_netbox.forms import ForwardNQEQueryForm
 from forward_netbox.forms import ForwardSyncForm
 from forward_netbox.models import ForwardSnapshot
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
+from forward_netbox.models import ForwardNQEQuery
 from forward_netbox.utilities.nqe_map import get_default_nqe_map
 
 
@@ -36,8 +39,9 @@ class ForwardSyncFormNQEMapTest(TestCase):
         }
 
         # Enable all supported models
-        for key in ("manufacturer", "devicerole", "devicetype", "device", "interface", "location"):
-            data[f"fwd_{key}"] = "on"
+        for model_key in self.default_map.keys():
+            short_key = model_key.split(".", 1)[1]
+            data[f"fwd_{short_key}"] = "on"
 
         # Populate NQE query fields
         for model_key, meta in self.default_map.items():
@@ -72,3 +76,28 @@ class ForwardSyncFormNQEMapTest(TestCase):
             effective_map["dcim.device"]["query_id"],
             "FQ_override",
         )
+
+
+class ForwardNQEQueryFormTest(TestCase):
+    def setUp(self) -> None:
+        self.content_type = ContentType.objects.get(app_label="dcim", model="device")
+        self.instance = ForwardNQEQuery.objects.create(
+            content_type=self.content_type,
+            query_id="FQ_original",
+            enabled=True,
+        )
+
+    def test_update_query(self):
+        form = ForwardNQEQueryForm(
+            data={
+                "content_type": self.content_type.pk,
+                "query_id": "FQ_updated",
+                "enabled": False,
+                "description": "Updated query",
+            },
+            instance=self.instance,
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+        obj = form.save()
+        self.assertEqual(obj.query_id, "FQ_updated")
+        self.assertFalse(obj.enabled)

@@ -3,6 +3,7 @@ nav:
   - installation.md
   - sources.md
   - syncs.md
+  - nqe_map.md
   - data_mapping.md
   - ingestions.md
   - extras.md

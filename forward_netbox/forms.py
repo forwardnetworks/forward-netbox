@@ -3,6 +3,7 @@ import copy
 from core.choices import DataSourceStatusChoices
 from core.choices import JobIntervalChoices
 from django import forms
+from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
@@ -24,32 +25,71 @@ from utilities.forms.widgets import NumberWithOptions
 
 from .choices import ForwardSnapshotStatusModelChoices
 from .models import ForwardIngestion
+from .models import ForwardNQEQuery
 from .models import ForwardSnapshot
 from .models import ForwardSource
 from .models import ForwardSync
 from .utilities.nqe_map import get_default_nqe_map
 
 
-dcim_parameters = {
-    "manufacturer": forms.BooleanField(
-        required=False, label=_("Manufacturers"), initial=True
-    ),
-    "devicerole": forms.BooleanField(
-        required=False, label=_("Device Roles"), initial=True
-    ),
-    "devicetype": forms.BooleanField(
-        required=False, label=_("Device Types"), initial=True
-    ),
-    "device": forms.BooleanField(required=False, label=_("Devices"), initial=True),
-    "interface": forms.BooleanField(
-        required=False, label=_("Interfaces"), initial=True
-    ),
-    "location": forms.BooleanField(
-        required=False, label=_("Locations"), initial=True
-    ),
-}
-ipam_parameters = {}
-sync_parameters = {"dcim": dcim_parameters, "ipam": ipam_parameters}
+def build_sync_parameters() -> dict[str, dict[str, forms.BooleanField]]:
+    mapping = get_default_nqe_map()
+    parameters: dict[str, dict[str, forms.BooleanField]] = {"dcim": {}, "ipam": {}}
+
+    for model_key, meta in mapping.items():
+        try:
+            app_label, model = model_key.split(".", 1)
+        except ValueError:
+            continue
+        if app_label not in parameters:
+            continue
+        label = model.replace("_", " ").title()
+        parameters[app_label][model] = forms.BooleanField(
+            required=False,
+            label=label,
+            initial=meta.get("enabled", True),
+        )
+
+    return parameters
+
+
+class ForwardNQEQueryForm(NetBoxModelForm):
+    content_type = forms.ModelChoiceField(
+        queryset=ContentType.objects.filter(app_label__in=["dcim", "ipam"]).order_by(
+            "app_label", "model"
+        ),
+        label=_("Model"),
+    )
+    query_id = forms.CharField(
+        label=_("NQE Query ID"),
+        required=True,
+        help_text=_("Identifier of the Forward Enterprise NQE query."),
+    )
+    enabled = forms.BooleanField(
+        label=_("Enabled"),
+        required=False,
+        initial=True,
+        help_text=_("Uncheck to disable syncing this model using NQE."),
+    )
+    description = CommentField(required=False)
+
+    fieldsets = (
+        FieldSet("content_type", "query_id", "enabled", name=_("Target Model")),
+        FieldSet("description", "tags", name=_("Extras")),
+    )
+
+    class Meta:
+        model = ForwardNQEQuery
+        fields = (
+            "content_type",
+            "query_id",
+            "enabled",
+            "description",
+            "tags",
+        )
+        widgets = {
+            "content_type": HTMXSelect(),
+        }
 
 def str_to_list(_str: str | list) -> list[str]:
     if not isinstance(_str, list):
@@ -353,7 +393,8 @@ class ForwardSyncForm(NetBoxModelForm):
         self.backend_fields = {}
 
         # Prepare buttons for each target Model
-        for k, v in sync_parameters.items():
+        parameter_definitions = build_sync_parameters()
+        for k, v in parameter_definitions.items():
             self.backend_fields[k] = []
             for name, form_field in v.items():
                 field_name = f"fwd_{name}"

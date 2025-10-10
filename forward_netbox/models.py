@@ -72,6 +72,56 @@ def apply_tags(object, tags, connection_name=None):
     _apply(object)
 
 
+ForwardNQEContentTypes = Q(app_label="dcim") | Q(app_label="ipam")
+
+
+class ForwardNQEQuery(NetBoxModel):
+    content_type = models.OneToOneField(
+        ContentType,
+        on_delete=models.CASCADE,
+        related_name="+",
+        limit_choices_to=ForwardNQEContentTypes,
+    )
+    query_id = models.CharField(max_length=128)
+    enabled = models.BooleanField(default=True)
+    description = models.CharField(max_length=200, blank=True)
+
+    objects = RestrictedQuerySet.as_manager()
+
+    class Meta:
+        ordering = ("content_type__app_label", "content_type__model")
+        verbose_name = "Forward Networks NQE Query"
+        verbose_name_plural = "Forward Networks NQE Queries"
+
+    def __str__(self):
+        return self.label
+
+    @property
+    def label(self) -> str:
+        if not self.content_type_id:
+            return "NQE Query"
+        return f"{self.content_type.app_label}.{self.content_type.model}"
+
+    def get_absolute_url(self):
+        return reverse("plugins:forward_netbox:forwardnqequery", args=[self.pk])
+
+    @property
+    def docs_url(self):
+        return ""
+
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        from .utilities.nqe_map import get_default_nqe_map
+
+        get_default_nqe_map.cache_clear()
+
+    def delete(self, *args, **kwargs):
+        from .utilities.nqe_map import get_default_nqe_map
+
+        super().delete(*args, **kwargs)
+        get_default_nqe_map.cache_clear()
+
+
 class ForwardClient:
     def get_client(self, parameters):
         try:
@@ -391,7 +441,7 @@ class ForwardSync(ForwardClient, JobsMixin, TagsMixin, ChangeLoggedModel):
         overrides = (self.parameters or {}).get("nqe_map", {})
         for model_key, meta in overrides.items():
             if model_key not in base_map:
-                base_map[model_key] = {}
+                base_map[model_key] = {"enabled": True}
             if meta:
                 base_map[model_key].update(meta)
         return base_map

@@ -7,17 +7,26 @@ from utilities.query import count_related
 
 from .serializers import ForwardIngestionIssueSerializer
 from .serializers import ForwardIngestionSerializer
+from .serializers import ForwardNQEQuerySerializer
 from .serializers import ForwardSnapshotSerializer
 from .serializers import ForwardSourceSerializer
 from .serializers import ForwardSyncSerializer
+from forward_netbox.filtersets import ForwardNQEQueryFilterSet
 from forward_netbox.filtersets import ForwardSnapshotFilterSet
 from forward_netbox.filtersets import ForwardSourceFilterSet
 from forward_netbox.models import ForwardData
 from forward_netbox.models import ForwardIngestion
 from forward_netbox.models import ForwardIngestionIssue
+from forward_netbox.models import ForwardNQEQuery
 from forward_netbox.models import ForwardSnapshot
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
+
+
+class ForwardNQEQueryViewSet(NetBoxModelViewSet):
+    queryset = ForwardNQEQuery.objects.select_related("content_type")
+    serializer_class = ForwardNQEQuerySerializer
+    filterset_class = ForwardNQEQueryFilterSet
 
 
 class ForwardSyncViewSet(NetBoxModelViewSet):

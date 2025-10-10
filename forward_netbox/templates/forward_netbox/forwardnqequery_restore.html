@@ -1,0 +1,16 @@
+{% extends 'htmx/modal.html' %}
+{% load form_helpers i18n %}
+
+{% block title %}{% trans "Restore Forward NQE Map" %}{% endblock %}
+
+{% block content %}
+  <form action="{% url 'plugins:forward_netbox:forwardnqequery_restore' %}" method="post">
+    {% csrf_token %}
+    {% render_form form %}
+    <div class="text-end">
+      <button type="submit" class="btn btn-warning">
+        <i class="mdi mdi-restore" aria-hidden="true"></i> {% trans "Restore" %}
+      </button>
+    </div>
+  </form>
+{% endblock %}

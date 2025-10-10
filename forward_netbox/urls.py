@@ -69,6 +69,36 @@ urlpatterns = (
         views.ForwardSyncDeleteView.as_view(),
         name="forwardsync_delete",
     ),
+    # NQE Map
+    path(
+        "nqe-map/",
+        views.ForwardNQEQueryListView.as_view(),
+        name="forwardnqequery_list",
+    ),
+    path(
+        "nqe-map/restore/",
+        views.ForwardNQEQueryRestoreView.as_view(),
+        name="forwardnqequery_restore",
+    ),
+    path(
+        "nqe-map/add",
+        views.ForwardNQEQueryEditView.as_view(),
+        name="forwardnqequery_add",
+    ),
+    path(
+        "nqe-map/delete/",
+        views.ForwardNQEQueryBulkDeleteView.as_view(),
+        name="forwardnqequery_bulk_delete",
+    ),
+    path(
+        "nqe-map/<int:pk>/",
+        include(get_model_urls("forward_netbox", "forwardnqequery")),
+    ),
+    path(
+        "nqe-map/<int:pk>/delete/",
+        views.ForwardNQEQueryDeleteView.as_view(),
+        name="forwardnqequery_delete",
+    ),
     # Ingestion
     path(
         "ingestion/",

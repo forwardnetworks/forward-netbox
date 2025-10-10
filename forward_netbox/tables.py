@@ -9,6 +9,7 @@ from netbox_branching.models import ChangeDiff
 from .models import ForwardData
 from .models import ForwardIngestion
 from .models import ForwardIngestionIssue
+from .models import ForwardNQEQuery
 from .models import ForwardSnapshot
 from .models import ForwardSource
 from .models import ForwardSync
@@ -37,6 +38,19 @@ DATA_BUTTON = """
         <i class="mdi mdi-code-tags">JSON</i>
     </a>
 """
+
+
+class ForwardNQEQueryTable(NetBoxTable):
+    label = tables.Column(verbose_name="Model", linkify=True)
+    query_id = tables.Column(verbose_name="NQE Query ID")
+    enabled = columns.BooleanColumn()
+    description = tables.Column()
+    actions = columns.ActionsColumn(actions=("edit", "delete"))
+
+    class Meta(NetBoxTable.Meta):
+        model = ForwardNQEQuery
+        fields = ("label", "query_id", "enabled", "description")
+        default_columns = ("label", "query_id", "enabled")
 
 
 class ForwardIngestionTable(NetBoxTable):

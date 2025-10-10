@@ -41,8 +41,24 @@ ingestion = PluginMenuItem(
     buttons=sync_buttons,
     permissions=["forward_netbox.view_forwardsync"],
 )
+
+nqe_buttons = [
+    PluginMenuButton(
+        link="plugins:forward_netbox:forwardnqequery_add",
+        title="Add",
+        icon_class="mdi mdi-plus-thick",
+        permissions=["forward_netbox.add_forwardnqequery"],
+    )
+]
+
+nqe_map = PluginMenuItem(
+    link="plugins:forward_netbox:forwardnqequery_list",
+    link_text="NQE Map",
+    permissions=["forward_netbox.view_forwardnqequery"],
+    buttons=nqe_buttons,
+)
 menu = PluginMenu(
     label="Forward Networks",
     icon_class="mdi mdi-cloud-sync",
-    groups=(("Forward Networks", (source, snapshot, ingestion)),),
+    groups=(("Forward Networks", (source, snapshot, ingestion, nqe_map)),),
 )

@@ -1,3 +1,4 @@
+from django.contrib.contenttypes.models import ContentType
 from django.utils import timezone
 from rest_framework import status
 from utilities.testing import APIViewTestCases
@@ -5,12 +6,60 @@ from utilities.testing import APIViewTestCases
 from forward_netbox.models import ForwardData
 from forward_netbox.models import ForwardIngestion
 from forward_netbox.models import ForwardIngestionIssue
+from forward_netbox.models import ForwardNQEQuery
 from forward_netbox.models import ForwardSnapshot
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 
 
 BASE = "/api/plugins/forward/"
+
+
+class ForwardNQEQueryTest(APIViewTestCases.APIViewTestCase):
+    model = ForwardNQEQuery
+    brief_fields = [
+        "display",
+        "id",
+        "content_type",
+        "query_id",
+        "enabled",
+    ]
+    bulk_update_data = {
+        "enabled": False,
+    }
+
+    def _get_list_url(self):
+        return f"{BASE}nqe-map/"
+
+    def _get_detail_url(self, instance):
+        return f"{BASE}nqe-map/{instance.pk}/"
+
+    @classmethod
+    def setUpTestData(cls):
+        device_ct = ContentType.objects.get(app_label="dcim", model="device")
+        interface_ct = ContentType.objects.get(app_label="dcim", model="interface")
+
+        ForwardNQEQuery.objects.update_or_create(
+            content_type=device_ct,
+            defaults={"query_id": "FQ_default_device", "enabled": True},
+        )
+        ForwardNQEQuery.objects.update_or_create(
+            content_type=interface_ct,
+            defaults={"query_id": "FQ_default_interface", "enabled": True},
+        )
+
+        cls.create_data = [
+            {
+                "content_type": "dcim.location",
+                "query_id": "FQ_new_location",
+                "enabled": True,
+            },
+            {
+                "content_type": "dcim.devicerole",
+                "query_id": "FQ_new_role",
+                "enabled": False,
+            },
+        ]
 
 class ForwardSourceTest(APIViewTestCases.APIViewTestCase):
     model = ForwardSource

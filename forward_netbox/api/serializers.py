@@ -1,5 +1,8 @@
+from django.contrib.contenttypes.models import ContentType
+
 from core.choices import DataSourceStatusChoices
 from netbox.api.fields import ChoiceField
+from netbox.api.fields import ContentTypeField
 from netbox.api.serializers import NestedGroupModelSerializer
 from netbox_branching.api.serializers import BranchSerializer
 from rest_framework import serializers
@@ -9,6 +12,7 @@ from forward_netbox.models import ForwardIngestionIssue
 from forward_netbox.models import ForwardSnapshot
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
+from forward_netbox.models import ForwardNQEQuery
 
 __all__ = (
     "ForwardSyncSerializer",
@@ -16,7 +20,35 @@ __all__ = (
     "ForwardIngestionSerializer",
     "ForwardIngestionIssueSerializer",
     "ForwardSourceSerializer",
+    "ForwardNQEQuerySerializer",
 )
+
+
+class ForwardNQEQuerySerializer(NestedGroupModelSerializer):
+    content_type = ContentTypeField(
+        queryset=ContentType.objects.filter(app_label__in=["dcim", "ipam"])
+    )
+
+    class Meta:
+        model = ForwardNQEQuery
+        fields = (
+            "id",
+            "display",
+            "content_type",
+            "query_id",
+            "enabled",
+            "description",
+            "tags",
+            "created",
+            "last_updated",
+        )
+        brief_fields = (
+            "id",
+            "display",
+            "content_type",
+            "query_id",
+            "enabled",
+        )
 
 
 class ForwardSourceSerializer(NestedGroupModelSerializer):
