@@ -28,6 +28,7 @@ from django.db.models import Q
 from django.db.models import signals
 from django.urls import reverse
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from django.utils.module_loading import import_string
 from django.utils.translation import gettext as _
 from netbox.context import current_request
@@ -49,7 +50,9 @@ from .choices import ForwardSourceTypeChoices
 from .choices import ForwardTransformMapSourceModelChoices
 from .choices import required_transform_map_contenttypes
 from .signals import clear_other_primary_ip
+from .exceptions import ForwardAPIError
 from .utilities.fwdutils import Forward
+from .utilities.fwdutils import ForwardRESTClient
 from .utilities.fwdutils import ForwardSyncRunner
 from .utilities.fwdutils import render_jinja2
 from .utilities.logging import SyncLogging
@@ -396,8 +399,12 @@ class ForwardTransformField(models.Model):
 class ForwardClient:
     def get_client(self, parameters):
         try:
-            fwd = Forward(parameters=parameters)
-            return fwd.fwd
+            return ForwardRESTClient(
+                base_url=parameters.get("base_url") or parameters.get("url"),
+                token=parameters.get("auth"),
+                verify=parameters.get("verify", True),
+                timeout=parameters.get("timeout"),
+            )
         except httpx.ConnectError as e:
             if "CERTIFICATE_VERIFY_FAILED" in str(e):
                 error_message = (
@@ -413,6 +420,8 @@ class ForwardClient:
             else:
                 error_message = str(e)
             self.handle_sync_failure("HTTPStatusError", e, error_message)
+        except ForwardAPIError as e:
+            self.handle_sync_failure("APIError", e, str(e))
         except ImportError as e:
             self.handle_sync_failure("ImportError", e, str(e))
         except Exception as e:
@@ -507,42 +516,39 @@ class ForwardSource(ForwardClient, JobsMixin, PrimaryModel):
             logger.debug(f"Syncing snapshots from {self.url}")
 
             self.parameters["base_url"] = self.url
-            fwd = self.get_client(parameters=self.parameters)
+            client = self.get_client(parameters=self.parameters)
 
-            if not fwd:
-                raise SyncError("Unable to connect to Forward.")
+            snapshots = client.list_snapshots()
+            for snapshot in snapshots:
+                snapshot_ref = snapshot.get("ref") or snapshot.get("snapshot_ref")
+                snapshot_id = snapshot.get("snapshot_id") or snapshot_ref
+                if snapshot_id in ["$prev", "$lastLocked"]:
+                    continue
 
-            for snapshot_id, value in fwd.snapshots.items():
-                if snapshot_id not in ["$prev", "$lastLocked"]:
-                    if value.name:
-                        name = (
-                            value.name
-                            + " - "
-                            + value.start.strftime("%d-%b-%y %H:%M:%S")
-                        )
-                    else:
-                        name = value.start.strftime("%d-%b-%y %H:%M:%S")
+                status = snapshot.get("status") or snapshot.get("state")
+                finish_status = snapshot.get("finish_status") or snapshot.get("finishState")
+                if status not in ("done", "loaded") and finish_status not in ("done", "loaded"):
+                    continue
 
-                    if value.status == "done":
-                        status = "loaded"
-                    else:
-                        status = value.status
+                name = snapshot.get("name") or snapshot_id
+                start_str = snapshot.get("start") or snapshot.get("started_at")
+                start = parse_datetime(start_str) if start_str else timezone.now()
 
-                    data = {
-                        "name": name,
-                        "data": json.loads(value.model_dump_json(exclude={"client"})),
-                        "date": value.start,
-                        "created": timezone.now(),
-                        "last_updated": timezone.now(),
-                        "status": status,
-                    }
-                    snapshot, _ = ForwardSnapshot.objects.update_or_create(
-                        source=self, snapshot_id=snapshot_id, defaults=data
-                    )
-                    self.logger.log_info(
-                        f"Created/Updated Snapshot {snapshot.name} ({snapshot.snapshot_id})",
-                        obj=snapshot,  # noqa E225
-                    )
+                data = {
+                    "name": name,
+                    "data": snapshot,
+                    "date": start,
+                    "created": timezone.now(),
+                    "last_updated": timezone.now(),
+                    "status": "loaded" if status in ("done", "loaded") else status,
+                }
+                snapshot_obj, _ = ForwardSnapshot.objects.update_or_create(
+                    source=self, snapshot_id=snapshot_id, defaults=data
+                )
+                self.logger.log_info(
+                    f"Created/Updated Snapshot {snapshot_obj.name} ({snapshot_obj.snapshot_id})",
+                    obj=snapshot_obj,  # noqa E225
+                )
             self.status = DataSourceStatusChoices.COMPLETED
             self.logger.log_success(f"Completed syncing snapshots from {self.name}")
             logger.debug(f"Completed syncing snapshots from {self.url}")
@@ -789,6 +795,7 @@ class ForwardSync(ForwardClient, JobsMixin, TagsMixin, ChangeLoggedModel):
 
         current_time = str(timezone.now())
         ingestion = ForwardIngestion.objects.create(sync=self, job=job)
+        client = None
         try:
             branch = Branch(name=f"Forward Sync {current_time}")
             branch.save(provision=False)
@@ -814,15 +821,17 @@ class ForwardSync(ForwardClient, JobsMixin, TagsMixin, ChangeLoggedModel):
             logger.info("Fetching Forward Client")
 
             if self.snapshot_data.source.type == ForwardSourceTypeChoices.LOCAL:
-                fwd = self.get_client(parameters=self.snapshot_data.source.parameters)
-                if not fwd:
+                client = self.get_client(
+                    parameters=self.snapshot_data.source.parameters
+                )
+                if not client:
                     logger.debug("Unable to connect to Forward.")
                     raise SyncError("Unable to connect to Forward.")
             else:
-                fwd = None
+                client = None
 
             runner = ForwardSyncRunner(
-                client=fwd,
+                client=client,
                 ingestion=ingestion,
                 settings=self.parameters,
                 sync=self,
@@ -884,6 +893,8 @@ class ForwardSync(ForwardClient, JobsMixin, TagsMixin, ChangeLoggedModel):
         )
         if job:
             job.data = self.logger.log_data
+        if client:
+            client.close()
 
 
 class ForwardIngestion(JobsMixin, models.Model):

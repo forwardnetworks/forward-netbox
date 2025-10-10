@@ -20,7 +20,7 @@ or autoboss account may cause irreversible, detrimental changes to the product a
 
 This plugin allows the integration and data synchronization between Forward and NetBox.
 
-When the optional Forward SDK is installed (available via Forward Networks support), the plugin can collect network data directly from Forward and relies on helpful NetBox features like [Branches](https://docs.netboxlabs.com/netbox-extensions/branching/) and [Background Tasks](https://netboxlabs.com/docs/netbox/en/stable/plugins/development/background-tasks/) to make the job of bringing in data to NetBox easier.
+The plugin communicates with Forward's REST API to gather inventory and topology data. Installing the optional Forward SDK (available via Forward Networks support) enhances some interactive workflows but is no longer required for data ingestion. The integration still relies on helpful NetBox features like [Branches](https://docs.netboxlabs.com/netbox-extensions/branching/) and [Background Tasks](https://netboxlabs.com/docs/netbox/en/stable/plugins/development/background-tasks/) to make the job of bringing in data to NetBox easier.
 
 - Multiple Forward Sources
 - Transform Maps

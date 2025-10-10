@@ -16,14 +16,13 @@ from django.core.exceptions import ObjectDoesNotExist
 from django.db.models import Model
 from django.utils.text import slugify
 from django_tables2 import Column
+import httpx
+from httpx import HTTPStatusError
 from jinja2.sandbox import SandboxedEnvironment
 from netbox.config import get_config
 from netutils.utils import jinja2_convenience_function
 
-try:
-    from forward import FWDClient  # type: ignore
-except ModuleNotFoundError:
-    FWDClient = None
+from ..exceptions import ForwardAPIError
 
 from ..choices import ForwardSourceTypeChoices
 from ..exceptions import create_or_get_sync_issue
@@ -69,73 +68,183 @@ def render_jinja2(template_code, context):
     return environment.from_string(source=template_code).render(**context)
 
 
+class ForwardRESTClient:
+    """Thin wrapper around Forward's REST API."""
+
+    DEFAULT_TIMEOUT = 60
+
+    def __init__(
+        self,
+        base_url: str,
+        token: str | None = None,
+        *,
+        verify: bool = True,
+        timeout: int | None = None,
+        session: httpx.Client | None = None,
+    ):
+        if not base_url:
+            raise ForwardAPIError("Forward base URL is not configured.")
+
+        self.base_url = base_url.rstrip("/")
+        headers = {
+            "Accept": "application/json",
+        }
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        headers["User-Agent"] = f"forward-netbox/{metadata.version('forward-netbox')}"
+        self._client = session or httpx.Client(
+            base_url=self.base_url,
+            headers=headers,
+            timeout=timeout or self.DEFAULT_TIMEOUT,
+            verify=verify,
+            follow_redirects=True,
+        )
+
+    def close(self) -> None:
+        self._client.close()
+
+    def _request(self, method: str, path: str, *, params=None, json_body=None):
+        try:
+            response = self._client.request(
+                method,
+                path,
+                params=params,
+                json=json_body,
+            )
+            response.raise_for_status()
+        except HTTPStatusError as exc:
+            status_code = exc.response.status_code if exc.response else None
+            raise ForwardAPIError(
+                f"Forward API returned {status_code}: {exc.response.text if exc.response else exc}",
+                status_code=status_code,
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise ForwardAPIError(f"Forward API request failed: {exc}") from exc
+        if response.content:
+            try:
+                return response.json()
+            except ValueError:
+                return response.text
+        return None
+
+    @staticmethod
+    def _extract_collection(payload):
+        if payload is None:
+            return []
+        if isinstance(payload, list):
+            return payload
+        if isinstance(payload, dict):
+            for key in ("data", "results", "items"):
+                if key in payload and isinstance(payload[key], list):
+                    return payload[key]
+        return [payload]
+
+    def _collection(self, path: str, *, snapshot_id=None, filters=None, method="GET"):
+        params = {}
+        if snapshot_id:
+            params["snapshot"] = snapshot_id
+        json_body = None
+        if filters:
+            json_body = {"filters": filters}
+        try:
+            payload = self._request(method, path, params=params, json_body=json_body)
+            return self._extract_collection(payload)
+        except ForwardAPIError as exc:
+            if exc.status_code == 405 and method == "POST":
+                # Retry with GET if POST is not supported
+                fallback_params = dict(params)
+                if filters:
+                    fallback_params["filters"] = json.dumps(filters)
+                payload = self._request("GET", path, params=fallback_params)
+                return self._extract_collection(payload)
+            raise
+
+    def list_snapshots(self):
+        return self._collection("/api/v1/snapshots")
+
+    def get_snapshot(self, snapshot_id: str):
+        payload = self._request("GET", f"/api/v1/snapshots/{snapshot_id}")
+        if isinstance(payload, dict):
+            return payload.get("data", payload)
+        return payload
+
+    def inventory(self, resource: str, snapshot_id: str | None = None, filters=None):
+        return self._collection(
+            f"/api/v1/inventory/{resource}", snapshot_id=snapshot_id, filters=filters
+        )
+
+    def technology(self, resource: str, snapshot_id: str | None = None, filters=None):
+        return self._collection(
+            f"/api/v1/technology/{resource}", snapshot_id=snapshot_id, filters=filters
+        )
+
+    def table(self, table: str, *, filters=None, snapshot_id=None):
+        path = f"/api/v1/{table.replace('.', '/')}"
+        return self._collection(path, snapshot_id=snapshot_id, filters=filters, method="POST")
+
+    def get_site_topology(self, site: str, snapshot_id: str, settings: dict | None = None):
+        payload = {
+            "site": site,
+            "snapshot": snapshot_id,
+            "settings": settings or {},
+        }
+        response = self._request("POST", "/api/v1/diagram/site", json_body=payload)
+        if not isinstance(response, dict):
+            raise ForwardAPIError("Unexpected response payload when requesting topology diagram.")
+        return response
 class Forward(object):
+    """High-level helper used by forms/views for Forward REST interactions."""
+
     def __init__(self, parameters=None) -> None:
-        if FWDClient is None:
-            raise ImportError(
-                "Forward SDK is not installed. Install the `forward` package to enable Forward integrations."
-            )
-        if parameters:
-            self.fwd = FWDClient(**parameters, unloaded=True)
-        else:
-            self.fwd = FWDClient(
-                **settings.PLUGINS_CONFIG["forward_netbox"], unloaded=True
-            )
-        self.fwd._client.headers[
-            "user-agent"
-        ] += f'; forward-netbox/{metadata.version("forward-netbox")}'  # noqa: E702
+        params = parameters or settings.PLUGINS_CONFIG.get("forward_netbox", {})
+        base_url = params.get("base_url") or params.get("url")
+        token = params.get("auth")
+        verify = params.get("verify", True)
+        timeout = params.get("timeout")
+        self.snapshot_id = params.get("snapshot_id")
+        self.api = ForwardRESTClient(
+            base_url=base_url,
+            token=token,
+            verify=verify,
+            timeout=timeout,
+        )
+
+    def close(self):
+        self.api.close()
 
     def get_snapshots(self) -> dict:
-        formatted_snapshots = {}
-        if self.fwd:
-            for snapshot_ref, snapshot in self.fwd.snapshots.items():
-                if snapshot.status != "done" and snapshot.finish_status != "done":
-                    continue
-                if snapshot_ref in ["$prev", "$lastLocked"]:
-                    continue
-                if snapshot.name:
-                    description = (
-                        snapshot.name
-                        + " - "
-                        + snapshot.end.strftime("%d-%b-%y %H:%M:%S")
-                    )
-                else:
-                    description = snapshot.end.strftime("%d-%b-%y %H:%M:%S")
-
-                formatted_snapshots[snapshot_ref] = (description, snapshot.snapshot_id)
+        formatted_snapshots: dict[str, tuple[str, str]] = {}
+        for snapshot in self.api.list_snapshots():
+            status = snapshot.get("status")
+            finish_status = snapshot.get("finish_status", status)
+            if status not in ("done", "loaded") and finish_status not in ("done", "loaded"):
+                continue
+            ref = snapshot.get("ref") or snapshot.get("snapshot_ref") or snapshot.get("snapshot_id")
+            if ref in ("$prev", "$lastLocked"):
+                continue
+            snapshot_id = snapshot.get("snapshot_id") or ref
+            name = snapshot.get("name") or snapshot_id
+            end_time = snapshot.get("end") or snapshot.get("finished_at")
+            if end_time:
+                description = f"{name} - {end_time}"
+            else:
+                description = name
+            formatted_snapshots[ref] = (description, snapshot_id)
         return formatted_snapshots
 
-    def get_sites(self, snapshot=None) -> list:
-        if snapshot:
-            raw_sites = self.fwd.inventory.sites.all(snapshot_id=snapshot)
-        else:
-            raw_sites = self.fwd.inventory.sites.all()
-        sites = []
-        for item in raw_sites:
-            sites.append(item["siteName"])
-        return sites
+    def get_sites(self, snapshot=None) -> list[str]:
+        snapshot_id = snapshot or self.snapshot_id or "$last"
+        raw_sites = self.api.inventory("sites", snapshot_id=snapshot_id)
+        return [item.get("siteName") or item.get("name") for item in raw_sites]
 
-    def get_table_data(self, table, device):
-        filter = {"sn": ["eq", device.serial]}
-        split = table.split(".")
-
-        if len(split) == 2:
-            if split[1] == "serial_ports":
-                table = getattr(self.fwd.technology, split[1])
-            else:
-                tech = getattr(self.fwd.technology, split[0])
-                table = getattr(tech, split[1])
-        else:
-            table = getattr(self.fwd.inventory, split[0])
-
-        columns = self.fwd.get_columns(table.endpoint)
-
-        columns.pop(0)
-
-        columns = [(k, Column()) for k in columns]
-        data = table.all(
-            filters=filter,
-        )
+    def get_table_data(self, table: str, device: Device):
+        filters = {"sn": ["eq", device.serial]}
+        snapshot_id = self.snapshot_id or "$last"
+        data = self.api.table(table, filters=filters, snapshot_id=snapshot_id)
+        columns: list[tuple[str, Column]] = []
+        if data:
+            for column_name in data[0].keys():
+                columns.append((column_name, Column()))
         return data, columns
 
 
@@ -359,84 +468,85 @@ class ForwardSyncRunner(object):
                     ).values_list("data", flat=True)
                 )
             else:
+            self.logger.log_info(
+                "Local collector being used for snapshot data.", obj=self.sync
+            )
+            excluded_vendors = ["aws", "azure"]
+
+            query_filter = {
+                "and": [{"vendor": ["neq", vendor]} for vendor in excluded_vendors]
+            }
+
+            if ingestion_sites := self.settings.get("sites"):
+                site_filter = {
+                    "or": [{"siteName": ["eq", site]} for site in ingestion_sites]
+                }
+                query_filter["and"].append(site_filter)
+
                 self.logger.log_info(
-                    "Local collector being used for snapshot data.", obj=self.sync
+                    f"Creating site filter `{json.dumps(site_filter)}`",
+                    obj=self.sync,
                 )
-                excluded_vendors = ["aws", "azure"]
+            else:
+                site_filter = {}
 
-                query_filter = {
-                    "and": [{"vendor": ["neq", vendor]} for vendor in excluded_vendors]
+            snapshot_id = self.settings["snapshot_id"]
+
+            data["site"] = self.client.inventory(
+                "sites", snapshot_id=snapshot_id, filters=site_filter
+            )
+
+            data["device"] = self.client.inventory(
+                "devices", snapshot_id=snapshot_id, filters=query_filter
+            )
+
+            data["virtualchassis"] = self.client.technology(
+                "platforms/stacks_members", snapshot_id=snapshot_id, filters=site_filter
+            )
+
+            data["interface"] = self.client.inventory(
+                "interfaces", snapshot_id=snapshot_id, filters=site_filter
+            )
+
+            inventory_item_filter = {
+                "and": [
+                    {"sn": ["empty", False]},
+                    {"name": ["empty", False]},
+                ]
+            }
+            if site_filter:
+                inventory_item_filter["and"].append(site_filter)
+
+            data["inventoryitem"] = self.client.inventory(
+                "pn", snapshot_id=snapshot_id, filters=inventory_item_filter
+            )
+
+            data["vlan"] = self.client.technology(
+                "vlans/site_summary", snapshot_id=snapshot_id, filters=site_filter
+            )
+
+            data["vrf"] = self.client.technology(
+                "routing/vrf_detail", snapshot_id=snapshot_id, filters=site_filter
+            )
+
+            if site_filter:
+                networks_filter = {
+                    "and": [site_filter, {"and": [{"net": ["empty", False]}]}]
                 }
+            else:
+                networks_filter = {"and": [{"net": ["empty", False]}]}
+            self.logger.log_info(f"Creating network filter: `{networks_filter}`")
+            data["prefix"] = self.client.technology(
+                "managed_networks/networks",
+                snapshot_id=snapshot_id,
+                filters=networks_filter,
+            )
 
-                if ingestion_sites := self.settings.get("sites"):
-                    site_filter = {
-                        "or": [{"siteName": ["eq", site]} for site in ingestion_sites]
-                    }
-                    query_filter["and"].append(site_filter)
-
-                    self.logger.log_info(
-                        f"Creating site filter `{json.dumps(site_filter)}`",
-                        obj=self.sync,
-                    )
-                else:
-                    site_filter = {}
-
-                data["site"] = self.client.inventory.sites.all(
-                    snapshot_id=self.settings["snapshot_id"], filters=site_filter
-                )
-
-                data["device"] = self.client.inventory.devices.all(
-                    snapshot_id=self.settings["snapshot_id"], filters=query_filter
-                )
-
-                data[
-                    "virtualchassis"
-                ] = self.client.technology.platforms.stacks_members.all(
-                    snapshot_id=self.settings["snapshot_id"], filters=site_filter
-                )
-
-                data["interface"] = self.client.inventory.interfaces.all(
-                    snapshot_id=self.settings["snapshot_id"], filters=site_filter
-                )
-
-                inventory_item_filter = {
-                    "and": [
-                        {"sn": ["empty", False]},
-                        {"name": ["empty", False]},
-                    ]
-                }
-                if site_filter:
-                    inventory_item_filter["and"].append(site_filter)
-
-                data["inventoryitem"] = self.client.inventory.pn.all(
-                    snapshot_id=self.settings["snapshot_id"],
-                    filters=inventory_item_filter,
-                )
-
-                data["vlan"] = self.client.technology.vlans.site_summary.all(
-                    snapshot_id=self.settings["snapshot_id"], filters=site_filter
-                )
-
-                data["vrf"] = self.client.technology.routing.vrf_detail.all(
-                    snapshot_id=self.settings["snapshot_id"], filters=site_filter
-                )
-
-                if site_filter:
-                    networks_filter = {
-                        "and": [site_filter, {"and": [{"net": ["empty", False]}]}]
-                    }
-                else:
-                    networks_filter = {"and": [{"net": ["empty", False]}]}
-                self.logger.log_info(f"Creating network filter: `{networks_filter}`")
-                data["prefix"] = self.client.technology.managed_networks.networks.all(
-                    snapshot_id=self.settings["snapshot_id"], filters=networks_filter
-                )
-
-                data[
-                    "ipaddress"
-                ] = self.client.technology.addressing.managed_ip_ipv4.all(
-                    snapshot_id=self.settings["snapshot_id"], filters=site_filter
-                )
+            data["ipaddress"] = self.client.technology(
+                "addressing/managed_ip_ipv4",
+                snapshot_id=snapshot_id,
+                filters=site_filter,
+            )
         except Exception as e:
             self.logger.log_failure(
                 f"Error collecting data from Forward: {e}", obj=self.sync

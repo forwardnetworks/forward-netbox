@@ -47,6 +47,14 @@ class IPAddressDuplicateError(IngestionIssue, SyncError):
         return f"IP address {self.data.get('address')} already exists in {self.model} with coalesce_fields={self.coalesce_fields}."
 
 
+class ForwardAPIError(SyncError):
+    """Raised when Forward REST API returns an error response."""
+
+    def __init__(self, message: str, *, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+
+
 def create_or_get_sync_issue(
     exception: Exception,
     ingestion: "ForwardIngestion",

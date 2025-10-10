@@ -169,13 +169,12 @@ class ForwardSourceTestCase(
         self.assertEqual(response.context["site"], self.site.id)
 
     @override_settings(EXEMPT_VIEW_PERMISSIONS=["*"])
-    @patch("forward_netbox.utilities.fwdutils.FWDClient")
-    def test_get_topology_htmx(self, mock_fwdclient_class):
-        # Mock the FWDClient instance that gets created inside Forward.__init__
-        mock_fwdclient_instance = mock_fwdclient_class.return_value
-        mock_fwdclient_instance._client.headers = {"user-agent": "test-user-agent"}
+    @patch("forward_netbox.utilities.fwdutils.ForwardRESTClient")
+    def test_get_topology_htmx(self, mock_forward_client_class):
+        mock_forward_client = mock_forward_client_class.return_value
+        mock_forward_client.close.return_value = None
 
-        # Mock snapshot data - this is what fwd.fwd.snapshots.get(snapshot) returns
+        # Mock snapshot data - Forward REST get_snapshot response
         mock_snapshot_data = {
             "id": "$last",
             "name": "Test Snapshot",
@@ -188,9 +187,9 @@ class ForwardSourceTestCase(
             "total_dev_count": 10,
             "interface_count": 50,
         }
-        mock_fwdclient_instance.snapshots.get.return_value = mock_snapshot_data
+        mock_forward_client.get_snapshot.return_value = mock_snapshot_data
 
-        # Mock site data - this is what fwd.fwd.inventory.sites.all() returns
+        # Mock site data - Forward REST inventory response
         mock_sites_data = [
             {
                 "siteName": "Test Site",
@@ -199,15 +198,12 @@ class ForwardSourceTestCase(
                 "deviceCount": 5,
             }
         ]
-        mock_fwdclient_instance.inventory.sites.all.return_value = mock_sites_data
+        mock_forward_client.inventory.return_value = mock_sites_data
 
-        # Mock diagram methods to avoid actual diagram generation
-        mock_fwdclient_instance.diagram.share_link.return_value = (
-            "https://forward.example.com/diagram/share/123"
-        )
-        mock_fwdclient_instance.diagram.svg.return_value = (
-            b'<svg><rect width="100" height="100" fill="blue"/></svg>'
-        )
+        mock_forward_client.get_site_topology.return_value = {
+            "share_link": "https://forward.example.com/diagram/share/123",
+            "svg": "<svg><rect width='100' height='100' fill='blue'/></svg>",
+        }
 
         response = self.client.get(
             self._get_queryset().first().get_absolute_url()
@@ -221,20 +217,19 @@ class ForwardSourceTestCase(
         self.assertHttpStatus(response, 200)
 
         # Verify that the API calls were made with correct parameters
-        mock_fwdclient_instance.snapshots.get.assert_called_once_with("$last")
-        mock_fwdclient_instance.inventory.sites.all.assert_called_once_with(
-            filters={"siteName": ["eq", "Test Site"]}
+        mock_forward_client.get_snapshot.assert_called_once_with("$last")
+        mock_forward_client.inventory.assert_called_once_with(
+            "sites", snapshot_id="$last", filters={"siteName": ["eq", "Test Site"]}
         )
+        mock_forward_client.get_site_topology.assert_called_once()
+        mock_forward_client.close.assert_called()
 
     @override_settings(EXEMPT_VIEW_PERMISSIONS=["*"])
-    @patch("forward_netbox.utilities.fwdutils.FWDClient")
-    def test_get_topology_htmx_empty_snapshot_data(self, mock_fwdclient_class):
-        # Mock the FWDClient instance that gets created inside Forward.__init__
-        mock_fwdclient_instance = mock_fwdclient_class.return_value
-        mock_fwdclient_instance._client.headers = {"user-agent": "test-user-agent"}
-
-        # Mock empty snapshot data - this is what fwd.fwd.snapshots.get(snapshot) returns when snapshot doesn't exist
-        mock_fwdclient_instance.snapshots.get.return_value = None
+    @patch("forward_netbox.utilities.fwdutils.ForwardRESTClient")
+    def test_get_topology_htmx_empty_snapshot_data(self, mock_forward_client_class):
+        mock_forward_client = mock_forward_client_class.return_value
+        mock_forward_client.close.return_value = None
+        mock_forward_client.get_snapshot.return_value = None
 
         response = self.client.get(
             self._get_queryset().first().get_absolute_url()
@@ -247,18 +242,17 @@ class ForwardSourceTestCase(
         )
         self.assertHttpStatus(response, 200)
 
-        # Verify that the snapshot API was called but sites API was not called due to early exit
-        mock_fwdclient_instance.snapshots.get.assert_called_once_with("$last")
-        mock_fwdclient_instance.inventory.sites.all.assert_not_called()
+        mock_forward_client.get_snapshot.assert_called_once_with("$last")
+        mock_forward_client.inventory.assert_not_called()
+        mock_forward_client.get_site_topology.assert_not_called()
+        mock_forward_client.close.assert_called()
 
     @override_settings(EXEMPT_VIEW_PERMISSIONS=["*"])
-    @patch("forward_netbox.utilities.fwdutils.FWDClient")
-    def test_get_topology_htmx_empty_sites_data(self, mock_fwdclient_class):
-        # Mock the FWDClient instance that gets created inside Forward.__init__
-        mock_fwdclient_instance = mock_fwdclient_class.return_value
-        mock_fwdclient_instance._client.headers = {"user-agent": "test-user-agent"}
+    @patch("forward_netbox.utilities.fwdutils.ForwardRESTClient")
+    def test_get_topology_htmx_empty_sites_data(self, mock_forward_client_class):
+        mock_forward_client = mock_forward_client_class.return_value
+        mock_forward_client.close.return_value = None
 
-        # Mock valid snapshot data
         mock_snapshot_data = {
             "id": "$last",
             "name": "Test Snapshot",
@@ -271,10 +265,8 @@ class ForwardSourceTestCase(
             "total_dev_count": 10,
             "interface_count": 50,
         }
-        mock_fwdclient_instance.snapshots.get.return_value = mock_snapshot_data
-
-        # Mock empty site data - this is what fwd.fwd.inventory.sites.all() returns when site doesn't exist in snapshot
-        mock_fwdclient_instance.inventory.sites.all.return_value = []
+        mock_forward_client.get_snapshot.return_value = mock_snapshot_data
+        mock_forward_client.inventory.return_value = []
 
         response = self.client.get(
             self._get_queryset().first().get_absolute_url()
@@ -287,11 +279,12 @@ class ForwardSourceTestCase(
         )
         self.assertHttpStatus(response, 200)
 
-        # Verify that both API calls were made
-        mock_fwdclient_instance.snapshots.get.assert_called_once_with("$last")
-        mock_fwdclient_instance.inventory.sites.all.assert_called_once_with(
-            filters={"siteName": ["eq", "Test Site"]}
+        mock_forward_client.get_snapshot.assert_called_once_with("$last")
+        mock_forward_client.inventory.assert_called_once_with(
+            "sites", snapshot_id="$last", filters={"siteName": ["eq", "Test Site"]}
         )
+        mock_forward_client.get_site_topology.assert_not_called()
+        mock_forward_client.close.assert_called()
 
     @override_settings(EXEMPT_VIEW_PERMISSIONS=["*"])
     def test_get_topology_htmx_no_source(self):
@@ -2022,28 +2015,18 @@ class ForwardTableViewTestCase(PluginPathMixin, ModelTestCase):
         self.assertContains(response, self.source.name)
 
     @override_settings(EXEMPT_VIEW_PERMISSIONS=["*"])
-    @patch("forward_netbox.utilities.fwdutils.FWDClient")
-    def test_get_table_with_cache(self, mock_fwdclient_class):
+    @patch("forward_netbox.utilities.fwdutils.ForwardRESTClient")
+    def test_get_table_with_cache(self, mock_forward_client_class):
         # Clear cache before the test
         cache.clear()
 
         table_name = tableChoices[0][0]
 
-        # Mock the FWDClient instance that gets created inside Forward.__init__
-        mock_fwdclient_instance = mock_fwdclient_class.return_value
-        mock_fwdclient_instance._client.headers = {"user-agent": "test-user-agent"}
-        mock_fwdclient_instance.get_columns.return_value = [
-            "id",
-            "hostname",
-            "vendor",
-            "model",
-        ]
-
-        mock_table = getattr(mock_fwdclient_instance.inventory, table_name)
-        mock_table.all.return_value = [
+        mock_forward_client = mock_forward_client_class.return_value
+        mock_forward_client.close.return_value = None
+        mock_forward_client.table.return_value = [
             {"hostname": "mock-device-1", "vendor": "cisco", "model": "ISR4331"},
         ]
-        mock_table.endpoint = f"inventory/{table_name}"
 
         response = self.client.get(
             self.device.get_absolute_url() + "forward/",
@@ -2054,8 +2037,11 @@ class ForwardTableViewTestCase(PluginPathMixin, ModelTestCase):
         )
         self.assertHttpStatus(response, 200)
 
-        mock_fwdclient_class.assert_called_once()
-        mock_table.all.assert_called_once()
+        mock_forward_client_class.assert_called_once()
+        mock_forward_client.table.assert_called_once_with(
+            table_name, filters={"sn": ["eq", self.device.serial]}, snapshot_id="$last"
+        )
+        mock_forward_client.close.assert_called()
 
     @override_settings(EXEMPT_VIEW_PERMISSIONS=["*"])
     def test_get_table_htmx(self):
@@ -2074,20 +2060,16 @@ class ForwardTableViewTestCase(PluginPathMixin, ModelTestCase):
         self.assertContains(response, "hx-target")  # HTMX attributes should be present
 
     @override_settings(EXEMPT_VIEW_PERMISSIONS=["*"])
-    @patch("forward_netbox.utilities.fwdutils.FWDClient")
-    def test_get_table_with_snapshot_data_and_api_call(self, mock_fwdclient_class):
+    @patch("forward_netbox.utilities.fwdutils.ForwardRESTClient")
+    def test_get_table_with_snapshot_data_and_api_call(self, mock_forward_client_class):
         """Test that snapshot data properly triggers API calls when needed."""
-        # Mock the FWDClient instance
-        mock_fwdclient_instance = mock_fwdclient_class.return_value
-        mock_fwdclient_instance._client.headers = {"user-agent": "test-user-agent"}
-        mock_fwdclient_instance.get_columns.return_value = ["id", "hostname", "vendor"]
-
-        table_name = tableChoices[0][0]
-        mock_table = getattr(mock_fwdclient_instance.inventory, table_name)
-        mock_table.all.return_value = [
+        mock_forward_client = mock_forward_client_class.return_value
+        mock_forward_client.close.return_value = None
+        mock_forward_client.table.return_value = [
             {"hostname": "test-device-001", "vendor": "cisco", "model": "ISR4331"},
         ]
-        mock_table.endpoint = f"inventory/{table_name}"
+
+        table_name = tableChoices[0][0]
 
         response = self.client.get(
             self.device.get_absolute_url() + "forward/",
@@ -2101,8 +2083,13 @@ class ForwardTableViewTestCase(PluginPathMixin, ModelTestCase):
         self.assertHttpStatus(response, 200)
 
         # Validate that API was called
-        mock_fwdclient_class.assert_called_once()
-        mock_table.all.assert_called_once()
+        mock_forward_client_class.assert_called_once()
+        mock_forward_client.table.assert_called_once_with(
+            table_name,
+            filters={"sn": ["eq", self.device.serial]},
+            snapshot_id=self.snapshot.snapshot_id,
+        )
+        mock_forward_client.close.assert_called()
 
         # Validate that response contains the mocked data
         self.assertContains(response, "test-device-001")

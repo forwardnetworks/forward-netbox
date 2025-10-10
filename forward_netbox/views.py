@@ -15,12 +15,6 @@ from django.urls import reverse
 from django.utils import timezone
 from django.views.generic import View
 from django_tables2 import RequestConfig
-try:
-    from forward.diagrams import Network  # type: ignore
-    from forward.diagrams import NetworkSettings  # type: ignore
-except ModuleNotFoundError:
-    Network = None
-    NetworkSettings = None
 from netbox.views import generic
 from netbox.views.generic.base import BaseObjectView
 from netbox_branching.models import ChangeDiff
@@ -945,6 +939,9 @@ class ForwardTable(generic.ObjectView):
                         cache.set(cache_key, data, 60 * 60 * 24)
                     except Exception as e:
                         messages.error(request, e)
+                    finally:
+                        if "fwd" in locals():
+                            fwd.close()
 
         if not data:
             data = {"data": [], "columns": []}
@@ -1008,22 +1005,6 @@ class ForwardSourceTopology(LoginRequiredMixin, View):
                 else None
             )
 
-            if Network is None or NetworkSettings is None:
-                return render(
-                    request,
-                    self.template_name,
-                    {
-                        "site": site_obj,
-                        "source": source,
-                        "svg": None,
-                        "size": "xl",
-                        "link": None,
-                        "time": timezone.now(),
-                        "snapshot": None,
-                        "error": "Forward SDK is not installed. Install the `forward` package to view topology diagrams.",
-                    },
-                )
-
             try:
                 if not source:
                     raise Exception("Source ID not available in request.")
@@ -1035,34 +1016,40 @@ class ForwardSourceTopology(LoginRequiredMixin, View):
                     {"snapshot_id": snapshot, "base_url": source.url}
                 )
 
-                fwd = Forward(parameters=source.parameters)
-                snapshot_data = fwd.fwd.snapshots.get(snapshot)
+                fwd_client = Forward(parameters=source.parameters)
+                snapshot_data = fwd_client.api.get_snapshot(snapshot)
                 if not snapshot_data:
                     raise Exception(
                         f"Snapshot ({snapshot}) not available in Forward."  # noqa E713
                     )
 
-                sites = fwd.fwd.inventory.sites.all(
-                    filters={"siteName": ["eq", site.name]}
+                sites = fwd_client.api.inventory(
+                    "sites",
+                    snapshot_id=snapshot,
+                    filters={"siteName": ["eq", site.name]},
                 )
                 if not sites:
                     raise Exception(
                         f"{site.name} not available in snapshot ({snapshot})."  # noqa E713
                     )
 
-                net = Network(sites=site.name, all_network=False)
-                settings = NetworkSettings()
-                settings.hide_protocol("xdp")
-                settings.hiddenDeviceTypes.extend(["transit", "cloud"])
-
-                link = fwd.fwd.diagram.share_link(net, graph_settings=settings)
-                svg_data = fwd.fwd.diagram.svg(net, graph_settings=settings).decode(
-                    "utf-8"
+                diagram_settings = {
+                    "hiddenProtocols": ["xdp"],
+                    "hiddenDeviceTypes": ["transit", "cloud"],
+                }
+                topology = fwd_client.api.get_site_topology(
+                    site.name, snapshot, settings=diagram_settings
                 )
+                link = topology.get("share_link") or topology.get("link")
+                svg_content = topology.get("svg")
+                svg_data = svg_content if isinstance(svg_content, str) else None
                 error = None
             except Exception as e:
                 error = e
                 svg_data = link = snapshot_data = source = None
+            finally:
+                if "fwd_client" in locals():
+                    fwd_client.close()
 
             return render(
                 request,

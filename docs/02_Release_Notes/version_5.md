@@ -8,7 +8,8 @@ description: v5 Release Notes
 
 #### Major Changes
 - Renamed the plugin namespace from `ipfabric_netbox` to `forward_netbox` to match the new Forward branding. This affects import paths, template locations, permissions, and navigation slugs.
-- Made the Forward SDK an optional dependency. The plugin can be installed without pulling the proprietary SDK; Forward-powered features now surface helpful guidance when the SDK is absent.
+- Replaced the legacy SDK integration with a REST client that talks directly to Forward, keeping the SDK optional for deployments that still rely on it.
+- Updated runtime ingest and topology helpers to use the new REST client for snapshots, inventory collection, and diagrams.
 - Updated developer tooling and docs to reference Forward Networks resources, streamlining installation and support workflows.
 
 #### Upgrade Notes
