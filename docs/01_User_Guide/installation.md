@@ -1,10 +1,10 @@
 ---
-description: Comprehensive installation instructions for the IP Fabric NetBox plugin with version-specific details, multiple approaches, and troubleshooting tips.
+description: Comprehensive installation instructions for the Forward NetBox plugin with version-specific details, multiple approaches, and troubleshooting tips.
 ---
 
 # NetBox Plugin Installation
 
-This guide provides detailed instructions for installing and configuring the IP Fabric NetBox plugin across different environments. The plugin enables seamless integration between IP Fabric's network discovery capabilities and NetBox's infrastructure management platform.
+This guide provides detailed instructions for installing and configuring the Forward NetBox plugin across different environments. The plugin enables seamless integration between Forward's network discovery capabilities and NetBox's infrastructure management platform.
 
 These instructions contain configuration of [netbox-branching](https://docs.netboxlabs.com/netbox-extensions/branching/) plugin since it is a hard requirement for this plugin to work.
 
@@ -12,7 +12,7 @@ These instructions contain configuration of [netbox-branching](https://docs.netb
 
 Before installation, ensure:
 
-- You follow requirements for version [compatibility between IP Fabric and NetBox](../index.md#netbox-compatibility)
+- You follow requirements for version [compatibility between Forward and NetBox](../index.md#netbox-compatibility)
 - You have administrative access to your NetBox instance
 - Your NetBox installation meets the minimum version requirements
 - You have Python and pip available in your environment
@@ -29,12 +29,14 @@ The plugin is available as a Python package on PyPI and can be installed using p
 source /opt/netbox/venv/bin/activate
 
 # Install the plugin
-(venv) $ pip install ipfabric_netbox
+(venv) $ pip install forward_netbox
 ```
+> **Note:** Forward API integration features require the Forward SDK. Install it separately based on your organization's distribution process before enabling those capabilities.
+
 In case you want to install a specific version of the plugin, you can specify the version number:
 ```bash
 # Install the plugin with specific version
-(venv) $ pip install ipfabric_netbox[$IPFABRIC_VERSION]==$IPFABRIC_NETBOX_VERSION
+(venv) $ pip install forward_netbox==$FORWARD_NETBOX_VERSION
 ```
 
 To ensure the plugin is automatically reinstalled during future NetBox upgrades:
@@ -42,12 +44,12 @@ To ensure the plugin is automatically reinstalled during future NetBox upgrades:
 1. Create or edit the `local_requirements.txt` file in the NetBox root directory:
 
    ```bash
-   (venv) $ echo "ipfabric_netbox" >> /opt/netbox/local_requirements.txt
+   (venv) $ echo "forward_netbox" >> /opt/netbox/local_requirements.txt
    ```
    In case we defined specific version of the plugin:
 
    ```bash
-   (venv) $ echo "ipfabric_netbox[$IPFABRIC_VERSION]==$IPFABRIC_NETBOX_VERSION" >> /opt/netbox/local_requirements.txt
+   (venv) $ echo "forward_netbox==$FORWARD_NETBOX_VERSION" >> /opt/netbox/local_requirements.txt
    ```
 
 2. This ensures the plugin will be reinstalled whenever NetBox is upgraded using the standard upgrade procedures.
@@ -66,7 +68,7 @@ After installing the plugin, enable it in the NetBox configuration:
 
    ```python
    PLUGINS = [
-       'ipfabric_netbox',
+       'forward_netbox',
        # other plugins...
        'netbox_branching',
    ]
@@ -76,7 +78,7 @@ After installing the plugin, enable it in the NetBox configuration:
 
    ```python
    PLUGINS_CONFIG = {
-       'ipfabric_netbox': {
+       'forward_netbox': {
            # Plugin-specific settings can be added here
        }
    }
@@ -101,7 +103,7 @@ After installing the plugin, enable it in the NetBox configuration:
             },
         },
        "loggers": {
-            "ipfabric_netbox": {
+            "forward_netbox": {
                 "level": "DEBUG",
                 "handlers": ["console"],
             },
@@ -176,7 +178,7 @@ For NetBox instances running in Docker, follow these steps:
          context: .
          dockerfile: Dockerfile
          args:
-           - NETBOX_LOCAL_REQUIREMENTS=ipfabric_netbox
+           - NETBOX_LOCAL_REQUIREMENTS=forward_netbox
    ```
 
 2. Update `configuration.py` as described in the previous section.
@@ -195,7 +197,7 @@ For development or testing purposes, you can mount the plugin directly:
 1. Clone the plugin repository:
 
    ```bash
-   git clone https://github.com/ipfabric/ipfabric-netbox.git
+   git clone https://github.com/forward-networks/forward-netbox.git
    ```
 
 2. Add a volume mount in your `docker-compose.override.yml`:
@@ -205,7 +207,7 @@ For development or testing purposes, you can mount the plugin directly:
    services:
      netbox:
        volumes:
-         - ./ipfabric-netbox:/opt/netbox/netbox/plugins/ipfabric_netbox
+         - ./forward-netbox:/opt/netbox/netbox/plugins/forward_netbox
    ```
 
 3. Update `configuration.py` as described in the previous section.
@@ -214,28 +216,16 @@ For development or testing purposes, you can mount the plugin directly:
 
 ## 4. Version-Specific Installations
 
-### 4.1 Locking IP Fabric Python SDK Version
+### 4.1 Installing the Forward SDK
 
-It's recommended to use the same SDK version as your IP Fabric API version. To lock the SDK dependency to a specific minor version, install the plugin with the appropriate extras:
+The plugin no longer installs the Forward SDK automatically. When you need SDK-backed functionality, install the version that matches your Forward deployment:
 
 ```bash
-# For IP Fabric version 6.10.x
-pip install ipfabric_netbox[ipfabric_6_10]
-
-# For IP Fabric version 7.0.x
-pip install ipfabric_netbox[ipfabric_7_0]
+# Example for Forward 7.0.x
+pip install forward==7.0.0
 ```
 
-### 4.2 Available Version Extras
-
-The following extras are currently available:
-
-| Extra Name    | Compatible IP Fabric Version | SDK Version |
-|---------------|------------------------------|-------------|
-| ipfabric_6_10 | 6.10.x                       | 6.10.x      |
-| ipfabric_7_0  | 7.0.x                        | 7.0.x       |
-| ipfabric_7_2  | 7.2.x                        | 7.2.x       |
-| ipfabric_7_3  | 7.3.x                        | 7.3.x       |
+Consult Forward Networks support for the correct SDK package name and version that aligns with your platform release.
 
 
 ## 5. Verification
@@ -246,7 +236,7 @@ To verify the plugin is installed correctly:
 
 1. Log in to the NetBox web interface
 2. Navigate to the Plugins menu
-3. Confirm "IP Fabric NetBox" appears in the list of installed plugins
+3. Confirm "Forward NetBox" appears in the list of installed plugins
 4. Check the plugin version matches your expected version
 
 ### 5.2 Verify Database Migrations
@@ -256,7 +246,7 @@ To verify database migrations were applied successfully:
 ```bash
 source /opt/netbox/venv/bin/activate
 (venv) $ cd /opt/netbox/netbox/
-(venv) $ python3 manage.py showmigrations ipfabric_netbox
+(venv) $ python3 manage.py showmigrations forward_netbox
 ```
 
 All migrations should be marked as applied (with [X]).
@@ -269,7 +259,7 @@ All migrations should be marked as applied (with [X]).
 |-------|----------------|----------|
 | Plugin not appearing in NetBox | Plugin not enabled in configuration | Check PLUGINS list in configuration.py |
 | Database migration errors | Incompatible NetBox version | Verify NetBox version meets requirements |
-| SDK version conflicts | Mismatched IP Fabric and SDK versions | Install with correct version-specific extras |
+| SDK version conflicts | Mismatched Forward and SDK versions | Install with correct version-specific extras |
 | Static files not loading | `collectstatic` not run | Run `python manage.py collectstatic` |
 | Permission errors | File system permissions | Check permissions on NetBox directories |
 
@@ -300,7 +290,7 @@ To upgrade the plugin to a newer version:
 
 ```bash
 source /opt/netbox/venv/bin/activate
-(venv) $ pip install --upgrade ipfabric_netbox
+(venv) $ pip install --upgrade forward_netbox
 (venv) $ cd /opt/netbox/netbox/
 (venv) $ python3 manage.py migrate
 (venv) $ python3 manage.py collectstatic --no-input
@@ -319,7 +309,7 @@ docker-compose up -d
 ### 7.3 Upgrading plugin to v4.0+ (NetBox v4.3.0+)
 
 !!! warning
-    For a smooth upgrade to v4.0+, we strongly suggest to upgrade to IP Fabric `v4.0.1` before upgrading NetBox to `v4.3.0+`. The preferred version of NetBox for this upgrade is `v4.2.6`, but anything greater than `v4.2.4` and before `v4.3.0` should work.
+    For a smooth upgrade to v4.0+, we strongly suggest to upgrade to Forward `v4.0.1` before upgrading NetBox to `v4.3.0+`. The preferred version of NetBox for this upgrade is `v4.2.6`, but anything greater than `v4.2.4` and before `v4.3.0` should work.
 
 The plugin now depends on `netbox-branching` plugin and these extra steps are simplified installation instructions of the plugin:
 
@@ -348,10 +338,10 @@ The plugin now depends on `netbox-branching` plugin and these extra steps are si
     If you've upgraded NetBox first or run migrations only for NetBox, you'll see the following error when attempting to upgrade plugin:
 
     ```commandline
-    django.db.migrations.exceptions.InvalidBasesError: Cannot resolve bases for [<ModelState: 'ipfabric_netbox.IPFabricBranch'>]
+    django.db.migrations.exceptions.InvalidBasesError: Cannot resolve bases for [<ModelState: 'forward_netbox.ForwardBranch'>]
     ```
 
-    Follow [Cannot resolve bases for `[<ModelState: 'ipfabric_netbox.IPFabricBranch'>]`](FAQ.md#cannot-resolve-bases-for-modelstate-ipfabric_netboxipfabricbranch) instructions to resolve this issue.
+    Follow [Cannot resolve bases for `[<ModelState: 'forward_netbox.ForwardBranch'>]`](FAQ.md#cannot-resolve-bases-for-modelstate-forward_netboxforwardbranch) instructions to resolve this issue.
 
 ## 8. Additional Resources
 

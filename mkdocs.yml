@@ -1,4 +1,4 @@
-site_name: IP Fabric NetBox Documentation
+site_name: Forward NetBox Documentation
 theme:
   name: material
 plugins:

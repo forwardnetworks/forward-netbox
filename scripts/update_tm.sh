@@ -15,8 +15,8 @@ clone_or_update_repository() {
 }
 
 # Define the repository URL and folder name
-REPO_URL="https://gitlab.com/ip-fabric/integrations/ipfabric-netbox-sync.git"
-FOLDER_NAME="ipfabric-netbox-sync"
+REPO_URL="https://github.com/forward-networks/forward-netbox.git"
+FOLDER_NAME="forward-netbox"
 
 # Check if the folder exists and clone/update the repository
 clone_or_update_repository
@@ -32,10 +32,10 @@ source /opt/netbox/venv/bin/activate
 # Define the Python script
 SCRIPT="
 exec(open('$CURRENT_DIR/import_tm.py').read())
-from ipfabric_netbox.models import IPFabricTransformMap, IPFabricTransformField, IPFabricRelationshipField
-print(f'Transform Map Count: {IPFabricTransformMap.objects.all().count()}')
-print(f'Transform Field Count: {IPFabricTransformField.objects.all().count()}')
-print(f'Relationship Field Count: {IPFabricRelationshipField.objects.all().count()}')"
+from forward_netbox.models import ForwardTransformMap, ForwardTransformField, ForwardRelationshipField
+print(f'Transform Map Count: {ForwardTransformMap.objects.all().count()}')
+print(f'Transform Field Count: {ForwardTransformField.objects.all().count()}')
+print(f'Relationship Field Count: {ForwardRelationshipField.objects.all().count()}')"
 
 # Pass the script to nbshell
 echo "$SCRIPT" | python3 /opt/netbox/netbox/manage.py nbshell

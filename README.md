@@ -1,28 +1,28 @@
-# IP Fabric Netbox Plugin
+# Forward NetBox Plugin
 
-## IP Fabric
+## Forward
 
-IP Fabric is a vendor-neutral network assurance platform that automates the
+Forward is a vendor-neutral network assurance platform that automates the
 holistic discovery, verification, visualization, and documentation of
 large-scale enterprise networks, reducing the associated costs and required
 resources whilst improving security and efficiency.
 
 It supports your engineering and operations teams, underpinning migration and
-transformation projects. IP Fabric will revolutionize how you approach network
+transformation projects. Forward will revolutionize how you approach network
 visibility and assurance, security assurance, automation, multi-cloud
 networking, and trouble resolution.
 
-**Integrations or scripts should not be installed directly on the IP Fabric VM unless directly communicated from the
-IP Fabric Support or Solution Architect teams.  Any action on the Command-Line Interface (CLI) using the root, osadmin,
+**Integrations or scripts should not be installed directly on the Forward VM unless directly communicated from the
+Forward Support or Solution Architect teams.  Any action on the Command-Line Interface (CLI) using the root, osadmin,
 or autoboss account may cause irreversible, detrimental changes to the product and can render the system unusable.**
 
 ## Overview
 
-This plugin allows the integration and data synchronization between IP Fabric and NetBox.
+This plugin allows the integration and data synchronization between Forward and NetBox.
 
-The plugin uses IP Fabric collect network data utilizing the [IP Fabric Python SDK](https://gitlab.com/ip-fabric/integrations/python-ipfabric). This plugin relies on helpful features in NetBox like [Branches](https://docs.netboxlabs.com/netbox-extensions/branching/) and [Background Tasks](https://netboxlabs.com/docs/netbox/en/stable/plugins/development/background-tasks/) to make the job of bringing in data to NetBox easier.
+When the optional Forward SDK is installed (available via Forward Networks support), the plugin can collect network data directly from Forward and relies on helpful NetBox features like [Branches](https://docs.netboxlabs.com/netbox-extensions/branching/) and [Background Tasks](https://netboxlabs.com/docs/netbox/en/stable/plugins/development/background-tasks/) to make the job of bringing in data to NetBox easier.
 
-- Multiple IP Fabric Sources
+- Multiple Forward Sources
 - Transform Maps
 - Scheduled Synchronization
 - Diff Visualization
@@ -58,7 +58,7 @@ These are the required NetBox versions for corresponding plugin version. Any oth
 
 ## Documentation
 
-Full documentation for this plugin can be found at [IP Fabric Docs](https://docs.ipfabric.io/main/integrations/netbox/).
+Full documentation for this plugin can be found at [Forward Docs](https://forwardnetworks.com/docs/forward-netbox).
 
 - User Guide
 - Administrator Guide

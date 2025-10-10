@@ -26,13 +26,13 @@ workflow:
     # For commits to Develop
     - if: '$CI_COMMIT_BRANCH == "develop"'
 include:
-  - project: ip-fabric/integrations/templates/sa-gitlab-ci-shared-lib
+  - project: forward-networks/integrations/templates/sa-gitlab-ci-shared-lib
     ref: main
     file: scan.yml
-  - project: ip-fabric/integrations/templates/sa-gitlab-ci-shared-lib
+  - project: forward-networks/integrations/templates/sa-gitlab-ci-shared-lib
     ref: main
     file: deploy.yml
-  - project: ip-fabric/integrations/templates/sa-gitlab-ci-shared-lib
+  - project: forward-networks/integrations/templates/sa-gitlab-ci-shared-lib
     ref: main
     file: bump_version.yml
 stages:
@@ -46,8 +46,8 @@ stages:
   stage: versioning
   image: python:3.12
   before_script:
-    - git config --global user.name "Bot IPFabric"
-    - git config --global user.email "devops+github@ipfabric.io"
+    - git config --global user.name "Bot Forward"
+    - git config --global user.email "devops+github@forwardnetworks.com"
     - |
       echo "CI_COMMIT_AUTHOR: $CI_COMMIT_AUTHOR"
   script:
@@ -55,7 +55,7 @@ stages:
     - poetry install --only=dev --no-interaction
     - poetry run invoke bump-version-of-netbox-plugin
     - mkdir -p changes
-    - cp --parents ipfabric_netbox/__init__.py changes/
+    - cp --parents forward_netbox/__init__.py changes/
   artifacts:
     paths:
       - changes
@@ -67,7 +67,7 @@ bump-netbox-plugin-beta-version:
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       when: never
-    - if: '$CI_COMMIT_AUTHOR =~ /Bot IPFabric/'
+    - if: '$CI_COMMIT_AUTHOR =~ /Bot Forward/'
       when: never
     - if: '$CI_COMMIT_BRANCH == "develop"'
 bump-netbox-plugin-release-version:
@@ -76,7 +76,7 @@ bump-netbox-plugin-release-version:
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       when: never
-    - if: '$CI_COMMIT_AUTHOR =~ /Bot IPFabric/'
+    - if: '$CI_COMMIT_AUTHOR =~ /Bot Forward/'
       when: never
     # yamllint disable-line rule:line-length
     - if: '$CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE != "merge_request_event"'
@@ -85,7 +85,7 @@ netbox_commit_beta_version:
   extends: commit_beta_version
   needs: [bump-netbox-plugin-beta-version]
   rules:
-    - if: '$CI_COMMIT_AUTHOR =~ /Bot IPFabric/'
+    - if: '$CI_COMMIT_AUTHOR =~ /Bot Forward/'
       when: never
     # yamllint disable-line rule:line-length
     - if: '$CI_COMMIT_BRANCH == "develop" && $CI_PIPELINE_SOURCE != "merge_request_event"'
@@ -94,7 +94,7 @@ netbox_commit_release_version:
   extends: commit_release_version
   needs: [bump-netbox-plugin-release-version]
   rules:
-    - if: '$CI_COMMIT_AUTHOR =~ /Bot IPFabric/'
+    - if: '$CI_COMMIT_AUTHOR =~ /Bot Forward/'
       when: never
     # yamllint disable-line rule:line-length
     - if: '$CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE != "merge_request_event"'
@@ -154,13 +154,13 @@ netbox_tests:
     source package.env
     # Build the NetBox image with the package built in the previous step
     # Fail if the package is not provided
-    docker compose --project-name ipfabric-netbox \
+    docker compose --project-name forward-netbox \
       --project-directory "${CI_PROJECT_DIR}/development" \
       build \
       --build-arg PACKAGE="/source/dist/${PACKAGE:-'ERR_NO_PACKAGE'}" \
       netbox
     # Start the NetBox container without waiting it to start
-    docker compose --project-name ipfabric-netbox \
+    docker compose --project-name forward-netbox \
       --project-directory "${CI_PROJECT_DIR}/development" \
       up -d netbox
     # Run the tests inside the NetBox container

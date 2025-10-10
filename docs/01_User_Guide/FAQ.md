@@ -1,5 +1,5 @@
 ---
-description: Frequently asked questions about the IP Fabric NetBox Plugin.
+description: Frequently asked questions about the Forward NetBox Plugin.
 ---
 
 # FAQ
@@ -26,12 +26,12 @@ If you encounter the error message `value too long for the type character varyin
 
 
 <!-- vale off -->
-### Cannot resolve bases for [<ModelState: 'ipfabric_netbox.IPFabricBranch'\>]
+### Cannot resolve bases for [<ModelState: 'forward_netbox.ForwardBranch'\>]
 <!-- vale on -->
 
-This error message appear if you were running `ipfabric_netbox` plugin with version <4.0.0 and upgraded to NetBox v4.3.0+.
+This error message appear if you were running `forward_netbox` plugin with version <4.0.0 and upgraded to NetBox v4.3.0+.
 
-The root cause is removed model in NetBox v4.3.0 that is used as parent of `IPFabricBranch`.
+The root cause is removed model in NetBox v4.3.0 that is used as parent of `ForwardBranch`.
 
 To resolve this issue, you need to completely purge plugin from your database and proceed with clean installation. Following steps should help you:
 
@@ -46,20 +46,20 @@ To resolve this issue, you need to completely purge plugin from your database an
       PSQL_CONTAINER_NAME = "netbox_postgres_1"
       docker exec -it $PSQL_CONTAINER_NAME psql -U netbox -h localhost
       ```
-3. Drop all tables related to ipfabric_netbox plugin including migration records:
+3. Drop all tables related to forward_netbox plugin including migration records:
    ```sql
    DROP TABLE IF EXISTS
-       ipfabric_netbox_ipfabricbranch,
-       ipfabric_netbox_ipfabricdata,
-       ipfabric_netbox_ipfabricingestion,
-       ipfabric_netbox_ipfabricrelationshipfield,
-       ipfabric_netbox_ipfabricsnapshot,
-       ipfabric_netbox_ipfabricsource,
-       ipfabric_netbox_ipfabricsync,
-       ipfabric_netbox_ipfabrictransformfield,
-       ipfabric_netbox_ipfabrictransformmap
+       forward_netbox_forwardbranch,
+       forward_netbox_forwarddata,
+       forward_netbox_forwardingestion,
+       forward_netbox_forwardrelationshipfield,
+       forward_netbox_forwardsnapshot,
+       forward_netbox_forwardsource,
+       forward_netbox_forwardsync,
+       forward_netbox_forwardtransformfield,
+       forward_netbox_forwardtransformmap
    CASCADE;
-   DELETE FROM django_migrations WHERE app = 'ipfabric_netbox';
+   DELETE FROM django_migrations WHERE app = 'forward_netbox';
    ```
 4. Re-add plugin to `PLUGINS` list in `configuration.py`.
 5. Run migrations.

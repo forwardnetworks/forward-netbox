@@ -38,7 +38,7 @@ LOGGING = {
             "handlers": ["console"],
             "level": LOGLEVEL,
         },
-        "ipfabric_netbox": {
+        "forward_netbox": {
             "handlers": ["console"],
             "level": LOGLEVEL,
         },

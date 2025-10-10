@@ -19,7 +19,6 @@ services:
       dockerfile: development/Dockerfile
       args:
         NETBOX_VER: "${NETBOX_VER}"
-        IPFABRIC_VER: "${IPFABRIC_VER}"
   netbox-worker:
     !!merge <<: *netbox
     depends_on:

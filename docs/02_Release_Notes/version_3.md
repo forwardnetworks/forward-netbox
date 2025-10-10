@@ -29,7 +29,7 @@ description: v3 Release Notes
 - NetBox v4.2.4 support:
   - [NetBox #18241](https://github.com/netbox-community/netbox/pull/18501) removed `LogLevelChoices.LOG_DEFAULT` causing `AttributeError`.
   - [NetBox #18286](https://github.com/netbox-community/netbox/pull/18642) removed `DurationChoices` causing `ImportError`.
-- Inventory item `part_id=None` in IPF no longer fails, the value is set `unknown` instead.
+- Inventory item `part_id=None` in FWD no longer fails, the value is set `unknown` instead.
 - `coalesce` relationships are now respected when searching for model without syncing it.
 - Allowed multiple IPs on single interface.
 - Added missing site filter support to the `site`, `interface`, `inventoryitem`, and `ipaddress` models.
@@ -44,11 +44,11 @@ YANKED
 - `NIM-17847` - Transform maps are delivered as migration.
 - `NIM-17848` - Custom fields are created in migration.
 - `NIM-17851` - Update to support NetBox 4.2.0.
-- `NIM-18142` - Allow to lock ipfabric SDK dependency to minor version.
+- `NIM-18142` - Allow to lock forward SDK dependency to minor version.
 
 ### Bugs
 - `NIM-18045` - TypeError when listed columns in branches contain ID.
-- [#11](https://gitlab.com/ip-fabric/integrations/ipfabric-netbox/-/issues/11) - Fails to install in current docker container.
+- [#11](https://github.com/forward-networks/forward-netbox/issues/11) - Fails to install in current docker container.
 
 ## v3.1.3 (2024-12-20)
 
@@ -80,7 +80,7 @@ YANKED
 
 ### Bug Fixes
 
-- [Issue-1](https://gitlab.com/ip-fabric/integrations/ipfabric-netbox/-/issues/1) - Fixes issues with interfaces with `nameOriginal` in TM not syncing IP Addresses.
+- [Issue-1](https://github.com/forward-networks/forward-netbox/issues/1) - Fixes issues with interfaces with `nameOriginal` in TM not syncing IP Addresses.
 
 ## v3.0.2 (2024-05-28)
 

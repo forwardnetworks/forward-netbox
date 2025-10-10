@@ -1,12 +1,12 @@
 ---
-description: On this page, we explain the IP Fabric NetBox plugin ingestion jobs.
+description: On this page, we explain the Forward NetBox plugin ingestion jobs.
 ---
 
 # Syncs
 
 ## Introduction
 
-Data sync is a fundamental process in the plugin, enabling synchronization between IP Fabric and NetBox. This process involves configuring various parameters to define how data is synchronized. Configuration here defines created **ingestions** which handle synchronizing and merging the data. Let's delve into the key components of data sync.
+Data sync is a fundamental process in the plugin, enabling synchronization between Forward and NetBox. This process involves configuring various parameters to define how data is synchronized. Configuration here defines created **ingestions** which handle synchronizing and merging the data. Let's delve into the key components of data sync.
 
 ## Configuration Parameters
 
@@ -15,7 +15,7 @@ A data sync configuration consists of several crucial parameters:
 | Field           | Description                                                      | Type                           |
 | --------------- |------------------------------------------------------------------| ------------------------------ |
 | Name            | The name of the ingestion job                                    | `CharField`                    |
-| Source          | The IP Fabric instance used for data synchronization with NetBox | `ForeignKey`                   |
+| Source          | The Forward instance used for data synchronization with NetBox | `ForeignKey`                   |
 | Snapshot        | The snapshot chosen for data synchronization with NetBox         | `ForeignKey`                   |
 | Auto Merge      | Automatically merge staged changes into NetBox                   | `BooleanField`                 |
 | Sites           | Optional: Limits ingestion to specific sites                     | `ChoiceField`                  |
@@ -29,7 +29,7 @@ A data sync configuration consists of several crucial parameters:
 
 !!! note
 
-    When scheduling recurring ingestions using the `Recurs Every` field, it's recommended to use the `$last` snapshot. This ensures that the ingestion always runs against the latest snapshot in IP Fabric, maintaining data consistency.
+    When scheduling recurring ingestions using the `Recurs Every` field, it's recommended to use the `$last` snapshot. This ensures that the ingestion always runs against the latest snapshot in Forward, maintaining data consistency.
 
 ## Data Synchronization Parameters
 

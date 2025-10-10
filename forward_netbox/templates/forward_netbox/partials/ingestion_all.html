@@ -1,0 +1,15 @@
+<div id="object_tabs" hx-swap-oob="true">
+  {% include 'forward_netbox/partials/object_tabs.html' with object=object %}
+</div>
+<div id="ingestion_statistics" hx-swap-oob="true">
+  {% include 'forward_netbox/partials/ingestion_statistics.html' with object=object %}
+</div>
+<div id="ingestion_status" hx-swap-oob="true">
+  {% include 'forward_netbox/partials/ingestion_status.html' with object=object %}
+</div>
+<div id="ingestion_progress" hx-swap-oob="true">
+  {% include 'forward_netbox/partials/ingestion_progress.html' %}
+</div>
+<div id="ingestion_logs">
+  {% include 'forward_netbox/partials/job_logs.html' with job_results=job_results job=job %}
+</div>

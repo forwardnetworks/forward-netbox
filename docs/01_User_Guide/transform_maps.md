@@ -17,7 +17,7 @@ Follow these steps to install the transform maps:
 1. Download the script using `wget`:
 
    ```shell
-   wget -O update_tm.sh "https://gitlab.com/ip-fabric/integrations/ipfabric-netbox/-/raw/main/scripts/update_tm.sh"
+   wget -O update_tm.sh "https://github.com/forward-networks/forward-netbox/raw/main/scripts/update_tm.sh"
    ```
 
 2. Make the script executable:
@@ -34,11 +34,11 @@ Follow these steps to install the transform maps:
 
 # Transform Maps
 
-In this scenario, envision a transform map as akin to a carefully crafted recipe. This recipe serves as a guide, orchestrating the process of extracting data from IP Fabric and delicately depositing it into the appropriate "containers" represented by Django models within NetBox. Its primary objective is to guarantee precise and efficient organization of the data, meticulously tailored to meet your network management requirements. In essence, it acts as a bridge, harmonizing disparate data formats and structures, ensuring a seamless integration of your network data with your NetBox database.
+In this scenario, envision a transform map as akin to a carefully crafted recipe. This recipe serves as a guide, orchestrating the process of extracting data from Forward and delicately depositing it into the appropriate "containers" represented by Django models within NetBox. Its primary objective is to guarantee precise and efficient organization of the data, meticulously tailored to meet your network management requirements. In essence, it acts as a bridge, harmonizing disparate data formats and structures, ensuring a seamless integration of your network data with your NetBox database.
 
 The concept of transform maps is not novel; it has been widely employed in various tools for transforming data from one format to another, a practice commonly referred to as ETL (Extract, Transform, Load). This concept draws substantial inspiration from ServiceNow and their implementation of Transform Maps.
 
-The IP Fabric plugin has four key transform map areas:
+The Forward plugin has four key transform map areas:
 
 - Transform Map Groups: This is a grouping of transform maps that can be used to organize and apply them to specific sync jobs.
 - Transform Map: This is the parent object that contains information about the source and destination of the data.
@@ -60,7 +60,7 @@ Transform Map with group assigned takes precedence over transform maps without a
 
 ## Transform Map
 
-This model serves as the parent for both Transform Map Fields and Transform Map Relationship Fields. It empowers users to select a supported source IP Fabric table and a supported target NetBox model.
+This model serves as the parent for both Transform Map Fields and Transform Map Relationship Fields. It empowers users to select a supported source Forward table and a supported target NetBox model.
 
 The combination of `group` and `target_model` is unique, meaning that you can only have one transform map for a specific group and target model. If you attempt to create a new transform map with the same group and target model, it will raise an error.
 
@@ -69,13 +69,13 @@ The combination of `group` and `target_model` is unique, meaning that you can on
 | Field        | Description                                              | Type          |
 |--------------|----------------------------------------------------------| ------------- |
 | Name         | Name of the transform map (e.g., `Device Transform Map`) | `CharField`   |
-| Group        | (optional) `IPFabric Transform Map Group`                | `ChoiceField` |
-| Source Model | IP Fabric Table                                          | `ChoiceField` |
+| Group        | (optional) `Forward Transform Map Group`                | `ChoiceField` |
+| Source Model | Forward Table                                          | `ChoiceField` |
 | Target Model | NetBox Model                                             | `ChoiceField` |
 
 ??? info "Source Model Choices"
 
-    The following list is shown in this format: `IP Fabric Table (URL)`
+    The following list is shown in this format: `Forward Table (URL)`
 
     - Site (`/inventory/sites/overview`)
     - Inventory (`/inventory/part-numbers`)
@@ -114,14 +114,14 @@ You can clone a transform map by clicking the `Clone` button in the top-right co
 
 ## Transform Field
 
-Transform fields belong to a transform map and are used to map the source fields to the destination fields. The source fields are the fields from the IP Fabric table and the destination fields are the fields from the NetBox model.
+Transform fields belong to a transform map and are used to map the source fields to the destination fields. The source fields are the fields from the Forward table and the destination fields are the fields from the NetBox model.
 
 ### Parameters
 
 | Field         | Description                                                 | Type                                  |
 | ------------- | ----------------------------------------------------------- | ------------------------------------- |
-| Transform Map | Transform map the field is associated with                  | `ForeignKey` (`IPFabricTransformMap`) |
-| Source Field  | IP Fabric Table                                             | `CharField`                           |
+| Transform Map | Transform map the field is associated with                  | `ForeignKey` (`ForwardTransformMap`) |
+| Source Field  | Forward Table                                             | `CharField`                           |
 | Target Field  | NetBox Model                                                | `CharField`                           |
 | Coalesce      | Determine if field should be used to match existing objects | `BooleanField`                        |
 | Template      | Jinja Template to transform the data during ingestion       | `TextField`                           |
@@ -129,7 +129,7 @@ Transform fields belong to a transform map and are used to map the source fields
 
 ### Source Field
 
-While the source field is defined as a `CharField`, it's important to note that the form restricts your selection to fields that are supported by the IP Fabric API. The list of available choices can be found in the [table description](https://docs.ipfabric.io/latest/IP_Fabric_API/index.md#technology-table-endpoints) within your IP Fabric instance, and it's limited to the models mentioned above.
+While the source field is defined as a `CharField`, it's important to note that the form restricts your selection to fields that are supported by the Forward API. The list of available choices can be found in the Forward Networks API documentation provided with your Forward deployment, and it's limited to the models mentioned above.
 
 ### Target Field
 
@@ -150,8 +150,8 @@ This field provides the capability to employ a [Jinja Template](https://jinja.pa
 The Jinja template has access to the following variables via context data:
 
 - `<fieldname>` -- The value of the source field (e.g., `{{ siteName }}`)
-- `object` -- The full raw source dictionary from IP Fabric
-  - Example: Raw data from IP Fabric for a site
+- `object` -- The full raw source dictionary from Forward
+  - Example: Raw data from Forward for a site
     ```json
     {
             "siteName": "Site 1",
@@ -173,13 +173,13 @@ The Jinja template has access to the following variables via context data:
 
 ## Transform Relationship Field
 
-Transform Relationship fields are an integral part of a transform map, designed to establish connections between various objects within NetBox. These fields encompass source fields, which originate from the IP Fabric table, and destination fields, which correspond to the fields within the NetBox model. For instance, in the context of importing a device and desiring to establish a relationship with a specific site, a transform relationship field becomes essential to achieve this linkage.
+Transform Relationship fields are an integral part of a transform map, designed to establish connections between various objects within NetBox. These fields encompass source fields, which originate from the Forward table, and destination fields, which correspond to the fields within the NetBox model. For instance, in the context of importing a device and desiring to establish a relationship with a specific site, a transform relationship field becomes essential to achieve this linkage.
 
 ### Parameters
 
 | Field         | Description                                                 | Type                                  |
 | ------------- | ----------------------------------------------------------- | ------------------------------------- |
-| Transform Map | Transform map the field is associated with                  | `ForeignKey` (`IPFabricTransformMap`) |
+| Transform Map | Transform map the field is associated with                  | `ForeignKey` (`ForwardTransformMap`) |
 | Source Model  | NetBox model that will be mapped                            | `ForeignKey`                          |
 | Target Field  | Field where the NetBox model will be placed.                | `CharField`                           |
 | Coalesce      | Determine if field should be used to match existing objects | `BooleanField`                        |
@@ -215,8 +215,8 @@ Much like the transform field, this field enables the utilization of a [Jinja Te
 
 The Jinja template has access to the following variables via context data:
 
-- `object` -- The full raw source dictionary from IP Fabric
-  - Example: Raw data from IP Fabric for a site
+- `object` -- The full raw source dictionary from Forward
+  - Example: Raw data from Forward for a site
     ```json
     {
             "siteName": "Site 1",
@@ -239,7 +239,7 @@ The Jinja template has access to the following variables via context data:
 
 ``` mermaid
 flowchart TD
-    A[Sync] -->B(Fetch IP Fabric Data)
+    A[Sync] -->B(Fetch Forward Data)
     subgraph TM[Transform Map]
       direction TB
       TF[Transform Field] --> RESULT[Result]

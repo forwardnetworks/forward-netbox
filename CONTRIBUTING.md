@@ -1,6 +1,6 @@
-# Contributing to IP Fabric Netbox
+# Contributing to Forward Netbox
 
-Thank you for considering contributing to the IP Fabric Netbox Plugin! 🎉
+Thank you for considering contributing to the Forward Netbox Plugin! 🎉
 We welcome contributions from the community and appreciate your help to make
 this project better.
 
@@ -34,13 +34,13 @@ There are multiple ways to contribute:
 
 If you find a bug, inconsistency, or have a question, please file an issue.
 
-1. Go to the [Issue Tracker](https://gitlab.com/ip-fabric/integrations/ipfabric-netbox-sync/-/issues).
+1. Go to the [Forward Networks Support Portal](https://forwardnetworks.com/support).
 2. Search for existing issues to avoid duplication.
 3. If no similar issue exists, create a new issue using the provided template.
 
-> IP Fabric uses an internal ticket tracking system which we also track issues
-> and feature requests. If you're an IP Fabric customer, you can also report
-> issues through [support.ipfabric.io](https://support.ipfabric.io).
+> Forward uses an internal ticket tracking system which we also track issues
+> and feature requests. If you're an Forward customer, you can also report
+> issues through [support.forwardnetworks.com](https://support.forwardnetworks.com).
 
 ### Guidelines for Reporting Bugs:
 
@@ -54,7 +54,7 @@ If you find a bug, inconsistency, or have a question, please file an issue.
 
 We welcome ideas for enhancements! To suggest a feature:
 
-1. Open a new issue in the [Issue Tracker](https://gitlab.com/ip-fabric/integrations/ipfabric-netbox-sync/-/issues).
+1. Open a new request in the [Forward Networks Support Portal](https://forwardnetworks.com/support).
 2. Clearly describe the feature or enhancement.
 3. Explain the benefit and potential use cases for the feature.
 
@@ -64,11 +64,12 @@ We welcome ideas for enhancements! To suggest a feature:
 
 We use **Git** and the standard Git workflow for contributions:
 
-1. Fork the repository on GitLab.
+1. Fork the repository on GitHub.
 2. Clone your fork:
    ```bash
-   git clone https://gitlab.com/your-username/ipfabric-netbox.git
-   cd ipfabric-netbox
+   git clone https://github.com/forward-networks/forward-netbox.git
+   cd forward-netbox
+   ```
 3. Create a new branch:
    ```bash
    git checkout -b my-new-feature
@@ -129,4 +130,4 @@ To publish a new release:
     ```bash
     poetry publish
     ```
-7. Create a new release on GitLab and add the release notes and PyPI links.
+7. Create a new release on GitHub and add the release notes and PyPI links.

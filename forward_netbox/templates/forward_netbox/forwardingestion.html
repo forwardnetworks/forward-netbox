@@ -1,0 +1,117 @@
+{% extends 'generic/object.html' %}
+{% load buttons %}
+{% load custom_links %}
+{% load helpers %}
+{% load perms %}
+{% load plugins %}
+{% load tabs %}
+
+{% block title %}{{ object }}{% endblock %}
+
+{% block control-buttons %}
+{# Clone/Edit/Delete Buttons #}
+<div class="controls">
+  <div class="control-group">
+    {% custom_links object %}
+  </div>
+{% if perms.core.sync_datasource %}
+{% if object.sync.ready_for_sync %}
+  <a href="#"
+  hx-get="{% url 'plugins:forward_netbox:forwardingestion_merge' pk=object.pk %}"
+  hx-target="#htmx-modal-content"
+  class="btn btn-success"
+  data-bs-toggle="modal"
+  data-bs-target="#htmx-modal" disabled
+  >
+  <span class="mdi mdi-sync" aria-hidden="true"></span>&nbsp;Merge
+  </a>
+{% else %}
+<span class="inline-block" tabindex="0" data-bs-toggle="tooltip" data-bs-delay="100" data-bs-placement="bottom">
+  <button class="btn btn-success" disabled>
+    <i class="mdi mdi-sync" aria-hidden="true"></i> Merge
+  </button>
+</span>
+{% endif %}
+{% endif %}
+</div>
+{% endblock control-buttons %}
+
+{% block tabs %}
+  <div id="object_tabs" hx-swap-oob="true">
+    {% include 'forward_netbox/partials/object_tabs.html' with object=object %}
+  </div>
+{% endblock tabs %}
+
+{% block content %}
+<div class="row mb-3">
+  <div class="col col-md-6">
+    <div class="card">
+      <h5 class="card-header">Ingestion Information</h5>
+      <div class="card-body">
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">Name</th>
+            <td>{{ object.name }}</td>
+          </tr>
+          <tr>
+            <th scope="row">Description</th>
+            <td>{{ object.description|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">Sync Object</th>
+            <td><a href="{% url 'plugins:forward_netbox:forwardsync' pk=object.sync.pk %}">{{ object.sync.name}}</a>
+            </td>
+          </tr>
+          <tr>
+            <th scope="row">Branch Object</th>
+            <td>{% if object.branch %}<a href="{% url 'plugins:netbox_branching:branch' pk=object.branch.pk %}">{{ object.branch.name}}</a>{% else %}{{ ""|placeholder }}{% endif %}
+            </td>
+          </tr>
+          <tr>
+            <th scope="row">Job Object</th>
+            <td><a href="{% url 'core:job' pk=object.job.pk %}">{{ object.job }}</a></td>
+          </tr>
+          <tr>
+            <th scope="row">Ingestion Status</th>
+              <td><div id="ingestion_status" hx-swap-oob="true">{% include 'forward_netbox/partials/ingestion_status.html' with object=object %}</div></td>
+              <!-- <td >{% badge object.sync.get_status_display bg_color=object.sync.get_status_color %}</td> -->
+          </tr>
+          <tr>
+            <th scope="row">Snapshot</th>
+            <td><a
+                href="{% url 'plugins:forward_netbox:forwardsnapshot' pk=object.sync.snapshot_data.pk %}">{{object.sync.snapshot_data.name }}</a></td>
+          </tr>
+          <tr>
+            <th scope="row">Source</th>
+            <td><a
+                href="{% url 'plugins:forward_netbox:forwardsource' pk=object.sync.snapshot_data.source.pk %}">{{object.sync.snapshot_data.source.name }}</a></td>
+          </tr>
+        </table>
+      </div>
+    </div>
+    {% plugin_left_page object %}
+  </div>
+  <div class="col col-md-6">
+    <div id="ingestion_statistics" hx-swap-oob="true">
+      {% include 'forward_netbox/partials/ingestion_statistics.html' with object=object %}
+    </div>
+    <div id="ingestion_progress" hx-swap-oob="true">
+      {% include 'forward_netbox/partials/ingestion_progress.html' %}
+    </div>
+    <!-- {% include 'inc/panels/related_objects.html' %} -->
+    {% include 'inc/panels/custom_fields.html' %}
+    {% plugin_right_page object %}
+  </div>
+  <div class="row mb-3">
+    <div class="col col-md-12" {% if not object.job.completed %} hx-get="{% url 'plugins:forward_netbox:forwardingestion_logs' pk=object.pk %}?type=info"
+      hx-trigger="every 5s" hx-target="#ingestion_logs" hx-select="#ingestion_logs" hx-select-oob="#ingestion_status:innerHTML,#ingestion_progress:innerHTML,#ingestion_statistics:innerHTML,#object_tabs:innerHTML"
+      hx-swap="innerHTML" {% endif %}>
+      <div id="ingestion_logs">{% include 'forward_netbox/partials/job_logs.html' with job=object.job %}</div>
+    </div>
+  </div>
+</div>
+{% endblock content %}
+
+{% block modals %}
+{% include 'inc/htmx_modal.html' with size='lg' %}
+{% endblock modals %}

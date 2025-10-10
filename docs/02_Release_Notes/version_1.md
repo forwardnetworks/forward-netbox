@@ -9,7 +9,7 @@ description: v1 Release Notes
 ### Enhancements
 
 - `SD-505` - Add option to auto merge staged changes into NetBox.
-- `SD-518` - Add support for IP Fabric tables in NetBox device UI.
+- `SD-518` - Add support for Forward tables in NetBox device UI.
 - `SD-546` - Add support for NetBox Cloud Remote data collection.
 
 ### Bug Fixes
@@ -27,10 +27,10 @@ description: v1 Release Notes
 
 ### Bug Fixes
 
-- `SD-475` - Support duplicate prefixes, if no prefix is provided by IP Fabric use NetBox's Global VRF as default.
-- `SD-476` - Reset IPFabricSync status to `new` on form save.
+- `SD-475` - Support duplicate prefixes, if no prefix is provided by Forward use NetBox's Global VRF as default.
+- `SD-476` - Reset ForwardSync status to `new` on form save.
 - `SD-477` - Improve Jinja form field help text for transform maps.
-- `SD-478` - Implement nested serializer for `IPFabricBranch` and `IPFabricSync` model.
+- `SD-478` - Implement nested serializer for `ForwardBranch` and `ForwardSync` model.
 
 ## v1.0.8 (2023-10-10)
 
@@ -41,7 +41,7 @@ description: v1 Release Notes
 
 ### Bug Fixes
 
-- `SA-494` - URL for the link to IP Fabric using `sn` instead of `snHw`.
+- `SA-494` - URL for the link to Forward using `sn` instead of `snHw`.
 - `SD-469` - Fix snapshot names so that they show `$last` etc.
 - `SD-469` - Remove parameters column from source table view.
 - `SD-470` - Managed networks without a `Network` cause the ingestion to fail. Filter networks without a `Network` before ingestion.

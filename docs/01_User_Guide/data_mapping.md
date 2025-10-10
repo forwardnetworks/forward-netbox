@@ -5,14 +5,14 @@ description: Data Mapping and how it works.
 # Data Mapping
 
 !!! note
-    This information is based on the latest version of the IP Fabric NetBox plugin.
+    This information is based on the latest version of the Forward NetBox plugin.
 
-This document outlines the tables from IP Fabric that are imported into NetBox and their corresponding endpoints, including the specific properties that are mapped.
+This document outlines the tables from Forward that are imported into NetBox and their corresponding endpoints, including the specific properties that are mapped.
 
 
 ## Data Sources
 
-| IP Fabric Table | IP Fabric Endpoint | NetBox Model | NetBox App |
+| Forward Table | Forward Endpoint | NetBox Model | NetBox App |
 |----------------|-------------------|--------------|------------|
 | Sites | `inventory.sites` | Site | `dcim` |
 | Devices | `inventory.devices` | Device | `dcim` |
@@ -27,13 +27,13 @@ This document outlines the tables from IP Fabric that are imported into NetBox a
 ## Property Mappings
 
 ### Site
-| IP Fabric Property | NetBox Property |
+| Forward Property | NetBox Property |
 |-------------------|----------------|
 | `siteName` | `name` |
 | `siteName` | `slug` |
 
 ### Device
-| IP Fabric Property | NetBox Property |
+| Forward Property | NetBox Property |
 |-------------------|----------------|
 | `hostname` | `name` |
 | `sn` | `serial` |
@@ -44,34 +44,34 @@ This document outlines the tables from IP Fabric that are imported into NetBox a
 | `virtual_chassis` | `virtual_chassis` (relationship) |
 
 ### Manufacturer
-| IP Fabric Property | NetBox Property |
+| Forward Property | NetBox Property |
 |-------------------|----------------|
 | `vendor` | `name` |
 | `vendor` | `slug` |
 
 ### Device Type
-| IP Fabric Property | NetBox Property |
+| Forward Property | NetBox Property |
 |-------------------|----------------|
 | `model` | `model` |
 | `model` | `slug` |
 | `vendor` | `manufacturer` (relationship) |
 
 ### Device Role
-| IP Fabric Property | NetBox Property |
+| Forward Property | NetBox Property |
 |-------------------|----------------|
 | `devType` | `name` |
 | `devType` | `slug` |
 | N/A | `vm_role` (set to False) |
 
 ### Platform
-| IP Fabric Property | NetBox Property |
+| Forward Property | NetBox Property |
 |-------------------|----------------|
 | `family` or `vendor` | `name` |
 | `vendor` + `family` | `slug` |
 | `vendor` | `manufacturer` (relationship) |
 
 ### Interface
-| IP Fabric Property | NetBox Property |
+| Forward Property | NetBox Property |
 |-------------------|----------------|
 | `nameOriginal` or `intName` | `name` |
 | `dscr` | `description` |
@@ -84,14 +84,14 @@ This document outlines the tables from IP Fabric that are imported into NetBox a
 | `sn` | `device` (relationship) |
 
 ### MAC Address
-| IP Fabric Property | NetBox Property |
+| Forward Property | NetBox Property |
 |-------------------|----------------|
 | `mac` | `mac_address` |
 | `id` | `assigned_object_id` |
 | N/A | `assigned_object_type` (set to Interface) |
 
 ### Inventory Item
-| IP Fabric Property | NetBox Property |
+| Forward Property | NetBox Property |
 |-------------------|----------------|
 | `pid` | `part_id` |
 | `sn` | `serial` |
@@ -100,7 +100,7 @@ This document outlines the tables from IP Fabric that are imported into NetBox a
 | `vendor` | `manufacturer` (relationship) |
 
 ### VLAN
-| IP Fabric Property | NetBox Property |
+| Forward Property | NetBox Property |
 |-------------------|----------------|
 | `vlanName` | `name` |
 | `dscr` | `description` |
@@ -108,13 +108,13 @@ This document outlines the tables from IP Fabric that are imported into NetBox a
 | `siteName` | `site` (relationship) |
 
 ### VRF
-| IP Fabric Property | NetBox Property |
+| Forward Property | NetBox Property |
 |-------------------|----------------|
 | `vrf` | `name` |
 | `rd` | `rd` |
 
 ### Prefix
-| IP Fabric Property | NetBox Property |
+| Forward Property | NetBox Property |
 |-------------------|----------------|
 | `net` | `prefix` |
 | `siteName` | `scope_id` |
@@ -122,7 +122,7 @@ This document outlines the tables from IP Fabric that are imported into NetBox a
 | N/A | `scope_type` (set to Site) |
 
 ### IP Address
-| IP Fabric Property | NetBox Property |
+| Forward Property | NetBox Property |
 |-------------------|----------------|
 | `ip` + `net` | `address` |
 | `sn` + `nameOriginal` | `assigned_object_id` |
@@ -130,22 +130,22 @@ This document outlines the tables from IP Fabric that are imported into NetBox a
 | `vrf` | `vrf` (relationship) |
 
 ### Virtual Chassis
-| IP Fabric Property | NetBox Property |
+| Forward Property | NetBox Property |
 |-------------------|----------------|
 | `master` | `name` |
 | `sn` | `master` (relationship to Device) |
 
 ## Data Transformation
 
-Data is transformed from IP Fabric to NetBox using transform maps that define:
-- Source fields from IP Fabric
+Data is transformed from Forward to NetBox using transform maps that define:
+- Source fields from Forward
 - Target fields in NetBox
 - Jinja2 templates to transform source fields to target fields
 - Relationship mappings between models
 
 ## Sync Process
 
-1. Data is collected from IP Fabric API
-2. Transform maps convert IP Fabric data format to NetBox format
+1. Data is collected from Forward API
+2. Transform maps convert Forward data format to NetBox format
 3. Data is synced to NetBox ingestion
 4. Data is merged from NetBox ingestion to the main database

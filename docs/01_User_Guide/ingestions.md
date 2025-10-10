@@ -18,7 +18,7 @@ This plugin relies heavily on a feature from NetBox Branching plugin known as **
 
 ## Ingestions: A Conceptual Overview
 
-In the context of this plugin, we use the concept of **ingestions**. Their purpose is to create a new Branch and populate it with data from IP Fabric. A Branch in this context represents a segregated workspace within NetBox where changes are isolated from the live database until explicitly merged.
+In the context of this plugin, we use the concept of **ingestions**. Their purpose is to create a new Branch and populate it with data from Forward. A Branch in this context represents a segregated workspace within NetBox where changes are isolated from the live database until explicitly merged.
 
 ## Key Functions of Ingestions
 

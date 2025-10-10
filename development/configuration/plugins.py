@@ -4,7 +4,7 @@
 # See https://github.com/netbox-community/netbox-docker/wiki/Using-Netbox-Plugins
 
 PLUGINS = [
-    "ipfabric_netbox",
+    "forward_netbox",
     "netbox_branching",
 ]
 

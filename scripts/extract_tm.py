@@ -3,9 +3,9 @@ import json
 from django.contrib.contenttypes.models import ContentType
 from django.core import serializers
 
-from ipfabric_netbox.models import IPFabricRelationshipField
-from ipfabric_netbox.models import IPFabricTransformField
-from ipfabric_netbox.models import IPFabricTransformMap
+from forward_netbox.models import ForwardRelationshipField
+from forward_netbox.models import ForwardTransformField
+from forward_netbox.models import ForwardTransformMap
 
 
 def write_json_to_file(data, filename):
@@ -16,7 +16,7 @@ def write_json_to_file(data, filename):
 new_data = []
 
 
-data = json.loads(serializers.serialize("json", IPFabricTransformMap.objects.all()))
+data = json.loads(serializers.serialize("json", ForwardTransformMap.objects.all()))
 for d in data:
     ct = ContentType.objects.get(pk=d["fields"]["target_model"])
     d["fields"]["target_model"] = {"app_label": ct.app_label, "model": ct.model}
@@ -28,7 +28,7 @@ for d in data:
 
     for fm in json.loads(
         serializers.serialize(
-            "json", IPFabricTransformField.objects.filter(transform_map=d["pk"])
+            "json", ForwardTransformField.objects.filter(transform_map=d["pk"])
         )
     ):
         fields = fm["fields"]
@@ -37,7 +37,7 @@ for d in data:
 
     for rm in json.loads(
         serializers.serialize(
-            "json", IPFabricRelationshipField.objects.filter(transform_map=d["pk"])
+            "json", ForwardRelationshipField.objects.filter(transform_map=d["pk"])
         )
     ):
         ct = ContentType.objects.get(pk=rm["fields"]["source_model"])

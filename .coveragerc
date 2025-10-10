@@ -1,8 +1,8 @@
 [coverage:paths]
 source =
-    ipfabric_netbox
-    /source/ipfabric_netbox
-    */site-packages/ipfabric_netbox
+    forward_netbox
+    /source/forward_netbox
+    */site-packages/forward_netbox
 show_missing = True
 
 [coverage:report]

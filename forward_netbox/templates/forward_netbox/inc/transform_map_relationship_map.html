@@ -1,0 +1,11 @@
+{% extends 'generic/object_children.html' %}
+
+{% block extra_controls %}
+{% if perms.forward_netbox.add_forwardrelationshipfield %}
+<a href="{% url 'plugins:forward_netbox:forwardrelationshipfield_add' %}?transform_map={{ object.pk }}&return_url={% url 'plugins:forward_netbox:forwardtransformmap_relationships' pk=object.pk %}"
+    class="btn btn-primary">
+    <i class="mdi mdi-plus-thick" aria-hidden="true"></i> Relationship Map
+</a>
+{% endif %}
+{{ block.super }}
+{% endblock extra_controls %}

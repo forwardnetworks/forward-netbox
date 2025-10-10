@@ -7,7 +7,7 @@ description: v2 Release Notes
 ## v2.0.6 (2023-05-14)
 
 ### Enhancements
-- `SD-629` - Add user agent information for IP Fabric logs.
+- `SD-629` - Add user agent information for Forward logs.
 
 ## v2.0.5 (2023-04-30)
 
@@ -38,7 +38,7 @@ description: v2 Release Notes
 ## v2.0.1 (2023-03-08)
 
 ### Enhancements
-- `SD-583`- Fetch IP Fabric topology via site model.
+- `SD-583`- Fetch Forward topology via site model.
 
 ### Bug Fixes
 - `SD-614` - Fix issue snapshot model serialization.
@@ -49,12 +49,12 @@ description: v2 Release Notes
 
 - `SD-564` - Support NetBox 3.7.
 - `SD-566` - Add ability to restore transform maps to their default.
-- `SD-570` - Move IP Fabric to a top level navigation item.
+- `SD-570` - Move Forward to a top level navigation item.
 - `SD-572` - Install transform maps by default if none are pre-installed.
 
 ### Bug Fixes
 
-- `SD-567` - Fix issue with cache not working on Device IP Fabric Table.
+- `SD-567` - Fix issue with cache not working on Device Forward Table.
 - `SD-568` - Fix issue with snapshot api.
 - `SD-571` - Fix issue with ingestion sync button not being greyed out if no raw data exists.
 - `SD-574` - Remove unused code.

@@ -1,1 +1,1 @@
-recursive-include ipfabric_netbox/templates *
+recursive-include forward_netbox/templates *

@@ -16,36 +16,36 @@ description: v4 Release Notes
 - Replace custom `Sync` table with NetBox's built-in list table.
 - Added option to completely skip syncing custom fields to avoid empty updates.
 - Added full GraphQL support for all models.
-- `IPFabricSource` API now supports `brief` parameter.
+- `ForwardSource` API now supports `brief` parameter.
 - API serializers now support `depth` parameter to control how many nested objects are serialized.
-- All direct REST API endpoints now support full CRUD operations except for `IPFabricSnapshot`, `IPFabricIngestion` and `IPFabricIngestionIssue` which are read-only.
-- Removed `type` from `IPFabricSyncForm`, all models are now visible by default.
-- `IPFabricTransformMap` and `IPFabricTransformMapGroup` forms now allows for tagging.
+- All direct REST API endpoints now support full CRUD operations except for `ForwardSnapshot`, `ForwardIngestion` and `ForwardIngestionIssue` which are read-only.
+- Removed `type` from `ForwardSyncForm`, all models are now visible by default.
+- `ForwardTransformMap` and `ForwardTransformMapGroup` forms now allows for tagging.
 - Custom permissions now follow NetBox's standard naming scheme _`<app_label>.<action>_<model_name>`_. Following renames were made:
-  - `ipfabric_netbox.tm_restore` -> `ipfabric_netbox.restore_ipfabrictransformmap`
-  - `ipfabric_netbox.ipfabrictransformmap_add` -> `ipfabric_netbox.clone_ipfabrictransformmap`
-  - `ipfabric_netbox.sync_source` -> `ipfabric_netbox.sync_ipfabricsource`
-  - `ipfabric_netbox.start_sync` -> `ipfabric_netbox.start_ipfabricsync`
-  - `ipfabric_netbox.merge_ingestion` -> `ipfabric_netbox.merge_ipfabricingestion`
-- When cloning an `IPFabricTransformMap`, the redirect now points to the clones map.
-- Source is found using `Site` when custom field containing `IPFabricSource` ID is empty. This happens when custom fields are ignored during sync.
+  - `forward_netbox.tm_restore` -> `forward_netbox.restore_forwardtransformmap`
+  - `forward_netbox.forwardtransformmap_add` -> `forward_netbox.clone_forwardtransformmap`
+  - `forward_netbox.sync_source` -> `forward_netbox.sync_forwardsource`
+  - `forward_netbox.start_sync` -> `forward_netbox.start_forwardsync`
+  - `forward_netbox.merge_ingestion` -> `forward_netbox.merge_forwardingestion`
+- When cloning an `ForwardTransformMap`, the redirect now points to the clones map.
+- Source is found using `Site` when custom field containing `ForwardSource` ID is empty. This happens when custom fields are ignored during sync.
 - All sync parameters are now enabled by default on new sync creation.
 - Updated `netbox-branching` to 0.7.0.
 
 #### Fixes
 - Improved docs section regarding upgrade issues with NetBox v4.3.0+.
-- `extra` group for IPF SDK version `7.3` was incorrectly pointing to `7.2`.
-- Fixed wrong filter set on `IPFabricRelationshipField` API view.
-- `IPFabricSource.status` API serializer is now correctly read-only.
-- Added missing filter sets for `IPFabricSync` and `IPFabricRelationshipField` API views.
+- `extra` group for FWD SDK version `7.3` was incorrectly pointing to `7.2`.
+- Fixed wrong filter set on `ForwardRelationshipField` API view.
+- `ForwardSource.status` API serializer is now correctly read-only.
+- Added missing filter sets for `ForwardSync` and `ForwardRelationshipField` API views.
 - `brief` parameter in most API serializers will now correctly return simplified data.
 - Fixed several small bugs in forms backend found with new tests.
 - Removed obsolete GitLab reference when restoring transform maps.
 - All views now correctly handle situation where non HTMX request is made when only HTMX is expected.
-- `IPFabricSync` bulk deletion was using `IPFabricSnapshot` table instead `IPFabricSync` table.
+- `ForwardSync` bulk deletion was using `ForwardSnapshot` table instead `ForwardSync` table.
 - Since NetBox 4.3.0 Topology button was show on all models. It's back to only `Site`.
-- Values in `IPFabricSync` form were not populated from existing instance on edit.
-- `IPFabricSync` form HTMX GET URL was getting longer with each change of `source` field.
+- Values in `ForwardSync` form were not populated from existing instance on edit.
+- `ForwardSync` form HTMX GET URL was getting longer with each change of `source` field.
 
 ## v4.2.2 (2025-09-12)
 
@@ -63,9 +63,9 @@ description: v4 Release Notes
 
 - Enhanced [Installation Guide](../01_User_Guide/installation.md).
 - All data in Ingestion detail views (newly statistics and tabs) are now updated every 5 seconds with the logs.
-- Most issues during ingestion are now stored as `IPFabricIngestionIssue` objects and can be viewed in separate Ingestion detail tab view.
+- Most issues during ingestion are now stored as `ForwardIngestionIssue` objects and can be viewed in separate Ingestion detail tab view.
 - Ingestion will show as passed when no errors occurred and only some issues were found.
-- Added `extra` group for IPF SDK version `7.3`.
+- Added `extra` group for FWD SDK version `7.3`.
 
 #### Fixes
 - Device topology view was using the wrong data for Site ID.
@@ -75,10 +75,10 @@ description: v4 Release Notes
 
 #### Changes
 
-- Added `IPFabricTransformMapGroup` model to group `IPFabricTransformMap` objects together.
+- Added `ForwardTransformMapGroup` model to group `ForwardTransformMap` objects together.
 - Restoring transform maps restores only those with no group assigned.
 - Sync now prioritizes using transform maps from groups specified in the sync settings.
-- Dropped `extra` group support for IPF SDK < `6.10` and added version `7.2`.
+- Dropped `extra` group support for FWD SDK < `6.10` and added version `7.2`.
 
 #### Fixes
 - Fixed topology view hanging on error.
@@ -122,16 +122,16 @@ description: v4 Release Notes
     ```
 
 !!! danger
-    When upgrading to v4.0.0+, make sure to upgrade at the same step as NetBox to 4.3.0+. If you already upgraded your NetBox instance, follow [Cannot resolve bases for `[<ModelState: 'ipfabric_netbox.IPFabricBranch'>]`](../01_User_Guide/FAQ.md#cannot-resolve-bases-for-modelstate-ipfabric_netboxipfabricbranch) instructions.
+    When upgrading to v4.0.0+, make sure to upgrade at the same step as NetBox to 4.3.0+. If you already upgraded your NetBox instance, follow [Cannot resolve bases for `[<ModelState: 'forward_netbox.ForwardBranch'>]`](../01_User_Guide/FAQ.md#cannot-resolve-bases-for-modelstate-forward_netboxforwardbranch) instructions.
 
 - Renamed `ingestion -> sync` and `branch -> ingestion` to avoid conflicts with [netbox-branching](https://github.com/netboxlabs/netbox-branching).
 - Renamed `Name -> Object` in list of ingestion changes and linked to the item if it exists.
-- Removed unused `status` field from `IPFabricTransformMap` and cleaned all references.
+- Removed unused `status` field from `ForwardTransformMap` and cleaned all references.
 
 #### Fixes
 - Quick search for staged changes was ignoring their values.
 - Sync for `InventoryItem` failed when name was longer than 64 characters.
-- Unable to delete IP Fabric Ingestion in UI.
+- Unable to delete Forward Ingestion in UI.
 - Data were not validated on model save.
 
 !!! warning

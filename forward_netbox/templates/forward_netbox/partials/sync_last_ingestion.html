@@ -1,0 +1,1 @@
+{% if last_ingestion %}<a href="{% url 'plugins:forward_netbox:forwardingestion' pk=last_ingestion.pk %}">{{ last_ingestion.name }}{% else %}{{ ""|placeholder }}{% endif %}</a>

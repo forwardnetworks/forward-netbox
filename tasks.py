@@ -12,7 +12,7 @@ except ImportError:
     import toml as tomllib
 
 
-INIT_FILE = "ipfabric_netbox/__init__.py"
+INIT_FILE = "forward_netbox/__init__.py"
 
 
 def get_version():
@@ -33,13 +33,12 @@ def get_version():
 
 load_dotenv(os.path.dirname(os.path.abspath(__file__)) + "/development/.env")
 
-namespace = Collection("ipfabric_netbox")
+namespace = Collection("forward_netbox")
 namespace.configure(
     {
-        "ipfabric_netbox": {
+        "forward_netbox": {
             "netbox_ver": os.environ["NETBOX_VER"],
-            "ipfabric_ver": os.environ["IPFABRIC_VER"],
-            "project_name": "ipfabric-netbox",
+            "project_name": "forward-netbox",
             "compose_dir": os.path.join(os.path.dirname(__file__), "development"),
         }
     }
@@ -67,16 +66,15 @@ def task(function=None, *args, **kwargs):
 
 def docker_compose(context, command, **kwargs):
     build_env = {
-        "NETBOX_VER": context.ipfabric_netbox.netbox_ver,
-        "IPFABRIC_VER": context.ipfabric_netbox.ipfabric_ver,
+        "NETBOX_VER": context.forward_netbox.netbox_ver,
         **kwargs.pop("env", {}),
     }
     print(build_env)
 
     compose_command_tokens = [
         "docker compose",
-        f"--project-name {context.ipfabric_netbox.project_name}",
-        f'--project-directory "{context.ipfabric_netbox.compose_dir}"',
+        f"--project-name {context.forward_netbox.project_name}",
+        f'--project-directory "{context.forward_netbox.compose_dir}"',
         command,
     ]
 
@@ -101,7 +99,7 @@ def build(context, force_rm=False, cache=True):
     if force_rm:
         command += " --force-rm"
 
-    print(f"Building NetBox with {context.ipfabric_netbox.netbox_ver}...")
+    print(f"Building NetBox with {context.forward_netbox.netbox_ver}...")
     docker_compose(context, command)
 
 
@@ -216,7 +214,7 @@ def createsuperuser(context):
 )
 def makemigrations(context, name=""):
     """Perform makemigrations operation in Django."""
-    command = "/opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py makemigrations ipfabric_netbox"
+    command = "/opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py makemigrations forward_netbox"
 
     if name:
         command += f" --name {name}"
@@ -257,7 +255,7 @@ def test(context, clean=False):
     test_command = """\
         /bin/bash -c \" \
         uv pip install coverage && \
-        /opt/netbox/venv/bin/coverage run --source=ipfabric_netbox,/source/ipfabric_netbox /opt/netbox/netbox/manage.py test ipfabric_netbox \
+        /opt/netbox/venv/bin/coverage run --source=forward_netbox,/source/forward_netbox /opt/netbox/netbox/manage.py test forward_netbox \
     """
     if not clean:
         test_command += " --keepdb"
@@ -302,7 +300,7 @@ def generate_packages(context):
 
 @task
 def bump_version_of_netbox_plugin(context):
-    """Bump the version of the NetBox plugin in ipfabric_netbox/__init__.py"""
+    """Bump the version of the NetBox plugin in forward_netbox/__init__.py"""
     version = get_version()
     with open(INIT_FILE, "r") as f:
         src = f.read()
