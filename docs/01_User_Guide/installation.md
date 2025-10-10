@@ -1,10 +1,10 @@
 ---
-description: Comprehensive installation instructions for the Forward NetBox plugin with version-specific details, multiple approaches, and troubleshooting tips.
+description: Comprehensive installation instructions for the Forward Networks NetBox plugin with version-specific details, multiple approaches, and troubleshooting tips.
 ---
 
 # NetBox Plugin Installation
 
-This guide provides detailed instructions for installing and configuring the Forward NetBox plugin across different environments. The plugin enables seamless integration between Forward's network discovery capabilities and NetBox's infrastructure management platform.
+This guide provides detailed instructions for installing and configuring the Forward Networks NetBox plugin across different environments. The plugin enables seamless integration between Forward Networks's network discovery capabilities and NetBox's infrastructure management platform.
 
 These instructions contain configuration of [netbox-branching](https://docs.netboxlabs.com/netbox-extensions/branching/) plugin since it is a hard requirement for this plugin to work.
 
@@ -12,7 +12,7 @@ These instructions contain configuration of [netbox-branching](https://docs.netb
 
 Before installation, ensure:
 
-- You follow requirements for version [compatibility between Forward and NetBox](../index.md#netbox-compatibility)
+- You follow requirements for version [compatibility between Forward Networks and NetBox](../index.md#netbox-compatibility)
 - You have administrative access to your NetBox instance
 - Your NetBox installation meets the minimum version requirements
 - You have Python and pip available in your environment
@@ -31,7 +31,7 @@ source /opt/netbox/venv/bin/activate
 # Install the plugin
 (venv) $ pip install forward_netbox
 ```
-> **Note:** Forward API integration features require the Forward SDK. Install it separately based on your organization's distribution process before enabling those capabilities.
+> **Note:** Forward Networks API integration features require the Forward Networks SDK. Install it separately based on your organization's distribution process before enabling those capabilities.
 
 In case you want to install a specific version of the plugin, you can specify the version number:
 ```bash
@@ -216,12 +216,12 @@ For development or testing purposes, you can mount the plugin directly:
 
 ## 4. Version-Specific Installations
 
-### 4.1 Installing the Forward SDK
+### 4.1 Installing the Forward Networks SDK
 
-The plugin no longer installs the Forward SDK automatically. When you need SDK-backed functionality, install the version that matches your Forward deployment:
+The plugin no longer installs the Forward Networks SDK automatically. When you need SDK-backed functionality, install the version that matches your Forward Networks deployment:
 
 ```bash
-# Example for Forward 7.0.x
+# Example for Forward Networks 7.0.x
 pip install forward==7.0.0
 ```
 
@@ -236,7 +236,7 @@ To verify the plugin is installed correctly:
 
 1. Log in to the NetBox web interface
 2. Navigate to the Plugins menu
-3. Confirm "Forward NetBox" appears in the list of installed plugins
+3. Confirm "Forward Networks NetBox" appears in the list of installed plugins
 4. Check the plugin version matches your expected version
 
 ### 5.2 Verify Database Migrations
@@ -259,7 +259,7 @@ All migrations should be marked as applied (with [X]).
 |-------|----------------|----------|
 | Plugin not appearing in NetBox | Plugin not enabled in configuration | Check PLUGINS list in configuration.py |
 | Database migration errors | Incompatible NetBox version | Verify NetBox version meets requirements |
-| SDK version conflicts | Mismatched Forward and SDK versions | Install with correct version-specific extras |
+| SDK version conflicts | Mismatched Forward Networks and SDK versions | Install with correct version-specific extras |
 | Static files not loading | `collectstatic` not run | Run `python manage.py collectstatic` |
 | Permission errors | File system permissions | Check permissions on NetBox directories |
 
@@ -309,7 +309,7 @@ docker-compose up -d
 ### 7.3 Upgrading plugin to v4.0+ (NetBox v4.3.0+)
 
 !!! warning
-    For a smooth upgrade to v4.0+, we strongly suggest to upgrade to Forward `v4.0.1` before upgrading NetBox to `v4.3.0+`. The preferred version of NetBox for this upgrade is `v4.2.6`, but anything greater than `v4.2.4` and before `v4.3.0` should work.
+    For a smooth upgrade to v4.0+, we strongly suggest to upgrade to Forward Networks `v4.0.1` before upgrading NetBox to `v4.3.0+`. The preferred version of NetBox for this upgrade is `v4.2.6`, but anything greater than `v4.2.4` and before `v4.3.0` should work.
 
 The plugin now depends on `netbox-branching` plugin and these extra steps are simplified installation instructions of the plugin:
 

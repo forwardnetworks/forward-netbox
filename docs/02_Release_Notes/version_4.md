@@ -20,14 +20,13 @@ description: v4 Release Notes
 - API serializers now support `depth` parameter to control how many nested objects are serialized.
 - All direct REST API endpoints now support full CRUD operations except for `ForwardSnapshot`, `ForwardIngestion` and `ForwardIngestionIssue` which are read-only.
 - Removed `type` from `ForwardSyncForm`, all models are now visible by default.
-- `ForwardTransformMap` and `ForwardTransformMapGroup` forms now allows for tagging.
+- Introduced Forward NQE query mapping for manufacturers, device roles, device types, devices, interfaces, and locations, replacing the previous transform-map based workflow.
 - Custom permissions now follow NetBox's standard naming scheme _`<app_label>.<action>_<model_name>`_. Following renames were made:
   - `forward_netbox.tm_restore` -> `forward_netbox.restore_forwardtransformmap`
   - `forward_netbox.forwardtransformmap_add` -> `forward_netbox.clone_forwardtransformmap`
   - `forward_netbox.sync_source` -> `forward_netbox.sync_forwardsource`
   - `forward_netbox.start_sync` -> `forward_netbox.start_forwardsync`
   - `forward_netbox.merge_ingestion` -> `forward_netbox.merge_forwardingestion`
-- When cloning an `ForwardTransformMap`, the redirect now points to the clones map.
 - Source is found using `Site` when custom field containing `ForwardSource` ID is empty. This happens when custom fields are ignored during sync.
 - All sync parameters are now enabled by default on new sync creation.
 - Updated `netbox-branching` to 0.7.0.
@@ -131,7 +130,7 @@ description: v4 Release Notes
 #### Fixes
 - Quick search for staged changes was ignoring their values.
 - Sync for `InventoryItem` failed when name was longer than 64 characters.
-- Unable to delete Forward Ingestion in UI.
+- Unable to delete Forward Networks Ingestion in UI.
 - Data were not validated on model save.
 
 !!! warning

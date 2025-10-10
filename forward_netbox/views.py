@@ -36,346 +36,28 @@ from .filtersets import ForwardIngestionIssueFilterSet
 from .filtersets import ForwardSnapshotFilterSet
 from .filtersets import ForwardSourceFilterSet
 from .filtersets import ForwardSyncFilterSet
-from .filtersets import ForwardTransformMapFilterSet
-from .filtersets import ForwardTransformMapGroupFilterSet
 from .forms import ForwardIngestionFilterForm
 from .forms import ForwardIngestionMergeForm
-from .forms import ForwardRelationshipFieldForm
 from .forms import ForwardSnapshotFilterForm
 from .forms import ForwardSourceFilterForm
 from .forms import ForwardSourceForm
 from .forms import ForwardSyncForm
 from .forms import ForwardTableForm
-from .forms import ForwardTransformFieldForm
-from .forms import ForwardTransformMapCloneForm
-from .forms import ForwardTransformMapForm
-from .forms import ForwardTransformMapGroupForm
 from .models import ForwardData
 from .models import ForwardIngestion
 from .models import ForwardIngestionIssue
-from .models import ForwardRelationshipField
 from .models import ForwardSnapshot
 from .models import ForwardSource
 from .models import ForwardSync
-from .models import ForwardTransformField
-from .models import ForwardTransformMap
-from .models import ForwardTransformMapGroup
 from .tables import DeviceFWDTable
 from .tables import ForwardDataTable
 from .tables import ForwardIngestionChangesTable
 from .tables import ForwardIngestionIssuesTable
 from .tables import ForwardIngestionTable
-from .tables import ForwardRelationshipFieldTable
 from .tables import ForwardSnapshotTable
 from .tables import ForwardSourceTable
 from .tables import ForwardSyncTable
-from .tables import ForwardTransformFieldTable
-from .tables import ForwardTransformMapGroupTable
-from .tables import ForwardTransformMapTable
 from .utilities.fwdutils import Forward
-from .utilities.transform_map import build_transform_maps
-from .utilities.transform_map import get_transform_map
-
-
-# Transform Map Relationship Field
-
-
-@register_model_view(ForwardRelationshipField, "edit")
-class ForwardRelationshipFieldEditView(generic.ObjectEditView):
-    queryset = ForwardRelationshipField.objects.all()
-    form = ForwardRelationshipFieldForm
-    default_return_url = "plugins:forward_netbox:forwardrelationshipfield_list"
-
-
-class ForwardRelationshipFieldDeleteView(generic.ObjectDeleteView):
-    queryset = ForwardRelationshipField.objects.all()
-    default_return_url = "plugins:forward_netbox:forwardrelationshipfield_list"
-
-
-@register_model_view(ForwardTransformMap, "relationships")
-class ForwardTransformRelationshipView(generic.ObjectChildrenView):
-    queryset = ForwardTransformMap.objects.all()
-    child_model = ForwardRelationshipField
-    table = ForwardRelationshipFieldTable
-    template_name = "forward_netbox/inc/transform_map_relationship_map.html"
-    tab = ViewTab(
-        label="Relationship Maps",
-        badge=lambda obj: ForwardRelationshipField.objects.filter(
-            transform_map=obj
-        ).count(),
-        permission="forward_netbox.view_forwardrelationshipfield",
-    )
-
-    def get_children(self, request, parent):
-        return self.child_model.objects.filter(transform_map=parent)
-
-
-class ForwardRelationshipFieldListView(generic.ObjectListView):
-    queryset = ForwardRelationshipField.objects.all()
-    table = ForwardRelationshipFieldTable
-
-
-# Transform Map Group
-
-
-class ForwardTransformMapGroupListView(generic.ObjectListView):
-    queryset = ForwardTransformMapGroup.objects.annotate(
-        maps_count=models.Count("transform_maps")
-    )
-    table = ForwardTransformMapGroupTable
-    filterset = ForwardTransformMapGroupFilterSet
-
-
-@register_model_view(ForwardTransformMapGroup, "edit")
-class ForwardTransformMapGroupEditView(generic.ObjectEditView):
-    queryset = ForwardTransformMapGroup.objects.all()
-    form = ForwardTransformMapGroupForm
-    default_return_url = "plugins:forward_netbox:forwardtransformmapgroup_list"
-
-
-class ForwardTransformMapGroupDeleteView(generic.ObjectDeleteView):
-    queryset = ForwardTransformMapGroup.objects.all()
-    default_return_url = "plugins:forward_netbox:forwardtransformmapgroup_list"
-
-
-class ForwardTransformMapGroupBulkDeleteView(generic.BulkDeleteView):
-    queryset = ForwardTransformMapGroup.objects.all()
-    table = ForwardTransformMapGroupTable
-
-
-@register_model_view(ForwardTransformMapGroup)
-class ForwardTransformMapGroupView(GetRelatedModelsMixin, generic.ObjectView):
-    queryset = ForwardTransformMapGroup.objects.all()
-
-    def get_extra_context(self, request, instance):
-        return {
-            "related_models": self.get_related_models(request, instance, omit=[]),
-        }
-
-
-# Transform Map
-
-
-class ForwardTransformMapListView(generic.ObjectListView):
-    queryset = ForwardTransformMap.objects.all()
-    table = ForwardTransformMapTable
-    template_name = "forward_netbox/forwardtransformmap_list.html"
-    filterset = ForwardTransformMapFilterSet
-
-
-class ForwardTransformMapRestoreView(generic.ObjectListView):
-    queryset = ForwardTransformMap.objects.all()
-    table = ForwardTransformMapTable
-
-    def get_required_permission(self):
-        return "forward_netbox.restore_forwardtransformmap"
-
-    def get(self, request):
-        if request.htmx:
-            viewname = get_viewname(self.queryset.model, action="restore")
-            form_url = reverse(viewname)
-            form = ConfirmationForm(initial=request.GET)
-            dependent_objects = {
-                ForwardTransformMap: ForwardTransformMap.objects.filter(
-                    group__isnull=True
-                ),
-                ForwardTransformField: ForwardTransformField.objects.filter(
-                    transform_map__group__isnull=True
-                ),
-                ForwardRelationshipField: ForwardRelationshipField.objects.filter(
-                    transform_map__group__isnull=True
-                ),
-            }
-            return render(
-                request,
-                "forward_netbox/forwardtransformmap_restore.html",
-                {
-                    "form": form,
-                    "form_url": form_url,
-                    "dependent_objects": dependent_objects,
-                },
-            )
-        return redirect(reverse("plugins:forward_netbox:forwardtransformmap_list"))
-
-    def post(self, request):
-        ForwardTransformMap.objects.filter(group__isnull=True).delete()
-        build_transform_maps(data=get_transform_map())
-        return redirect("plugins:forward_netbox:forwardtransformmap_list")
-
-
-@register_model_view(ForwardTransformMap, "edit")
-class ForwardTransformMapEditView(generic.ObjectEditView):
-    queryset = ForwardTransformMap.objects.all()
-    form = ForwardTransformMapForm
-    default_return_url = "plugins:forward_netbox:forwardtransformmap_list"
-
-
-@register_model_view(ForwardTransformMap, "clone")
-class ForwardTransformMapCloneView(BaseObjectView):
-    queryset = ForwardTransformMap.objects.all()
-    template_name = "forward_netbox/inc/clone_form.html"
-    form = ForwardTransformMapCloneForm
-
-    def get_required_permission(self):
-        return "forward_netbox.clone_forwardtransformmap"
-
-    def get(self, request, pk):
-        obj = get_object_or_404(self.queryset, pk=pk)
-        if request.htmx:
-            viewname = get_viewname(self.queryset.model, action="clone")
-            form_url = reverse(viewname, kwargs={"pk": obj.pk})
-            initial = request.GET.copy()
-            initial["name"] = f"Clone of {obj.name}"
-            form = self.form(initial=initial)
-            restrict_form_fields(form, request.user)
-            return render(
-                request,
-                self.template_name,
-                {
-                    "object": obj,
-                    "form": form,
-                    "pk": pk,
-                    "form_url": form_url,
-                },
-            )
-        return redirect(obj.get_absolute_url())
-
-    def post(self, request, pk):
-        obj = get_object_or_404(self.queryset, pk=pk)
-        form = self.form(request.POST)
-        restrict_form_fields(form, request.user)
-        try:
-            if form.is_valid():
-                with transaction.atomic():
-                    fields = ForwardTransformField.objects.filter(transform_map=obj)
-                    relationships = ForwardRelationshipField.objects.filter(
-                        transform_map=obj
-                    )
-                    # Clone the transform map - create a proper copy using Django model copying
-                    new_map = ForwardTransformMap(
-                        name=form.cleaned_data["name"],
-                        source_model=obj.source_model,
-                        target_model=obj.target_model,
-                        group=form.cleaned_data["group"],
-                    )
-                    new_map.full_clean()
-                    new_map.save()
-
-                    # Clone related transform fields
-                    if form.cleaned_data["clone_fields"]:
-                        for field in fields:
-                            ForwardTransformField.objects.create(
-                                transform_map=new_map,
-                                source_field=field.source_field,
-                                target_field=field.target_field,
-                                coalesce=field.coalesce,
-                                template=field.template,
-                            )
-
-                    # Clone related relationship fields
-                    if form.cleaned_data["clone_relationships"]:
-                        for rel in relationships:
-                            ForwardRelationshipField.objects.create(
-                                transform_map=new_map,
-                                source_model=rel.source_model,
-                                target_field=rel.target_field,
-                                coalesce=rel.coalesce,
-                                template=rel.template,
-                            )
-
-                return_url = reverse(
-                    "plugins:forward_netbox:forwardtransformmap", args=[new_map.pk]
-                )
-                if request.htmx:
-                    response = HttpResponse()
-                    response["HX-Redirect"] = return_url
-                    return response
-                return redirect(return_url)
-        except ValidationError as err:
-            if not hasattr(err, "error_dict") or not err.error_dict:
-                form.add_error(None, err)
-            else:
-                # This serves to show errors in the form directly
-                for field, error in err.error_dict.items():
-                    if field in form.fields:
-                        form.add_error(field, error)
-                    else:
-                        form.add_error(None, error)
-        if request.htmx:
-            viewname = get_viewname(self.queryset.model, action="clone")
-            form_url = reverse(viewname, kwargs={"pk": obj.pk})
-            response = render(
-                request,
-                "forward_netbox/inc/clone_form.html",
-                {
-                    "form": form,
-                    "object": obj,
-                    "pk": pk,
-                    "form_url": form_url,
-                },
-            )
-            response["X-Debug-HTMX-Partial"] = "true"
-            return response
-        return render(
-            request,
-            self.template_name,
-            {
-                "form": form,
-                "object": obj,
-                "pk": pk,
-            },
-        )
-
-
-class ForwardTransformMapDeleteView(generic.ObjectDeleteView):
-    queryset = ForwardTransformMap.objects.all()
-    default_return_url = "plugins:forward_netbox:forwardtransformmap_list"
-
-
-class ForwardTransformMapBulkDeleteView(generic.BulkDeleteView):
-    queryset = ForwardTransformMap.objects.all()
-    table = ForwardTransformMapTable
-
-
-@register_model_view(ForwardTransformMap)
-class ForwardTransformMapView(generic.ObjectView):
-    queryset = ForwardTransformMap.objects.all()
-
-
-# Transform Map Field
-
-
-class ForwardTransformFieldListView(generic.ObjectListView):
-    queryset = ForwardTransformField.objects.all()
-    table = ForwardTransformFieldTable
-
-
-@register_model_view(ForwardTransformField, "edit")
-class ForwardTransformFieldEditView(generic.ObjectEditView):
-    queryset = ForwardTransformField.objects.all()
-    form = ForwardTransformFieldForm
-
-
-class ForwardTransformFieldDeleteView(generic.ObjectDeleteView):
-    queryset = ForwardTransformField.objects.all()
-
-
-@register_model_view(ForwardTransformMap, "fields")
-class ForwardTransformFieldView(generic.ObjectChildrenView):
-    queryset = ForwardTransformMap.objects.all()
-    child_model = ForwardTransformField
-    table = ForwardTransformFieldTable
-    template_name = "forward_netbox/inc/transform_map_field_map.html"
-    tab = ViewTab(
-        label="Field Maps",
-        badge=lambda obj: ForwardTransformField.objects.filter(
-            transform_map=obj
-        ).count(),
-        permission="forward_netbox.view_forwardtransformfield",
-    )
-
-    def get_children(self, request, parent):
-        return self.child_model.objects.filter(transform_map=parent)
 
 
 # Snapshot
@@ -610,26 +292,6 @@ class ForwardSyncBulkDeleteView(generic.BulkDeleteView):
     queryset = ForwardSync.objects.all()
     filterset = ForwardSnapshotFilterSet
     table = ForwardSyncTable
-
-
-@register_model_view(ForwardSync, "transformmaps")
-class ForwardTransformMapTabView(generic.ObjectChildrenView):
-    queryset = ForwardSync.objects.all()
-    child_model = ForwardTransformMap
-    table = ForwardTransformMapTable
-    template_name = "generic/object_children.html"
-    tab = ViewTab(
-        label="Transform Maps",
-        badge=lambda obj: obj.get_transform_maps(
-            obj.parameters.get("groups", []) if obj.parameters else []
-        ).count(),
-        permission="forward_netbox.view_forwardtransformmap",
-    )
-
-    def get_children(self, request, parent):
-        return parent.get_transform_maps(
-            parent.parameters.get("groups", []) if parent.parameters else []
-        )
 
 
 @register_model_view(ForwardSync, "ingestion")
@@ -884,7 +546,7 @@ class ForwardIngestionDeleteView(generic.ObjectDeleteView):
 @register_model_view(Device, "forward")
 class ForwardTable(generic.ObjectView):
     template_name = "forward_netbox/forward_table.html"
-    tab = ViewTab("Forward", permission="forward_netbox.view_devicetable")
+    tab = ViewTab("Forward Networks", permission="forward_netbox.view_devicetable")
     queryset = Device.objects.all()
 
     def get_extra_context(self, request, instance):
@@ -922,16 +584,22 @@ class ForwardTable(generic.ObjectView):
                 source = source or form.cleaned_data["snapshot_data"].source
 
             if source is not None:
-                source.parameters["snapshot_id"] = snapshot_id
-                source.parameters["base_url"] = source.url
+                params = dict(source.parameters or {})
+                params["snapshot_id"] = snapshot_id
+                params["base_url"] = source.url
+                if source.network_id:
+                    params["network_id"] = source.network_id
 
-                cache_key = f"forward_{table_name}_{device.serial}_{source.parameters['snapshot_id']}"
+                network_component = params.get("network_id") or "default"
+                cache_key = (
+                    f"forward_{table_name}_{device.serial}_{snapshot_id}_{network_component}"
+                )
                 if cache_enable:
                     data = cache.get(cache_key)
 
                 if not data:
                     try:
-                        fwd = Forward(parameters=source.parameters)
+                        fwd = Forward(parameters=params)
                         raw_data, columns = fwd.get_table_data(
                             table=table_name, device=device
                         )
@@ -1012,15 +680,16 @@ class ForwardSourceTopology(LoginRequiredMixin, View):
                 if not snapshot:
                     raise Exception("Snapshot ID not available in request.")
 
-                source.parameters.update(
-                    {"snapshot_id": snapshot, "base_url": source.url}
-                )
+                params = dict(source.parameters or {})
+                params.update({"snapshot_id": snapshot, "base_url": source.url})
+                if source.network_id:
+                    params["network_id"] = source.network_id
 
-                fwd_client = Forward(parameters=source.parameters)
+                fwd_client = Forward(parameters=params)
                 snapshot_data = fwd_client.api.get_snapshot(snapshot)
                 if not snapshot_data:
                     raise Exception(
-                        f"Snapshot ({snapshot}) not available in Forward."  # noqa E713
+                        f"Snapshot ({snapshot}) not available in Forward Networks."  # noqa E713
                     )
 
                 sites = fwd_client.api.inventory(
@@ -1030,7 +699,7 @@ class ForwardSourceTopology(LoginRequiredMixin, View):
                 )
                 if not sites:
                     raise Exception(
-                        f"{site.name} not available in snapshot ({snapshot})."  # noqa E713
+                        f"{site.name} not available in snapshot ({snapshot}) for Forward Networks."  # noqa E713
                     )
 
                 diagram_settings = {

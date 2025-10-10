@@ -6,8 +6,6 @@ from core.graphql.mixins import ChangelogMixin
 from core.models import Job
 from extras.graphql.mixins import TagsMixin
 from netbox.graphql.types import BaseObjectType
-from netbox.graphql.types import ContentTypeType
-from netbox.graphql.types import NetBoxObjectType
 from netbox.graphql.types import OrganizationalObjectType
 from netbox_branching.models import Branch
 from strawberry.scalars import JSON
@@ -17,22 +15,14 @@ from .filters import BranchFilter
 from .filters import ForwardDataFilter
 from .filters import ForwardIngestionFilter
 from .filters import ForwardIngestionIssueFilter
-from .filters import ForwardRelationshipFieldFilter
 from .filters import ForwardSnapshotFilter
 from .filters import ForwardSourceFilter
 from .filters import ForwardSyncFilter
-from .filters import ForwardTransformFieldFilter
-from .filters import ForwardTransformMapFilter
-from .filters import ForwardTransformMapGroupFilter
 from .filters import JobFilter
 from forward_netbox import models
 
 
 __all__ = (
-    "ForwardTransformMapGroupType",
-    "ForwardTransformMapType",
-    "ForwardTransformFieldType",
-    "ForwardRelationshipFieldType",
     "ForwardSourceType",
     "ForwardSnapshotType",
     "ForwardSyncType",
@@ -40,75 +30,6 @@ __all__ = (
     "ForwardIngestionIssueType",
     "ForwardDataType",
 )
-
-
-@strawberry_django.type(
-    models.ForwardTransformMapGroup,
-    fields="__all__",
-    filters=ForwardTransformMapGroupFilter,
-)
-class ForwardTransformMapGroupType(NetBoxObjectType):
-    name: str
-    description: str | None
-
-
-@strawberry_django.type(
-    models.ForwardTransformMap, fields="__all__", filters=ForwardTransformMapFilter
-)
-class ForwardTransformMapType(NetBoxObjectType):
-    name: str
-    source_model: str
-    target_model: (
-        Annotated[
-            "ContentTypeType",
-            strawberry.lazy("netbox.graphql.types"),
-        ]
-        | None
-    )
-    group: (
-        Annotated[
-            "ForwardTransformMapGroupType",
-            strawberry.lazy("forward_netbox.graphql.types"),
-        ]
-        | None
-    )
-
-
-@strawberry_django.type(
-    models.ForwardTransformField,
-    fields="__all__",
-    filters=ForwardTransformFieldFilter,
-)
-class ForwardTransformFieldType(BaseObjectType):
-    transform_map: (
-        Annotated[
-            "ForwardTransformMapType", strawberry.lazy("forward_netbox.graphql.types")
-        ]
-        | None
-    )
-    source_field: str
-    target_field: str
-    coalesce: bool
-    template: str
-
-
-@strawberry_django.type(
-    models.ForwardRelationshipField,
-    fields="__all__",
-    filters=ForwardRelationshipFieldFilter,
-)
-class ForwardRelationshipFieldType(BaseObjectType):
-    transform_map: (
-        Annotated[
-            "ForwardTransformMapType", strawberry.lazy("forward_netbox.graphql.types")
-        ]
-        | None
-    )
-    source_model: Annotated["ContentTypeType", strawberry.lazy("netbox.graphql.types")]
-    target_field: str
-    coalesce: bool
-    template: str
-
 
 @strawberry_django.type(
     models.ForwardSource, fields="__all__", filters=ForwardSourceFilter

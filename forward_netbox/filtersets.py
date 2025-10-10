@@ -11,13 +11,9 @@ from netbox_branching.models import ChangeDiff
 from .models import ForwardData
 from .models import ForwardIngestion
 from .models import ForwardIngestionIssue
-from .models import ForwardRelationshipField
 from .models import ForwardSnapshot
 from .models import ForwardSource
 from .models import ForwardSync
-from .models import ForwardTransformField
-from .models import ForwardTransformMap
-from .models import ForwardTransformMapGroup
 
 
 class ForwardIngestionChangeFilterSet(BaseFilterSet):
@@ -112,10 +108,11 @@ class ForwardSourceFilterSet(NetBoxModelFilterSet):
     status = django_filters.MultipleChoiceFilter(
         choices=DataSourceStatusChoices, null_value=None
     )
+    network_id = django_filters.CharFilter(lookup_expr="icontains")
 
     class Meta:
         model = ForwardSource
-        fields = ("id", "name")
+        fields = ("id", "name", "network_id")
 
     def search(self, queryset, name, value):
         if not value.strip():
@@ -150,79 +147,6 @@ class ForwardIngestionFilterSet(BaseFilterSet):
         return queryset.filter(
             Q(branch__name__icontains=value) | Q(sync__name__icontains=value)
         )
-
-
-class ForwardTransformMapGroupFilterSet(NetBoxModelFilterSet):
-    q = django_filters.CharFilter(method="search")
-
-    class Meta:
-        model = ForwardTransformMapGroup
-        fields = ("id", "name", "description")
-
-    def search(self, queryset, name, value):
-        if not value.strip():
-            return queryset
-        return queryset.filter(
-            Q(name__icontains=value) | Q(description__icontains=value)
-        )
-
-
-class ForwardTransformMapFilterSet(NetBoxModelFilterSet):
-    q = django_filters.CharFilter(method="search")
-    group_id = django_filters.ModelMultipleChoiceFilter(
-        queryset=ForwardTransformMapGroup.objects.all(),
-        label=_("Transform Map Group (ID)"),
-    )
-    group = django_filters.ModelMultipleChoiceFilter(
-        queryset=ForwardTransformMapGroup.objects.all(), label=_("Transform Map Group")
-    )
-
-    class Meta:
-        model = ForwardTransformMap
-        fields = ("id", "name", "group", "source_model", "target_model")
-
-    def search(self, queryset, name, value):
-        if not value.strip():
-            return queryset
-        return queryset.filter(
-            Q(group__name__icontains=value) | Q(name__icontains=value)
-        )
-
-
-class ForwardTransformFieldFilterSet(BaseFilterSet):
-    transform_map = django_filters.ModelMultipleChoiceFilter(
-        queryset=ForwardTransformMap.objects.all(), label=_("Transform Map")
-    )
-
-    class Meta:
-        model = ForwardTransformField
-        fields = (
-            "id",
-            "transform_map",
-            "source_field",
-            "target_field",
-            "coalesce",
-            "template",
-        )
-
-
-class ForwardRelationshipFieldFilterSet(BaseFilterSet):
-    transform_map = django_filters.ModelMultipleChoiceFilter(
-        queryset=ForwardTransformMap.objects.all(), label=_("Transform Map")
-    )
-
-    class Meta:
-        model = ForwardRelationshipField
-        fields = (
-            "id",
-            "transform_map",
-            "source_model",
-            "target_field",
-            "coalesce",
-            "template",
-        )
-
-
 class ForwardSyncFilterSet(ChangeLoggedModelFilterSet):
     q = django_filters.CharFilter(method="search")
     snapshot_data_id = django_filters.ModelMultipleChoiceFilter(

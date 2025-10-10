@@ -1,12 +1,12 @@
 ---
-description: On this page, we explain the Forward NetBox plugin ingestion jobs.
+description: On this page, we explain the Forward Networks NetBox plugin ingestion jobs.
 ---
 
 # Syncs
 
 ## Introduction
 
-Data sync is a fundamental process in the plugin, enabling synchronization between Forward and NetBox. This process involves configuring various parameters to define how data is synchronized. Configuration here defines created **ingestions** which handle synchronizing and merging the data. Let's delve into the key components of data sync.
+Data sync is a fundamental process in the plugin, enabling synchronization between Forward Networks and NetBox. This process involves configuring various parameters to define how data is synchronized. Configuration here defines created **ingestions** which handle synchronizing and merging the data. Let's delve into the key components of data sync.
 
 ## Configuration Parameters
 
@@ -15,7 +15,7 @@ A data sync configuration consists of several crucial parameters:
 | Field           | Description                                                      | Type                           |
 | --------------- |------------------------------------------------------------------| ------------------------------ |
 | Name            | The name of the ingestion job                                    | `CharField`                    |
-| Source          | The Forward instance used for data synchronization with NetBox | `ForeignKey`                   |
+| Source          | The Forward Networks instance used for data synchronization with NetBox | `ForeignKey`                   |
 | Snapshot        | The snapshot chosen for data synchronization with NetBox         | `ForeignKey`                   |
 | Auto Merge      | Automatically merge staged changes into NetBox                   | `BooleanField`                 |
 | Sites           | Optional: Limits ingestion to specific sites                     | `ChoiceField`                  |
@@ -29,7 +29,7 @@ A data sync configuration consists of several crucial parameters:
 
 !!! note
 
-    When scheduling recurring ingestions using the `Recurs Every` field, it's recommended to use the `$last` snapshot. This ensures that the ingestion always runs against the latest snapshot in Forward, maintaining data consistency.
+    When scheduling recurring ingestions using the `Recurs Every` field, it's recommended to use the `$last` snapshot. This ensures that the ingestion always runs against the latest snapshot in Forward Networks, maintaining data consistency.
 
 ## Data Synchronization Parameters
 
@@ -66,9 +66,9 @@ The data sync detail page offers insights into the ingestion configuration and i
 
 On the left, you can access snapshot information and the configured source for data ingestion. On the right, parameters and values.
 
-Tabs at the top provide access to various features, including viewing [Transform Maps](transform_maps.md), [Ingestions](ingestions.md), accessing the change log, and reviewing associated jobs.
+Tabs at the top provide access to the configured [Ingestions](ingestions.md), the change log, and associated jobs.
 
-The [Transform Maps](transform_maps.md) tab displays currently used transform maps for this exact Sync. Only single one will be used for each target model, the choice is made by selecting [Transform Map Groups](transform_maps.md#transform-map-group) in the Sync configuration. The last group takes precedence, so if you have multiple groups with transform maps for the same target model, the one from the last group in the list will be used.
+The parameters table lists the Forward NQE queries used for each synced model together with their enabled state. Updating the mapping is handled directly from the sync form.
 
 ## Initiating a Synchronization
 

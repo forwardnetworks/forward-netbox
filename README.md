@@ -1,28 +1,29 @@
-# Forward NetBox Plugin
+# Forward Networks NetBox Plugin
 
-## Forward
+## Forward Networks
 
-Forward is a vendor-neutral network assurance platform that automates the
+Forward Networks is a vendor-neutral network assurance platform that automates the
 holistic discovery, verification, visualization, and documentation of
 large-scale enterprise networks, reducing the associated costs and required
 resources whilst improving security and efficiency.
 
 It supports your engineering and operations teams, underpinning migration and
-transformation projects. Forward will revolutionize how you approach network
+transformation projects. Forward Networks will revolutionize how you approach network
 visibility and assurance, security assurance, automation, multi-cloud
 networking, and trouble resolution.
 
-**Integrations or scripts should not be installed directly on the Forward VM unless directly communicated from the
-Forward Support or Solution Architect teams.  Any action on the Command-Line Interface (CLI) using the root, osadmin,
+**Integrations or scripts should not be installed directly on the Forward Networks VM unless directly communicated from the
+Forward Networks Support or Solution Architect teams.  Any action on the Command-Line Interface (CLI) using the root, osadmin,
 or autoboss account may cause irreversible, detrimental changes to the product and can render the system unusable.**
 
 ## Overview
 
-This plugin allows the integration and data synchronization between Forward and NetBox.
+This plugin allows the integration and data synchronization between Forward Networks and NetBox.
 
-The plugin communicates with Forward's REST API to gather inventory and topology data. Installing the optional Forward SDK (available via Forward Networks support) enhances some interactive workflows but is no longer required for data ingestion. The integration still relies on helpful NetBox features like [Branches](https://docs.netboxlabs.com/netbox-extensions/branching/) and [Background Tasks](https://netboxlabs.com/docs/netbox/en/stable/plugins/development/background-tasks/) to make the job of bringing in data to NetBox easier.
+The plugin communicates with Forward Networks' REST API to gather inventory and topology data. Installing the optional Forward Networks SDK (available via Forward Networks support) enhances some interactive workflows but is no longer required for data ingestion. The integration still relies on helpful NetBox features like [Branches](https://docs.netboxlabs.com/netbox-extensions/branching/) and [Background Tasks](https://netboxlabs.com/docs/netbox/en/stable/plugins/development/background-tasks/) to make the job of bringing in data to NetBox easier.
 
-- Multiple Forward Sources
+- Multiple Forward Networks Sources
+- Per-source Network ID scoping for Forward Networks API calls
 - Transform Maps
 - Scheduled Synchronization
 - Diff Visualization
@@ -58,7 +59,7 @@ These are the required NetBox versions for corresponding plugin version. Any oth
 
 ## Documentation
 
-Full documentation for this plugin can be found at [Forward Docs](https://forwardnetworks.com/docs/forward-netbox).
+Full documentation for this plugin can be found at [Forward Networks Docs](https://forwardnetworks.com/docs/forward-netbox).
 
 - User Guide
 - Administrator Guide

@@ -41,36 +41,8 @@ ingestion = PluginMenuItem(
     buttons=sync_buttons,
     permissions=["forward_netbox.view_forwardsync"],
 )
-
-tmg = PluginMenuItem(
-    link="plugins:forward_netbox:forwardtransformmapgroup_list",
-    link_text="Transform Map Groups",
-    permissions=["forward_netbox.view_forwardtransformmapgroup"],
-    buttons=[
-        PluginMenuButton(
-            link="plugins:forward_netbox:forwardtransformmapgroup_add",
-            title="Add",
-            icon_class="mdi mdi-plus-thick",
-            permissions=["forward_netbox.add_forwardtransformmapgroup"],
-        )
-    ],
-)
-
-tm = PluginMenuItem(
-    link="plugins:forward_netbox:forwardtransformmap_list",
-    link_text="Transform Maps",
-    permissions=["forward_netbox.view_forwardtransformmap"],
-    buttons=[
-        PluginMenuButton(
-            link="plugins:forward_netbox:forwardtransformmap_add",
-            title="Add",
-            icon_class="mdi mdi-plus-thick",
-            permissions=["forward_netbox.add_forwardtransformmap"],
-        )
-    ],
-)
 menu = PluginMenu(
-    label="Forward",
+    label="Forward Networks",
     icon_class="mdi mdi-cloud-sync",
-    groups=(("Forward", (source, snapshot, ingestion, tmg, tm)),),
+    groups=(("Forward Networks", (source, snapshot, ingestion)),),
 )

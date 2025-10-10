@@ -1,5 +1,3 @@
-import ast
-import functools
 import json
 import logging
 import traceback
@@ -13,10 +11,14 @@ from core.models import Job
 from core.models import ObjectType
 from core.signals import pre_sync
 from dcim.models import Device
+from dcim.models import DeviceRole
+from dcim.models import DeviceType
+from dcim.models import Interface
+from dcim.models import Location
+from dcim.models import Manufacturer
 from dcim.models import Site
 from dcim.models import VirtualChassis
 from dcim.signals import assign_virtualchassis_master
-from django.apps import apps
 from django.conf import settings
 from django.contrib.contenttypes.models import ContentType
 from django.core.cache import cache
@@ -31,6 +33,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from django.utils.module_loading import import_string
 from django.utils.translation import gettext as _
+from django.utils.text import slugify
 from netbox.context import current_request
 from netbox.models import ChangeLoggedModel
 from netbox.models import NetBoxModel
@@ -40,22 +43,19 @@ from netbox.models.features import TagsMixin
 from netbox_branching.choices import BranchStatusChoices
 from netbox_branching.contextvars import active_branch
 from netbox_branching.models import Branch
-from netbox_branching.utilities import supports_branching
 from utilities.querysets import RestrictedQuerySet
 from utilities.request import NetBoxFakeRequest
 
 from .choices import ForwardRawDataTypeChoices
 from .choices import ForwardSnapshotStatusModelChoices
 from .choices import ForwardSourceTypeChoices
-from .choices import ForwardTransformMapSourceModelChoices
-from .choices import required_transform_map_contenttypes
 from .signals import clear_other_primary_ip
 from .exceptions import ForwardAPIError
 from .utilities.fwdutils import Forward
 from .utilities.fwdutils import ForwardRESTClient
 from .utilities.fwdutils import ForwardSyncRunner
-from .utilities.fwdutils import render_jinja2
 from .utilities.logging import SyncLogging
+from .utilities.nqe_map import get_default_nqe_map
 
 
 logger = logging.getLogger("forward_netbox.models")
@@ -72,330 +72,6 @@ def apply_tags(object, tags, connection_name=None):
     _apply(object)
 
 
-ForwardSupportedSyncModels = Q(
-    Q(app_label="dcim", model="site")
-    | Q(app_label="dcim", model="manufacturer")
-    | Q(app_label="dcim", model="platform")
-    | Q(app_label="dcim", model="devicerole")
-    | Q(app_label="dcim", model="devicetype")
-    | Q(app_label="dcim", model="device")
-    | Q(app_label="dcim", model="virtualchassis")
-    | Q(app_label="dcim", model="interface")
-    | Q(app_label="dcim", model="macaddress")
-    | Q(app_label="ipam", model="vlan")
-    | Q(app_label="ipam", model="vrf")
-    | Q(app_label="ipam", model="prefix")
-    | Q(app_label="ipam", model="ipaddress")
-    | Q(app_label="contenttypes", model="contenttype")
-    | Q(app_label="tenancy", model="tenant")
-    | Q(app_label="dcim", model="inventoryitem")
-)
-
-
-ForwardRelationshipFieldSourceModels = Q(
-    Q(app_label="dcim")
-    | Q(app_label="ipam")
-    | Q(app_label="tenancy")
-    | Q(app_label="contenttypes", model="contenttype")
-)
-
-
-class ForwardTransformMapGroup(NetBoxModel):
-    name = models.CharField(max_length=100, unique=True)
-    description = models.TextField(blank=True, null=True)
-
-    class Meta:
-        ordering = ("pk",)
-        verbose_name = "Forward Transform Map Group"
-        verbose_name_plural = "Forward Transform Map Groups"
-
-    def __str__(self):
-        return self.name
-
-    def get_absolute_url(self):
-        return reverse(
-            "plugins:forward_netbox:forwardtransformmapgroup", args=[self.pk]
-        )
-
-
-class ForwardTransformMap(NetBoxModel):
-    name = models.CharField(max_length=100)
-    source_model = models.CharField(
-        max_length=50, choices=ForwardTransformMapSourceModelChoices
-    )
-    target_model = models.ForeignKey(
-        to=ContentType,
-        related_name="+",
-        verbose_name="Target Model",
-        limit_choices_to=ForwardSupportedSyncModels,
-        help_text=_("The object(s) to which transform map target applies."),
-        on_delete=models.PROTECT,
-        blank=False,
-        null=False,
-    )
-    group = models.ForeignKey(
-        to=ForwardTransformMapGroup,
-        on_delete=models.CASCADE,
-        related_name="transform_maps",
-        blank=True,
-        null=True,
-    )
-
-    class Meta:
-        ordering = ("pk",)
-        verbose_name = "Forward Transform Map"
-        verbose_name_plural = "Forward Transform Maps"
-
-    def __str__(self):
-        if self.source_model and self.target_model:
-            return f"{self.source_model} - {self.target_model}"
-        else:
-            return "Transform Map"
-
-    def get_absolute_url(self):
-        return reverse("plugins:forward_netbox:forwardtransformmap", args=[self.pk])
-
-    @property
-    def docs_url(self):
-        # TODO: Add docs url
-        return ""
-
-    def clean(self):
-        cleaned_data = super().clean()
-        qs = ForwardTransformMap.objects.filter(
-            group=self.group,
-            target_model_id=self.target_model_id,
-        )
-        if self.pk:
-            qs = qs.exclude(pk=self.pk)
-        if qs.exists():
-            err_msg = _(
-                "A transform map with this group and target model already exists."
-            )
-            raise ValidationError(
-                {
-                    "group": err_msg,
-                    "target_model": err_msg,
-                }
-            )
-        return cleaned_data
-
-    @functools.cache
-    def get_models(self):
-        _context = dict()
-
-        for app, app_models in apps.all_models.items():
-            _context.setdefault(app, {})
-            for model in app_models:
-                if isinstance(model, str):
-                    model = apps.get_registered_model(app, model)
-                if not supports_branching(model):
-                    continue
-                _context[app][model.__name__] = model
-        _context["contenttypes"] = {}
-        _context["contenttypes"]["ContentType"] = ContentType
-        return _context
-
-    def build_relationships(self, source_data):
-        relationship_maps = self.relationship_maps.all()
-        rel_dict = {}
-        rel_dict_coalesce = {}
-
-        for field in relationship_maps:
-            if not field.template:
-                continue
-            context = {
-                "object": source_data,
-            }
-            context.update(self.get_models())
-            text = render_jinja2(field.template, context).strip()
-            if text:
-                try:
-                    pk = int(text)
-                except ValueError:
-                    pk = text
-
-                if isinstance(pk, int):
-                    related_object = field.source_model.model_class().objects.get(pk=pk)
-                else:
-                    related_object = ast.literal_eval(pk)
-
-                if not field.coalesce:
-                    rel_dict[field.target_field] = related_object
-                else:
-                    if related_object is None:
-                        # We are searching by this field, so we need to set it to None
-                        rel_dict_coalesce[field.target_field + "__isnull"] = True
-                    else:
-                        rel_dict_coalesce[field.target_field] = related_object
-        return rel_dict, rel_dict_coalesce
-
-    def get_context(self, source_data):
-        new_data = deepcopy(source_data)
-        relationship, coalesce_relationship = self.build_relationships(
-            source_data=source_data
-        )
-        if relationship:
-            new_data["relationship"] = relationship
-        if coalesce_relationship:
-            new_data["relationship_coalesce"] = coalesce_relationship
-        context = self.render(new_data)
-        return context
-
-    def update_or_create_instance(self, context, tags=[], connection_name=None):
-        target_class = self.target_model.model_class()
-        queryset = target_class.objects.using(connection_name)
-
-        # Don't change context since it's used in case of exception for ForwardIngestionIssue
-        context = deepcopy(context)
-        defaults = context.pop("defaults", {})
-
-        with transaction.atomic(using=connection_name):
-            try:
-                # For correct ObjectChange on UPDATE we need to create snapshot
-                # NetBox does this in UI using views, we need to do it manually
-                # See NetBox docs Customization -> Custom Scripts -> Change Logging
-                instance = queryset.get(**context)
-                instance.snapshot()
-                changed = False
-                for attr, value in defaults.items():
-                    # Only run data validation and save if something has changed
-                    if getattr(instance, attr) == value:
-                        continue
-                    changed = True
-                    setattr(instance, attr, value)
-                if changed:
-                    instance.full_clean()
-                    instance.save(using=connection_name)
-            except target_class.DoesNotExist:
-                for field in list(context.keys()):
-                    # When assigning we need to replace `field__isnull=True` with `field=None`
-                    if field.endswith("__isnull"):
-                        context[field[:-8]] = None
-                        del context[field]
-                instance = queryset.create(**context, **defaults)
-                instance.full_clean()
-
-            apply_tags(instance, tags, connection_name)
-
-        return instance
-
-    def render(self, source_data):
-        data = {"defaults": {}}
-        for field in self.field_maps.all():
-            if field.template:
-                context = {
-                    "object": source_data,
-                    field.source_field: source_data[field.source_field],
-                }
-                context.update(self.get_models())
-                text = render_jinja2(field.template, context).strip()
-            else:
-                text = source_data[field.source_field]
-
-            if text is not None:
-                if isinstance(text, str):
-                    if text.lower() in ["true"]:
-                        text = True
-                    elif text.lower() in ["false"]:
-                        text = False
-                    elif text.lower() in ["none"]:
-                        text = None
-
-                    if text:
-                        target_field = getattr(
-                            self.target_model.model_class(), field.target_field
-                        )
-                        target_field_type = target_field.field.get_internal_type()
-                        if "integer" in target_field_type.lower():
-                            text = int(text)
-
-            if not field.coalesce:
-                data["defaults"][field.target_field] = text
-            else:
-                if text is None:
-                    data[field.target_field + "__isnull"] = True
-                else:
-                    data[field.target_field] = text
-
-        if relationship := source_data.get("relationship"):
-            data["defaults"].update(relationship)
-
-        if relationship_coalesce := source_data.get("relationship_coalesce"):
-            data.update(relationship_coalesce)
-
-        return data
-
-
-class ForwardRelationshipField(models.Model):
-    transform_map = models.ForeignKey(
-        to=ForwardTransformMap,
-        on_delete=models.CASCADE,
-        related_name="relationship_maps",
-        editable=True,
-    )
-    source_model = models.ForeignKey(
-        ContentType,
-        related_name="forward_transform_fields",
-        limit_choices_to=ForwardRelationshipFieldSourceModels,
-        verbose_name="Source Model",
-        on_delete=models.PROTECT,
-        blank=False,
-        null=False,
-    )
-    target_field = models.CharField(max_length=100)
-    coalesce = models.BooleanField(default=False)
-    template = models.TextField(
-        help_text=_(
-            "Jinja2 template code, return an integer to create a relationship between the source and target model. True, False and None are also supported."
-        ),
-        blank=True,
-        default="",
-    )
-
-    objects = RestrictedQuerySet.as_manager()
-
-    class Meta:
-        ordering = ("transform_map",)
-        verbose_name = "Forward Relationship Field"
-        verbose_name_plural = "Forward Relationship Fields"
-
-    @property
-    def docs_url(self):
-        # TODO: Add docs url
-        return ""
-
-
-class ForwardTransformField(models.Model):
-    transform_map = models.ForeignKey(
-        to=ForwardTransformMap,
-        on_delete=models.CASCADE,
-        related_name="field_maps",
-        editable=True,
-    )
-    source_field = models.CharField(max_length=100)
-    target_field = models.CharField(max_length=100)
-    coalesce = models.BooleanField(default=False)
-
-    objects = RestrictedQuerySet.as_manager()
-
-    template = models.TextField(
-        help_text=_("Jinja2 template code to be rendered into the target field."),
-        blank=True,
-        default="",
-    )
-
-    class Meta:
-        ordering = ("transform_map",)
-        verbose_name = "Forward Transform Field"
-        verbose_name_plural = "Forward Transform Fields"
-
-    @property
-    def docs_url(self):
-        # TODO: Add docs url
-        return ""
-
-
 class ForwardClient:
     def get_client(self, parameters):
         try:
@@ -404,6 +80,7 @@ class ForwardClient:
                 token=parameters.get("auth"),
                 verify=parameters.get("verify", True),
                 timeout=parameters.get("timeout"),
+                network_id=parameters.get("network_id"),
             )
         except httpx.ConnectError as e:
             if "CERTIFICATE_VERIFY_FAILED" in str(e):
@@ -447,6 +124,13 @@ class ForwardSource(ForwardClient, JobsMixin, PrimaryModel):
         default=ForwardSourceTypeChoices.LOCAL,
     )
     url = models.CharField(max_length=200, verbose_name=_("URL"))
+    network_id = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True,
+        verbose_name=_("Network ID"),
+        help_text=_("Optional Forward Networks network identifier used for API scoping."),
+    )
     status = models.CharField(
         max_length=50,
         choices=DataSourceStatusChoices,
@@ -458,8 +142,8 @@ class ForwardSource(ForwardClient, JobsMixin, PrimaryModel):
 
     class Meta:
         ordering = ("name",)
-        verbose_name = "Forward Source"
-        verbose_name_plural = "Forward Sources"
+        verbose_name = "Forward Networks Source"
+        verbose_name_plural = "Forward Networks Sources"
 
     def __str__(self):
         return f"{self.name}"
@@ -483,6 +167,8 @@ class ForwardSource(ForwardClient, JobsMixin, PrimaryModel):
         super().clean()
 
         self.url = self.url.rstrip("/")
+        if self.network_id:
+            self.network_id = self.network_id.strip()
 
     def enqueue_sync_job(self, request):
         # Set the status to "syncing"
@@ -515,8 +201,11 @@ class ForwardSource(ForwardClient, JobsMixin, PrimaryModel):
             self.logger.log_info(f"Syncing snapshots from {self.name}", obj=self)
             logger.debug(f"Syncing snapshots from {self.url}")
 
-            self.parameters["base_url"] = self.url
-            client = self.get_client(parameters=self.parameters)
+            client_parameters = dict(self.parameters or {})
+            client_parameters["base_url"] = self.url
+            if self.network_id:
+                client_parameters["network_id"] = self.network_id
+            client = self.get_client(parameters=client_parameters)
 
             snapshots = client.list_snapshots()
             for snapshot in snapshots:
@@ -594,8 +283,8 @@ class ForwardSnapshot(TagsMixin, ChangeLoggedModel):
 
     class Meta:
         ordering = ("source", "-date")
-        verbose_name = "Forward Snapshot"
-        verbose_name_plural = "Forward Snapshots"
+        verbose_name = "Forward Networks Snapshot"
+        verbose_name_plural = "Forward Networks Snapshots"
 
     def __str__(self):
         return f"{self.name} - {self.snapshot_id}"
@@ -653,7 +342,8 @@ class ForwardSync(ForwardClient, JobsMixin, TagsMixin, ChangeLoggedModel):
 
     class Meta:
         ordering = ["pk"]
-        verbose_name = "Forward Sync"
+        verbose_name = "Forward Networks Sync"
+        verbose_name_plural = "Forward Networks Syncs"
 
     def __str__(self):
         return f"{self.name}"
@@ -694,24 +384,17 @@ class ForwardSync(ForwardClient, JobsMixin, TagsMixin, ChangeLoggedModel):
     def last_ingestion(self):
         return self.forwardingestion_set.last()
 
-    @staticmethod
-    def get_transform_maps(group_ids=None):
-        """
-        Returns a queryset of ForwardTransformMap objects that would be used by this sync,
-        following group and default precedence logic.
-        """
-        default_maps = ForwardTransformMap.objects.filter(group__isnull=True)
-        group_ids = group_ids or []
-        maps_by_target = {tm.target_model_id: tm for tm in default_maps}
-        # Replace default maps with the ones from the groups, in given order.
-        if group_ids:
-            for group_id in group_ids:
-                group_maps = ForwardTransformMap.objects.filter(group_id=group_id)
-                for tm in group_maps:
-                    maps_by_target[tm.target_model_id] = tm
-        return ForwardTransformMap.objects.filter(
-            pk__in=[tm.pk for tm in maps_by_target.values()]
-        )
+    def get_nqe_map(self) -> dict[str, dict[str, object]]:
+        """Return the effective NQE query mapping for this sync."""
+
+        base_map = deepcopy(get_default_nqe_map())
+        overrides = (self.parameters or {}).get("nqe_map", {})
+        for model_key, meta in overrides.items():
+            if model_key not in base_map:
+                base_map[model_key] = {}
+            if meta:
+                base_map[model_key].update(meta)
+        return base_map
 
     def enqueue_sync_job(self, adhoc=False, user=None):
         # Set the status to "syncing"
@@ -756,22 +439,6 @@ class ForwardSync(ForwardClient, JobsMixin, TagsMixin, ChangeLoggedModel):
             self.logger = SyncLogging(job=self.pk)
             user = None
 
-        maps = self.get_transform_maps(self.parameters.get("groups", []))
-        missing = []
-        for app_label, model in required_transform_map_contenttypes:
-            if not maps.filter(
-                target_model=ContentType.objects.get(app_label=app_label, model=model)
-            ):
-                missing.append(f"{app_label}.{model}")
-        if missing:
-            self.logger.log_failure(
-                f"Combination of these transform map groups failed validation. Missing maps: {missing}.",
-                obj=self,
-            )
-            raise SyncError(
-                f"Combination of these transform map groups failed validation. Missing maps: {missing}."
-            )
-
         if self.status == DataSourceStatusChoices.SYNCING:
             raise SyncError("Cannot initiate sync; ingestion already in progress.")
 
@@ -797,7 +464,7 @@ class ForwardSync(ForwardClient, JobsMixin, TagsMixin, ChangeLoggedModel):
         ingestion = ForwardIngestion.objects.create(sync=self, job=job)
         client = None
         try:
-            branch = Branch(name=f"Forward Sync {current_time}")
+            branch = Branch(name=f"Forward Networks Sync {current_time}")
             branch.save(provision=False)
             ingestion.branch = branch
             ingestion.save()
@@ -817,16 +484,18 @@ class ForwardSync(ForwardClient, JobsMixin, TagsMixin, ChangeLoggedModel):
             self.logger.log_info(f"New branch Created {branch.name}", obj=branch)
             logger.info(f"New branch Created {branch.name}")
 
-            self.logger.log_info("Fetching Forward Client", obj=branch)
-            logger.info("Fetching Forward Client")
+            self.logger.log_info("Fetching Forward Networks Client", obj=branch)
+            logger.info("Fetching Forward Networks Client")
 
             if self.snapshot_data.source.type == ForwardSourceTypeChoices.LOCAL:
-                client = self.get_client(
-                    parameters=self.snapshot_data.source.parameters
-                )
+                source_params = dict(self.snapshot_data.source.parameters or {})
+                source_params.setdefault("base_url", self.snapshot_data.source.url)
+                if self.snapshot_data.source.network_id:
+                    source_params["network_id"] = self.snapshot_data.source.network_id
+                client = self.get_client(parameters=source_params)
                 if not client:
-                    logger.debug("Unable to connect to Forward.")
-                    raise SyncError("Unable to connect to Forward.")
+                    logger.debug("Unable to connect to Forward Networks.")
+                    raise SyncError("Unable to connect to Forward Networks.")
             else:
                 client = None
 
@@ -899,7 +568,7 @@ class ForwardSync(ForwardClient, JobsMixin, TagsMixin, ChangeLoggedModel):
 
 class ForwardIngestion(JobsMixin, models.Model):
     """
-    Links Forward Sync to its Branches.
+    Links Forward Networks Sync to its Branches.
     """
 
     objects = RestrictedQuerySet.as_manager()
@@ -910,8 +579,8 @@ class ForwardIngestion(JobsMixin, models.Model):
 
     class Meta:
         ordering = ("pk",)
-        verbose_name = "Forward Ingestion"
-        verbose_name_plural = "Forward Ingestions"
+        verbose_name = "Forward Networks Ingestion"
+        verbose_name_plural = "Forward Networks Ingestions"
 
     def __str__(self):
         return self.name
@@ -1019,8 +688,8 @@ class ForwardIngestionIssue(models.Model):
 
     class Meta:
         ordering = ["timestamp"]
-        verbose_name = "Forward Ingestion Issue"
-        verbose_name_plural = "Forward Ingestion Issues"
+        verbose_name = "Forward Networks Ingestion Issue"
+        verbose_name_plural = "Forward Networks Ingestion Issues"
 
     def __str__(self):
         return f"[{self.timestamp}] {self.message}"

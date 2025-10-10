@@ -3,7 +3,6 @@ import copy
 from core.choices import DataSourceStatusChoices
 from core.choices import JobIntervalChoices
 from django import forms
-from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
@@ -11,7 +10,6 @@ from netbox.forms import NetBoxModelFilterSetForm
 from netbox.forms import NetBoxModelForm
 from netbox.forms.mixins import SavedFiltersMixin
 from utilities.datetime import local_now
-from utilities.forms import add_blank_choice
 from utilities.forms import ConfirmationForm
 from utilities.forms import FilterForm
 from utilities.forms import get_field_value
@@ -25,73 +23,33 @@ from utilities.forms.widgets import HTMXSelect
 from utilities.forms.widgets import NumberWithOptions
 
 from .choices import ForwardSnapshotStatusModelChoices
-from .choices import required_transform_map_contenttypes
-from .choices import transform_field_source_columns
 from .models import ForwardIngestion
-from .models import ForwardRelationshipField
 from .models import ForwardSnapshot
 from .models import ForwardSource
 from .models import ForwardSync
-from .models import ForwardTransformField
-from .models import ForwardTransformMap
-from .models import ForwardTransformMapGroup
+from .utilities.nqe_map import get_default_nqe_map
 
-
-exclude_fields = [
-    "id",
-    "created",
-    "last_updated",
-    "custom_field_data",
-    "_name",
-    "status",
-]
 
 dcim_parameters = {
-    "site": forms.BooleanField(required=False, label=_("Sites"), initial=True),
     "manufacturer": forms.BooleanField(
         required=False, label=_("Manufacturers"), initial=True
-    ),
-    "devicetype": forms.BooleanField(
-        required=False, label=_("Device Types"), initial=True
     ),
     "devicerole": forms.BooleanField(
         required=False, label=_("Device Roles"), initial=True
     ),
-    "platform": forms.BooleanField(required=False, label=_("Platforms"), initial=True),
-    "device": forms.BooleanField(required=False, label=_("Devices"), initial=True),
-    "virtualchassis": forms.BooleanField(
-        required=False, label=_("Virtual Chassis"), initial=True
+    "devicetype": forms.BooleanField(
+        required=False, label=_("Device Types"), initial=True
     ),
+    "device": forms.BooleanField(required=False, label=_("Devices"), initial=True),
     "interface": forms.BooleanField(
         required=False, label=_("Interfaces"), initial=True
     ),
-    "macaddress": forms.BooleanField(
-        required=False, label=_("MAC Addresses"), initial=True
-    ),
-    "inventoryitem": forms.BooleanField(
-        required=False, label=_("Part Numbers"), initial=True
+    "location": forms.BooleanField(
+        required=False, label=_("Locations"), initial=True
     ),
 }
-ipam_parameters = {
-    "vlan": forms.BooleanField(required=False, label=_("VLANs"), initial=True),
-    "vrf": forms.BooleanField(required=False, label=_("VRFs"), initial=True),
-    "prefix": forms.BooleanField(required=False, label=_("Prefixes"), initial=True),
-    "ipaddress": forms.BooleanField(
-        required=False, label=_("IP Addresses"), initial=True
-    ),
-}
+ipam_parameters = {}
 sync_parameters = {"dcim": dcim_parameters, "ipam": ipam_parameters}
-
-
-def source_column_choices(model: str) -> list[tuple[str, str]]:
-    columns = transform_field_source_columns.get(model, None)
-    if columns:
-        choices = [(f, f) for f in transform_field_source_columns.get(model)]
-    else:
-        # This should never happen, but better be safe than sorry
-        choices = []  # pragma: no cover
-    return choices
-
 
 def str_to_list(_str: str | list) -> list[str]:
     if not isinstance(_str, list):
@@ -105,201 +63,6 @@ def list_to_choices(choices: list[str]) -> tuple[tuple[str, str], ...]:
     for choice in choices:
         new_choices = new_choices + ((choice, choice),)
     return new_choices
-
-
-class ForwardRelationshipFieldForm(NetBoxModelForm):
-    coalesce = forms.BooleanField(required=False, initial=False)
-    target_field = forms.CharField(
-        label="Target Field",
-        required=True,
-        help_text="Select target model field.",
-        widget=forms.Select(),
-    )
-
-    fieldsets = (
-        FieldSet(
-            "transform_map",
-            "source_model",
-            "target_field",
-            "coalesce",
-            name=_("Transform Map"),
-        ),
-        FieldSet("template", name=_("Extras")),
-    )
-
-    class Meta:
-        model = ForwardRelationshipField
-        fields = (
-            "transform_map",
-            "source_model",
-            "target_field",
-            "coalesce",
-            "template",
-        )
-        widgets = {
-            "transform_map": HTMXSelect(),
-        }
-        help_texts = {
-            "link_text": _(
-                "Jinja2 template code for the source field. Reference the object as <code>{{ object }}</code>. "
-                "templates which render as empty text will not be displayed."
-            ),
-        }
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        if not self.data:
-            if self.instance and self.instance.pk is not None:
-                fields = (
-                    self.instance.transform_map.target_model.model_class()._meta.fields
-                )
-                self.fields["target_field"].widget.choices = add_blank_choice(
-                    [
-                        (f.name, f.verbose_name)
-                        for f in fields
-                        if f.is_relation and f.name not in exclude_fields
-                    ]
-                )
-                self.fields["target_field"].widget.initial = self.instance.target_field
-            else:
-                if kwargs.get("initial", {}).get("transform_map", None):
-                    transform_map_id = kwargs["initial"]["transform_map"]
-                    transform_map = ForwardTransformMap.objects.get(
-                        pk=transform_map_id
-                    )
-                    fields = transform_map.target_model.model_class()._meta.fields
-                    choices = [
-                        (f.name, f.verbose_name)
-                        for f in fields
-                        if f.is_relation and f.name not in exclude_fields
-                    ]
-                    self.fields["target_field"].widget.choices = add_blank_choice(
-                        choices
-                    )
-
-
-class ForwardTransformFieldForm(NetBoxModelForm):
-    coalesce = forms.BooleanField(required=False, initial=False)
-    source_field = forms.CharField(
-        label="Source Field",
-        required=True,
-        help_text="Select column from Forward.",
-        widget=forms.Select(),
-    )
-    target_field = forms.CharField(
-        label="Target Field",
-        required=True,
-        help_text="Select target model field.",
-        widget=forms.Select(),
-    )
-
-    fieldsets = (
-        FieldSet(
-            "transform_map",
-            "source_field",
-            "target_field",
-            "coalesce",
-            name=_("Transform Map"),
-        ),
-        FieldSet("template", name=_("Extras")),
-    )
-
-    class Meta:
-        model = ForwardTransformField
-        fields = (
-            "transform_map",
-            "source_field",
-            "target_field",
-            "coalesce",
-            "template",
-        )
-        widgets = {
-            "template": forms.Textarea(attrs={"class": "font-monospace"}),
-            "transform_map": HTMXSelect(),
-        }
-        help_texts = {
-            "link_text": _(
-                "Jinja2 template code for the source field. Reference the object as <code>{{ object }}</code>. "
-                "templates which render as empty text will not be displayed."
-            ),
-        }
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        if not self.data:
-            if self.instance and self.instance.pk is not None:
-                fields = (
-                    self.instance.transform_map.target_model.model_class()._meta.fields
-                )
-                source_fields = self.instance.transform_map.source_model
-                self.fields["target_field"].widget.choices = add_blank_choice(
-                    [
-                        (f.name, f.verbose_name)
-                        for f in fields
-                        if not f.is_relation and f.name not in exclude_fields
-                    ]
-                )
-                self.fields["target_field"].widget.initial = self.instance.target_field
-                self.fields["source_field"].widget.choices = add_blank_choice(
-                    source_column_choices(source_fields)
-                )
-            else:
-                if kwargs.get("initial", {}).get("transform_map", None):
-                    transform_map_id = kwargs["initial"]["transform_map"]
-                    transform_map = ForwardTransformMap.objects.get(
-                        pk=transform_map_id
-                    )
-                    fields = transform_map.target_model.model_class()._meta.fields
-                    choices = [
-                        (f.name, f.verbose_name)
-                        for f in fields
-                        if not f.is_relation and f.name not in exclude_fields
-                    ]
-                    self.fields["target_field"].widget.choices = add_blank_choice(
-                        choices
-                    )
-                    self.fields["source_field"].widget.choices = add_blank_choice(
-                        source_column_choices(transform_map.source_model)
-                    )
-
-
-class ForwardTransformMapGroupForm(NetBoxModelForm):
-    class Meta:
-        model = ForwardTransformMapGroup
-        fields = ("name", "description")
-
-
-class ForwardTransformMapForm(NetBoxModelForm):
-    class Meta:
-        model = ForwardTransformMap
-        fields = ("name", "group", "source_model", "target_model")
-        widgets = {
-            "target_model": HTMXSelect(hx_url="/plugins/forward/transform-map/add"),
-        }
-
-
-class ForwardTransformMapCloneForm(forms.Form):
-    name = forms.CharField(
-        required=True, label="Name", help_text="Name for the cloned transform map."
-    )
-    group = forms.ModelChoiceField(
-        queryset=ForwardTransformMapGroup.objects.all(),
-        required=False,
-        label="Target Group",
-        help_text="Select the group to assign the cloned transform map to.",
-    )
-    clone_fields = forms.BooleanField(
-        required=False,
-        initial=True,
-        label="Clone Child Fields",
-        help_text="Clone all child fields of this transform map.",
-    )
-    clone_relationships = forms.BooleanField(
-        required=False,
-        initial=True,
-        label="Clone Child Relationships",
-        help_text="Clone all child relationships of this transform map.",
-    )
 
 
 class ForwardSnapshotFilterForm(NetBoxModelFilterSetForm):
@@ -320,9 +83,10 @@ class ForwardSourceFilterForm(NetBoxModelFilterSetForm):
     model = ForwardSource
     fieldsets = (
         FieldSet("q", "filter_id"),
-        FieldSet("status", name=_("Source")),
+        FieldSet("status", "network_id", name=_("Source")),
     )
     status = forms.MultipleChoiceField(choices=DataSourceStatusChoices, required=False)
+    network_id = forms.CharField(required=False, label=_("Network ID"))
 
 
 class ForwardIngestionFilterForm(SavedFiltersMixin, FilterForm):
@@ -354,6 +118,7 @@ class ForwardSourceForm(NetBoxModelForm):
             "name",
             "type",
             "url",
+            "network_id",
             "description",
             "comments",
         ]
@@ -367,7 +132,9 @@ class ForwardSourceForm(NetBoxModelForm):
 
         # Set fieldsets dynamically based on source_type
         self.fieldsets: list[FieldSet] = []
-        self.fieldsets.append(FieldSet("name", "type", "url", name=_("Source")))
+        self.fieldsets.append(
+            FieldSet("name", "type", "url", "network_id", name=_("Source"))
+        )
         if self.source_type == "local":
             self.fieldsets.append(
                 FieldSet("auth", "verify", "timeout", name=_("Parameters"))
@@ -396,7 +163,7 @@ class ForwardSourceForm(NetBoxModelForm):
                 required=True,
                 label=_("API Token"),
                 widget=forms.TextInput(attrs={"class": "form-control"}),
-                help_text=_("Forward API Token."),
+                help_text=_("Forward Networks API Token."),
             )
             self.fields["verify"] = forms.BooleanField(
                 required=False,
@@ -420,6 +187,7 @@ class ForwardSourceForm(NetBoxModelForm):
                 parameters["timeout"] = self.cleaned_data[name]
 
         self.instance.parameters = parameters
+        self.instance.network_id = self.cleaned_data.get("network_id")
         self.instance.status = DataSourceStatusChoices.NEW
 
         instance = super().save(*args, **kwargs)
@@ -439,37 +207,12 @@ class ForwardSourceForm(NetBoxModelForm):
         return instance
 
 
-class OrderedModelMultipleChoiceField(forms.ModelMultipleChoiceField):
-    """A ModelMultipleChoiceField that preserves the order of the selected items."""
-
-    def clean(self, value):
-        qs = super().clean(value)
-        # Handle None or empty values
-        if not value:
-            return qs
-        clauses = " ".join(
-            ["WHEN id=%s THEN %s" % (pk, i) for i, pk in enumerate(value)]
-        )
-        return qs.filter(pk__in=value).extra(
-            select={"ordering": "CASE %s END" % clauses}, order_by=("ordering",)
-        )
-
-
 class ForwardSyncForm(NetBoxModelForm):
     source = forms.ModelChoiceField(
         queryset=ForwardSource.objects.all(),
         required=True,
-        label=_("Forward Source"),
+        label=_("Forward Networks Source"),
         widget=HTMXSelect(),
-    )
-    groups = OrderedModelMultipleChoiceField(
-        queryset=ForwardTransformMapGroup.objects.all(),
-        required=False,
-        label=_("Transform Map Groups"),
-        widget=forms.SelectMultiple(attrs={"class": "form-control"}),
-        help_text=_(
-            "Prioritize transform maps by group in entered order for each NetBox model. Default maps will be used if no group is selected for given model."
-        ),
     )
     snapshot_data = DynamicModelChoiceField(
         queryset=ForwardSnapshot.objects.filter(status="loaded"),
@@ -577,8 +320,6 @@ class ForwardSyncForm(NetBoxModelForm):
                     "source", self.instance.snapshot_data.source
                 )
             self.initial["source"] = source
-            if "groups" not in self.initial:
-                self.initial["groups"] = self.instance.parameters.get("groups", [])
 
             # Handle sites field initialization
             if "sites" not in self.initial:
@@ -622,10 +363,35 @@ class ForwardSyncForm(NetBoxModelForm):
                     value = self.instance.parameters.get(name)
                     self.fields[field_name].initial = value
 
+        default_nqe_map = get_default_nqe_map()
+        overrides_nqe = {}
+        if self.instance and self.instance.pk and self.instance.parameters:
+            overrides_nqe = self.instance.parameters.get("nqe_map", {})
+        elif kwargs.get("initial"):
+            overrides_nqe = kwargs["initial"].get("nqe_map", {})
+
+        self.nqe_field_map: dict[str, str] = {}
+        self.nqe_fields: list[str] = []
+        for model_key, meta in sorted(default_nqe_map.items()):
+            field_name = f"nqe__{model_key.replace('.', '__')}"
+            self.nqe_field_map[field_name] = model_key
+            default_query = meta.get("query_id", "")
+            initial_query = overrides_nqe.get(model_key, {}).get(
+                "query_id", default_query
+            )
+            self.fields[field_name] = forms.CharField(
+                required=True,
+                label=model_key,
+                initial=initial_query,
+                help_text=_(
+                    "Forward NQE query ID used to collect data for %(model)s."
+                )
+                % {"model": model_key},
+            )
+            self.nqe_fields.append(field_name)
+
         # Set fieldsets dynamically based and backend_fields
-        fieldsets = [
-            FieldSet("name", "source", "groups", name=_("Forward Source")),
-        ]
+        fieldsets = [FieldSet("name", "source", name=_("Forward Networks Source"))]
         # Only show snapshot and sites if source is selected
         if source:
             if isinstance(source, str) or isinstance(source, int):
@@ -640,6 +406,8 @@ class ForwardSyncForm(NetBoxModelForm):
                 )
         for k, v in self.backend_fields.items():
             fieldsets.append(FieldSet(*v, name=f"{k.upper()} Parameters"))
+        if self.nqe_fields:
+            fieldsets.append(FieldSet(*self.nqe_fields, name=_("Forward NQE Queries")))
         fieldsets.append(
             FieldSet("scheduled", "interval", name=_("Ingestion Execution Parameters"))
         )
@@ -693,35 +461,27 @@ class ForwardSyncForm(NetBoxModelForm):
         if self.cleaned_data.get("interval") and not scheduled_time:
             self.cleaned_data["scheduled"] = local_now()
 
-        maps = ForwardSync.get_transform_maps(self.cleaned_data.get("groups", []))
-        missing = []
-        for app_label, model in required_transform_map_contenttypes:
-            if not maps.filter(
-                target_model=ContentType.objects.get(app_label=app_label, model=model)
-            ):
-                missing.append(f"{app_label}.{model}")
-        if missing:
-            raise ValidationError(
-                {
-                    "groups": _(
-                        f"Combination of these transform map groups failed validation. Missing maps: {missing}."
-                    )
-                }
-            )
-
         return self.cleaned_data
 
     def save(self, *args, **kwargs):
         parameters = {}
+        nqe_map = {}
         for name in self.fields:
             if name.startswith("fwd_"):
                 parameters[name[4:]] = self.cleaned_data[name]
-            if name == "sites":
+            elif name == "sites":
                 parameters["sites"] = self.cleaned_data["sites"]
-            if name == "groups":
-                parameters["groups"] = [
-                    group.pk for group in self.cleaned_data["groups"]
-                ]
+            elif name in getattr(self, "nqe_field_map", {}):
+                model_key = self.nqe_field_map[name]
+                query_id = (self.cleaned_data.get(name) or "").strip()
+                model = model_key.split(".", maxsplit=1)[-1]
+                enabled = bool(self.cleaned_data.get(f"fwd_{model}"))
+                nqe_map[model_key] = {
+                    "query_id": query_id,
+                    "enabled": enabled,
+                }
+        if nqe_map:
+            parameters["nqe_map"] = nqe_map
         self.instance.parameters = parameters
         self.instance.status = DataSourceStatusChoices.NEW
 
@@ -1105,7 +865,7 @@ class ForwardTableForm(forms.Form):
     source = DynamicModelChoiceField(
         queryset=ForwardSource.objects.all(),
         required=False,
-        label=_("Forward Source"),
+        label=_("Forward Networks Source"),
     )
     snapshot_data = DynamicModelChoiceField(
         queryset=ForwardSnapshot.objects.filter(status="loaded"),
@@ -1115,7 +875,7 @@ class ForwardTableForm(forms.Form):
             "source_id": "$source",
             "status": "loaded",
         },
-        help_text=_("Forward snapshot to query. Defaults to $last if not specified."),
+        help_text=_("Forward Networks snapshot to query. Defaults to $last if not specified."),
     )
     table = forms.ChoiceField(choices=tableChoices, required=True)
     cache_enable = forms.ChoiceField(

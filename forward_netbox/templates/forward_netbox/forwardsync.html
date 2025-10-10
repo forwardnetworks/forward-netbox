@@ -84,16 +84,28 @@
             <tr>
               <th scope="row">{{ name }}</th>
               <td>
-                {% if name == "groups" %}
-                {{"["}}
-                  {% for group_id in object.parameters|get_key:name %}
-                    {% with group=group_id|resolve_object:"forward_netbox.ForwardTransformMapGroup" %}
-                      <a href="{% url 'plugins:forward_netbox:forwardtransformmapgroup' pk=group.pk %}">{{ group }}</a>{% if not forloop.last %}, {% endif %}
-                    {% endwith %}
-                  {% empty %}
-                    <span class="text-muted">No groups assigned</span>
-                  {% endfor %}
-                {{"]"}}
+                {% if name == "nqe_map" %}
+                  {% with map=object.parameters|get_key:name %}
+                    {% if map %}
+                      <ul class="list-unstyled mb-0">
+                        {% for model, meta in map.items %}
+                          <li>
+                            <strong>{{ model }}</strong>:
+                            {% if meta.query_id %}
+                              {{ meta.query_id }}
+                            {% else %}
+                              <span class="text-muted">Not configured</span>
+                            {% endif %}
+                            {% if meta.enabled is not None and not meta.enabled %}
+                              <span class="badge bg-secondary ms-1">Disabled</span>
+                            {% endif %}
+                          </li>
+                        {% endfor %}
+                      </ul>
+                    {% else %}
+                      <span class="text-muted">No NQE mapping configured</span>
+                    {% endif %}
+                  {% endwith %}
                 {% else %}
                   {{ object.parameters|get_key:name|placeholder }}
                 {% endif %}

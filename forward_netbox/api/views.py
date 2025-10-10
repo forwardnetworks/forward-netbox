@@ -7,49 +7,17 @@ from utilities.query import count_related
 
 from .serializers import ForwardIngestionIssueSerializer
 from .serializers import ForwardIngestionSerializer
-from .serializers import ForwardRelationshipFieldSerializer
 from .serializers import ForwardSnapshotSerializer
 from .serializers import ForwardSourceSerializer
 from .serializers import ForwardSyncSerializer
-from .serializers import ForwardTransformFieldSerializer
-from .serializers import ForwardTransformMapGroupSerializer
-from .serializers import ForwardTransformMapSerializer
-from forward_netbox.filtersets import ForwardRelationshipFieldFilterSet
 from forward_netbox.filtersets import ForwardSnapshotFilterSet
 from forward_netbox.filtersets import ForwardSourceFilterSet
-from forward_netbox.filtersets import ForwardTransformFieldFilterSet
 from forward_netbox.models import ForwardData
 from forward_netbox.models import ForwardIngestion
 from forward_netbox.models import ForwardIngestionIssue
-from forward_netbox.models import ForwardRelationshipField
 from forward_netbox.models import ForwardSnapshot
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
-from forward_netbox.models import ForwardTransformField
-from forward_netbox.models import ForwardTransformMap
-from forward_netbox.models import ForwardTransformMapGroup
-
-
-class ForwardTransformMapGroupViewSet(NetBoxModelViewSet):
-    queryset = ForwardTransformMapGroup.objects.all()
-    serializer_class = ForwardTransformMapGroupSerializer
-
-
-class ForwardTransformMapViewSet(NetBoxModelViewSet):
-    queryset = ForwardTransformMap.objects.all()
-    serializer_class = ForwardTransformMapSerializer
-
-
-class ForwardTransformFieldViewSet(NetBoxModelViewSet):
-    queryset = ForwardTransformField.objects.all()
-    serializer_class = ForwardTransformFieldSerializer
-    filterset_class = ForwardTransformFieldFilterSet
-
-
-class ForwardRelationshipFieldViewSet(NetBoxModelViewSet):
-    queryset = ForwardRelationshipField.objects.all()
-    serializer_class = ForwardRelationshipFieldSerializer
-    filterset_class = ForwardRelationshipFieldFilterSet
 
 
 class ForwardSyncViewSet(NetBoxModelViewSet):

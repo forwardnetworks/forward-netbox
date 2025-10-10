@@ -35,19 +35,3 @@ def clear_other_primary_ip(instance: Device, **kwargs) -> None:
     except Device.DoesNotExist:
         pass
 
-
-def remove_group_from_syncs(instance, **kwargs):
-    """
-    When a ForwardTransformMapGroup is deleted, remove its ID from any ForwardSync.parameters['groups'] list.
-    """
-    from forward_netbox.models import ForwardSync
-
-    group_id = instance.pk
-    for sync in ForwardSync.objects.all():
-        params = sync.parameters or {}
-        groups = params.get("groups", [])
-        if group_id not in groups:
-            continue
-        params["groups"] = [gid for gid in groups if gid != group_id]
-        sync.parameters = params
-        sync.save()

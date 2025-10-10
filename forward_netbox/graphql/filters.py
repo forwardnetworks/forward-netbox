@@ -25,14 +25,9 @@ from forward_netbox.graphql.enums import DataSourceStatusEnum
 from forward_netbox.graphql.enums import ForwardRawDataTypeEnum
 from forward_netbox.graphql.enums import ForwardSnapshotStatusModelEnum
 from forward_netbox.graphql.enums import ForwardSourceTypeEnum
-from forward_netbox.graphql.enums import ForwardTransformMapSourceModelEnum
 from forward_netbox.graphql.enums import JobStatusEnum
 
 __all__ = (
-    "ForwardTransformMapGroupFilter",
-    "ForwardTransformMapFilter",
-    "ForwardTransformFieldFilter",
-    "ForwardRelationshipFieldFilter",
     "ForwardSourceFilter",
     "ForwardSnapshotFilter",
     "ForwardSyncFilter",
@@ -42,76 +37,6 @@ __all__ = (
     "BranchFilter",
     "JobFilter",
 )
-
-
-@strawberry_django.filter(models.ForwardTransformMapGroup, lookups=True)
-class ForwardTransformMapGroupFilter(NetBoxModelFilterMixin):
-    id: ID | None = strawberry_django.filter_field()
-    name: FilterLookup[str] | None = strawberry_django.filter_field()
-    description: FilterLookup[str] | None = strawberry_django.filter_field()
-
-
-@strawberry_django.filter(models.ForwardTransformMap, lookups=True)
-class ForwardTransformMapFilter(NetBoxModelFilterMixin):
-    id: ID | None = strawberry_django.filter_field()
-    name: FilterLookup[str] | None = strawberry_django.filter_field()
-    source_model: (
-        Annotated[
-            "ForwardTransformMapSourceModelEnum",
-            strawberry.lazy("forward_netbox.graphql.enums"),
-        ]
-        | None
-    ) = strawberry_django.filter_field()
-    target_model: (
-        Annotated["ContentTypeFilter", strawberry.lazy("core.graphql.filters")] | None
-    ) = strawberry_django.filter_field()
-    group: (
-        Annotated[
-            "ForwardTransformMapGroupFilter",
-            strawberry.lazy("forward_netbox.graphql.filters"),
-        ]
-        | None
-    ) = strawberry_django.filter_field()
-
-
-@strawberry_django.filter(models.ForwardTransformField, lookups=True)
-class ForwardTransformFieldFilter(BaseFilterMixin):
-    id: ID | None = strawberry_django.filter_field()
-    transform_map: (
-        Annotated[
-            "ForwardTransformMapFilter",
-            strawberry.lazy("forward_netbox.graphql.filters"),
-        ]
-        | None
-    ) = strawberry_django.filter_field()
-    source_field: FilterLookup[str] | None = strawberry_django.filter_field()
-    target_field: FilterLookup[str] | None = strawberry_django.filter_field()
-    coalesce: (
-        Annotated["IntegerLookup", strawberry.lazy("netbox.graphql.filter_lookups")]
-        | None
-    ) = strawberry_django.filter_field()
-    template: FilterLookup[str] | None = strawberry_django.filter_field()
-
-
-@strawberry_django.filter(models.ForwardRelationshipField, lookups=True)
-class ForwardRelationshipFieldFilter(BaseFilterMixin):
-    id: ID | None = strawberry_django.filter_field()
-    transform_map: (
-        Annotated[
-            "ForwardTransformMapFilter",
-            strawberry.lazy("forward_netbox.graphql.filters"),
-        ]
-        | None
-    ) = strawberry_django.filter_field()
-    source_model: (
-        Annotated["ContentTypeFilter", strawberry.lazy("core.graphql.filters")] | None
-    ) = strawberry_django.filter_field()
-    target_field: FilterLookup[str] | None = strawberry_django.filter_field()
-    coalesce: (
-        Annotated["IntegerLookup", strawberry.lazy("netbox.graphql.filter_lookups")]
-        | None
-    ) = strawberry_django.filter_field()
-    template: FilterLookup[str] | None = strawberry_django.filter_field()
 
 
 @strawberry_django.filter(models.ForwardSource, lookups=True)

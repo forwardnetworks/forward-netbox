@@ -1,5 +1,5 @@
 ---
-description: Frequently asked questions about the Forward NetBox Plugin.
+description: Frequently asked questions about the Forward Networks NetBox Plugin.
 ---
 
 # FAQ
@@ -22,7 +22,7 @@ If you get the error message `CERTIFICATE_VERIFY_FAILED`, it is due to the certi
 
 ### VLAN Name Too Long
 
-If you encounter the error message `value too long for the type character varying(64)`, it means that the string you are using is longer than the maximum value allowed by NetBox. This can occur when the `vlanName` contains more than 64 characters. The error message will display the name of the transform map. You can edit it and restrict the input to the necessary number of characters using `{{ object.vlanName[:64] }}`.
+If you encounter the error message `value too long for the type character varying(64)`, it means that the string you are using is longer than the maximum value allowed by NetBox. This can occur when the `vlanName` contains more than 64 characters. The error will reference the NQE mapping entry that produced the value. You can edit the corresponding NQE query so that it truncates the value (for example `{{ object.vlanName[:64] }}`) before it is sent to NetBox.
 
 
 <!-- vale off -->

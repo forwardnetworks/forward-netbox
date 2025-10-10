@@ -1,6 +1,6 @@
-# Contributing to Forward Netbox
+# Contributing to Forward Networks Netbox
 
-Thank you for considering contributing to the Forward Netbox Plugin! 🎉
+Thank you for considering contributing to the Forward Networks Netbox Plugin! 🎉
 We welcome contributions from the community and appreciate your help to make
 this project better.
 
@@ -38,8 +38,8 @@ If you find a bug, inconsistency, or have a question, please file an issue.
 2. Search for existing issues to avoid duplication.
 3. If no similar issue exists, create a new issue using the provided template.
 
-> Forward uses an internal ticket tracking system which we also track issues
-> and feature requests. If you're an Forward customer, you can also report
+> Forward Networks uses an internal ticket tracking system which we also track issues
+> and feature requests. If you're an Forward Networks customer, you can also report
 > issues through [support.forwardnetworks.com](https://support.forwardnetworks.com).
 
 ### Guidelines for Reporting Bugs:

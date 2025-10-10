@@ -18,7 +18,7 @@ This plugin relies heavily on a feature from NetBox Branching plugin known as **
 
 ## Ingestions: A Conceptual Overview
 
-In the context of this plugin, we use the concept of **ingestions**. Their purpose is to create a new Branch and populate it with data from Forward. A Branch in this context represents a segregated workspace within NetBox where changes are isolated from the live database until explicitly merged.
+In the context of this plugin, we use the concept of **ingestions**. Their purpose is to create a new Branch and populate it with data from Forward Networks. A Branch in this context represents a segregated workspace within NetBox where changes are isolated from the live database until explicitly merged.
 
 ## Key Functions of Ingestions
 
@@ -100,7 +100,7 @@ Here are a couple of examples illustrating the **`Diff`** section:
 
    ![Changes Update Diff](../images/user_guide/branch_changes_update_diff.png)
 
-   Here, updating an object involves altering the hostname through a transform map. The diff section reflects the changes that will be applied to the object.
+Here, updating an object involves altering the hostname using the data returned by the configured NQE query. The diff section reflects the changes that will be applied to the object.
 
    Additionally, custom fields are updated for the device model to track the last sync time for a device.
 

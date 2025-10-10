@@ -9,13 +9,9 @@ from netbox_branching.models import ChangeDiff
 from .models import ForwardData
 from .models import ForwardIngestion
 from .models import ForwardIngestionIssue
-from .models import ForwardRelationshipField
 from .models import ForwardSnapshot
 from .models import ForwardSource
 from .models import ForwardSync
-from .models import ForwardTransformField
-from .models import ForwardTransformMap
-from .models import ForwardTransformMapGroup
 
 
 DIFF_BUTTON = """
@@ -43,52 +39,9 @@ DATA_BUTTON = """
 """
 
 
-class ForwardRelationshipFieldTable(NetBoxTable):
-    actions = columns.ActionsColumn(actions=("edit", "delete"))
-
-    class Meta(NetBoxTable.Meta):
-        model = ForwardRelationshipField
-        fields = ("source_model", "target_field", "coalesce", "actions")
-        default_columns = ("source_model", "target_field", "coalesce", "actions")
-
-
-class ForwardTransformFieldTable(NetBoxTable):
-    id = tables.Column()
-    actions = columns.ActionsColumn(actions=("edit", "delete"))
-
-    class Meta(NetBoxTable.Meta):
-        model = ForwardTransformField
-        fields = ("id", "source_field", "target_field", "coalesce", "actions")
-        default_columns = ("source_field", "target_field", "coalesce", "actions")
-
-
-class ForwardTransformMapGroupTable(NetBoxTable):
-    name = tables.Column(linkify=True)
-    maps_count = columns.LinkedCountColumn(
-        viewname="plugins:forward_netbox:forwardtransformmap_list",
-        url_params={"group_id": "pk"},
-        verbose_name="Transform Maps",
-    )
-
-    class Meta(NetBoxTable.Meta):
-        model = ForwardTransformMapGroup
-        fields = ("name", "description", "maps_count")
-        default_columns = ("name", "description", "maps_count")
-
-
-class ForwardTransformMapTable(NetBoxTable):
-    name = tables.Column(linkify=True)
-    group = tables.Column(linkify=True)
-
-    class Meta(NetBoxTable.Meta):
-        model = ForwardTransformMap
-        fields = ("name", "group", "source_model", "target_model")
-        default_columns = ("name", "group", "source_model", "target_model")
-
-
 class ForwardIngestionTable(NetBoxTable):
     name = tables.Column(linkify=True)
-    sync = tables.Column(verbose_name="Forward Sync", linkify=True)
+    sync = tables.Column(verbose_name="Forward Networks Sync", linkify=True)
     branch = tables.Column(linkify=True)
     changes = tables.Column(accessor="staged_changes", verbose_name="Number of Changes")
     actions = columns.ActionsColumn(actions=("delete",))
@@ -125,6 +78,7 @@ class ForwardSourceTable(NetBoxTable):
     name = tables.Column(linkify=True)
     status = columns.ChoiceFieldColumn()
     snapshot_count = tables.Column(verbose_name="Snapshots")
+    network_id = tables.Column(verbose_name="Network ID")
     tags = columns.TagColumn(url_name="core:datasource_list")
 
     class Meta(NetBoxTable.Meta):
@@ -134,12 +88,20 @@ class ForwardSourceTable(NetBoxTable):
             "id",
             "name",
             "status",
+            "network_id",
             "description",
             "comments",
             "created",
             "last_updated",
         )
-        default_columns = ("pk", "name", "status", "description", "snapshot_count")
+        default_columns = (
+            "pk",
+            "name",
+            "status",
+            "network_id",
+            "description",
+            "snapshot_count",
+        )
 
 
 class ForwardSyncTable(NetBoxTable):

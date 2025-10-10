@@ -1,4 +1,4 @@
-site_name: Forward NetBox Documentation
+site_name: Forward Networks NetBox Documentation
 theme:
   name: material
 plugins:

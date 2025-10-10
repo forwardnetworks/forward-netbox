@@ -8,30 +8,25 @@ from typing import TypeVar
 from core.choices import DataSourceStatusChoices
 from core.exceptions import SyncError
 from dcim.models import Device
+from dcim.models import DeviceRole
+from dcim.models import DeviceType
 from dcim.models import Interface
-from dcim.models import MACAddress
+from dcim.models import Location
+from dcim.models import Manufacturer
+from dcim.models import Site
 from django.conf import settings
-from django.core.exceptions import MultipleObjectsReturned
-from django.core.exceptions import ObjectDoesNotExist
+from django.db import transaction
 from django.db.models import Model
 from django.utils.text import slugify
 from django_tables2 import Column
 import httpx
 from httpx import HTTPStatusError
-from jinja2.sandbox import SandboxedEnvironment
-from netbox.config import get_config
-from netutils.utils import jinja2_convenience_function
 
 from ..exceptions import ForwardAPIError
 
 from ..choices import ForwardSourceTypeChoices
-from ..exceptions import create_or_get_sync_issue
-from ..exceptions import IPAddressDuplicateError
 from ..exceptions import SearchError
-from ..exceptions import SyncDataError
-from .nbutils import device_serial_max_length
-from .nbutils import order_devices
-from .nbutils import order_members
+from ..models import apply_tags
 
 if TYPE_CHECKING:
     from ..models import ForwardIngestion
@@ -40,32 +35,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger("forward_netbox.utilities.fwdutils")
 
 ModelTypeVar = TypeVar("ModelTypeVar", bound=Model)
-
-
-def slugify_text(value):
-    return slugify(value)
-
-
-def serial(value):
-    sn_length = len(value.get("sn"))
-    serial_number = value.get("sn") if sn_length < device_serial_max_length else ""
-    if not serial_number:
-        serial_number = value.get("id")
-    return serial_number
-
-
-FWD_JINJA_FILTERS = {"slugify": slugify_text, "serial": serial}
-
-
-def render_jinja2(template_code, context):
-    """
-    Render a Jinja2 template with the provided context. Return the rendered content.
-    """
-    environment = SandboxedEnvironment()
-    environment.filters.update(get_config().JINJA2_FILTERS)
-    environment.filters.update(FWD_JINJA_FILTERS)
-    environment.filters.update(jinja2_convenience_function())
-    return environment.from_string(source=template_code).render(**context)
 
 
 class ForwardRESTClient:
@@ -81,11 +50,13 @@ class ForwardRESTClient:
         verify: bool = True,
         timeout: int | None = None,
         session: httpx.Client | None = None,
+        network_id: str | None = None,
     ):
         if not base_url:
-            raise ForwardAPIError("Forward base URL is not configured.")
+            raise ForwardAPIError("Forward Networks base URL is not configured.")
 
         self.base_url = base_url.rstrip("/")
+        self.network_id = network_id
         headers = {
             "Accept": "application/json",
         }
@@ -115,11 +86,11 @@ class ForwardRESTClient:
         except HTTPStatusError as exc:
             status_code = exc.response.status_code if exc.response else None
             raise ForwardAPIError(
-                f"Forward API returned {status_code}: {exc.response.text if exc.response else exc}",
+                f"Forward Networks API returned {status_code}: {exc.response.text if exc.response else exc}",
                 status_code=status_code,
             ) from exc
         except httpx.HTTPError as exc:
-            raise ForwardAPIError(f"Forward API request failed: {exc}") from exc
+            raise ForwardAPIError(f"Forward Networks API request failed: {exc}") from exc
         if response.content:
             try:
                 return response.json()
@@ -143,6 +114,8 @@ class ForwardRESTClient:
         params = {}
         if snapshot_id:
             params["snapshot"] = snapshot_id
+        if self.network_id:
+            params.setdefault("network", self.network_id)
         json_body = None
         if filters:
             json_body = {"filters": filters}
@@ -155,6 +128,7 @@ class ForwardRESTClient:
                 fallback_params = dict(params)
                 if filters:
                     fallback_params["filters"] = json.dumps(filters)
+                fallback_params.setdefault("network", self.network_id)
                 payload = self._request("GET", path, params=fallback_params)
                 return self._extract_collection(payload)
             raise
@@ -182,12 +156,45 @@ class ForwardRESTClient:
         path = f"/api/v1/{table.replace('.', '/')}"
         return self._collection(path, snapshot_id=snapshot_id, filters=filters, method="POST")
 
+    def run_nqe_query(
+        self,
+        query_id: str,
+        *,
+        offset: int = 0,
+        limit: int = 1000,
+        query_options: dict | None = None,
+    ) -> tuple[list[dict], int]:
+        """Execute an NQE query and return a tuple of (results, total)."""
+
+        params = {}
+        if self.network_id:
+            params["networkId"] = self.network_id
+
+        payload = {"queryId": query_id}
+        options = dict(query_options or {})
+        options.setdefault("offset", offset)
+        options.setdefault("limit", limit)
+        payload["queryOptions"] = options
+
+        response = self._request("POST", "/api/nqe", params=params, json_body=payload)
+        if not isinstance(response, dict):
+            raise ForwardAPIError("Unexpected response payload when executing NQE query.")
+
+        data = response.get("data") or response.get("results") or response.get("items") or []
+        if not isinstance(data, list):
+            raise ForwardAPIError("Unexpected NQE response format: query results are not a list.")
+
+        total = response.get("totalNumItems", len(data))
+        return data, int(total)
+
     def get_site_topology(self, site: str, snapshot_id: str, settings: dict | None = None):
         payload = {
             "site": site,
             "snapshot": snapshot_id,
             "settings": settings or {},
         }
+        if self.network_id:
+            payload["network"] = self.network_id
         response = self._request("POST", "/api/v1/diagram/site", json_body=payload)
         if not isinstance(response, dict):
             raise ForwardAPIError("Unexpected response payload when requesting topology diagram.")
@@ -202,11 +209,13 @@ class Forward(object):
         verify = params.get("verify", True)
         timeout = params.get("timeout")
         self.snapshot_id = params.get("snapshot_id")
+        self.network_id = params.get("network_id")
         self.api = ForwardRESTClient(
             base_url=base_url,
             token=token,
             verify=verify,
             timeout=timeout,
+            network_id=self.network_id,
         )
 
     def close(self):
@@ -249,733 +258,439 @@ class Forward(object):
 
 
 class ForwardSyncRunner(object):
+    """Orchestrates a Forward ingestion using Forward's NQE queries."""
+
+    NQE_SEQUENCE = [
+        "dcim.manufacturer",
+        "dcim.devicerole",
+        "dcim.devicetype",
+        "dcim.location",
+        "dcim.device",
+        "dcim.interface",
+    ]
+    NQE_PAGE_SIZE = 1000
+
     def __init__(
         self,
         sync,
-        client: Forward = None,
+        client: ForwardRESTClient | None = None,
         ingestion=None,
-        settings: dict = None,
+        settings: dict | None = None,
     ) -> None:
         self.client = client
-        self.settings = settings
+        self.settings = settings or {}
         self.ingestion = ingestion
         self.sync = sync
-        self.transform_maps = sync.get_transform_maps(sync.parameters.get("groups"))
+        self.nqe_map = sync.get_nqe_map()
         if hasattr(self.sync, "logger"):
             self.logger = self.sync.logger
+        else:
+            self.logger = logger
 
         if self.sync.snapshot_data.status != "loaded":
             raise SyncError("Snapshot not loaded in Forward.")
 
+        self.manufacturer_cache: dict[str, Manufacturer] = {}
+        self.role_cache: dict[str, DeviceRole] = {}
+        self.device_type_cache: dict[str, DeviceType] = {}
+        self.device_cache: dict[str, Device] = {}
+        self.location_cache: dict[tuple[int | None, str], Location] = {}
+        self.site_cache: dict[str, Site] = {}
+
+        self._handlers = {
+            "dcim.manufacturer": self._sync_manufacturer,
+            "dcim.devicerole": self._sync_devicerole,
+            "dcim.devicetype": self._sync_devicetype,
+            "dcim.location": self._sync_location,
+            "dcim.device": self._sync_device,
+            "dcim.interface": self._sync_interface,
+        }
+
     @staticmethod
     def handle_errors(func: Callable):
-        def wrapper(*args, **kwargs):
+        def wrapper(self, *args, **kwargs):
             try:
-                return func(*args, **kwargs)
-            except Exception as err:
-                # Log the error to logger outside of job - console/file
+                return func(self, *args, **kwargs)
+            except Exception as err:  # pragma: no cover - best effort logging
                 logger.error(err, exc_info=True)
-                if hasattr(err, "issue_id") and err.issue_id:
-                    # The error is already logged to user, no need to log it again
-                    return None
-                # Logging section for logs inside job - facing user
-                self = args[0]
                 if isinstance(err, SearchError):
-                    if self.settings.get(err.model):
-                        self.logger.log_failure(
-                            f"Aborting syncing `{err.model}` instance due to above error, please check your transform maps and/or existing data.",
-                            obj=self.sync,
-                        )
-                    else:
-                        self.logger.log_failure(
-                            f"Syncing `{err.model}` is disabled in settings, but hit above error trying to find the correct item. Please check your transform maps and/or existing data.",
-                            obj=self.sync,
-                        )
-                if isinstance(err, IPAddressDuplicateError):
-                    self.logger.log_warning(
-                        f"IP Address `{err.data.get('address')}` already exists in `{err.model}` with coalesce fields: `{err.coalesce_fields}`. Please check your transform maps and/or existing data.",
-                        obj=self.sync,
+                    self.logger.log_failure(
+                        f"Aborting syncing `{err.model}`: {err}", obj=self.sync
                     )
                 else:
                     self.logger.log_failure(
-                        f"Syncing failed with: `{err}`. See above error for more details.",
+                        f"Syncing failed with: `{err}`. See logs for more details.",
                         obj=self.sync,
                     )
-                # Make sure the whole sync is failed when we encounter error
                 self.sync.status = DataSourceStatusChoices.FAILED
                 return None
 
         return wrapper
 
-    def get_db_connection_name(self) -> str:
-        connection_name = None
+    def get_db_connection_name(self) -> str | None:
         if self.ingestion:
-            connection_name = self.ingestion.branch.connection_name
-        return connection_name
+            return self.ingestion.branch.connection_name
+        return None
 
-    def get_model_or_update(self, app, model, data):
-        transform_map = self.transform_maps.get(
-            target_model__app_label=app, target_model__model=model
+    def _ensure_client(self) -> ForwardRESTClient:
+        if not self.client:
+            raise SyncError("Forward REST client is not initialized.")
+        return self.client
+
+    def _collect_nqe_records(self, model_key: str, query_id: str) -> list[dict]:
+        client = self._ensure_client()
+        results: list[dict] = []
+        offset = 0
+        while True:
+            batch, total = client.run_nqe_query(
+                query_id, offset=offset, limit=self.NQE_PAGE_SIZE
+            )
+            if not batch:
+                break
+            results.extend(batch)
+            offset += len(batch)
+            if offset >= total:
+                break
+        return results
+
+    def _upsert(self, model_class, lookup: dict, defaults: dict):
+        connection_name = self.get_db_connection_name()
+        queryset = model_class.objects.using(connection_name)
+        with transaction.atomic(using=connection_name):
+            try:
+                obj = queryset.get(**lookup)
+                obj.snapshot()
+                changed = False
+                for attr, value in defaults.items():
+                    if getattr(obj, attr) != value:
+                        setattr(obj, attr, value)
+                        changed = True
+                if changed:
+                    obj.full_clean()
+                    obj.save(using=connection_name)
+            except model_class.DoesNotExist:
+                obj = model_class(**lookup, **defaults)
+                obj.full_clean()
+                obj.save(using=connection_name)
+            apply_tags(obj, self.sync.tags.all(), connection_name)
+        return obj
+
+    def _to_bool(self, value) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in {"true", "1", "yes", "on"}
+        if value is None:
+            return False
+        return bool(value)
+
+    def _resolve_site(self, value, *, for_model: str, data: dict) -> Site:
+        if not value:
+            raise SearchError("Site reference is required.", model=for_model, data=data)
+        key = str(value).lower()
+        if key in self.site_cache:
+            return self.site_cache[key]
+        connection_name = self.get_db_connection_name()
+        queryset = Site.objects.using(connection_name)
+        site = queryset.filter(slug__iexact=value).first()
+        if not site:
+            site = queryset.filter(name__iexact=value).first()
+        if not site:
+            raise SearchError("Site `{}` not found in NetBox.".format(value), model=for_model, data=data)
+        self.site_cache[key] = site
+        return site
+
+    def _resolve_manufacturer(self, value, *, for_model: str, data: dict) -> Manufacturer:
+        if isinstance(value, dict):
+            slug = value.get("slug") or slugify(value.get("name", ""))
+            name = value.get("name")
+        else:
+            slug = str(value) if value else None
+            name = str(value) if value else None
+        identifier = (slug or name or "").lower()
+        if not identifier:
+            raise SearchError("Manufacturer reference is required.", model=for_model, data=data)
+        if identifier in self.manufacturer_cache:
+            return self.manufacturer_cache[identifier]
+        connection_name = self.get_db_connection_name()
+        queryset = Manufacturer.objects.using(connection_name)
+        manufacturer = None
+        if slug:
+            manufacturer = queryset.filter(slug__iexact=slug).first()
+        if not manufacturer and name:
+            manufacturer = queryset.filter(name__iexact=name).first()
+        if not manufacturer:
+            raise SearchError(
+                "Manufacturer `{}` not found in NetBox.".format(slug or name),
+                model=for_model,
+                data=data,
+            )
+        self.manufacturer_cache[identifier] = manufacturer
+        return manufacturer
+
+    def _resolve_role(self, value, *, for_model: str, data: dict) -> DeviceRole:
+        if isinstance(value, dict):
+            slug = value.get("slug") or slugify(value.get("name", ""))
+            name = value.get("name")
+        else:
+            slug = str(value) if value else None
+            name = str(value) if value else None
+        identifier = (slug or name or "").lower()
+        if not identifier:
+            raise SearchError("Device role reference is required.", model=for_model, data=data)
+        if identifier in self.role_cache:
+            return self.role_cache[identifier]
+        connection_name = self.get_db_connection_name()
+        queryset = DeviceRole.objects.using(connection_name)
+        role = None
+        if slug:
+            role = queryset.filter(slug__iexact=slug).first()
+        if not role and name:
+            role = queryset.filter(name__iexact=name).first()
+        if not role:
+            raise SearchError(
+                "Device role `{}` not found in NetBox.".format(slug or name),
+                model=for_model,
+                data=data,
+            )
+        self.role_cache[identifier] = role
+        return role
+
+    def _resolve_device_type(self, value, *, for_model: str, data: dict) -> DeviceType:
+        if isinstance(value, dict):
+            slug = value.get("slug") or slugify(value.get("model") or value.get("name", ""))
+        else:
+            slug = str(value) if value else None
+        if not slug:
+            raise SearchError("Device type reference is required.", model=for_model, data=data)
+        identifier = slug.lower()
+        if identifier in self.device_type_cache:
+            return self.device_type_cache[identifier]
+        connection_name = self.get_db_connection_name()
+        queryset = DeviceType.objects.using(connection_name)
+        device_type = queryset.filter(slug__iexact=slug).first()
+        if not device_type:
+            raise SearchError(
+                "Device type `{}` not found in NetBox.".format(slug),
+                model=for_model,
+                data=data,
+            )
+        self.device_type_cache[identifier] = device_type
+        return device_type
+
+    def _resolve_device(self, name: str, *, for_model: str, data: dict) -> Device:
+        if not name:
+            raise SearchError("Device reference is required.", model=for_model, data=data)
+        identifier = name.lower()
+        if identifier in self.device_cache:
+            return self.device_cache[identifier]
+        connection_name = self.get_db_connection_name()
+        queryset = Device.objects.using(connection_name)
+        device = queryset.filter(name__iexact=name).first()
+        if not device:
+            raise SearchError("Device `{}` not found in NetBox.".format(name), model=for_model, data=data)
+        self.device_cache[identifier] = device
+        return device
+
+    def _resolve_location(self, value, *, site: Site, for_model: str, data: dict) -> Location | None:
+        if value in (None, ""):
+            return None
+        if isinstance(value, dict):
+            slug = value.get("slug") or slugify(value.get("name", ""))
+            name = value.get("name")
+        else:
+            slug = str(value) if value else None
+            name = str(value) if value else None
+        identifier = (slug or name or "").lower()
+        cache_key = (site.pk if site else None, identifier)
+        if cache_key in self.location_cache:
+            return self.location_cache[cache_key]
+        connection_name = self.get_db_connection_name()
+        queryset = Location.objects.using(connection_name).filter(site=site)
+        location = None
+        if slug:
+            location = queryset.filter(slug__iexact=slug).first()
+        if not location and name:
+            location = queryset.filter(name__iexact=name).first()
+        if not location:
+            raise SearchError(
+                "Location `{}` not found in site `{}`.".format(slug or name, site),
+                model=for_model,
+                data=data,
+            )
+        self.location_cache[cache_key] = location
+        return location
+
+    @handle_errors
+    def _sync_manufacturer(self, item: dict):
+        name = item.get("name")
+        if not name:
+            raise SearchError("Manufacturer name is required.", model="dcim.manufacturer", data=item)
+        slug = item.get("slug") or slugify(name)
+        defaults = {"name": name, "slug": slug}
+        for field in ("description", "comments"):
+            if item.get(field) is not None:
+                defaults[field] = item[field]
+        manufacturer = self._upsert(Manufacturer, {"slug": slug}, defaults)
+        self.manufacturer_cache[slug.lower()] = manufacturer
+        return manufacturer
+
+    @handle_errors
+    def _sync_devicerole(self, item: dict):
+        name = item.get("name")
+        if not name:
+            raise SearchError("Device role name is required.", model="dcim.devicerole", data=item)
+        slug = item.get("slug") or slugify(name)
+        defaults = {"name": name, "slug": slug}
+        if item.get("color") is not None:
+            defaults["color"] = item["color"]
+        if item.get("description") is not None:
+            defaults["description"] = item["description"]
+        role = self._upsert(DeviceRole, {"slug": slug}, defaults)
+        self.role_cache[slug.lower()] = role
+        return role
+
+    @handle_errors
+    def _sync_devicetype(self, item: dict):
+        model_name = item.get("model") or item.get("name")
+        if not model_name:
+            raise SearchError("Device type model is required.", model="dcim.devicetype", data=item)
+        slug = item.get("slug") or slugify(model_name)
+        manufacturer_value = item.get("manufacturer")
+        manufacturer = self._resolve_manufacturer(
+            manufacturer_value, for_model="dcim.devicetype", data=item
         )
+        lookup = {"slug": slug, "manufacturer": manufacturer}
+        defaults = {"model": model_name, "slug": slug, "manufacturer": manufacturer}
+        for field in ("part_number", "u_height", "is_full_depth", "subdevice_role", "comments"):
+            if item.get(field) is not None:
+                defaults[field] = item[field]
+        device_type = self._upsert(DeviceType, lookup, defaults)
+        self.device_type_cache[slug.lower()] = device_type
+        return device_type
 
-        if not transform_map:
-            raise SystemError(f"No transform map available for {app}: {model}")
+    @handle_errors
+    def _sync_location(self, item: dict):
+        name = item.get("name")
+        if not name:
+            raise SearchError("Location name is required.", model="dcim.location", data=item)
+        site_value = item.get("site")
+        site = self._resolve_site(site_value, for_model="dcim.location", data=item)
+        slug = item.get("slug") or slugify(name)
+        parent_value = item.get("parent")
+        parent = None
+        if parent_value:
+            parent = self._resolve_location(parent_value, site=site, for_model="dcim.location", data=item)
+        lookup = {"slug": slug, "site": site}
+        defaults = {"name": name, "slug": slug, "site": site}
+        if parent:
+            defaults["parent"] = parent
+        if item.get("status") is not None:
+            defaults["status"] = item["status"]
+        if item.get("description") is not None:
+            defaults["description"] = item["description"]
+        location = self._upsert(Location, lookup, defaults)
+        cache_key = (site.pk, slug.lower())
+        self.location_cache[cache_key] = location
+        return location
 
-        model_settings = self.settings.get(model, False)
-        try:
-            context = transform_map.get_context(data)
-        except Exception as err:
-            message = f"Error getting context for `{model}`."
-            if isinstance(err, ObjectDoesNotExist):
-                message += (
-                    " Could not find related object using template in transform maps."
-                )
-            elif isinstance(err, MultipleObjectsReturned):
-                message += " Multiple objects returned using on template in transform maps, the template is not strict enough."
-            _, issue = create_or_get_sync_issue(
-                exception=err,
-                ingestion=self.ingestion,
-                message=message,
-                model=model,
-                data=data,
-            )
-            raise SearchError(
-                message=message, data=data, model=model, issue_id=issue.id
-            ) from err
+    @handle_errors
+    def _sync_device(self, item: dict):
+        name = item.get("name")
+        if not name:
+            raise SearchError("Device name is required.", model="dcim.device", data=item)
+        device_type_value = item.get("device_type")
+        device_type = self._resolve_device_type(device_type_value, for_model="dcim.device", data=item)
+        role_value = item.get("role")
+        role = self._resolve_role(role_value, for_model="dcim.device", data=item)
+        site_value = item.get("site")
+        site = None
+        if site_value:
+            site = self._resolve_site(site_value, for_model="dcim.device", data=item)
+        location_value = item.get("location")
+        location = None
+        if location_value:
+            if not site and isinstance(location_value, dict) and location_value.get("site"):
+                site = self._resolve_site(location_value.get("site"), for_model="dcim.device", data=item)
+            if site:
+                location = self._resolve_location(location_value, site=site, for_model="dcim.device", data=item)
+        if not site and location:
+            site = location.site
+        defaults = {"device_type": device_type, "role": role}
+        if site:
+            defaults["site"] = site
+        if location:
+            defaults["location"] = location
+        for field in ("status", "serial", "asset_tag", "comments"):
+            if item.get(field) is not None:
+                defaults[field] = item[field]
+        device = self._upsert(Device, {"name": name}, defaults)
+        self.device_cache[name.lower()] = device
+        return device
 
-        queryset = transform_map.target_model.model_class().objects
-
-        object = None
-        try:
-            connection_name = self.get_db_connection_name()
-            if model_settings:
-                logger.info(f"Creating {model}")
-                object = transform_map.update_or_create_instance(
-                    context=context,
-                    tags=self.sync.tags.all(),
-                    connection_name=connection_name,
-                )
-            else:
-                logger.info(f"Getting {model}")
-                context.pop("defaults", None)
-                object = queryset.using(connection_name).get(**context)
-        except queryset.model.DoesNotExist as err:
-            message = f"Instance of `{model}` not found."
-            _, issue = create_or_get_sync_issue(
-                exception=err,
-                ingestion=self.ingestion,
-                message=message,
-                model=model,
-                context=context,
-                data=data,
-            )
-            raise SearchError(
-                message=message,
-                model=model,
-                context=context,
-                data=data,
-                issue_id=issue.id,
-            ) from err
-        except queryset.model.MultipleObjectsReturned as err:
-            message = f"Multiple instances of `{model}` found."
-            _, issue = create_or_get_sync_issue(
-                exception=err,
-                ingestion=self.ingestion,
-                message=message,
-                model=model,
-                context=context,
-                data=data,
-            )
-            raise SearchError(
-                message=message,
-                model=model,
-                context=context,
-                data=data,
-                issue_id=issue.id,
-            ) from err
-        except Exception as err:
-            _, issue = create_or_get_sync_issue(
-                exception=err,
-                ingestion=self.ingestion,
-                model=model,
-                context=context,
-                data=data,
-            )
-            raise SyncDataError(
-                model=model, context=context, data=data, issue_id=issue.id
-            ) from err
-
-        return object
-
-    def collect_data(self):
-        try:
-            self.logger.log_info(
-                "Collecting information from Forward",
-                obj=self.sync.snapshot_data.source,
-            )
-            data = {}
-            if self.sync.snapshot_data.source.type == ForwardSourceTypeChoices.REMOTE:
-                self.logger.log_info(
-                    "Remote collector checking for snapshot data.", obj=self.sync
-                )
-                if not self.sync.snapshot_data.fwd_data.count() > 0:
-                    raise SyncError(
-                        "No snapshot data available. This is a remote sync. Push data to NetBox first."
-                    )
-                data["site"] = list(
-                    self.sync.snapshot_data.fwd_data.filter(type="site").values_list(
-                        "data", flat=True
-                    )
-                )
-                data["device"] = list(
-                    self.sync.snapshot_data.fwd_data.filter(type="device").values_list(
-                        "data", flat=True
-                    )
-                )
-                data["virtualchassis"] = list(
-                    self.sync.snapshot_data.fwd_data.filter(
-                        type="virtualchassis"
-                    ).values_list("data", flat=True)
-                )
-                data["interface"] = list(
-                    self.sync.snapshot_data.fwd_data.filter(
-                        type="interface"
-                    ).values_list("data", flat=True)
-                )
-                data["inventoryitem"] = list(
-                    self.sync.snapshot_data.fwd_data.filter(
-                        type="inventoryitem"
-                    ).values_list("data", flat=True)
-                )
-                data["vlan"] = list(
-                    self.sync.snapshot_data.fwd_data.filter(type="vlan").values_list(
-                        "data", flat=True
-                    )
-                )
-                data["vrf"] = list(
-                    self.sync.snapshot_data.fwd_data.filter(type="vrf").values_list(
-                        "data", flat=True
-                    )
-                )
-                data["prefix"] = list(
-                    self.sync.snapshot_data.fwd_data.filter(type="prefix").values_list(
-                        "data", flat=True
-                    )
-                )
-                data["ipaddress"] = list(
-                    self.sync.snapshot_data.fwd_data.filter(
-                        type="ipaddress"
-                    ).values_list("data", flat=True)
-                )
-            else:
-            self.logger.log_info(
-                "Local collector being used for snapshot data.", obj=self.sync
-            )
-            excluded_vendors = ["aws", "azure"]
-
-            query_filter = {
-                "and": [{"vendor": ["neq", vendor]} for vendor in excluded_vendors]
-            }
-
-            if ingestion_sites := self.settings.get("sites"):
-                site_filter = {
-                    "or": [{"siteName": ["eq", site]} for site in ingestion_sites]
-                }
-                query_filter["and"].append(site_filter)
-
-                self.logger.log_info(
-                    f"Creating site filter `{json.dumps(site_filter)}`",
+    @handle_errors
+    def _sync_interface(self, item: dict):
+        name = item.get("name")
+        if not name:
+            raise SearchError("Interface name is required.", model="dcim.interface", data=item)
+        device_value = item.get("device") or item.get("device_name")
+        device = self._resolve_device(device_value, for_model="dcim.interface", data=item)
+        lookup = {"device": device, "name": name}
+        defaults = {}
+        if item.get("type") is not None:
+            defaults["type"] = item["type"]
+        if item.get("enabled") is not None:
+            defaults["enabled"] = self._to_bool(item["enabled"])
+        if item.get("mtu") is not None:
+            defaults["mtu"] = item["mtu"]
+        if item.get("mac_address") is not None:
+            defaults["mac_address"] = item["mac_address"]
+        if item.get("description") is not None:
+            defaults["description"] = item["description"]
+        if item.get("speed") is not None:
+            try:
+                defaults["speed"] = int(item["speed"])
+            except (TypeError, ValueError):
+                self.logger.log_warning(
+                    f"Invalid speed value `{item['speed']}` for interface `{name}` on `{device.name}`.",
                     obj=self.sync,
                 )
-            else:
-                site_filter = {}
-
-            snapshot_id = self.settings["snapshot_id"]
-
-            data["site"] = self.client.inventory(
-                "sites", snapshot_id=snapshot_id, filters=site_filter
-            )
-
-            data["device"] = self.client.inventory(
-                "devices", snapshot_id=snapshot_id, filters=query_filter
-            )
-
-            data["virtualchassis"] = self.client.technology(
-                "platforms/stacks_members", snapshot_id=snapshot_id, filters=site_filter
-            )
-
-            data["interface"] = self.client.inventory(
-                "interfaces", snapshot_id=snapshot_id, filters=site_filter
-            )
-
-            inventory_item_filter = {
-                "and": [
-                    {"sn": ["empty", False]},
-                    {"name": ["empty", False]},
-                ]
-            }
-            if site_filter:
-                inventory_item_filter["and"].append(site_filter)
-
-            data["inventoryitem"] = self.client.inventory(
-                "pn", snapshot_id=snapshot_id, filters=inventory_item_filter
-            )
-
-            data["vlan"] = self.client.technology(
-                "vlans/site_summary", snapshot_id=snapshot_id, filters=site_filter
-            )
-
-            data["vrf"] = self.client.technology(
-                "routing/vrf_detail", snapshot_id=snapshot_id, filters=site_filter
-            )
-
-            if site_filter:
-                networks_filter = {
-                    "and": [site_filter, {"and": [{"net": ["empty", False]}]}]
-                }
-            else:
-                networks_filter = {"and": [{"net": ["empty", False]}]}
-            self.logger.log_info(f"Creating network filter: `{networks_filter}`")
-            data["prefix"] = self.client.technology(
-                "managed_networks/networks",
-                snapshot_id=snapshot_id,
-                filters=networks_filter,
-            )
-
-            data["ipaddress"] = self.client.technology(
-                "addressing/managed_ip_ipv4",
-                snapshot_id=snapshot_id,
-                filters=site_filter,
-            )
-        except Exception as e:
-            self.logger.log_failure(
-                f"Error collecting data from Forward: {e}", obj=self.sync
-            )
-            raise SyncError(f"Error collecting data from Forward: {e}")
-
-        self.logger.log_info(
-            f"{len(data['site'])} sites collected", obj=self.sync.snapshot_data.source
-        )
-        self.logger.log_info(
-            f"{len(data['device'])} devices collected",
-            obj=self.sync.snapshot_data.source,
-        )
-        self.logger.log_info(
-            f"{len(data['virtualchassis'])} stack members collected",
-            obj=self.sync.snapshot_data.source,
-        )
-
-        self.logger.log_info(
-            f"{len(data['interface'])} interfaces collected",
-            obj=self.sync.snapshot_data.source,
-        )
-
-        self.logger.log_info(
-            f"{len(data.get('inventoryitem', []))} part numbers collected",
-            obj=self.sync.snapshot_data.source,
-        )
-
-        self.logger.log_info(
-            f"{len(data.get('vlan', []))} VLANs collected",
-            obj=self.sync.snapshot_data.source,
-        )
-
-        self.logger.log_info(
-            f"{len(data.get('vrf', []))} VRFs collected",
-            obj=self.sync.snapshot_data.source,
-        )
-
-        self.logger.log_info(
-            f"{len(data.get('prefix', []))} networks collected",
-            obj=self.sync.snapshot_data.source,
-        )
-
-        self.logger.log_info(
-            f"{len(data.get('ipaddress', []))} management IP's collected",
-            obj=self.sync.snapshot_data.source,
-        )
-        self.logger.log_info("Ordering devices", obj=self.sync)
-
-        members = order_members(data.get("virtualchassis", []))
-        devices = order_devices(data.get("device", []), members)
-
-        self.logger.log_info("Ordering Part Numbers", obj=self.sync)
-
-        interface_dict = {}
-        for interface in data["interface"]:
-            if int_sn := interface.get("sn"):
-                if interface_dict.get(int_sn):
-                    interface_dict[int_sn].append(interface)
-                else:
-                    interface_dict[int_sn] = [interface]
-
-        interface_key = "nameOriginal"
-        try:
-            int_transform_map = self.transform_maps.get(
-                target_model__app_label="dcim", target_model__model="interface"
-            )
-            int_name_field_map = int_transform_map.field_maps.get(target_field="name")
-            interface_key = int_name_field_map.source_field
-        except Exception as e:
-            self.logger.log_failure(
-                f"Error collecting information about transform map for interface name: {e}",
-                obj=self.sync,
-            )
-            raise SyncError(f"Error collecting source column name for interface: {e}")
-
-        managed_ips = {}
-        for ip in data["ipaddress"]:
-            # Find corresponding interface list by serial number (sn)
-            device_interfaces = interface_dict.get(ip["sn"], [])
-
-            # Use filter to find the interface with the matching intName
-            filtered_interface = list(
-                filter(lambda d: d["intName"] == ip["intName"], device_interfaces)
-            )
-
-            if filtered_interface:
-                ip["nameOriginal"] = filtered_interface[0]["nameOriginal"]
-                if ip[interface_key]:
-                    int_name = ip[interface_key]
-                else:
-                    int_name = ip["intName"]
-                if ip["sn"] not in managed_ips:
-                    managed_ips[ip["sn"]] = {int_name: [ip]}
-                elif int_name not in managed_ips.get(ip["sn"]):
-                    managed_ips[ip["sn"]][int_name] = [ip]
-                else:
-                    managed_ips[ip["sn"]][int_name].append(ip)
-
-        for vlan in data["vlan"][:]:
-            # Remove VLANs with ID 0, minimum VLAN ID in NetBox is 1
-            if vlan.get("vlanId") == 0:
-                data["vlan"].remove(vlan)
-
-        for item in data["inventoryitem"][:]:
-            # Remove items with empty serial number
-            if item.get("sn") in [None, "None"]:
-                data["inventoryitem"].remove(item)
-
-        for model, item_count in [
-            ("site", len(data.get("site", []))),
-            ("device", len(devices)),
-            ("interface", len(data.get("interface", []))),
-            ("inventoryitem", len(data.get("inventoryitem", []))),
-            ("vlan", len(data.get("vlan", []))),
-            ("vrf", len(data.get("vrf", []))),
-            ("prefix", len(data.get("prefix", []))),
-            # TODO: Since we sync only those assigned to interfaces, we are skipping some IPs
-            # TODO: This is fixable by syncing IPs separately from interface and only assign them on interfaces
-            ("ipaddress", len(data.get("ipaddress", []))),
-        ]:
-            if self.settings.get(model):
-                self.logger.init_statistics(model, item_count)
-
-        return (
-            data["site"],
-            devices,
-            interface_dict,
-            data["inventoryitem"],
-            data["vrf"],
-            data["vlan"],
-            data["prefix"],
-            managed_ips,
-        )
-
-    @handle_errors
-    def sync_model(
-        self,
-        app_label: str,
-        model: str,
-        data: dict | None,
-        stats: bool = True,
-        sync: bool = False,
-    ) -> ModelTypeVar | None:
-        """Sync a single item to NetBox."""
-        # The `sync` param is a workaround since we need to get some models (Device...) even when not syncing them.
-        if not sync:
-            return None
-
-        if not data:
-            return None
-
-        instance = self.get_model_or_update(app_label, model, data)
-
-        # Only log when we successfully synced the item and asked for it
-        if stats:
-            self.logger.increment_statistics(model=model)
-
-        return instance
-
-    def sync_item(
-        self,
-        item,
-        app_label: str,
-        model: str,
-        cf: bool = False,
-        ingestion: "ForwardIngestion" = None,
-    ) -> ModelTypeVar | None:
-        """Sync a single item to NetBox."""
-        synced_object = self.sync_model(
-            app_label=app_label,
-            model=model,
-            data=item,
-            sync=self.settings.get(model),
-        )
-        if synced_object is None:
-            return None
-
-        if cf:
-            synced_object.snapshot()
-            synced_object.custom_field_data[
-                "forward_source"
-            ] = self.sync.snapshot_data.source.pk
-            if ingestion:
-                synced_object.custom_field_data["forward_ingestion"] = ingestion.pk
-            synced_object.save()
-
-        return synced_object
-
-    def sync_items(
-        self,
-        items,
-        app_label: str,
-        model: str,
-        cf: bool = False,
-        ingestion: "ForwardIngestion" = None,
-    ) -> None:
-        """Sync list of items to NetBox."""
-        if not self.settings.get(model):
-            self.logger.log_info(
-                f"Did not ask to sync {model}s, skipping.", obj=self.sync
-            )
-            return
-
-        for item in items:
-            self.sync_item(item, app_label, model, cf, ingestion)
-
-    @handle_errors
-    def sync_devices(
-        self,
-        ingestion,
-        devices,
-        interface_dict,
-        managed_ips,
-    ):
-        for model, name in [
-            ("manufacturer", "manufacturers"),
-            ("devicetype", "device types"),
-            ("platform", "platforms"),
-            ("devicerole", "device roles"),
-            ("virtualchassis", "virtual chassis"),
-            ("device", "devices"),
-            ("inventoryitem", "device inventory items"),
-        ]:
-            if not self.settings.get(model):
-                self.logger.log_info(
-                    f"Did not ask to sync {name}, skipping", obj=self.sync
-                )
-
-        devices_total = len(devices)
-
-        for device in devices:
-            self.sync_model(
-                "dcim", "manufacturer", device, sync=self.settings.get("manufacturer")
-            )
-            self.sync_model(
-                "dcim", "devicetype", device, sync=self.settings.get("devicetype")
-            )
-            self.sync_model(
-                "dcim", "platform", device, sync=self.settings.get("platform")
-            )
-            self.sync_model(
-                "dcim", "devicerole", device, sync=self.settings.get("devicerole")
-            )
-
-            virtual_chassis = device.get("virtual_chassis", {})
-            self.sync_model(
-                "dcim",
-                "virtualchassis",
-                virtual_chassis,
-                stats=False,
-                sync=self.settings.get("virtualchassis"),
-            )
-
-            # We need to get a Device instance even when not syncing it but syncing Interfaces, IPs or MACs
-            device_object: Device | None = self.sync_model(
-                "dcim",
-                "device",
-                device,
-                stats=False,
-                sync=self.settings.get("device")
-                or self.settings.get("interface")
-                or self.settings.get("ipaddress")
-                or self.settings.get("macaddress"),
-            )
-
-            if device_object and self.settings.get("device"):
-                device_object.snapshot()
-                if self.sync.update_custom_fields:
-                    device_object.custom_field_data[
-                        "forward_source"
-                    ] = self.sync.snapshot_data.source.pk
-                    if ingestion:
-                        device_object.custom_field_data[
-                            "forward_ingestion"
-                        ] = ingestion.pk
-                device_object.save()
-
-                self.logger.increment_statistics(model="device")
-                logger.info(
-                    f"Device {self.logger.log_data.get('statistics', {}).get('device', {}).get('current')} out of {devices_total}"
-                )
-
-                # The Device exists now, so we can update the master of the VC.
-                # The logic is handled in transform maps.
-                self.sync_model(
-                    "dcim",
-                    "virtualchassis",
-                    virtual_chassis,
-                    stats=False,
-                    sync=self.settings.get("virtualchassis"),
-                )
-
-            device_interfaces = interface_dict.get(device.get("sn"), [])
-            for device_interface in device_interfaces:
-                self.sync_interface(
-                    device_interface, managed_ips, device_object, device
-                )
-
-    @handle_errors
-    def sync_ipaddress(
-        self,
-        managed_ip: dict | None,
-        device_object: Device | None,
-        primary_ip: str | None,
-        login_ip: str | None,
-    ):
-        ip_address_obj: "IPAddress | None" = self.sync_model(
-            "ipam",
-            "ipaddress",
-            managed_ip,
-            sync=self.settings.get("ipaddress"),
-        )
-        if ip_address_obj is None:
-            return None
-
-        connection_name = self.get_db_connection_name()
-
-        try:
-            # Removing another IP is done in .signals.clear_other_primary_ip
-            # But do it here too, so the change is shown in StagedChange diff
-            other_device = Device.objects.using(connection_name).get(
-                primary_ip4=ip_address_obj
-            )
-            if other_device and device_object != other_device:
-                other_device.snapshot()
-                other_device.primary_ip4 = None
-                other_device.save(using=connection_name)
-        except ObjectDoesNotExist:
-            pass
-
-        if login_ip == primary_ip:
-            try:
-                device_object.snapshot()
-                device_object.primary_ip4 = ip_address_obj
-                device_object.save(using=connection_name)
-            except (ValueError, AttributeError) as err:
-                self.logger.log_failure(
-                    f"Error assigning primary IP to device: {err}", obj=self.sync
-                )
-                return None
-        return ip_address_obj
-
-    @handle_errors
-    def sync_macaddress(
-        self, data: dict | None, interface_object: Interface
-    ) -> MACAddress | None:
-        # Need to create MAC Address object before we can assign it to Interface
-        # TODO: Figure out how to do this using transform maps
-        macaddress_data = {
-            "mac": data,
-            "id": getattr(interface_object, "pk", None),
-        }
-        macaddress_object: MACAddress | None = self.sync_model(
-            "dcim", "macaddress", macaddress_data, sync=self.settings.get("macaddress")
-        )
-        if macaddress_object is None:
-            return None
-        try:
-            interface_object.snapshot()
-            interface_object.primary_mac_address = macaddress_object
-            interface_object.save(using=self.get_db_connection_name())
-        except ValueError as err:
-            self.logger.log_failure(
-                f"Error assigning MAC Address to interface: {err}", obj=self.sync
-            )
-            return None
-        return macaddress_object
-
-    @handle_errors
-    def sync_interface(
-        self,
-        device_interface: dict,
-        managed_ips: dict,
-        device_object: Device | None,
-        device: dict,
-    ):
-        device_interface["loginIp"] = device.get("loginIp")
-        # We need to get an Interface instance even when not syncing it but syncing IPs or MACs
-        interface_object: Interface | None = self.sync_model(
-            "dcim",
-            "interface",
-            device_interface,
-            sync=self.settings.get("interface")
-            or self.settings.get("ipaddress")
-            or self.settings.get("macaddress"),
-        )
-
-        for ipaddress in managed_ips.get(
-            getattr(device_object, "serial", None), {}
-        ).get(getattr(interface_object, "name", None), []):
-            self.sync_ipaddress(
-                ipaddress,
-                device_object,
-                device_interface.get("primaryIp"),
-                device.get("loginIp"),
-            )
-
-        self.sync_macaddress(device_interface.get("mac"), interface_object)
-
-        return interface_object
+        interface = self._upsert(Interface, lookup, defaults)
+        return interface
 
     def collect_and_sync(self, ingestion=None) -> None:
         self.logger.log_info("Starting data sync.", obj=self.sync)
-        (
-            sites,
-            devices,
-            interface_dict,
-            inventory_items,
-            vrfs,
-            vlans,
-            networks,
-            managed_ips,
-        ) = self.collect_data()
-
-        self.sync_items(
-            app_label="dcim",
-            model="site",
-            items=sites,
-            cf=self.sync.update_custom_fields,
-            ingestion=ingestion,
-        )
-        self.sync_devices(
-            ingestion,
-            devices,
-            interface_dict,
-            managed_ips,
-        )
-        self.sync_items(app_label="dcim", model="inventoryitem", items=inventory_items)
-        self.sync_items(app_label="ipam", model="vlan", items=vlans)
-        self.sync_items(app_label="ipam", model="vrf", items=vrfs)
-        self.sync_items(app_label="ipam", model="prefix", items=networks)
+        for model_key in self.NQE_SEQUENCE:
+            short_model = model_key.split(".", 1)[1]
+            if not self.settings.get(short_model):
+                self.logger.log_info(
+                    f"Skipping `{model_key}` - disabled for this sync.", obj=self.sync
+                )
+                continue
+            query_meta = self.nqe_map.get(model_key, {})
+            if not query_meta.get("enabled", True):
+                self.logger.log_info(
+                    f"Skipping `{model_key}` - disabled in NQE map.", obj=self.sync
+                )
+                continue
+            query_id = query_meta.get("query_id")
+            if not query_id:
+                self.logger.log_warning(
+                    f"No NQE query ID configured for `{model_key}`; skipping.", obj=self.sync
+                )
+                continue
+            records = self._collect_nqe_records(model_key, query_id)
+            self.logger.log_info(
+                f"Collected {len(records)} records for `{model_key}`.", obj=self.sync
+            )
+            self.logger.init_statistics(short_model, len(records))
+            handler = self._handlers.get(model_key)
+            if not handler:
+                self.logger.log_warning(
+                    f"No handler defined for `{model_key}`; skipping.", obj=self.sync
+                )
+                continue
+            for record in records:
+                if handler(record):
+                    self.logger.increment_statistics(short_model)
+        self.logger.log_info("Data sync completed.", obj=self.sync)

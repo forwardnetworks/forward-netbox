@@ -6,11 +6,9 @@ from netbox_branching.choices import BranchStatusChoices
 from forward_netbox.choices import ForwardRawDataTypeChoices
 from forward_netbox.choices import ForwardSnapshotStatusModelChoices
 from forward_netbox.choices import ForwardSourceTypeChoices
-from forward_netbox.choices import ForwardTransformMapSourceModelChoices
 
 __all__ = (
     "DataSourceStatusEnum",
-    "ForwardTransformMapSourceModelEnum",
     "ForwardSourceTypeEnum",
     "ForwardSnapshotStatusModelEnum",
     "ForwardRawDataTypeEnum",
@@ -19,9 +17,6 @@ __all__ = (
 )
 
 DataSourceStatusEnum = strawberry.enum(DataSourceStatusChoices.as_enum(prefix="type"))
-ForwardTransformMapSourceModelEnum = strawberry.enum(
-    ForwardTransformMapSourceModelChoices.as_enum(prefix="type")
-)
 ForwardSourceTypeEnum = strawberry.enum(
     ForwardSourceTypeChoices.as_enum(prefix="type")
 )
