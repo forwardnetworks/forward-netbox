@@ -26,8 +26,6 @@ from ..exceptions import ForwardAPIError
 
 from ..choices import ForwardSourceTypeChoices
 from ..exceptions import SearchError
-from ..models import apply_tags
-
 if TYPE_CHECKING:
     from ..models import ForwardIngestion
     from ipam.models import IPAddress
@@ -356,6 +354,9 @@ class ForwardSyncRunner(object):
     def _upsert(self, model_class, lookup: dict, defaults: dict):
         connection_name = self.get_db_connection_name()
         queryset = model_class.objects.using(connection_name)
+        tags_to_apply = []
+        if hasattr(self.sync, "tags"):
+            tags_to_apply = list(self.sync.tags.all())
         with transaction.atomic(using=connection_name):
             try:
                 obj = queryset.get(**lookup)
@@ -372,7 +373,10 @@ class ForwardSyncRunner(object):
                 obj = model_class(**lookup, **defaults)
                 obj.full_clean()
                 obj.save(using=connection_name)
-            apply_tags(obj, self.sync.tags.all(), connection_name)
+            if tags_to_apply and hasattr(obj, "tags"):
+                obj.snapshot()
+                obj.tags.add(*tags_to_apply)
+                obj.save(using=connection_name)
         return obj
 
     def _to_bool(self, value) -> bool:
