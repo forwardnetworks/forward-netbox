@@ -1,0 +1,55 @@
+{% extends 'generic/object.html' %}
+{% load static %}
+{% load form_helpers %}
+{% load i18n %}
+
+{% block content %}
+{{ object.custom_field }}
+
+{% if source %}
+  {% if not object.serial %}
+  <div class="row px-3">
+    <div class="card">
+      <div class="card-body">
+        Device does not have a serial number configured. The serial number is used to match devices between NetBox and IP Fabric.
+      </div>
+    </div>
+  </div>
+  {% elif source.type == "remote" %}
+  <div class="row px-3">
+    <div class="card">
+      <div class="card-body">
+        Device has a remote IP Fabric Source configured and cannot directly query IP Fabric.
+      </div>
+    </div>
+  {% else %}
+  <div class="row px-3">
+    <div class="col col-12 py-3 mx-auto">
+      <form action="{% url 'dcim:device' pk=object.pk %}ipfabric" method="get" class="form form-horizontal">
+        {% render_form form %}
+        <div class="text-end">
+          <button type="submit" class="btn btn-primary">
+            <span class="mdi mdi-magnify" aria-hidden="true"></span> Fetch
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+  <div class="row px-3">
+    <div class="card">
+      <div class="card-body htmx-container table-responsive" id="object_list">
+        {% include 'htmx/table.html' %}
+      </div>
+    </div>
+  </div>
+  {% endif %}
+{% else %}
+  <div class="row px-3">
+    <div class="card">
+      <div class="card-body">
+        Could not find an IP Fabric Source that could have synced this Device. The source is used to match devices between NetBox and IP Fabric instance.
+      </div>
+    </div>
+  </div>
+{% endif %}
+{% endblock %}

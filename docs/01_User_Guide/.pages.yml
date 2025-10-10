@@ -1,0 +1,10 @@
+title: User Guide
+nav:
+  - installation.md
+  - sources.md
+  - syncs.md
+  - transform_maps.md
+  - data_mapping.md
+  - ingestions.md
+  - extras.md
+  - FAQ.md

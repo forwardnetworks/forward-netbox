@@ -1,0 +1,17 @@
+{% extends 'generic/object_list.html' %}
+
+{% block extra_controls %}
+<a href="#"
+  hx-get="{% url 'plugins:ipfabric_netbox:ipfabrictransformmap_restore' %}"
+  hx-target="#htmx-modal-content"
+  class="btn btn-warning"
+  data-bs-toggle="modal"
+  data-bs-target="#htmx-modal"
+>
+  <span class="mdi mdi-file-restore" aria-hidden="true"></span>&nbsp;Restore
+</a>
+{% endblock %}
+
+{% block modals %}
+  {% include 'inc/htmx_modal.html' %}
+{% endblock modals %}

@@ -1,0 +1,12 @@
+{% load helpers %}
+{% load tabs %}
+
+<ul class="nav nav-tabs" role="presentation">
+  {# Primary tab #}
+  <li class="nav-item">
+    <a class="nav-link{% if not tab %} active{% endif %}" href="{{ object.get_absolute_url }}">{{ object|meta:"verbose_name"|bettertitle }}</a>
+  </li>
+
+  {# Include tabs for registered model views #}
+  {% model_view_tabs object %}
+</ul>

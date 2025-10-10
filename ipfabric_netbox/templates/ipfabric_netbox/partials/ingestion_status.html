@@ -1,0 +1,1 @@
+{% badge object.sync.get_status_display bg_color=object.sync.get_status_color %} {% if object.errors and object.errors.count %}(with {{ object.errors.count }} issues){% endif %}

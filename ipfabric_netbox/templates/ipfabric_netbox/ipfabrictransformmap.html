@@ -1,0 +1,52 @@
+{% extends 'generic/object.html' %}
+{% load static %}
+{% load helpers %}
+{% load plugins %}
+{% load render_table from django_tables2 %}
+
+{% block extra_controls %}
+  <a href="#"
+  hx-get="{% url 'plugins:ipfabric_netbox:ipfabrictransformmap_clone' pk=object.pk %}"
+  hx-target="#htmx-modal-content"
+  class="btn btn-primary"
+  data-bs-toggle="modal"
+  data-bs-target="#htmx-modal" disabled
+  >
+  <span class="mdi mdi-content-copy" aria-hidden="true"></span>&nbsp;Clone
+  </a>
+{% endblock %}
+
+{% block content %}
+<div class="row mb-3">
+  <div class="col col-md-6">
+    <div class="card">
+      <h5 class="card-header">Transform Map Information</h5>
+      <div class="card-body">
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">Name</th>
+            <td>{{ object.name }}</td>
+          </tr>
+          <tr>
+            <th scope="row">Group</th>
+            <td>{{ object.group | linkify | placeholder}}</td>
+          </tr>
+          <tr>
+            <th scope="row">Source Model</th>
+            <td>ipfabric | {{ object.source_model }}</td>
+          </tr>
+          <tr>
+            <th scope="row">Target Model</th>
+            <td>{{ object.target_model }}</td>
+          </tr>
+        </table>
+      </div>
+    </div>
+    {% plugin_left_page object %}
+  </div>
+  <div class="col col-md-6">
+    {% include 'inc/panels/custom_fields.html' %}
+    {% plugin_right_page object %}
+  </div>
+</div>
+{% endblock %}

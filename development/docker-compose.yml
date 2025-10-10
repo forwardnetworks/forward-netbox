@@ -1,0 +1,81 @@
+services:
+  netbox: &netbox
+    depends_on:
+      - postgres
+      - redis
+    env_file: env/netbox.env
+    healthcheck:
+      start_period: 5s
+      timeout: 3s
+      interval: 5s
+      # It takes about 180s for NetBox to start from scratch due to migrations
+      retries: 40
+      test: "curl -f http://localhost:8000/api/ || exit 1"
+    volumes:
+      - ./configuration:/etc/netbox/config:ro
+      - ../:/source
+    build:
+      context: ../
+      dockerfile: development/Dockerfile
+      args:
+        NETBOX_VER: "${NETBOX_VER}"
+        IPFABRIC_VER: "${IPFABRIC_VER}"
+  netbox-worker:
+    !!merge <<: *netbox
+    depends_on:
+      netbox:
+        condition: service_healthy
+    command:
+      - /opt/netbox/venv/bin/watchmedo
+      - auto-restart
+      - --directory=/source
+      - --pattern=*.py
+      - --recursive
+      - --
+      - /opt/netbox/venv/bin/python
+      - /opt/netbox/netbox/manage.py
+      - rqworker
+    deploy:
+      mode: replicated
+      replicas: 2
+    healthcheck:
+      start_period: 10s
+      timeout: 3s
+      interval: 10s
+      test: "ps -aux | grep -v grep | grep -q rqworker || exit 1"
+  postgres:
+    image: postgres:16-alpine
+    env_file: env/postgres.env
+    volumes:
+      - netbox-postgres-data:/var/lib/postgresql/data
+  redis:
+    image: redis:7-alpine
+    command:
+      - sh
+      - -c # this is to evaluate the $REDIS_PASSWORD from the env
+      - redis-server --appendonly yes --requirepass $$REDIS_PASSWORD # yamllint disable-line rule:line-length
+    env_file: env/redis.env
+  docs:
+    build:
+      context: ../
+      dockerfile: docs/Dockerfile
+    ports:
+      - "8001:8001"
+    volumes:
+      - ${PWD}/docs:/docs
+      - ${PWD}/mkdocs.yml:/mkdocs.yml
+    command:
+      - /usr/local/bin/watchmedo
+      - auto-restart
+      - --directory=/docs
+      - --pattern=*.md
+      - --recursive
+      - --
+      - mkdocs
+      - serve
+      - --config-file=/mkdocs.yml
+      - --dev-addr=0.0.0.0:8001
+      - --dirtyreload
+volumes:
+  netbox-postgres-data:
+    driver: local

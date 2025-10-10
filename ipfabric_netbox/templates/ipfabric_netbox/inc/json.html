@@ -1,0 +1,20 @@
+<div class="modal-header">
+    <h5 class="modal-title">Raw Data {{ object.pk }}</h5>
+    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+</div>
+<div class="modal-body">
+    <div class="row mb-3">
+        <div class="col-12">
+            <div class="card">
+                <h5 class="card-header">JSON Output</h5>
+                <div class="card-body">
+                    <pre>{{ object.data | json }}</pre>
+                </div>
+            </div>
+      </div>
+    </div>
+</div>
+
+<div class="modal-footer">
+</div>
+</div>

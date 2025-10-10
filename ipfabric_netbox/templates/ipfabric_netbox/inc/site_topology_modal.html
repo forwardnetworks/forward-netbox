@@ -1,0 +1,61 @@
+{% load helpers %}
+
+<div class="modal-body">
+    <div class="d-flex flex-row m-2"">
+    {% if svg %}
+        <div class=" d-flex flex-row flex-grow-1 align-items-center">
+            {{svg|safe}}
+        </div>
+        <div>
+            <div class="position-absolute top-0 end-0 m-2 border rounded p-2">
+                <ul class="list-unstyled">
+                    <li><span>Fetched: {{ time|isodatetime }}</span></li>
+                    <li>Snapshot Name: {{ snapshot.name }}</li>
+                    <li>Snapshot ID: {{ snapshot.snapshot_id }}</li>
+                    <li>Snapshot Date: {{ snapshot.end|isodatetime }}</li>
+                </ul>
+            </div>
+        </div>
+    {% else %}
+        <div class="d-flex flex-row flex-grow-1 align-items-center">
+            {{ error }}
+        </div>
+        {% if snapshot %}
+        <div>
+            <div class="border rounded p-2">
+                <ul class="list-unstyled">
+                    <li><span>Fetched: {{ time|isodatetime }}</span></li>
+                    <li>Snapshot Name: {{ snapshot.name }}</li>
+                    <li>Snapshot ID: {{ snapshot.snapshot_id }}</li>
+                    <li>Snapshot Date: {{ snapshot.end|isodatetime }}</li>
+                </ul>
+            </div>
+        </div>
+        {% endif %}
+    {% endif %}
+</div>
+</div>
+{% if link %}
+<div class="modal-footer">
+    <a href="#" hx-get="{% url 'plugins:ipfabric_netbox:ipfabricsource_topology' pk=source.pk site=site.pk %}?snapshot={{ snapshot.snapshot_id }}"
+        hx-target="#topology-modal-content" class="btn btn-success" hx-indicator=".my-indicator"><span
+            class="spinner-border spinner-border-sm loader my-indicator" role="status" aria-hidden="true"></span>
+        Refresh</a>
+    <a href="{{ link }}" class="btn btn-primary" target="_blank">Open in IP Fabric</a>
+</div>
+{% endif %}
+
+<style type="text/css">
+    .my-indicator {
+        display: none !important;
+        ;
+    }
+
+    .htmx-request .my-indicator {
+        display: inline-block !important;
+    }
+
+    .htmx-request.my-indicator {
+        display: inline-block !important;
+    }
+</style>

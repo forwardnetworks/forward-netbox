@@ -1,0 +1,11 @@
+[coverage:paths]
+source =
+    ipfabric_netbox
+    /source/ipfabric_netbox
+    */site-packages/ipfabric_netbox
+show_missing = True
+
+[coverage:report]
+omit =
+    */tests/*
+    */migrations/*

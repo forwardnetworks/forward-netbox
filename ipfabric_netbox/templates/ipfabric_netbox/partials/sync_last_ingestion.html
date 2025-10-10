@@ -1,0 +1,1 @@
+{% if last_ingestion %}<a href="{% url 'plugins:ipfabric_netbox:ipfabricingestion' pk=last_ingestion.pk %}">{{ last_ingestion.name }}{% else %}{{ ""|placeholder }}{% endif %}</a>

@@ -1,0 +1,19 @@
+{% load helpers %}
+<div class="card">
+    <h5 class="card-header">Progress</h5>
+    <div class="card-body">
+        {% if statistics %}
+        <table class="table table-hover attr-table">
+            {% for model, util in statistics.items %}
+            <tr>
+                <th scope="row">{{ model }}</th>
+                <td>{% utilization_graph util %}</td>
+            </tr>
+            {% endfor %}
+        </table>
+        {% else %}
+        Ingestion progress pending...<br>
+        <small class="text-muted">Last updated {% now "H:i:s" %}</small>
+        {% endif %}
+    </div>
+</div>

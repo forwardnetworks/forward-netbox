@@ -1,0 +1,611 @@
+[
+    {
+        "data": {
+            "created": null,
+            "last_updated": null,
+            "custom_field_data": {},
+            "name": "IP Address Transform Map",
+            "source_model": "ipaddress",
+            "target_model": {
+                "app_label": "ipam",
+                "model": "ipaddress"
+            }
+        },
+        "field_maps": [
+            {
+                "source_field": "sn",
+                "target_field": "assigned_object_id",
+                "coalesce": false,
+                "template": "{% if object.nameOriginal %}{{ dcim.Interface.objects.filter(device__serial=object.sn, name=object.nameOriginal).first().pk }}{% else %}{{ dcim.Interface.objects.filter(device__serial=object.sn, name=object.intName).first().pk }}{% endif %}"
+            },
+            {
+                "source_field": "net",
+                "target_field": "address",
+                "coalesce": true,
+                "template": "{% if object.net %}{% set MASK = object.net.split('/')[1] %}{% else %}{% set MASK = 32 %}{% endif %}{{ object.ip }}/{{MASK}}"
+            }
+        ],
+        "relationship_maps": [
+            {
+                "source_model": {
+                    "app_label": "contenttypes",
+                    "model": "contenttype"
+                },
+                "target_field": "assigned_object_type",
+                "coalesce": false,
+                "template": "{{ contenttypes.ContentType.objects.get(app_label=\"dcim\", model=\"interface\").pk }}"
+            },
+            {
+                "source_model": {
+                    "app_label": "ipam",
+                    "model": "vrf"
+                },
+                "target_field": "vrf",
+                "coalesce": false,
+                "template": "{% if object.vrf is defined and object.vrf | string not in [\"\", \"system\", \"0\"] %}{{ ipam.VRF.objects.filter(name=object.vrf).first().pk }}{% else %}None{% endif %}"
+            }
+        ]
+    },
+    {
+        "data": {
+            "created": null,
+            "last_updated": null,
+            "custom_field_data": {},
+            "name": "Platform Transform Map",
+            "source_model": "device",
+            "target_model": {
+                "app_label": "dcim",
+                "model": "platform"
+            }
+        },
+        "field_maps": [
+            {
+                "source_field": "vendor",
+                "target_field": "slug",
+                "coalesce": true,
+                "template": "{{ object.vendor | slugify }}{%if object.family %}_{{ object.family | slugify }}{% endif %}"
+            },
+            {
+                "source_field": "family",
+                "target_field": "name",
+                "coalesce": false,
+                "template": "{%if object.family %}{{ object.family | slugify }}{% else %}{{ object.vendor }}{% endif %}"
+            }
+        ],
+        "relationship_maps": [
+            {
+                "source_model": {
+                    "app_label": "dcim",
+                    "model": "manufacturer"
+                },
+                "target_field": "manufacturer",
+                "coalesce": false,
+                "template": "{% set SLUG = object.vendor | slugify %}\n{{ dcim.Manufacturer.objects.get(slug=SLUG).pk }}"
+            }
+        ]
+    },
+    {
+        "data": {
+            "created": null,
+            "last_updated": null,
+            "custom_field_data": {},
+            "name": "Site Transform Map",
+            "source_model": "site",
+            "target_model": {
+                "app_label": "dcim",
+                "model": "site"
+            }
+        },
+        "field_maps": [
+            {
+                "source_field": "siteName",
+                "target_field": "slug",
+                "coalesce": true,
+                "template": "{{ object.siteName | slugify }}"
+            },
+            {
+                "source_field": "siteName",
+                "target_field": "name",
+                "coalesce": false,
+                "template": ""
+            }
+        ],
+        "relationship_maps": []
+    },
+    {
+        "data": {
+            "created": null,
+            "last_updated": null,
+            "custom_field_data": {},
+            "name": "Manufacturer Transform Map",
+            "source_model": "device",
+            "target_model": {
+                "app_label": "dcim",
+                "model": "manufacturer"
+            }
+        },
+        "field_maps": [
+            {
+                "source_field": "vendor",
+                "target_field": "slug",
+                "coalesce": true,
+                "template": "{{ object.vendor | slugify }}"
+            },
+            {
+                "source_field": "vendor",
+                "target_field": "name",
+                "coalesce": false,
+                "template": ""
+            }
+        ],
+        "relationship_maps": []
+    },
+    {
+        "data": {
+            "created": null,
+            "last_updated": null,
+            "custom_field_data": {},
+            "name": "Device Transform Map",
+            "source_model": "device",
+            "target_model": {
+                "app_label": "dcim",
+                "model": "device"
+            }
+        },
+        "field_maps": [
+            {
+                "source_field": "hostname",
+                "target_field": "name",
+                "coalesce": false,
+                "template": ""
+            },
+            {
+                "source_field": "sn",
+                "target_field": "serial",
+                "coalesce": true,
+                "template": "{{ object | serial }}"
+            },
+            {
+                "source_field": "hostname",
+                "target_field": "vc_position",
+                "coalesce": false,
+                "template": "{% if object.virtual_chassis is defined %}{{ object.virtual_chassis.member }}{% else %}None{% endif %}"
+            }
+        ],
+        "relationship_maps": [
+            {
+                "source_model": {
+                    "app_label": "dcim",
+                    "model": "virtualchassis"
+                },
+                "target_field": "virtual_chassis",
+                "coalesce": false,
+                "template": "{% if object.virtual_chassis is defined %}{{ dcim.VirtualChassis.objects.filter(name=object.virtual_chassis.master).first().pk }}{% endif %}"
+            },
+            {
+                "source_model": {
+                    "app_label": "dcim",
+                    "model": "platform"
+                },
+                "target_field": "platform",
+                "coalesce": false,
+                "template": "{% set SLUG = object.vendor | slugify %}{% if object.family %}{% set SLUG = SLUG ~ \"_\" ~ object.family | slugify %}{% endif %}\n{{ dcim.Platform.objects.get(slug=SLUG).pk }}"
+            },
+            {
+                "source_model": {
+                    "app_label": "dcim",
+                    "model": "site"
+                },
+                "target_field": "site",
+                "coalesce": false,
+                "template": "{% if object.siteName is defined %}{% set SLUG = object.siteName | slugify %}\n{{ dcim.Site.objects.get(slug=SLUG).pk }}{% else %}None{% endif %}"
+            },
+            {
+                "source_model": {
+                    "app_label": "dcim",
+                    "model": "devicetype"
+                },
+                "target_field": "device_type",
+                "coalesce": false,
+                "template": "{% if object.model %}{% set SLUG = object.model | string | slugify %}{% else %}{% set SLUG = object.vendor | slugify ~ \"-\" ~ object.family | slugify ~ \"-\" ~ object.platform | slugify %}{% endif %}{{ dcim.DeviceType.objects.get(slug=SLUG).pk }}"
+            },
+            {
+                "source_model": {
+                    "app_label": "dcim",
+                    "model": "devicerole"
+                },
+                "target_field": "role",
+                "coalesce": false,
+                "template": "{% if object.devType is defined %}{% set SLUG = object.devType | slugify %}{{ dcim.DeviceRole.objects.get(slug=SLUG).pk }}{% endif %}"
+            }
+        ]
+    },
+    {
+        "data": {
+            "created": null,
+            "last_updated": null,
+            "custom_field_data": {},
+            "name": "Device Role Transform Map",
+            "source_model": "device",
+            "target_model": {
+                "app_label": "dcim",
+                "model": "devicerole"
+            }
+        },
+        "field_maps": [
+            {
+                "source_field": "devType",
+                "target_field": "slug",
+                "coalesce": true,
+                "template": "{{ object.devType | slugify }}"
+            },
+            {
+                "source_field": "devType",
+                "target_field": "vm_role",
+                "coalesce": true,
+                "template": "False"
+            },
+            {
+                "source_field": "devType",
+                "target_field": "name",
+                "coalesce": false,
+                "template": ""
+            }
+        ],
+        "relationship_maps": []
+    },
+    {
+        "data": {
+            "created": null,
+            "last_updated": null,
+            "custom_field_data": {},
+            "name": "Device Type Transform Map",
+            "source_model": "device",
+            "target_model": {
+                "app_label": "dcim",
+                "model": "devicetype"
+            }
+        },
+        "field_maps": [
+            {
+                "source_field": "model",
+                "target_field": "slug",
+                "coalesce": true,
+                "template": "{% if object.model %}{{ object.model | string | slugify }}{% else %}{{ object.vendor | slugify }}-{{ object.family | slugify}}-{{ object.platform | slugify }}{% endif %}"
+            },
+            {
+                "source_field": "model",
+                "target_field": "model",
+                "coalesce": false,
+                "template": "{% if object.model %}{{ object.model | string }}{% else %}{{ object.vendor }} - {{ object.family }} - {{ object.platform }}{% endif %}"
+            }
+        ],
+        "relationship_maps": [
+            {
+                "source_model": {
+                    "app_label": "dcim",
+                    "model": "manufacturer"
+                },
+                "target_field": "manufacturer",
+                "coalesce": false,
+                "template": "{% set SLUG = object.vendor | slugify %}\n{{ dcim.Manufacturer.objects.get(slug=SLUG).pk }}"
+            }
+        ]
+    },
+    {
+        "data": {
+            "created": null,
+            "last_updated": null,
+            "custom_field_data": {},
+            "name": "Interface Transform Map",
+            "source_model": "interface",
+            "target_model": {
+                "app_label": "dcim",
+                "model": "interface"
+            }
+        },
+        "field_maps": [
+            {
+                "source_field": "nameOriginal",
+                "target_field": "name",
+                "coalesce": true,
+                "template": "{% if object.nameOriginal %}{{ object.nameOriginal }}{% else %}{{ object.intName }}{% endif %}"
+            },
+            {
+                "source_field": "dscr",
+                "target_field": "description",
+                "coalesce": false,
+                "template": "{% if (object.dscr | lower) != \"none\" %}{{ object.dscr or \"\" }}{% endif %}"
+            },
+            {
+                "source_field": "mtu",
+                "target_field": "mtu",
+                "coalesce": false,
+                "template": "{{ object.mtu or 1500 }}"
+            },
+            {
+                "source_field": "media",
+                "target_field": "type",
+                "coalesce": false,
+                "template": "1000base-t"
+            },
+            {
+                "source_field": "l1",
+                "target_field": "enabled",
+                "coalesce": false,
+                "template": "{% if object.l1 == \"up\" %}True{% else %}False{% endif %}"
+            },
+            {
+                "source_field": "primaryIp",
+                "target_field": "mgmt_only",
+                "coalesce": false,
+                "template": "{% if object.primaryIp == object.loginIp %}True{% else %}False{% endif %}"
+            },
+            {
+                "source_field": "speedValue",
+                "target_field": "speed",
+                "coalesce": false,
+                "template": "{% if not object.speedValue or object.speedValue==\"unknown\" %}None{% else %}{{ object.speedValue|int // 1000 }}{% endif %}"
+            },
+            {
+                "source_field": "duplex",
+                "target_field": "duplex",
+                "coalesce": false,
+                "template": "{% if not object.duplex or object.duplex==\"unknown\" %}None{% else %}{{ object.duplex }}{% endif %}"
+            }
+        ],
+        "relationship_maps": [
+            {
+                "source_model": {
+                    "app_label": "dcim",
+                    "model": "device"
+                },
+                "target_field": "device",
+                "coalesce": true,
+                "template": "{{ dcim.Device.objects.get(serial=object.sn).pk }}"
+            }
+        ]
+    },
+    {
+        "data": {
+            "created": "2025-02-12T21:43:50.322Z",
+            "last_updated": "2025-02-12T21:43:50.322Z",
+            "custom_field_data": {},
+            "name": "MAC Address Transform Map",
+            "source_model": "interface",
+            "target_model": {
+                "app_label": "dcim",
+                "model": "macaddress"
+            }
+        },
+        "field_maps": [
+        {
+            "source_field": "mac",
+            "target_field": "mac_address",
+            "coalesce": true,
+            "template": "{% if object.mac %}{{ object.mac | mac_to_format(frmt=\"MAC_COLON_TWO\") | upper }}{% else %}{{ \"00:00:00:00:00:01\" | mac_to_format(frmt=\"MAC_COLON_TWO\") | upper }}{% endif %}"
+        },
+        {
+            "source_field": "id",
+            "target_field": "assigned_object_id",
+            "coalesce": true,
+            "template": ""
+        }
+        ],
+        "relationship_maps": [
+            {
+                "source_model": {
+                    "app_label": "contenttypes",
+                    "model": "contenttype"
+                },
+                "target_field": "assigned_object_type",
+                "coalesce": true,
+                "template": "{{ contenttypes.ContentType.objects.get(app_label=\"dcim\", model=\"interface\").pk }}"
+            }
+        ]
+    },
+    {
+        "data": {
+            "created": null,
+            "last_updated": null,
+            "custom_field_data": {},
+            "name": "Inventory Transform Map",
+            "source_model": "part_number",
+            "target_model": {
+                "app_label": "dcim",
+                "model": "inventoryitem"
+            }
+        },
+        "field_maps": [
+            {
+                "source_field": "pid",
+                "target_field": "part_id",
+                "coalesce": false,
+                "template": "{% if object.pid and object.pid != \"None\" %}{{ object.pid }}{% else %}unknown{% endif %}"
+            },
+            {
+                "source_field": "sn",
+                "target_field": "serial",
+                "coalesce": true,
+                "template": ""
+            },
+            {
+                "source_field": "name",
+                "target_field": "name",
+                "coalesce": false,
+                "template": "{% if object.name is not none %}{{ object.name | string | truncate(64, True) }}{% elif object.dscr is not none %}{{ object.dscr | string | truncate(64, True) }}{% else %}Default Name{% endif %}"
+            }
+        ],
+        "relationship_maps": [
+            {
+                "source_model": {
+                    "app_label": "dcim",
+                    "model": "device"
+                },
+                "target_field": "device",
+                "coalesce": false,
+                "template": "{{ dcim.Device.objects.get(serial=object.deviceSn).pk }}"
+            },
+            {
+                "source_model": {
+                    "app_label": "dcim",
+                    "model": "manufacturer"
+                },
+                "target_field": "manufacturer",
+                "coalesce": false,
+                "template": "{% if object.vendor is defined %}{% set SLUG = object.vendor | slugify %}\n{{ dcim.Manufacturer.objects.get(slug=SLUG).pk }}{% endif %}"
+            }
+        ]
+    },
+    {
+        "data": {
+            "created": null,
+            "last_updated": null,
+            "custom_field_data": {},
+            "name": "VLAN Transform Map",
+            "source_model": "vlan",
+            "target_model": {
+                "app_label": "ipam",
+                "model": "vlan"
+            }
+        },
+        "field_maps": [
+            {
+                "source_field": "vlanName",
+                "target_field": "name",
+                "coalesce": false,
+                "template": "{% if object.vlanName is defined and object.vlanName | lower != \"none\" %}{{ object.vlanName | string | truncate(64, True) }}{% else %}\"\"{% endif %}"
+            },
+            {
+                "source_field": "dscr",
+                "target_field": "description",
+                "coalesce": false,
+                "template": "{% if (object.dscr | lower) != \"none\" %}{{ object.dscr or \"\"}}{% endif %}"
+            },
+            {
+                "source_field": "vlanId",
+                "target_field": "vid",
+                "coalesce": true,
+                "template": ""
+            }
+        ],
+        "relationship_maps": [
+            {
+                "source_model": {
+                    "app_label": "dcim",
+                    "model": "site"
+                },
+                "target_field": "site",
+                "coalesce": true,
+                "template": "{% if object.siteName is defined %}{% set SLUG = object.siteName | slugify %}\n{{ dcim.Site.objects.get(slug=SLUG).pk }}{% else %}None{% endif %}"
+            }
+        ]
+    },
+    {
+        "data": {
+            "created": null,
+            "last_updated": null,
+            "custom_field_data": {},
+            "name": "VRF Transform Map",
+            "source_model": "vrf",
+            "target_model": {
+                "app_label": "ipam",
+                "model": "vrf"
+            }
+        },
+        "field_maps": [
+            {
+                "source_field": "vrf",
+                "target_field": "name",
+                "coalesce": true,
+                "template": ""
+            },
+            {
+                "source_field": "rd",
+                "target_field": "rd",
+                "coalesce": true,
+                "template": ""
+            }
+        ],
+        "relationship_maps": []
+    },
+    {
+        "data": {
+            "created": null,
+            "last_updated": null,
+            "custom_field_data": {},
+            "name": "Prefix Transform Map",
+            "source_model": "prefix",
+            "target_model": {
+                "app_label": "ipam",
+                "model": "prefix"
+            }
+        },
+        "field_maps": [
+            {
+                "source_field": "net",
+                "target_field": "prefix",
+                "coalesce": true,
+                "template": ""
+            },
+            {
+                "source_field": "siteName",
+                "target_field": "scope_id",
+                "coalesce": true,
+                "template": "{% if object.siteName is defined %}{% set SLUG = object.siteName | slugify %}\n{{ dcim.Site.objects.get(slug=SLUG).pk }}{% else %}None{% endif %}"
+            }
+        ],
+        "relationship_maps": [
+            {
+                "source_model": {
+                    "app_label": "ipam",
+                    "model": "vrf"
+                },
+                "target_field": "vrf",
+                "coalesce": true,
+                "template": "{% if object.vrf is defined and object.vrf | string not in [\"\", \"system\", \"0\"] %}{{ ipam.VRF.objects.filter(name=object.vrf).first().pk }}{% else %}None{% endif %}"
+            },
+            {
+                "source_model": {
+                    "app_label": "contenttypes",
+                    "model": "contenttype"
+                },
+                "target_field": "scope_type",
+                "coalesce": true,
+                "template": "{% if object.siteName is defined %}{{ contenttypes.ContentType.objects.get(app_label=\"dcim\", model=\"site\").pk }}{% else %}None{% endif %}"
+            }
+        ]
+    },
+    {
+        "data": {
+            "created": null,
+            "last_updated": null,
+            "custom_field_data": {},
+            "name": "Virtual Chassis Transform Map",
+            "source_model": "virtualchassis",
+            "target_model": {
+                "app_label": "dcim",
+                "model": "virtualchassis"
+            }
+        },
+        "field_maps": [
+            {
+                "source_field": "master",
+                "target_field": "name",
+                "coalesce": true,
+                "template": ""
+            }
+        ],
+        "relationship_maps": [
+            {
+                "source_model": {
+                    "app_label": "dcim",
+                    "model": "device"
+                },
+                "target_field": "master",
+                "coalesce": false,
+                "template": "{% set DEVICE = dcim.Device.objects.filter(serial=object.sn).first() %}{% if DEVICE %}{{ DEVICE.pk }}{% endif %}"
+            }
+        ]
+    }
+]

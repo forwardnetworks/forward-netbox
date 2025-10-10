@@ -1,0 +1,173 @@
+# You can override the included template(s) by including variable overrides
+# SAST customization:
+# https://docs.gitlab.com/ee/user/application_security/sast/#customizing-the-sast-settings
+# Secret Detection customization:
+# https://docs.gitlab.com/ee/user/application_security/secret_detection/#customizing-settings
+# Dependency Scanning customization:
+# https://docs.gitlab.com/ee/user/application_security/dependency_scanning/#customizing-the-dependency-scanning-settings
+# Container Scanning customization:
+# https://docs.gitlab.com/ee/user/application_security/container_scanning/#customizing-the-container-scanning-settings
+# Note that environment variables can be set in several places
+# See https://docs.gitlab.com/ee/ci/variables/#cicd-variable-precedence
+
+variables:
+  SAST_EXCLUDED_PATHS: "spec, test, tests, tmp, examples, docs"
+  # Don't collapse multiline commands in GitLab UI
+  FF_SCRIPT_SECTIONS: "true"
+workflow:
+  rules:
+    # For merge requests, create a pipeline.
+    - if: '$CI_MERGE_REQUEST_IID'
+    # For `main` branch, create a pipeline
+    # (this includes on schedules, pushes, merges, etc.).
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    # For tags, create a pipeline.
+    - if: '$CI_COMMIT_TAG'
+    # For commits to Develop
+    - if: '$CI_COMMIT_BRANCH == "develop"'
+include:
+  - project: ip-fabric/integrations/templates/sa-gitlab-ci-shared-lib
+    ref: main
+    file: scan.yml
+  - project: ip-fabric/integrations/templates/sa-gitlab-ci-shared-lib
+    ref: main
+    file: deploy.yml
+  - project: ip-fabric/integrations/templates/sa-gitlab-ci-shared-lib
+    ref: main
+    file: bump_version.yml
+stages:
+  - scan
+  - build
+  - test
+  - versioning
+  - version_commit
+  - deploy
+.bump-netbox-plugin-base:
+  stage: versioning
+  image: python:3.12
+  before_script:
+    - git config --global user.name "Bot IPFabric"
+    - git config --global user.email "devops+github@ipfabric.io"
+    - |
+      echo "CI_COMMIT_AUTHOR: $CI_COMMIT_AUTHOR"
+  script:
+    - pip3 install -U poetry
+    - poetry install --only=dev --no-interaction
+    - poetry run invoke bump-version-of-netbox-plugin
+    - mkdir -p changes
+    - cp --parents ipfabric_netbox/__init__.py changes/
+  artifacts:
+    paths:
+      - changes
+      - version.txt
+      - commit_message.txt
+bump-netbox-plugin-beta-version:
+  extends: .bump-netbox-plugin-base
+  needs: [bump-beta-version]
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: never
+    - if: '$CI_COMMIT_AUTHOR =~ /Bot IPFabric/'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "develop"'
+bump-netbox-plugin-release-version:
+  extends: .bump-netbox-plugin-base
+  needs: [bump-release-version]
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: never
+    - if: '$CI_COMMIT_AUTHOR =~ /Bot IPFabric/'
+      when: never
+    # yamllint disable-line rule:line-length
+    - if: '$CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE != "merge_request_event"'
+      when: always
+netbox_commit_beta_version:
+  extends: commit_beta_version
+  needs: [bump-netbox-plugin-beta-version]
+  rules:
+    - if: '$CI_COMMIT_AUTHOR =~ /Bot IPFabric/'
+      when: never
+    # yamllint disable-line rule:line-length
+    - if: '$CI_COMMIT_BRANCH == "develop" && $CI_PIPELINE_SOURCE != "merge_request_event"'
+      when: always
+netbox_commit_release_version:
+  extends: commit_release_version
+  needs: [bump-netbox-plugin-release-version]
+  rules:
+    - if: '$CI_COMMIT_AUTHOR =~ /Bot IPFabric/'
+      when: never
+    # yamllint disable-line rule:line-length
+    - if: '$CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE != "merge_request_event"'
+      when: always
+commit_beta_version:
+  rules:
+    - when: never
+commit_release_version:
+  rules:
+    - when: never
+build_package:
+  stage: build
+  image: python:3.12
+  before_script:
+    - pip install poetry
+    - poetry install --no-interaction
+  script:
+    - poetry build
+    # Save package name to an environment file for later use
+    - echo "PACKAGE=\"$(ls dist | grep whl)\"" > package.env
+  artifacts:
+    paths:
+      - dist/*.*
+      - package.env
+pre_commit:
+  stage: test
+  image: python:3.12
+  before_script:
+    - pip install poetry
+    - poetry install --only=dev --no-interaction
+  script:
+    - poetry run pre-commit run --all-files
+docs:
+  stage: test
+  image: python:3.12
+  before_script:
+    - pip install -r docs/requirements.txt
+  script:
+    - mkdocs build --strict
+netbox_tests:
+  stage: test
+  tags:
+    # https://docs.gitlab.com/ci/runners/hosted_runners/linux/#docker-in-docker-support
+    - saas-linux-small-amd64
+  image:
+    name: docker:latest
+  needs:
+    - build_package
+  services:
+    - docker:dind
+  before_script:
+    - apk add bash pipx
+    - pipx ensurepath && source ~/.bashrc
+    - pipx install poetry
+    - poetry install --only=dev --no-interaction
+  script: |
+    source package.env
+    # Build the NetBox image with the package built in the previous step
+    # Fail if the package is not provided
+    docker compose --project-name ipfabric-netbox \
+      --project-directory "${CI_PROJECT_DIR}/development" \
+      build \
+      --build-arg PACKAGE="/source/dist/${PACKAGE:-'ERR_NO_PACKAGE'}" \
+      netbox
+    # Start the NetBox container without waiting it to start
+    docker compose --project-name ipfabric-netbox \
+      --project-directory "${CI_PROJECT_DIR}/development" \
+      up -d netbox
+    # Run the tests inside the NetBox container
+    # This uses seprate DB so no need to wait for the NetBox DB to be ready
+    poetry run invoke test
+  artifacts:
+    when: always
+    paths:
+      - coverage.xml
+      - htmlcov

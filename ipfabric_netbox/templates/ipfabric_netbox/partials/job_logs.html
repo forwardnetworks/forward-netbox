@@ -1,0 +1,53 @@
+{% load humanize %}
+{% load helpers %}
+
+<p>
+{% if job.started %}
+Started: <strong>{{ job.started|isodatetime }}</strong>
+{% elif job.scheduled %}
+Scheduled for: <strong>{{ job.scheduled|isodatetime }}</strong> ({{ job.scheduled|naturaltime }})
+{% else %}
+Created: <strong>{{ job.created|isodatetime }}</strong>
+{% endif %}
+{% if job.completed %}
+Duration: <strong>{{ job.duration }}</strong>
+{% endif %}
+<span id="pending-result-label">{% badge job.get_status_display job.get_status_color %}</span>
+</p>
+{% if not job.completed %}
+{% include 'ipfabric_netbox/inc/logs_pending.html' %}
+{% endif %}
+<div class="card">
+<h5 class="card-header">Sync Results</h5>
+<div class="card-body">
+    <table class="table table-hover report">
+    <thead>
+        <tr class="table-headings">
+        <th>Time</th>
+        <th>Level</th>
+        <th>Object</th>
+        <th>Message</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for time, level, obj, url, message in job_results.logs %}
+        <tr class="{% if level == 'failure' %}danger{% elif level %}{{ level }}{% endif %}">
+        <td>{{ time }}</td>
+        <td>
+            <label class="badge bg-{% if level == 'failure' %}danger{% else %}{{ level }}{% endif %}">{{ level|title }}</label>
+        </td>
+        <td>
+            {% if obj and url %}
+            <a href="{{ url }}">{{ obj }}</a>
+            {% elif obj %}
+            {{ obj }}
+            {% else %}
+            {{ ''|placeholder }}
+            {% endif %}
+        </td>
+        <td class="rendered-markdown">{{ message|markdown }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+    </table>
+</div>
