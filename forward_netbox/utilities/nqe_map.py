@@ -44,6 +44,7 @@ def restore_default_nqe_map() -> None:
     """Restore the NQE query map to the shipped defaults."""
 
     from ..models import ForwardNQEQuery
+    from ..models import ForwardSync
 
     defaults = _load_json_defaults()
     content_types = {
