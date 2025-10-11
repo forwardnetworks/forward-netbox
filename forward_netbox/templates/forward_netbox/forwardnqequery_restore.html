@@ -1,11 +1,12 @@
-{% extends 'htmx/modal.html' %}
-{% load form_helpers i18n %}
+{% load form_helpers %}
+{% load i18n %}
 
-{% block title %}{% trans "Restore Forward NQE Maps" %}{% endblock %}
-
-{% block content %}
-  <form action="{% url 'plugins:forward_netbox:forwardnqequery_restore' %}" method="post">
-    {% csrf_token %}
+<form action="{% url 'plugins:forward_netbox:forwardnqequery_restore' %}" method="post">
+  {% csrf_token %}
+  <div class="modal-header">
+    <h5 class="modal-title">{% trans "Confirm Restore" %}</h5>
+  </div>
+  <div class="modal-body">
     <p>
       {% blocktrans trimmed %}
         Are you sure you want to <strong class="text-danger">restore</strong> the Forward NQE Maps? This action overwrites the default query definitions and removes any per-sync overrides.
@@ -25,11 +26,11 @@
     {% endif %}
 
     {% render_form form %}
-    <div class="text-end">
-      <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">{% trans "Cancel" %}</button>
-      <button type="submit" class="btn btn-warning">
-        <i class="mdi mdi-restore" aria-hidden="true"></i> {% trans "Restore" %}
-      </button>
-    </div>
-  </form>
-{% endblock %}
+  </div>
+  <div class="modal-footer">
+    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">{% trans "Cancel" %}</button>
+    <button type="submit" class="btn btn-warning">
+      <span class="mdi mdi-file-restore" aria-hidden="true"></span>&nbsp;{% trans "Restore" %}
+    </button>
+  </div>
+</form>
