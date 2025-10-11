@@ -1,7 +1,7 @@
 {% load form_helpers %}
 {% load i18n %}
 
-<form action="{% url 'plugins:forward_netbox:forwardnqequery_restore' %}" method="post">
+<form action="{{ form_url }}" method="post">
   {% csrf_token %}
   <div class="modal-header">
     <h5 class="modal-title">{% trans "Confirm Restore" %}</h5>
@@ -9,27 +9,50 @@
   <div class="modal-body">
     <p>
       {% blocktrans trimmed %}
-        Are you sure you want to <strong class="text-danger">restore</strong> the Forward NQE Maps? This action overwrites the default query definitions and removes any per-sync overrides.
+        Are you sure you want to <strong class="text-danger">restore</strong> the NQE Maps? This action overwrites the shipped query definitions and removes any per-sync overrides.
       {% endblocktrans %}
     </p>
-
-    {% if dependent_summary %}
-      <p>{% trans "The following objects will be deleted or reset:" %}</p>
-      <div class="list-group list-group-flush mb-3">
-        {% for summary in dependent_summary %}
-          <div class="list-group-item d-flex justify-content-between align-items-center">
-            <span class="fs-5 fw-bold">{{ summary.count }}</span>
-            <span>{{ summary.label }}</span>
+    {% if dependent_objects %}
+      <p>{% trans "The following objects will be deleted or reset as a result of this action." %}</p>
+      <div class="accordion" id="nqeRestoreAccordion">
+        {% for model, instances in dependent_objects.items %}
+          <div class="accordion-item">
+            <h2 class="accordion-header" id="nqeRestoreHeading{{ forloop.counter }}">
+              <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#nqeCollapse{{ forloop.counter }}" aria-expanded="false" aria-controls="nqeCollapse{{ forloop.counter }}">
+                {% with object_count=instances|length %}
+                  {{ object_count }}
+                  {% if object_count == 1 %}
+                    {{ model|meta:"verbose_name" }}
+                  {% else %}
+                    {{ model|meta:"verbose_name_plural" }}
+                  {% endif %}
+                {% endwith %}
+              </button>
+            </h2>
+            <div id="nqeCollapse{{ forloop.counter }}" class="accordion-collapse collapse" aria-labelledby="nqeRestoreHeading{{ forloop.counter }}" data-bs-parent="#nqeRestoreAccordion">
+              <div class="accordion-body p-0">
+                <div class="list-group list-group-flush">
+                  {% for instance in instances %}
+                    {% with url=instance.get_absolute_url %}
+                      <a {% if url %}href="{{ url }}" {% endif %}class="list-group-item list-group-item-action">{{ instance }}</a>
+                    {% endwith %}
+                  {% endfor %}
+                </div>
+              </div>
+            </div>
           </div>
         {% endfor %}
       </div>
     {% endif %}
-
     {% render_form form %}
   </div>
   <div class="modal-footer">
-    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">{% trans "Cancel" %}</button>
-    <button type="submit" class="btn btn-warning">
+    {% if return_url %}
+      <a href="{{ return_url }}" class="btn btn-outline-secondary">{% trans "Cancel" %}</a>
+    {% else %}
+      <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">{% trans "Cancel" %}</button>
+    {% endif %}
+    <button type="submit" class="btn btn-danger">
       <span class="mdi mdi-file-restore" aria-hidden="true"></span>&nbsp;{% trans "Restore" %}
     </button>
   </div>

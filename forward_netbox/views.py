@@ -103,28 +103,28 @@ class ForwardNQEQueryRestoreView(PermissionRequiredMixin, View):
     raise_exception = True
 
     def get(self, request):
-        form = ConfirmationForm(initial=request.GET)
-        dependent_summary = [
-            {
-                "label": "Forward NQE Queries",
-                "count": ForwardNQEQuery.objects.count(),
-            },
-            {
-                "label": "Forward Sync overrides",
-                "count": ForwardSync.objects.filter(
+        if request.htmx:
+            form = ConfirmationForm(initial=request.GET)
+            form_url = reverse("plugins:forward_netbox:forwardnqequery_restore")
+            dependent_objects = {
+                ForwardNQEQuery: ForwardNQEQuery.objects.all(),
+                ForwardSync: ForwardSync.objects.filter(
                     parameters__has_key="nqe_map"
-                ).count(),
-            },
-        ]
-        dependent_summary = [item for item in dependent_summary if item["count"]]
-        return render(
-            request,
-            self.template_name,
-            {
-                "form": form,
-                "dependent_summary": dependent_summary,
-            },
-        )
+                ),
+            }
+            dependent_objects = {
+                model: qs for model, qs in dependent_objects.items() if qs.exists()
+            }
+            return render(
+                request,
+                self.template_name,
+                {
+                    "form": form,
+                    "form_url": form_url,
+                    "dependent_objects": dependent_objects,
+                },
+            )
+        return redirect(reverse("plugins:forward_netbox:forwardnqequery_list"))
 
     def post(self, request):
         restore_default_nqe_map()
