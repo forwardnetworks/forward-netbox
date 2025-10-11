@@ -3,13 +3,7 @@
 
 {% block title %}Forward NQE Map{% endblock %}
 
-{% block buttons %}
-  {% if perms.forward_netbox.add_forwardnqequery %}
-    <a href="{% url 'plugins:forward_netbox:forwardnqequery_add' %}"
-       class="btn btn-primary">
-      <i class="mdi mdi-plus-thick" aria-hidden="true"></i> {% trans "Add" %}
-    </a>
-  {% endif %}
+{% block extra_controls %}
   {% if perms.forward_netbox.add_forwardnqequery %}
     <a href="{% url 'plugins:forward_netbox:forwardnqequery_restore' %}"
        hx-get="{% url 'plugins:forward_netbox:forwardnqequery_restore' %}"
@@ -17,7 +11,7 @@
        data-bs-toggle="modal"
        data-bs-target="#htmx-modal"
        class="btn btn-warning">
-      <i class="mdi mdi-restore" aria-hidden="true"></i> {% trans "Restore Defaults" %}
+      <i class="mdi mdi-restore" aria-hidden="true"></i> {% trans "Restore" %}
     </a>
   {% endif %}
 {% endblock %}
