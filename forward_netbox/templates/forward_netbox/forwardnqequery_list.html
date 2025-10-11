@@ -1,16 +1,17 @@
 {% extends 'generic/object_list.html' %}
 {% load i18n %}
 
-{% block title %}Forward NQE Map{% endblock %}
+{% block title %}Forward NQE Maps{% endblock %}
 
 {% block extra_controls %}
   {% if perms.forward_netbox.add_forwardnqequery %}
-    <a href="{% url 'plugins:forward_netbox:forwardnqequery_restore' %}"
+    <a href="#"
        hx-get="{% url 'plugins:forward_netbox:forwardnqequery_restore' %}"
        hx-target="#htmx-modal-content"
+       hx-swap="innerHTML"
        data-bs-toggle="modal"
-       data-bs-target="#htmx-modal"
-       class="btn btn-warning">
+        data-bs-target="#htmx-modal"
+        class="btn btn-warning">
       <i class="mdi mdi-restore" aria-hidden="true"></i> {% trans "Restore" %}
     </a>
   {% endif %}

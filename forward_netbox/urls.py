@@ -69,7 +69,7 @@ urlpatterns = (
         views.ForwardSyncDeleteView.as_view(),
         name="forwardsync_delete",
     ),
-    # NQE Map
+    # NQE Maps
     path(
         "nqe-map/",
         views.ForwardNQEQueryListView.as_view(),

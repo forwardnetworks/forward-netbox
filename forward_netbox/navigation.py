@@ -53,7 +53,7 @@ nqe_buttons = [
 
 nqe_map = PluginMenuItem(
     link="plugins:forward_netbox:forwardnqequery_list",
-    link_text="NQE Map",
+    link_text="NQE Maps",
     permissions=["forward_netbox.view_forwardnqequery"],
     buttons=nqe_buttons,
 )

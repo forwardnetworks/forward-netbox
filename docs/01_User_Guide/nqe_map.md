@@ -2,9 +2,9 @@
 description: Managing Forward Enterprise NQE queries for the NetBox plugin.
 ---
 
-# NQE Map
+# NQE Maps
 
-The Forward NetBox plugin uses Forward Enterprise NQE queries to collect data for each NetBox model. The **NQE Map** page lists every model that can be synced, the query ID that is executed, and whether the model is currently enabled. Use this view to adjust the default queries or to add additional DCIM/IPAM models that you want to sync.
+The Forward NetBox plugin uses Forward Enterprise NQE queries to collect data for each NetBox model. The **NQE Maps** page lists every model that can be synced, the query ID that is executed, and whether the model is currently enabled. Use this view to adjust the default queries or to add additional DCIM/IPAM models that you want to sync.
 
 ## Viewing and Editing Entries
 

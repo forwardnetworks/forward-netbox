@@ -65,7 +65,7 @@ from .utilities.fwdutils import Forward
 from .utilities.nqe_map import restore_default_nqe_map
 
 
-# NQE Map
+# NQE Maps
 
 
 class ForwardNQEQueryListView(generic.ObjectListView):
@@ -104,7 +104,27 @@ class ForwardNQEQueryRestoreView(PermissionRequiredMixin, View):
 
     def get(self, request):
         form = ConfirmationForm(initial=request.GET)
-        return render(request, self.template_name, {"form": form})
+        dependent_summary = [
+            {
+                "label": "Forward NQE Queries",
+                "count": ForwardNQEQuery.objects.count(),
+            },
+            {
+                "label": "Forward Sync overrides",
+                "count": ForwardSync.objects.filter(
+                    parameters__has_key="nqe_map"
+                ).count(),
+            },
+        ]
+        dependent_summary = [item for item in dependent_summary if item["count"]]
+        return render(
+            request,
+            self.template_name,
+            {
+                "form": form,
+                "dependent_summary": dependent_summary,
+            },
+        )
 
     def post(self, request):
         restore_default_nqe_map()

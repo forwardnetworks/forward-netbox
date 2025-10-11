@@ -1,13 +1,32 @@
 {% extends 'htmx/modal.html' %}
 {% load form_helpers i18n %}
 
-{% block title %}{% trans "Restore Forward NQE Map" %}{% endblock %}
+{% block title %}{% trans "Restore Forward NQE Maps" %}{% endblock %}
 
 {% block content %}
   <form action="{% url 'plugins:forward_netbox:forwardnqequery_restore' %}" method="post">
     {% csrf_token %}
+    <p>
+      {% blocktrans trimmed %}
+        Are you sure you want to <strong class="text-danger">restore</strong> the Forward NQE Maps? This action overwrites the default query definitions and removes any per-sync overrides.
+      {% endblocktrans %}
+    </p>
+
+    {% if dependent_summary %}
+      <p>{% trans "The following objects will be deleted or reset:" %}</p>
+      <div class="list-group list-group-flush mb-3">
+        {% for summary in dependent_summary %}
+          <div class="list-group-item d-flex justify-content-between align-items-center">
+            <span class="fs-5 fw-bold">{{ summary.count }}</span>
+            <span>{{ summary.label }}</span>
+          </div>
+        {% endfor %}
+      </div>
+    {% endif %}
+
     {% render_form form %}
     <div class="text-end">
+      <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">{% trans "Cancel" %}</button>
       <button type="submit" class="btn btn-warning">
         <i class="mdi mdi-restore" aria-hidden="true"></i> {% trans "Restore" %}
       </button>
