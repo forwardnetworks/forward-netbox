@@ -1,0 +1,43 @@
+{% extends 'generic/object.html' %}
+{% load helpers i18n %}
+
+{% block breadcrumbs %}
+  <li class="breadcrumb-item"><a href="{% url 'plugins:forward_netbox:forwardnqequery_list' %}">{% trans "NQE Map" %}</a></li>
+  <li class="breadcrumb-item active" aria-current="page">{{ object }}</li>
+{% endblock %}
+
+{% block content %}
+  <div class="card">
+    <h5 class="card-header">{% trans "Details" %}</h5>
+    <div class="card-body">
+      <table class="table table-hover attr-table">
+        <tr>
+          <th scope="row">{% trans "Name" %}</th>
+          <td>{{ object.label }}</td>
+        </tr>
+        <tr>
+          <th scope="row">{% trans "App" %}</th>
+          <td>{{ object.app_label_display }}</td>
+        </tr>
+        <tr>
+          <th scope="row">{% trans "Model" %}</th>
+          <td>{{ object.model_display }}</td>
+        </tr>
+        <tr>
+          <th scope="row">{% trans "NQE Query ID" %}</th>
+          <td><code>{{ object.query_id }}</code></td>
+        </tr>
+        <tr>
+          <th scope="row">{% trans "Enabled" %}</th>
+          <td>{% checkmark object.enabled %}</td>
+        </tr>
+        <tr>
+          <th scope="row">{% trans "Description" %}</th>
+          <td>{{ object.description|placeholder }}</td>
+        </tr>
+      </table>
+    </div>
+  </div>
+
+  {% include 'inc/panels/tags.html' %}
+{% endblock %}

@@ -102,6 +102,18 @@ class ForwardNQEQuery(NetBoxModel):
             return "NQE Query"
         return f"{self.content_type.app_label}.{self.content_type.model}"
 
+    @property
+    def app_label_display(self) -> str:
+        if not self.content_type_id:
+            return ""
+        return self.content_type.app_label.upper()
+
+    @property
+    def model_display(self) -> str:
+        if not self.content_type_id:
+            return ""
+        return self.content_type.model.replace("_", " ").title()
+
     def get_absolute_url(self):
         return reverse("plugins:forward_netbox:forwardnqequery", args=[self.pk])
 

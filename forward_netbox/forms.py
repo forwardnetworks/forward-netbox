@@ -91,6 +91,12 @@ class ForwardNQEQueryForm(NetBoxModelForm):
             "content_type": HTMXSelect(),
         }
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.instance and self.instance.pk:
+            self.fields["content_type"].disabled = True
+            self.fields["content_type"].widget.attrs["readonly"] = True
+
 def str_to_list(_str: str | list) -> list[str]:
     if not isinstance(_str, list):
         return [_str]
