@@ -109,7 +109,11 @@ class ForwardNQEQueryRestoreView(PermissionRequiredMixin, View):
     def post(self, request):
         restore_default_nqe_map()
         messages.success(request, "Forward NQE map restored to defaults.")
-        return redirect("plugins:forward_netbox:forwardnqequery_list")
+        response = redirect("plugins:forward_netbox:forwardnqequery_list")
+        if request.htmx:
+            response.status_code = 204
+            response["HX-Redirect"] = response.url
+        return response
 
 
 # Snapshot

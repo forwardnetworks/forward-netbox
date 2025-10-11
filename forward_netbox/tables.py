@@ -41,7 +41,6 @@ DATA_BUTTON = """
 
 
 class ForwardNQEQueryTable(NetBoxTable):
-    label = tables.Column(verbose_name="Name", linkify=True, orderable=False)
     app_label = tables.Column(
         accessor="app_label_display",
         verbose_name="App",
@@ -50,6 +49,7 @@ class ForwardNQEQueryTable(NetBoxTable):
     model = tables.Column(
         accessor="model_display",
         verbose_name="Model",
+        linkify=True,
         order_by=("content_type__model",),
     )
     query_id = tables.Column(verbose_name="NQE Query ID", orderable=True)
@@ -59,8 +59,8 @@ class ForwardNQEQueryTable(NetBoxTable):
 
     class Meta(NetBoxTable.Meta):
         model = ForwardNQEQuery
-        fields = ("label", "app_label", "model", "query_id", "enabled", "description")
-        default_columns = ("label", "app_label", "model", "query_id", "enabled")
+        fields = ("app_label", "model", "query_id", "enabled", "description")
+        default_columns = ("app_label", "model", "query_id", "enabled")
 
 
 class ForwardIngestionTable(NetBoxTable):

@@ -21,6 +21,7 @@ def get_default_nqe_map() -> dict[str, dict[str, object]]:
     """Return the default NQE query mapping."""
 
     from ..models import ForwardNQEQuery
+    from ..models import ForwardSync
 
     mapping: dict[str, dict[str, object]] = {}
     for entry in ForwardNQEQuery.objects.select_related("content_type").all():
@@ -71,5 +72,12 @@ def restore_default_nqe_map() -> None:
         ForwardNQEQuery.objects.exclude(content_type_id__in=seen_ids).delete()
     else:
         ForwardNQEQuery.objects.all().delete()
+
+    # Clear per-sync overrides so restored defaults take effect
+    for sync in ForwardSync.objects.exclude(parameters__isnull=True):
+        params = dict(sync.parameters)
+        if params.pop("nqe_map", None) is not None:
+            sync.parameters = params
+            sync.save(update_fields=["parameters"])
 
     get_default_nqe_map.cache_clear()
