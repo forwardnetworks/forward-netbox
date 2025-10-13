@@ -1,9 +1,10 @@
 # Contributing to Forward NetBox
 
 Thanks for your interest in the Forward Networks NetBox plugin! This project is
-maintained on a best-effort basis by Craig Johnson and is intentionally
-unsupported by Forward Networks services. Contributions are welcome, and the
-simplest ways to get involved are:
+maintained on a best-effort basis by Craig Johnson (Principal Solutions
+Architect, Forward Networks) and is intentionally unsupported by Forward
+Networks services. Contributions are welcome, and the simplest ways to get
+involved are:
 
 - Open a GitHub issue for bugs, enhancement ideas, or questions.
 - Email [craigjohnson@forwardnetworks.com](mailto:craigjohnson@forwardnetworks.com)
