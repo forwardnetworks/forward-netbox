@@ -60,8 +60,13 @@ class ForwardRESTClient:
             "Accept": "application/json",
         }
         if token:
-            headers["Authorization"] = f"Bearer {token}"
+            if token.lower().startswith("basic "):
+                headers["Authorization"] = token
+            else:
+                headers["Authorization"] = f"Basic {token}"
         headers["User-Agent"] = f"forward-netbox/{metadata.version('forward-netbox')}"
+        if session:
+            session.headers.update(headers)
         self._client = session or httpx.Client(
             base_url=self.base_url,
             headers=headers,

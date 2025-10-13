@@ -9,9 +9,12 @@ from forward_netbox.exceptions import ForwardAPIError
 
 class ForwardRESTClientSnapshotTest(SimpleTestCase):
     def _make_client(self, response_json, *, path_expected):
+        expected_auth = "Basic test-token"
+
         def handler(request: httpx.Request) -> httpx.Response:
             assert request.method == "GET"
             assert request.url.path == path_expected
+            assert request.headers.get("Authorization") == expected_auth
             return httpx.Response(200, json=response_json)
 
         transport = httpx.MockTransport(handler)
@@ -19,7 +22,7 @@ class ForwardRESTClientSnapshotTest(SimpleTestCase):
         self.addCleanup(session.close)
         return ForwardRESTClient(
             base_url="https://example.com",
-            token=None,
+            token="test-token",
             verify=True,
             network_id="12345",
             session=session,
