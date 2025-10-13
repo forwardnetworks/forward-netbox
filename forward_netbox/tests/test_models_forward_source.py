@@ -1,6 +1,11 @@
-from django.test import TestCase
+from datetime import timedelta
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
-from forward_netbox.models import ForwardSource
+from django.test import TestCase
+from django.utils import timezone
+
+from forward_netbox.models import ForwardSource, ForwardSnapshot
 from forward_netbox.choices import ForwardSourceTypeChoices
 
 
@@ -28,3 +33,36 @@ class ForwardSourceModelTest(TestCase):
         source_pk = source.pk
         source.delete()
         self.assertFalse(ForwardSource.objects.filter(pk=source_pk).exists())
+
+    @patch("forward_netbox.models.ForwardSource.get_client")
+    def test_sync_creates_latest_snapshot_entry(self, mock_get_client):
+        now = timezone.now()
+        mock_client = MagicMock()
+        mock_client.list_snapshots.return_value = [
+            {
+                "snapshot_id": "100",
+                "name": "Snap 100",
+                "status": "loaded",
+                "start": now.isoformat(),
+                "end": (now + timedelta(minutes=1)).isoformat(),
+                "processed_at_millis": int(now.timestamp() * 1000),
+            },
+            {
+                "snapshot_id": "200",
+                "name": "Snap 200",
+                "status": "loaded",
+                "start": (now + timedelta(minutes=2)).isoformat(),
+                "end": (now + timedelta(minutes=3)).isoformat(),
+                "processed_at_millis": int((now.timestamp() + 300) * 1000),
+            },
+        ]
+        mock_get_client.return_value = mock_client
+
+        source = ForwardSource.objects.create(**self.base_kwargs)
+        job = SimpleNamespace(pk=1, data=None)
+
+        source.sync(job=job)
+
+        latest = ForwardSnapshot.objects.get(source=source, snapshot_id="$last")
+        self.assertEqual(latest.resolve_snapshot_id(), "200")
+        self.assertEqual(latest.status, "loaded")

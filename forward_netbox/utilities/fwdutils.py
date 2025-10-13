@@ -174,6 +174,8 @@ class ForwardRESTClient:
                     "state": state,
                     "start": _to_iso(item.get("creationDateMillis")),
                     "end": _to_iso(item.get("processedAtMillis")),
+                    "processed_at_millis": item.get("processedAtMillis"),
+                    "creation_date_millis": item.get("creationDateMillis"),
                     "network_id": self.network_id,
                 }
             )

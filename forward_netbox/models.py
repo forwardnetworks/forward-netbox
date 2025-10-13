@@ -270,6 +270,8 @@ class ForwardSource(ForwardClient, JobsMixin, PrimaryModel):
             client = self.get_client(parameters=client_parameters)
 
             snapshots = client.list_snapshots()
+            latest_snapshot: dict | None = None
+            latest_order: float | None = None
             for snapshot in snapshots:
                 snapshot_ref = snapshot.get("ref") or snapshot.get("snapshot_ref")
                 snapshot_id = snapshot.get("snapshot_id") or snapshot_ref
@@ -299,6 +301,46 @@ class ForwardSource(ForwardClient, JobsMixin, PrimaryModel):
                 self.logger.log_info(
                     f"Created/Updated Snapshot {snapshot_obj.name} ({snapshot_obj.snapshot_id})",
                     obj=snapshot_obj,  # noqa E225
+                )
+
+                order_value = snapshot.get("processed_at_millis")
+                if order_value is not None:
+                    order_value = float(order_value)
+                else:
+                    end_str = snapshot.get("end") or snapshot.get("finished_at")
+                    end = parse_datetime(end_str) if end_str else None
+                    order_value = end.timestamp() if end else start.timestamp()
+
+                if latest_order is None or order_value > latest_order:
+                    latest_order = order_value
+                    latest_snapshot = {
+                        "snapshot_id": snapshot_id,
+                        "name": name,
+                        "status": data["status"],
+                        "date": start,
+                        "snapshot": snapshot,
+                    }
+
+            if latest_snapshot:
+                latest_defaults = {
+                    "name": f"Latest Snapshot ({latest_snapshot['snapshot_id']})",
+                    "data": {
+                        "resolved_snapshot_id": latest_snapshot["snapshot_id"],
+                        "snapshot": latest_snapshot["snapshot"],
+                    },
+                    "date": latest_snapshot["date"],
+                    "created": timezone.now(),
+                    "last_updated": timezone.now(),
+                    "status": latest_snapshot["status"],
+                }
+                latest_obj, _ = ForwardSnapshot.objects.update_or_create(
+                    source=self,
+                    snapshot_id="$last",
+                    defaults=latest_defaults,
+                )
+                self.logger.log_info(
+                    f"Created/Updated Snapshot {latest_obj.name} ({latest_obj.snapshot_id})",
+                    obj=latest_obj,
                 )
             self.status = DataSourceStatusChoices.COMPLETED
             self.logger.log_success(f"Completed syncing snapshots from {self.name}")
@@ -353,6 +395,25 @@ class ForwardSnapshot(TagsMixin, ChangeLoggedModel):
 
     def get_absolute_url(self):
         return reverse("plugins:forward_netbox:forwardsnapshot", args=[self.pk])
+
+    def resolve_snapshot_id(self) -> str:
+        if self.snapshot_id != "$last":
+            return self.snapshot_id
+
+        if self.data:
+            resolved = self.data.get("resolved_snapshot_id")
+            if resolved:
+                return resolved
+
+        latest = (
+            self.source.snapshots.exclude(snapshot_id="$last")
+            .filter(status="loaded")
+            .order_by("-date", "-pk")
+            .first()
+        )
+        if latest:
+            return latest.snapshot_id
+        raise SyncError("No loaded snapshots available to resolve $last")
 
     def get_status_color(self):
         return ForwardSnapshotStatusModelChoices.colors.get(self.status)
@@ -516,7 +577,12 @@ class ForwardSync(ForwardClient, JobsMixin, TagsMixin, ChangeLoggedModel):
         logger.info(f"Ingesting data from {self.snapshot_data.source.name}")
 
         self.snapshot_data.source.parameters["base_url"] = self.snapshot_data.source.url
-        self.parameters["snapshot_id"] = self.snapshot_data.snapshot_id
+        resolved_snapshot_id = self.snapshot_data.resolve_snapshot_id()
+        if self.snapshot_data.snapshot_id == "$last":
+            self.logger.log_info(
+                f"Resolved '$last' to snapshot {resolved_snapshot_id}", obj=self.snapshot_data
+            )
+        self.parameters["snapshot_id"] = resolved_snapshot_id
         self.logger.log_info(
             f"Syncing with the following data {json.dumps(self.parameters)}", obj=self
         )
