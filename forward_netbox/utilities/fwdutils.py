@@ -578,7 +578,7 @@ class ForwardSyncRunner(object):
         if not name:
             raise SearchError("Manufacturer name is required.", model="dcim.manufacturer", data=item)
         slug = item.get("slug") or slugify(name)
-        defaults = {"name": name, "slug": slug}
+        defaults = {"name": name}
         for field in ("description", "comments"):
             if item.get(field) is not None:
                 defaults[field] = item[field]
