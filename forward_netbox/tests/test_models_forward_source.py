@@ -2,6 +2,7 @@ from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.utils import timezone
 
@@ -59,7 +60,11 @@ class ForwardSourceModelTest(TestCase):
         mock_get_client.return_value = mock_client
 
         source = ForwardSource.objects.create(**self.base_kwargs)
-        job = SimpleNamespace(pk=1, data=None)
+        User = get_user_model()
+        user = User.objects.create_superuser(
+            username="tester", email="tester@example.com", password="pass"
+        )
+        job = SimpleNamespace(pk=1, data=None, user=user)
 
         source.sync(job=job)
 

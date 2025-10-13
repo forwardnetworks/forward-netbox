@@ -249,134 +249,135 @@ class ForwardSource(ForwardClient, JobsMixin, PrimaryModel):
     def sync(self, job):
         self.logger = SyncLogging(job=job.pk)
         request_token = None
-        current_user = job.user
-        if not current_user:
-            from django.contrib.auth import get_user_model
-
-            User = get_user_model()
-            current_user = (
-                User.objects.filter(is_active=True, is_superuser=True)
-                .order_by("pk")
-                .first()
-            )
-            if not current_user:
-                raise SyncError(
-                    "Cannot sync snapshots: no user context available. Provide a user or create a superuser."
-                )
-            job.user = current_user
-
-        request_token = current_request.set(
-            NetBoxFakeRequest({"id": uuid4(), "user": current_user})
-        )
-
-        if self.status == DataSourceStatusChoices.SYNCING:
-            self.logger.log_failure(
-                "Cannot initiate sync; syncing already in progress.", obj=self
-            )
-            raise SyncError("Cannot initiate sync; syncing already in progress.")
-
-        pre_sync.send(sender=self.__class__, instance=self)
-
-        self.status = DataSourceStatusChoices.SYNCING
-        ForwardSource.objects.filter(pk=self.pk).update(status=self.status)
-
-        # Begin Sync
+        current_user = getattr(job, "user", None)
         try:
-            self.logger.log_info(f"Syncing snapshots from {self.name}", obj=self)
-            logger.debug(f"Syncing snapshots from {self.url}")
+            if not current_user:
+                from django.contrib.auth import get_user_model
 
-            client_parameters = dict(self.parameters or {})
-            client_parameters["base_url"] = self.url
-            if self.network_id:
-                client_parameters["network_id"] = self.network_id
-            client = self.get_client(parameters=client_parameters)
-
-            snapshots = client.list_snapshots()
-            latest_snapshot: dict | None = None
-            latest_order: float | None = None
-            for snapshot in snapshots:
-                snapshot_ref = snapshot.get("ref") or snapshot.get("snapshot_ref")
-                snapshot_id = snapshot.get("snapshot_id") or snapshot_ref
-                if snapshot_id in ["$prev", "$lastLocked"]:
-                    continue
-
-                status = snapshot.get("status") or snapshot.get("state")
-                finish_status = snapshot.get("finish_status") or snapshot.get("finishState")
-                if status not in ("done", "loaded") and finish_status not in ("done", "loaded"):
-                    continue
-
-                name = snapshot.get("name") or snapshot_id
-                start_str = snapshot.get("start") or snapshot.get("started_at")
-                start = parse_datetime(start_str) if start_str else timezone.now()
-
-                data = {
-                    "name": name,
-                    "data": snapshot,
-                    "date": start,
-                    "created": timezone.now(),
-                    "last_updated": timezone.now(),
-                    "status": "loaded" if status in ("done", "loaded") else status,
-                }
-                snapshot_obj, _ = ForwardSnapshot.objects.update_or_create(
-                    source=self, snapshot_id=snapshot_id, defaults=data
+                User = get_user_model()
+                current_user = (
+                    User.objects.filter(is_active=True, is_superuser=True)
+                    .order_by("pk")
+                    .first()
                 )
-                self.logger.log_info(
-                    f"Created/Updated Snapshot {snapshot_obj.name} ({snapshot_obj.snapshot_id})",
-                    obj=snapshot_obj,  # noqa E225
-                )
+                if not current_user:
+                    raise SyncError(
+                        "Cannot sync snapshots: no user context available. Provide a user or create a superuser."
+                    )
+                job.user = current_user
 
-                order_value = snapshot.get("processed_at_millis") or snapshot.get(
-                    "creation_date_millis"
-                )
-                if order_value is not None:
-                    order_value = float(order_value)
-                else:
-                    order_value = start.timestamp()
-
-                if latest_order is None or order_value > latest_order:
-                    latest_order = order_value
-                    latest_snapshot = {
-                        "snapshot_id": snapshot_id,
-                        "name": name,
-                        "status": data["status"],
-                        "date": start,
-                        "snapshot": snapshot,
-                    }
-
-            if latest_snapshot:
-                latest_defaults = {
-                    "name": f"Latest Snapshot ({latest_snapshot['snapshot_id']})",
-                    "data": {
-                        "resolved_snapshot_id": latest_snapshot["snapshot_id"],
-                        "snapshot": latest_snapshot["snapshot"],
-                    },
-                    "date": latest_snapshot["date"],
-                    "created": timezone.now(),
-                    "last_updated": timezone.now(),
-                    "status": latest_snapshot["status"],
-                }
-                latest_obj, _ = ForwardSnapshot.objects.update_or_create(
-                    source=self,
-                    snapshot_id="$last",
-                    defaults=latest_defaults,
-                )
-                self.logger.log_info(
-                    f"Created/Updated Snapshot {latest_obj.name} ({latest_obj.snapshot_id})",
-                    obj=latest_obj,
-                )
-            self.status = DataSourceStatusChoices.COMPLETED
-            self.logger.log_success(f"Completed syncing snapshots from {self.name}")
-            logger.debug(f"Completed syncing snapshots from {self.url}")
-        except Exception as e:
-            self.handle_sync_failure(type(e).__name__, e)
-        finally:
-            self.last_synced = timezone.now()
-            ForwardSource.objects.filter(pk=self.pk).update(
-                status=self.status, last_synced=self.last_synced
+            request_token = current_request.set(
+                NetBoxFakeRequest({"id": uuid4(), "user": current_user})
             )
-            self.logger.log_info("Sync job completed.", obj=self)
-            if job:
-                job.data = self.logger.log_data
+
+            if self.status == DataSourceStatusChoices.SYNCING:
+                self.logger.log_failure(
+                    "Cannot initiate sync; syncing already in progress.", obj=self
+                )
+                raise SyncError("Cannot initiate sync; syncing already in progress.")
+
+            pre_sync.send(sender=self.__class__, instance=self)
+
+            self.status = DataSourceStatusChoices.SYNCING
+            ForwardSource.objects.filter(pk=self.pk).update(status=self.status)
+
+            # Begin Sync
+            try:
+                self.logger.log_info(f"Syncing snapshots from {self.name}", obj=self)
+                logger.debug(f"Syncing snapshots from {self.url}")
+
+                client_parameters = dict(self.parameters or {})
+                client_parameters["base_url"] = self.url
+                if self.network_id:
+                    client_parameters["network_id"] = self.network_id
+                client = self.get_client(parameters=client_parameters)
+
+                snapshots = client.list_snapshots()
+                latest_snapshot: dict | None = None
+                latest_order: float | None = None
+                for snapshot in snapshots:
+                    snapshot_ref = snapshot.get("ref") or snapshot.get("snapshot_ref")
+                    snapshot_id = snapshot.get("snapshot_id") or snapshot_ref
+                    if snapshot_id in ["$prev", "$lastLocked"]:
+                        continue
+
+                    status = snapshot.get("status") or snapshot.get("state")
+                    finish_status = snapshot.get("finish_status") or snapshot.get("finishState")
+                    if status not in ("done", "loaded") and finish_status not in ("done", "loaded"):
+                        continue
+
+                    name = snapshot.get("name") or snapshot_id
+                    start_str = snapshot.get("start") or snapshot.get("started_at")
+                    start = parse_datetime(start_str) if start_str else timezone.now()
+
+                    data = {
+                        "name": name,
+                        "data": snapshot,
+                        "date": start,
+                        "created": timezone.now(),
+                        "last_updated": timezone.now(),
+                        "status": "loaded" if status in ("done", "loaded") else status,
+                    }
+                    snapshot_obj, _ = ForwardSnapshot.objects.update_or_create(
+                        source=self, snapshot_id=snapshot_id, defaults=data
+                    )
+                    self.logger.log_info(
+                        f"Created/Updated Snapshot {snapshot_obj.name} ({snapshot_obj.snapshot_id})",
+                        obj=snapshot_obj,  # noqa E225
+                    )
+
+                    order_value = snapshot.get("processed_at_millis") or snapshot.get(
+                        "creation_date_millis"
+                    )
+                    if order_value is not None:
+                        order_value = float(order_value)
+                    else:
+                        order_value = start.timestamp()
+
+                    if latest_order is None or order_value > latest_order:
+                        latest_order = order_value
+                        latest_snapshot = {
+                            "snapshot_id": snapshot_id,
+                            "name": name,
+                            "status": data["status"],
+                            "date": start,
+                            "snapshot": snapshot,
+                        }
+
+                if latest_snapshot:
+                    latest_defaults = {
+                        "name": f"Latest Snapshot ({latest_snapshot['snapshot_id']})",
+                        "data": {
+                            "resolved_snapshot_id": latest_snapshot["snapshot_id"],
+                            "snapshot": latest_snapshot["snapshot"],
+                        },
+                        "date": latest_snapshot["date"],
+                        "created": timezone.now(),
+                        "last_updated": timezone.now(),
+                        "status": latest_snapshot["status"],
+                    }
+                    latest_obj, _ = ForwardSnapshot.objects.update_or_create(
+                        source=self,
+                        snapshot_id="$last",
+                        defaults=latest_defaults,
+                    )
+                    self.logger.log_info(
+                        f"Created/Updated Snapshot {latest_obj.name} ({latest_obj.snapshot_id})",
+                        obj=latest_obj,
+                    )
+                self.status = DataSourceStatusChoices.COMPLETED
+                self.logger.log_success(f"Completed syncing snapshots from {self.name}")
+                logger.debug(f"Completed syncing snapshots from {self.url}")
+            except Exception as e:
+                self.handle_sync_failure(type(e).__name__, e)
+            finally:
+                self.last_synced = timezone.now()
+                ForwardSource.objects.filter(pk=self.pk).update(
+                    status=self.status, last_synced=self.last_synced
+                )
+                self.logger.log_info("Sync job completed.", obj=self)
+                if job:
+                    job.data = self.logger.log_data
         finally:
             if request_token:
                 current_request.reset(request_token)
