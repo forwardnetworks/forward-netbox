@@ -4,6 +4,7 @@ import httpx
 from django.test import SimpleTestCase
 
 from forward_netbox.utilities.fwdutils import ForwardRESTClient
+from forward_netbox.exceptions import ForwardAPIError
 
 
 class ForwardRESTClientSnapshotTest(SimpleTestCase):
@@ -55,25 +56,14 @@ class ForwardRESTClientSnapshotTest(SimpleTestCase):
             datetime.fromtimestamp(1758101256253 / 1000, tz=timezone.utc).isoformat(),
         )
 
-    def test_list_snapshots_without_network(self):
-        records = [
-            {"id": "legacy", "status": "loaded"},
-        ]
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            assert request.url.path == "/api/v1/snapshots"
-            return httpx.Response(200, json=records)
-
-        session = httpx.Client(base_url="https://example.com", transport=httpx.MockTransport(handler))
-        self.addCleanup(session.close)
-
+    def test_list_snapshots_without_network_raises(self):
         client = ForwardRESTClient(
             base_url="https://example.com",
             token=None,
             verify=True,
             network_id=None,
-            session=session,
         )
+        self.addCleanup(client.close)
 
-        snapshots = client.list_snapshots()
-        self.assertEqual(snapshots, records)
+        with self.assertRaises(ForwardAPIError):
+            client.list_snapshots()
