@@ -20,6 +20,7 @@ from dcim.models import Site
 from dcim.models import VirtualChassis
 from dcim.signals import assign_virtualchassis_master
 from django.conf import settings
+from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
 from django.core.cache import cache
 from django.core.exceptions import ValidationError
@@ -557,10 +558,24 @@ class ForwardSync(ForwardClient, JobsMixin, TagsMixin, ChangeLoggedModel):
     def sync(self, job=None):
         if job:
             self.logger = SyncLogging(job=job.pk)
-            user = job.user
+            job_user = job.user
         else:
             self.logger = SyncLogging(job=self.pk)
-            user = None
+            job_user = None
+
+        effective_user = job_user or self.user
+        if not effective_user:
+            User = get_user_model()
+            effective_user = (
+                User.objects.filter(is_active=True, is_superuser=True)
+                .order_by("pk")
+                .first()
+            )
+        if not effective_user:
+            raise SyncError(
+                "Unable to determine a user context for Forward sync. "
+                "Configure a user on the sync or ensure a superuser exists."
+            )
 
         if self.status == DataSourceStatusChoices.SYNCING:
             raise SyncError("Cannot initiate sync; ingestion already in progress.")
@@ -591,18 +606,13 @@ class ForwardSync(ForwardClient, JobsMixin, TagsMixin, ChangeLoggedModel):
         current_time = str(timezone.now())
         ingestion = ForwardIngestion.objects.create(sync=self, job=job)
         client = None
+        request_token = None
         try:
             branch = Branch(name=f"Forward Networks Sync {current_time}")
-            temp_request_token = None
-            if user:
-                temp_request_token = current_request.set(
-                    NetBoxFakeRequest({"id": uuid4(), "user": user})
-                )
-            try:
-                branch.save(provision=False)
-            finally:
-                if temp_request_token:
-                    current_request.reset(temp_request_token)
+            request_token = current_request.set(
+                NetBoxFakeRequest({"id": uuid4(), "user": effective_user})
+            )
+            branch.save(provision=False)
             ingestion.branch = branch
             ingestion.save()
 
@@ -610,8 +620,10 @@ class ForwardSync(ForwardClient, JobsMixin, TagsMixin, ChangeLoggedModel):
                 # Re-assign the Job from FWDSync to ForwardIngestion so it is listed in the ingestion
                 job.object_type = ObjectType.objects.get_for_model(ingestion)
                 job.object_id = ingestion.pk
+                if not job.user:
+                    job.user = effective_user
                 job.save()
-            branch.provision(user=user)
+            branch.provision(user=effective_user)
             branch.refresh_from_db()
             if branch.status == BranchStatusChoices.FAILED:
                 print("Branch Failed")
@@ -645,10 +657,11 @@ class ForwardSync(ForwardClient, JobsMixin, TagsMixin, ChangeLoggedModel):
 
             # Not using `deactivate_branch` since that does not clean up on Exception
             current_branch = active_branch.get()
-            if not (token := current_request.get()):
+            token = None
+            if not current_request.get():
                 # This allows for ChangeLoggingMiddleware to create ObjectChanges
                 token = current_request.set(
-                    NetBoxFakeRequest({"id": uuid4(), "user": user})
+                    NetBoxFakeRequest({"id": uuid4(), "user": effective_user})
                 )
             try:
                 active_branch.set(branch)
@@ -659,7 +672,8 @@ class ForwardSync(ForwardClient, JobsMixin, TagsMixin, ChangeLoggedModel):
                 finally:
                     active_branch.set(None)
             finally:
-                current_request.set(token.old_value)
+                if token:
+                    current_request.reset(token)
                 active_branch.set(current_branch)
 
             if self.status != DataSourceStatusChoices.FAILED:
@@ -672,6 +686,9 @@ class ForwardSync(ForwardClient, JobsMixin, TagsMixin, ChangeLoggedModel):
                 f"Stack Trace: `{traceback.format_exc()}`", obj=ingestion
             )
             logger.debug(f"Ingestion Failed: `{e}`")
+        finally:
+            if request_token:
+                current_request.reset(request_token)
 
         logger.debug(f"Completed ingesting data from {self.snapshot_data.source.name}")
         self.logger.log_info(
@@ -684,7 +701,7 @@ class ForwardSync(ForwardClient, JobsMixin, TagsMixin, ChangeLoggedModel):
             self.logger.log_info("Auto Merging Ingestion", obj=ingestion)
             logger.info("Auto Merging Ingestion")
             try:
-                ingestion.enqueue_merge_job(user=user)
+                ingestion.enqueue_merge_job(user=effective_user)
                 self.logger.log_info("Auto Merge Job Enqueued", obj=ingestion)
                 logger.info("Auto Merge Job Enqueued")
             except NameError:
