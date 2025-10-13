@@ -5,6 +5,8 @@ from core.choices import DataSourceStatusChoices
 from core.choices import JobStatusChoices
 from core.exceptions import SyncError
 from core.models import Job
+from django.contrib.auth import get_user_model
+from netbox.context import current_request
 from netbox.context_managers import event_tracking
 from rq.timeouts import JobTimeoutException
 from utilities.datetime import local_now
@@ -20,7 +22,25 @@ logger = logging.getLogger(__name__)
 def sync_forwardsource(job, *args, **kwargs):
     fwdsource = ForwardSource.objects.get(pk=job.object_id)
 
+    request_token = None
     try:
+        user = job.user
+        if not user:
+            User = get_user_model()
+            user = (
+                User.objects.filter(is_active=True, is_superuser=True)
+                .order_by("pk")
+                .first()
+            )
+            if not user:
+                raise SyncError(
+                    "Cannot sync snapshots: no user context available. Provide a user or create a superuser."
+                )
+            job.user = user
+
+        request_token = current_request.set(
+            NetBoxFakeRequest({"id": job.job_id, "user": user})
+        )
         job.start()
         fwdsource.sync(job=job)
         job.terminate()
@@ -33,6 +53,9 @@ def sync_forwardsource(job, *args, **kwargs):
             logging.error(e)
         else:
             raise e
+    finally:
+        if request_token:
+            current_request.reset(request_token)
 
 
 def sync_forward(job, *args, **kwargs):
