@@ -9,7 +9,7 @@ The Forward Networks NetBox plugin enables data synchronization between Forward 
 ## Key Features
 
 ### Data Synchronization
-When the optional Forward Networks SDK (distributed through Forward Networks support channels) is installed, the plugin can collect comprehensive network data from Forward Networks instances and transform it into NetBox's data model, enabling automated documentation of network infrastructure.
+The plugin connects directly to the Forward Enterprise REST / NQE API, collecting structured network data from Forward Networks instances and transforming it to NetBox's data model—no additional Forward SDK is required.
 
 ### Branches
 Built on [NetBox Branching](https://docs.netboxlabs.com/netbox-extensions/branching/) feature, the plugin allows review of proposed changes before they are applied to the production database, providing an additional layer of validation and control.
@@ -35,19 +35,9 @@ Connect to multiple Forward Networks instances simultaneously, allowing for comp
 
 The plugin requires specific NetBox versions due to API changes and feature dependencies. Please ensure compatibility before installation.
 
-| NetBox Version | Plugin Version | Release Date | Key Features                                   |
+| NetBox Version | Plugin Version | Release Date | Key Notes                                      |
 |----------------|----------------|--------------|------------------------------------------------|
-| 4.4.0 and up   | 4.3.0 and up   | 2025-09-23   | NetBox 4.4, REST API and GraphQL               |
-| 4.3.0 - 4.3.7  | 4.2.2          | 2025-09-12   | Fix for NetBox 4.3.7 bug in Source view        |
-| 4.3.0 - 4.3.6  | 4.0.0 - 4.2.1  | 2025-05-27   | NetBox 4.3 support and netbox-branching plugin |
-| 4.2.4 - 4.2.9  | 3.2.2 - 3.2.4  | 2025-03-15   | Introduced Forward NQE query mapping, improved performance  |
-| 4.2.0 - 4.2.3  | 3.2.0 - 3.2.1  | 2025-02-01   | NetBox 4.2 compatibility updates               |
-| 4.1.5 - 4.1.11 | 3.1.1 - 3.1.3  | 2024-12-10   | Bug fixes, stability improvements              |
-| 4.1.0 - 4.1.4  | 3.1.0          | 2024-11-05   | NetBox 4.1 compatibility                       |
-| 4.0.1          | 3.0.1 - 3.0.3  | 2024-09-20   | Bug fixes                                      |
-| 4.0.0          | 3.0.0          | 2024-08-15   | Major rewrite for NetBox 4.0                   |
-| 3.7.0 - 3.7.8  | 2.0.0 - 2.0.6  | 2024-05-10   | Enhanced data synchronization                  |
-| 3.4.0 - 3.6.9  | 1.0.0 - 1.0.11 | 2023-11-01   | Initial release                                |
+| 4.4.0 and up   | 1.0.x          | 2025-10-13   | First public release, REST/NQE API integration |
 
 ## Important Notes
 

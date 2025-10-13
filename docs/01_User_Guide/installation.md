@@ -37,9 +37,8 @@ source /opt/netbox/venv/bin/activate
 (venv) $ pip install -e forward-netbox
 ```
 
-> **Note:** Forward Networks API integration features require access to Forward
-> Enterprise. Install the optional Forward SDK separately if your workflow calls
-> for it.
+> **Note:** The plugin interacts directly with the Forward Enterprise REST / NQE
+> API. No additional Forward SDK packages are required.
 
 To keep the plugin pinned across NetBox upgrades, add the Git requirement to
 `/opt/netbox/local_requirements.txt`:
@@ -208,21 +207,7 @@ For development or testing purposes, you can mount the plugin directly:
 
 4. Rebuild and restart your Docker containers.
 
-## 4. Version-Specific Installations
-
-### 4.1 Installing the Forward Networks SDK
-
-The plugin no longer installs the Forward Networks SDK automatically. When you need SDK-backed functionality, install the version that matches your Forward Networks deployment:
-
-```bash
-# Example for Forward Networks 7.0.x
-pip install forward==7.0.0
-```
-
-Consult Forward Networks support for the correct SDK package name and version that aligns with your platform release.
-
-
-## 5. Verification
+## 4. Verification
 
 ### 5.1 Verify Plugin Installation
 
@@ -245,7 +230,7 @@ source /opt/netbox/venv/bin/activate
 
 All migrations should be marked as applied (with [X]).
 
-## 6. Troubleshooting
+## 5. Troubleshooting
 
 ### 6.1 Common Issues
 
@@ -253,7 +238,6 @@ All migrations should be marked as applied (with [X]).
 |-------|----------------|----------|
 | Plugin not appearing in NetBox | Plugin not enabled in configuration | Check PLUGINS list in configuration.py |
 | Database migration errors | Incompatible NetBox version | Verify NetBox version meets requirements |
-| SDK version conflicts | Mismatched Forward Networks and SDK versions | Install with correct version-specific extras |
 | Static files not loading | `collectstatic` not run | Run `python manage.py collectstatic` |
 | Permission errors | File system permissions | Check permissions on NetBox directories |
 
@@ -276,22 +260,22 @@ To troubleshoot installation issues:
    DEBUG = True
    ```
 
-## 7. Upgrade Procedures
+## 6. Upgrade Procedures
 
-### 7.1 Standard Upgrade
+### 6.1 Standard Upgrade
 
 To upgrade the plugin to a newer version:
 
 ```bash
 source /opt/netbox/venv/bin/activate
-(venv) $ pip install --upgrade forward_netbox
+(venv) $ pip install --upgrade git+https://github.com/forwardnetworks/forward-netbox.git
 (venv) $ cd /opt/netbox/netbox/
 (venv) $ python3 manage.py migrate
 (venv) $ python3 manage.py collectstatic --no-input
 sudo systemctl restart netbox netbox-rq
 ```
 
-### 7.2 Docker Upgrade
+### 6.2 Docker Upgrade
 
 For Docker installations, update your configuration to specify the new version and rebuild:
 
@@ -300,44 +284,11 @@ docker-compose build --no-cache netbox
 docker-compose up -d
 ```
 
-### 7.3 Upgrading plugin to v4.0+ (NetBox v4.3.0+)
+### 6.3 Upgrading plugin to future releases
 
-!!! warning
-    For a smooth upgrade to v4.0+, we strongly suggest to upgrade to Forward Networks `v4.0.1` before upgrading NetBox to `v4.3.0+`. The preferred version of NetBox for this upgrade is `v4.2.6`, but anything greater than `v4.2.4` and before `v4.3.0` should work.
+These steps will evolve with future releases. Always review the relevant release notes before upgrading.
 
-The plugin now depends on `netbox-branching` plugin and these extra steps are simplified installation instructions of the plugin:
-
-1. Modify your `configuration.py` with the following content. Replace `$ORIGINAL_DATABASE_CONFIG` with your original `DATABASE` configuration dictionary. If you are using other `DATABASE_ROUTERS`, make sure to include them in the list.
-    ```python
-    from netbox_branching.utilities import DynamicSchemaDict
-
-    # Wrap DATABASES with DynamicSchemaDict for dynamic schema support
-    DATABASES = DynamicSchemaDict({
-        'default': $ORIGINAL_DATABASE_CONFIG,
-    })
-
-    # Employ netbox-branching custom database router
-    DATABASE_ROUTERS = [
-        'netbox_branching.database.BranchAwareRouter',
-    ]
-
-    # Add `netbox-branching` to plugins list (must be last!)
-    PLUGINS = [
-        # ...
-        'netbox_branching',
-    ]
-    ```
-
-!!! warning
-    If you've upgraded NetBox first or run migrations only for NetBox, you'll see the following error when attempting to upgrade plugin:
-
-    ```commandline
-    django.db.migrations.exceptions.InvalidBasesError: Cannot resolve bases for [<ModelState: 'forward_netbox.ForwardBranch'>]
-    ```
-
-    Follow [Cannot resolve bases for `[<ModelState: 'forward_netbox.ForwardBranch'>]`](FAQ.md#cannot-resolve-bases-for-modelstate-forward_netboxforwardbranch) instructions to resolve this issue.
-
-## 8. Additional Resources
+## 7. Additional Resources
 
 - [NetBox Documentation](https://netboxlabs.com/docs/netbox/)
 - [NetBox Plugin documentation](https://netboxlabs.com/docs/netbox/en/stable/plugins/installation/).

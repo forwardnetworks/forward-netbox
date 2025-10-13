@@ -1,8 +1,8 @@
 [tool.poetry]
 name = "forward_netbox"
-version = "4.3.0"
+version = "1.0.0"
 description = "NetBox plugin to sync Forward Networks data into NetBox"
-authors = ["Forward Networks <support@forwardnetworks.com>"]
+authors = ["Craig Johnson <craigjohnson@forwardnetworks.com>"]
 license = "MIT"
 readme = "README.md"
 repository = "https://github.com/forwardnetworks/forward-netbox"

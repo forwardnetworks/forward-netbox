@@ -6,7 +6,7 @@ ingesting inventory from Forward Enterprise (REST and NQE APIs), staging the
 changes in [netbox-branching](https://docs.netboxlabs.com/netbox-extensions/branching/)
 branches, and giving operators tooling to review, diff, and merge the updates.
 
-Version **4.3.0** is the initial public release of the modernized plugin. It
+Version **1.0.0** is the first public release of the modernized plugin. It
 supersedes the legacy Forward ↔ NetBox integration that previously shipped with
 Forward appliances.
 
@@ -26,17 +26,7 @@ These combinations are validated and supported:
 
 | NetBox version  | Plugin version |
 |-----------------|----------------|
-| 4.4.0 and later | 4.3.0+         |
-| 4.3.0 – 4.3.7   | 4.2.2          |
-| 4.3.0 – 4.3.6   | 4.0.0 – 4.2.1  |
-| 4.2.4 – 4.2.9   | 3.2.2 – 3.2.4  |
-| 4.2.0 – 4.2.3   | 3.2.0          |
-| 4.1.5 – 4.1.11  | 3.1.1 – 3.1.3  |
-| 4.1.0 – 4.1.4   | 3.1.0          |
-| 4.0.1           | 3.0.1 – 3.0.3  |
-| 4.0.0           | 3.0.0          |
-| 3.7.0 – 3.7.8   | 2.0.0 – 2.0.6  |
-| 3.4.0 – 3.6.9   | 1.0.0 – 1.0.11 |
+| 4.4.0 and later | 1.0.x          |
 
 ## Installation
 
@@ -49,6 +39,9 @@ _This plugin is distributed from source (it is not published on PyPI)._
    cd forward-netbox
    pip install -e .
    ```
+
+   > The plugin talks directly to the Forward Enterprise REST / NQE API; no
+   > additional Forward SDK packages are required.
 
 2. Add the plugin (and its netbox-branching dependency) to `PLUGINS` in
    `netbox/configuration.py`:
