@@ -49,18 +49,13 @@ requests are triaged alongside bug reports.
    poetry install --with dev
    pre-commit install
    ```
-4. (Optional) Point your virtual environment at a local NetBox checkout for IDE
-   introspection:
-   ```bash
-   echo $PATH_TO_NETBOX_REPO/netbox > $VENV/lib/python3.10/site-packages/netbox.pth
-   ```
-5. Use the provided invoke tasks to start the sample NetBox stack if needed:
+4. Use the provided invoke tasks to start the sample NetBox stack if needed:
    ```bash
    invoke build
    invoke start
    invoke createsuperuser
    ```
-6. Implement your changes and update documentation as appropriate.
+5. Implement your changes and update documentation as appropriate.
 
 ---
 
