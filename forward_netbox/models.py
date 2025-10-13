@@ -303,13 +303,13 @@ class ForwardSource(ForwardClient, JobsMixin, PrimaryModel):
                     obj=snapshot_obj,  # noqa E225
                 )
 
-                order_value = snapshot.get("processed_at_millis")
+                order_value = snapshot.get("processed_at_millis") or snapshot.get(
+                    "creation_date_millis"
+                )
                 if order_value is not None:
                     order_value = float(order_value)
                 else:
-                    end_str = snapshot.get("end") or snapshot.get("finished_at")
-                    end = parse_datetime(end_str) if end_str else None
-                    order_value = end.timestamp() if end else start.timestamp()
+                    order_value = start.timestamp()
 
                 if latest_order is None or order_value > latest_order:
                     latest_order = order_value
