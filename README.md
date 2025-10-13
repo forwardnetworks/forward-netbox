@@ -6,8 +6,6 @@ ingesting inventory from Forward Enterprise (REST and NQE APIs), staging the
 changes in [netbox-branching](https://docs.netboxlabs.com/netbox-extensions/branching/)
 branches, and giving operators tooling to review, diff, and merge the updates.
 
-Version **1.0.0** is the first public release of this GitHub-hosted plugin.
-
 ## Features
 
 - Multiple Forward sources (local API connectivity or remote, pre-loaded feeds)
