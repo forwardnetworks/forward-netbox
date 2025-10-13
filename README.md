@@ -47,18 +47,24 @@ _This plugin is distributed from source (it is not published on PyPI)._
    ```python
    PLUGINS = [
        "forward_netbox",
+       # other plugins...
        "netbox_branching",
    ]
+   ```
 
+3. Optionally, define plugin settings in `PLUGINS_CONFIG`. Typical keys include
+   `base_url`, `auth`, `network_id`, `verify`, `timeout`, and `snapshot_id`:
+
+   ```python
    PLUGINS_CONFIG = {
        "forward_netbox": {
-           "base_url": "https://fwd.example.com",
-           "auth": "pk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-           "network_id": "12345",        # Optional
-           "verify": True,               # Set False for self-signed certs
-           "timeout": 60,                # Seconds
-           "snapshot_id": "$last",       # Default Forward snapshot reference
-       },
+           # "base_url": "https://fwd.example.com",
+           # "auth": "pk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+           # "network_id": "12345",
+           # "verify": True,
+           # "timeout": 60,
+           # "snapshot_id": "$last",
+       }
    }
    ```
 
