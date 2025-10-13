@@ -593,7 +593,16 @@ class ForwardSync(ForwardClient, JobsMixin, TagsMixin, ChangeLoggedModel):
         client = None
         try:
             branch = Branch(name=f"Forward Networks Sync {current_time}")
-            branch.save(provision=False)
+            temp_request_token = None
+            if user:
+                temp_request_token = current_request.set(
+                    NetBoxFakeRequest({"id": uuid4(), "user": user})
+                )
+            try:
+                branch.save(provision=False)
+            finally:
+                if temp_request_token:
+                    current_request.reset(temp_request_token)
             ingestion.branch = branch
             ingestion.save()
 
