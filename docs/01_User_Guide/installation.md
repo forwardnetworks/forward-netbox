@@ -6,7 +6,7 @@ description: Comprehensive installation instructions for the Forward Networks Ne
 
 This guide provides detailed instructions for installing and configuring the Forward Networks NetBox plugin across different environments. The plugin enables seamless integration between Forward Networks's network discovery capabilities and NetBox's infrastructure management platform.
 
-These instructions contain configuration of [netbox-branching](https://docs.netboxlabs.com/netbox-extensions/branching/) plugin since it is a hard requirement for this plugin to work.
+These instructions contain configuration of [netbox-branching](https://github.com/netboxlabs/netbox-branching) plugin since it is a hard requirement for this plugin to work.
 
 ## 1. System Requirements
 

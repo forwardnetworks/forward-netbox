@@ -3,7 +3,7 @@
 This repository packages the Forward Networks data source for NetBox as a
 standalone plugin. It connects NetBox to Forward's network assurance platform,
 ingesting inventory from Forward Enterprise (REST and NQE APIs), staging the
-changes in [netbox-branching](https://docs.netboxlabs.com/netbox-extensions/branching/)
+changes in [netbox-branching](https://github.com/netboxlabs/netbox-branching)
 branches, and giving operators tooling to review, diff, and merge the updates.
 
 ## Features
@@ -98,11 +98,22 @@ _This plugin is distributed from source (it is not published on PyPI)._
    }
    ```
 
-3. Configure [netbox-branching](https://docs.netboxlabs.com/netbox-extensions/branching/)
-   by wrapping `DATABASES` in a `DynamicSchemaDict` and enabling the
-   `BranchAwareRouter` (see
-   [installation docs](docs/01_User_Guide/installation.md#24-configure-database-router-to-support-branching)
-   for the exact snippet).
+3. Configure the NetBox database router for
+   [`netbox-branching`](https://github.com/netboxlabs/netbox-branching):
+
+   ```python
+   from netbox_branching.utilities import DynamicSchemaDict
+
+   # Wrap DATABASES with DynamicSchemaDict for dynamic schema support
+   DATABASES = DynamicSchemaDict({
+       "default": $ORIGINAL_DATABASE_CONFIG,
+   })
+
+   # Employ netbox-branching custom database router
+   DATABASE_ROUTERS = [
+       "netbox_branching.database.BranchAwareRouter",
+   ]
+   ```
 
 4. Run the usual post-install commands:
 
