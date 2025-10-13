@@ -1,6 +1,7 @@
 import json
 import logging
 from importlib import metadata
+from datetime import datetime, timezone
 from typing import Callable
 from typing import TYPE_CHECKING
 from typing import TypeVar
@@ -132,6 +133,41 @@ class ForwardRESTClient:
             raise
 
     def list_snapshots(self):
+        if self.network_id:
+            response = self._request(
+                "GET", f"/api/networks/{self.network_id}/snapshots"
+            )
+            if isinstance(response, dict):
+                network_name = response.get("name") or response.get("networkName")
+                snapshots = []
+
+                def _to_iso(ms: int | None) -> str | None:
+                    if not ms:
+                        return None
+                    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).isoformat()
+
+                for item in response.get("snapshots", []):
+                    if not isinstance(item, dict):
+                        continue
+                    snapshot_id = item.get("id")
+                    if snapshot_id is None:
+                        continue
+                    snapshot_id = str(snapshot_id)
+                    state = item.get("state")
+                    status = "loaded" if state == "PROCESSED" else state
+                    snapshots.append(
+                        {
+                            "snapshot_id": snapshot_id,
+                            "name": f"{network_name} - {snapshot_id}" if network_name else snapshot_id,
+                            "status": status,
+                            "state": state,
+                            "start": _to_iso(item.get("creationDateMillis")),
+                            "end": _to_iso(item.get("processedAtMillis")),
+                            "network_id": self.network_id,
+                        }
+                    )
+                return snapshots
+            return []
         return self._collection("/api/v1/snapshots")
 
     def get_snapshot(self, snapshot_id: str):
