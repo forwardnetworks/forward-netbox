@@ -1,133 +1,100 @@
-# Contributing to Forward Networks Netbox
+# Contributing to Forward NetBox
 
-Thank you for considering contributing to the Forward Networks Netbox Plugin! 🎉
-We welcome contributions from the community and appreciate your help to make
-this project better.
+Thanks for your interest in the Forward Networks NetBox plugin! This project is
+maintained on a best-effort basis by Craig Johnson and is intentionally
+unsupported by Forward Networks services. Contributions are welcome, and the
+simplest ways to get involved are:
 
----
-
-## Table of Contents
-
-1. [How to Contribute](#how-to-contribute)
-2. [Reporting Issues](#reporting-issues)
-3. [Suggesting Features](#suggesting-features)
-4. [Submitting Code Changes](#submitting-code-changes)
-5. [Code Style and Standards](#code-style-and-standards)
-6. [Testing Your Changes](#testing-your-changes)
-7. [Pull Request Guidelines](#pull-request-guidelines)
-8. [Publishing a Release](#publishing-a-release)
-
----
-
-## How to Contribute
-
-There are multiple ways to contribute:
-
-- Reporting bugs.
-- Suggesting features and improvements.
-- Submitting pull requests (PRs) with code or documentation changes.
-- Improving the project documentation.
+- Open a GitHub issue for bugs, enhancement ideas, or questions.
+- Email [craigjohnson@forwardnetworks.com](mailto:craigjohnson@forwardnetworks.com)
+  if you prefer a direct conversation.
+- Submit a pull request when you have a fix or improvement ready to share.
 
 ---
 
 ## Reporting Issues
 
-If you find a bug, inconsistency, or have a question, please file an issue.
-
-1. Go to the [Forward Networks Support Portal](https://forwardnetworks.com/support).
-2. Search for existing issues to avoid duplication.
-3. If no similar issue exists, create a new issue using the provided template.
-
-> Forward Networks uses an internal ticket tracking system which we also track issues
-> and feature requests. If you're an Forward Networks customer, you can also report
-> issues through [support.forwardnetworks.com](https://support.forwardnetworks.com).
-
-### Guidelines for Reporting Bugs:
-
-- Provide clear steps to reproduce the problem.
-- Include the version of the plugin and environment details.
-- Share logs or screenshots, if applicable.
+1. Search the [issue tracker](https://github.com/forwardnetworks/forward-netbox/issues)
+   to see if your topic already exists.
+2. If you do not find a match, open a new issue and include:
+   - NetBox and plugin versions.
+   - Reproduction steps or sample data.
+   - Expected vs. actual behaviour, plus any relevant logs or screenshots.
 
 ---
 
-## Suggesting Features
+## Suggesting Enhancements
 
-We welcome ideas for enhancements! To suggest a feature:
-
-1. Open a new request in the [Forward Networks Support Portal](https://forwardnetworks.com/support).
-2. Clearly describe the feature or enhancement.
-3. Explain the benefit and potential use cases for the feature.
+Follow the same process as reporting an issue, but describe the desired outcome,
+why it would help, and any implementation notes you have in mind. Feature
+requests are triaged alongside bug reports.
 
 ---
 
-## Submitting Code Changes
+## Development Workflow
 
-We use **Git** and the standard Git workflow for contributions:
-
-1. Fork the repository on GitHub.
-2. Clone your fork:
+1. Fork the repository and clone your fork:
    ```bash
-   git clone https://github.com/forward-networks/forward-netbox.git
+   git clone https://github.com/<your-user>/forward-netbox.git
    cd forward-netbox
    ```
-3. Create a new branch:
+2. Create a feature branch:
    ```bash
-   git checkout -b my-new-feature
+   git checkout -b my-feature
    ```
-4. Prepare Python environment and install dev dependencies.
+3. Prepare a development environment:
    ```bash
+   python -m venv venv && source venv/bin/activate
    pip install poetry
-   ```
-5. [optional] Clone netbox and link it to you env for IDE to register it. Taken
-   from [offical docs](https://netboxlabs.com/docs/netbox/en/stable/plugins/development/).
-   ```bash
-   echo $PATH_TO_NETBOX_REPO/netbox > $VENV/lib/python3.10/site-packages/netbox.pth
-   ```
-6. Install the project dependencies:
-   ```bash
    poetry install --with dev
    pre-commit install
    ```
-7. Start the development containers, create admin user:
-    ```bash
-    invoke build
-    invoke start
-    invoke createsuperuser
-    Navigate to http://localhost:8000
-    ```
-8. Make your changes.
-9. Run the tests:
-    ```bash
-    invoke test
-    ```
-10. Add release notes to documentation and update docs if needed.
-11. Check docs are correct by navigating to `http://localhost:8001/` after running the invoke commands above or directly `invoke serve-docs`.
-12. Commit your changes:
-    ```bash
-    git commit -m 'Add new feature'
-    ```
-13. Push your changes to your fork:
-    ```bash
-    git push origin my-new-feature
-    ```
+4. (Optional) Point your virtual environment at a local NetBox checkout for IDE
+   introspection:
+   ```bash
+   echo $PATH_TO_NETBOX_REPO/netbox > $VENV/lib/python3.10/site-packages/netbox.pth
+   ```
+5. Use the provided invoke tasks to start the sample NetBox stack if needed:
+   ```bash
+   invoke build
+   invoke start
+   invoke createsuperuser
+   ```
+6. Implement your changes and update documentation as appropriate.
 
 ---
 
-## Publishing a Release
+## Testing
 
-To publish a new release:
+Before opening a pull request, run the automated checks:
 
-1. Update the version number in the `pyproject.toml` file.
-2. Ensure there are changelogs for the new version in the documentation.
-   `docs/administration/Release_Notes/*`.
-3. Merge changed into the `develop` branch.
-4. Merge the `develop` branch into the `main` branch.
-5. Build the distribution package:
-    ```bash
-    poetry build
-    ```
-6. Publish the package to PyPI:
-    ```bash
-    poetry publish
-    ```
-7. Create a new release on GitHub and add the release notes and PyPI links.
+```bash
+invoke test
+```
+
+You can also run `pytest` directly or launch `invoke serve-docs` to preview the
+documentation locally.
+
+---
+
+## Pull Request Checklist
+
+- [ ] Tests (or relevant invoke tasks) pass locally.
+- [ ] Documentation and release notes reflect user-facing changes.
+- [ ] Commits are scoped and descriptive.
+- [ ] The pull request references the corresponding issue (if applicable).
+
+Please keep pull requests focused. Separate unrelated fixes into distinct PRs to
+help reviewers respond quickly.
+
+---
+
+## Release Management
+
+If you are helping maintain the project:
+
+1. Bump the version in `pyproject.toml` and `forward_netbox/__init__.py`.
+2. Update release notes under `docs/02_Release_Notes/`.
+3. Tag the release on GitHub once changes are merged.
+
+That’s it—thanks for contributing!

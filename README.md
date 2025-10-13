@@ -6,9 +6,8 @@ ingesting inventory from Forward Enterprise (REST and NQE APIs), staging the
 changes in [netbox-branching](https://docs.netboxlabs.com/netbox-extensions/branching/)
 branches, and giving operators tooling to review, diff, and merge the updates.
 
-Version **1.0.0** is the first public release of the modernized plugin. It
-supersedes the legacy Forward ↔ NetBox integration that previously shipped with
-Forward appliances.
+Version **1.0.0** is the first public release of this GitHub-hosted plugin
+maintained by Craig Johnson.
 
 ## Features
 
@@ -216,3 +215,10 @@ Craig Johnson (Principal Solutions Architect, Forward Networks) — GitHub:
 
 Released under the [MIT License](LICENSE). Forward Networks retains copyright for
 the plugin source and associated branding assets.
+
+## Support and Contact
+
+This project is offered as-is and is not part of an official Forward Networks
+support program. For questions or feedback, open a GitHub issue or email
+[craigjohnson@forwardnetworks.com](mailto:craigjohnson@forwardnetworks.com). Pull
+requests are welcome.

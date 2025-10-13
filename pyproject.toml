@@ -26,8 +26,8 @@ netboxlabs-netbox-branching = "0.7.0"
 netutils = "*"
 
 [tool.poetry.urls]
-"Bug Tracker" = "https://forwardnetworks.com/support"
-"Documentation" = "https://forwardnetworks.com/docs/forward-netbox"
+"Bug Tracker" = "https://github.com/forwardnetworks/forward-netbox/issues"
+"Documentation" = "https://github.com/forwardnetworks/forward-netbox/tree/main/docs"
 
 [tool.poetry.group.dev]
 optional = true
