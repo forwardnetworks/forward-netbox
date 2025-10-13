@@ -41,8 +41,15 @@ _This plugin is distributed from source (it is not published on PyPI)._
    > The plugin talks directly to the Forward Enterprise REST / NQE API; no
    > additional Forward SDK packages are required.
 
-2. Add the plugin (and its netbox-branching dependency) to `PLUGINS` in
-   `netbox/configuration.py`:
+2. Enable the plugin in the NetBox configuration:
+
+   Open the NetBox configuration file:
+
+   ```bash
+   (venv) $ nano /opt/netbox/netbox/netbox/configuration.py
+   ```
+
+   Add the plugins to the `PLUGINS` list:
 
    ```python
    PLUGINS = [
@@ -52,19 +59,44 @@ _This plugin is distributed from source (it is not published on PyPI)._
    ]
    ```
 
-3. Optionally, define plugin settings in `PLUGINS_CONFIG`. Typical keys include
-   `base_url`, `auth`, `network_id`, `verify`, `timeout`, and `snapshot_id`:
+   Optionally, configure plugin-specific settings in the `PLUGINS_CONFIG` dictionary:
 
    ```python
    PLUGINS_CONFIG = {
        "forward_netbox": {
-           # "base_url": "https://fwd.example.com",
-           # "auth": "pk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-           # "network_id": "12345",
-           # "verify": True,
-           # "timeout": 60,
-           # "snapshot_id": "$last",
+           # Plugin-specific settings can be added here
        }
+   }
+   ```
+
+   Additionally, configure plugin-specific logging for debugging purposes:
+
+   ```python
+   LOGGING = {
+       "version": 1,
+       "formatters": {
+            "simple": {
+                "format": "{levelname} {message}",
+                "style": "{",
+            },
+       },
+       "handlers": {
+            "console": {
+                "level": "DEBUG",
+                "class": "logging.StreamHandler",
+                "formatter": "simple",
+            },
+        },
+       "loggers": {
+            "forward_netbox": {
+                "level": "DEBUG",
+                "handlers": ["console"],
+            },
+            "netbox_branching": {
+                "level": "DEBUG",
+                "handlers": ["console"],
+            },
+        },
    }
    ```
 
