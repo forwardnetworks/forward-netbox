@@ -45,9 +45,6 @@ _This plugin is distributed from source (it is not published on PyPI)._
    `netbox/configuration.py`:
 
    ```python
-   from netbox.core.settings_funcs import is_truthy
-   import os
-
    PLUGINS = [
        "forward_netbox",
        "netbox_branching",
@@ -55,12 +52,12 @@ _This plugin is distributed from source (it is not published on PyPI)._
 
    PLUGINS_CONFIG = {
        "forward_netbox": {
-           "base_url": os.getenv("FORWARD_NETBOX_BASE_URL"),
-           "auth": os.getenv("FORWARD_NETBOX_API_TOKEN"),
-           "network_id": os.getenv("FORWARD_NETBOX_NETWORK_ID"),
-           "verify": is_truthy(os.getenv("FORWARD_NETBOX_SSL_VERIFY", "true")),
-           "timeout": os.getenv("FORWARD_NETBOX_TIMEOUT"),
-           "snapshot_id": os.getenv("FORWARD_NETBOX_SNAPSHOT_ID"),
+           "base_url": "https://fwd.example.com",
+           "auth": "pk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+           "network_id": "12345",        # Optional
+           "verify": True,               # Set False for self-signed certs
+           "timeout": 60,                # Seconds
+           "snapshot_id": "$last",       # Default Forward snapshot reference
        },
    }
    ```
@@ -79,18 +76,6 @@ _This plugin is distributed from source (it is not published on PyPI)._
    ```
 
 5. Restart NetBox services (Django, rqworker, rqworker.high, etc.).
-
-Populate the environment variables referenced above (for example in
-`/opt/netbox/.env`):
-
-```dotenv
-FORWARD_NETBOX_BASE_URL=https://fwd.example.com
-FORWARD_NETBOX_API_TOKEN=pk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-FORWARD_NETBOX_NETWORK_ID=12345
-FORWARD_NETBOX_SSL_VERIFY=true
-FORWARD_NETBOX_TIMEOUT=60
-FORWARD_NETBOX_SNAPSHOT_ID=$last
-```
 
 ## Getting Started
 
@@ -144,8 +129,8 @@ are created before devices and interfaces to satisfy foreign key relationships.
 - Template content, navigation items, and table views mirror NetBox patterns,
   making it easy to add the plugin to dashboards or embed partials elsewhere.
 
-Full documentation (administrator and user guides) is published at
-[forwardnetworks.com/docs/forward-netbox](https://forwardnetworks.com/docs/forward-netbox).
+Full documentation (administrator and user guides) lives under the
+[`docs/`](docs/) directory in this repository.
 
 ## Development
 

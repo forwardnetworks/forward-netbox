@@ -148,7 +148,7 @@ class ForwardClient:
             if "CERTIFICATE_VERIFY_FAILED" in str(e):
                 error_message = (
                     "SSL certificate verification failed, self-signed cert? "
-                    "<a href='https://forwardnetworks.com/docs/forward-netbox/user-guide/faq/' target='_blank'>Check out our FAQ documentation.</a>"
+                    "<a href='https://github.com/forwardnetworks/forward-netbox/blob/main/docs/01_User_Guide/FAQ.md' target='_blank'>Check out our FAQ documentation.</a>"
                 )
             else:
                 error_message = str(e)
