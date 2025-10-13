@@ -249,25 +249,25 @@ class ForwardSource(ForwardClient, JobsMixin, PrimaryModel):
     def sync(self, job):
         self.logger = SyncLogging(job=job.pk)
         request_token = None
-        try:
-            if not job.user:
-                from django.contrib.auth import get_user_model
+        current_user = job.user
+        if not current_user:
+            from django.contrib.auth import get_user_model
 
-                User = get_user_model()
-                fallback_user = (
-                    User.objects.filter(is_active=True, is_superuser=True)
-                    .order_by("pk")
-                    .first()
-                )
-                if not fallback_user:
-                    raise SyncError(
-                        "Cannot sync snapshots: no user context available. Provide a user or create a superuser."
-                    )
-                job.user = fallback_user
-
-            request_token = current_request.set(
-                NetBoxFakeRequest({"id": uuid4(), "user": job.user})
+            User = get_user_model()
+            current_user = (
+                User.objects.filter(is_active=True, is_superuser=True)
+                .order_by("pk")
+                .first()
             )
+            if not current_user:
+                raise SyncError(
+                    "Cannot sync snapshots: no user context available. Provide a user or create a superuser."
+                )
+            job.user = current_user
+
+        request_token = current_request.set(
+            NetBoxFakeRequest({"id": uuid4(), "user": current_user})
+        )
 
         if self.status == DataSourceStatusChoices.SYNCING:
             self.logger.log_failure(
