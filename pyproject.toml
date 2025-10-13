@@ -2,11 +2,11 @@
 name = "forward_netbox"
 version = "4.3.0"
 description = "NetBox plugin to sync Forward Networks data into NetBox"
-authors = ["Solution Architecture <solution.architecture@forwardnetworks.com>"]
+authors = ["Forward Networks <support@forwardnetworks.com>"]
 license = "MIT"
 readme = "README.md"
-repository = "https://forwardnetworks.com"
-homepage = "https://forwardnetworks.com"
+repository = "https://github.com/forwardnetworks/forward-netbox"
+homepage = "https://github.com/forwardnetworks/forward-netbox"
 keywords = ["netbox", "forward", "plugin", "sync"]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -27,6 +27,7 @@ netutils = "*"
 
 [tool.poetry.urls]
 "Bug Tracker" = "https://forwardnetworks.com/support"
+"Documentation" = "https://forwardnetworks.com/docs/forward-netbox"
 
 [tool.poetry.group.dev]
 optional = true

@@ -20,39 +20,33 @@ Before installation, ensure:
 
 ## 2. Standard Installation (Bare Metal/VM)
 
-### 2.1 Install via Package Manager
+### 2.1 Install from source
 
-The plugin is available as a Python package on PyPI and can be installed using pip:
+The plugin is currently distributed from source. Use `pip` with the GitHub
+repository URL (or clone locally and install in editable mode):
 
 ```bash
 # Activate the NetBox virtual environment
 source /opt/netbox/venv/bin/activate
 
-# Install the plugin
-(venv) $ pip install forward_netbox
-```
-> **Note:** Forward Networks API integration features require the Forward Networks SDK. Install it separately based on your organization's distribution process before enabling those capabilities.
+# Install the latest tagged release from GitHub
+(venv) $ pip install git+https://github.com/forwardnetworks/forward-netbox.git
 
-In case you want to install a specific version of the plugin, you can specify the version number:
+# …or clone and install editable for development workflows
+(venv) $ git clone https://github.com/forwardnetworks/forward-netbox.git
+(venv) $ pip install -e forward-netbox
+```
+
+> **Note:** Forward Networks API integration features require access to Forward
+> Enterprise. Install the optional Forward SDK separately if your workflow calls
+> for it.
+
+To keep the plugin pinned across NetBox upgrades, add the Git requirement to
+`/opt/netbox/local_requirements.txt`:
+
 ```bash
-# Install the plugin with specific version
-(venv) $ pip install forward_netbox==$FORWARD_NETBOX_VERSION
+(venv) $ echo "git+https://github.com/forwardnetworks/forward-netbox.git@main#egg=forward_netbox" >> /opt/netbox/local_requirements.txt
 ```
-
-To ensure the plugin is automatically reinstalled during future NetBox upgrades:
-
-1. Create or edit the `local_requirements.txt` file in the NetBox root directory:
-
-   ```bash
-   (venv) $ echo "forward_netbox" >> /opt/netbox/local_requirements.txt
-   ```
-   In case we defined specific version of the plugin:
-
-   ```bash
-   (venv) $ echo "forward_netbox==$FORWARD_NETBOX_VERSION" >> /opt/netbox/local_requirements.txt
-   ```
-
-2. This ensures the plugin will be reinstalled whenever NetBox is upgraded using the standard upgrade procedures.
 
 ### 2.3 Enable the Plugin in NetBox Configuration
 
