@@ -3,6 +3,7 @@ from typing import Annotated
 import strawberry
 import strawberry_django
 from core.graphql.mixins import ChangelogMixin
+from core.graphql.types import ContentType as ContentTypeType
 from core.models import Job
 from extras.graphql.mixins import TagsMixin
 from netbox.graphql.types import BaseObjectType
@@ -12,6 +13,7 @@ from strawberry.scalars import JSON
 from users.graphql.types import UserType
 
 from .filters import BranchFilter
+from .filters import ForwardNQEQueryFilter
 from .filters import ForwardDataFilter
 from .filters import ForwardIngestionFilter
 from .filters import ForwardIngestionIssueFilter
@@ -23,6 +25,7 @@ from forward_netbox import models
 
 
 __all__ = (
+    "ForwardNQEQueryType",
     "ForwardSourceType",
     "ForwardSnapshotType",
     "ForwardSyncType",
@@ -30,6 +33,15 @@ __all__ = (
     "ForwardIngestionIssueType",
     "ForwardDataType",
 )
+
+
+@strawberry_django.type(
+    models.ForwardNQEQuery, fields="__all__", filters=ForwardNQEQueryFilter
+)
+class ForwardNQEQueryType(BaseObjectType):
+    content_type: ContentTypeType
+    enabled: bool
+
 
 @strawberry_django.type(
     models.ForwardSource, fields="__all__", filters=ForwardSourceFilter

@@ -23,7 +23,7 @@ def get_default_nqe_map() -> dict[str, dict[str, object]]:
     from ..models import ForwardNQEQuery
     from ..models import ForwardSync
 
-    mapping: dict[str, dict[str, object]] = {}
+    mapping = _load_json_defaults()
     for entry in ForwardNQEQuery.objects.select_related("content_type").all():
         label = f"{entry.content_type.app_label}.{entry.content_type.model}"
         mapping[label] = {
@@ -33,10 +33,7 @@ def get_default_nqe_map() -> dict[str, dict[str, object]]:
         if entry.description:
             mapping[label]["description"] = entry.description
 
-    if mapping:
-        return mapping
-
-    return _load_json_defaults()
+    return mapping
 
 
 @transaction.atomic

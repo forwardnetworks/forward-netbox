@@ -28,6 +28,7 @@ from forward_netbox.graphql.enums import ForwardSourceTypeEnum
 from forward_netbox.graphql.enums import JobStatusEnum
 
 __all__ = (
+    "ForwardNQEQueryFilter",
     "ForwardSourceFilter",
     "ForwardSnapshotFilter",
     "ForwardSyncFilter",
@@ -62,6 +63,16 @@ class ForwardSourceFilter(PrimaryModelFilterMixin):
     last_synced: DatetimeFilterLookup[
         datetime
     ] | None = strawberry_django.filter_field()
+
+
+@strawberry_django.filter(models.ForwardNQEQuery, lookups=True)
+class ForwardNQEQueryFilter(PrimaryModelFilterMixin):
+    id: ID | None = strawberry_django.filter_field()
+    content_type: Annotated[
+        "ContentTypeFilter", strawberry.lazy("core.graphql.filters")
+    ] | None = strawberry_django.filter_field()
+    query_id: FilterLookup[str] | None = strawberry_django.filter_field()
+    enabled: FilterLookup[bool] | None = strawberry_django.filter_field()
 
 
 @strawberry_django.filter(models.ForwardSnapshot, lookups=True)

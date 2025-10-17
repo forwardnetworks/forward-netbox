@@ -4,12 +4,14 @@ import strawberry_django
 from .types import ForwardDataType
 from .types import ForwardIngestionIssueType
 from .types import ForwardIngestionType
+from .types import ForwardNQEQueryType
 from .types import ForwardSnapshotType
 from .types import ForwardSourceType
 from .types import ForwardSyncType
 
 
 __all__ = (
+    "ForwardNQEQueryQuery",
     "ForwardSyncQuery",
     "ForwardSourceQuery",
     "ForwardSnapshotQuery",
@@ -23,6 +25,14 @@ __all__ = (
 class ForwardSourceQuery:
     forward_source: ForwardSourceType = strawberry_django.field()
     forward_source_list: list[ForwardSourceType] = strawberry_django.field()
+
+
+@strawberry.type(name="Query")
+class ForwardNQEQueryQuery:
+    forward_networks_nqe_query: ForwardNQEQueryType = strawberry_django.field()
+    forward_networks_nqe_query_list: list[
+        ForwardNQEQueryType
+    ] = strawberry_django.field()
 
 
 @strawberry.type(name="Query")

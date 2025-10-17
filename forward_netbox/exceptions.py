@@ -68,8 +68,7 @@ def create_or_get_sync_issue(
     """
     context = context or {}
 
-    # TODO: This is to prevent circular import issues, clean it up later.
-    from .models import ForwardIngestionIssue
+    from .models import ForwardIngestionIssue  # Imported lazily to avoid circular import.
 
     if not hasattr(exception, "issue_id") or not exception.issue_id:
         issue = ForwardIngestionIssue.objects.create(

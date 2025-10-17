@@ -512,20 +512,46 @@ class ForwardSyncForm(NetBoxModelForm):
 
     def save(self, *args, **kwargs):
         parameters = {}
-        nqe_map = {}
+        default_nqe_map = get_default_nqe_map()
+        existing_overrides = {}
+        if self.instance and self.instance.pk and self.instance.parameters:
+            existing_overrides = self.instance.parameters.get("nqe_map", {})
         for name in self.fields:
             if name.startswith("fwd_"):
                 parameters[name[4:]] = self.cleaned_data[name]
             elif name == "sites":
                 parameters["sites"] = self.cleaned_data["sites"]
-            elif name in getattr(self, "nqe_field_map", {}):
-                model_key = self.nqe_field_map[name]
-                query_id = (self.cleaned_data.get(name) or "").strip()
-                model = model_key.split(".", maxsplit=1)[-1]
-                enabled = bool(self.cleaned_data.get(f"fwd_{model}"))
+
+        nqe_map: dict[str, dict[str, object]] = {}
+        model_keys = set(default_nqe_map.keys())
+        model_keys.update(getattr(self, "nqe_field_map", {}).values())
+        for model_key in model_keys:
+            default_meta = default_nqe_map.get(model_key, {})
+            field_name = f"nqe__{model_key.replace('.', '__')}"
+            raw_query = self.cleaned_data.get(field_name)
+            query_id = raw_query if raw_query is not None else default_meta.get("query_id", "")
+            if isinstance(query_id, str):
+                query_id = query_id.strip()
+            model = model_key.split(".", maxsplit=1)[-1]
+            enabled_field_name = f"fwd_{model}"
+            if enabled_field_name in self.cleaned_data:
+                enabled_value = self.cleaned_data.get(enabled_field_name)
+            else:
+                enabled_value = existing_overrides.get(model_key, {}).get(
+                    "enabled", default_meta.get("enabled", True)
+                )
+            nqe_map[model_key] = {
+                "query_id": query_id or "",
+                "enabled": bool(enabled_value)
+                if enabled_value is not None
+                else default_meta.get("enabled", True),
+            }
+
+        for model_key, meta in existing_overrides.items():
+            if model_key not in nqe_map:
                 nqe_map[model_key] = {
-                    "query_id": query_id,
-                    "enabled": enabled,
+                    "query_id": meta.get("query_id", ""),
+                    "enabled": bool(meta.get("enabled", True)),
                 }
         if nqe_map:
             parameters["nqe_map"] = nqe_map

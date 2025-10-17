@@ -18,11 +18,11 @@ BASE = "/api/plugins/forward/"
 class ForwardNQEQueryTest(APIViewTestCases.APIViewTestCase):
     model = ForwardNQEQuery
     brief_fields = [
-        "display",
-        "id",
         "content_type",
-        "query_id",
+        "display",
         "enabled",
+        "id",
+        "query_id",
     ]
     bulk_update_data = {
         "enabled": False,
@@ -38,6 +38,7 @@ class ForwardNQEQueryTest(APIViewTestCases.APIViewTestCase):
     def setUpTestData(cls):
         device_ct = ContentType.objects.get(app_label="dcim", model="device")
         interface_ct = ContentType.objects.get(app_label="dcim", model="interface")
+        location_ct = ContentType.objects.get(app_label="dcim", model="location")
 
         ForwardNQEQuery.objects.update_or_create(
             content_type=device_ct,
@@ -47,16 +48,20 @@ class ForwardNQEQueryTest(APIViewTestCases.APIViewTestCase):
             content_type=interface_ct,
             defaults={"query_id": "FQ_default_interface", "enabled": True},
         )
+        ForwardNQEQuery.objects.update_or_create(
+            content_type=location_ct,
+            defaults={"query_id": "FQ_default_location", "enabled": True},
+        )
 
         cls.create_data = [
             {
-                "content_type": "dcim.location",
-                "query_id": "FQ_new_location",
+                "content_type": "ipam.vlan",
+                "query_id": "FQ_new_vlan",
                 "enabled": True,
             },
             {
-                "content_type": "dcim.devicerole",
-                "query_id": "FQ_new_role",
+                "content_type": "ipam.prefix",
+                "query_id": "FQ_new_prefix",
                 "enabled": False,
             },
         ]
@@ -67,6 +72,7 @@ class ForwardSourceTest(APIViewTestCases.APIViewTestCase):
         "display",
         "id",
         "name",
+        "network_id",
         "status",
         "type",
         "url",

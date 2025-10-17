@@ -75,6 +75,10 @@ def apply_tags(object, tags, connection_name=None):
 
 ForwardNQEContentTypes = Q(app_label="dcim") | Q(app_label="ipam")
 
+DOCS_BASE_URL = (
+    "https://github.com/forwardnetworks/forward-netbox/blob/main/docs/01_User_Guide"
+)
+
 
 class ForwardNQEQuery(NetBoxModel):
     content_type = models.OneToOneField(
@@ -120,7 +124,7 @@ class ForwardNQEQuery(NetBoxModel):
 
     @property
     def docs_url(self):
-        return ""
+        return f"{DOCS_BASE_URL}/nqe_map.md"
 
     def save(self, *args, **kwargs):
         super().save(*args, **kwargs)
@@ -223,8 +227,7 @@ class ForwardSource(ForwardClient, JobsMixin, PrimaryModel):
 
     @property
     def docs_url(self):
-        # TODO: Add docs url
-        return ""
+        return f"{DOCS_BASE_URL}/syncs.md"
 
     def clean(self):
         super().clean()
@@ -499,8 +502,7 @@ class ForwardSync(ForwardClient, JobsMixin, TagsMixin, ChangeLoggedModel):
 
     @property
     def docs_url(self):
-        # TODO: Add docs url
-        return ""
+        return f"{DOCS_BASE_URL}/syncs.md"
 
     @property
     def logger(self):
