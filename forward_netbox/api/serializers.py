@@ -62,7 +62,6 @@ class ForwardSourceSerializer(NestedGroupModelSerializer):
             "url",
             "display",
             "name",
-            "type",
             "status",
             "last_synced",
             "network_id",
@@ -77,7 +76,6 @@ class ForwardSourceSerializer(NestedGroupModelSerializer):
             "id",
             "name",
             "status",
-            "type",
             "url",
             "network_id",
         )

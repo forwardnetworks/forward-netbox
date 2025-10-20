@@ -622,7 +622,7 @@ class ForwardIngestionDeleteView(generic.ObjectDeleteView):
 @register_model_view(Device, "forward")
 class ForwardTable(generic.ObjectView):
     template_name = "forward_netbox/forward_table.html"
-    tab = ViewTab("Forward Networks", permission="forward_netbox.view_devicetable")
+    tab = ViewTab("Forward Enterprise", permission="forward_netbox.view_devicetable")
     queryset = Device.objects.all()
 
     def get_extra_context(self, request, instance):
@@ -765,7 +765,7 @@ class ForwardSourceTopology(LoginRequiredMixin, View):
                 snapshot_data = fwd_client.api.get_snapshot(snapshot)
                 if not snapshot_data:
                     raise Exception(
-                        f"Snapshot ({snapshot}) not available in Forward Networks."  # noqa E713
+                        f"Snapshot ({snapshot}) not available in Forward Enterprise."  # noqa E713
                     )
 
                 sites = fwd_client.api.inventory(
@@ -775,7 +775,7 @@ class ForwardSourceTopology(LoginRequiredMixin, View):
                 )
                 if not sites:
                     raise Exception(
-                        f"{site.name} not available in snapshot ({snapshot}) for Forward Networks."  # noqa E713
+                        f"{site.name} not available in snapshot ({snapshot}) for Forward Enterprise."  # noqa E713
                     )
 
                 diagram_settings = {

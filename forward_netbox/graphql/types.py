@@ -48,7 +48,6 @@ class ForwardNQEQueryType(BaseObjectType):
 )
 class ForwardSourceType(OrganizationalObjectType):
     name: str
-    type: str
     url: str
     status: str
     parameters: JSON

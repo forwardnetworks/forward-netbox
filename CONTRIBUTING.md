@@ -1,6 +1,6 @@
-# Contributing to Forward NetBox
+# Contributing to Forward Enterprise NetBox
 
-Thanks for your interest in the Forward Networks NetBox plugin! This project is
+Thanks for your interest in the Forward Enterprise NetBox plugin! This project is
 maintained on a best-effort basis by Craig Johnson (Principal Solutions
 Architect, Forward Networks) and is intentionally unsupported by Forward
 Networks services. Contributions are welcome, and the simplest ways to get

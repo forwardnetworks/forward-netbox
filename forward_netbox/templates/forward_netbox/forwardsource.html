@@ -7,7 +7,7 @@
 
 {% block extra_controls %}
 {% if perms.forward_netbox.sync_source %}
-{% if object.ready_for_sync and object.type == 'local' %}
+{% if object.ready_for_sync %}
 <form action="{% url 'plugins:forward_netbox:forwardsource_sync' pk=object.pk %}" method="post">
   {% csrf_token %}
   <button type="submit" class="btn btn-primary">
@@ -34,10 +34,6 @@
           <tr>
             <th scope="row">Name</th>
             <td>{{ object.name }}</td>
-          </tr>
-          <tr>
-            <th scope="row">Type</th>
-            <td>{{ object.get_type_display }}</td>
           </tr>
           <tr>
             <th scope="row">Status</th>

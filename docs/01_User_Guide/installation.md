@@ -1,10 +1,10 @@
 ---
-description: Comprehensive installation instructions for the Forward Networks NetBox plugin with version-specific details, multiple approaches, and troubleshooting tips.
+description: Comprehensive installation instructions for the Forward Enterprise NetBox plugin with version-specific details, multiple approaches, and troubleshooting tips.
 ---
 
 # NetBox Plugin Installation
 
-This guide provides detailed instructions for installing and configuring the Forward Networks NetBox plugin across different environments. The plugin enables seamless integration between Forward Networks's network discovery capabilities and NetBox's infrastructure management platform.
+This guide provides detailed instructions for installing and configuring the Forward Enterprise NetBox plugin across different environments. The plugin enables seamless integration between Forward Enterprise's network discovery capabilities and NetBox's infrastructure management platform.
 
 These instructions contain configuration of [netbox-branching](https://github.com/netboxlabs/netbox-branching) plugin since it is a hard requirement for this plugin to work.
 
@@ -12,7 +12,7 @@ These instructions contain configuration of [netbox-branching](https://github.co
 
 Before installation, ensure:
 
-- You follow requirements for version [compatibility between Forward Networks and NetBox](../index.md#netbox-compatibility)
+- You follow requirements for version [compatibility between Forward Enterprise and NetBox](../index.md#netbox-compatibility)
 - You have administrative access to your NetBox instance
 - Your NetBox installation meets the minimum version requirements
 - You have Python and pip available in your environment
@@ -215,7 +215,7 @@ To verify the plugin is installed correctly:
 
 1. Log in to the NetBox web interface
 2. Navigate to the Plugins menu
-3. Confirm "Forward Networks NetBox" appears in the list of installed plugins
+3. Confirm "Forward Enterprise NetBox" appears in the list of installed plugins
 4. Check the plugin version matches your expected version
 
 ### 5.2 Verify Database Migrations

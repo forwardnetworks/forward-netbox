@@ -65,7 +65,7 @@ class ForwardNQEQueryTable(NetBoxTable):
 
 class ForwardIngestionTable(NetBoxTable):
     name = tables.Column(linkify=True)
-    sync = tables.Column(verbose_name="Forward Networks Sync", linkify=True)
+    sync = tables.Column(verbose_name="Forward Enterprise Sync", linkify=True)
     branch = tables.Column(linkify=True)
     changes = tables.Column(accessor="staged_changes", verbose_name="Number of Changes")
     actions = columns.ActionsColumn(actions=("delete",))

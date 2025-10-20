@@ -25,7 +25,6 @@ from httpx import HTTPStatusError
 
 from ..exceptions import ForwardAPIError
 
-from ..choices import ForwardSourceTypeChoices
 from ..exceptions import SearchError
 if TYPE_CHECKING:
     from ..models import ForwardIngestion
@@ -52,7 +51,7 @@ class ForwardRESTClient:
         network_id: str | None = None,
     ):
         if not base_url:
-            raise ForwardAPIError("Forward Networks base URL is not configured.")
+            raise ForwardAPIError("Forward Enterprise base URL is not configured.")
 
         self.base_url = base_url.rstrip("/")
         self.network_id = network_id
@@ -90,11 +89,11 @@ class ForwardRESTClient:
         except HTTPStatusError as exc:
             status_code = exc.response.status_code if exc.response else None
             raise ForwardAPIError(
-                f"Forward Networks API returned {status_code}: {exc.response.text if exc.response else exc}",
+                f"Forward Enterprise API returned {status_code}: {exc.response.text if exc.response else exc}",
                 status_code=status_code,
             ) from exc
         except httpx.HTTPError as exc:
-            raise ForwardAPIError(f"Forward Networks API request failed: {exc}") from exc
+            raise ForwardAPIError(f"Forward Enterprise API request failed: {exc}") from exc
         if response.content:
             try:
                 return response.json()
@@ -140,7 +139,7 @@ class ForwardRESTClient:
     def list_snapshots(self):
         if not self.network_id:
             raise ForwardAPIError(
-                "Forward Networks network_id is required to list snapshots."
+                "Forward Enterprise network_id is required to list snapshots."
             )
 
         response = self._request(

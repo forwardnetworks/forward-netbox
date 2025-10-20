@@ -58,7 +58,7 @@ nqe_map = PluginMenuItem(
     buttons=nqe_buttons,
 )
 menu = PluginMenu(
-    label="Forward Networks",
+    label="Forward Enterprise",
     icon_class="mdi mdi-cloud-sync",
-    groups=(("Forward Networks", (source, snapshot, ingestion, nqe_map)),),
+    groups=(("Forward Enterprise", (source, snapshot, ingestion, nqe_map)),),
 )

@@ -5,7 +5,6 @@ from core.choices import JobIntervalChoices
 from django import forms
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
-from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 from netbox.forms import NetBoxModelFilterSetForm
 from netbox.forms import NetBoxModelForm
@@ -23,7 +22,6 @@ from utilities.forms.widgets import DateTimePicker
 from utilities.forms.widgets import HTMXSelect
 from utilities.forms.widgets import NumberWithOptions
 
-from .choices import ForwardSnapshotStatusModelChoices
 from .models import ForwardIngestion
 from .models import ForwardNQEQuery
 from .models import ForwardSnapshot
@@ -162,31 +160,26 @@ class ForwardSourceForm(NetBoxModelForm):
         model = ForwardSource
         fields = [
             "name",
-            "type",
             "url",
             "network_id",
             "description",
             "comments",
         ]
-        widgets = {
-            "type": HTMXSelect(),
-        }
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.source_type = get_field_value(self, "type")
-
-        # Set fieldsets dynamically based on source_type
-        self.fieldsets: list[FieldSet] = []
-        self.fieldsets.append(
-            FieldSet("name", "type", "url", "network_id", name=_("Source"))
-        )
-        if self.source_type == "local":
-            self.fieldsets.append(
-                FieldSet("auth", "verify", "timeout", name=_("Parameters"))
-            )
-        else:
-            self.fieldsets.append(FieldSet("timeout", name=_("Parameters")))
+        # Define the layout for a single Forward source configuration
+        self.fieldsets: list[FieldSet] = [
+            FieldSet(
+                "name",
+                "url",
+                "network_id",
+                "description",
+                "comments",
+                name=_("Source"),
+            ),
+            FieldSet("auth", "verify", "timeout", name=_("Parameters")),
+        ]
 
         self.fields["url"] = forms.URLField(
             required=True,
@@ -204,60 +197,47 @@ class ForwardSourceForm(NetBoxModelForm):
             widget=forms.NumberInput(attrs={"class": "form-control"}),
         )
 
-        if self.source_type == "local":
-            self.fields["auth"] = forms.CharField(
-                required=True,
-                label=_("API Token"),
-                widget=forms.TextInput(attrs={"class": "form-control"}),
-                help_text=_("Forward Networks API Token."),
-            )
-            self.fields["verify"] = forms.BooleanField(
-                required=False,
-                initial=True,
-                help_text=_(
-                    "Certificate validation. Uncheck if using self signed certificate."
-                ),
-            )
-            if self.instance.pk:
-                for name, form_field in self.instance.parameters.items():
-                    self.fields[name].initial = self.instance.parameters.get(name)
+        self.fields["auth"] = forms.CharField(
+            required=True,
+            label=_("API Token"),
+            widget=forms.TextInput(attrs={"class": "form-control"}),
+            help_text=_("Forward Enterprise API Token."),
+        )
+        self.fields["verify"] = forms.BooleanField(
+            required=False,
+            initial=True,
+            help_text=_(
+                "Certificate validation. Uncheck if using self signed certificate."
+            ),
+        )
+
+        if self.instance.pk and isinstance(self.instance.parameters, dict):
+            for name, value in self.instance.parameters.items():
+                if name in self.fields:
+                    self.fields[name].initial = value
 
     def save(self, *args, **kwargs):
         parameters = {}
         for name in self.fields:
-            if name.startswith("auth"):
+            if name.startswith("auth") and name in self.cleaned_data:
                 parameters["auth"] = self.cleaned_data[name]
-            if name.startswith("verify"):
+            if name.startswith("verify") and name in self.cleaned_data:
                 parameters["verify"] = self.cleaned_data[name]
-            if name.startswith("timeout"):
+            if name.startswith("timeout") and name in self.cleaned_data:
                 parameters["timeout"] = self.cleaned_data[name]
 
-        self.instance.parameters = parameters
+        self.instance.parameters = parameters or {}
         self.instance.network_id = self.cleaned_data.get("network_id")
         self.instance.status = DataSourceStatusChoices.NEW
 
-        instance = super().save(*args, **kwargs)
-
-        if instance.type == "remote":
-            if not ForwardSnapshot.objects.filter(
-                source=instance, snapshot_id="$last"
-            ).exists():
-                ForwardSnapshot.objects.create(
-                    source=instance,
-                    name="$last",
-                    snapshot_id="$last",
-                    status=ForwardSnapshotStatusModelChoices.STATUS_LOADED,
-                    last_updated=timezone.now(),
-                )
-
-        return instance
+        return super().save(*args, **kwargs)
 
 
 class ForwardSyncForm(NetBoxModelForm):
     source = forms.ModelChoiceField(
         queryset=ForwardSource.objects.all(),
         required=True,
-        label=_("Forward Networks Source"),
+        label=_("Forward Enterprise Source"),
         widget=HTMXSelect(),
     )
     snapshot_data = DynamicModelChoiceField(
@@ -438,19 +418,12 @@ class ForwardSyncForm(NetBoxModelForm):
             self.nqe_fields.append(field_name)
 
         # Set fieldsets dynamically based and backend_fields
-        fieldsets = [FieldSet("name", "source", name=_("Forward Networks Source"))]
+        fieldsets = [FieldSet("name", "source", name=_("Forward Enterprise Source"))]
         # Only show snapshot and sites if source is selected
         if source:
-            if isinstance(source, str) or isinstance(source, int):
-                source = ForwardSource.objects.get(pk=source)
-            if source.type == "local":
-                fieldsets.append(
-                    FieldSet("snapshot_data", "sites", name=_("Snapshot Information")),
-                )
-            else:
-                fieldsets.append(
-                    FieldSet("snapshot_data", name=_("Snapshot Information")),
-                )
+            fieldsets.append(
+                FieldSet("snapshot_data", "sites", name=_("Snapshot Information")),
+            )
         for k, v in self.backend_fields.items():
             fieldsets.append(FieldSet(*v, name=f"{k.upper()} Parameters"))
         if self.nqe_fields:
@@ -938,7 +911,7 @@ class ForwardTableForm(forms.Form):
     source = DynamicModelChoiceField(
         queryset=ForwardSource.objects.all(),
         required=False,
-        label=_("Forward Networks Source"),
+        label=_("Forward Enterprise Source"),
     )
     snapshot_data = DynamicModelChoiceField(
         queryset=ForwardSnapshot.objects.filter(status="loaded"),
@@ -948,7 +921,7 @@ class ForwardTableForm(forms.Form):
             "source_id": "$source",
             "status": "loaded",
         },
-        help_text=_("Forward Networks snapshot to query. Defaults to $last if not specified."),
+        help_text=_("Forward Enterprise snapshot to query. Defaults to $last if not specified."),
     )
     table = forms.ChoiceField(choices=tableChoices, required=True)
     cache_enable = forms.ChoiceField(

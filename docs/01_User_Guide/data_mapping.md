@@ -5,14 +5,14 @@ description: Data Mapping and how it works.
 # Data Mapping
 
 !!! note
-    This information is based on the latest version of the Forward Networks NetBox plugin.
+    This information is based on the latest version of the Forward Enterprise NetBox plugin.
 
-This document outlines the tables from Forward Networks that are imported into NetBox and their corresponding endpoints, including the specific properties that are mapped.
+This document outlines the tables from Forward Enterprise that are imported into NetBox and their corresponding endpoints, including the specific properties that are mapped.
 
 
 ## Data Sources
 
-| Forward Networks Table | Forward Networks Endpoint | NetBox Model | NetBox App |
+| Forward Enterprise Table | Forward Enterprise Endpoint | NetBox Model | NetBox App |
 |----------------|-------------------|--------------|------------|
 | Sites | `inventory.sites` | Site | `dcim` |
 | Devices | `inventory.devices` | Device | `dcim` |
@@ -27,13 +27,13 @@ This document outlines the tables from Forward Networks that are imported into N
 ## Property Mappings
 
 ### Site
-| Forward Networks Property | NetBox Property |
+| Forward Enterprise Property | NetBox Property |
 |-------------------|----------------|
 | `siteName` | `name` |
 | `siteName` | `slug` |
 
 ### Device
-| Forward Networks Property | NetBox Property |
+| Forward Enterprise Property | NetBox Property |
 |-------------------|----------------|
 | `hostname` | `name` |
 | `sn` | `serial` |
@@ -44,34 +44,34 @@ This document outlines the tables from Forward Networks that are imported into N
 | `virtual_chassis` | `virtual_chassis` (relationship) |
 
 ### Manufacturer
-| Forward Networks Property | NetBox Property |
+| Forward Enterprise Property | NetBox Property |
 |-------------------|----------------|
 | `vendor` | `name` |
 | `vendor` | `slug` |
 
 ### Device Type
-| Forward Networks Property | NetBox Property |
+| Forward Enterprise Property | NetBox Property |
 |-------------------|----------------|
 | `model` | `model` |
 | `model` | `slug` |
 | `vendor` | `manufacturer` (relationship) |
 
 ### Device Role
-| Forward Networks Property | NetBox Property |
+| Forward Enterprise Property | NetBox Property |
 |-------------------|----------------|
 | `devType` | `name` |
 | `devType` | `slug` |
 | N/A | `vm_role` (set to False) |
 
 ### Platform
-| Forward Networks Property | NetBox Property |
+| Forward Enterprise Property | NetBox Property |
 |-------------------|----------------|
 | `family` or `vendor` | `name` |
 | `vendor` + `family` | `slug` |
 | `vendor` | `manufacturer` (relationship) |
 
 ### Interface
-| Forward Networks Property | NetBox Property |
+| Forward Enterprise Property | NetBox Property |
 |-------------------|----------------|
 | `nameOriginal` or `intName` | `name` |
 | `dscr` | `description` |
@@ -84,14 +84,14 @@ This document outlines the tables from Forward Networks that are imported into N
 | `sn` | `device` (relationship) |
 
 ### MAC Address
-| Forward Networks Property | NetBox Property |
+| Forward Enterprise Property | NetBox Property |
 |-------------------|----------------|
 | `mac` | `mac_address` |
 | `id` | `assigned_object_id` |
 | N/A | `assigned_object_type` (set to Interface) |
 
 ### Inventory Item
-| Forward Networks Property | NetBox Property |
+| Forward Enterprise Property | NetBox Property |
 |-------------------|----------------|
 | `pid` | `part_id` |
 | `sn` | `serial` |
@@ -100,7 +100,7 @@ This document outlines the tables from Forward Networks that are imported into N
 | `vendor` | `manufacturer` (relationship) |
 
 ### VLAN
-| Forward Networks Property | NetBox Property |
+| Forward Enterprise Property | NetBox Property |
 |-------------------|----------------|
 | `vlanName` | `name` |
 | `dscr` | `description` |
@@ -108,13 +108,13 @@ This document outlines the tables from Forward Networks that are imported into N
 | `siteName` | `site` (relationship) |
 
 ### VRF
-| Forward Networks Property | NetBox Property |
+| Forward Enterprise Property | NetBox Property |
 |-------------------|----------------|
 | `vrf` | `name` |
 | `rd` | `rd` |
 
 ### Prefix
-| Forward Networks Property | NetBox Property |
+| Forward Enterprise Property | NetBox Property |
 |-------------------|----------------|
 | `net` | `prefix` |
 | `siteName` | `scope_id` |
@@ -122,7 +122,7 @@ This document outlines the tables from Forward Networks that are imported into N
 | N/A | `scope_type` (set to Site) |
 
 ### IP Address
-| Forward Networks Property | NetBox Property |
+| Forward Enterprise Property | NetBox Property |
 |-------------------|----------------|
 | `ip` + `net` | `address` |
 | `sn` + `nameOriginal` | `assigned_object_id` |
@@ -130,7 +130,7 @@ This document outlines the tables from Forward Networks that are imported into N
 | `vrf` | `vrf` (relationship) |
 
 ### Virtual Chassis
-| Forward Networks Property | NetBox Property |
+| Forward Enterprise Property | NetBox Property |
 |-------------------|----------------|
 | `master` | `name` |
 | `sn` | `master` (relationship to Device) |
@@ -141,6 +141,6 @@ Each sync uses Forward Enterprise NQE queries to return JSON objects that alread
 
 ## Sync Process
 
-1. The configured NQE queries are executed against the Forward Networks API.
+1. The configured NQE queries are executed against the Forward Enterprise API.
 2. Returned records are upserted into the NetBox staging branch for every enabled model.
 3. After review, the ingestion can be merged into the primary NetBox database.

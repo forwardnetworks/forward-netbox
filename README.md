@@ -1,6 +1,6 @@
 # Forward NetBox Integration
 
-This repository packages the Forward Networks data source for NetBox as a
+This repository packages the Forward Enterprise data source for NetBox as a
 standalone plugin. It connects NetBox to Forward's network assurance platform,
 ingesting inventory from Forward Enterprise (REST and NQE APIs), staging the
 changes in [netbox-branching](https://github.com/netboxlabs/netbox-branching)
@@ -8,7 +8,7 @@ branches, and giving operators tooling to review, diff, and merge the updates.
 
 ## Features
 
-- Multiple Forward sources (local API connectivity or remote, pre-loaded feeds)
+- Multiple Forward sources with direct API connectivity to Forward Enterprise
 - Snapshot discovery with filtering by Forward network ID and snapshot state
 - NQE-backed ingestion covering manufacturers, roles, device types, locations,
   devices, and interfaces
@@ -126,10 +126,9 @@ _This plugin is distributed from source (it is not published on PyPI)._
 
 ## Getting Started
 
-1. Navigate to **Plugins → Forward Networks → Sources** and create a Forward
+1. Navigate to **Plugins → Forward Enterprise → Sources** and create a Forward
    source. Provide the base URL, API token, optional network ID, and timeout /
-   certificate verification settings. Remote sources can reference snapshots
-   synced from another NetBox instance.
+   certificate verification settings.
 2. Use the **Sync Snapshots** action to discover the Forward snapshots for that
    source. Only snapshots in a `loaded`/`done` state are staged.
 3. Create a **Forward Sync** referencing the snapshot to ingest, choose the
@@ -158,7 +157,7 @@ the following datasets:
 
 Override these defaults in two ways:
 
-- **Forward NQE Queries** (Plugins → Forward Networks → NQE Queries) lets you
+- **Forward NQE Queries** (Plugins → Forward Enterprise → NQE Queries) lets you
   persist query IDs per NetBox model so that every sync inherits them.
 - Individual **Forward Syncs** allow per-run overrides via the form fields
   generated from the default map.
@@ -238,18 +237,18 @@ new functionality is added.
 
 ## Maintainer
 
-Craig Johnson (Principal Solutions Architect, Forward Networks) — GitHub:
+Craig Johnson (Principal Solutions Architect, Forward Enterprise) — GitHub:
 [@captainpacket](https://github.com/captainpacket),
 [craigjohnson@forwardnetworks.com](mailto:craigjohnson@forwardnetworks.com).
 
 ## License
 
-Released under the [MIT License](LICENSE). Forward Networks retains copyright for
+Released under the [MIT License](LICENSE). Forward Enterprise retains copyright for
 the plugin source and associated branding assets.
 
 ## Support and Contact
 
-This project is offered as-is and is not part of an official Forward Networks
+This project is offered as-is and is not part of an official Forward Enterprise
 support program. For questions or feedback, open a GitHub issue or email
 [craigjohnson@forwardnetworks.com](mailto:craigjohnson@forwardnetworks.com). Pull
 requests are welcome.

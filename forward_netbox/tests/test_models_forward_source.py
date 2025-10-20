@@ -7,15 +7,14 @@ from django.test import TestCase
 from django.utils import timezone
 
 from forward_netbox.models import ForwardSource, ForwardSnapshot
-from forward_netbox.choices import ForwardSourceTypeChoices
 
 
 class ForwardSourceModelTest(TestCase):
     def setUp(self):
         self.base_kwargs = {
-            "name": "Forward Local",
-            "type": ForwardSourceTypeChoices.LOCAL,
+            "name": "Forward Remote",
             "url": "https://forward.example.com",
+            "parameters": {"auth": "token", "verify": True},
         }
 
     def test_create_source_with_network_id(self):

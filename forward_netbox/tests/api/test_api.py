@@ -74,7 +74,6 @@ class ForwardSourceTest(APIViewTestCases.APIViewTestCase):
         "name",
         "network_id",
         "status",
-        "type",
         "url",
     ]
     bulk_update_data = {
@@ -114,19 +113,16 @@ class ForwardSourceTest(APIViewTestCases.APIViewTestCase):
                 "name": "NewSrc 1",
                 "url": "https://nb1.example",
                 "parameters": {"auth": "t", "verify": False},
-                "type": "local",
             },
             {
                 "name": "NewSrc 2",
                 "url": "https://nb2.example",
                 "parameters": {"auth": "t", "verify": True},
-                "type": "local",
             },
             {
                 "name": "NewSrc 3",
                 "url": "https://nb3.example",
                 "parameters": {"auth": "t", "verify": True},
-                "type": "local",
             },
         ]
 

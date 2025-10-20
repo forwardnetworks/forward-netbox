@@ -49,7 +49,6 @@ from utilities.request import NetBoxFakeRequest
 
 from .choices import ForwardRawDataTypeChoices
 from .choices import ForwardSnapshotStatusModelChoices
-from .choices import ForwardSourceTypeChoices
 from .signals import clear_other_primary_ip
 from .exceptions import ForwardAPIError
 from .utilities.fwdutils import Forward
@@ -95,8 +94,8 @@ class ForwardNQEQuery(NetBoxModel):
 
     class Meta:
         ordering = ("content_type__app_label", "content_type__model")
-        verbose_name = "Forward Networks NQE Query"
-        verbose_name_plural = "Forward Networks NQE Queries"
+        verbose_name = "Forward Enterprise NQE Query"
+        verbose_name_plural = "Forward Enterprise NQE Queries"
 
     def __str__(self):
         return self.label
@@ -184,19 +183,13 @@ class ForwardClient:
 
 class ForwardSource(ForwardClient, JobsMixin, PrimaryModel):
     name = models.CharField(max_length=100, unique=True)
-    type = models.CharField(
-        verbose_name=_("type"),
-        max_length=50,
-        choices=ForwardSourceTypeChoices,
-        default=ForwardSourceTypeChoices.LOCAL,
-    )
     url = models.CharField(max_length=200, verbose_name=_("URL"))
     network_id = models.CharField(
         max_length=100,
         blank=True,
         null=True,
         verbose_name=_("Network ID"),
-        help_text=_("Optional Forward Networks network identifier used for API scoping."),
+        help_text=_("Optional Forward Enterprise network identifier used for API scoping."),
     )
     status = models.CharField(
         max_length=50,
@@ -209,8 +202,8 @@ class ForwardSource(ForwardClient, JobsMixin, PrimaryModel):
 
     class Meta:
         ordering = ("name",)
-        verbose_name = "Forward Networks Source"
-        verbose_name_plural = "Forward Networks Sources"
+        verbose_name = "Forward Enterprise Source"
+        verbose_name_plural = "Forward Enterprise Sources"
 
     def __str__(self):
         return f"{self.name}"
@@ -416,8 +409,8 @@ class ForwardSnapshot(TagsMixin, ChangeLoggedModel):
 
     class Meta:
         ordering = ("source", "-date")
-        verbose_name = "Forward Networks Snapshot"
-        verbose_name_plural = "Forward Networks Snapshots"
+        verbose_name = "Forward Enterprise Snapshot"
+        verbose_name_plural = "Forward Enterprise Snapshots"
 
     def __str__(self):
         return f"{self.name} - {self.snapshot_id}"
@@ -494,8 +487,8 @@ class ForwardSync(ForwardClient, JobsMixin, TagsMixin, ChangeLoggedModel):
 
     class Meta:
         ordering = ["pk"]
-        verbose_name = "Forward Networks Sync"
-        verbose_name_plural = "Forward Networks Syncs"
+        verbose_name = "Forward Enterprise Sync"
+        verbose_name_plural = "Forward Enterprise Syncs"
 
     def __str__(self):
         return f"{self.name}"
@@ -520,16 +513,7 @@ class ForwardSync(ForwardClient, JobsMixin, TagsMixin, ChangeLoggedModel):
 
     @property
     def ready_for_sync(self):
-        if self.status not in (DataSourceStatusChoices.SYNCING,):
-            if self.snapshot_data.source.type == "remote":
-                if self.snapshot_data.fwd_data.count() > 0:
-                    return True
-                else:
-                    return False
-            else:
-                return True
-        else:
-            return False
+        return self.status not in (DataSourceStatusChoices.SYNCING,)
 
     @property
     def last_ingestion(self):
@@ -635,7 +619,7 @@ class ForwardSync(ForwardClient, JobsMixin, TagsMixin, ChangeLoggedModel):
         client = None
         request_token = None
         try:
-            branch = Branch(name=f"Forward Networks Sync {current_time}")
+            branch = Branch(name=f"Forward Enterprise Sync {current_time}")
             request_token = current_request.set(
                 NetBoxFakeRequest({"id": uuid4(), "user": effective_user})
             )
@@ -660,20 +644,17 @@ class ForwardSync(ForwardClient, JobsMixin, TagsMixin, ChangeLoggedModel):
             self.logger.log_info(f"New branch Created {branch.name}", obj=branch)
             logger.info(f"New branch Created {branch.name}")
 
-            self.logger.log_info("Fetching Forward Networks Client", obj=branch)
-            logger.info("Fetching Forward Networks Client")
+            self.logger.log_info("Fetching Forward Enterprise client", obj=branch)
+            logger.info("Fetching Forward Enterprise client")
 
-            if self.snapshot_data.source.type == ForwardSourceTypeChoices.LOCAL:
-                source_params = dict(self.snapshot_data.source.parameters or {})
-                source_params.setdefault("base_url", self.snapshot_data.source.url)
-                if self.snapshot_data.source.network_id:
-                    source_params["network_id"] = self.snapshot_data.source.network_id
-                client = self.get_client(parameters=source_params)
-                if not client:
-                    logger.debug("Unable to connect to Forward Networks.")
-                    raise SyncError("Unable to connect to Forward Networks.")
-            else:
-                client = None
+            source_params = dict(self.snapshot_data.source.parameters or {})
+            source_params.setdefault("base_url", self.snapshot_data.source.url)
+            if self.snapshot_data.source.network_id:
+                source_params["network_id"] = self.snapshot_data.source.network_id
+            client = self.get_client(parameters=source_params)
+            if not client:
+                logger.debug("Unable to connect to Forward Enterprise.")
+                raise SyncError("Unable to connect to Forward Enterprise.")
 
             runner = ForwardSyncRunner(
                 client=client,
@@ -749,7 +730,7 @@ class ForwardSync(ForwardClient, JobsMixin, TagsMixin, ChangeLoggedModel):
 
 class ForwardIngestion(JobsMixin, models.Model):
     """
-    Links Forward Networks Sync to its Branches.
+    Links Forward Enterprise syncs to their branches.
     """
 
     objects = RestrictedQuerySet.as_manager()
@@ -760,8 +741,8 @@ class ForwardIngestion(JobsMixin, models.Model):
 
     class Meta:
         ordering = ("pk",)
-        verbose_name = "Forward Networks Ingestion"
-        verbose_name_plural = "Forward Networks Ingestions"
+        verbose_name = "Forward Enterprise Ingestion"
+        verbose_name_plural = "Forward Enterprise Ingestions"
 
     def __str__(self):
         return self.name
@@ -869,8 +850,8 @@ class ForwardIngestionIssue(models.Model):
 
     class Meta:
         ordering = ["timestamp"]
-        verbose_name = "Forward Networks Ingestion Issue"
-        verbose_name_plural = "Forward Networks Ingestion Issues"
+        verbose_name = "Forward Enterprise Ingestion Issue"
+        verbose_name_plural = "Forward Enterprise Ingestion Issues"
 
     def __str__(self):
         return f"[{self.timestamp}] {self.message}"

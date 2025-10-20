@@ -15,8 +15,7 @@ class ForwardSyncFormNQEMapTest(TestCase):
         self.source = ForwardSource.objects.create(
             name="forward",
             url="https://forward.local",
-            type="local",
-            parameters={"verify": False},
+            parameters={"auth": "token", "verify": False},
         )
         self.snapshot = ForwardSnapshot.objects.create(
             name="snapshot",

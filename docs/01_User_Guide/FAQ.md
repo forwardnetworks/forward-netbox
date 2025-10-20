@@ -1,5 +1,5 @@
 ---
-description: Frequently asked questions about the Forward Networks NetBox Plugin.
+description: Frequently asked questions about the Forward Enterprise NetBox Plugin.
 ---
 
 # FAQ

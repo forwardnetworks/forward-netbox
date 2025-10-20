@@ -24,7 +24,6 @@ from forward_netbox.graphql.enums import BranchStatusEnum
 from forward_netbox.graphql.enums import DataSourceStatusEnum
 from forward_netbox.graphql.enums import ForwardRawDataTypeEnum
 from forward_netbox.graphql.enums import ForwardSnapshotStatusModelEnum
-from forward_netbox.graphql.enums import ForwardSourceTypeEnum
 from forward_netbox.graphql.enums import JobStatusEnum
 
 __all__ = (
@@ -44,12 +43,6 @@ __all__ = (
 class ForwardSourceFilter(PrimaryModelFilterMixin):
     id: ID | None = strawberry_django.filter_field()
     name: FilterLookup[str] | None = strawberry_django.filter_field()
-    type: (
-        Annotated[
-            "ForwardSourceTypeEnum", strawberry.lazy("forward_netbox.graphql.enums")
-        ]
-        | None
-    ) = strawberry_django.filter_field()
     url: FilterLookup[str] | None = strawberry_django.filter_field()
     status: (
         Annotated[

@@ -1,12 +1,12 @@
 ---
-description: On this page, we explain the Forward Networks NetBox plugin ingestion jobs.
+description: On this page, we explain the Forward Enterprise NetBox plugin ingestion jobs.
 ---
 
 # Syncs
 
 ## Introduction
 
-Data sync is a fundamental process in the plugin, enabling synchronization between Forward Networks and NetBox. This process involves configuring various parameters to define how data is synchronized. Configuration here defines created **ingestions** which handle synchronizing and merging the data. Let's delve into the key components of data sync.
+Data sync is a fundamental process in the plugin, enabling synchronization between Forward Enterprise and NetBox. This process involves configuring various parameters to define how data is synchronized. Configuration here defines created **ingestions** which handle synchronizing and merging the data. Let's delve into the key components of data sync.
 
 ## Configuration Parameters
 
@@ -15,7 +15,7 @@ A data sync configuration consists of several crucial parameters:
 | Field           | Description                                                      | Type                           |
 | --------------- |------------------------------------------------------------------| ------------------------------ |
 | Name            | The name of the ingestion job                                    | `CharField`                    |
-| Source          | The Forward Networks instance used for data synchronization with NetBox | `ForeignKey`                   |
+| Source          | The Forward Enterprise instance used for data synchronization with NetBox | `ForeignKey`                   |
 | Snapshot        | The snapshot chosen for data synchronization with NetBox         | `ForeignKey`                   |
 | Auto Merge      | Automatically merge staged changes into NetBox                   | `BooleanField`                 |
 | Sites           | Optional: Limits ingestion to specific sites                     | `ChoiceField`                  |
@@ -29,7 +29,7 @@ A data sync configuration consists of several crucial parameters:
 
 !!! note
 
-    When scheduling recurring ingestions using the `Recurs Every` field, it's recommended to use the `$last` snapshot. This ensures that the ingestion always runs against the latest snapshot in Forward Networks, maintaining data consistency.
+    When scheduling recurring ingestions using the `Recurs Every` field, it's recommended to use the `$last` snapshot. This ensures that the ingestion always runs against the latest snapshot in Forward Enterprise, maintaining data consistency.
 
 ## Data Synchronization Parameters
 

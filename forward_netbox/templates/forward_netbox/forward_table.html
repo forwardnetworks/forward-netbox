@@ -11,17 +11,10 @@
   <div class="row px-3">
     <div class="card">
       <div class="card-body">
-        Device does not have a serial number configured. The serial number is used to match devices between NetBox and Forward Networks.
+        Device does not have a serial number configured. The serial number is used to match devices between NetBox and Forward Enterprise.
       </div>
     </div>
   </div>
-  {% elif source.type == "remote" %}
-  <div class="row px-3">
-    <div class="card">
-      <div class="card-body">
-        Device has a remote Forward Networks Source configured and cannot directly query Forward Networks.
-      </div>
-    </div>
   {% else %}
   <div class="row px-3">
     <div class="col col-12 py-3 mx-auto">
@@ -47,7 +40,7 @@
   <div class="row px-3">
     <div class="card">
       <div class="card-body">
-        Could not find a Forward Networks Source that could have synced this device. The source is used to match devices between NetBox and the Forward Networks instance.
+        Could not find a Forward Enterprise source that could have synced this device. The source is used to match devices between NetBox and the Forward Enterprise instance.
       </div>
     </div>
   </div>

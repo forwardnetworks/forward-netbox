@@ -13,16 +13,6 @@ class ForwardSnapshotStatusModelChoices(ChoiceSet):
     ]
 
 
-class ForwardSourceTypeChoices(ChoiceSet):
-    LOCAL = "local"
-    REMOTE = "remote"
-
-    CHOICES = (
-        (LOCAL, "Local", "cyan"),
-        (REMOTE, "Remote", "gray"),
-    )
-
-
 class ForwardRawDataTypeChoices(ChoiceSet):
     DEVICE = "device"
     VLAN = "vlan"
