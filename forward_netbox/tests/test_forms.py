@@ -1,3 +1,5 @@
+import base64
+
 from django.contrib.contenttypes.models import ContentType
 from django.test import TestCase
 
@@ -97,7 +99,9 @@ class ForwardSourceFormTest(TestCase):
             data={
                 "name": "Forward SaaS",
                 "deployment_mode": "saas",
-                "auth": "token",
+                "network_id": "net-123",
+                "access_key": "user",
+                "secret_key": "pass",
             }
         )
         self.assertTrue(form.is_valid(), form.errors)
@@ -106,6 +110,10 @@ class ForwardSourceFormTest(TestCase):
         self.assertEqual(source.url, ForwardSourceForm.DEFAULT_SAAS_URL)
         self.assertEqual(source.parameters.get("deployment_mode"), "saas")
         self.assertFalse(source.parameters.get("verify"))
+        self.assertTrue(source.parameters.get("auth"))
+        token = source.parameters.get("auth")
+        decoded = base64.b64decode(token.encode("ascii")).decode("utf-8")
+        self.assertEqual(decoded, "user:pass")
 
     def test_on_prem_fields(self):
         form = ForwardSourceForm(
@@ -113,7 +121,9 @@ class ForwardSourceFormTest(TestCase):
                 "name": "Forward On-Prem",
                 "deployment_mode": "on_prem",
                 "url": "https://forward.internal",
-                "auth": "token",
+                "network_id": "net-456",
+                "access_key": "user",
+                "secret_key": "pass",
                 "verify": True,
             }
         )
@@ -123,3 +133,7 @@ class ForwardSourceFormTest(TestCase):
         self.assertEqual(source.url, "https://forward.internal")
         self.assertEqual(source.parameters.get("deployment_mode"), "on_prem")
         self.assertTrue(source.parameters.get("verify"))
+        self.assertTrue(source.parameters.get("auth"))
+        token = source.parameters.get("auth")
+        decoded = base64.b64decode(token.encode("ascii")).decode("utf-8")
+        self.assertEqual(decoded, "user:pass")

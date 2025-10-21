@@ -290,11 +290,11 @@ class ForwardSource(ForwardClient, JobsMixin, PrimaryModel):
 
                 snapshots = client.list_snapshots()
                 latest_snapshot: dict | None = None
-                latest_order: float | None = None
+                latest_order: tuple[float, float] | None = None
                 for snapshot in snapshots:
                     snapshot_ref = snapshot.get("ref") or snapshot.get("snapshot_ref")
                     snapshot_id = snapshot.get("snapshot_id") or snapshot_ref
-                    if snapshot_id in ["$prev", "$lastLocked"]:
+                    if snapshot_id in ["$prev", "$lastLocked", "$last"]:
                         continue
 
                     status = snapshot.get("status") or snapshot.get("state")
@@ -302,7 +302,16 @@ class ForwardSource(ForwardClient, JobsMixin, PrimaryModel):
                     if status not in ("done", "loaded") and finish_status not in ("done", "loaded"):
                         continue
 
-                    name = snapshot.get("name") or snapshot_id
+                    raw_note = snapshot.get("note")
+                    if raw_note is None:
+                        raw_note = snapshot.get("notes")
+                    if raw_note is not None:
+                        note = raw_note.strip()
+                        name = note or "(no note)"
+                    else:
+                        name = snapshot.get("name") or snapshot_id or "(no note)"
+                        if isinstance(name, str):
+                            name = name.strip() or "(no note)"
                     start_str = snapshot.get("start") or snapshot.get("started_at")
                     start = parse_datetime(start_str) if start_str else timezone.now()
 
@@ -319,19 +328,27 @@ class ForwardSource(ForwardClient, JobsMixin, PrimaryModel):
                     )
                     self.logger.log_info(
                         f"Created/Updated Snapshot {snapshot_obj.name} ({snapshot_obj.snapshot_id})",
-                        obj=snapshot_obj,  # noqa E225
+                        obj=snapshot_obj,
                     )
 
-                    order_value = snapshot.get("processed_at_millis") or snapshot.get(
-                        "creation_date_millis"
+                    processed_at = snapshot.get("processed_at_millis")
+                    created_at = snapshot.get("creation_date_millis")
+                    order_value = (
+                        float(processed_at)
+                        if processed_at is not None
+                        else float(created_at)
+                        if created_at is not None
+                        else start.timestamp()
                     )
-                    if order_value is not None:
-                        order_value = float(order_value)
-                    else:
-                        order_value = start.timestamp()
+                    numeric_id = None
+                    try:
+                        numeric_id = float(snapshot_id)
+                    except (TypeError, ValueError):
+                        pass
+                    order_key = (order_value, numeric_id or 0)
 
-                    if latest_order is None or order_value > latest_order:
-                        latest_order = order_value
+                    if latest_order is None or order_key > latest_order:
+                        latest_order = order_key
                         latest_snapshot = {
                             "snapshot_id": snapshot_id,
                             "name": name,
@@ -341,26 +358,7 @@ class ForwardSource(ForwardClient, JobsMixin, PrimaryModel):
                         }
 
                 if latest_snapshot:
-                    latest_defaults = {
-                        "name": f"Latest Snapshot ({latest_snapshot['snapshot_id']})",
-                        "data": {
-                            "resolved_snapshot_id": latest_snapshot["snapshot_id"],
-                            "snapshot": latest_snapshot["snapshot"],
-                        },
-                        "date": latest_snapshot["date"],
-                        "created": timezone.now(),
-                        "last_updated": timezone.now(),
-                        "status": latest_snapshot["status"],
-                    }
-                    latest_obj, _ = ForwardSnapshot.objects.update_or_create(
-                        source=self,
-                        snapshot_id="$last",
-                        defaults=latest_defaults,
-                    )
-                    self.logger.log_info(
-                        f"Created/Updated Snapshot {latest_obj.name} ({latest_obj.snapshot_id})",
-                        obj=latest_obj,
-                    )
+                    self._update_latest_snapshot_record(latest_snapshot)
                 self.status = DataSourceStatusChoices.COMPLETED
                 self.logger.log_success(f"Completed syncing snapshots from {self.name}")
                 logger.debug(f"Completed syncing snapshots from {self.url}")
@@ -379,6 +377,49 @@ class ForwardSource(ForwardClient, JobsMixin, PrimaryModel):
                 current_request.reset(request_token)
         # Emit the post_sync signal
         # post_sync.send(sender=self.__class__, instance=self)
+
+    def _upsert_snapshot(self, snapshot_id: str, entry: dict) -> 'ForwardSnapshot':
+        defaults = {
+            "name": entry["name"],
+            "data": entry["snapshot"],
+            "date": entry["date"],
+            "created": timezone.now(),
+            "last_updated": timezone.now(),
+            "status": entry["status"],
+        }
+        snapshot_obj, _ = ForwardSnapshot.objects.update_or_create(
+            source=self,
+            snapshot_id=snapshot_id,
+            defaults=defaults,
+        )
+        self.logger.log_info(
+            f"Created/Updated Snapshot {snapshot_obj.name} ({snapshot_obj.snapshot_id})",
+            obj=snapshot_obj,
+        )
+        return snapshot_obj
+
+    def _update_latest_snapshot_record(self, latest_snapshot: dict) -> None:
+        latest_defaults = {
+            "name": latest_snapshot.get("name")
+            or f"Latest Snapshot ({latest_snapshot['snapshot_id']})",
+            "data": {
+                "resolved_snapshot_id": latest_snapshot["snapshot_id"],
+                "snapshot": latest_snapshot["snapshot"],
+            },
+            "date": latest_snapshot["date"],
+            "created": timezone.now(),
+            "last_updated": timezone.now(),
+            "status": latest_snapshot["status"],
+        }
+        latest_obj, _ = ForwardSnapshot.objects.update_or_create(
+            source=self,
+            snapshot_id="$last",
+            defaults=latest_defaults,
+        )
+        self.logger.log_info(
+            f"Created/Updated Snapshot {latest_obj.name} ({latest_obj.snapshot_id})",
+            obj=latest_obj,
+        )
 
     @classmethod
     def get_for_site(cls, site: Site):

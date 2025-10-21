@@ -1,3 +1,4 @@
+import base64
 import copy
 
 from core.choices import DataSourceStatusChoices
@@ -209,6 +210,8 @@ class ForwardSourceForm(NetBoxModelForm):
             ),
         )
 
+        self.fields["network_id"].required = True
+
         self.fields["timeout"] = forms.IntegerField(
             required=False,
             label=_("Timeout"),
@@ -216,11 +219,21 @@ class ForwardSourceForm(NetBoxModelForm):
             widget=forms.NumberInput(attrs={"class": "form-control"}),
         )
 
-        self.fields["auth"] = forms.CharField(
+        self.fields["access_key"] = forms.CharField(
             required=True,
-            label=_("API Token"),
+            label=_("Forward Access Key"),
             widget=forms.TextInput(attrs={"class": "form-control"}),
-            help_text=_("Forward Enterprise API Token."),
+            help_text=_("Forward Enterprise username or access key."),
+        )
+        self.fields["secret_key"] = forms.CharField(
+            required=True,
+            label=_("Forward Secret Key"),
+            widget=forms.PasswordInput(render_value=True, attrs={"class": "form-control"}),
+            help_text=_("Forward Enterprise password or secret key."),
+        )
+        self.fields["auth"] = forms.CharField(
+            required=False,
+            widget=forms.HiddenInput(),
         )
         self.fields["verify"] = forms.BooleanField(
             required=False,
@@ -245,16 +258,26 @@ class ForwardSourceForm(NetBoxModelForm):
                     self.fields["verify"].initial = verify_value
 
         if self.instance.pk and isinstance(self.instance.parameters, dict):
-            for name, value in self.instance.parameters.items():
+            params = self.instance.parameters
+            token = params.get("auth") or ""
+            if token:
+                try:
+                    decoded = base64.b64decode(token.encode("ascii")).decode("utf-8")
+                    access_value, secret_value = decoded.split(":", 1)
+                except Exception:
+                    access_value = secret_value = ""
+                self.fields["access_key"].initial = access_value
+                self.fields["secret_key"].initial = secret_value
+            for name, value in params.items():
                 if name in self.fields:
                     self.fields[name].initial = value
 
-        source_fields = ["name", "deployment_mode"]
+        source_fields = ["name", "deployment_mode", "network_id"]
         if mode == "on_prem":
             source_fields.append("url")
-        source_fields.extend(["network_id", "description", "comments"])
+        source_fields.append("description")
 
-        parameter_fields = ["auth"]
+        parameter_fields = ["access_key", "secret_key"]
         if mode == "on_prem":
             parameter_fields.append("verify")
         parameter_fields.append("timeout")
@@ -267,8 +290,6 @@ class ForwardSourceForm(NetBoxModelForm):
     def save(self, *args, **kwargs):
         parameters = {}
         for name in self.fields:
-            if name.startswith("auth") and name in self.cleaned_data:
-                parameters["auth"] = self.cleaned_data[name]
             if name.startswith("verify") and name in self.cleaned_data:
                 parameters["verify"] = self.cleaned_data[name]
             if name.startswith("timeout") and name in self.cleaned_data:
@@ -285,6 +306,14 @@ class ForwardSourceForm(NetBoxModelForm):
             self.instance.url = url
             if "verify" in parameters:
                 parameters["verify"] = bool(parameters["verify"])
+
+        access_key = self.cleaned_data.get("access_key", "")
+        secret_key = self.cleaned_data.get("secret_key", "")
+        token = ""
+        if access_key or secret_key:
+            combined = f"{access_key}:{secret_key}"
+            token = base64.b64encode(combined.encode("utf-8")).decode("ascii")
+        parameters["auth"] = token
 
         self.instance.parameters = parameters or {}
         self.instance.network_id = self.cleaned_data.get("network_id")
