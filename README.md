@@ -133,8 +133,8 @@ _This plugin is distributed from source (it is not published on PyPI)._
    source. Only snapshots in a `loaded`/`done` state are staged.
 3. Create a **Forward Sync** referencing the snapshot to ingest, choose the
    site scope (or leave empty to import all sites), and review the toggles for
-   each DCIM dataset. You can override default NQE query IDs directly in the
-   form.
+   each dataset that you want to ingest. NQE IDs are pulled from the shared NQE
+   map automatically.
 4. Run the sync immediately or schedule it. Each execution provisions a
    netbox-branching branch, applies the data, and leaves the branch ready for
    review/merge. Enable “auto merge” to queue a merge job after a successful
@@ -159,8 +159,6 @@ Override these defaults in two ways:
 
 - **Forward NQE Queries** (Plugins → Forward Enterprise → NQE Queries) lets you
   persist query IDs per NetBox model so that every sync inherits them.
-- Individual **Forward Syncs** allow per-run overrides via the form fields
-  generated from the default map.
 
 The plugin executes each NQE query in order, batches results, and maps Forward
 fields onto NetBox objects. Manufacturers, roles, device types, and locations

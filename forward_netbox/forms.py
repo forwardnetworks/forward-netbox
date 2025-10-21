@@ -390,33 +390,6 @@ class ForwardSyncForm(NetBoxModelForm):
                     value = self.instance.parameters.get(name)
                     self.fields[field_name].initial = value
 
-        default_nqe_map = get_default_nqe_map()
-        overrides_nqe = {}
-        if self.instance and self.instance.pk and self.instance.parameters:
-            overrides_nqe = self.instance.parameters.get("nqe_map", {})
-        elif kwargs.get("initial"):
-            overrides_nqe = kwargs["initial"].get("nqe_map", {})
-
-        self.nqe_field_map: dict[str, str] = {}
-        self.nqe_fields: list[str] = []
-        for model_key, meta in sorted(default_nqe_map.items()):
-            field_name = f"nqe__{model_key.replace('.', '__')}"
-            self.nqe_field_map[field_name] = model_key
-            default_query = meta.get("query_id", "")
-            initial_query = overrides_nqe.get(model_key, {}).get(
-                "query_id", default_query
-            )
-            self.fields[field_name] = forms.CharField(
-                required=True,
-                label=model_key,
-                initial=initial_query,
-                help_text=_(
-                    "Forward NQE query ID used to collect data for %(model)s."
-                )
-                % {"model": model_key},
-            )
-            self.nqe_fields.append(field_name)
-
         # Set fieldsets dynamically based and backend_fields
         fieldsets = [FieldSet("name", "source", name=_("Forward Enterprise Source"))]
         # Only show snapshot and sites if source is selected
@@ -426,8 +399,6 @@ class ForwardSyncForm(NetBoxModelForm):
             )
         for k, v in self.backend_fields.items():
             fieldsets.append(FieldSet(*v, name=f"{k.upper()} Parameters"))
-        if self.nqe_fields:
-            fieldsets.append(FieldSet(*self.nqe_fields, name=_("Forward NQE Queries")))
         fieldsets.append(
             FieldSet("scheduled", "interval", name=_("Ingestion Execution Parameters"))
         )
@@ -485,49 +456,15 @@ class ForwardSyncForm(NetBoxModelForm):
 
     def save(self, *args, **kwargs):
         parameters = {}
-        default_nqe_map = get_default_nqe_map()
-        existing_overrides = {}
-        if self.instance and self.instance.pk and self.instance.parameters:
-            existing_overrides = self.instance.parameters.get("nqe_map", {})
         for name in self.fields:
             if name.startswith("fwd_"):
                 parameters[name[4:]] = self.cleaned_data[name]
             elif name == "sites":
                 parameters["sites"] = self.cleaned_data["sites"]
-
-        nqe_map: dict[str, dict[str, object]] = {}
-        model_keys = set(default_nqe_map.keys())
-        model_keys.update(getattr(self, "nqe_field_map", {}).values())
-        for model_key in model_keys:
-            default_meta = default_nqe_map.get(model_key, {})
-            field_name = f"nqe__{model_key.replace('.', '__')}"
-            raw_query = self.cleaned_data.get(field_name)
-            query_id = raw_query if raw_query is not None else default_meta.get("query_id", "")
-            if isinstance(query_id, str):
-                query_id = query_id.strip()
-            model = model_key.split(".", maxsplit=1)[-1]
-            enabled_field_name = f"fwd_{model}"
-            if enabled_field_name in self.cleaned_data:
-                enabled_value = self.cleaned_data.get(enabled_field_name)
-            else:
-                enabled_value = existing_overrides.get(model_key, {}).get(
-                    "enabled", default_meta.get("enabled", True)
-                )
-            nqe_map[model_key] = {
-                "query_id": query_id or "",
-                "enabled": bool(enabled_value)
-                if enabled_value is not None
-                else default_meta.get("enabled", True),
-            }
-
-        for model_key, meta in existing_overrides.items():
-            if model_key not in nqe_map:
-                nqe_map[model_key] = {
-                    "query_id": meta.get("query_id", ""),
-                    "enabled": bool(meta.get("enabled", True)),
-                }
-        if nqe_map:
-            parameters["nqe_map"] = nqe_map
+        if self.instance and self.instance.pk and self.instance.parameters:
+            existing_overrides = self.instance.parameters.get("nqe_map")
+            if existing_overrides:
+                parameters["nqe_map"] = existing_overrides
         self.instance.parameters = parameters
         self.instance.status = DataSourceStatusChoices.NEW
 

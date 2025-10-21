@@ -68,7 +68,7 @@ On the left, you can access snapshot information and the configured source for d
 
 Tabs at the top provide access to the configured [Ingestions](ingestions.md), the change log, and associated jobs.
 
-The parameters table lists the Forward NQE queries used for each synced model together with their enabled state. Updating the mapping is handled directly from the sync form.
+The parameters table lists the Forward NQE queries used for each synced model together with their enabled state. Update query IDs from the global [NQE Map](nqe_map.md); the sync form simply toggles which datasets are included for that run.
 
 ## Initiating a Synchronization
 

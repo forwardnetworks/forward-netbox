@@ -42,39 +42,27 @@ class ForwardSyncFormNQEMapTest(TestCase):
             short_key = model_key.split(".", 1)[1]
             data[f"fwd_{short_key}"] = "on"
 
-        # Populate NQE query fields
-        for model_key, meta in self.default_map.items():
-            field_name = f"nqe__{model_key.replace('.', '__')}"
-            data[field_name] = meta.get("query_id", "")
-
         return data
 
-    def test_form_saves_nqe_map_parameters(self):
+    def test_form_saves_model_toggles(self):
         form = ForwardSyncForm(data=self._base_form_data())
         self.assertTrue(form.is_valid(), form.errors)
         sync: ForwardSync = form.save()
 
-        nqe_map = sync.parameters.get("nqe_map")
-        self.assertIsNotNone(nqe_map)
+        self.assertNotIn("nqe_map", sync.parameters)
         for model_key, meta in self.default_map.items():
-            self.assertIn(model_key, nqe_map)
-            self.assertEqual(nqe_map[model_key]["query_id"], meta.get("query_id"))
-            self.assertTrue(nqe_map[model_key]["enabled"])
+            short_key = model_key.split(".", 1)[1]
+            self.assertTrue(sync.parameters.get(short_key))
 
-    def test_get_nqe_map_merges_overrides(self):
-        form_data = self._base_form_data()
-        override_field = "nqe__dcim__device"
-        form_data[override_field] = "FQ_override"
-
-        form = ForwardSyncForm(data=form_data)
+    def test_get_nqe_map_uses_defaults(self):
+        form = ForwardSyncForm(data=self._base_form_data())
         self.assertTrue(form.is_valid(), form.errors)
         sync = form.save()
 
         effective_map = sync.get_nqe_map()
-        self.assertEqual(
-            effective_map["dcim.device"]["query_id"],
-            "FQ_override",
-        )
+        for model_key, meta in self.default_map.items():
+            self.assertIn(model_key, effective_map)
+            self.assertEqual(effective_map[model_key]["query_id"], meta.get("query_id"))
 
 
 class ForwardNQEQueryFormTest(TestCase):

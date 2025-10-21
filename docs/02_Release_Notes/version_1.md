@@ -11,7 +11,7 @@ description: v1 Release Notes
 - First public release of the Forward ↔ NetBox integration rebuilt on the Forward Enterprise REST / NQE API.
 - Multiple source support with per-source Forward network identifiers and snapshot discovery.
 - Branch-aware ingestion pipeline for manufacturers, roles, device types, locations, devices, and interfaces.
-- Configurable NQE map defaults plus per-sync overrides from the NetBox UI.
+- Configurable NQE map defaults managed from the NetBox UI.
 - Full REST and GraphQL coverage for Forward sources, snapshots, syncs, and ingestion issues.
 
 ### Upgrade Notes

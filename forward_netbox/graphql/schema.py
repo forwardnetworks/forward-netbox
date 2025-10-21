@@ -29,8 +29,8 @@ class ForwardSourceQuery:
 
 @strawberry.type(name="Query")
 class ForwardNQEQueryQuery:
-    forward_networks_nqe_query: ForwardNQEQueryType = strawberry_django.field()
-    forward_networks_nqe_query_list: list[
+    forward_enterprise_nqe_query: ForwardNQEQueryType = strawberry_django.field()
+    forward_enterprise_nqe_query_list: list[
         ForwardNQEQueryType
     ] = strawberry_django.field()
 

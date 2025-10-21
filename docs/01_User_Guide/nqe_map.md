@@ -18,6 +18,9 @@ Select **Add** to create a new mapping. Choose the target model from the DCIM/IP
 
 If you need to revert to the shipped defaults, choose **Restore Defaults**. This action replaces the NQE map with the values from `forward_netbox/data/nqe_map.json`. Custom mappings are removed during the restore, so export any custom values you want to keep before running it.
 
-## Per-Sync Overrides
+## Forward Sync Toggles
 
-Individual Forward Syncs can override the default NQE map. The sync form shows the current query IDs and lets you adjust them for that single sync. Overrides are stored with the sync parameters and take precedence over the global defaults described above.
+Forward Syncs now reference the shared NQE map automatically. The sync form
+exposes checkboxes for each model so you can choose which datasets to ingest,
+but the underlying query IDs always come from the global NQE map. Update the
+map here whenever you need to change the query for a given model.
