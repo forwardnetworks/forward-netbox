@@ -155,6 +155,7 @@ class ForwardIngestionMergeForm(ConfirmationForm):
 
 class ForwardSourceForm(NetBoxModelForm):
     comments = CommentField()
+    DEFAULT_SAAS_URL = "https://fwd.app"
 
     class Meta:
         model = ForwardSource
@@ -168,18 +169,36 @@ class ForwardSourceForm(NetBoxModelForm):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        # Define the layout for a single Forward source configuration
-        self.fieldsets: list[FieldSet] = [
-            FieldSet(
-                "name",
-                "url",
-                "network_id",
-                "description",
-                "comments",
-                name=_("Source"),
+        # Deployment mode (SaaS vs. On-Premises)
+        self.fields["deployment_mode"] = forms.ChoiceField(
+            choices=(
+                ("saas", _("Forward SaaS")),
+                ("on_prem", _("On-Premises")),
             ),
-            FieldSet("auth", "verify", "timeout", name=_("Parameters")),
-        ]
+            initial="saas",
+            label=_("Deployment"),
+            widget=HTMXSelect(),
+        )
+
+        mode = None
+        if self.data and self.data.get("deployment_mode"):
+            mode = self.data.get("deployment_mode")
+        elif "deployment_mode" in kwargs.get("initial", {}):
+            mode = kwargs["initial"]["deployment_mode"]
+        elif self.instance and self.instance.pk:
+            params = self.instance.parameters or {}
+            mode = params.get("deployment_mode")
+            if not mode:
+                if (
+                    self.instance.url == self.DEFAULT_SAAS_URL
+                    and params.get("verify") is False
+                ):
+                    mode = "saas"
+                else:
+                    mode = "on_prem"
+        if mode not in {"saas", "on_prem"}:
+            mode = "saas"
+        self.fields["deployment_mode"].initial = mode
 
         self.fields["url"] = forms.URLField(
             required=True,
@@ -211,10 +230,39 @@ class ForwardSourceForm(NetBoxModelForm):
             ),
         )
 
+        if mode == "saas":
+            self.fields["url"].required = False
+            self.fields["url"].initial = self.DEFAULT_SAAS_URL
+            self.fields["url"].widget = forms.HiddenInput()
+            self.fields["verify"].initial = False
+            self.fields["verify"].widget = forms.HiddenInput()
+        else:
+            self.fields["url"].required = True
+            self.fields["verify"].widget = forms.CheckboxInput()
+            if self.instance and self.instance.parameters:
+                verify_value = self.instance.parameters.get("verify")
+                if verify_value is not None:
+                    self.fields["verify"].initial = verify_value
+
         if self.instance.pk and isinstance(self.instance.parameters, dict):
             for name, value in self.instance.parameters.items():
                 if name in self.fields:
                     self.fields[name].initial = value
+
+        source_fields = ["name", "deployment_mode"]
+        if mode == "on_prem":
+            source_fields.append("url")
+        source_fields.extend(["network_id", "description", "comments"])
+
+        parameter_fields = ["auth"]
+        if mode == "on_prem":
+            parameter_fields.append("verify")
+        parameter_fields.append("timeout")
+
+        self.fieldsets: list[FieldSet] = [
+            FieldSet(*source_fields, name=_("Source")),
+            FieldSet(*parameter_fields, name=_("Parameters")),
+        ]
 
     def save(self, *args, **kwargs):
         parameters = {}
@@ -225,6 +273,18 @@ class ForwardSourceForm(NetBoxModelForm):
                 parameters["verify"] = self.cleaned_data[name]
             if name.startswith("timeout") and name in self.cleaned_data:
                 parameters["timeout"] = self.cleaned_data[name]
+
+        mode = self.cleaned_data.get("deployment_mode", "saas")
+        parameters["deployment_mode"] = mode
+
+        if mode == "saas":
+            self.instance.url = self.DEFAULT_SAAS_URL
+            parameters["verify"] = False
+        else:
+            url = self.cleaned_data.get("url", "").rstrip("/")
+            self.instance.url = url
+            if "verify" in parameters:
+                parameters["verify"] = bool(parameters["verify"])
 
         self.instance.parameters = parameters or {}
         self.instance.network_id = self.cleaned_data.get("network_id")

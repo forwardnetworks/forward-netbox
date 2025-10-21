@@ -2,6 +2,7 @@ from django.contrib.contenttypes.models import ContentType
 from django.test import TestCase
 
 from forward_netbox.forms import ForwardNQEQueryForm
+from forward_netbox.forms import ForwardSourceForm
 from forward_netbox.forms import ForwardSyncForm
 from forward_netbox.models import ForwardSnapshot
 from forward_netbox.models import ForwardSource
@@ -88,3 +89,37 @@ class ForwardNQEQueryFormTest(TestCase):
         obj = form.save()
         self.assertEqual(obj.query_id, "FQ_updated")
         self.assertFalse(obj.enabled)
+
+
+class ForwardSourceFormTest(TestCase):
+    def test_saas_defaults(self):
+        form = ForwardSourceForm(
+            data={
+                "name": "Forward SaaS",
+                "deployment_mode": "saas",
+                "auth": "token",
+            }
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+        source = form.save()
+
+        self.assertEqual(source.url, ForwardSourceForm.DEFAULT_SAAS_URL)
+        self.assertEqual(source.parameters.get("deployment_mode"), "saas")
+        self.assertFalse(source.parameters.get("verify"))
+
+    def test_on_prem_fields(self):
+        form = ForwardSourceForm(
+            data={
+                "name": "Forward On-Prem",
+                "deployment_mode": "on_prem",
+                "url": "https://forward.internal",
+                "auth": "token",
+                "verify": True,
+            }
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+        source = form.save()
+
+        self.assertEqual(source.url, "https://forward.internal")
+        self.assertEqual(source.parameters.get("deployment_mode"), "on_prem")
+        self.assertTrue(source.parameters.get("verify"))
