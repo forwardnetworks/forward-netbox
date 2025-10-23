@@ -11,7 +11,8 @@ branches, and giving operators tooling to review, diff, and merge the updates.
 - Multiple Forward sources with direct API connectivity to Forward Enterprise
 - Snapshot discovery with filtering by Forward network ID and snapshot state
 - NQE-backed ingestion covering manufacturers, roles, device types, locations,
-  devices, and interfaces
+  devices, interfaces, cables, virtual chassis, inventory items, prefixes,
+  VRFs, and IP addresses
 - Branching-aware imports with optional auto-merge after review
 - Built-in scheduling, logging, and RQ job orchestration
 - REST API, GraphQL schema, and tables/forms consistent with NetBox UX
@@ -143,8 +144,9 @@ _This plugin is distributed from source (it is not published on PyPI)._
 ## Forward NQE Queries
 
 Default Forward NQE identifiers live in
-[`forward_netbox/data/nqe_map.json`](forward_netbox/data/nqe_map.json) and cover
-the following datasets:
+[`forward_netbox/data/nqe_map.json`](forward_netbox/data/nqe_map.json).
+Each query returns JSON described in the
+[`docs/nqe/`](docs/nqe/index.md) reference and covers the following datasets:
 
 | Model key          | Description                       |
 |--------------------|-----------------------------------|
@@ -154,6 +156,12 @@ the following datasets:
 | `dcim.location`    | Site hierarchy / locations        |
 | `dcim.device`      | Device inventory                  |
 | `dcim.interface`   | Physical and logical interfaces   |
+| `dcim.cable`       | Physical interface links          |
+| `dcim.virtualchassis` | Member stacks & master devices |
+| `dcim.inventoryitem` | Device components               |
+| `ipam.vrf`         | VRFs / routing instances          |
+| `ipam.prefix`      | Managed prefixes/networks         |
+| `ipam.ipaddress`   | Managed IP addresses              |
 
 Override these defaults in two ways:
 

@@ -18,6 +18,7 @@ This document outlines the tables from Forward Enterprise that are imported into
 | Devices | `inventory.devices` | Device | `dcim` |
 | Virtual Chassis | `technology.platforms.stacks_members` | VirtualChassis | `dcim` |
 | Interfaces | `inventory.interfaces` | Interface | `dcim` |
+| Interface Links | `inventory.interfaces.links` | Cable | `dcim` |
 | Part Numbers | `inventory.pn` | InventoryItem | `dcim` |
 | VLANs | `technology.vlans.site_summary` | VLAN | `ipam` |
 | VRFs | `technology.routing.vrf_detail` | VRF | `ipam` |
@@ -83,6 +84,14 @@ This document outlines the tables from Forward Enterprise that are imported into
 | `duplex` | `duplex` |
 | `sn` | `device` (relationship) |
 
+### Cable
+| Forward Enterprise Property | NetBox Property |
+|-------------------|----------------|
+| `sn` + interface `nameOriginal` | Termination A (device/interface) |
+| `link.deviceName` + `link.ifaceName` | Termination B (device/interface) |
+| `link.type` | `type` (optional) |
+| `link.label` | `label` (optional) |
+
 ### MAC Address
 | Forward Enterprise Property | NetBox Property |
 |-------------------|----------------|
@@ -112,6 +121,7 @@ This document outlines the tables from Forward Enterprise that are imported into
 |-------------------|----------------|
 | `vrf` | `name` |
 | `rd` | `rd` |
+| N/A | `enforce_unique` (default False) |
 
 ### Prefix
 | Forward Enterprise Property | NetBox Property |

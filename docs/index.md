@@ -10,6 +10,7 @@ The Forward Enterprise NetBox plugin enables data synchronization between Forwar
 
 ### Data Synchronization
 The plugin connects directly to the Forward Enterprise REST / NQE API, collecting structured network data from Forward Enterprise instances and transforming it to NetBox's data model—no additional Forward SDK is required.
+For field-level JSON examples and query snippets, see the [NQE reference](../nqe/index.md).
 
 ### Branches
 Built on [NetBox Branching](https://docs.netboxlabs.com/netbox-extensions/branching/) feature, the plugin allows review of proposed changes before they are applied to the production database, providing an additional layer of validation and control.
@@ -25,11 +26,12 @@ Connect to multiple Forward Enterprise instances simultaneously, allowing for co
 
 ## Use Cases
 
-- **Network Documentation Automation**: Automatically document network devices, interfaces, IP addresses, and VLANs discovered by Forward Enterprise
+- **Network Documentation Automation**: Automatically document network devices, interfaces, IP addresses, VLANs, cables, and virtual chassis discovered by Forward Enterprise
 - **Configuration Validation**: Compare intended network state (NetBox) with actual state (Forward Enterprise)
 - **Change Management**: Review and approve network changes through the staged changes workflow
 - **Network Inventory Management**: Maintain accurate inventory of network devices and components
-- **IP Address Management**: Synchronize IP address allocation and usage information
+- **Physical Connectivity Tracking**: Build and validate cable relationships between Forward interfaces in NetBox
+- **IP Address & Routing Management**: Synchronize IP address allocation alongside VRFs and prefixes
 
 ## NetBox Compatibility
 
