@@ -1,0 +1,9 @@
+foreach device in network.devices
+select {
+  device: device.name,
+  os: replace(toString(device.platform.os), "OS.", ""),
+  version: device.platform.osVersion,
+  last_maintenance: device.platform.osSupport?.lastMaintenanceDate,
+  last_support: device.platform.osSupport?.lastSupportDate,
+  last_vulnerability: device.platform.osSupport?.lastVulnerabilityDate
+}

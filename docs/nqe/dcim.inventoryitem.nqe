@@ -1,0 +1,25 @@
+maxSerialLength = 255;
+maxNameLength = 128;
+
+trim(value, limit) =
+  if length(value) <= limit then value
+  else substring(value, 0, limit);
+
+foreach device in network.devices
+let manufacturerName = replace(toString(device.platform.vendor), "Vendor.", "")
+foreach component in device.platform.components
+let serialNumber = component.serialNumber
+let partId = component.partId
+let nameValue = component.name
+let descriptionValue = component.description
+where isPresent(serialNumber) || isPresent(partId) || isPresent(nameValue)
+let serialTrimmed = if isPresent(serialNumber) then trim(serialNumber, maxSerialLength) else ""
+let nameTrimmed = if isPresent(nameValue) then trim(nameValue, maxNameLength) else toString(component.partType)
+select {
+  device: device.name,
+  name: nameTrimmed,
+  serial: serialTrimmed,
+  manufacturer: replace(manufacturerName, "_", " "),
+  part_id: if isPresent(partId) then partId else "",
+  description: descriptionValue
+}

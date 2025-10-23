@@ -8,20 +8,27 @@ from typing import TypeVar
 
 from core.choices import DataSourceStatusChoices
 from core.exceptions import SyncError
+from dcim.choices import LinkStatusChoices
+from dcim.models import Cable
 from dcim.models import Device
 from dcim.models import DeviceRole
 from dcim.models import DeviceType
 from dcim.models import Interface
+from dcim.models import InventoryItem
 from dcim.models import Location
 from dcim.models import Manufacturer
 from dcim.models import Site
+from dcim.models import VirtualChassis
+from ipam.models import VRF
 from django.conf import settings
 from django.db import transaction
+from django.core.exceptions import ValidationError
 from django.db.models import Model
 from django.utils.text import slugify
 from django_tables2 import Column
 import httpx
 from httpx import HTTPStatusError
+from tenancy.models import Tenant
 
 from ..exceptions import ForwardAPIError
 
@@ -311,6 +318,10 @@ class ForwardSyncRunner(object):
         "dcim.location",
         "dcim.device",
         "dcim.interface",
+        "dcim.cable",
+        "dcim.virtualchassis",
+        "dcim.inventoryitem",
+        "ipam.vrf",
     ]
     NQE_PAGE_SIZE = 1000
 
@@ -340,6 +351,7 @@ class ForwardSyncRunner(object):
         self.device_cache: dict[str, Device] = {}
         self.location_cache: dict[tuple[int | None, str], Location] = {}
         self.site_cache: dict[str, Site] = {}
+        self.tenant_cache: dict[str, Tenant] = {}
 
         self._handlers = {
             "dcim.manufacturer": self._sync_manufacturer,
@@ -348,6 +360,10 @@ class ForwardSyncRunner(object):
             "dcim.location": self._sync_location,
             "dcim.device": self._sync_device,
             "dcim.interface": self._sync_interface,
+            "dcim.cable": self._sync_cable,
+            "dcim.virtualchassis": self._sync_virtualchassis,
+            "dcim.inventoryitem": self._sync_inventory_item,
+            "ipam.vrf": self._sync_vrf,
         }
 
     @staticmethod
@@ -478,6 +494,34 @@ class ForwardSyncRunner(object):
         self.manufacturer_cache[identifier] = manufacturer
         return manufacturer
 
+    def _resolve_tenant(self, value, *, for_model: str, data: dict) -> Tenant:
+        if isinstance(value, dict):
+            slug = value.get("slug") or slugify(value.get("name", ""))
+            name = value.get("name")
+        else:
+            slug = str(value) if value else None
+            name = str(value) if value else None
+        identifier = (slug or name or "").lower()
+        if not identifier:
+            raise SearchError("Tenant reference is required.", model=for_model, data=data)
+        if identifier in self.tenant_cache:
+            return self.tenant_cache[identifier]
+        connection_name = self.get_db_connection_name()
+        queryset = Tenant.objects.using(connection_name)
+        tenant = None
+        if slug:
+            tenant = queryset.filter(slug__iexact=slug).first()
+        if not tenant and name:
+            tenant = queryset.filter(name__iexact=name).first()
+        if not tenant:
+            raise SearchError(
+                "Tenant `{}` not found in NetBox.".format(slug or name),
+                model=for_model,
+                data=data,
+            )
+        self.tenant_cache[identifier] = tenant
+        return tenant
+
     def _resolve_role(self, value, *, for_model: str, data: dict) -> DeviceRole:
         if isinstance(value, dict):
             slug = value.get("slug") or slugify(value.get("name", ""))
@@ -541,6 +585,24 @@ class ForwardSyncRunner(object):
             raise SearchError("Device `{}` not found in NetBox.".format(name), model=for_model, data=data)
         self.device_cache[identifier] = device
         return device
+
+    def _resolve_interface(
+        self, device: Device, name: str, *, for_model: str, data: dict
+    ) -> Interface:
+        if not name:
+            raise SearchError(
+                "Interface name is required.", model=for_model, data=data
+            )
+        connection_name = self.get_db_connection_name()
+        queryset = Interface.objects.using(connection_name) if connection_name else Interface.objects
+        interface = queryset.filter(device=device, name__iexact=name).first()
+        if not interface:
+            raise SearchError(
+                "Interface `{}` not found on device `{}`.".format(name, device.name),
+                model=for_model,
+                data=data,
+            )
+        return interface
 
     def _resolve_location(self, value, *, site: Site, for_model: str, data: dict) -> Location | None:
         if value in (None, ""):
@@ -707,6 +769,242 @@ class ForwardSyncRunner(object):
                 )
         interface = self._upsert(Interface, lookup, defaults)
         return interface
+
+    @handle_errors
+    def _sync_cable(self, item: dict):
+        a_device_name = item.get("a_device")
+        a_interface_name = item.get("a_interface")
+        b_device_name = item.get("b_device")
+        b_interface_name = item.get("b_interface")
+
+        if not all([a_device_name, a_interface_name, b_device_name, b_interface_name]):
+            raise SearchError(
+                "Cable record requires `a_device`, `a_interface`, `b_device`, and `b_interface`.",
+                model="dcim.cable",
+                data=item,
+            )
+
+        device_a = self._resolve_device(a_device_name, for_model="dcim.cable", data=item)
+        device_b = self._resolve_device(b_device_name, for_model="dcim.cable", data=item)
+
+        interface_a = self._resolve_interface(device_a, a_interface_name, for_model="dcim.cable", data=item)
+        interface_b = self._resolve_interface(device_b, b_interface_name, for_model="dcim.cable", data=item)
+
+        if interface_a.pk == interface_b.pk:
+            self.logger.log_warning(
+                f"Skipping cable for `{interface_a}`: both endpoints reference the same interface.",
+                obj=self.sync,
+            )
+            return None
+
+        def _connected_to(interface: Interface, peer: Interface) -> bool:
+            cable = getattr(interface, "cable", None)
+            if not cable:
+                return False
+            try:
+                peers = set(cable.a_terminations + cable.b_terminations)
+            except Exception:
+                peers = set()
+            return peer in peers
+
+        if _connected_to(interface_a, interface_b):
+            return interface_a.cable
+        if _connected_to(interface_b, interface_a):
+            return interface_b.cable
+
+        connection_name = self.get_db_connection_name()
+        save_kwargs = {"using": connection_name} if connection_name else {}
+
+        for iface in (interface_a, interface_b):
+            cable = getattr(iface, "cable", None)
+            if cable:
+                self.logger.log_warning(
+                    f"Removing existing cable `{cable}` from interface `{iface}` before re-terminating.",
+                    obj=self.sync,
+                )
+                cable.delete()
+
+        cable = Cable(status=LinkStatusChoices.STATUS_CONNECTED)
+        if item.get("type"):
+            cable.type = item["type"]
+        if item.get("label"):
+            cable.label = item["label"]
+
+        cable.a_terminations = [interface_a]
+        cable.b_terminations = [interface_b]
+
+        try:
+            cable.full_clean()
+            cable.save(**save_kwargs)
+        except ValidationError as exc:
+            self.logger.log_warning(
+                f"Failed to create cable between `{interface_a}` and `{interface_b}`: {exc}",
+                obj=self.sync,
+            )
+            return None
+
+        return cable
+
+    @handle_errors
+    def _sync_virtualchassis(self, item: dict):
+        name = item.get("name")
+        members = [m for m in (item.get("members") or []) if m]
+        if not name:
+            raise SearchError("Virtual chassis name is required.", model="dcim.virtualchassis", data=item)
+
+        if len(members) < 2:
+            self.logger.log_warning(
+                f"Skipping virtual chassis `{name}`: requires at least two members.", obj=self.sync
+            )
+            return None
+
+        master_name_input = item.get("master")
+        connection_name = self.get_db_connection_name()
+        save_kwargs = {"using": connection_name} if connection_name else {}
+
+        lookup = {"name": name}
+        defaults: dict[str, object] = {}
+        target_master = None
+
+        if master_name_input:
+            try:
+                target_master = self._resolve_device(
+                    master_name_input, for_model="dcim.virtualchassis", data=item
+                )
+                defaults["master"] = target_master
+            except SearchError as exc:
+                self.logger.log_warning(str(exc), obj=self.sync)
+
+        if item.get("domain"):
+            defaults["domain"] = item["domain"]
+
+        virtual_chassis = self._upsert(VirtualChassis, lookup, defaults)
+
+        if target_master and target_master.name not in members:
+            members.insert(0, target_master.name)
+
+        seen_members: set[str] = set()
+        unique_members: list[str] = []
+        for member_name in members:
+            key = member_name.lower()
+            if key in seen_members:
+                continue
+            seen_members.add(key)
+            unique_members.append(member_name)
+
+        if len(unique_members) < 2:
+            self.logger.log_warning(
+                f"Skipping virtual chassis `{name}`: requires at least two unique members.", obj=self.sync
+            )
+            return None
+
+        member_lookup = {m.lower(): m for m in unique_members}
+
+        queryset = Device.objects.using(connection_name) if connection_name else Device.objects
+        existing_members = queryset.filter(virtual_chassis=virtual_chassis)
+        for device in existing_members:
+            if device.name.lower() not in member_lookup:
+                device.snapshot()
+                device.virtual_chassis = None
+                device.vc_position = None
+                device.vc_priority = None
+                device.save(**save_kwargs)
+
+        ordered_members = unique_members
+        if target_master and target_master.name.lower() in member_lookup:
+            ordered_members = [target_master.name] + [m for m in unique_members if m != target_master.name]
+
+        resolved_devices: list[Device] = []
+        for index, member_name in enumerate(ordered_members, start=1):
+            try:
+                device = self._resolve_device(member_name, for_model="dcim.virtualchassis", data=item)
+            except SearchError as exc:
+                self.logger.log_warning(str(exc), obj=self.sync)
+                continue
+            device.snapshot()
+            device.virtual_chassis = virtual_chassis
+            device.vc_position = index
+            device.save(**save_kwargs)
+            resolved_devices.append(device)
+
+        if not resolved_devices:
+            self.logger.log_warning(
+                f"No members resolved for virtual chassis `{name}`; skipping.", obj=self.sync
+            )
+            return None
+
+        if not target_master:
+            target_master = resolved_devices[0]
+
+        if target_master and resolved_devices:
+            # Ensure master device has vc_position = 1
+            for device in resolved_devices:
+                if device.pk == target_master.pk and device.vc_position != 1:
+                    device.snapshot()
+                    device.vc_position = 1
+                    device.save(**save_kwargs)
+
+        if target_master and virtual_chassis.master_id != target_master.pk:
+            if hasattr(virtual_chassis, "snapshot"):
+                virtual_chassis.snapshot()
+            virtual_chassis.master = target_master
+            virtual_chassis.save(**save_kwargs)
+
+        return virtual_chassis
+
+    @handle_errors
+    def _sync_inventory_item(self, item: dict):
+        device_name = item.get("device")
+        if not device_name:
+            raise SearchError("Inventory item must reference a device.", model="dcim.inventoryitem", data=item)
+
+        device = self._resolve_device(device_name, for_model="dcim.inventoryitem", data=item)
+        name = item.get("name") or item.get("part_id") or item.get("serial") or "Component"
+        max_name_length = InventoryItem._meta.get_field("name").max_length
+        if len(name) > max_name_length:
+            name = name[:max_name_length]
+        lookup = {"device": device, "name": name}
+
+        defaults = {}
+        for field in ("serial", "part_id", "description"):
+            if item.get(field) is not None:
+                defaults[field] = item[field]
+
+        manufacturer_value = item.get("manufacturer")
+        if manufacturer_value:
+            try:
+                manufacturer = self._resolve_manufacturer(
+                    manufacturer_value, for_model="dcim.inventoryitem", data=item
+                )
+                defaults["manufacturer"] = manufacturer
+            except SearchError as exc:
+                self.logger.log_warning(str(exc), obj=self.sync)
+
+        return self._upsert(InventoryItem, lookup, defaults)
+
+    @handle_errors
+    def _sync_vrf(self, item: dict):
+        name = item.get("name")
+        if not name:
+            raise SearchError("VRF name is required.", model="ipam.vrf", data=item)
+
+        lookup = {"name": name}
+        defaults = {}
+        rd_value = item.get("rd")
+        if rd_value:
+            defaults["rd"] = rd_value
+
+        if item.get("enforce_unique") is not None:
+            defaults["enforce_unique"] = self._to_bool(item["enforce_unique"])
+
+        tenant_value = item.get("tenant")
+        if tenant_value:
+            try:
+                defaults["tenant"] = self._resolve_tenant(tenant_value, for_model="ipam.vrf", data=item)
+            except SearchError as exc:
+                self.logger.log_warning(str(exc), obj=self.sync)
+
+        return self._upsert(VRF, lookup, defaults)
 
     def collect_and_sync(self, ingestion=None) -> None:
         self.logger.log_info("Starting data sync.", obj=self.sync)

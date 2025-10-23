@@ -1,0 +1,20 @@
+pairRecords = distinct(
+  foreach device in network.devices
+  foreach iface in device.interfaces
+  foreach link in iface.links
+  let remoteDevice = link.deviceName
+  let remoteInterface = link.ifaceName
+  where isPresent(remoteDevice) && isPresent(remoteInterface)
+  let localKey = toLowerCase(device.name) + ":" + toLowerCase(iface.name)
+  let remoteKey = toLowerCase(remoteDevice) + ":" + toLowerCase(remoteInterface)
+  where localKey < remoteKey
+  select {
+    a_device: device.name,
+    a_interface: iface.name,
+    b_device: remoteDevice,
+    b_interface: remoteInterface
+  }
+);
+
+foreach record in pairRecords
+select record

@@ -1,0 +1,7 @@
+foreach location in network.locations
+select {
+  name: location.name,
+  city: location.city,
+  admin_division: location.adminDivision,
+  country: location.country
+}

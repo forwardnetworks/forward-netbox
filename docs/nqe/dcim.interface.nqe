@@ -1,0 +1,32 @@
+defaultInterfaceType = "1000base-t";
+defaultInterfaceSpeedMbps = 1000;
+
+speedToType(speed) =
+  if speed == 10 then "10base-t"
+  else if speed == 100 then "100base-tx"
+  else if speed == 1000 then "1000base-t"
+  else if speed == 2500 then "2.5gbase-t"
+  else if speed == 5000 then "5gbase-t"
+  else if speed == 10000 then "10gbase-x-sfpp"
+  else if speed == 25000 then "25gbase-x-sfp28"
+  else if speed == 40000 then "40gbase-x-qsfpp"
+  else if speed == 50000 then "50gbase-x-sfp56"
+  else if speed == 100000 then "100gbase-x-qsfp28"
+  else defaultInterfaceType;
+
+foreach device in network.devices
+foreach iface in device.interfaces
+let rawSpeed = iface.ethernet.speedMbps
+let macValue = if isPresent(iface.ethernet.macAddress) then toString(iface.ethernet.macAddress) else null
+let typeSlug = if isPresent(rawSpeed) then speedToType(rawSpeed) else defaultInterfaceType
+let speedValue = if isPresent(rawSpeed) then rawSpeed else defaultInterfaceSpeedMbps
+select {
+  device: device.name,
+  name: iface.name,
+  type: typeSlug,
+  speed: speedValue,
+  enabled: iface.adminStatus == AdminStatus.UP,
+  mtu: iface.mtu,
+  mac_address: macValue,
+  description: iface.description
+}

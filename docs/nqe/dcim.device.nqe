@@ -1,0 +1,35 @@
+ignoredTypes = [
+  DeviceType.INTERNET,
+  DeviceType.INTRANET,
+  DeviceType.L2_VPN,
+  DeviceType.L3_VPN,
+  DeviceType.WAN_CIRCUIT,
+  DeviceType.MISSING_PEER
+];
+
+foreach device in network.devices
+let vendorCode = replace(toString(device.platform.vendor), "Vendor.", "")
+let deviceTypeCode = device.platform.deviceType
+where vendorCode != "FORWARD_CUSTOM" && deviceTypeCode not in ignoredTypes
+let serialCandidates = (
+  foreach component in device.platform.components
+  let serialValue = toString(component.serialNumber)
+  where component.partType == DevicePartType.CHASSIS &&
+        isPresent(component.serialNumber) &&
+        toLowerCase(serialValue) not in ["", "unknown", "none"]
+  select serialValue
+)
+let serial = min(serialCandidates)
+let model = device.platform.model
+let osCode = replace(toString(device.platform.os), "OS.", "")
+select {
+  name: device.name,
+  serial: serial,
+  manufacturer: replace(vendorCode, "_", " "),
+  device_type: if isPresent(model) then model else "",
+  platform: osCode,
+  role: replace(toString(deviceTypeCode), "DeviceType.", ""),
+  site: device.locationName,
+  status: "active",
+  tags: device.tagNames
+}

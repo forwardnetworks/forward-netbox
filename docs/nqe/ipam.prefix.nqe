@@ -1,0 +1,16 @@
+prefixRecords = distinct(
+  foreach device in network.devices
+  foreach ni in device.networkInstances
+  let siteName = device.locationName
+  let vrfName = ni.name
+  where isPresent(ni.afts.ipv4Unicast)
+  foreach entry in ni.afts.ipv4Unicast.ipEntries
+  select {
+    prefix: toString(entry.prefix),
+    site: siteName,
+    vrf: vrfName
+  }
+);
+
+foreach record in prefixRecords
+select record

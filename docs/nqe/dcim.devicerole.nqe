@@ -1,0 +1,24 @@
+allowedTypes = [
+  DeviceType.ROUTER,
+  DeviceType.SWITCH,
+  DeviceType.FIREWALL,
+  DeviceType.LOAD_BALANCER,
+  DeviceType.CONTROLLER,
+  DeviceType.ENCRYPTOR,
+  DeviceType.SD_WAN,
+  DeviceType.WIFI_ACCESS_POINT,
+  DeviceType.OTHER
+];
+
+roleLabels = distinct(
+  foreach device in network.devices
+  let role = device.platform.deviceType
+  where role in allowedTypes
+  select replace(toString(role), "DeviceType.", "")
+);
+
+foreach roleLabel in roleLabels
+select {
+  name: replace(roleLabel, "_", " "),
+  slug: toLowerCase(replace(roleLabel, "_", "-"))
+}

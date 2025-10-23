@@ -1,0 +1,11 @@
+vrfNames = distinct(
+  foreach device in network.devices
+  foreach networkInstance in device.networkInstances
+  select networkInstance.name
+);
+
+foreach vrfName in vrfNames
+select {
+  name: vrfName,
+  enforce_unique: false
+}

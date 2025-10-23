@@ -1,0 +1,14 @@
+addressRecords = distinct(
+  foreach device in network.devices
+  foreach iface in device.interfaces
+  foreach subiface in iface.subinterfaces
+  foreach addr in subiface.ipv4.addresses
+  select {
+    address: toString(addr.ip) + "/" + toString(addr.prefixLength),
+    device: device.name,
+    interface: subiface.name
+  }
+);
+
+foreach record in addressRecords
+select record

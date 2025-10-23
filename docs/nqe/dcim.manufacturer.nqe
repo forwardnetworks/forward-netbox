@@ -1,0 +1,14 @@
+spaced(raw: String) = replace(raw, "_", " ");
+
+vendorNames = distinct(
+  foreach device in network.devices
+  let vendorName = replace(toString(device.platform.vendor), "Vendor.", "")
+  where vendorName != "FORWARD_CUSTOM"
+  select vendorName
+);
+
+foreach vendor in vendorNames
+select {
+  name: spaced(vendor),
+  slug: toLowerCase(replace(vendor, "_", "-"))
+}

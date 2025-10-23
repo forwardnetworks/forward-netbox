@@ -1,0 +1,13 @@
+vlanRecords = distinct(
+  foreach device in network.devices
+  foreach ni in device.networkInstances
+  foreach vlan in ni.vlans
+  select {
+    name: if isPresent(vlan.name) then vlan.name else "VLAN " + toString(vlan.vlanId),
+    vid: vlan.vlanId,
+    site: device.locationName
+  }
+);
+
+foreach record in vlanRecords
+select record

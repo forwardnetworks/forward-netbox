@@ -1,0 +1,17 @@
+modelRecords = distinct(
+  foreach device in network.devices
+  let vendor = replace(toString(device.platform.vendor), "Vendor.", "")
+  let model = device.platform.model
+  where vendor != "FORWARD_CUSTOM" && isPresent(model)
+  select {
+    manufacturer: replace(vendor, "_", " "),
+    model: model
+  }
+);
+
+foreach record in modelRecords
+select {
+  manufacturer: record.manufacturer,
+  model: record.model,
+  slug: toLowerCase(replace(replace(record.model, " ", "-"), "/", "-"))
+}

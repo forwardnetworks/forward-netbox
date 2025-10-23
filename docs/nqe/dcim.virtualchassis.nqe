@@ -1,0 +1,18 @@
+defaultVirtualChassisDomain = "default";
+
+foreach device in network.devices
+let chassisName = device.system.physicalName
+where isPresent(chassisName)
+group device as devicesForChassis by chassisName as name
+let members = distinct(
+  foreach member in devicesForChassis
+  select member.name
+)
+where length(members) > 1
+let masterName = min(members)
+select {
+  name: name,
+  master: masterName,
+  domain: defaultVirtualChassisDomain,
+  members: members
+}
