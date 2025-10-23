@@ -136,15 +136,16 @@ class ForwardSyncRunnerHandlersTest(TestCase):
             device_type=device_type,
             role=role,
         )
+        physical_type = InterfaceTypeChoices.TYPE_1GE_FIXED
         self.interface_a = Interface.objects.create(
             device=self.device_a,
             name="et0",
-            type=InterfaceTypeChoices.TYPE_1000BASE_T,
+            type=physical_type,
         )
         self.interface_b = Interface.objects.create(
             device=self.device_b,
             name="et0",
-            type=InterfaceTypeChoices.TYPE_1000BASE_T,
+            type=physical_type,
         )
 
         self.runner = ForwardSyncRunner(
