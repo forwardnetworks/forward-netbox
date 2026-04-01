@@ -1,0 +1,21 @@
+/**
+ * @intent Forward VLANs
+ * @description Raw NQE for NetBox VLAN rows derived from Forward network instances.
+ */
+
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+foreach ni in device.networkInstances
+foreach vlan in ni.vlans
+let site_name = if isPresent(device.locationName) then toLowerCase(device.locationName) else "unknown"
+let site_slug_1 = replace(site_name, "&", " and ")
+let site_slug_2 = replaceRegexMatches(site_slug_1, re`[^a-z0-9]+`, "-")
+let site_slug = replaceRegexMatches(site_slug_2, re`^-+|-+$`, "")
+select distinct {
+  site: site_name,
+  site_slug: site_slug,
+  vid: vlan.vlanId,
+  name: if isPresent(vlan.name) then vlan.name else join(" ", ["VLAN", toString(vlan.vlanId)]),
+  status: "active"
+}

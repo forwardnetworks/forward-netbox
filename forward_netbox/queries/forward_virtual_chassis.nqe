@@ -1,0 +1,15 @@
+/**
+ * @intent Forward Virtual Chassis
+ * @description Raw NQE for NetBox virtual chassis records derived from Forward HA VPC domains.
+ */
+
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+where device.ha.vpc.domainId > 0
+let site_name = if isPresent(device.locationName) then toLowerCase(device.locationName) else "unknown"
+select {
+  device: device.name,
+  vc_name: join("-", [site_name, "vpc", toString(device.ha.vpc.domainId)]),
+  vc_domain: toString(device.ha.vpc.domainId)
+}

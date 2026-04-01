@@ -1,0 +1,85 @@
+{% load humanize %}
+{% load helpers %}
+{% load i18n %}
+
+<div class="card">
+  <h5 class="card-header d-flex justify-content-between align-items-center">
+    {% if active_stage == 'merge' %}{% trans "Merge Results" %}{% else %}{% trans "Sync Results" %}{% endif %}
+    {% if job %}
+      {% include 'forward_netbox/partials/stage_switcher_buttons.html' with active_stage=active_stage merge_disabled=merge_disabled job=job %}
+    {% endif %}
+  </h5>
+  <div class="card-body">
+    <p class="mb-2">
+      {% if active_stage == 'merge' %}
+        {% if merge_job.started %}
+          {% trans "Started:" %} <strong>{{ merge_job.started|isodatetime }}</strong>
+        {% elif merge_job.scheduled %}
+          {% trans "Scheduled for:" %} <strong>{{ merge_job.scheduled|isodatetime }}</strong> ({{ merge_job.scheduled|naturaltime }})
+        {% elif merge_job %}
+          {% trans "Created:" %} <strong>{{ merge_job.created|isodatetime }}</strong>
+        {% endif %}
+        {% if merge_job.completed %}
+          {% trans "Duration:" %} <strong>{{ merge_job.duration }}</strong>
+        {% endif %}
+        {% if merge_job %}
+          <span id="pending-result-label">{% badge merge_job.get_status_display merge_job.get_status_color %}</span>
+        {% endif %}
+      {% else %}
+        {% if job.started %}
+          {% trans "Started:" %} <strong>{{ job.started|isodatetime }}</strong>
+        {% elif job.scheduled %}
+          {% trans "Scheduled for:" %} <strong>{{ job.scheduled|isodatetime }}</strong> ({{ job.scheduled|naturaltime }})
+        {% elif job %}
+          {% trans "Created:" %} <strong>{{ job.created|isodatetime }}</strong>
+        {% endif %}
+        {% if job.completed %}
+          {% trans "Duration:" %} <strong>{{ job.duration }}</strong>
+        {% endif %}
+        {% if job %}
+          <span id="pending-result-label">{% badge job.get_status_display job.get_status_color %}</span>
+        {% endif %}
+      {% endif %}
+    </p>
+    {% if active_stage == 'merge' and merge_job and not merge_job.completed %}
+      {% include 'forward_netbox/inc/logs_pending.html' %}
+    {% elif active_stage != 'merge' and job and not job.completed %}
+      {% include 'forward_netbox/inc/logs_pending.html' %}
+    {% endif %}
+    <table class="table table-hover report">
+      <thead>
+        <tr class="table-headings">
+          <th>{% trans "Time" %}</th>
+          <th>{% trans "Level" %}</th>
+          <th>{% trans "Object" %}</th>
+          <th>{% trans "Message" %}</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% if active_stage == 'merge' %}
+          {% for time, level, obj, url, message in merge_job_results.logs|default:'' %}
+            <tr class="{% if level == 'failure' %}danger{% elif level %}{{ level }}{% endif %}">
+              <td>{{ time }}</td>
+              <td><label class="badge bg-{% if level == 'failure' %}danger{% else %}{{ level }}{% endif %}">{{ level|title }}</label></td>
+              <td>{% if obj and url %}<a href="{{ url }}">{{ obj }}</a>{% elif obj %}{{ obj }}{% else %}{{ ''|placeholder }}{% endif %}</td>
+              <td class="rendered-markdown">{{ message|markdown }}</td>
+            </tr>
+          {% empty %}
+            <tr><td colspan="4" class="text-muted">{% trans "No merge log entries yet." %}</td></tr>
+          {% endfor %}
+        {% else %}
+          {% for time, level, obj, url, message in job_results.logs|default:'' %}
+            <tr class="{% if level == 'failure' %}danger{% elif level %}{{ level }}{% endif %}">
+              <td>{{ time }}</td>
+              <td><label class="badge bg-{% if level == 'failure' %}danger{% else %}{{ level }}{% endif %}">{{ level|title }}</label></td>
+              <td>{% if obj and url %}<a href="{{ url }}">{{ obj }}</a>{% elif obj %}{{ obj }}{% else %}{{ ''|placeholder }}{% endif %}</td>
+              <td class="rendered-markdown">{{ message|markdown }}</td>
+            </tr>
+          {% empty %}
+            <tr><td colspan="4" class="text-muted">{% trans "No log entries yet." %}</td></tr>
+          {% endfor %}
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</div>

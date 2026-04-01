@@ -1,0 +1,3 @@
+{% load helpers %}
+{% badge object.sync.get_status_display bg_color=object.sync.get_status_color %}
+{% if object.issues.count %}(with {{ object.issues.count }} issues){% endif %}

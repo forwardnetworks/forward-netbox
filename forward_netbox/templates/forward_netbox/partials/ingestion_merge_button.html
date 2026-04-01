@@ -1,0 +1,19 @@
+{% load i18n %}
+{% if perms.forward_netbox.merge_forwardingestion %}
+  {% if object.sync.status == "ready_to_merge" and object.branch and object.branch.status != "merged" %}
+    <a href="#"
+       hx-get="{% url 'plugins:forward_netbox:forwardingestion_merge' pk=object.pk %}"
+       hx-target="#htmx-modal-content"
+       class="btn btn-success"
+       data-bs-toggle="modal"
+       data-bs-target="#htmx-modal">
+      <span class="mdi mdi-sync" aria-hidden="true"></span>&nbsp;{% trans "Merge" %}
+    </a>
+  {% else %}
+    <span class="inline-block" tabindex="0" data-bs-toggle="tooltip" data-bs-delay="100" data-bs-placement="bottom">
+      <button class="btn btn-success" disabled>
+        <i class="mdi mdi-sync" aria-hidden="true"></i>&nbsp;{% trans "Merge" %}
+      </button>
+    </span>
+  {% endif %}
+{% endif %}

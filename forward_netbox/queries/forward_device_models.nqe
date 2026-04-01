@@ -1,0 +1,25 @@
+/**
+ * @intent Device models found by Forward
+ * @description It provides a list of device models collected by Forward Networks to be added
+ * in NetBox using POST requests to the /api/dcim/device-types/ REST API endpoint.
+ */
+
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+let vendor = device.platform.vendor
+let model = device.platform.model
+let model_slug_1 = replace(toLowerCase(toString(model)), "&", " and ")
+let model_slug_2 = replaceRegexMatches(model_slug_1, re`[^a-z0-9]+`, "-")
+let model_slug = replaceRegexMatches(model_slug_2, re`^-+|-+$`, "")
+let manufacturer_name = replace(toString(vendor), "Vendor.", "")
+let manufacturer_slug_1 = replace(toLowerCase(manufacturer_name), "&", " and ")
+let manufacturer_slug_2 = replaceRegexMatches(manufacturer_slug_1, re`[^a-z0-9]+`, "-")
+let manufacturer_slug = replaceRegexMatches(manufacturer_slug_2, re`^-+|-+$`, "")
+select distinct {
+  manufacturer: vendor,
+  manufacturer_slug: manufacturer_slug,
+  model: model,
+  part_number: model,
+  slug: model_slug
+}

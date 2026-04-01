@@ -1,0 +1,64 @@
+{% load i18n %}
+<div class="modal-content" id="htmx-modal-content">
+  <div class="modal-header">
+    <h5 class="modal-title">{% blocktrans %}Change Diff {{ change }}{% endblocktrans %}</h5>
+    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+  </div>
+  <div class="modal-body">
+    <div class="row mb-3">
+      <div class="col-6">
+        <div class="card">
+          <h5 class="card-header">{% trans "Pre-Change Data" %}</h5>
+          <div class="card-body">
+            {% if prechange_data %}
+              <pre class="change-data">{% for k, v in prechange_data.items %}{% spaceless %}
+                  <span{% if k in diff_removed %} class="removed"{% endif %}>{{ k }}: {{ v|json }}</span>
+              {% endspaceless %}{% endfor %}</pre>
+            {% else %}
+              <span class="text-muted">{% trans "None" %}</span>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+      <div class="col-6">
+        <div class="card">
+          <h5 class="card-header">{% trans "Post-Change Data" %}</h5>
+          <div class="card-body">
+            {% if postchange_data %}
+              <pre class="change-data">{% for k, v in postchange_data.items %}{% spaceless %}
+                  <span{% if k in diff_removed %} class="added"{% endif %}>{{ k }}: {{ v|json }}</span>
+              {% endspaceless %}{% endfor %}</pre>
+            {% else %}
+              <span class="text-muted">{% trans "None" %}</span>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="row">
+      <div class="col">
+        <div class="card">
+          <div class="card-header">
+            <h5 class="d-inline">{% trans "Difference" %}</h5>
+          </div>
+          <div class="card-body">
+            {% if diff_added == diff_removed %}
+              <span class="text-muted" style="margin-left: 10px;">
+                {% if change.action == 'create' %}
+                  {% trans "Object Created" %}
+                {% elif change.action == 'delete' %}
+                  {% trans "Object Deleted" %}
+                {% else %}
+                  {% trans "No Changes" %}
+                {% endif %}
+              </span>
+            {% else %}
+              <pre class="change-diff change-removed">{{ diff_removed|json }}</pre>
+              <pre class="change-diff change-added">{{ diff_added|json }}</pre>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

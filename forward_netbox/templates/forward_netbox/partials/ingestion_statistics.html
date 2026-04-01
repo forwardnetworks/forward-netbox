@@ -1,0 +1,20 @@
+{% load i18n %}
+<div class="card">
+  <h5 class="card-header">{% trans "Statistics" %}</h5>
+  <div class="card-body">
+    <table class="table table-hover attr-table">
+      <tr>
+        <th scope="row">{% trans "Created" %}</th>
+        <td>{% if object.num_created %}{{ object.num_created }}{% else %}{{ ''|placeholder }}{% endif %}</td>
+      </tr>
+      <tr>
+        <th scope="row">{% trans "Updated" %}</th>
+        <td>{% if object.num_updated %}{{ object.num_updated }}{% else %}{{ ''|placeholder }}{% endif %}</td>
+      </tr>
+      <tr>
+        <th scope="row">{% trans "Deleted" %}</th>
+        <td>{% if object.num_deleted %}{{ object.num_deleted }}{% else %}{{ ''|placeholder }}{% endif %}</td>
+      </tr>
+    </table>
+  </div>
+</div>

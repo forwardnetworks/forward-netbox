@@ -1,0 +1,6 @@
+{% load i18n %}
+<div class="spinner-border float-start me-1" id="spinner" role="status">
+  <span class="visually-hidden">{% trans "Loading..." %}</span>
+</div>
+<h3>{% trans "Logs pending..." %}</h3>
+<small class="text-muted">{% trans "Last updated" %} {% now "H:i:s" %}</small>

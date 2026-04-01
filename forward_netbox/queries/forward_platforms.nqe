@@ -1,0 +1,22 @@
+/**
+ * @intent Forward Platforms
+ * @description Raw NQE for NetBox platform records derived from Forward device OS values.
+ */
+
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+let platform_name = replace(toString(device.platform.os), "OS.", "")
+let platform_slug_1 = replace(toLowerCase(platform_name), "&", " and ")
+let platform_slug_2 = replaceRegexMatches(platform_slug_1, re`[^a-z0-9]+`, "-")
+let platform_slug = replaceRegexMatches(platform_slug_2, re`^-+|-+$`, "")
+let manufacturer_name = replace(toString(device.platform.vendor), "Vendor.", "")
+let manufacturer_slug_1 = replace(toLowerCase(manufacturer_name), "&", " and ")
+let manufacturer_slug_2 = replaceRegexMatches(manufacturer_slug_1, re`[^a-z0-9]+`, "-")
+let manufacturer_slug = replaceRegexMatches(manufacturer_slug_2, re`^-+|-+$`, "")
+select distinct {
+  name: platform_name,
+  manufacturer: device.platform.vendor,
+  manufacturer_slug: manufacturer_slug,
+  slug: platform_slug
+}

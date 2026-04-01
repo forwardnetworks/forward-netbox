@@ -1,0 +1,2 @@
+recursive-include forward_netbox/templates *
+recursive-include forward_netbox/queries *

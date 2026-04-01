@@ -1,0 +1,30 @@
+{% load forward_netbox_helpers %}
+{% url 'plugins:forward_netbox:forwardingestion_logs' pk=object.pk as logs_url %}
+<div id="object_tabs" hx-swap-oob="true">
+  {% include 'forward_netbox/partials/object_tabs.html' with object=object %}
+</div>
+<div id="ingestion_statistics" hx-swap-oob="true">
+  {% include 'forward_netbox/partials/ingestion_statistics.html' with object=object %}
+</div>
+<div id="ingestion_status" hx-swap-oob="true">
+  {% include 'forward_netbox/partials/ingestion_status.html' with object=object %}
+</div>
+<div id="ingestion_progress" hx-swap-oob="true">
+  {% render_progress_card job statistics active_stage merge_job=merge_job merge_disabled=merge_disabled %}
+</div>
+<div id="ingestion_merge_button" hx-swap-oob="true">
+  {% include 'forward_netbox/partials/ingestion_merge_button.html' with object=object %}
+</div>
+<div id="ingestion_poll"
+     hx-swap-oob="true"
+     class="col col-md-12"
+     hx-get="{{ logs_url }}?stage={{ active_stage }}"
+     hx-trigger="{% if polling_done %}none{% else %}every 5s{% endif %}"
+     hx-target="#ingestion_logs"
+     hx-select="#ingestion_logs"
+     hx-select-oob="#ingestion_status:innerHTML,#ingestion_progress:innerHTML,#ingestion_statistics:innerHTML,#object_tabs:innerHTML,#ingestion_merge_button:innerHTML"
+     hx-swap="innerHTML">
+</div>
+<div id="ingestion_logs">
+  {% include 'forward_netbox/partials/job_logs.html' with job=job merge_job=merge_job job_results=job_results merge_job_results=merge_job_results active_stage=active_stage merge_disabled=merge_disabled %}
+</div>
