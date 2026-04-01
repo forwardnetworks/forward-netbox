@@ -1,0 +1,16 @@
+/**
+ * @intent Forward MAC Addresses
+ * @description Raw NQE for NetBox MAC addresses derived from Forward interface ethernet state.
+ */
+
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+foreach interface in device.interfaces
+where interface.interfaceType == IfaceType.IF_ETHERNET
+where isPresent(interface.ethernet.macAddress)
+select {
+  device: device.name,
+  interface: interface.name,
+  mac: toString(interface.ethernet.macAddress)
+}

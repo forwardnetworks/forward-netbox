@@ -1,0 +1,9 @@
+services:
+  netbox:
+    ports:
+      - "8000:8000"
+    environment:
+      LOGLEVEL: "INFO"
+  netbox-worker:
+    environment:
+      LOGLEVEL: "DEBUG"

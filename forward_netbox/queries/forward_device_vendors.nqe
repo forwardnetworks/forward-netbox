@@ -1,0 +1,18 @@
+/**
+ * @intent Device Vendors found by Forward
+ * @description It provides a list of device vendors collected by Forward Networks to be added
+ * in NetBox using POST requests to the /api/dcim/manufacturers/ REST API endpoint.
+ */
+
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+let vendor = device.platform.vendor
+let vendor_name = replace(toString(vendor), "Vendor.", "")
+let vendor_slug_1 = replace(toLowerCase(vendor_name), "&", " and ")
+let vendor_slug_2 = replaceRegexMatches(vendor_slug_1, re`[^a-z0-9]+`, "-")
+let vendor_slug = replaceRegexMatches(vendor_slug_2, re`^-+|-+$`, "")
+select distinct {
+  name: vendor,
+  slug: vendor_slug
+}

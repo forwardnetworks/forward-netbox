@@ -1,0 +1,23 @@
+/**
+ * @intent Forward IPv6 Prefixes
+ * @description Raw NQE for NetBox IPv6 prefixes derived from Forward network instance routes.
+ */
+
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+foreach ni in device.networkInstances
+where isPresent(ni.afts?.ipv6Unicast?.ipEntries)
+foreach entry in ni.afts.ipv6Unicast.ipEntries
+where !(length(entry.nextHops) > 0
+  && length((foreach hop in entry.nextHops
+    where hop.nextHopType != NextHopType.RECEIVE && hop.nextHopType != NextHopType.DROP
+    select hop.nextHopType)) == 0
+  && length(entry.prefix) == 128)
+select {
+  vrf: if ni.name != "default"
+    then if toString(ni.instanceType) != "NetworkInstanceType.DEFAULT_INSTANCE" then ni.name else null : String
+    else null : String,
+  prefix: ipSubnet(networkAddress(entry.prefix), length(entry.prefix)),
+  status: "active"
+}

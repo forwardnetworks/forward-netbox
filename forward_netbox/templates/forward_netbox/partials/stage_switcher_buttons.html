@@ -1,0 +1,18 @@
+{% load i18n %}
+<div class="btn-group btn-group-sm" role="group" aria-label="{% trans 'Progress stage' %}">
+  <button type="button"
+          class="btn btn-outline-secondary{% if active_stage == 'sync' %} active{% endif %}"
+          hx-get="{% url 'plugins:forward_netbox:forwardingestion_logs' pk=job.object_id %}?stage=sync"
+          hx-target="#ingestion_logs"
+          hx-swap="outerHTML">
+    {% trans "Sync" %}
+  </button>
+  <button type="button"
+          class="btn btn-outline-secondary{% if active_stage == 'merge' %} active{% endif %}"
+          hx-get="{% url 'plugins:forward_netbox:forwardingestion_logs' pk=job.object_id %}?stage=merge"
+          hx-target="#ingestion_logs"
+          hx-swap="outerHTML"
+          {% if merge_disabled %}disabled{% endif %}>
+    {% trans "Merge" %}
+  </button>
+</div>

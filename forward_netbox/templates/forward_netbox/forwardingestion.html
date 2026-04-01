@@ -1,0 +1,154 @@
+{% extends 'generic/object.html' %}
+{% load custom_links %}
+{% load forward_netbox_helpers %}
+{% load helpers %}
+{% load plugins %}
+{% load i18n %}
+
+{% block control-buttons %}
+<div class="controls">
+  <div class="control-group">
+    {% custom_links object %}
+  </div>
+  <div id="ingestion_merge_button">
+    {% include 'forward_netbox/partials/ingestion_merge_button.html' with object=object %}
+  </div>
+</div>
+{% endblock control-buttons %}
+
+{% block tabs %}
+  <div id="object_tabs">
+    {% include 'forward_netbox/partials/object_tabs.html' with object=object %}
+  </div>
+{% endblock tabs %}
+
+{% block content %}
+<div class="row mb-3">
+  <div class="col col-md-6">
+    <div class="card">
+      <h5 class="card-header">{% trans "Ingestion Information" %}</h5>
+      <div class="card-body">
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">{% trans "Name" %}</th>
+            <td>{{ object.name }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Sync" %}</th>
+            <td><a href="{{ object.sync.get_absolute_url }}">{{ object.sync.name }}</a></td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Branch" %}</th>
+            <td>
+              {% if object.branch %}
+                <a href="{% url 'plugins:netbox_branching:branch' pk=object.branch.pk %}">{{ object.branch.name }}</a>
+              {% else %}
+                {{ ""|placeholder }}
+              {% endif %}
+            </td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Job" %}</th>
+            <td>
+              {% if object.job %}
+                <a href="{% url 'core:job' pk=object.job.pk %}">{{ object.job }}</a>
+              {% else %}
+                {{ ""|placeholder }}
+              {% endif %}
+            </td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Merge Job" %}</th>
+            <td>
+              {% if object.merge_job %}
+                <a href="{% url 'core:job' pk=object.merge_job.pk %}">{{ object.merge_job }}</a>
+              {% else %}
+                {{ ""|placeholder }}
+              {% endif %}
+            </td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Status" %}</th>
+            <td><div id="ingestion_status">{% include 'forward_netbox/partials/ingestion_status.html' with object=object %}</div></td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Snapshot Selection" %}</th>
+            <td>{{ object.get_snapshot_summary.snapshot_selector|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Snapshot ID" %}</th>
+            <td>{{ object.get_snapshot_summary.snapshot_id|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Snapshot State" %}</th>
+            <td>{{ object.get_snapshot_summary.state|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Snapshot Created" %}</th>
+            <td>{{ object.get_snapshot_summary.created_at|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Snapshot Processed" %}</th>
+            <td>{{ object.get_snapshot_summary.processed_at|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Created" %}</th>
+            <td>{{ object.created }}</td>
+          </tr>
+        </table>
+      </div>
+    </div>
+    {% plugin_left_page object %}
+    <div id="ingestion_statistics">
+      {% include 'forward_netbox/partials/ingestion_statistics.html' with object=object %}
+    </div>
+  </div>
+  <div class="col col-md-6">
+    <div id="ingestion_progress">
+      {% render_progress_card object.job statistics active_stage merge_job=merge_job merge_disabled=merge_disabled %}
+    </div>
+    <div class="card">
+      <h5 class="card-header">{% trans "Forward Snapshot Metrics" %}</h5>
+      <div class="card-body">
+        {% if object.get_snapshot_metrics_summary %}
+          <table class="table table-hover attr-table">
+            {% for key, value in object.get_snapshot_metrics_summary.items %}
+              <tr>
+                <th scope="row">{{ key }}</th>
+                <td>{{ value|placeholder }}</td>
+              </tr>
+            {% endfor %}
+          </table>
+        {% else %}
+          <span class="text-muted">{% trans "No snapshot metrics were returned for this ingestion." %}</span>
+        {% endif %}
+      </div>
+    </div>
+    {% if object.snapshot_metrics %}
+      <div class="card">
+        {% include 'extras/inc/configcontext_data.html' with title="Snapshot Metrics (Raw)" data=object.snapshot_metrics format="json" copyid="forward-ingestion-snapshot-metrics" %}
+      </div>
+    {% endif %}
+    {% include 'inc/panels/custom_fields.html' %}
+    {% plugin_right_page object %}
+  </div>
+  <div class="row mb-3">
+    <div id="ingestion_poll"
+         class="col col-md-12"
+         hx-get="{% url 'plugins:forward_netbox:forwardingestion_logs' pk=object.pk %}?stage={{ active_stage|default:'sync' }}"
+         hx-trigger="{% if job_running %}every 5s{% else %}none{% endif %}"
+         hx-target="#ingestion_logs"
+         hx-select="#ingestion_logs"
+         hx-select-oob="#ingestion_status:innerHTML,#ingestion_progress:innerHTML,#ingestion_statistics:innerHTML,#object_tabs:innerHTML,#ingestion_merge_button:innerHTML"
+         hx-swap="innerHTML">
+    </div>
+    <div id="ingestion_logs" class="col col-md-12">
+      {% include 'forward_netbox/partials/job_logs.html' with job=object.job merge_job=merge_job job_results=job_results merge_job_results=merge_job_results active_stage=active_stage merge_disabled=merge_disabled %}
+    </div>
+  </div>
+</div>
+{% endblock content %}
+
+{% block modals %}
+{% include 'inc/htmx_modal.html' with size='lg' %}
+{% endblock modals %}

@@ -1,0 +1,30 @@
+/**
+ * @intent Forward Locations
+ * @description It provides a list of Locations configured in Forward to be added
+ * in NetBox using POST requests to the /api/dcim/sites/ REST API endpoint.
+ */
+
+deviceLocations =
+  foreach d in network.devices
+  select distinct d.locationName;
+
+foreach location in network.locations
+where location.name in deviceLocations
+let location_name = toLowerCase(location.name)
+let location_slug_1 = replace(location_name, "&", " and ")
+let location_slug_2 = replaceRegexMatches(location_slug_1, re`[^a-z0-9]+`, "-")
+let location_slug = replaceRegexMatches(location_slug_2, re`^-+|-+$`, "")
+let address = join(", ", [if isPresent(location.city)
+                          then location.city
+                          else "city unknown",
+                          if isPresent(location.country)
+                          then location.country
+                          else "country unknown"
+                         ])
+select {
+  name: location_name,
+  slug: location_slug,
+  status: "active",
+  physical_address: address,
+  comments: "Site added or Updated by Forward Enterprise"
+}

@@ -1,0 +1,69 @@
+{% extends 'generic/object.html' %}
+{% load helpers %}
+{% load plugins %}
+{% load i18n %}
+
+{% block content %}
+<div class="row mb-3">
+  <div class="col col-md-6">
+    <div class="card">
+      <h5 class="card-header">{% trans "Forward Source" %}</h5>
+      <div class="card-body">
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">{% trans "Name" %}</th>
+            <td>{{ object.name }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Type" %}</th>
+            <td>{{ object.get_type_display }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Status" %}</th>
+            <td>{{ object.get_status_display }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Last synced" %}</th>
+            <td>{{ object.last_synced|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Description" %}</th>
+            <td>{{ object.description|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Base URL" %}</th>
+            <td><a href="{{ object.url }}">{{ object.url }}</a></td>
+          </tr>
+        </table>
+      </div>
+    </div>
+    {% include 'inc/panels/tags.html' %}
+    {% include 'inc/panels/comments.html' %}
+    {% plugin_left_page object %}
+  </div>
+  <div class="col col-md-6">
+    <div class="card">
+      <h5 class="card-header">{% trans "Parameters" %}</h5>
+      <div class="card-body">
+        <table class="table table-hover attr-table">
+          {% for name, value in masked_parameters.items %}
+            <tr>
+              <th scope="row">{{ name|capfirst }}</th>
+              <td>{{ value|placeholder }}</td>
+            </tr>
+          {% empty %}
+            <tr>
+              <td colspan="2" class="text-muted">{% trans "No parameters defined" %}</td>
+            </tr>
+          {% endfor %}
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      {% include 'extras/inc/configcontext_data.html' with title="Parameters" data=masked_parameters format="json" copyid="forward-source-parameters" %}
+    </div>
+    {% include 'inc/panels/custom_fields.html' %}
+    {% plugin_right_page object %}
+  </div>
+</div>
+{% endblock %}

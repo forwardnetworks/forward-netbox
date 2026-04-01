@@ -1,0 +1,67 @@
+name: CI
+"on":
+  push:
+  pull_request:
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install validation dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            build \
+            pre-commit \
+            mkdocs \
+            mkdocs-material \
+            mkdocs-awesome-pages-plugin \
+            mdx-truly-sane-lists \
+            pymdown-extensions
+      - name: Run pre-commit
+        run: pre-commit run --all-files
+      - name: Compile plugin modules
+        run: python -m py_compile $(find forward_netbox -name '*.py' -print)
+      - name: Build docs
+        run: mkdocs build --strict
+      - name: Start NetBox development stack
+        run: |
+          docker compose --env-file development/.env \
+            -f development/docker-compose.yml \
+            up -d --build postgres redis netbox
+      - name: Run Django system checks
+        run: |
+          docker compose --env-file development/.env \
+            -f development/docker-compose.yml \
+            exec -T netbox bash -lc \
+            "cd /opt/netbox/netbox && python manage.py check"
+      - name: Run plugin tests
+        run: |
+          docker compose --env-file development/.env \
+            -f development/docker-compose.yml \
+            exec -T netbox bash -lc \
+            "cd /opt/netbox/netbox && \
+            python manage.py test --keepdb --noinput forward_netbox.tests"
+      - name: Build release artifacts
+        run: python -m build
+      - name: Show container logs on failure
+        if: failure()
+        run: |
+          docker compose --env-file development/.env \
+            -f development/docker-compose.yml \
+            logs --no-color netbox
+          docker compose --env-file development/.env \
+            -f development/docker-compose.yml \
+            logs --no-color netbox-worker
+      - name: Stop NetBox development stack
+        if: always()
+        run: |
+          docker compose --env-file development/.env \
+            -f development/docker-compose.yml \
+            down -v

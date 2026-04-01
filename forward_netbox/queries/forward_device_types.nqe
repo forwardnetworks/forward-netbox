@@ -1,0 +1,19 @@
+/**
+ * @intent Device Types found by Forward
+ * @description It provides a list of device roles collected by Forward Networks to be added
+ * in NetBox using POST requests to the /api/dcim/device-roles/ REST API endpoint.
+ */
+
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+let device_type = device.platform.deviceType
+let role_name = replace(toString(device_type), "DeviceType.", "")
+let role_slug_1 = replace(toLowerCase(role_name), "&", " and ")
+let role_slug_2 = replaceRegexMatches(role_slug_1, re`[^a-z0-9]+`, "-")
+let role_slug = replaceRegexMatches(role_slug_2, re`^-+|-+$`, "")
+select distinct {
+  name: device_type,
+  slug: role_slug,
+  color: "9e9e9e"
+}
