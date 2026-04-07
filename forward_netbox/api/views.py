@@ -6,6 +6,8 @@ from netbox.api.viewsets import NetBoxReadOnlyModelViewSet
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
+from ..exceptions import ForwardConnectivityError
+from ..exceptions import ForwardSyncError
 from .serializers import EmptySerializer
 from .serializers import ForwardIngestionIssueSerializer
 from .serializers import ForwardIngestionSerializer
@@ -65,6 +67,17 @@ class ForwardSourceViewSet(NetBoxModelViewSet):
                         "verify": verify,
                     },
                 )
+            else:
+                return Response(
+                    {
+                        "count": 0,
+                        "results": [],
+                        "detail": (
+                            "Enter Forward username and password so the plugin can "
+                            "load networks."
+                        ),
+                    }
+                )
 
         q = (request.GET.get("q") or "").strip().lower()
         results = []
@@ -84,8 +97,54 @@ class ForwardSourceViewSet(NetBoxModelViewSet):
                             "display": network["label"],
                         }
                     )
+            except ForwardSyncError as error:
+                message = str(error)
+                if isinstance(error, ForwardConnectivityError):
+                    detail = (
+                        "Could not contact the Forward API endpoint. Check URL reachability, "
+                        "DNS/network connectivity, and whether Forward is reachable from this "
+                        "NetBox host."
+                    )
+                elif (
+                    "Forward API request failed with HTTP 401" in message
+                    or "HTTP 403" in message
+                ):
+                    detail = (
+                        "Could not authenticate to Forward. Verify username and password. "
+                        "For new Forward accounts, set the account password in the Forward "
+                        "web UI before using NetBox."
+                    )
+                elif (
+                    "Forward credentials are valid, but no networks are available."
+                    in message
+                ):
+                    detail = (
+                        "The Forward account is valid but no networks are available for "
+                        "the provided credentials."
+                    )
+                else:
+                    detail = (
+                        "Could not load networks from this Forward account. "
+                        "Check URL, username, and password."
+                    )
+                return Response(
+                    {
+                        "count": 0,
+                        "results": [],
+                        "detail": detail,
+                    }
+                )
             except Exception:
-                results = []
+                return Response(
+                    {
+                        "count": 0,
+                        "results": [],
+                        "detail": (
+                            "Could not load networks from this Forward account. "
+                            "Check URL, username, and password."
+                        ),
+                    }
+                )
         return Response({"count": len(results), "results": results})
 
 

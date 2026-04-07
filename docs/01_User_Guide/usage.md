@@ -17,6 +17,10 @@ Fill in:
 - `Password`
 - `Network`
 
+Important:
+
+- `Network` will remain empty until the Forward account has both username and password configured.
+
 Expected result:
 
 - The form loads without errors.
@@ -131,6 +135,8 @@ Optional knobs:
 - `FORWARD_SMOKE_URL` defaults to `https://fwd.app`
 - `FORWARD_SMOKE_SNAPSHOT_ID` defaults to `latestProcessed`
 - `FORWARD_SMOKE_MODELS` accepts a comma-separated list of enabled NetBox models
+- `invoke forward_netbox.smoke-sync --validate-only` resolves the source/network/snapshot and executes the selected queries without creating an ingestion
+- `--query-limit` limits rows fetched per query during `--validate-only`; normal syncs page through the full NQE result set
 - `invoke forward_netbox.smoke-sync --merge` will merge the staged branch after a clean run
 
 Expected result:
@@ -138,3 +144,4 @@ Expected result:
 - the command creates or updates a disposable smoke `Source` and `Sync`
 - the sync resolves the selected snapshot and runs a real ingestion
 - the command exits non-zero if the sync fails or any ingestion issues are recorded
+- in `--validate-only` mode, the command prints per-model query execution mode, row count, and runtime and exits non-zero on any query failure

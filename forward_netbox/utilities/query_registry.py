@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
@@ -38,10 +39,83 @@ class QuerySpec:
 
 
 QUERY_DIR = Path(__file__).resolve().parents[1] / "queries"
+LOCAL_IMPORT_RE = re.compile(r'^\s*import\s+"([^"]+)"\s*;\s*$')
+
+
+def _read_query_source(filename: str) -> str:
+    return (QUERY_DIR / filename).read_text(encoding="utf-8").strip()
+
+
+def _resolve_local_import(base_path: Path, import_target: str) -> Path | None:
+    if import_target.startswith("@"):
+        return None
+
+    candidates = [base_path.parent / import_target]
+    if not import_target.endswith(".nqe"):
+        candidates.append(base_path.parent / f"{import_target}.nqe")
+
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        try:
+            resolved.relative_to(QUERY_DIR)
+        except ValueError:
+            continue
+        if resolved.is_file():
+            return resolved
+
+    raise FileNotFoundError(
+        f"Unable to resolve local NQE import '{import_target}' from '{base_path.name}'."
+    )
+
+
+def _compile_query_file(
+    path: Path,
+    *,
+    seen: set[Path] | None = None,
+    active: tuple[Path, ...] = (),
+) -> str:
+    if seen is None:
+        seen = set()
+    resolved_path = path.resolve()
+    if resolved_path in active:
+        cycle = " -> ".join(module.name for module in (*active, resolved_path))
+        raise ValueError(f"Detected local NQE import cycle: {cycle}")
+    if resolved_path in seen:
+        return ""
+
+    active = (*active, resolved_path)
+    source = resolved_path.read_text(encoding="utf-8").strip()
+    fragments: list[str] = []
+    remaining_lines: list[str] = []
+
+    for line in source.splitlines():
+        match = LOCAL_IMPORT_RE.match(line)
+        if not match:
+            remaining_lines.append(line)
+            continue
+
+        import_path = _resolve_local_import(resolved_path, match.group(1))
+        if import_path is None:
+            remaining_lines.append(line)
+            continue
+
+        compiled_import = _compile_query_file(
+            import_path,
+            seen=seen,
+            active=active,
+        )
+        if compiled_import:
+            fragments.append(compiled_import)
+
+    seen.add(resolved_path)
+    remaining_source = "\n".join(remaining_lines).strip()
+    if remaining_source:
+        fragments.append(remaining_source)
+    return "\n\n".join(fragment for fragment in fragments if fragment).strip()
 
 
 def _read_query(filename: str) -> str:
-    return (QUERY_DIR / filename).read_text(encoding="utf-8").strip()
+    return _compile_query_file(QUERY_DIR / filename)
 
 
 BUILTIN_QUERY_MAPS = [
@@ -122,6 +196,11 @@ BUILTIN_QUERY_MAPS = [
     },
 ]
 
+BUILTIN_QUERY_DEFAULTS = {
+    (query_default["model_string"], query_default["name"]): query_default
+    for query_default in BUILTIN_QUERY_MAPS
+}
+
 
 def builtin_nqe_map_rows() -> list[dict[str, Any]]:
     rows = []
@@ -131,7 +210,7 @@ def builtin_nqe_map_rows() -> list[dict[str, Any]]:
                 "model_string": query_default["model_string"],
                 "name": query_default["name"],
                 "query_id": "",
-                "query": _read_query(query_default["filename"]),
+                "query": _read_query_source(query_default["filename"]),
                 "commit_id": "",
                 "parameters": {},
                 "weight": index * 100,
@@ -149,6 +228,18 @@ def _build_builtin_query_spec(query_default: dict[str, Any]) -> QuerySpec:
 
 
 def _build_query_spec_from_map(query_map) -> QuerySpec:
+    if query_map.built_in:
+        query_default = BUILTIN_QUERY_DEFAULTS.get(
+            (query_map.model_string, query_map.name)
+        )
+        if query_default is not None:
+            return QuerySpec(
+                model_string=query_map.model_string,
+                query_name=query_map.name,
+                query=_read_query(query_default["filename"]),
+                parameters=query_map.parameters or {},
+                placeholder=False,
+            )
     return QuerySpec(
         model_string=query_map.model_string,
         query_name=query_map.name,

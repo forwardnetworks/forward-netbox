@@ -4,6 +4,8 @@
  * in NetBox using POST requests to the /api/dcim/sites/ REST API endpoint.
  */
 
+import "netbox_utilities";
+
 deviceLocations =
   foreach d in network.devices
   select distinct d.locationName;
@@ -11,9 +13,7 @@ deviceLocations =
 foreach location in network.locations
 where location.name in deviceLocations
 let location_name = toLowerCase(location.name)
-let location_slug_1 = replace(location_name, "&", " and ")
-let location_slug_2 = replaceRegexMatches(location_slug_1, re`[^a-z0-9]+`, "-")
-let location_slug = replaceRegexMatches(location_slug_2, re`^-+|-+$`, "")
+let location_slug = slugify(location_name)
 let address = join(", ", [if isPresent(location.city)
                           then location.city
                           else "city unknown",

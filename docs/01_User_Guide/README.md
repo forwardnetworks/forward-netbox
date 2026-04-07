@@ -9,27 +9,33 @@ Install the plugin package, enable the required plugins, run the migrations, and
 
 ## Package Installation
 
-Download the wheel or source archive from the GitHub release for this repository and install it into the same Python environment as NetBox:
+Install the package from PyPI into the same Python environment as NetBox:
 
 ```bash
-pip install /path/to/forward_netbox-0.1.0-py3-none-any.whl
+pip install forward-netbox==0.1.1
 ```
 
-Alternatively, install directly from the source archive:
+If you need an offline or pinned artifact workflow, install the wheel from GitHub Releases instead:
 
 ```bash
-pip install /path/to/forward_netbox-0.1.0.tar.gz
+pip install /path/to/forward_netbox-0.1.1-py3-none-any.whl
+```
+
+Alternatively, install directly from the GitHub source archive:
+
+```bash
+pip install /path/to/forward_netbox-0.1.1.tar.gz
 ```
 
 ## Release Compatibility
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v0.1.0` | `4.5.x` only | Initial release, unsupported |
+| `v0.1.1` | `4.5.x` only | Current unsupported release |
 
 ## Support Disclaimer
 
-This plugin is provided at your own risk. It is an unsupported initial release with no support commitment or compatibility guarantee beyond NetBox 4.5.x.
+This plugin is provided at your own risk. It is an unsupported release with no support commitment or compatibility guarantee beyond NetBox 4.5.x.
 
 ## Enable The Plugins
 

@@ -107,9 +107,16 @@ def docs(context):
 
 
 @task(name="smoke-sync")
-def smoke_sync(context, merge=False):
-    merge_flag = " --merge" if merge else ""
-    manage_py(context, f"forward_smoke_sync{merge_flag}")
+def smoke_sync(context, merge=False, validate_only=False, query_limit=5):
+    flags = []
+    if merge:
+        flags.append("--merge")
+    if validate_only:
+        flags.append("--validate-only")
+    if query_limit != 5:
+        flags.append(f"--query-limit {int(query_limit)}")
+    flag_string = f" {' '.join(flags)}" if flags else ""
+    manage_py(context, f"forward_smoke_sync{flag_string}")
 
 
 @task(pre=[lint, build, start, check, test, docs, package])

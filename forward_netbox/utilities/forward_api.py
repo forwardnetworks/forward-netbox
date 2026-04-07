@@ -3,6 +3,7 @@ import json
 import httpx
 
 from ..exceptions import ForwardClientError
+from ..exceptions import ForwardConnectivityError
 
 LATEST_PROCESSED_SNAPSHOT = "latestProcessed"
 
@@ -27,7 +28,7 @@ class ForwardClient:
         return {
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "forward-netbox/0.1.0",
+            "User-Agent": "forward-netbox/0.1.1",
         }
 
     def _auth(self):
@@ -48,6 +49,14 @@ class ForwardClient:
                 verify=self.verify,
             )
             response.raise_for_status()
+        except httpx.TimeoutException as exc:
+            raise ForwardConnectivityError(
+                "Forward API request timed out while connecting to Forward."
+            ) from exc
+        except httpx.RequestError as exc:
+            raise ForwardConnectivityError(
+                f"Could not connect to Forward API endpoint: {exc}"
+            ) from exc
         except httpx.HTTPStatusError as exc:
             raise ForwardClientError(
                 f"Forward API request failed with HTTP {exc.response.status_code}: {exc.response.text}"
@@ -129,6 +138,18 @@ class ForwardClient:
         response = self._request("GET", f"/snapshots/{snapshot_id}/metrics")
         return response.json() or {}
 
+    def _parse_nqe_records(self, data):
+        items = data.get("items") or []
+        records = []
+        for item in items:
+            if isinstance(item, dict) and isinstance(item.get("fields"), dict):
+                records.append(item["fields"])
+            elif isinstance(item, dict):
+                records.append(item)
+            else:
+                records.append(json.loads(json.dumps(item)))
+        return records, data.get("totalNumItems")
+
     def run_nqe_query(
         self,
         *,
@@ -142,44 +163,71 @@ class ForwardClient:
         offset=0,
         item_format="JSON",
         column_filters=None,
+        fetch_all=False,
     ):
         if bool(query) == bool(query_id):
             raise ForwardClientError(
                 "Exactly one of `query` or `query_id` must be supplied."
             )
+        if limit < 1:
+            raise ForwardClientError("`limit` must be at least 1.")
 
-        payload = {
-            "parameters": parameters or {},
-            "queryOptions": {
-                "limit": limit,
-                "offset": offset,
-                "itemFormat": item_format,
-            },
-        }
-        if column_filters:
-            payload["queryOptions"]["columnFilters"] = column_filters
-        if query_id:
-            payload["queryId"] = query_id
-            if commit_id:
-                payload["commitId"] = commit_id
-        else:
-            payload["query"] = query
-        req_params = {}
-        if network_id:
-            req_params["networkId"] = network_id
-        if snapshot_id:
-            req_params["snapshotId"] = snapshot_id
-
-        response = self._request("POST", "/nqe", params=req_params, json_body=payload)
-
-        data = response.json()
-        items = data.get("items") or []
-        records = []
-        for item in items:
-            if isinstance(item, dict) and isinstance(item.get("fields"), dict):
-                records.append(item["fields"])
-            elif isinstance(item, dict):
-                records.append(item)
+        def fetch_page(page_offset):
+            payload = {
+                "parameters": parameters or {},
+                "queryOptions": {
+                    "limit": limit,
+                    "offset": page_offset,
+                    "itemFormat": item_format,
+                },
+            }
+            if column_filters:
+                payload["queryOptions"]["columnFilters"] = column_filters
+            if query_id:
+                payload["queryId"] = query_id
+                if commit_id:
+                    payload["commitId"] = commit_id
             else:
-                records.append(json.loads(json.dumps(item)))
-        return records
+                payload["query"] = query
+            req_params = {}
+            if network_id:
+                req_params["networkId"] = network_id
+            if snapshot_id:
+                req_params["snapshotId"] = snapshot_id
+
+            response = self._request(
+                "POST",
+                "/nqe",
+                params=req_params,
+                json_body=payload,
+            )
+
+            return self._parse_nqe_records(response.json() or {})
+
+        records, total_num_items = fetch_page(offset)
+        if not fetch_all:
+            return records
+
+        all_records = list(records)
+        expected_total = int(total_num_items) if total_num_items is not None else None
+        last_page_size = len(records)
+
+        while True:
+            if expected_total is not None and len(all_records) >= expected_total:
+                return all_records
+            if expected_total is None and last_page_size < limit:
+                return all_records
+
+            next_offset = offset + len(all_records)
+            page_records, page_total = fetch_page(next_offset)
+            if expected_total is None and page_total is not None:
+                expected_total = int(page_total)
+            last_page_size = len(page_records)
+            if not page_records:
+                if expected_total is not None and len(all_records) < expected_total:
+                    raise ForwardClientError(
+                        "Forward NQE pagination ended early: "
+                        f"fetched {len(all_records)} rows but API reported {expected_total}."
+                    )
+                return all_records
+            all_records.extend(page_records)

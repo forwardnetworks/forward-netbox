@@ -1,15 +1,27 @@
 /**
  * @intent Forward Virtual Chassis
- * @description Raw NQE for NetBox virtual chassis records derived from Forward HA VPC domains.
+ * @description Raw NQE for NetBox virtual chassis records derived from Forward HA VPC or MLAG relationships.
  */
 
 foreach device in network.devices
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
-where device.ha.vpc.domainId > 0
+let has_vpc = isPresent(device.ha) && isPresent(device.ha.vpc) && isPresent(device.ha.vpc.domainId) && device.ha.vpc.domainId > 0
+let has_mlag_peer = isPresent(device.ha) && isPresent(device.ha.mlagPeer)
+let mlag_peer_name = if has_mlag_peer then toString(device.ha.mlagPeer) else ""
+where has_vpc || has_mlag_peer
 let site_name = if isPresent(device.locationName) then toLowerCase(device.locationName) else "unknown"
+let mlag_members = if has_mlag_peer then
+  if mlag_peer_name > device.name
+  then [device.name, mlag_peer_name]
+  else [mlag_peer_name, device.name]
+else [device.name]
 select {
   device: device.name,
-  vc_name: join("-", [site_name, "vpc", toString(device.ha.vpc.domainId)]),
-  vc_domain: toString(device.ha.vpc.domainId)
+  vc_name: if has_vpc
+    then join("-", [site_name, "vpc", toString(device.ha.vpc.domainId)])
+    else join("-", [site_name, "mlag", join("--", mlag_members)]),
+  vc_domain: if has_vpc
+    then toString(device.ha.vpc.domainId)
+    else join("--", mlag_members)
 }

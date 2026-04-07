@@ -3,21 +3,19 @@
  * @description Raw NQE for NetBox inventory items derived from Forward platform components.
  */
 
+import "netbox_utilities";
+
 foreach device in network.devices
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
 foreach component in device.platform.components
-let manufacturer_name = replace(toString(device.platform.vendor), "Vendor.", "")
-let manufacturer_slug_1 = replace(toLowerCase(manufacturer_name), "&", " and ")
-let manufacturer_slug_2 = replaceRegexMatches(manufacturer_slug_1, re`[^a-z0-9]+`, "-")
-let manufacturer_slug = replaceRegexMatches(manufacturer_slug_2, re`^-+|-+$`, "")
+let manufacturer_name = canonicalManufacturerName(device.platform.vendor)
+let manufacturer_slug = slugify(manufacturer_name)
 let role_name = replace(replace(toString(component.partType), "DevicePartType.", ""), "_", " ")
-let role_slug_1 = replace(toLowerCase(role_name), "&", " and ")
-let role_slug_2 = replaceRegexMatches(role_slug_1, re`[^a-z0-9]+`, "-")
-let role_slug = replaceRegexMatches(role_slug_2, re`^-+|-+$`, "")
+let role_slug = slugify(role_name)
 select {
   device: device.name,
-  manufacturer: device.platform.vendor,
+  manufacturer: manufacturer_name,
   manufacturer_slug: manufacturer_slug,
   name: component.name,
   part_id: if isPresent(component.partId) then component.partId else "",

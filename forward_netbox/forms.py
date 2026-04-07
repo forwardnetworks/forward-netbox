@@ -17,6 +17,8 @@ from .choices import FORWARD_SUPPORTED_MODELS
 from .choices import ForwardSourceDeploymentChoices
 from .choices import ForwardSourceStatusChoices
 from .choices import ForwardSyncStatusChoices
+from .exceptions import ForwardConnectivityError
+from .exceptions import ForwardSyncError
 from .models import ForwardNQEMap
 from .models import ForwardSource
 from .models import ForwardSync
@@ -88,7 +90,10 @@ class ForwardSourceForm(NetBoxModelForm):
             required=False,
             label="Password",
             widget=forms.PasswordInput(render_value=False),
-            help_text="Leave blank when editing to keep the stored password.",
+            help_text=(
+                "Required for network discovery and sync. Leave blank only when editing "
+                "an existing source to preserve the stored password."
+            ),
         )
         self.fields["timeout"] = forms.IntegerField(
             required=False,
@@ -104,11 +109,11 @@ class ForwardSourceForm(NetBoxModelForm):
             help_text="Certificate validation. Uncheck only for custom deployments using self-signed certificates.",
         )
         self.fields["network_id"] = forms.ChoiceField(
-            required=False,
+            required=True,
             label="Network",
             choices=(),
             widget=APISelect(api_url="/api/plugins/forward/source/available-networks/"),
-            help_text="Optional Forward network for syncs using this source.",
+            help_text="Forward network used as the default for syncs using this source.",
         )
         _configure_api_select(
             self.fields["network_id"].widget,
@@ -167,7 +172,6 @@ class ForwardSourceForm(NetBoxModelForm):
         self.fieldsets.append(FieldSet("description", "owner", name="Metadata"))
 
     def clean(self):
-        super().clean()
         cleaned = dict(self.cleaned_data)
         existing_parameters = self.instance.parameters or {}
         source_type = (
@@ -188,14 +192,7 @@ class ForwardSourceForm(NetBoxModelForm):
             raise forms.ValidationError("Custom Forward sources require a base URL.")
 
         selected_network_id = cleaned.get("network_id") or ""
-        self.fields["network_id"].choices = _selected_choice(selected_network_id)
-        self.instance.type = source_type
-        self.instance.url = (
-            "https://fwd.app"
-            if source_type == ForwardSourceDeploymentChoices.SAAS
-            else (cleaned.get("url") or "").rstrip("/")
-        )
-        self.instance.parameters = {
+        candidate_parameters = {
             "username": username,
             "password": password,
             "verify": (
@@ -208,6 +205,39 @@ class ForwardSourceForm(NetBoxModelForm):
             or 60,
             "network_id": selected_network_id,
         }
+        self.instance.type = source_type
+        self.instance.url = (
+            "https://fwd.app"
+            if source_type == ForwardSourceDeploymentChoices.SAAS
+            else (cleaned.get("url") or "").rstrip("/")
+        )
+        self.instance.parameters = candidate_parameters
+        super().clean()
+        candidate_source = ForwardSource(
+            type=source_type,
+            url=cleaned.get("url") or "",
+            parameters=candidate_parameters,
+        )
+        try:
+            candidate_source.validate_connection()
+        except ForwardSyncError as error:
+            message = str(error)
+            if isinstance(error, ForwardConnectivityError):
+                message = (
+                    "Could not connect to Forward. Verify the Forward URL and "
+                    "network connectivity from NetBox to Forward."
+                )
+            if "Forward API request failed with HTTP" in message:
+                message = (
+                    "Could not authenticate to Forward. Verify username and password. "
+                    "For new Forward accounts, set the account password in the Forward "
+                    "web UI before using NetBox."
+                )
+            raise forms.ValidationError(message)
+
+        if not selected_network_id:
+            raise forms.ValidationError("Select a Forward network for this source.")
+        self.fields["network_id"].choices = _selected_choice(selected_network_id)
         return cleaned
 
     def save(self, *args, **kwargs):

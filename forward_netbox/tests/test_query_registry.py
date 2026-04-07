@@ -4,6 +4,7 @@ from django.contrib.contenttypes.models import ContentType
 from django.test import TestCase
 
 from forward_netbox.models import ForwardNQEMap
+from forward_netbox.utilities.query_registry import builtin_nqe_map_rows
 from forward_netbox.utilities.query_registry import BUILTIN_QUERY_MAPS
 from forward_netbox.utilities.query_registry import BUILTIN_QUERY_SPECS
 from forward_netbox.utilities.query_registry import get_query_specs
@@ -79,6 +80,14 @@ SLUG_QUERY_NAMES = {
     "Forward Inventory Items",
 }
 
+MANUFACTURER_QUERY_NAMES = {
+    "Forward Device Vendors",
+    "Forward Platforms",
+    "Forward Device Models",
+    "Forward Devices",
+    "Forward Inventory Items",
+}
+
 
 def _field_pattern(field_name):
     return re.compile(rf"(?m)^\s*{re.escape(field_name)}\s*:")
@@ -111,11 +120,74 @@ class QueryRegistryTest(TestCase):
                 spec.query,
                 msg=f"{query_default['name']} no longer shapes slugs in NQE.",
             )
-            self.assertRegex(
-                spec.query,
-                re.compile(r"let\s+\w+_slug_1\s*="),
-                msg=f"{query_default['name']} no longer uses the staged slug pipeline.",
+            self.assertTrue(
+                "slugify(" in spec.query
+                or re.search(r"let\s+\w+_slug_1\s*=", spec.query),
+                msg=f"{query_default['name']} no longer uses a reusable or staged slug pipeline.",
             )
+
+    def test_manufacturer_queries_canonicalize_vendor_names_in_nqe(self):
+        for query_default in BUILTIN_QUERY_MAPS:
+            if query_default["name"] not in MANUFACTURER_QUERY_NAMES:
+                continue
+            model_specs = BUILTIN_QUERY_SPECS[query_default["model_string"]]
+            spec = next(
+                spec for spec in model_specs if spec.query_name == query_default["name"]
+            )
+            self.assertIn(
+                "canonicalManufacturerName(",
+                spec.query,
+                msg=f"{query_default['name']} no longer canonicalizes manufacturers in NQE.",
+            )
+            self.assertIn(
+                "manufacturer_name_overrides = [",
+                spec.query,
+                msg=f"{query_default['name']} no longer carries the shared manufacturer lookup table.",
+            )
+            self.assertIn(
+                '{ vendor: Vendor.CISCO, name: "Cisco" }',
+                spec.query,
+                msg=f"{query_default['name']} lost the Cisco manufacturer mapping.",
+            )
+            self.assertIn(
+                '{ vendor: Vendor.PALO_ALTO_NETWORKS, name: "Palo Alto Networks" }',
+                spec.query,
+                msg=f"{query_default['name']} lost the Palo Alto Networks mapping.",
+            )
+            self.assertIn(
+                "where mapping.vendor == vendor",
+                spec.query,
+                msg=f"{query_default['name']} no longer uses the shared manufacturer lookup filter.",
+            )
+            self.assertIn(
+                "let manufacturer_slug = slugify(manufacturer_name)",
+                spec.query,
+                msg=f"{query_default['name']} no longer derives manufacturer slugs from the canonical name.",
+            )
+            self.assertNotIn(
+                'if vendor == Vendor.CISCO then "Cisco"',
+                spec.query,
+                msg=f"{query_default['name']} still uses the legacy vendor if/else chain.",
+            )
+
+        manufacturer_spec = next(
+            spec
+            for spec in BUILTIN_QUERY_SPECS["dcim.manufacturer"]
+            if spec.query_name == "Forward Device Vendors"
+        )
+        self.assertIn("name: manufacturer_name", manufacturer_spec.query)
+        self.assertNotIn("name: vendor", manufacturer_spec.query)
+
+        for model_string in [
+            "dcim.platform",
+            "dcim.devicetype",
+            "dcim.device",
+            "dcim.inventoryitem",
+        ]:
+            spec = next(spec for spec in BUILTIN_QUERY_SPECS[model_string])
+            self.assertIn("manufacturer: manufacturer_name", spec.query)
+            self.assertNotIn("manufacturer: vendor", spec.query)
+            self.assertNotIn("manufacturer: device.platform.vendor", spec.query)
 
     def test_interface_query_uses_lookup_record_for_speed_mapping(self):
         spec = next(
@@ -134,6 +206,29 @@ class QueryRegistryTest(TestCase):
             "speed: if isPresent(interface_speed) then interface_speed else null : Integer",
             spec.query,
         )
+
+    def test_virtual_chassis_query_supports_vpc_and_mlag_semantics(self):
+        spec = next(
+            spec
+            for spec in BUILTIN_QUERY_SPECS["dcim.virtualchassis"]
+            if spec.query_name == "Forward Virtual Chassis"
+        )
+
+        self.assertIn("let has_vpc =", spec.query)
+        self.assertIn("let has_mlag_peer =", spec.query)
+        self.assertIn("let mlag_members = if has_mlag_peer then", spec.query)
+        self.assertIn("&& isPresent(device.ha.vpc)", spec.query)
+        self.assertIn("where has_vpc || has_mlag_peer", spec.query)
+        self.assertIn("device.ha.vpc.domainId > 0", spec.query)
+        self.assertIn("device.ha.mlagPeer", spec.query)
+        self.assertIn(
+            'join("-", [site_name, "mlag", join("--", mlag_members)])', spec.query
+        )
+        self.assertIn('join("--", mlag_members)', spec.query)
+        self.assertNotIn("else []", spec.query)
+        self.assertNotIn(" and isPresent", spec.query)
+        self.assertNotIn("where has_vpc or has_mlag_peer", spec.query)
+        self.assertNotIn("?.", spec.query)
 
     def test_custom_maps_win_over_built_in_maps_for_a_model(self):
         netbox_model = ContentType.objects.get(app_label="dcim", model="device")
@@ -159,3 +254,40 @@ class QueryRegistryTest(TestCase):
         self.assertEqual(len(specs), 1)
         self.assertEqual(specs[0].query_id, "FQ_custom_devices")
         self.assertEqual(specs[0].query, None)
+
+    def test_built_in_maps_use_current_bundled_query_text(self):
+        netbox_model = ContentType.objects.get(app_label="dcim", model="virtualchassis")
+        builtin_map = ForwardNQEMap.objects.create(
+            name="Forward Virtual Chassis",
+            netbox_model=netbox_model,
+            query='select {stale: "query"}',
+            built_in=True,
+            enabled=True,
+            weight=100,
+        )
+
+        specs = get_query_specs("dcim.virtualchassis", maps=[builtin_map])
+
+        self.assertEqual(len(specs), 1)
+        self.assertIn("where has_vpc || has_mlag_peer", specs[0].query)
+        self.assertNotIn('select {stale: "query"}', specs[0].query)
+
+    def test_builtin_map_rows_keep_authored_query_source(self):
+        row = next(
+            row
+            for row in builtin_nqe_map_rows()
+            if row["name"] == "Forward Device Vendors"
+        )
+
+        self.assertIn('import "netbox_utilities";', row["query"])
+        self.assertNotIn("manufacturer_name_overrides = [", row["query"])
+
+    def test_builtin_query_specs_flatten_local_imports(self):
+        spec = next(
+            spec
+            for spec in BUILTIN_QUERY_SPECS["dcim.manufacturer"]
+            if spec.query_name == "Forward Device Vendors"
+        )
+
+        self.assertNotIn('import "netbox_utilities";', spec.query)
+        self.assertIn("manufacturer_name_overrides = [", spec.query)

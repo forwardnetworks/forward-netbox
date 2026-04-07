@@ -6,11 +6,11 @@
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v0.1.0` | `4.5.x` only | Initial release, unsupported |
+| `v0.1.1` | `4.5.x` only | Current unsupported release |
 
 ## Support Disclaimer
 
-This repository is provided for use at your own risk. It is an initial, unsupported release and is not an officially supported Forward Networks product. There is no warranty, support commitment, or compatibility guarantee beyond the version table above.
+This repository is provided for use at your own risk. It is an unsupported release and is not an officially supported Forward Networks product. There is no warranty, support commitment, or compatibility guarantee beyond the version table above.
 
 ## Features
 
@@ -18,6 +18,8 @@ This repository is provided for use at your own risk. It is an initial, unsuppor
 - Forward `Sources`, `NQE Maps`, `Syncs`, and `Ingestions`
 - Built-in shipped NQE maps seeded automatically after migration
 - Support for either published Forward `query_id` references or raw NQE `query` text
+- Repository-authored built-in queries can share local helper modules and still execute as flattened raw NQE when bundled
+- Automatic paging across multi-page Forward NQE result sets during sync execution
 - Snapshot-aware execution with `latestProcessed` or an explicit Forward snapshot per sync
 - Ingestion records that preserve the selected snapshot mode, resolved snapshot ID, and Forward snapshot metrics
 - Built-in coverage for:
@@ -38,10 +40,16 @@ This repository is provided for use at your own risk. It is an initial, unsuppor
 
 ## Quickstart
 
-1. Download the release assets from GitHub Releases and install the wheel into the same Python environment as NetBox:
+1. Install the plugin into the same Python environment as NetBox:
 
 ```bash
-pip install /path/to/forward_netbox-0.1.0-py3-none-any.whl
+pip install forward-netbox==0.1.1
+```
+
+If you need an offline or pinned artifact workflow, install the wheel or source archive from GitHub Releases instead:
+
+```bash
+pip install /path/to/forward_netbox-0.1.1-py3-none-any.whl
 ```
 
 2. Enable both plugins in the NetBox configuration:
@@ -101,6 +109,7 @@ Optional smoke-sync variables:
 - `FORWARD_SMOKE_URL` defaults to `https://fwd.app`
 - `FORWARD_SMOKE_SNAPSHOT_ID` defaults to `latestProcessed`
 - `FORWARD_SMOKE_MODELS` accepts a comma-separated subset such as `dcim.site,dcim.device,dcim.interface`
+- `invoke forward_netbox.smoke-sync --validate-only` runs live snapshot/query validation without executing an ingestion
 - `invoke forward_netbox.smoke-sync --merge` will merge the staged branch after a clean run
 
 ## Documentation
@@ -111,5 +120,6 @@ Optional smoke-sync variables:
 - [Usage and Validation](docs/01_User_Guide/usage.md)
 - [Troubleshooting](docs/01_User_Guide/troubleshooting.md)
 - [Built-In NQE Reference](docs/02_Reference/built-in-nqe-maps.md)
+- [Model Mapping Matrix](docs/02_Reference/model-mapping-matrix.md)
 - [Shipped NQE Query Files](https://github.com/forwardnetworks/forward-netbox/tree/main/forward_netbox/queries)
 - [License](LICENSE)
