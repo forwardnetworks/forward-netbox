@@ -1,4 +1,5 @@
 import os
+import time
 
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand
@@ -9,6 +10,7 @@ from forward_netbox.choices import ForwardSourceDeploymentChoices
 from forward_netbox.choices import ForwardSyncStatusChoices
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
+from forward_netbox.utilities.query_registry import get_query_specs
 
 
 class Command(BaseCommand):
@@ -53,6 +55,17 @@ class Command(BaseCommand):
             action="store_true",
             help="Merge the resulting branch after the sync completes successfully.",
         )
+        parser.add_argument(
+            "--validate-only",
+            action="store_true",
+            help="Validate snapshot resolution and built-in/custom query execution without running an ingestion.",
+        )
+        parser.add_argument(
+            "--query-limit",
+            type=int,
+            default=int(os.getenv("FORWARD_SMOKE_QUERY_LIMIT", "5")),
+            help="Maximum rows to fetch per query during --validate-only. Defaults to 5.",
+        )
 
     def handle(self, *args, **options):
         username = options["username"]
@@ -64,6 +77,8 @@ class Command(BaseCommand):
             raise CommandError("Set --password or FORWARD_SMOKE_PASSWORD.")
         if not network_id:
             raise CommandError("Set --network-id or FORWARD_SMOKE_NETWORK_ID.")
+        if options["query_limit"] < 1:
+            raise CommandError("--query-limit must be at least 1.")
 
         user_model = get_user_model()
         user = user_model.objects.filter(is_superuser=True).order_by("pk").first()
@@ -81,38 +96,27 @@ class Command(BaseCommand):
 
         selected_models = self._selected_models(options["models"])
 
-        source, _ = ForwardSource.objects.update_or_create(
-            name=options["source_name"],
-            defaults={
-                "type": source_type,
-                "url": url,
-                "parameters": {
-                    "username": username,
-                    "password": password,
-                    "verify": True,
-                    "network_id": network_id,
-                },
-            },
+        source = self._build_source(
+            source_name=options["source_name"],
+            source_type=source_type,
+            url=url,
+            username=username,
+            password=password,
+            network_id=network_id,
         )
-        source.full_clean()
-        source.save()
         source.validate_connection()
 
-        sync_parameters = {"snapshot_id": options["snapshot_id"], "auto_merge": False}
-        for model_string in FORWARD_SUPPORTED_MODELS:
-            sync_parameters[model_string] = model_string in selected_models
-
-        sync, _ = ForwardSync.objects.update_or_create(
-            name=options["sync_name"],
-            defaults={
-                "source": source,
-                "user": user,
-                "auto_merge": False,
-                "parameters": sync_parameters,
-            },
+        sync = self._build_sync(
+            sync_name=options["sync_name"],
+            source=source,
+            user=user,
+            snapshot_id=options["snapshot_id"],
+            selected_models=selected_models,
         )
-        sync.full_clean()
-        sync.save()
+
+        if options["validate_only"]:
+            self._run_validation_only(sync, query_limit=options["query_limit"])
+            return
 
         self.stdout.write(
             self.style.NOTICE(
@@ -152,6 +156,94 @@ class Command(BaseCommand):
             self.stdout.write(f"Post-merge sync status: {sync.status}")
 
         self.stdout.write(self.style.SUCCESS("Forward smoke sync completed cleanly."))
+
+    def _build_source(
+        self,
+        *,
+        source_name,
+        source_type,
+        url,
+        username,
+        password,
+        network_id,
+    ):
+        source, _ = ForwardSource.objects.update_or_create(
+            name=source_name,
+            defaults={
+                "type": source_type,
+                "url": url,
+                "parameters": {
+                    "username": username,
+                    "password": password,
+                    "verify": True,
+                    "network_id": network_id,
+                },
+            },
+        )
+        source.full_clean()
+        source.save()
+        return source
+
+    def _build_sync(self, *, sync_name, source, user, snapshot_id, selected_models):
+        sync_parameters = {"snapshot_id": snapshot_id, "auto_merge": False}
+        for model_string in FORWARD_SUPPORTED_MODELS:
+            sync_parameters[model_string] = model_string in selected_models
+
+        sync, _ = ForwardSync.objects.update_or_create(
+            name=sync_name,
+            defaults={
+                "source": source,
+                "user": user,
+                "auto_merge": False,
+                "parameters": sync_parameters,
+            },
+        )
+        sync.full_clean()
+        sync.save()
+        return sync
+
+    def _run_validation_only(self, sync, *, query_limit):
+        client = sync.source.get_client()
+        network_id = sync.get_network_id()
+        snapshot_selector = sync.get_snapshot_id()
+        snapshot_id = sync.resolve_snapshot_id(client)
+        query_parameters = sync.get_query_parameters()
+        maps = sync.get_maps()
+
+        self.stdout.write(
+            self.style.NOTICE(
+                f"Validating Forward queries for sync '{sync.name}' against network '{network_id}' "
+                f"and snapshot '{snapshot_id}' (selector: {snapshot_selector})"
+            )
+        )
+
+        for model_string in sync.get_model_strings():
+            specs = get_query_specs(model_string, maps=maps)
+            if not specs:
+                raise CommandError(
+                    f"No enabled built-in or custom query maps were resolved for {model_string}."
+                )
+
+            for spec in specs:
+                started = time.perf_counter()
+                rows = client.run_nqe_query(
+                    query=spec.query,
+                    query_id=spec.query_id,
+                    commit_id=spec.commit_id,
+                    network_id=network_id,
+                    snapshot_id=snapshot_id,
+                    parameters=spec.merged_parameters(query_parameters),
+                    limit=query_limit,
+                )
+                elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
+                self.stdout.write(
+                    f"{model_string} | {spec.query_name} | {spec.execution_mode} | "
+                    f"rows={len(rows)} | runtime_ms={elapsed_ms}"
+                )
+
+        self.stdout.write(
+            self.style.SUCCESS("Forward query validation completed cleanly.")
+        )
 
     def _selected_models(self, raw_models):
         if not raw_models.strip():

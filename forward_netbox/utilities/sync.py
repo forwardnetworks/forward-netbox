@@ -87,6 +87,7 @@ class ForwardSyncRunner:
                     commit_id=spec.commit_id,
                     snapshot_id=snapshot_id,
                     parameters=spec.merged_parameters(query_parameters),
+                    fetch_all=True,
                 )
                 query_results.append(rows)
                 total_rows += len(rows)
@@ -148,11 +149,16 @@ class ForwardSyncRunner:
         from dcim.models import Manufacturer
 
         name = row["name"]
-        manufacturer, _ = self._update_existing_or_create(
-            Manufacturer,
-            lookup={"name": name},
-            defaults={"slug": row["slug"]},
-        )
+        slug = row["slug"]
+        manufacturer = Manufacturer.objects.filter(name=name).order_by("pk").first()
+        if manufacturer is None:
+            manufacturer = Manufacturer.objects.create(name=name, slug=slug)
+            return manufacturer
+        if manufacturer.name == name and manufacturer.slug == slug:
+            return manufacturer
+        if manufacturer.name == name and manufacturer.slug != slug:
+            manufacturer.slug = slug
+            manufacturer.save(update_fields=["slug"])
         return manufacturer
 
     def _ensure_role(self, row):
@@ -192,11 +198,54 @@ class ForwardSyncRunner:
             {"name": row["manufacturer"], "slug": row["manufacturer_slug"]}
         )
         model = row["model"]
-        device_type, _ = self._update_existing_or_create(
-            DeviceType,
-            lookup={"manufacturer": manufacturer, "model": model},
-            defaults={"slug": row["slug"], "part_number": row.get("part_number", "")},
+        slug = row["slug"]
+        device_type_by_model = (
+            DeviceType.objects.filter(manufacturer=manufacturer, model=model)
+            .order_by("pk")
+            .first()
         )
+        device_type_by_slug = (
+            DeviceType.objects.filter(manufacturer=manufacturer, slug=slug)
+            .order_by("pk")
+            .first()
+        )
+
+        if (
+            device_type_by_model is not None
+            and device_type_by_slug is not None
+            and device_type_by_model.pk != device_type_by_slug.pk
+        ):
+            raise ForwardQueryError(
+                "Conflicting NetBox device types already exist for "
+                f"manufacturer `{manufacturer.name}`: model `{model}` and slug `{slug}` "
+                "resolve to different rows."
+            )
+
+        device_type = device_type_by_model or device_type_by_slug
+        if device_type is None:
+            create_kwargs = {
+                "manufacturer": manufacturer,
+                "model": model,
+                "slug": slug,
+            }
+            if "part_number" in row:
+                create_kwargs["part_number"] = row.get("part_number", "")
+            return DeviceType.objects.create(**create_kwargs)
+
+        update_fields = []
+        if device_type.model != model:
+            device_type.model = model
+            update_fields.append("model")
+        if device_type.slug != slug:
+            device_type.slug = slug
+            update_fields.append("slug")
+        if "part_number" in row:
+            part_number = row.get("part_number", "")
+            if device_type.part_number != part_number:
+                device_type.part_number = part_number
+                update_fields.append("part_number")
+        if update_fields:
+            device_type.save(update_fields=update_fields)
         return device_type
 
     def _ensure_vrf(self, row):
@@ -288,25 +337,20 @@ class ForwardSyncRunner:
 
     def _apply_dcim_device(self, row):
         from dcim.models import Device
-        from dcim.models import DeviceType
 
         site = self._ensure_site({"name": row["site"], "slug": row["site_slug"]})
         role = self._ensure_role(
             {"name": row["role"], "slug": row["role_slug"], "color": row["role_color"]}
         )
-        device_type = (
-            DeviceType.objects.filter(model=row["device_type"]).order_by("id").first()
+        device_type = self._ensure_device_type(
+            {
+                "manufacturer": row["manufacturer"],
+                "manufacturer_slug": row["manufacturer_slug"],
+                "slug": row["device_type_slug"],
+                "model": row["device_type"],
+                **({"part_number": row["part_number"]} if "part_number" in row else {}),
+            }
         )
-        if device_type is None:
-            device_type = self._ensure_device_type(
-                {
-                    "manufacturer": row["manufacturer"],
-                    "manufacturer_slug": row["manufacturer_slug"],
-                    "slug": row["device_type_slug"],
-                    "model": row["device_type"],
-                    "part_number": row.get("part_number", ""),
-                }
-            )
         platform = None
         if row.get("platform"):
             platform = self._ensure_platform(

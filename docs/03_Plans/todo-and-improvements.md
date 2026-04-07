@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This document captures the next major improvement phase for `forward_netbox` after the initial `v0.1.0` release.
+This document captures the next major improvement phase for `forward_netbox` after the current `v0.1.1` release line.
 
 The plugin is already in a solid release state:
 
@@ -315,7 +315,7 @@ Reduce the amount of manual release surgery needed to keep a clean release story
 - publishes or refreshes the GitHub release
 - verifies that `main`, the release tag, and the published assets match
 
-This does not require PyPI publishing. GitHub Releases remain the distribution channel.
+PyPI can be the primary package distribution channel as long as GitHub release assets remain aligned to the exact published tree.
 
 ### 9. Live Validation And Smoke Workflow
 
@@ -542,5 +542,5 @@ This roadmap is complete when:
 
 - NQE authoring remains a Forward responsibility.
 - The plugin continues to support both `query_id` and raw `query` execution for sync maps.
-- GitHub Releases remain the package distribution mechanism.
+- PyPI can be the primary package distribution mechanism, with GitHub Releases kept in sync as an alternate artifact channel.
 - NetBox `4.5.x` remains the supported target until a deliberate compatibility expansion is planned.

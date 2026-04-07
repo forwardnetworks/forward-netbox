@@ -1,0 +1,68 @@
+/**
+ * @intent Forward NetBox shared helpers
+ * @description Shared NQE helpers for slug shaping and canonical manufacturer naming.
+ */
+
+manufacturer_name_overrides = [
+  { vendor: Vendor.A10, name: "A10" },
+  { vendor: Vendor.AMAZON, name: "Amazon" },
+  { vendor: Vendor.ARISTA, name: "Arista" },
+  { vendor: Vendor.ARUBA, name: "Aruba" },
+  { vendor: Vendor.AVAYA, name: "Avaya" },
+  { vendor: Vendor.AVI_NETWORKS, name: "Avi Networks" },
+  { vendor: Vendor.AZURE, name: "Microsoft" },
+  { vendor: Vendor.BLUECAT, name: "BlueCat" },
+  { vendor: Vendor.BROCADE, name: "Brocade" },
+  { vendor: Vendor.CHECKPOINT, name: "Check Point" },
+  { vendor: Vendor.CISCO, name: "Cisco" },
+  { vendor: Vendor.CITRIX, name: "Citrix" },
+  { vendor: Vendor.CUMULUS, name: "Cumulus" },
+  { vendor: Vendor.DELL, name: "Dell" },
+  { vendor: Vendor.EDGE_CORE, name: "Edge Core" },
+  { vendor: Vendor.EXTREME, name: "Extreme Networks" },
+  { vendor: Vendor.F5, name: "F5" },
+  { vendor: Vendor.FORCEPOINT, name: "Forcepoint" },
+  { vendor: Vendor.FORTINET, name: "Fortinet" },
+  { vendor: Vendor.GENERAL_DYNAMICS, name: "General Dynamics" },
+  { vendor: Vendor.GOOGLE, name: "Google" },
+  { vendor: Vendor.HP, name: "HPE" },
+  { vendor: Vendor.HUAWEI, name: "Huawei" },
+  { vendor: Vendor.JUNIPER, name: "Juniper" },
+  { vendor: Vendor.LINUX_GENERIC, name: "Linux" },
+  { vendor: Vendor.NOKIA, name: "Nokia" },
+  { vendor: Vendor.PALO_ALTO_NETWORKS, name: "Palo Alto Networks" },
+  { vendor: Vendor.PENSANDO, name: "Pensando" },
+  { vendor: Vendor.PICA8, name: "Pica8" },
+  { vendor: Vendor.RIVERBED, name: "Riverbed" },
+  { vendor: Vendor.SILVER_PEAK, name: "Silver Peak" },
+  { vendor: Vendor.SYMANTEC, name: "Symantec" },
+  { vendor: Vendor.T128, name: "128T" },
+  { vendor: Vendor.UNKNOWN, name: "Unknown" },
+  { vendor: Vendor.VERSA, name: "Versa" },
+  { vendor: Vendor.VIASAT, name: "Viasat" },
+  { vendor: Vendor.VMWARE, name: "VMware" },
+  { vendor: Vendor.ALKIRA, name: "Alkira" }
+];
+
+canonicalManufacturerOverride(vendor: Vendor) =
+  max(
+    foreach mapping in manufacturer_name_overrides
+    where mapping.vendor == vendor
+    select mapping.name
+  );
+
+export canonicalManufacturerName(vendor: Vendor) =
+  if isPresent(canonicalManufacturerOverride(vendor))
+  then canonicalManufacturerOverride(vendor)
+  else replace(replace(toString(vendor), "Vendor.", ""), "_", " ");
+
+export slugify(value: String) =
+  replaceRegexMatches(
+    replaceRegexMatches(
+      replace(toLowerCase(value), "&", " and "),
+      re`[^a-z0-9]+`,
+      "-"
+    ),
+    re`^-+|-+$`,
+    ""
+  );

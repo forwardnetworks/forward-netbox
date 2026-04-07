@@ -6,11 +6,11 @@
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v0.1.0` | `4.5.x` only | Initial release, unsupported |
+| `v0.1.1` | `4.5.x` only | Current unsupported release |
 
 ## Support Disclaimer
 
-This repository is provided for use at your own risk. It is an initial, unsupported release and is not an officially supported Forward Networks product.
+This repository is provided for use at your own risk. It is an unsupported release and is not an officially supported Forward Networks product.
 
 ## What This Plugin Provides
 
@@ -30,6 +30,7 @@ This repository is provided for use at your own risk. It is an initial, unsuppor
 - [Usage and Validation](01_User_Guide/usage.md)
 - [Troubleshooting](01_User_Guide/troubleshooting.md)
 - [Built-In NQE Reference](02_Reference/built-in-nqe-maps.md)
+- [Model Mapping Matrix](02_Reference/model-mapping-matrix.md)
 - [TODO And Improvements](03_Plans/todo-and-improvements.md)
 - [Shipped NQE Query Files](https://github.com/forwardnetworks/forward-netbox/tree/main/forward_netbox/queries)
 

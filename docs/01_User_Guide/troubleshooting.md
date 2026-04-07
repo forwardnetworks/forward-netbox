@@ -23,6 +23,7 @@ Checks:
 
 - Confirm the Forward account has access to at least one network.
 - Confirm the selected source URL is correct.
+- Confirm the Forward account password has been set (new accounts must log in and set a password before network discovery works).
 - Re-enter the password if the source was edited with a blank password field previously.
 
 ## NQE Map Validation Fails

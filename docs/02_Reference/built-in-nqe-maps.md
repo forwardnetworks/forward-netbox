@@ -8,9 +8,9 @@ Each entry includes:
 - the target `NetBox Model`
 - the expected output fields
 - the shipped query file in the repository
-- the exact bundled NQE text
+- the exact shipped source text
 
-All built-in maps are executed against the sync-selected Forward snapshot. The examples below are the shipped query text from this repository.
+All built-in maps are executed against the sync-selected Forward snapshot. The examples below are the shipped query source from this repository. Queries that import `netbox_utilities` are flattened by the plugin at execution time for bundled built-ins, but the source modules shown here can also be copied into the Forward Org Repository and tested by `query_id`.
 
 ## Summary
 
@@ -32,6 +32,78 @@ All built-in maps are executed against the sync-selected Forward snapshot. The e
 | Forward IP Addresses | `ipam.ipaddress` | [`forward_ip_addresses.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_ip_addresses.nqe) |
 | Forward Inventory Items | `dcim.inventoryitem` | [`forward_inventory_items.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_inventory_items.nqe) |
 
+## Shared Module
+
+- Shared helper module: [`netbox_utilities.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/netbox_utilities.nqe)
+- Purpose: centralizes slug shaping plus the manufacturer override table used by the manufacturer-bearing maps.
+- Customization note: if your NetBox already uses different curated manufacturer rows, copy the query set and adjust `manufacturer_name_overrides` in this shared module before syncing.
+
+```nqe
+manufacturer_name_overrides = [
+  { vendor: Vendor.A10, name: "A10" },
+  { vendor: Vendor.AMAZON, name: "Amazon" },
+  { vendor: Vendor.ARISTA, name: "Arista" },
+  { vendor: Vendor.ARUBA, name: "Aruba" },
+  { vendor: Vendor.AVAYA, name: "Avaya" },
+  { vendor: Vendor.AVI_NETWORKS, name: "Avi Networks" },
+  { vendor: Vendor.AZURE, name: "Microsoft" },
+  { vendor: Vendor.BLUECAT, name: "BlueCat" },
+  { vendor: Vendor.BROCADE, name: "Brocade" },
+  { vendor: Vendor.CHECKPOINT, name: "Check Point" },
+  { vendor: Vendor.CISCO, name: "Cisco" },
+  { vendor: Vendor.CITRIX, name: "Citrix" },
+  { vendor: Vendor.CUMULUS, name: "Cumulus" },
+  { vendor: Vendor.DELL, name: "Dell" },
+  { vendor: Vendor.EDGE_CORE, name: "Edge Core" },
+  { vendor: Vendor.EXTREME, name: "Extreme Networks" },
+  { vendor: Vendor.F5, name: "F5" },
+  { vendor: Vendor.FORCEPOINT, name: "Forcepoint" },
+  { vendor: Vendor.FORTINET, name: "Fortinet" },
+  { vendor: Vendor.GENERAL_DYNAMICS, name: "General Dynamics" },
+  { vendor: Vendor.GOOGLE, name: "Google" },
+  { vendor: Vendor.HP, name: "HPE" },
+  { vendor: Vendor.HUAWEI, name: "Huawei" },
+  { vendor: Vendor.JUNIPER, name: "Juniper" },
+  { vendor: Vendor.LINUX_GENERIC, name: "Linux" },
+  { vendor: Vendor.NOKIA, name: "Nokia" },
+  { vendor: Vendor.PALO_ALTO_NETWORKS, name: "Palo Alto Networks" },
+  { vendor: Vendor.PENSANDO, name: "Pensando" },
+  { vendor: Vendor.PICA8, name: "Pica8" },
+  { vendor: Vendor.RIVERBED, name: "Riverbed" },
+  { vendor: Vendor.SILVER_PEAK, name: "Silver Peak" },
+  { vendor: Vendor.SYMANTEC, name: "Symantec" },
+  { vendor: Vendor.T128, name: "128T" },
+  { vendor: Vendor.UNKNOWN, name: "Unknown" },
+  { vendor: Vendor.VERSA, name: "Versa" },
+  { vendor: Vendor.VIASAT, name: "Viasat" },
+  { vendor: Vendor.VMWARE, name: "VMware" },
+  { vendor: Vendor.ALKIRA, name: "Alkira" }
+];
+
+canonicalManufacturerOverride(vendor: Vendor) =
+  max(
+    foreach mapping in manufacturer_name_overrides
+    where mapping.vendor == vendor
+    select mapping.name
+  );
+
+export canonicalManufacturerName(vendor: Vendor) =
+  if isPresent(canonicalManufacturerOverride(vendor))
+  then canonicalManufacturerOverride(vendor)
+  else replace(replace(toString(vendor), "Vendor.", ""), "_", " ");
+
+export slugify(value: String) =
+  replaceRegexMatches(
+    replaceRegexMatches(
+      replace(toLowerCase(value), "&", " and "),
+      re`[^a-z0-9]+`,
+      "-"
+    ),
+    re`^-+|-+$`,
+    ""
+  );
+```
+
 ## Forward Locations
 
 - `NetBox Model`: `dcim.site`
@@ -39,12 +111,16 @@ All built-in maps are executed against the sync-selected Forward snapshot. The e
 - Query file: [`forward_locations.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_locations.nqe)
 
 ```nqe
+import "netbox_utilities";
+
+deviceLocations =
+  foreach d in network.devices
+  select distinct d.locationName;
+
 foreach location in network.locations
 where location.name in deviceLocations
 let location_name = toLowerCase(location.name)
-let location_slug_1 = replace(location_name, "&", " and ")
-let location_slug_2 = replaceRegexMatches(location_slug_1, re`[^a-z0-9]+`, "-")
-let location_slug = replaceRegexMatches(location_slug_2, re`^-+|-+$`, "")
+let location_slug = slugify(location_name)
 let address = join(", ", [if isPresent(location.city)
                           then location.city
                           else "city unknown",
@@ -66,19 +142,21 @@ select {
 - `NetBox Model`: `dcim.manufacturer`
 - Expected fields: `name`, `slug`
 - Query file: [`forward_device_vendors.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_device_vendors.nqe)
+- Built-in behavior: canonicalizes Forward vendor enums into NetBox-ready manufacturer names and slugs directly in NQE.
+- Customization note: if your NetBox already uses different curated manufacturer rows, copy this query set and update `manufacturer_name_overrides` in `netbox_utilities`.
 
 ```nqe
+import "netbox_utilities";
+
 foreach device in network.devices
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
 let vendor = device.platform.vendor
-let vendor_name = replace(toString(vendor), "Vendor.", "")
-let vendor_slug_1 = replace(toLowerCase(vendor_name), "&", " and ")
-let vendor_slug_2 = replaceRegexMatches(vendor_slug_1, re`[^a-z0-9]+`, "-")
-let vendor_slug = replaceRegexMatches(vendor_slug_2, re`^-+|-+$`, "")
+let manufacturer_name = canonicalManufacturerName(vendor)
+let manufacturer_slug = slugify(manufacturer_name)
 select distinct {
-  name: vendor,
-  slug: vendor_slug
+  name: manufacturer_name,
+  slug: manufacturer_slug
 }
 ```
 
@@ -89,14 +167,14 @@ select distinct {
 - Query file: [`forward_device_types.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_device_types.nqe)
 
 ```nqe
+import "netbox_utilities";
+
 foreach device in network.devices
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
 let device_type = device.platform.deviceType
 let role_name = replace(toString(device_type), "DeviceType.", "")
-let role_slug_1 = replace(toLowerCase(role_name), "&", " and ")
-let role_slug_2 = replaceRegexMatches(role_slug_1, re`[^a-z0-9]+`, "-")
-let role_slug = replaceRegexMatches(role_slug_2, re`^-+|-+$`, "")
+let role_slug = slugify(role_name)
 select distinct {
   name: device_type,
   slug: role_slug,
@@ -111,20 +189,18 @@ select distinct {
 - Query file: [`forward_platforms.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_platforms.nqe)
 
 ```nqe
+import "netbox_utilities";
+
 foreach device in network.devices
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
 let platform_name = replace(toString(device.platform.os), "OS.", "")
-let platform_slug_1 = replace(toLowerCase(platform_name), "&", " and ")
-let platform_slug_2 = replaceRegexMatches(platform_slug_1, re`[^a-z0-9]+`, "-")
-let platform_slug = replaceRegexMatches(platform_slug_2, re`^-+|-+$`, "")
-let manufacturer_name = replace(toString(device.platform.vendor), "Vendor.", "")
-let manufacturer_slug_1 = replace(toLowerCase(manufacturer_name), "&", " and ")
-let manufacturer_slug_2 = replaceRegexMatches(manufacturer_slug_1, re`[^a-z0-9]+`, "-")
-let manufacturer_slug = replaceRegexMatches(manufacturer_slug_2, re`^-+|-+$`, "")
+let platform_slug = slugify(platform_name)
+let manufacturer_name = canonicalManufacturerName(device.platform.vendor)
+let manufacturer_slug = slugify(manufacturer_name)
 select distinct {
   name: platform_name,
-  manufacturer: device.platform.vendor,
+  manufacturer: manufacturer_name,
   manufacturer_slug: manufacturer_slug,
   slug: platform_slug
 }
@@ -137,20 +213,18 @@ select distinct {
 - Query file: [`forward_device_models.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_device_models.nqe)
 
 ```nqe
+import "netbox_utilities";
+
 foreach device in network.devices
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
 let vendor = device.platform.vendor
 let model = device.platform.model
-let model_slug_1 = replace(toLowerCase(toString(model)), "&", " and ")
-let model_slug_2 = replaceRegexMatches(model_slug_1, re`[^a-z0-9]+`, "-")
-let model_slug = replaceRegexMatches(model_slug_2, re`^-+|-+$`, "")
-let manufacturer_name = replace(toString(vendor), "Vendor.", "")
-let manufacturer_slug_1 = replace(toLowerCase(manufacturer_name), "&", " and ")
-let manufacturer_slug_2 = replaceRegexMatches(manufacturer_slug_1, re`[^a-z0-9]+`, "-")
-let manufacturer_slug = replaceRegexMatches(manufacturer_slug_2, re`^-+|-+$`, "")
+let model_slug = slugify(toString(model))
+let manufacturer_name = canonicalManufacturerName(vendor)
+let manufacturer_slug = slugify(manufacturer_name)
 select distinct {
-  manufacturer: vendor,
+  manufacturer: manufacturer_name,
   manufacturer_slug: manufacturer_slug,
   model: model,
   part_number: model,
@@ -165,6 +239,8 @@ select distinct {
 - Query file: [`forward_devices.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_devices.nqe)
 
 ```nqe
+import "netbox_utilities";
+
 foreach device in network.devices
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
@@ -172,27 +248,17 @@ let location = device.locationName
 let model = device.platform.model
 let device_type = device.platform.deviceType
 let site_name = if isPresent(location) then toLowerCase(location) else "unknown"
-let site_slug_1 = replace(site_name, "&", " and ")
-let site_slug_2 = replaceRegexMatches(site_slug_1, re`[^a-z0-9]+`, "-")
-let site_slug = replaceRegexMatches(site_slug_2, re`^-+|-+$`, "")
+let site_slug = slugify(site_name)
 let role_name = replace(toString(device_type), "DeviceType.", "")
-let role_slug_1 = replace(toLowerCase(role_name), "&", " and ")
-let role_slug_2 = replaceRegexMatches(role_slug_1, re`[^a-z0-9]+`, "-")
-let role_slug = replaceRegexMatches(role_slug_2, re`^-+|-+$`, "")
+let role_slug = slugify(role_name)
 let platform_name = replace(toString(device.platform.os), "OS.", "")
-let platform_slug_1 = replace(toLowerCase(platform_name), "&", " and ")
-let platform_slug_2 = replaceRegexMatches(platform_slug_1, re`[^a-z0-9]+`, "-")
-let platform_slug = replaceRegexMatches(platform_slug_2, re`^-+|-+$`, "")
-let device_type_slug_1 = replace(toLowerCase(toString(model)), "&", " and ")
-let device_type_slug_2 = replaceRegexMatches(device_type_slug_1, re`[^a-z0-9]+`, "-")
-let device_type_slug = replaceRegexMatches(device_type_slug_2, re`^-+|-+$`, "")
-let manufacturer_name = replace(toString(device.platform.vendor), "Vendor.", "")
-let manufacturer_slug_1 = replace(toLowerCase(manufacturer_name), "&", " and ")
-let manufacturer_slug_2 = replaceRegexMatches(manufacturer_slug_1, re`[^a-z0-9]+`, "-")
-let manufacturer_slug = replaceRegexMatches(manufacturer_slug_2, re`^-+|-+$`, "")
+let platform_slug = slugify(platform_name)
+let device_type_slug = slugify(toString(model))
+let manufacturer_name = canonicalManufacturerName(device.platform.vendor)
+let manufacturer_slug = slugify(manufacturer_name)
 select {
   name: device.name,
-  manufacturer: device.platform.vendor,
+  manufacturer: manufacturer_name,
   device_type: model,
   device_type_slug: device_type_slug,
   site: site_name,
@@ -212,17 +278,32 @@ select {
 - `NetBox Model`: `dcim.virtualchassis`
 - Expected fields: `device`, `vc_name`, `vc_domain`
 - Query file: [`forward_virtual_chassis.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_virtual_chassis.nqe)
+- Current semantics: emits virtual chassis rows for Forward HA `vpc` domains and `mlagPeer` pairs.
 
 ```nqe
 foreach device in network.devices
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
-where device.ha.vpc.domainId > 0
+let has_vpc = isPresent(device.ha) && isPresent(device.ha.vpc) && isPresent(device.ha.vpc.domainId) && device.ha.vpc.domainId > 0
+let has_mlag_peer = isPresent(device.ha) && isPresent(device.ha.mlagPeer)
+let mlag_peer_name = if has_mlag_peer then toString(device.ha.mlagPeer) else ""
+where has_vpc || has_mlag_peer
 let site_name = if isPresent(device.locationName) then toLowerCase(device.locationName) else "unknown"
+let mlag_members = if has_mlag_peer then
+  if mlag_peer_name > device.name
+  then [device.name, mlag_peer_name]
+  else [mlag_peer_name, device.name]
+else [device.name]
 select {
   device: device.name,
-  vc_name: join("-", [site_name, "vpc", toString(device.ha.vpc.domainId)]),
-  vc_domain: toString(device.ha.vpc.domainId)
+  vc_name: if has_vpc
+    then join("-", [site_name, "vpc", toString(device.ha.vpc.domainId)])
+  else
+    join("-", [site_name, "mlag", join("--", mlag_members)]),
+  vc_domain: if has_vpc
+    then toString(device.ha.vpc.domainId)
+  else
+    join("--", mlag_members)
 }
 ```
 
@@ -296,15 +377,15 @@ select {
 - Query file: [`forward_vlans.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_vlans.nqe)
 
 ```nqe
+import "netbox_utilities";
+
 foreach device in network.devices
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
 foreach ni in device.networkInstances
 foreach vlan in ni.vlans
 let site_name = if isPresent(device.locationName) then toLowerCase(device.locationName) else "unknown"
-let site_slug_1 = replace(site_name, "&", " and ")
-let site_slug_2 = replaceRegexMatches(site_slug_1, re`[^a-z0-9]+`, "-")
-let site_slug = replaceRegexMatches(site_slug_2, re`^-+|-+$`, "")
+let site_slug = slugify(site_name)
 select distinct {
   site: site_name,
   site_slug: site_slug,
@@ -406,21 +487,19 @@ The shipped query combines rows from subinterfaces, bridge interfaces, tunnels, 
 - Query file: [`forward_inventory_items.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_inventory_items.nqe)
 
 ```nqe
+import "netbox_utilities";
+
 foreach device in network.devices
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
 foreach component in device.platform.components
-let manufacturer_name = replace(toString(device.platform.vendor), "Vendor.", "")
-let manufacturer_slug_1 = replace(toLowerCase(manufacturer_name), "&", " and ")
-let manufacturer_slug_2 = replaceRegexMatches(manufacturer_slug_1, re`[^a-z0-9]+`, "-")
-let manufacturer_slug = replaceRegexMatches(manufacturer_slug_2, re`^-+|-+$`, "")
+let manufacturer_name = canonicalManufacturerName(device.platform.vendor)
+let manufacturer_slug = slugify(manufacturer_name)
 let role_name = replace(replace(toString(component.partType), "DevicePartType.", ""), "_", " ")
-let role_slug_1 = replace(toLowerCase(role_name), "&", " and ")
-let role_slug_2 = replaceRegexMatches(role_slug_1, re`[^a-z0-9]+`, "-")
-let role_slug = replaceRegexMatches(role_slug_2, re`^-+|-+$`, "")
+let role_slug = slugify(role_name)
 select {
   device: device.name,
-  manufacturer: device.platform.vendor,
+  manufacturer: manufacturer_name,
   manufacturer_slug: manufacturer_slug,
   name: component.name,
   part_id: if isPresent(component.partId) then component.partId else "",

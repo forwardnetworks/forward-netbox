@@ -4,6 +4,8 @@
  * updated in NetBox using POST and PATCH requests to the /api/dcim/devices/ REST API endpoint.
  */
 
+import "netbox_utilities";
+
 foreach device in network.devices
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
@@ -11,27 +13,17 @@ let location = device.locationName
 let model = device.platform.model
 let device_type = device.platform.deviceType
 let site_name = if isPresent(location) then toLowerCase(location) else "unknown"
-let site_slug_1 = replace(site_name, "&", " and ")
-let site_slug_2 = replaceRegexMatches(site_slug_1, re`[^a-z0-9]+`, "-")
-let site_slug = replaceRegexMatches(site_slug_2, re`^-+|-+$`, "")
+let site_slug = slugify(site_name)
 let role_name = replace(toString(device_type), "DeviceType.", "")
-let role_slug_1 = replace(toLowerCase(role_name), "&", " and ")
-let role_slug_2 = replaceRegexMatches(role_slug_1, re`[^a-z0-9]+`, "-")
-let role_slug = replaceRegexMatches(role_slug_2, re`^-+|-+$`, "")
+let role_slug = slugify(role_name)
 let platform_name = replace(toString(device.platform.os), "OS.", "")
-let platform_slug_1 = replace(toLowerCase(platform_name), "&", " and ")
-let platform_slug_2 = replaceRegexMatches(platform_slug_1, re`[^a-z0-9]+`, "-")
-let platform_slug = replaceRegexMatches(platform_slug_2, re`^-+|-+$`, "")
-let device_type_slug_1 = replace(toLowerCase(toString(model)), "&", " and ")
-let device_type_slug_2 = replaceRegexMatches(device_type_slug_1, re`[^a-z0-9]+`, "-")
-let device_type_slug = replaceRegexMatches(device_type_slug_2, re`^-+|-+$`, "")
-let manufacturer_name = replace(toString(device.platform.vendor), "Vendor.", "")
-let manufacturer_slug_1 = replace(toLowerCase(manufacturer_name), "&", " and ")
-let manufacturer_slug_2 = replaceRegexMatches(manufacturer_slug_1, re`[^a-z0-9]+`, "-")
-let manufacturer_slug = replaceRegexMatches(manufacturer_slug_2, re`^-+|-+$`, "")
+let platform_slug = slugify(platform_name)
+let device_type_slug = slugify(toString(model))
+let manufacturer_name = canonicalManufacturerName(device.platform.vendor)
+let manufacturer_slug = slugify(manufacturer_name)
 select {
   name: device.name,
-  manufacturer: device.platform.vendor,
+  manufacturer: manufacturer_name,
   device_type: model,
   device_type_slug: device_type_slug,
   site: site_name,
