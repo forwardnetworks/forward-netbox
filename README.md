@@ -6,7 +6,7 @@
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v0.1.2` | `4.5.x` only | Current unsupported release |
+| `v0.1.3` | `4.5.x` only | Current unsupported release |
 
 ## Support Disclaimer
 
@@ -18,6 +18,7 @@ This repository is provided for use at your own risk. It is an unsupported relea
 - Forward `Sources`, `NQE Maps`, `Syncs`, and `Ingestions`
 - Built-in shipped NQE maps seeded automatically after migration
 - Support for either published Forward `query_id` references or raw NQE `query` text
+- Explicit identity contracts per map (`coalesce_fields`) with strict sync-time ambiguity detection
 - Repository-authored built-in queries can share local helper modules and still execute as flattened raw NQE when bundled
 - Automatic paging across multi-page Forward NQE result sets during sync execution
 - Snapshot-aware execution with `latestProcessed` or an explicit Forward snapshot per sync
@@ -43,13 +44,13 @@ This repository is provided for use at your own risk. It is an unsupported relea
 1. Install the plugin into the same Python environment as NetBox:
 
 ```bash
-pip install forward-netbox==0.1.2
+pip install forward-netbox==0.1.3
 ```
 
 If you need an offline or pinned artifact workflow, install the wheel or source archive from GitHub Releases instead:
 
 ```bash
-pip install /path/to/forward_netbox-0.1.2-py3-none-any.whl
+pip install /path/to/forward_netbox-0.1.3-py3-none-any.whl
 ```
 
 2. Enable both plugins in the NetBox configuration:

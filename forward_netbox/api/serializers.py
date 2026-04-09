@@ -39,6 +39,7 @@ class ForwardNQEMapSerializer(NestedGroupModelSerializer):
             "query",
             "commit_id",
             "parameters",
+            "coalesce_fields",
             "execution_mode",
             "execution_value",
             "enabled",

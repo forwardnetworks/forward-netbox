@@ -5,6 +5,8 @@ from django.db import IntegrityError
 from ..choices import ForwardIngestionPhaseChoices
 from ..exceptions import ForwardQueryError
 from .query_registry import get_query_specs
+from .sync_contracts import default_coalesce_fields_for_model
+from .sync_contracts import validate_row_shape_for_model
 
 logger = logging.getLogger("forward_netbox.sync")
 
@@ -25,6 +27,7 @@ class ForwardSyncRunner:
         self.client = client
         self.logger = logger_
         self._content_types = {}
+        self._model_coalesce_fields: dict[str, list[list[str]]] = {}
 
     def _conflict_policy(self, model_string):
         return self.MODEL_CONFLICT_POLICIES.get(model_string, "strict")
@@ -88,6 +91,14 @@ class ForwardSyncRunner:
 
         for model_string in self.sync.get_model_strings():
             specs = get_query_specs(model_string, maps=maps)
+            if specs:
+                self._model_coalesce_fields[model_string] = [
+                    list(field_set) for field_set in specs[0].coalesce_fields
+                ] or default_coalesce_fields_for_model(model_string)
+            else:
+                self._model_coalesce_fields[model_string] = (
+                    default_coalesce_fields_for_model(model_string)
+                )
             query_results = []
             total_rows = 0
             for spec in specs:
@@ -103,6 +114,12 @@ class ForwardSyncRunner:
                     parameters=spec.merged_parameters(query_parameters),
                     fetch_all=True,
                 )
+                for row in rows:
+                    validate_row_shape_for_model(
+                        model_string,
+                        row,
+                        self._model_coalesce_fields[model_string],
+                    )
                 query_results.append(rows)
                 total_rows += len(rows)
             self.logger.init_statistics(model_string, total_rows)
@@ -131,34 +148,161 @@ class ForwardSyncRunner:
         fallback_lookups=None,
         conflict_policy="strict",
     ):
-        fallback_lookups = fallback_lookups or []
-        obj = model.objects.filter(**lookup).order_by("pk").first()
-        if obj is None:
-            for fallback_lookup in fallback_lookups:
-                obj = model.objects.filter(**fallback_lookup).order_by("pk").first()
-                if obj is not None:
-                    break
+        return self._coalesce_update_or_create(
+            model,
+            coalesce_lookups=[lookup, *(fallback_lookups or [])],
+            create_values={**lookup, **defaults},
+            update_values=defaults,
+            conflict_policy=conflict_policy,
+        )
+
+    def _coalesce_update_or_create(
+        self,
+        model,
+        *,
+        coalesce_lookups,
+        create_values,
+        update_values=None,
+        conflict_policy="strict",
+    ):
+        lookups = [lookup for lookup in (coalesce_lookups or []) if lookup]
+        if not lookups:
+            raise ValueError("At least one coalesce lookup must be provided.")
+
+        update_values = create_values if update_values is None else update_values
+
+        obj = None
+        for lookup in lookups:
+            obj = self._get_unique_or_raise(model, lookup)
+            if obj is not None:
+                break
+
         if obj is None:
             try:
-                return model.objects.create(**lookup, **defaults), True
+                obj = model(**create_values)
+                obj.full_clean()
+                obj.save()
+                return obj, True
             except IntegrityError:
                 if conflict_policy != "reuse_on_unique_conflict":
                     raise
-                for retry_lookup in [lookup, *fallback_lookups]:
-                    obj = model.objects.filter(**retry_lookup).order_by("pk").first()
+                for retry_lookup in lookups:
+                    obj = self._get_unique_or_raise(model, retry_lookup)
                     if obj is not None:
                         break
                 if obj is None:
                     raise
 
         update_fields = []
-        for field, value in defaults.items():
+        for field, value in update_values.items():
             if getattr(obj, field) != value:
                 setattr(obj, field, value)
                 update_fields.append(field)
         if update_fields:
+            obj.full_clean()
             obj.save(update_fields=update_fields)
         return obj, False
+
+    def _get_unique_or_raise(self, model, lookup):
+        queryset = model.objects.filter(**lookup).order_by("pk")
+        obj = queryset.first()
+        if obj is None:
+            return None
+        if queryset.exclude(pk=obj.pk).exists():
+            raise ForwardQueryError(
+                f"Ambiguous coalesce lookup for `{model._meta.label_lower}` with {lookup}."
+            )
+        return obj
+
+    def _coalesce_lookup(self, row, *fields):
+        return {
+            field: row[field]
+            for field in fields
+            if field in row and row[field] != ""
+        }
+
+    def _coalesce_upsert(
+        self,
+        model_string,
+        model,
+        *,
+        coalesce_lookups,
+        create_values,
+        update_values=None,
+    ):
+        return self._coalesce_update_or_create(
+            model,
+            coalesce_lookups=coalesce_lookups,
+            create_values=create_values,
+            update_values=update_values,
+            conflict_policy=self._conflict_policy(model_string),
+        )
+
+    def _coalesce_sets_for(self, model_string, default_sets):
+        configured = self._model_coalesce_fields.get(model_string)
+        if configured:
+            return configured
+        return [list(field_set) for field_set in default_sets]
+
+    def _upsert_row(
+        self,
+        model_string,
+        model,
+        *,
+        row,
+        coalesce_sets,
+        create_values,
+        update_values=None,
+    ):
+        lookups = [
+            self._coalesce_lookup(row, *coalesce_set)
+            for coalesce_set in coalesce_sets
+        ]
+        return self._coalesce_upsert(
+            model_string,
+            model,
+            coalesce_lookups=lookups,
+            create_values=create_values,
+            update_values=update_values,
+        )
+
+    def _upsert_row_from_defaults(
+        self,
+        model_string,
+        model,
+        *,
+        row,
+        coalesce_sets,
+        defaults,
+    ):
+        return self._upsert_row(
+            model_string,
+            model,
+            row=row,
+            coalesce_sets=coalesce_sets,
+            create_values=defaults,
+            update_values=defaults,
+        )
+
+    def _upsert_values_from_defaults(
+        self,
+        model_string,
+        model,
+        *,
+        values,
+        coalesce_sets,
+    ):
+        lookups = [
+            self._coalesce_lookup(values, *coalesce_set)
+            for coalesce_set in coalesce_sets
+        ]
+        return self._coalesce_upsert(
+            model_string,
+            model,
+            coalesce_lookups=lookups,
+            create_values=values,
+            update_values=values,
+        )
 
     def _apply_model_rows(self, model_string, rows):
         handler_name = f"_apply_{model_string.replace('.', '_')}"
@@ -173,6 +317,10 @@ class ForwardSyncRunner:
             try:
                 handler(row)
                 self.logger.increment_statistics(model_string)
+            except ForwardQueryError as exc:
+                logger.exception("Failed applying %s row", model_string)
+                self._record_issue(model_string, str(exc), row)
+                raise
             except Exception as exc:
                 logger.exception("Failed applying %s row", model_string)
                 self._record_issue(model_string, str(exc), row)
@@ -180,41 +328,49 @@ class ForwardSyncRunner:
     def _ensure_site(self, row):
         from dcim.models import Site
 
-        name = row["name"]
-        slug = row["slug"]
-        site, _ = self._update_existing_or_create(
+        site, _ = self._upsert_row_from_defaults(
+            "dcim.site",
             Site,
-            lookup={"name": name},
-            defaults={"slug": slug},
-            fallback_lookups=[{"slug": slug}],
-            conflict_policy=self._conflict_policy("dcim.site"),
+            row=row,
+            coalesce_sets=self._coalesce_sets_for(
+                "dcim.site",
+                [("slug",), ("name",)],
+            ),
+            defaults={"name": row["name"], "slug": row["slug"]},
         )
         return site
 
     def _ensure_manufacturer(self, row):
         from dcim.models import Manufacturer
 
-        name = row["name"]
-        slug = row["slug"]
-        manufacturer, _ = self._update_existing_or_create(
+        manufacturer, _ = self._upsert_row_from_defaults(
+            "dcim.manufacturer",
             Manufacturer,
-            lookup={"name": name},
-            defaults={"slug": slug},
-            fallback_lookups=[{"slug": slug}],
-            conflict_policy=self._conflict_policy("dcim.manufacturer"),
+            row=row,
+            coalesce_sets=self._coalesce_sets_for(
+                "dcim.manufacturer",
+                [("slug",), ("name",)],
+            ),
+            defaults={"name": row["name"], "slug": row["slug"]},
         )
         return manufacturer
 
     def _ensure_role(self, row):
         from dcim.models import DeviceRole
 
-        name = row["name"]
-        role, _ = self._update_existing_or_create(
+        role, _ = self._upsert_row_from_defaults(
+            "dcim.devicerole",
             DeviceRole,
-            lookup={"name": name},
-            defaults={"slug": row["slug"], "color": row["color"]},
-            fallback_lookups=[{"slug": row["slug"]}],
-            conflict_policy=self._conflict_policy("dcim.devicerole"),
+            row=row,
+            coalesce_sets=self._coalesce_sets_for(
+                "dcim.devicerole",
+                [("slug",), ("name",)],
+            ),
+            defaults={
+                "name": row["name"],
+                "slug": row["slug"],
+                "color": row["color"],
+            },
         )
         return role
 
@@ -226,16 +382,19 @@ class ForwardSyncRunner:
             manufacturer = self._ensure_manufacturer(
                 {"name": row["manufacturer"], "slug": row["manufacturer_slug"]}
             )
-        name = row["name"]
-        platform, _ = self._update_existing_or_create(
+        platform_values = {
+            "name": row["name"],
+            "slug": row["slug"],
+            "manufacturer": manufacturer,
+        }
+        platform, _ = self._upsert_values_from_defaults(
+            "dcim.platform",
             Platform,
-            lookup={"name": name},
-            defaults={
-                "slug": row["slug"],
-                "manufacturer": manufacturer,
-            },
-            fallback_lookups=[{"slug": row["slug"]}],
-            conflict_policy=self._conflict_policy("dcim.platform"),
+            values=platform_values,
+            coalesce_sets=self._coalesce_sets_for(
+                "dcim.platform",
+                [("slug",), ("name",)],
+            ),
         )
         return platform
 
@@ -247,15 +406,29 @@ class ForwardSyncRunner:
         )
         model = row["model"]
         slug = row["slug"]
+        configured_sets = self._coalesce_sets_for(
+            "dcim.devicetype",
+            [("manufacturer_slug", "slug"), ("manufacturer_slug", "model")],
+        )
+        coalesce_lookups = []
+        for field_set in configured_sets:
+            lookup = {}
+            for field_name in field_set:
+                if field_name in {"manufacturer", "manufacturer_slug"}:
+                    lookup["manufacturer"] = manufacturer
+                elif field_name in {"slug", "model"}:
+                    lookup[field_name] = row[field_name]
+            if lookup:
+                coalesce_lookups.append(lookup)
+        if not coalesce_lookups:
+            raise ForwardQueryError(
+                "No usable coalesce lookups were configured for dcim.devicetype."
+            )
         device_type_by_model = (
-            DeviceType.objects.filter(manufacturer=manufacturer, model=model)
-            .order_by("pk")
-            .first()
+            DeviceType.objects.filter(**coalesce_lookups[1]).order_by("pk").first()
         )
         device_type_by_slug = (
-            DeviceType.objects.filter(manufacturer=manufacturer, slug=slug)
-            .order_by("pk")
-            .first()
+            DeviceType.objects.filter(**coalesce_lookups[0]).order_by("pk").first()
         )
 
         if (
@@ -269,84 +442,68 @@ class ForwardSyncRunner:
                 "resolve to different rows."
             )
 
-        device_type = device_type_by_model or device_type_by_slug
-        if device_type is None:
-            create_kwargs = {
-                "manufacturer": manufacturer,
-                "model": model,
-                "slug": slug,
-            }
-            if "part_number" in row:
-                create_kwargs["part_number"] = row.get("part_number", "")
-            try:
-                return DeviceType.objects.create(**create_kwargs)
-            except IntegrityError:
-                if (
-                    self._conflict_policy("dcim.devicetype")
-                    != "reuse_on_unique_conflict"
-                ):
-                    raise
-                device_type = (
-                    DeviceType.objects.filter(manufacturer=manufacturer, slug=slug)
-                    .order_by("pk")
-                    .first()
-                )
-                if device_type is None:
-                    raise
-                update_fields = []
-                if device_type.model != model:
-                    device_type.model = model
-                    update_fields.append("model")
-                if "part_number" in row:
-                    part_number = row.get("part_number", "")
-                    if device_type.part_number != part_number:
-                        device_type.part_number = part_number
-                        update_fields.append("part_number")
-                if update_fields:
-                    device_type.save(update_fields=update_fields)
-                return device_type
-
-        update_fields = []
-        if device_type.model != model:
-            device_type.model = model
-            update_fields.append("model")
-        if device_type.slug != slug:
-            device_type.slug = slug
-            update_fields.append("slug")
+        create_values = {
+            "manufacturer": manufacturer,
+            "model": model,
+            "slug": slug,
+        }
+        update_values = {
+            "model": model,
+            "slug": slug,
+        }
         if "part_number" in row:
             part_number = row.get("part_number", "")
-            if device_type.part_number != part_number:
-                device_type.part_number = part_number
-                update_fields.append("part_number")
-        if update_fields:
-            device_type.save(update_fields=update_fields)
+            create_values["part_number"] = part_number
+            update_values["part_number"] = part_number
+
+        device_type, _ = self._coalesce_upsert(
+            "dcim.devicetype",
+            DeviceType,
+            coalesce_lookups=coalesce_lookups,
+            create_values=create_values,
+            update_values=update_values,
+        )
         return device_type
 
     def _ensure_vrf(self, row):
         from ipam.models import VRF
 
-        name = row["name"]
-        vrf, _ = self._update_existing_or_create(
+        rd = row.get("rd") or None
+        values = {
+            "name": row["name"],
+            "rd": rd,
+            "description": row.get("description", ""),
+            "enforce_unique": row.get("enforce_unique", False),
+        }
+        coalesce_sets = [("name",)]
+        if rd:
+            coalesce_sets.insert(0, ("rd",))
+
+        vrf, _ = self._upsert_values_from_defaults(
+            "ipam.vrf",
             VRF,
-            lookup={"name": name},
-            defaults={
-                "rd": row.get("rd") or None,
-                "description": row.get("description", ""),
-                "enforce_unique": row.get("enforce_unique", False),
-            },
+            values=values,
+            coalesce_sets=self._coalesce_sets_for("ipam.vrf", coalesce_sets),
         )
         return vrf
 
     def _ensure_vlan(self, *, vid, name, status, site=None):
         from ipam.models import VLAN
 
-        vlan, _ = self._update_existing_or_create(
+        values = {
+            "site": site,
+            "vid": vid,
+            "name": name,
+            "status": status,
+        }
+        vlan, _ = self._upsert_values_from_defaults(
+            "ipam.vlan",
             VLAN,
-            lookup={"site": site, "vid": vid},
-            defaults={
-                "name": name,
-                "status": status,
-            },
+            values=values,
+            coalesce_sets=self._coalesce_sets_for(
+                "ipam.vlan",
+                [("site", "vid")],
+            ),
         )
         return vlan
 
@@ -356,12 +513,16 @@ class ForwardSyncRunner:
         role_name = row.get("role")
         if not role_name:
             return None
-        role, _ = self._update_existing_or_create(
+        role, _ = self._upsert_row_from_defaults(
+            "dcim.inventoryitemrole",
             InventoryItemRole,
-            lookup={"name": str(role_name)},
-            defaults={"slug": row["role_slug"], "color": row["role_color"]},
-            fallback_lookups=[{"slug": row["role_slug"]}],
-            conflict_policy=self._conflict_policy("dcim.inventoryitemrole"),
+            row={"name": str(role_name), "slug": row["role_slug"]},
+            coalesce_sets=[("slug",), ("name",)],
+            defaults={
+                "name": str(role_name),
+                "slug": row["role_slug"],
+                "color": row["role_color"],
+            },
         )
         return role
 
@@ -398,10 +559,18 @@ class ForwardSyncRunner:
         from dcim.models import VirtualChassis
 
         vc_name = row.get("vc_name") or row.get("name")
-        vc, _ = self._update_existing_or_create(
+        vc_values = {
+            "name": vc_name,
+            "domain": row.get("vc_domain", row.get("domain", "")),
+        }
+        vc, _ = self._upsert_values_from_defaults(
+            "dcim.virtualchassis",
             VirtualChassis,
-            lookup={"name": vc_name},
-            defaults={"domain": row.get("vc_domain", row.get("domain", ""))},
+            values=vc_values,
+            coalesce_sets=self._coalesce_sets_for(
+                "dcim.virtualchassis",
+                [("name",)],
+            ),
         )
         if row.get("device"):
             device = Device.objects.get(name=row["device"])
@@ -439,6 +608,7 @@ class ForwardSyncRunner:
             )
 
         defaults = {
+            "name": row["name"],
             "site": site,
             "role": role,
             "device_type": device_type,
@@ -453,8 +623,14 @@ class ForwardSyncRunner:
             if row.get("vc_position"):
                 defaults["vc_position"] = row["vc_position"]
 
-        self._update_existing_or_create(
-            Device, lookup={"name": row["name"]}, defaults=defaults
+        self._upsert_values_from_defaults(
+            "dcim.device",
+            Device,
+            values=defaults,
+            coalesce_sets=self._coalesce_sets_for(
+                "dcim.device",
+                [("name",)],
+            ),
         )
 
     def _apply_dcim_interface(self, row):
@@ -464,16 +640,21 @@ class ForwardSyncRunner:
         device = Device.objects.get(name=row["device"])
         defaults = {
             "device": device,
+            "name": row["name"],
             "type": row["type"],
             "enabled": row["enabled"],
             "mtu": row.get("mtu") or None,
             "description": row.get("description") or "",
             "speed": row.get("speed") or None,
         }
-        self._update_existing_or_create(
+        self._upsert_values_from_defaults(
+            "dcim.interface",
             Interface,
-            lookup={"device": device, "name": row["name"]},
-            defaults=defaults,
+            values=defaults,
+            coalesce_sets=self._coalesce_sets_for(
+                "dcim.interface",
+                [("device", "name")],
+            ),
         )
 
     def _apply_dcim_macaddress(self, row):
@@ -487,13 +668,18 @@ class ForwardSyncRunner:
             raise ForwardQueryError(
                 f"Unable to find interface {row['interface']} on device {device.name} for MAC assignment."
             )
-        self._update_existing_or_create(
+        self._upsert_values_from_defaults(
+            "dcim.macaddress",
             MACAddress,
-            lookup={"mac_address": row["mac"]},
-            defaults={
+            values={
+                "mac_address": row["mac"],
                 "assigned_object_type": self._content_type_for(Interface),
                 "assigned_object_id": interface.pk,
             },
+            coalesce_sets=self._coalesce_sets_for(
+                "dcim.macaddress",
+                [("mac_address",)],
+            ),
         )
 
     def _apply_ipam_vlan(self, row):
@@ -527,10 +713,18 @@ class ForwardSyncRunner:
             if row.get("vrf")
             else None
         )
-        self._update_existing_or_create(
+        self._upsert_values_from_defaults(
+            "ipam.prefix",
             Prefix,
-            lookup={"prefix": row["prefix"], "vrf": vrf},
-            defaults={"status": row["status"]},
+            values={
+                "prefix": row["prefix"],
+                "vrf": vrf,
+                "status": row["status"],
+            },
+            coalesce_sets=self._coalesce_sets_for(
+                "ipam.prefix",
+                [("prefix", "vrf")],
+            ),
         )
 
     def _apply_ipam_ipaddress(self, row):
@@ -556,14 +750,20 @@ class ForwardSyncRunner:
             if row.get("vrf")
             else None
         )
-        self._update_existing_or_create(
+        self._upsert_values_from_defaults(
+            "ipam.ipaddress",
             IPAddress,
-            lookup={"address": row["address"], "vrf": vrf},
-            defaults={
+            values={
+                "address": row["address"],
+                "vrf": vrf,
                 "status": row["status"],
                 "assigned_object_type": self._content_type_for(Interface),
                 "assigned_object_id": interface.pk,
             },
+            coalesce_sets=self._coalesce_sets_for(
+                "ipam.ipaddress",
+                [("address", "vrf")],
+            ),
         )
 
     def _apply_dcim_inventoryitem(self, row):
@@ -577,19 +777,22 @@ class ForwardSyncRunner:
                 {"name": row["manufacturer"], "slug": row["manufacturer_slug"]}
             )
         role = self._ensure_inventory_item_role(row)
-        self._update_existing_or_create(
+        self._upsert_values_from_defaults(
+            "dcim.inventoryitem",
             InventoryItem,
-            lookup={
+            values={
                 "device": device,
                 "name": row["name"],
                 "part_id": row.get("part_id") or "",
                 "serial": row.get("serial") or "",
-            },
-            defaults={
                 "status": row["status"],
                 "role": role,
                 "manufacturer": manufacturer,
                 "discovered": row["discovered"],
                 "description": row.get("description") or "",
             },
+            coalesce_sets=self._coalesce_sets_for(
+                "dcim.inventoryitem",
+                [("device", "name", "part_id", "serial")],
+            ),
         )
