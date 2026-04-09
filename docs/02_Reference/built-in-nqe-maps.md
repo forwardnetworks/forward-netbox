@@ -276,7 +276,7 @@ select {
 ## Forward Virtual Chassis
 
 - `NetBox Model`: `dcim.virtualchassis`
-- Expected fields: `device`, `vc_name`, `vc_domain`
+- Expected fields: `device`, `vc_name`, `name`, `vc_domain`
 - Query file: [`forward_virtual_chassis.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_virtual_chassis.nqe)
 - Current semantics: emits virtual chassis rows for Forward HA `vpc` domains and `mlagPeer` pairs.
 
@@ -353,7 +353,7 @@ select {
 ## Forward MAC Addresses
 
 - `NetBox Model`: `dcim.macaddress`
-- Expected fields: `device`, `interface`, `mac`
+- Expected fields: `device`, `interface`, `mac`, `mac_address`
 - Query file: [`forward_mac_addresses.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_mac_addresses.nqe)
 
 ```nqe

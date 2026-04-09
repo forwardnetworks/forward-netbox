@@ -68,6 +68,9 @@
     <div class="card">
       {% include 'extras/inc/configcontext_data.html' with title="Parameters" data=object.parameters format="json" copyid="forward-nqe-map-parameters" %}
     </div>
+    <div class="card">
+      {% include 'extras/inc/configcontext_data.html' with title="Coalesce Fields" data=object.coalesce_fields format="json" copyid="forward-nqe-map-coalesce-fields" %}
+    </div>
     {% plugin_right_page object %}
   </div>
 </div>

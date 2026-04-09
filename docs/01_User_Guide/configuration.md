@@ -56,6 +56,10 @@ Create a `Forward Source` for each Forward deployment or tenant you want to sync
   - Use this or `Query ID`, not both.
 - `Commit ID`
   - Optional published query revision to pin when `Query ID` is used.
+- `Coalesce Fields`
+  - Ordered identity key sets used to match existing NetBox rows before create/update.
+  - Example: `[["slug"], ["name"]]`.
+  - Must be valid for the selected `NetBox Model`.
 - `Enabled`
   - Disabled maps are skipped.
 - `Weight`
@@ -69,6 +73,18 @@ Each map must define exactly one of:
 - raw `query`
 
 Use `query_id` when you want the map to call a named or published Forward query. Use raw `query` when you want the exact NQE text stored directly in NetBox.
+
+### Identity Contract Validation
+
+The plugin enforces a strict identity contract:
+
+- Save-time map validation:
+  - `coalesce_fields` must be valid for the selected model.
+  - Raw `query` maps must include required output fields and coalesce fields.
+- Sync-time validation:
+  - Rows must include required identity fields.
+  - Rows must satisfy at least one configured coalesce field set.
+  - Ambiguous coalesce matches fail the sync to prevent duplicate or inconsistent object resolution.
 
 ### Built-In Maps
 
