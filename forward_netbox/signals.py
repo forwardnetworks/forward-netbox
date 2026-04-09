@@ -30,6 +30,7 @@ def seed_builtin_nqe_maps(sender, **kwargs):
                 "query": row["query"],
                 "commit_id": row["commit_id"],
                 "parameters": row["parameters"],
+                "coalesce_fields": row["coalesce_fields"],
                 "weight": row["weight"],
                 "enabled": True,
             },

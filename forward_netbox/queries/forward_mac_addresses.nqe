@@ -12,5 +12,6 @@ where isPresent(interface.ethernet.macAddress)
 select {
   device: device.name,
   interface: interface.name,
-  mac: toString(interface.ethernet.macAddress)
+  mac: toString(interface.ethernet.macAddress),
+  mac_address: toString(interface.ethernet.macAddress)
 }

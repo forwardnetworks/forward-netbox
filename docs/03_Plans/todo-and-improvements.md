@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This document captures the next major improvement phase for `forward_netbox` after the current `v0.1.2` release line.
+This document captures the next major improvement phase for `forward_netbox` after the current `v0.1.3` release line.
 
 The plugin is already in a solid release state:
 

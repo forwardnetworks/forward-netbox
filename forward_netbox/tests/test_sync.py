@@ -8,6 +8,7 @@ from dcim.models import Interface
 from dcim.models import Manufacturer
 from dcim.models import Site
 from dcim.models import VirtualChassis
+from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 from django.test import TestCase
 
@@ -172,7 +173,7 @@ class ForwardSyncRunnerTest(TestCase):
         )
 
         with patch(
-            "dcim.models.Interface.objects.create",
+            "dcim.models.Interface.full_clean",
             side_effect=IntegrityError("unique violation"),
         ):
             with self.assertRaises(IntegrityError):
@@ -182,6 +183,19 @@ class ForwardSyncRunnerTest(TestCase):
                     defaults={"type": "1000base-t", "enabled": True},
                     conflict_policy=runner._conflict_policy("dcim.interface"),
                 )
+
+    def test_non_lookup_models_raise_validation_errors_from_full_clean(self):
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        with self.assertRaises(ValidationError):
+            runner._update_existing_or_create(
+                Interface,
+                lookup={"name": "Ethernet1/1", "device_id": 999999},
+                defaults={"type": "1000base-t", "enabled": True},
+                conflict_policy=runner._conflict_policy("dcim.interface"),
+            )
 
     def test_apply_device_uses_manufacturer_specific_device_type(self):
         Manufacturer.objects.create(name="Juniper", slug="juniper")
@@ -313,6 +327,38 @@ class ForwardSyncRunnerTest(TestCase):
             fetch_all=True,
         )
 
+    def test_run_fails_when_rows_miss_required_identity_fields(self):
+        ingestion = ForwardIngestion.objects.create(sync=self.sync)
+        client = Mock()
+        client.get_latest_processed_snapshot.return_value = {
+            "id": "1248264",
+            "processedAt": "2026-03-31T12:15:00Z",
+        }
+        client.get_snapshot_metrics.return_value = {}
+        client.run_nqe_query.return_value = [{"name": "device-1"}]
+        runner = ForwardSyncRunner(
+            sync=self.sync,
+            ingestion=ingestion,
+            client=client,
+            logger_=Mock(),
+        )
+
+        self.sync.get_model_strings = lambda: ["dcim.device"]
+        self.sync.resolve_snapshot_id = lambda client=None: "1248264"
+
+        with patch(
+            "forward_netbox.utilities.sync.get_query_specs",
+            return_value=[
+                QuerySpec(
+                    model_string="dcim.device",
+                    query_name="Forward Devices",
+                    query="foreach device select {name: device.name}",
+                )
+            ],
+        ):
+            with self.assertRaises(ForwardQueryError):
+                runner.run()
+
     def test_runner_defines_adapter_for_all_supported_models(self):
         runner = ForwardSyncRunner(
             sync=self.sync, ingestion=None, client=None, logger_=Mock()
@@ -324,6 +370,22 @@ class ForwardSyncRunnerTest(TestCase):
                 hasattr(runner, handler_name),
                 msg=f"Missing adapter handler for {model_string}",
             )
+
+    def test_apply_model_rows_fails_fast_on_forward_query_error(self):
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        def _raise(_):
+            raise ForwardQueryError("boom")
+
+        runner._apply_dcim_site = _raise
+        runner._record_issue = Mock()
+
+        with self.assertRaises(ForwardQueryError):
+            runner._apply_model_rows("dcim.site", [{"name": "site-1", "slug": "site-1"}])
+
+        runner._record_issue.assert_called_once()
 
     def test_apply_virtual_chassis_attaches_device_without_inventing_position(self):
         site = Site.objects.create(name="site-1", slug="site-1")

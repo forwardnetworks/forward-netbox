@@ -38,6 +38,20 @@ Checks:
 - If using `Query ID`, ensure the published query exists in Forward.
 - If using raw `Query`, validate the NQE text directly against the Forward API if needed.
 - Keep the `NetBox Model` aligned with the output shape of the query.
+- Ensure `Coalesce Fields` are valid for the selected model and use non-empty field sets.
+
+## Sync Fails With Identity/Coalesce Errors
+
+Symptoms:
+
+- Sync fails with messages about missing required fields, coalesce mismatch, or ambiguous coalesce lookups.
+
+Checks:
+
+- Confirm the active map query returns all required fields for that model.
+- Confirm each row satisfies at least one configured coalesce field set.
+- If multiple NetBox rows can match the same coalesce keys, fix the duplicate data in NetBox or tighten coalesce fields.
+- Prefer keeping NetBox-ready shaping in NQE rather than adding Python-side normalization.
 
 ## Sync Fails Before Staging
 

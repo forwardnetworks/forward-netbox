@@ -49,6 +49,7 @@ class ForwardNQEMapTable(NetBoxTable):
             "netbox_model",
             "execution_mode",
             "execution_value",
+            "coalesce_fields",
             "commit_id",
             "enabled",
             "built_in",

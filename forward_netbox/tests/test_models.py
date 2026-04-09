@@ -1,7 +1,9 @@
+from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
 from django.test import TestCase
 
 from forward_netbox.models import ForwardIngestion
+from forward_netbox.models import ForwardNQEMap
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
@@ -106,3 +108,44 @@ class ForwardIngestionSnapshotSummaryTest(TestCase):
                 "processingDuration": 900,
             },
         )
+
+
+class ForwardNQEMapModelTest(TestCase):
+    def test_map_defaults_coalesce_fields_from_model_contract(self):
+        netbox_model = ContentType.objects.get(app_label="dcim", model="site")
+        query_map = ForwardNQEMap(
+            name="Site Map",
+            netbox_model=netbox_model,
+            query='select {\n  name: "site-a",\n  slug: "site-a"\n}',
+        )
+
+        query_map.clean()
+
+        self.assertEqual(query_map.coalesce_fields, [["slug"], ["name"]])
+
+    def test_map_rejects_invalid_coalesce_field(self):
+        netbox_model = ContentType.objects.get(app_label="dcim", model="site")
+        query_map = ForwardNQEMap(
+            name="Site Map",
+            netbox_model=netbox_model,
+            query='select {\n  name: "site-a",\n  slug: "site-a"\n}',
+            coalesce_fields=[["name"], ["invalid_field"]],
+        )
+
+        with self.assertRaises(ValidationError) as ctx:
+            query_map.clean()
+
+        self.assertIn("is not allowed", str(ctx.exception))
+
+    def test_map_rejects_query_missing_required_fields(self):
+        netbox_model = ContentType.objects.get(app_label="dcim", model="device")
+        query_map = ForwardNQEMap(
+            name="Device Map",
+            netbox_model=netbox_model,
+            query='select {name: "device-1"}',
+        )
+
+        with self.assertRaises(ValidationError) as ctx:
+            query_map.clean()
+
+        self.assertIn("missing required fields", str(ctx.exception))

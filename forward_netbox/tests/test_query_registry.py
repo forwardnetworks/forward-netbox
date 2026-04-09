@@ -37,7 +37,7 @@ REQUIRED_FIELDS_BY_QUERY_NAME = {
         "platform_slug",
         "status",
     },
-    "Forward Virtual Chassis": {"device", "vc_name", "vc_domain"},
+    "Forward Virtual Chassis": {"device", "vc_name", "name", "vc_domain"},
     "Forward Interfaces": {
         "device",
         "name",
@@ -47,7 +47,7 @@ REQUIRED_FIELDS_BY_QUERY_NAME = {
         "description",
         "speed",
     },
-    "Forward MAC Addresses": {"device", "interface", "mac"},
+    "Forward MAC Addresses": {"device", "interface", "mac", "mac_address"},
     "Forward VLANs": {"site", "site_slug", "vid", "name", "status"},
     "Forward VRFs": {"name", "rd", "description", "enforce_unique"},
     "Forward IPv4 Prefixes": {"vrf", "prefix", "status"},
@@ -281,6 +281,7 @@ class QueryRegistryTest(TestCase):
 
         self.assertIn('import "netbox_utilities";', row["query"])
         self.assertNotIn("manufacturer_name_overrides = [", row["query"])
+        self.assertEqual(row["coalesce_fields"], [["slug"], ["name"]])
 
     def test_builtin_query_specs_flatten_local_imports(self):
         spec = next(
@@ -291,3 +292,4 @@ class QueryRegistryTest(TestCase):
 
         self.assertNotIn('import "netbox_utilities";', spec.query)
         self.assertIn("manufacturer_name_overrides = [", spec.query)
+        self.assertEqual(spec.coalesce_fields, (("slug",), ("name",)))

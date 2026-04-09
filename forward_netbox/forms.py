@@ -449,6 +449,11 @@ class ForwardNQEMapForm(NetBoxModelForm):
         label="Commit ID",
         help_text="Optional published query revision. Only applies when `Query ID` is used.",
     )
+    coalesce_fields = forms.JSONField(
+        required=False,
+        label="Coalesce Fields",
+        help_text="Ordered identity key sets used for upsert matching (for example [[\"slug\"], [\"name\"]]).",
+    )
 
     class Meta:
         model = ForwardNQEMap
@@ -458,6 +463,7 @@ class ForwardNQEMapForm(NetBoxModelForm):
             "query_id",
             "query",
             "commit_id",
+            "coalesce_fields",
             "enabled",
             "weight",
         )
@@ -468,6 +474,7 @@ class ForwardNQEMapForm(NetBoxModelForm):
             "query_id",
             "query",
             "commit_id",
+            "coalesce_fields",
             "enabled",
             "weight",
             name="Query Definition",

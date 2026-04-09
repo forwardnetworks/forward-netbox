@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import Any
 
 from ..choices import FORWARD_SUPPORTED_MODELS
+from .sync_contracts import default_coalesce_fields_for_model
+from .sync_contracts import normalize_coalesce_fields
 
 
 @dataclass(frozen=True)
@@ -15,6 +17,7 @@ class QuerySpec:
     query_id: str | None = None
     commit_id: str | None = None
     parameters: dict[str, Any] = field(default_factory=dict)
+    coalesce_fields: tuple[tuple[str, ...], ...] = ()
     placeholder: bool = False
 
     def __post_init__(self):
@@ -213,6 +216,9 @@ def builtin_nqe_map_rows() -> list[dict[str, Any]]:
                 "query": _read_query_source(query_default["filename"]),
                 "commit_id": "",
                 "parameters": {},
+                "coalesce_fields": default_coalesce_fields_for_model(
+                    query_default["model_string"]
+                ),
                 "weight": index * 100,
             }
         )
@@ -224,10 +230,21 @@ def _build_builtin_query_spec(query_default: dict[str, Any]) -> QuerySpec:
         model_string=query_default["model_string"],
         query_name=query_default["name"],
         query=_read_query(query_default["filename"]),
+        coalesce_fields=tuple(
+            tuple(field_set)
+            for field_set in default_coalesce_fields_for_model(
+                query_default["model_string"]
+            )
+        ),
     )
 
 
 def _build_query_spec_from_map(query_map) -> QuerySpec:
+    normalized_coalesce = normalize_coalesce_fields(
+        query_map.model_string,
+        query_map.coalesce_fields,
+        allow_default=True,
+    )
     if query_map.built_in:
         query_default = BUILTIN_QUERY_DEFAULTS.get(
             (query_map.model_string, query_map.name)
@@ -238,6 +255,7 @@ def _build_query_spec_from_map(query_map) -> QuerySpec:
                 query_name=query_map.name,
                 query=_read_query(query_default["filename"]),
                 parameters=query_map.parameters or {},
+                coalesce_fields=tuple(tuple(field_set) for field_set in normalized_coalesce),
                 placeholder=False,
             )
     return QuerySpec(
@@ -247,6 +265,7 @@ def _build_query_spec_from_map(query_map) -> QuerySpec:
         query_id=query_map.query_id or None,
         commit_id=query_map.commit_id or None,
         parameters=query_map.parameters or {},
+        coalesce_fields=tuple(tuple(field_set) for field_set in normalized_coalesce),
         placeholder=False,
     )
 

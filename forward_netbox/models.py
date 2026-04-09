@@ -37,6 +37,8 @@ from .exceptions import ForwardSyncError
 from .utilities.forward_api import ForwardClient
 from .utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from .utilities.logging import SyncLogging
+from .utilities.sync_contracts import normalize_coalesce_fields
+from .utilities.sync_contracts import validate_query_shape_for_model
 
 logger = logging.getLogger("forward_netbox.models")
 
@@ -161,6 +163,7 @@ class ForwardNQEMap(ChangeLoggedModel):
     query = models.TextField(blank=True)
     commit_id = models.CharField(max_length=100, blank=True)
     parameters = models.JSONField(blank=True, default=dict)
+    coalesce_fields = models.JSONField(blank=True, default=list)
     weight = models.PositiveIntegerField(default=100)
     enabled = models.BooleanField(default=True)
     built_in = models.BooleanField(default=False, editable=False)
@@ -195,6 +198,24 @@ class ForwardNQEMap(ChangeLoggedModel):
             raise ValidationError(_("Set exactly one of `Query ID` or `Query`."))
         if self.parameters and not isinstance(self.parameters, dict):
             raise ValidationError(_("Parameters must be a JSON object."))
+        try:
+            normalized = normalize_coalesce_fields(
+                self.model_string,
+                self.coalesce_fields,
+                allow_default=True,
+            )
+        except ValueError as exc:
+            raise ValidationError(_(str(exc)))
+        self.coalesce_fields = normalized
+        if self.query:
+            try:
+                validate_query_shape_for_model(
+                    self.model_string,
+                    self.query,
+                    self.coalesce_fields,
+                )
+            except ValueError as exc:
+                raise ValidationError(_(str(exc)))
 
 
 class ForwardSync(JobsMixin, TagsMixin, ChangeLoggedModel):
