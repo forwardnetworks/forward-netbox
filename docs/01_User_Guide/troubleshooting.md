@@ -138,6 +138,12 @@ curl -sS -H "Authorization: Token ${NETBOX_TOKEN}" \
   "${NETBOX_URL}/api/plugins/forward/ingestion-issues/?limit=0"
 ```
 
+In 0.1.4 and newer, each issue includes structured fields to speed root-cause analysis:
+
+- `coalesce_fields`: identity keys used for matching
+- `defaults`: payload values attempted for create/update
+- `raw_data`: original row emitted by the NQE query
+
 ### 2) Pull NetBox job records
 
 ```bash

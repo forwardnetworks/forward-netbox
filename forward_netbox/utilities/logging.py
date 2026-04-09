@@ -58,13 +58,25 @@ class SyncLogging:
             self.log_data.setdefault("statistics", {})[model_string] = {
                 "current": 0,
                 "total": total,
+                "applied": 0,
+                "failed": 0,
+                "skipped": 0,
             }
             cache.set(self.cache_key, self.log_data, self.cache_timeout)
 
-    def increment_statistics(self, model_string: str) -> None:
+    def increment_statistics(self, model_string: str, *, outcome: str = "applied") -> None:
         with self._lock:
             stats = self.log_data.setdefault("statistics", {}).setdefault(
-                model_string, {"current": 0, "total": 0}
+                model_string,
+                {
+                    "current": 0,
+                    "total": 0,
+                    "applied": 0,
+                    "failed": 0,
+                    "skipped": 0,
+                },
             )
             stats["current"] += 1
+            if outcome in {"applied", "failed", "skipped"}:
+                stats[outcome] += 1
             cache.set(self.cache_key, self.log_data, self.cache_timeout)
