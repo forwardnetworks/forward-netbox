@@ -8,6 +8,7 @@ from dcim.models import Interface
 from dcim.models import Manufacturer
 from dcim.models import Site
 from dcim.models import VirtualChassis
+from django.db import IntegrityError
 from django.test import TestCase
 
 from forward_netbox.choices import FORWARD_SUPPORTED_MODELS
@@ -100,6 +101,41 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertEqual(existing.slug, "ws-c4507r-e")
         self.assertEqual(existing.part_number, "WS-C4507R-E")
 
+    def test_ensure_manufacturer_reuses_existing_slug_conflict(self):
+        Manufacturer.objects.create(name="Cisco Systems", slug="cisco")
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        manufacturer = runner._ensure_manufacturer({"name": "Cisco", "slug": "cisco"})
+
+        self.assertEqual(manufacturer.slug, "cisco")
+        self.assertEqual(Manufacturer.objects.filter(slug="cisco").count(), 1)
+
+    def test_ensure_role_reuses_existing_slug_conflict(self):
+        DeviceRole.objects.create(name="Switches", slug="switch", color="9e9e9e")
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        role = runner._ensure_role(
+            {"name": "SWITCH", "slug": "switch", "color": "9e9e9e"}
+        )
+
+        self.assertEqual(role.slug, "switch")
+        self.assertEqual(DeviceRole.objects.filter(slug="switch").count(), 1)
+
+    def test_ensure_site_reuses_existing_slug_conflict(self):
+        Site.objects.create(name="legacy-site", slug="site-1")
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        site = runner._ensure_site({"name": "site-1", "slug": "site-1"})
+
+        self.assertEqual(site.slug, "site-1")
+        self.assertEqual(Site.objects.filter(slug="site-1").count(), 1)
+
     def test_ensure_device_type_rejects_conflicting_model_and_slug_matches(self):
         manufacturer = Manufacturer.objects.create(name="Cisco", slug="cisco")
         DeviceType.objects.create(
@@ -129,6 +165,23 @@ class ForwardSyncRunnerTest(TestCase):
                     "part_number": "WS-C4507R-E",
                 }
             )
+
+    def test_non_lookup_models_remain_strict_on_integrity_errors(self):
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        with patch(
+            "dcim.models.Interface.objects.create",
+            side_effect=IntegrityError("unique violation"),
+        ):
+            with self.assertRaises(IntegrityError):
+                runner._update_existing_or_create(
+                    Interface,
+                    lookup={"name": "Ethernet1/1", "device_id": 999999},
+                    defaults={"type": "1000base-t", "enabled": True},
+                    conflict_policy=runner._conflict_policy("dcim.interface"),
+                )
 
     def test_apply_device_uses_manufacturer_specific_device_type(self):
         Manufacturer.objects.create(name="Juniper", slug="juniper")
