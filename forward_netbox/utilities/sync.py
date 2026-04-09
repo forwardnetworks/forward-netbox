@@ -39,6 +39,7 @@ class ForwardSyncRunner:
         return self.MODEL_CONFLICT_POLICIES.get(model_string, "strict")
 
     def run(self):
+        self.logger.log_info("Starting Forward ingestion sync stage.", obj=self.sync)
         network_id = self.sync.get_network_id()
         snapshot_selector = self.sync.get_snapshot_id()
         snapshot_id = self.sync.resolve_snapshot_id(self.client)
@@ -96,6 +97,7 @@ class ForwardSyncRunner:
         )
 
         for model_string in self.sync.get_model_strings():
+            self.logger.log_info(f"Starting model ingestion for {model_string}.", obj=self.sync)
             try:
                 specs = get_query_specs(model_string, maps=maps)
                 if specs:
@@ -159,6 +161,7 @@ class ForwardSyncRunner:
                     obj=self.sync,
                 )
                 continue
+        self.logger.log_info("Finished Forward ingestion sync stage.", obj=self.sync)
 
     def _record_issue(
         self,
@@ -171,6 +174,14 @@ class ForwardSyncRunner:
         defaults=None,
     ):
         from ..models import ForwardIngestionIssue
+
+        if exception is not None and getattr(exception, "issue_id", None):
+            issue = ForwardIngestionIssue.objects.filter(
+                pk=exception.issue_id,
+                ingestion=self.ingestion,
+            ).first()
+            if issue:
+                return issue
 
         exception_name = (
             exception.__class__.__name__
@@ -189,8 +200,21 @@ class ForwardSyncRunner:
             str(sorted(defaults_data.items())),
         )
         if issue_key in self._recorded_issue_ids:
-            return
-        ForwardIngestionIssue.objects.create(
+            existing = ForwardIngestionIssue.objects.filter(
+                ingestion=self.ingestion,
+                phase=ForwardIngestionPhaseChoices.SYNC,
+                model=model_string,
+                message=message,
+                exception=exception_name,
+                coalesce_fields=context_data,
+                defaults=defaults_data,
+            ).first()
+            if existing:
+                if exception is not None and hasattr(exception, "issue_id"):
+                    exception.issue_id = existing.pk
+                return existing
+            return None
+        issue = ForwardIngestionIssue.objects.create(
             ingestion=self.ingestion,
             phase=ForwardIngestionPhaseChoices.SYNC,
             model=model_string,
@@ -201,7 +225,10 @@ class ForwardSyncRunner:
             exception=exception_name,
         )
         self._recorded_issue_ids.add(issue_key)
+        if exception is not None and hasattr(exception, "issue_id"):
+            exception.issue_id = issue.pk
         self.logger.log_failure(f"{model_string}: {message}", obj=self.ingestion)
+        return issue
 
     def _dependency_key(self, model_string, row):
         if model_string == "dcim.device":
@@ -396,6 +423,10 @@ class ForwardSyncRunner:
                 obj=self.sync,
             )
             return
+        self.logger.log_info(
+            f"Applying {len(rows)} rows for {model_string}.",
+            obj=self.sync,
+        )
         for row in rows:
             try:
                 handler(row)
@@ -452,6 +483,10 @@ class ForwardSyncRunner:
                     model_string=model_string,
                     data=row,
                 ) from exc
+        self.logger.log_info(
+            f"Finished applying rows for {model_string}.",
+            obj=self.sync,
+        )
 
     def _ensure_site(self, row):
         from dcim.models import Site

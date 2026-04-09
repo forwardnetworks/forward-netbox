@@ -67,6 +67,19 @@ Checks:
 - Confirm the required NQE maps are enabled.
 - Check `Forward Ingestion Issues` for the failing model and error text.
 
+## Sync Or Merge Times Out
+
+Symptoms:
+
+- Sync or merge ends with timeout status.
+- Ingestion issues include `JobTimeoutException`.
+
+Checks:
+
+- Increase the RQ worker timeout in your NetBox deployment.
+- Re-run the sync (and merge if needed) after increasing timeout.
+- Review `core/jobs` plus ingestion issues for the matching timestamp window.
+
 ## Merge Records Skipped Changes
 
 Symptoms:

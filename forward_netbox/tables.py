@@ -1,3 +1,5 @@
+import json
+
 import django_tables2 as tables
 from django.utils.html import format_html
 from django.utils.translation import gettext_lazy as _
@@ -156,9 +158,40 @@ class ForwardIngestionChangesTable(NetBoxTable):
 
 class ForwardIngestionIssueTable(NetBoxTable):
     phase = columns.ChoiceFieldColumn()
+    coalesce_fields = tables.Column(verbose_name=_("Coalesce Fields"))
+    defaults = tables.Column(verbose_name=_("Defaults"))
     actions = None
+
+    def _render_json(self, value):
+        payload = value or {}
+        return format_html(
+            "<code>{}</code>",
+            json.dumps(payload, sort_keys=True, separators=(",", ":")),
+        )
+
+    def render_coalesce_fields(self, value):
+        return self._render_json(value)
+
+    def render_defaults(self, value):
+        return self._render_json(value)
 
     class Meta(NetBoxTable.Meta):
         model = ForwardIngestionIssue
-        fields = ("timestamp", "phase", "model", "exception", "message")
-        default_columns = ("timestamp", "phase", "model", "exception", "message")
+        fields = (
+            "timestamp",
+            "phase",
+            "model",
+            "exception",
+            "coalesce_fields",
+            "defaults",
+            "message",
+        )
+        default_columns = (
+            "timestamp",
+            "phase",
+            "model",
+            "exception",
+            "coalesce_fields",
+            "defaults",
+            "message",
+        )

@@ -17,6 +17,7 @@ from forward_netbox.exceptions import ForwardDependencySkipError
 from forward_netbox.exceptions import ForwardQueryError
 from forward_netbox.exceptions import ForwardSyncDataError
 from forward_netbox.models import ForwardIngestion
+from forward_netbox.models import ForwardIngestionIssue
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
@@ -468,6 +469,33 @@ class ForwardSyncRunnerTest(TestCase):
         _, _, kwargs = runner._record_issue.mock_calls[0]
         self.assertEqual(kwargs["context"], {"slug": "site-1"})
         self.assertEqual(kwargs["defaults"], {"name": "site-1"})
+
+    def test_record_issue_reuses_issue_id_and_does_not_duplicate(self):
+        ingestion = ForwardIngestion.objects.create(sync=self.sync)
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=ingestion, client=Mock(), logger_=Mock()
+        )
+        exc = ForwardSyncDataError("duplicate-check")
+
+        issue_1 = runner._record_issue(
+            "dcim.site",
+            "duplicate-check",
+            {"name": "site-1", "slug": "site-1"},
+            exception=exc,
+            context={"slug": "site-1"},
+            defaults={"name": "site-1"},
+        )
+        issue_2 = runner._record_issue(
+            "dcim.site",
+            "duplicate-check",
+            {"name": "site-1", "slug": "site-1"},
+            exception=exc,
+            context={"slug": "site-1"},
+            defaults={"name": "site-1"},
+        )
+
+        self.assertEqual(issue_1.pk, issue_2.pk)
+        self.assertEqual(ForwardIngestionIssue.objects.filter(ingestion=ingestion).count(), 1)
 
     def test_apply_virtual_chassis_attaches_device_without_inventing_position(self):
         site = Site.objects.create(name="site-1", slug="site-1")
