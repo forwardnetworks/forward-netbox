@@ -170,6 +170,8 @@ class ForwardIngestionIssueSerializer(NestedGroupModelSerializer):
             "phase",
             "model",
             "message",
+            "coalesce_fields",
+            "defaults",
             "raw_data",
             "exception",
         )

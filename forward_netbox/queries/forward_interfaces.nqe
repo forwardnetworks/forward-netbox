@@ -12,7 +12,7 @@ where interface.interfaceType == IfaceType.IF_ETHERNET
 let speed = interface.ethernet.negotiatedPortSpeed
 let speed_key = toString(speed)
 let ethernet_by_speed = [
-  { key: "PortSpeed.SPEED_10MB", type: "10base-t", speed: 10000 },
+  { key: "PortSpeed.SPEED_10MB", type: "other", speed: 10000 },
   { key: "PortSpeed.SPEED_100MB", type: "100base-tx", speed: 100000 },
   { key: "PortSpeed.SPEED_1GB", type: "1000base-t", speed: 1000000 },
   { key: "PortSpeed.SPEED_2500MB", type: "2.5gbase-t", speed: 2500000 },

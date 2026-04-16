@@ -13,6 +13,8 @@ from utilities.datetime import local_now
 from utilities.request import NetBoxFakeRequest
 
 from .choices import ForwardSyncStatusChoices
+from .choices import ForwardIngestionPhaseChoices
+from .models import ForwardIngestionIssue
 from .models import ForwardIngestion
 from .models import ForwardSync
 from .utilities.logging import SyncLogging
@@ -36,6 +38,27 @@ def safe_save_job_data(job, obj_with_logger):
         logger.warning("Failed to save job data for job %s: %s", job.pk, exc)
 
 
+def record_timeout_issue(ingestion, phase, message):
+    if ingestion is None:
+        return None
+    existing = ForwardIngestionIssue.objects.filter(
+        ingestion=ingestion,
+        phase=phase,
+        exception=JobTimeoutException.__name__,
+    ).first()
+    if existing:
+        return existing
+    return ForwardIngestionIssue.objects.create(
+        ingestion=ingestion,
+        phase=phase,
+        message=message,
+        exception=JobTimeoutException.__name__,
+        raw_data={},
+        coalesce_fields={},
+        defaults={},
+    )
+
+
 def sync_forwardsync(job, *args, **kwargs):
     sync = ForwardSync.objects.get(pk=job.object_id)
 
@@ -46,10 +69,26 @@ def sync_forwardsync(job, *args, **kwargs):
         job.terminate()
     except Exception as exc:
         safe_save_job_data(job, sync)
+        timeout = isinstance(exc, JobTimeoutException)
         job.terminate(status=JobStatusChoices.STATUS_ERRORED)
         ForwardSync.objects.filter(pk=sync.pk).update(
-            status=ForwardSyncStatusChoices.FAILED
+            status=(
+                ForwardSyncStatusChoices.TIMEOUT
+                if timeout
+                else ForwardSyncStatusChoices.FAILED
+            )
         )
+        if timeout:
+            ingestion = ForwardIngestion.objects.filter(sync=sync).order_by("-pk").first()
+            message = (
+                "Forward sync job timed out. Increase RQ worker timeout and rerun the sync."
+            )
+            record_timeout_issue(
+                ingestion,
+                ForwardIngestionPhaseChoices.SYNC,
+                message,
+            )
+            sync.logger.log_failure(message, obj=sync)
         if type(exc) in (SyncError, JobTimeoutException):
             logger.error(exc)
         else:
@@ -154,10 +193,25 @@ def merge_forwardingestion(job, remove_branch=False, *args, **kwargs):
             "Error during merge for ForwardIngestion %s: %s", ingestion.pk, exc
         )
         safe_save_job_data(job, ingestion.sync)
+        timeout = isinstance(exc, JobTimeoutException)
         job.terminate(status=JobStatusChoices.STATUS_ERRORED)
         ForwardSync.objects.filter(pk=ingestion.sync.pk).update(
-            status=ForwardSyncStatusChoices.FAILED
+            status=(
+                ForwardSyncStatusChoices.TIMEOUT
+                if timeout
+                else ForwardSyncStatusChoices.FAILED
+            )
         )
+        if timeout:
+            message = (
+                "Forward merge job timed out. Increase RQ worker timeout and rerun the merge."
+            )
+            record_timeout_issue(
+                ingestion,
+                ForwardIngestionPhaseChoices.MERGE,
+                message,
+            )
+            ingestion.sync.logger.log_failure(message, obj=ingestion)
         if type(exc) in (SyncError, JobTimeoutException):
             logger.error(exc)
         else:

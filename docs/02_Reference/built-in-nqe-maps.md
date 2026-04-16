@@ -322,7 +322,7 @@ where interface.interfaceType == IfaceType.IF_ETHERNET
 let speed = interface.ethernet.negotiatedPortSpeed
 let speed_key = toString(speed)
 let ethernet_by_speed = [
-  { key: "PortSpeed.SPEED_10MB", type: "10base-t", speed: 10000 },
+  { key: "PortSpeed.SPEED_10MB", type: "other", speed: 10000 },
   { key: "PortSpeed.SPEED_100MB", type: "100base-tx", speed: 100000 },
   { key: "PortSpeed.SPEED_1GB", type: "1000base-t", speed: 1000000 },
   { key: "PortSpeed.SPEED_2500MB", type: "2.5gbase-t", speed: 2500000 },
@@ -429,6 +429,8 @@ where device.platform.vendor != Vendor.FORWARD_CUSTOM
 foreach ni in device.networkInstances
 where isPresent(ni.afts?.ipv4Unicast?.ipEntries)
 foreach entry in ni.afts.ipv4Unicast.ipEntries
+where length(entry.prefix) > 0
+where length(entry.prefix) <= 32
 where !(length(entry.nextHops) > 0
   && length((foreach hop in entry.nextHops
     where hop.nextHopType != NextHopType.RECEIVE && hop.nextHopType != NextHopType.DROP
@@ -502,8 +504,8 @@ select {
   manufacturer: manufacturer_name,
   manufacturer_slug: manufacturer_slug,
   name: component.name,
-  part_id: if isPresent(component.partId) then component.partId else "",
-  serial: if isPresent(component.serialNumber) then component.serialNumber else "",
+  part_id: if isPresent(component.partId) then component.partId else component.name,
+  serial: if isPresent(component.serialNumber) then component.serialNumber else if isPresent(component.description) then component.description else role_name,
   role: role_name,
   role_slug: role_slug,
   role_color: "9e9e9e",

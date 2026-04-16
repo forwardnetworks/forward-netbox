@@ -1,9 +1,13 @@
 import logging
 
 from django.db import IntegrityError
+from django.core.exceptions import ObjectDoesNotExist
 
 from ..choices import ForwardIngestionPhaseChoices
+from ..exceptions import ForwardDependencySkipError
 from ..exceptions import ForwardQueryError
+from ..exceptions import ForwardSearchError
+from ..exceptions import ForwardSyncDataError
 from .query_registry import get_query_specs
 from .sync_contracts import default_coalesce_fields_for_model
 from .sync_contracts import validate_row_shape_for_model
@@ -28,11 +32,14 @@ class ForwardSyncRunner:
         self.logger = logger_
         self._content_types = {}
         self._model_coalesce_fields: dict[str, list[list[str]]] = {}
+        self._recorded_issue_ids: set[tuple] = set()
+        self._failed_dependencies: dict[str, set[tuple]] = {}
 
     def _conflict_policy(self, model_string):
         return self.MODEL_CONFLICT_POLICIES.get(model_string, "strict")
 
     def run(self):
+        self.logger.log_info("Starting Forward ingestion sync stage.", obj=self.sync)
         network_id = self.sync.get_network_id()
         snapshot_selector = self.sync.get_snapshot_id()
         snapshot_id = self.sync.resolve_snapshot_id(self.client)
@@ -90,54 +97,155 @@ class ForwardSyncRunner:
         )
 
         for model_string in self.sync.get_model_strings():
-            specs = get_query_specs(model_string, maps=maps)
-            if specs:
-                self._model_coalesce_fields[model_string] = [
-                    list(field_set) for field_set in specs[0].coalesce_fields
-                ] or default_coalesce_fields_for_model(model_string)
-            else:
-                self._model_coalesce_fields[model_string] = (
-                    default_coalesce_fields_for_model(model_string)
-                )
-            query_results = []
-            total_rows = 0
-            for spec in specs:
+            self.logger.log_info(f"Starting model ingestion for {model_string}.", obj=self.sync)
+            try:
+                specs = get_query_specs(model_string, maps=maps)
+                if specs:
+                    self._model_coalesce_fields[model_string] = [
+                        list(field_set) for field_set in specs[0].coalesce_fields
+                    ] or default_coalesce_fields_for_model(model_string)
+                else:
+                    self._model_coalesce_fields[model_string] = (
+                        default_coalesce_fields_for_model(model_string)
+                    )
+                query_results = []
+                total_rows = 0
+                for spec in specs:
+                    self.logger.log_info(
+                        f"Running Forward {spec.execution_mode} `{spec.execution_value}` for {model_string}.",
+                        obj=self.sync,
+                    )
+                    rows = self.client.run_nqe_query(
+                        query=spec.query,
+                        query_id=spec.query_id,
+                        commit_id=spec.commit_id,
+                        snapshot_id=snapshot_id,
+                        parameters=spec.merged_parameters(query_parameters),
+                        fetch_all=True,
+                    )
+                    self.logger.log_info(
+                        f"Fetched {len(rows)} rows for {model_string} from {spec.execution_mode} `{spec.execution_value}`.",
+                        obj=self.sync,
+                    )
+                    for row in rows:
+                        validate_row_shape_for_model(
+                            model_string,
+                            row,
+                            self._model_coalesce_fields[model_string],
+                        )
+                    query_results.append(rows)
+                    total_rows += len(rows)
+                self.logger.init_statistics(model_string, total_rows)
+                for rows in query_results:
+                    self._apply_model_rows(model_string, rows)
+                stats = self.logger.log_data.get("statistics", {}).get(model_string, {})
                 self.logger.log_info(
-                    f"Running Forward {spec.execution_mode} `{spec.execution_value}` for {model_string}.",
+                    f"Completed {model_string}: applied={stats.get('applied', 0)} failed={stats.get('failed', 0)} skipped={stats.get('skipped', 0)} total={stats.get('total', 0)}.",
                     obj=self.sync,
                 )
-                rows = self.client.run_nqe_query(
-                    query=spec.query,
-                    query_id=spec.query_id,
-                    commit_id=spec.commit_id,
-                    snapshot_id=snapshot_id,
-                    parameters=spec.merged_parameters(query_parameters),
-                    fetch_all=True,
+            except ForwardQueryError as exc:
+                self._record_issue(
+                    model_string,
+                    str(exc),
+                    {},
+                    exception=exc,
                 )
-                for row in rows:
-                    validate_row_shape_for_model(
-                        model_string,
-                        row,
-                        self._model_coalesce_fields[model_string],
-                    )
-                query_results.append(rows)
-                total_rows += len(rows)
-            self.logger.init_statistics(model_string, total_rows)
-            for rows in query_results:
-                self._apply_model_rows(model_string, rows)
+                self.logger.log_warning(
+                    f"Aborted {model_string} due to validation failure: {exc}",
+                    obj=self.sync,
+                )
+                continue
+            except ForwardSyncDataError as exc:
+                self.logger.log_warning(
+                    f"Aborted {model_string} after row failure: {exc}",
+                    obj=self.sync,
+                )
+                continue
+        self.logger.log_info("Finished Forward ingestion sync stage.", obj=self.sync)
 
-    def _record_issue(self, model_string, message, row):
+    def _record_issue(
+        self,
+        model_string,
+        message,
+        row,
+        *,
+        exception=None,
+        context=None,
+        defaults=None,
+    ):
         from ..models import ForwardIngestionIssue
 
-        ForwardIngestionIssue.objects.create(
+        if exception is not None and getattr(exception, "issue_id", None):
+            issue = ForwardIngestionIssue.objects.filter(
+                pk=exception.issue_id,
+                ingestion=self.ingestion,
+            ).first()
+            if issue:
+                return issue
+
+        exception_name = (
+            exception.__class__.__name__
+            if exception is not None
+            else "ForwardSyncDataError"
+        )
+        context_data = dict(context or {})
+        defaults_data = dict(defaults or {})
+        issue_key = (
+            self.ingestion.pk if self.ingestion else None,
+            ForwardIngestionPhaseChoices.SYNC,
+            model_string,
+            exception_name,
+            str(message),
+            str(sorted(context_data.items())),
+            str(sorted(defaults_data.items())),
+        )
+        if issue_key in self._recorded_issue_ids:
+            existing = ForwardIngestionIssue.objects.filter(
+                ingestion=self.ingestion,
+                phase=ForwardIngestionPhaseChoices.SYNC,
+                model=model_string,
+                message=message,
+                exception=exception_name,
+                coalesce_fields=context_data,
+                defaults=defaults_data,
+            ).first()
+            if existing:
+                if exception is not None and hasattr(exception, "issue_id"):
+                    exception.issue_id = existing.pk
+                return existing
+            return None
+        issue = ForwardIngestionIssue.objects.create(
             ingestion=self.ingestion,
             phase=ForwardIngestionPhaseChoices.SYNC,
             model=model_string,
             message=message,
+            coalesce_fields=context_data,
+            defaults=defaults_data,
             raw_data=row or {},
-            exception="ForwardAdapterError",
+            exception=exception_name,
         )
+        self._recorded_issue_ids.add(issue_key)
+        if exception is not None and hasattr(exception, "issue_id"):
+            exception.issue_id = issue.pk
         self.logger.log_failure(f"{model_string}: {message}", obj=self.ingestion)
+        return issue
+
+    def _dependency_key(self, model_string, row):
+        if model_string == "dcim.device":
+            return (row.get("name"),)
+        if model_string == "dcim.interface":
+            return (row.get("device"), row.get("name"))
+        if model_string == "dcim.virtualchassis":
+            return (row.get("device"), row.get("vc_name") or row.get("name"))
+        return None
+
+    def _mark_dependency_failed(self, model_string, row):
+        key = self._dependency_key(model_string, row)
+        if key and all(item not in (None, "") for item in key):
+            self._failed_dependencies.setdefault(model_string, set()).add(key)
+
+    def _dependency_failed(self, model_string, key):
+        return key in self._failed_dependencies.get(model_string, set())
 
     def _update_existing_or_create(
         self,
@@ -209,8 +317,10 @@ class ForwardSyncRunner:
         if obj is None:
             return None
         if queryset.exclude(pk=obj.pk).exists():
-            raise ForwardQueryError(
-                f"Ambiguous coalesce lookup for `{model._meta.label_lower}` with {lookup}."
+            raise ForwardSearchError(
+                f"Ambiguous coalesce lookup for `{model._meta.label_lower}` with {lookup}.",
+                model_string=model._meta.label_lower,
+                context=lookup,
             )
         return obj
 
@@ -313,17 +423,70 @@ class ForwardSyncRunner:
                 obj=self.sync,
             )
             return
+        self.logger.log_info(
+            f"Applying {len(rows)} rows for {model_string}.",
+            obj=self.sync,
+        )
         for row in rows:
             try:
                 handler(row)
-                self.logger.increment_statistics(model_string)
-            except ForwardQueryError as exc:
+                self.logger.increment_statistics(model_string, outcome="applied")
+            except ForwardDependencySkipError as exc:
                 logger.exception("Failed applying %s row", model_string)
-                self._record_issue(model_string, str(exc), row)
-                raise
+                self.logger.increment_statistics(model_string, outcome="skipped")
+                self._record_issue(
+                    model_string,
+                    str(exc),
+                    row,
+                    exception=exc,
+                    context=exc.context,
+                    defaults=exc.defaults,
+                )
+                raise ForwardSyncDataError(
+                    str(exc),
+                    model_string=model_string,
+                    context=exc.context,
+                    defaults=exc.defaults,
+                    data=row,
+                ) from exc
+            except (ForwardSearchError, ForwardQueryError) as exc:
+                logger.exception("Failed applying %s row", model_string)
+                self._mark_dependency_failed(model_string, row)
+                self.logger.increment_statistics(model_string, outcome="failed")
+                self._record_issue(
+                    model_string,
+                    str(exc),
+                    row,
+                    exception=exc,
+                    context=getattr(exc, "context", {}),
+                    defaults=getattr(exc, "defaults", {}),
+                )
+                raise ForwardSyncDataError(
+                    str(exc),
+                    model_string=model_string,
+                    context=getattr(exc, "context", {}),
+                    defaults=getattr(exc, "defaults", {}),
+                    data=row,
+                ) from exc
             except Exception as exc:
                 logger.exception("Failed applying %s row", model_string)
-                self._record_issue(model_string, str(exc), row)
+                self._mark_dependency_failed(model_string, row)
+                self.logger.increment_statistics(model_string, outcome="failed")
+                self._record_issue(
+                    model_string,
+                    str(exc),
+                    row,
+                    exception=exc,
+                )
+                raise ForwardSyncDataError(
+                    str(exc),
+                    model_string=model_string,
+                    data=row,
+                ) from exc
+        self.logger.log_info(
+            f"Finished applying rows for {model_string}.",
+            obj=self.sync,
+        )
 
     def _ensure_site(self, row):
         from dcim.models import Site
@@ -573,7 +736,23 @@ class ForwardSyncRunner:
             ),
         )
         if row.get("device"):
-            device = Device.objects.get(name=row["device"])
+            try:
+                device = Device.objects.get(name=row["device"])
+            except ObjectDoesNotExist as exc:
+                key = (row["device"],)
+                if self._dependency_failed("dcim.device", key):
+                    raise ForwardDependencySkipError(
+                        f"Skipping virtual chassis assignment because dependency `dcim.device` failed for {key}.",
+                        model_string="dcim.virtualchassis",
+                        context={"device": row["device"]},
+                        data=row,
+                    ) from exc
+                raise ForwardSearchError(
+                    f"Unable to find device `{row['device']}` for virtual chassis assignment.",
+                    model_string="dcim.virtualchassis",
+                    context={"device": row["device"]},
+                    data=row,
+                ) from exc
             defaults = {"virtual_chassis": vc}
             if row.get("vc_position"):
                 defaults["vc_position"] = row["vc_position"]
@@ -637,7 +816,23 @@ class ForwardSyncRunner:
         from dcim.models import Device
         from dcim.models import Interface
 
-        device = Device.objects.get(name=row["device"])
+        try:
+            device = Device.objects.get(name=row["device"])
+        except ObjectDoesNotExist as exc:
+            key = (row["device"],)
+            if self._dependency_failed("dcim.device", key):
+                raise ForwardDependencySkipError(
+                    f"Skipping interface `{row.get('name')}` because dependency `dcim.device` failed for {key}.",
+                    model_string="dcim.interface",
+                    context={"device": row["device"], "name": row.get("name")},
+                    data=row,
+                ) from exc
+            raise ForwardSearchError(
+                f"Unable to find device `{row['device']}` for interface `{row.get('name')}`.",
+                model_string="dcim.interface",
+                context={"device": row["device"], "name": row.get("name")},
+                data=row,
+            ) from exc
         defaults = {
             "device": device,
             "name": row["name"],
@@ -662,11 +857,38 @@ class ForwardSyncRunner:
         from dcim.models import Interface
         from dcim.models import MACAddress
 
-        device = Device.objects.get(name=row["device"])
+        try:
+            device = Device.objects.get(name=row["device"])
+        except ObjectDoesNotExist as exc:
+            key = (row["device"],)
+            if self._dependency_failed("dcim.device", key):
+                raise ForwardDependencySkipError(
+                    f"Skipping MAC assignment because dependency `dcim.device` failed for {key}.",
+                    model_string="dcim.macaddress",
+                    context={"device": row["device"], "interface": row.get("interface")},
+                    data=row,
+                ) from exc
+            raise ForwardSearchError(
+                f"Unable to find device `{row['device']}` for MAC assignment.",
+                model_string="dcim.macaddress",
+                context={"device": row["device"], "interface": row.get("interface")},
+                data=row,
+            ) from exc
         interface = self._lookup_interface(device, row["interface"])
         if interface is None:
-            raise ForwardQueryError(
-                f"Unable to find interface {row['interface']} on device {device.name} for MAC assignment."
+            key = (device.name, row["interface"])
+            if self._dependency_failed("dcim.interface", key):
+                raise ForwardDependencySkipError(
+                    f"Skipping MAC assignment because dependency `dcim.interface` failed for {key}.",
+                    model_string="dcim.macaddress",
+                    context={"device": device.name, "interface": row["interface"]},
+                    data=row,
+                )
+            raise ForwardSearchError(
+                f"Unable to find interface {row['interface']} on device {device.name} for MAC assignment.",
+                model_string="dcim.macaddress",
+                context={"device": device.name, "interface": row["interface"]},
+                data=row,
             )
         self._upsert_values_from_defaults(
             "dcim.macaddress",
@@ -732,11 +954,38 @@ class ForwardSyncRunner:
         from dcim.models import Interface
         from ipam.models import IPAddress
 
-        device = Device.objects.get(name=row["device"])
+        try:
+            device = Device.objects.get(name=row["device"])
+        except ObjectDoesNotExist as exc:
+            key = (row["device"],)
+            if self._dependency_failed("dcim.device", key):
+                raise ForwardDependencySkipError(
+                    f"Skipping IP assignment because dependency `dcim.device` failed for {key}.",
+                    model_string="ipam.ipaddress",
+                    context={"device": row["device"], "interface": row.get("interface")},
+                    data=row,
+                ) from exc
+            raise ForwardSearchError(
+                f"Unable to find device `{row['device']}` for IP assignment.",
+                model_string="ipam.ipaddress",
+                context={"device": row["device"], "interface": row.get("interface")},
+                data=row,
+            ) from exc
         interface = self._lookup_interface(device, row["interface"])
         if interface is None:
-            raise ForwardQueryError(
-                f"Unable to find interface {row['interface']} on device {device.name} for IP assignment."
+            key = (device.name, row["interface"])
+            if self._dependency_failed("dcim.interface", key):
+                raise ForwardDependencySkipError(
+                    f"Skipping IP assignment because dependency `dcim.interface` failed for {key}.",
+                    model_string="ipam.ipaddress",
+                    context={"device": device.name, "interface": row["interface"]},
+                    data=row,
+                )
+            raise ForwardSearchError(
+                f"Unable to find interface {row['interface']} on device {device.name} for IP assignment.",
+                model_string="ipam.ipaddress",
+                context={"device": device.name, "interface": row["interface"]},
+                data=row,
             )
         vrf = (
             self._ensure_vrf(
@@ -770,7 +1019,23 @@ class ForwardSyncRunner:
         from dcim.models import Device
         from dcim.models import InventoryItem
 
-        device = Device.objects.get(name=row["device"])
+        try:
+            device = Device.objects.get(name=row["device"])
+        except ObjectDoesNotExist as exc:
+            key = (row["device"],)
+            if self._dependency_failed("dcim.device", key):
+                raise ForwardDependencySkipError(
+                    f"Skipping inventory item because dependency `dcim.device` failed for {key}.",
+                    model_string="dcim.inventoryitem",
+                    context={"device": row["device"], "name": row.get("name")},
+                    data=row,
+                ) from exc
+            raise ForwardSearchError(
+                f"Unable to find device `{row['device']}` for inventory item `{row.get('name')}`.",
+                model_string="dcim.inventoryitem",
+                context={"device": row["device"], "name": row.get("name")},
+                data=row,
+            ) from exc
         manufacturer = None
         if row.get("manufacturer"):
             manufacturer = self._ensure_manufacturer(

@@ -9,6 +9,8 @@ where device.platform.vendor != Vendor.FORWARD_CUSTOM
 foreach ni in device.networkInstances
 where isPresent(ni.afts?.ipv4Unicast?.ipEntries)
 foreach entry in ni.afts.ipv4Unicast.ipEntries
+where length(entry.prefix) > 0
+where length(entry.prefix) <= 32
 where !(length(entry.nextHops) > 0
   && length((foreach hop in entry.nextHops
     where hop.nextHopType != NextHopType.RECEIVE && hop.nextHopType != NextHopType.DROP
