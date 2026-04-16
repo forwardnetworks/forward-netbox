@@ -6,7 +6,7 @@
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v0.1.1` | `4.5.x` only | Current unsupported release |
+| `v0.1.2` | `4.5.x` only | Current unsupported release |
 
 ## Support Disclaimer
 

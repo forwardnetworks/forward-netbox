@@ -1,5 +1,7 @@
 import logging
 
+from django.db import IntegrityError
+
 from ..choices import ForwardIngestionPhaseChoices
 from ..exceptions import ForwardQueryError
 from .query_registry import get_query_specs
@@ -8,12 +10,24 @@ logger = logging.getLogger("forward_netbox.sync")
 
 
 class ForwardSyncRunner:
+    MODEL_CONFLICT_POLICIES = {
+        "dcim.site": "reuse_on_unique_conflict",
+        "dcim.manufacturer": "reuse_on_unique_conflict",
+        "dcim.devicerole": "reuse_on_unique_conflict",
+        "dcim.platform": "reuse_on_unique_conflict",
+        "dcim.devicetype": "reuse_on_unique_conflict",
+        "dcim.inventoryitemrole": "reuse_on_unique_conflict",
+    }
+
     def __init__(self, sync, ingestion, client, logger_):
         self.sync = sync
         self.ingestion = ingestion
         self.client = client
         self.logger = logger_
         self._content_types = {}
+
+    def _conflict_policy(self, model_string):
+        return self.MODEL_CONFLICT_POLICIES.get(model_string, "strict")
 
     def run(self):
         network_id = self.sync.get_network_id()
@@ -108,13 +122,42 @@ class ForwardSyncRunner:
         )
         self.logger.log_failure(f"{model_string}: {message}", obj=self.ingestion)
 
-    def _update_existing_or_create(self, model, *, lookup, defaults):
+    def _update_existing_or_create(
+        self,
+        model,
+        *,
+        lookup,
+        defaults,
+        fallback_lookups=None,
+        conflict_policy="strict",
+    ):
+        fallback_lookups = fallback_lookups or []
         obj = model.objects.filter(**lookup).order_by("pk").first()
         if obj is None:
-            return model.objects.create(**lookup, **defaults), True
+            for fallback_lookup in fallback_lookups:
+                obj = model.objects.filter(**fallback_lookup).order_by("pk").first()
+                if obj is not None:
+                    break
+        if obj is None:
+            try:
+                return model.objects.create(**lookup, **defaults), True
+            except IntegrityError:
+                if conflict_policy != "reuse_on_unique_conflict":
+                    raise
+                for retry_lookup in [lookup, *fallback_lookups]:
+                    obj = model.objects.filter(**retry_lookup).order_by("pk").first()
+                    if obj is not None:
+                        break
+                if obj is None:
+                    raise
+
+        update_fields = []
         for field, value in defaults.items():
-            setattr(obj, field, value)
-        obj.save(update_fields=list(defaults))
+            if getattr(obj, field) != value:
+                setattr(obj, field, value)
+                update_fields.append(field)
+        if update_fields:
+            obj.save(update_fields=update_fields)
         return obj, False
 
     def _apply_model_rows(self, model_string, rows):
@@ -138,10 +181,13 @@ class ForwardSyncRunner:
         from dcim.models import Site
 
         name = row["name"]
+        slug = row["slug"]
         site, _ = self._update_existing_or_create(
             Site,
             lookup={"name": name},
-            defaults={"slug": row["slug"]},
+            defaults={"slug": slug},
+            fallback_lookups=[{"slug": slug}],
+            conflict_policy=self._conflict_policy("dcim.site"),
         )
         return site
 
@@ -150,15 +196,13 @@ class ForwardSyncRunner:
 
         name = row["name"]
         slug = row["slug"]
-        manufacturer = Manufacturer.objects.filter(name=name).order_by("pk").first()
-        if manufacturer is None:
-            manufacturer = Manufacturer.objects.create(name=name, slug=slug)
-            return manufacturer
-        if manufacturer.name == name and manufacturer.slug == slug:
-            return manufacturer
-        if manufacturer.name == name and manufacturer.slug != slug:
-            manufacturer.slug = slug
-            manufacturer.save(update_fields=["slug"])
+        manufacturer, _ = self._update_existing_or_create(
+            Manufacturer,
+            lookup={"name": name},
+            defaults={"slug": slug},
+            fallback_lookups=[{"slug": slug}],
+            conflict_policy=self._conflict_policy("dcim.manufacturer"),
+        )
         return manufacturer
 
     def _ensure_role(self, row):
@@ -169,6 +213,8 @@ class ForwardSyncRunner:
             DeviceRole,
             lookup={"name": name},
             defaults={"slug": row["slug"], "color": row["color"]},
+            fallback_lookups=[{"slug": row["slug"]}],
+            conflict_policy=self._conflict_policy("dcim.devicerole"),
         )
         return role
 
@@ -188,6 +234,8 @@ class ForwardSyncRunner:
                 "slug": row["slug"],
                 "manufacturer": manufacturer,
             },
+            fallback_lookups=[{"slug": row["slug"]}],
+            conflict_policy=self._conflict_policy("dcim.platform"),
         )
         return platform
 
@@ -230,7 +278,33 @@ class ForwardSyncRunner:
             }
             if "part_number" in row:
                 create_kwargs["part_number"] = row.get("part_number", "")
-            return DeviceType.objects.create(**create_kwargs)
+            try:
+                return DeviceType.objects.create(**create_kwargs)
+            except IntegrityError:
+                if (
+                    self._conflict_policy("dcim.devicetype")
+                    != "reuse_on_unique_conflict"
+                ):
+                    raise
+                device_type = (
+                    DeviceType.objects.filter(manufacturer=manufacturer, slug=slug)
+                    .order_by("pk")
+                    .first()
+                )
+                if device_type is None:
+                    raise
+                update_fields = []
+                if device_type.model != model:
+                    device_type.model = model
+                    update_fields.append("model")
+                if "part_number" in row:
+                    part_number = row.get("part_number", "")
+                    if device_type.part_number != part_number:
+                        device_type.part_number = part_number
+                        update_fields.append("part_number")
+                if update_fields:
+                    device_type.save(update_fields=update_fields)
+                return device_type
 
         update_fields = []
         if device_type.model != model:
@@ -286,6 +360,8 @@ class ForwardSyncRunner:
             InventoryItemRole,
             lookup={"name": str(role_name)},
             defaults={"slug": row["role_slug"], "color": row["role_color"]},
+            fallback_lookups=[{"slug": row["role_slug"]}],
+            conflict_policy=self._conflict_policy("dcim.inventoryitemrole"),
         )
         return role
 
