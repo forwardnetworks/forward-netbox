@@ -151,7 +151,7 @@ curl -sS -H "Authorization: Token ${NETBOX_TOKEN}" \
   "${NETBOX_URL}/api/plugins/forward/ingestion-issues/?limit=0"
 ```
 
-In 0.1.4 and newer, each issue includes structured fields to speed root-cause analysis:
+In 0.1.4.1 and newer, each issue includes structured fields to speed root-cause analysis:
 
 - `coalesce_fields`: identity keys used for matching
 - `defaults`: payload values attempted for create/update

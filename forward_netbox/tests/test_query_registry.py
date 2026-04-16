@@ -216,15 +216,17 @@ class QueryRegistryTest(TestCase):
 
         self.assertIn("let has_vpc =", spec.query)
         self.assertIn("let has_mlag_peer =", spec.query)
-        self.assertIn("let mlag_members = if has_mlag_peer then", spec.query)
+        self.assertIn("truncate(value: String, max_len: Integer)", spec.query)
+        self.assertIn("compactMemberKey(value: String)", spec.query)
+        self.assertIn("let member_a = if has_mlag_peer", spec.query)
+        self.assertIn("let member_b = if has_mlag_peer", spec.query)
+        self.assertIn("let bounded_mlag_domain = if length(raw_mlag_domain) <= 30", spec.query)
         self.assertIn("&& isPresent(device.ha.vpc)", spec.query)
         self.assertIn("where has_vpc || has_mlag_peer", spec.query)
         self.assertIn("device.ha.vpc.domainId > 0", spec.query)
         self.assertIn("device.ha.mlagPeer", spec.query)
-        self.assertIn(
-            'join("-", [site_name, "mlag", join("--", mlag_members)])', spec.query
-        )
-        self.assertIn('join("--", mlag_members)', spec.query)
+        self.assertIn('join("-", [truncate(site_name, 28), "mlag", vc_domain])', spec.query)
+        self.assertIn('join("--", [compactMemberKey(member_a), compactMemberKey(member_b)])', spec.query)
         self.assertNotIn("else []", spec.query)
         self.assertNotIn(" and isPresent", spec.query)
         self.assertNotIn("where has_vpc or has_mlag_peer", spec.query)
