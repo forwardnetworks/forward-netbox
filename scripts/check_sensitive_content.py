@@ -1,21 +1,31 @@
 #!/usr/bin/env python3
-
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 import sys
+from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from forward_netbox.utilities.sensitive_content import format_finding
-from forward_netbox.utilities.sensitive_content import load_sensitive_patterns
-from forward_netbox.utilities.sensitive_content import scan_commit_history
-from forward_netbox.utilities.sensitive_content import scan_file
-from forward_netbox.utilities.sensitive_content import scan_paths
-from forward_netbox.utilities.sensitive_content import tracked_files
+
+def _load_sensitive_utilities():
+    from forward_netbox.utilities.sensitive_content import format_finding
+    from forward_netbox.utilities.sensitive_content import load_sensitive_patterns
+    from forward_netbox.utilities.sensitive_content import scan_commit_history
+    from forward_netbox.utilities.sensitive_content import scan_file
+    from forward_netbox.utilities.sensitive_content import scan_paths
+    from forward_netbox.utilities.sensitive_content import tracked_files
+
+    return {
+        "format_finding": format_finding,
+        "load_sensitive_patterns": load_sensitive_patterns,
+        "scan_commit_history": scan_commit_history,
+        "scan_file": scan_file,
+        "scan_paths": scan_paths,
+        "tracked_files": tracked_files,
+    }
 
 
 def parse_args() -> argparse.Namespace:
@@ -54,7 +64,8 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     repo_root = REPO_ROOT
-    patterns = load_sensitive_patterns(repo_root)
+    utilities = _load_sensitive_utilities()
+    patterns = utilities["load_sensitive_patterns"](repo_root)
     findings = []
 
     explicit_mode = any(
@@ -69,7 +80,7 @@ def main() -> int:
 
     if args.commit_msg_file is not None:
         findings.extend(
-            scan_file(
+            utilities["scan_file"](
                 args.commit_msg_file.resolve(),
                 repo_root=args.commit_msg_file.resolve().parent,
                 patterns=patterns,
@@ -77,11 +88,13 @@ def main() -> int:
         )
 
     if args.all_history:
-        findings.extend(scan_commit_history(repo_root=repo_root, patterns=patterns))
+        findings.extend(
+            utilities["scan_commit_history"](repo_root=repo_root, patterns=patterns)
+        )
 
     for rev_arg in args.rev_list:
         findings.extend(
-            scan_commit_history(
+            utilities["scan_commit_history"](
                 repo_root=repo_root,
                 patterns=patterns,
                 rev_args=[rev_arg],
@@ -90,8 +103,8 @@ def main() -> int:
 
     if args.git_files:
         findings.extend(
-            scan_paths(
-                tracked_files(repo_root),
+            utilities["scan_paths"](
+                utilities["tracked_files"](repo_root),
                 repo_root=repo_root,
                 patterns=patterns,
             )
@@ -99,7 +112,7 @@ def main() -> int:
 
     if args.paths:
         findings.extend(
-            scan_paths(
+            utilities["scan_paths"](
                 [Path(path).resolve() for path in args.paths],
                 repo_root=repo_root,
                 patterns=patterns,
@@ -108,8 +121,8 @@ def main() -> int:
 
     if not explicit_mode:
         findings.extend(
-            scan_paths(
-                tracked_files(repo_root),
+            utilities["scan_paths"](
+                utilities["tracked_files"](repo_root),
                 repo_root=repo_root,
                 patterns=patterns,
             )
@@ -120,7 +133,7 @@ def main() -> int:
 
     print("Sensitive content guard failed:")
     for finding in findings:
-        print(format_finding(finding))
+        print(utilities["format_finding"](finding))
     print(
         "Add local customer names to .sensitive-patterns.local.txt "
         "(literal lines or re:<regex>) so they are blocked before commit."
