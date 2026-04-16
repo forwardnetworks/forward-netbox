@@ -206,7 +206,10 @@ def validate_row_shape_for_model(
             f"Row for `{model_string}` is missing required fields: {missing}."
         )
     has_complete_coalesce = any(
-        all(field_name in row and row[field_name] != "" for field_name in field_set)
+        all(
+            field_name in row and row[field_name] not in ("", None)
+            for field_name in field_set
+        )
         for field_set in coalesce_fields
     )
     if not has_complete_coalesce:

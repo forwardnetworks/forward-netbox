@@ -4,37 +4,56 @@
  * in NetBox using POST and PATCH requests to the /api/dcim/interfaces/ REST API endpoint.
  */
 
-foreach device in network.devices
-where device.snapshotInfo.result == DeviceSnapshotResult.completed
-where device.platform.vendor != Vendor.FORWARD_CUSTOM
-foreach interface in device.interfaces
-where interface.interfaceType == IfaceType.IF_ETHERNET
-let speed = interface.ethernet.negotiatedPortSpeed
-let speed_key = toString(speed)
-let ethernet_by_speed = [
-  { key: "PortSpeed.SPEED_10MB", type: "other", speed: 10000 },
-  { key: "PortSpeed.SPEED_100MB", type: "100base-tx", speed: 100000 },
-  { key: "PortSpeed.SPEED_1GB", type: "1000base-t", speed: 1000000 },
-  { key: "PortSpeed.SPEED_2500MB", type: "2.5gbase-t", speed: 2500000 },
-  { key: "PortSpeed.SPEED_5GB", type: "5gbase-t", speed: 5000000 },
-  { key: "PortSpeed.SPEED_10GB", type: "10gbase-t", speed: 10000000 },
-  { key: "PortSpeed.SPEED_25GB", type: "25gbase-x-sfp28", speed: 25000000 },
-  { key: "PortSpeed.SPEED_40GB", type: "40gbase-x-qsfpp", speed: 40000000 },
-  { key: "PortSpeed.SPEED_50GB", type: "50gbase-x-sfp56", speed: 50000000 },
-  { key: "PortSpeed.SPEED_100GB", type: "100gbase-x-qsfp28", speed: 100000000 }
-]
-let interface_type = max(foreach profile in ethernet_by_speed
-  where profile.key == speed_key
-  select profile.type)
-let interface_speed = max(foreach profile in ethernet_by_speed
-  where profile.key == speed_key
-  select profile.speed)
-select {
-  device: device.name,
-  name: interface.name,
-  type: if isPresent(interface_type) then interface_type else "other",
-  enabled: interface.operStatus == OperStatus.UP,
-  mtu: interface.mtu,
-  description: if isPresent(interface.description) then interface.description else "",
-  speed: if isPresent(interface_speed) then interface_speed else null : Integer
-}
+ethernet_interfaces =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  foreach interface in device.interfaces
+  where interface.interfaceType == IfaceType.IF_ETHERNET
+  let speed = interface.ethernet.negotiatedPortSpeed
+  let speed_key = toString(speed)
+  let ethernet_by_speed = [
+    { key: "PortSpeed.SPEED_10MB", type: "other", speed: 10000 },
+    { key: "PortSpeed.SPEED_100MB", type: "100base-tx", speed: 100000 },
+    { key: "PortSpeed.SPEED_1GB", type: "1000base-t", speed: 1000000 },
+    { key: "PortSpeed.SPEED_2500MB", type: "2.5gbase-t", speed: 2500000 },
+    { key: "PortSpeed.SPEED_5GB", type: "5gbase-t", speed: 5000000 },
+    { key: "PortSpeed.SPEED_10GB", type: "10gbase-t", speed: 10000000 },
+    { key: "PortSpeed.SPEED_25GB", type: "25gbase-x-sfp28", speed: 25000000 },
+    { key: "PortSpeed.SPEED_40GB", type: "40gbase-x-qsfpp", speed: 40000000 },
+    { key: "PortSpeed.SPEED_50GB", type: "50gbase-x-sfp56", speed: 50000000 },
+    { key: "PortSpeed.SPEED_100GB", type: "100gbase-x-qsfp28", speed: 100000000 }
+  ]
+  let interface_type = max(foreach profile in ethernet_by_speed
+    where profile.key == speed_key
+    select profile.type)
+  let interface_speed = max(foreach profile in ethernet_by_speed
+    where profile.key == speed_key
+    select profile.speed)
+  select {
+    device: device.name,
+    name: interface.name,
+    type: if isPresent(interface_type) then interface_type else "other",
+    enabled: interface.operStatus == OperStatus.UP,
+    mtu: interface.mtu,
+    description: if isPresent(interface.description) then interface.description else "",
+    speed: if isPresent(interface_speed) then interface_speed else null : Integer
+  };
+
+loopback_interfaces =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  foreach interface in device.interfaces
+  where interface.interfaceType == IfaceType.IF_LOOPBACK
+  select {
+    device: device.name,
+    name: interface.name,
+    type: "virtual",
+    enabled: interface.operStatus == OperStatus.UP,
+    mtu: interface.mtu,
+    description: if isPresent(interface.description) then interface.description else "",
+    speed: null : Integer
+  };
+
+ethernet_interfaces + loopback_interfaces
