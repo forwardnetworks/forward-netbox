@@ -101,3 +101,93 @@ Checks:
 - Confirm `python manage.py migrate` completed successfully.
 - Confirm the plugin is enabled in `PLUGINS`.
 - Run migrations again and re-open the plugin menu.
+
+## Collect Logs And Issue Evidence
+
+Use these commands when a customer reports a failed or hanging sync.
+
+### 1) Pull plugin API evidence
+
+Replace `${NETBOX_URL}` and `${NETBOX_TOKEN}` with your values.
+
+```bash
+# Latest sync objects
+curl -sS -H "Authorization: Token ${NETBOX_TOKEN}" \
+  "${NETBOX_URL}/api/plugins/forward/sync/?limit=50"
+
+# Latest ingestions (includes snapshot metadata)
+curl -sS -H "Authorization: Token ${NETBOX_TOKEN}" \
+  "${NETBOX_URL}/api/plugins/forward/ingestion/?limit=50"
+
+# All ingestion issues (filter locally by ingestion/model/message as needed)
+curl -sS -H "Authorization: Token ${NETBOX_TOKEN}" \
+  "${NETBOX_URL}/api/plugins/forward/ingestion-issues/?limit=0"
+```
+
+### 2) Pull NetBox job records
+
+```bash
+# All recent jobs (look for the Forward sync and merge jobs)
+curl -sS -H "Authorization: Token ${NETBOX_TOKEN}" \
+  "${NETBOX_URL}/api/core/jobs/?limit=100"
+
+# Optional: details for one specific job id
+curl -sS -H "Authorization: Token ${NETBOX_TOKEN}" \
+  "${NETBOX_URL}/api/core/jobs/<job-id>/"
+```
+
+### 3) Pull plugin runtime logs from the host/container
+
+If file logging is enabled, collect:
+
+```bash
+/var/log/netbox/forward_netbox.log
+```
+
+For containerized deployments where file logging is not enabled, collect container stdout/stderr:
+
+```bash
+docker compose logs netbox --since=2h
+docker compose logs netbox-worker --since=2h
+```
+
+### 4) Filter to one ingestion or one model quickly
+
+```bash
+# Only issues for one ingestion id
+curl -sS -H "Authorization: Token ${NETBOX_TOKEN}" \
+  "${NETBOX_URL}/api/plugins/forward/ingestion-issues/?ingestion_id=<ingestion-id>&limit=0"
+
+# Only issues for one model string (example: dcim.devicerole)
+curl -sS -H "Authorization: Token ${NETBOX_TOKEN}" \
+  "${NETBOX_URL}/api/plugins/forward/ingestion-issues/?model=dcim.devicerole&limit=0"
+```
+
+### 5) Validate Forward connectivity from the NetBox runtime
+
+Run this from inside the NetBox container or host where NetBox executes:
+
+```bash
+curl -sS -u "<forward-username>:<forward-password>" \
+  "https://fwd.app/api/networks"
+```
+
+If this fails with timeout/DNS/TLS errors, the issue is environmental connectivity rather than ingestion mapping logic.
+
+### 6) Recommended community troubleshooting bundle
+
+When sharing evidence in community channels (for example GitHub issues/discussions), include:
+
+- Output of `ingestion-issues` API for the failing ingestion
+- Output of `core/jobs` for the same timestamp window
+- `netbox` and `netbox-worker` container logs for the same window
+- NetBox plugin version and NetBox version
+- Failing sync name, ingestion id, and model being ingested when it failed
+
+### 7) Redact before sharing
+
+Before uploading logs externally, remove or mask:
+
+- `Authorization` headers and API tokens
+- Forward usernames/passwords
+- Any internal hostnames/IPs that are not required for troubleshooting context
