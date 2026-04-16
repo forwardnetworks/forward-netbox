@@ -13,17 +13,21 @@ let manufacturer_name = canonicalManufacturerName(device.platform.vendor)
 let manufacturer_slug = slugify(manufacturer_name)
 let role_name = replace(replace(toString(component.partType), "DevicePartType.", ""), "_", " ")
 let role_slug = slugify(role_name)
+let component_name = if isPresent(component.name) && component.name != "" then component.name else null : String
+let component_part_id = if isPresent(component.partId) && component.partId != "" then component.partId else null : String
+let component_serial = if isPresent(component.serialNumber) && component.serialNumber != "" then component.serialNumber else null : String
+let component_description = if isPresent(component.description) && component.description != "" then component.description else null : String
 select {
   device: device.name,
   manufacturer: manufacturer_name,
   manufacturer_slug: manufacturer_slug,
-  name: component.name,
-  part_id: if isPresent(component.partId) then component.partId else component.name,
-  serial: if isPresent(component.serialNumber) then component.serialNumber else if isPresent(component.description) then component.description else role_name,
+  name: if isPresent(component_name) then component_name else if isPresent(component_part_id) then component_part_id else if isPresent(component_description) then component_description else role_name,
+  part_id: if isPresent(component_part_id) then component_part_id else if isPresent(component_name) then component_name else role_name,
+  serial: if isPresent(component_serial) then component_serial else if isPresent(component_description) then component_description else role_name,
   role: role_name,
   role_slug: role_slug,
   role_color: "9e9e9e",
   status: "active",
   discovered: true,
-  description: if isPresent(component.description) then component.description else ""
+  description: if isPresent(component_description) then component_description else ""
 }

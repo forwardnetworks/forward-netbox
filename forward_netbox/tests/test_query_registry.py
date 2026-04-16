@@ -302,3 +302,35 @@ class QueryRegistryTest(TestCase):
         self.assertNotIn('import "netbox_utilities";', spec.query)
         self.assertIn("manufacturer_name_overrides = [", spec.query)
         self.assertEqual(spec.coalesce_fields, (("slug",), ("name",)))
+
+    def test_interface_query_includes_loopbacks_for_ip_bearing_logical_interfaces(self):
+        spec = next(
+            spec
+            for spec in BUILTIN_QUERY_SPECS["dcim.interface"]
+            if spec.query_name == "Forward Interfaces"
+        )
+
+        self.assertIn("loopback_interfaces =", spec.query)
+        self.assertIn("interface.interfaceType == IfaceType.IF_LOOPBACK", spec.query)
+        self.assertIn('type: "virtual"', spec.query)
+        self.assertIn("ethernet_interfaces + loopback_interfaces", spec.query)
+
+    def test_inventory_query_treats_empty_strings_as_missing_identity_values(self):
+        spec = next(
+            spec
+            for spec in BUILTIN_QUERY_SPECS["dcim.inventoryitem"]
+            if spec.query_name == "Forward Inventory Items"
+        )
+
+        self.assertIn('component.partId) && component.partId != ""', spec.query)
+        self.assertIn(
+            'component.serialNumber) && component.serialNumber != ""',
+            spec.query,
+        )
+        self.assertIn(
+            'component.description) && component.description != ""', spec.query
+        )
+        self.assertIn(
+            "else if isPresent(component_description) then component_description else role_name",
+            spec.query,
+        )

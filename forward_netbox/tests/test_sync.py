@@ -23,6 +23,7 @@ from forward_netbox.models import ForwardSync
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from forward_netbox.utilities.query_registry import QuerySpec
 from forward_netbox.utilities.sync import ForwardSyncRunner
+from forward_netbox.utilities.sync_contracts import validate_row_shape_for_model
 
 
 class ForwardSyncRunnerTest(TestCase):
@@ -76,6 +77,33 @@ class ForwardSyncRunnerTest(TestCase):
 
         self.assertEqual(runner._lookup_interface(device, "Ethernet1/1"), interface)
         self.assertIsNone(runner._lookup_interface(device, "ethernet1/1"))
+
+    def test_coalesce_lookup_ignores_null_and_empty_values(self):
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        self.assertEqual(
+            runner._coalesce_lookup(
+                {"rd": None, "name": "blue", "description": ""},
+                "rd",
+                "name",
+                "description",
+            ),
+            {"name": "blue"},
+        )
+
+    def test_validate_row_shape_allows_secondary_coalesce_when_primary_is_null(self):
+        validate_row_shape_for_model(
+            "ipam.vrf",
+            {
+                "name": "blue",
+                "rd": None,
+                "description": "",
+                "enforce_unique": False,
+            },
+            [["rd"], ["name"]],
+        )
 
     def test_ensure_device_type_reuses_existing_slug_match(self):
         manufacturer = Manufacturer.objects.create(name="Cisco", slug="cisco")

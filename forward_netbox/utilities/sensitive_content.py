@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
 import re
 import subprocess
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Iterable
 from typing import Sequence
 
@@ -160,7 +160,9 @@ def scan_paths(
         if resolved_path in seen_paths:
             continue
         seen_paths.add(resolved_path)
-        findings.extend(scan_file(resolved_path, repo_root=repo_root, patterns=patterns))
+        findings.extend(
+            scan_file(resolved_path, repo_root=repo_root, patterns=patterns)
+        )
     return findings
 
 
@@ -201,7 +203,4 @@ def format_finding(finding: SensitiveFinding) -> str:
     line_text = finding.line_text
     if len(line_text) > 160:
         line_text = f"{line_text[:157]}..."
-    return (
-        f"{finding.source}:{finding.line_number}: "
-        f"{finding.label}: {line_text}"
-    )
+    return f"{finding.source}:{finding.line_number}: " f"{finding.label}: {line_text}"

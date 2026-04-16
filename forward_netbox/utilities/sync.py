@@ -328,7 +328,9 @@ class ForwardSyncRunner:
 
     def _coalesce_lookup(self, row, *fields):
         return {
-            field: row[field] for field in fields if field in row and row[field] != ""
+            field: row[field]
+            for field in fields
+            if field in row and row[field] not in ("", None)
         }
 
     def _coalesce_upsert(

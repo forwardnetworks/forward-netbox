@@ -2,8 +2,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
 
-from forward_netbox.utilities.sensitive_content import LOCAL_PATTERN_FILE
 from forward_netbox.utilities.sensitive_content import load_sensitive_patterns
+from forward_netbox.utilities.sensitive_content import LOCAL_PATTERN_FILE
 from forward_netbox.utilities.sensitive_content import scan_text
 
 
@@ -12,9 +12,7 @@ class SensitiveContentTest(TestCase):
         patterns = load_sensitive_patterns(Path.cwd())
         network_id = "".join(["54", "321"])
         snapshot_id = "".join(["98", "765"])
-        plus_alias = "".join(
-            ["operator", "+tenant", "@forwardnetworks.com"]
-        )
+        plus_alias = "".join(["operator", "+tenant", "@forwardnetworks.com"])
 
         findings = scan_text(
             "\n".join(
@@ -38,7 +36,7 @@ class SensitiveContentTest(TestCase):
         patterns = load_sensitive_patterns(Path.cwd())
 
         findings = scan_text(
-            '\n'.join(
+            "\n".join(
                 [
                     'req_params["networkId"] = network_id',
                     'req_params["snapshotId"] = snapshot_id',
