@@ -636,6 +636,8 @@ class ForwardIngestionIssue(models.Model):
     )
     model = models.CharField(max_length=100, blank=True, null=True)
     message = models.TextField()
+    coalesce_fields = models.JSONField(blank=True, default=dict)
+    defaults = models.JSONField(blank=True, default=dict)
     raw_data = models.JSONField(blank=True, default=dict)
     exception = models.TextField()
 

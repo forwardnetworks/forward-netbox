@@ -13,8 +13,11 @@ from django.db import IntegrityError
 from django.test import TestCase
 
 from forward_netbox.choices import FORWARD_SUPPORTED_MODELS
+from forward_netbox.exceptions import ForwardDependencySkipError
 from forward_netbox.exceptions import ForwardQueryError
+from forward_netbox.exceptions import ForwardSyncDataError
 from forward_netbox.models import ForwardIngestion
+from forward_netbox.models import ForwardIngestionIssue
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
@@ -327,7 +330,7 @@ class ForwardSyncRunnerTest(TestCase):
             fetch_all=True,
         )
 
-    def test_run_fails_when_rows_miss_required_identity_fields(self):
+    def test_run_records_issue_when_rows_miss_required_identity_fields(self):
         ingestion = ForwardIngestion.objects.create(sync=self.sync)
         client = Mock()
         client.get_latest_processed_snapshot.return_value = {
@@ -356,8 +359,65 @@ class ForwardSyncRunnerTest(TestCase):
                 )
             ],
         ):
-            with self.assertRaises(ForwardQueryError):
-                runner.run()
+            runner.run()
+
+        self.assertEqual(ingestion.issues.count(), 1)
+        self.assertIn(
+            "missing required fields",
+            ingestion.issues.first().message,
+        )
+
+    def test_run_continues_with_next_model_after_model_abort(self):
+        ingestion = ForwardIngestion.objects.create(sync=self.sync)
+        client = Mock()
+        client.get_latest_processed_snapshot.return_value = {
+            "id": "1248264",
+            "processedAt": "2026-03-31T12:15:00Z",
+        }
+        client.get_snapshot_metrics.return_value = {}
+        client.run_nqe_query.side_effect = [
+            [{"name": "site-1", "slug": "site-1"}],
+            [{"name": "site-2", "slug": "site-2"}],
+        ]
+        logger = Mock()
+        runner = ForwardSyncRunner(
+            sync=self.sync,
+            ingestion=ingestion,
+            client=client,
+            logger_=logger,
+        )
+        runner._apply_model_rows = Mock(
+            side_effect=[
+                ForwardSyncDataError("boom", model_string="dcim.site"),
+                None,
+            ]
+        )
+
+        self.sync.get_model_strings = lambda: ["dcim.site", "dcim.manufacturer"]
+        self.sync.resolve_snapshot_id = lambda client=None: "1248264"
+
+        with patch(
+            "forward_netbox.utilities.sync.get_query_specs",
+            side_effect=[
+                [
+                    QuerySpec(
+                        model_string="dcim.site",
+                        query_name="Forward Sites",
+                        query='select {name: "site-1", slug: "site-1"}',
+                    )
+                ],
+                [
+                    QuerySpec(
+                        model_string="dcim.manufacturer",
+                        query_name="Forward Manufacturers",
+                        query='select {name: "site-2", slug: "site-2"}',
+                    )
+                ],
+            ],
+        ):
+            runner.run()
+
+        self.assertEqual(runner._apply_model_rows.call_count, 2)
 
     def test_runner_defines_adapter_for_all_supported_models(self):
         runner = ForwardSyncRunner(
@@ -382,10 +442,60 @@ class ForwardSyncRunnerTest(TestCase):
         runner._apply_dcim_site = _raise
         runner._record_issue = Mock()
 
-        with self.assertRaises(ForwardQueryError):
+        with self.assertRaises(ForwardSyncDataError):
             runner._apply_model_rows("dcim.site", [{"name": "site-1", "slug": "site-1"}])
 
         runner._record_issue.assert_called_once()
+
+    def test_apply_model_rows_records_structured_dependency_skip_issue(self):
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        def _raise(_):
+            raise ForwardDependencySkipError(
+                "dependency failed",
+                model_string="dcim.site",
+                context={"slug": "site-1"},
+                defaults={"name": "site-1"},
+            )
+
+        runner._apply_dcim_site = _raise
+        runner._record_issue = Mock()
+
+        with self.assertRaises(ForwardSyncDataError):
+            runner._apply_model_rows("dcim.site", [{"name": "site-1", "slug": "site-1"}])
+
+        _, _, kwargs = runner._record_issue.mock_calls[0]
+        self.assertEqual(kwargs["context"], {"slug": "site-1"})
+        self.assertEqual(kwargs["defaults"], {"name": "site-1"})
+
+    def test_record_issue_reuses_issue_id_and_does_not_duplicate(self):
+        ingestion = ForwardIngestion.objects.create(sync=self.sync)
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=ingestion, client=Mock(), logger_=Mock()
+        )
+        exc = ForwardSyncDataError("duplicate-check")
+
+        issue_1 = runner._record_issue(
+            "dcim.site",
+            "duplicate-check",
+            {"name": "site-1", "slug": "site-1"},
+            exception=exc,
+            context={"slug": "site-1"},
+            defaults={"name": "site-1"},
+        )
+        issue_2 = runner._record_issue(
+            "dcim.site",
+            "duplicate-check",
+            {"name": "site-1", "slug": "site-1"},
+            exception=exc,
+            context={"slug": "site-1"},
+            defaults={"name": "site-1"},
+        )
+
+        self.assertEqual(issue_1.pk, issue_2.pk)
+        self.assertEqual(ForwardIngestionIssue.objects.filter(ingestion=ingestion).count(), 1)
 
     def test_apply_virtual_chassis_attaches_device_without_inventing_position(self):
         site = Site.objects.create(name="site-1", slug="site-1")
