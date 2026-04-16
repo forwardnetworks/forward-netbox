@@ -3,6 +3,14 @@
  * @description Raw NQE for NetBox virtual chassis records derived from Forward HA VPC or MLAG relationships.
  */
 
+truncate(value: String, max_len: Integer) =
+  if length(value) <= max_len then value else substring(value, 0, max_len);
+
+compactMemberKey(value: String) =
+  if length(value) <= 14
+  then value
+  else join("", [substring(value, 0, 7), substring(value, length(value) - 7, length(value))]);
+
 foreach device in network.devices
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
@@ -11,20 +19,25 @@ let has_mlag_peer = isPresent(device.ha) && isPresent(device.ha.mlagPeer)
 let mlag_peer_name = if has_mlag_peer then toString(device.ha.mlagPeer) else ""
 where has_vpc || has_mlag_peer
 let site_name = if isPresent(device.locationName) then toLowerCase(device.locationName) else "unknown"
-let mlag_members = if has_mlag_peer then
-  if mlag_peer_name > device.name
-  then [device.name, mlag_peer_name]
-  else [mlag_peer_name, device.name]
-else [device.name]
+let member_a = if has_mlag_peer
+  then if mlag_peer_name > device.name then device.name else mlag_peer_name
+  else device.name
+let member_b = if has_mlag_peer
+  then if mlag_peer_name > device.name then mlag_peer_name else device.name
+  else ""
+let raw_mlag_domain = join("--", [member_a, member_b])
+let bounded_mlag_domain = if length(raw_mlag_domain) <= 30
+  then raw_mlag_domain
+  else join("--", [compactMemberKey(member_a), compactMemberKey(member_b)])
+let vc_domain = if has_vpc
+  then toString(device.ha.vpc.domainId)
+  else bounded_mlag_domain
+let vc_name = if has_vpc
+  then join("-", [truncate(site_name, 48), "vpc", toString(device.ha.vpc.domainId)])
+  else join("-", [truncate(site_name, 28), "mlag", vc_domain])
 select {
   device: device.name,
-  vc_name: if has_vpc
-    then join("-", [site_name, "vpc", toString(device.ha.vpc.domainId)])
-    else join("-", [site_name, "mlag", join("--", mlag_members)]),
-  name: if has_vpc
-    then join("-", [site_name, "vpc", toString(device.ha.vpc.domainId)])
-    else join("-", [site_name, "mlag", join("--", mlag_members)]),
-  vc_domain: if has_vpc
-    then toString(device.ha.vpc.domainId)
-    else join("--", mlag_members)
+  vc_name: vc_name,
+  name: vc_name,
+  vc_domain: vc_domain
 }
