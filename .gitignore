@@ -131,3 +131,6 @@ dmypy.json
 # IDE sesttings
 .idea
 .vscode
+
+# Local-only sensitive content denylist
+.sensitive-patterns.local.txt

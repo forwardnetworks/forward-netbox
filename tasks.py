@@ -86,6 +86,12 @@ def lint(context):
     context.run("pre-commit run --all-files")
 
 
+@task(name="sensitive-check")
+def sensitive_check(context):
+    context.run("python scripts/check_sensitive_content.py")
+    context.run("python scripts/check_sensitive_content.py --all-history")
+
+
 @task
 def check(context):
     manage_py(context, "check")
@@ -119,6 +125,6 @@ def smoke_sync(context, merge=False, validate_only=False, query_limit=5):
     manage_py(context, f"forward_smoke_sync{flag_string}")
 
 
-@task(pre=[lint, build, start, check, test, docs, package])
+@task(pre=[sensitive_check, lint, build, start, check, test, docs, package])
 def ci(context):
     """Run the local CI-equivalent validation flow."""
