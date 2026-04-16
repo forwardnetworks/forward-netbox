@@ -12,26 +12,38 @@ Install the plugin package, enable the required plugins, run the migrations, and
 Install the package from PyPI into the same Python environment as NetBox:
 
 ```bash
-pip install forward-netbox==0.1.4.1
+pip install forward-netbox==0.1.4.2
 ```
 
 If you need an offline or pinned artifact workflow, install the wheel from GitHub Releases instead:
 
 ```bash
-pip install /path/to/forward_netbox-0.1.4.1-py3-none-any.whl
+pip install /path/to/forward_netbox-0.1.4.2-py3-none-any.whl
 ```
 
 Alternatively, install directly from the GitHub source archive:
 
 ```bash
-pip install /path/to/forward_netbox-0.1.4.1.tar.gz
+pip install /path/to/forward_netbox-0.1.4.2.tar.gz
 ```
 
 ## Release Compatibility
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v0.1.4.1` | `4.5.x` only | Current unsupported release |
+| `v0.1.4.2` | `4.5.x` only | Current unsupported release |
+
+## Version History
+
+| Release | Summary |
+| --- | --- |
+| `v0.1.4.2` | CI/package patch release that applies repository formatting/import-order fixes and publishes a clean artifact line. |
+| `v0.1.4.1` | Patch release that bounds built-in `dcim.virtualchassis` names and domains to NetBox field limits. |
+| `v0.1.4` | Hardened built-in NQE mappings and docs for large dataset syncs. |
+| `v0.1.3` | Enforced deterministic model identity contracts across sync ingestion. |
+| `v0.1.2` | Improved ingestion safety, diagnostics, and compatibility with existing NetBox objects. |
+| `v0.1.1` | Added NQE pagination, shared helper composition, and release/doc cleanup. |
+| `v0.1.0` | Initial unsupported release of the plugin. |
 
 ## Support Disclaimer
 

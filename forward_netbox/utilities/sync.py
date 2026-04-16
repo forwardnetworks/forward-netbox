@@ -1,7 +1,7 @@
 import logging
 
-from django.db import IntegrityError
 from django.core.exceptions import ObjectDoesNotExist
+from django.db import IntegrityError
 
 from ..choices import ForwardIngestionPhaseChoices
 from ..exceptions import ForwardDependencySkipError
@@ -97,7 +97,9 @@ class ForwardSyncRunner:
         )
 
         for model_string in self.sync.get_model_strings():
-            self.logger.log_info(f"Starting model ingestion for {model_string}.", obj=self.sync)
+            self.logger.log_info(
+                f"Starting model ingestion for {model_string}.", obj=self.sync
+            )
             try:
                 specs = get_query_specs(model_string, maps=maps)
                 if specs:
@@ -326,9 +328,7 @@ class ForwardSyncRunner:
 
     def _coalesce_lookup(self, row, *fields):
         return {
-            field: row[field]
-            for field in fields
-            if field in row and row[field] != ""
+            field: row[field] for field in fields if field in row and row[field] != ""
         }
 
     def _coalesce_upsert(
@@ -365,8 +365,7 @@ class ForwardSyncRunner:
         update_values=None,
     ):
         lookups = [
-            self._coalesce_lookup(row, *coalesce_set)
-            for coalesce_set in coalesce_sets
+            self._coalesce_lookup(row, *coalesce_set) for coalesce_set in coalesce_sets
         ]
         return self._coalesce_upsert(
             model_string,
@@ -865,7 +864,10 @@ class ForwardSyncRunner:
                 raise ForwardDependencySkipError(
                     f"Skipping MAC assignment because dependency `dcim.device` failed for {key}.",
                     model_string="dcim.macaddress",
-                    context={"device": row["device"], "interface": row.get("interface")},
+                    context={
+                        "device": row["device"],
+                        "interface": row.get("interface"),
+                    },
                     data=row,
                 ) from exc
             raise ForwardSearchError(
@@ -962,7 +964,10 @@ class ForwardSyncRunner:
                 raise ForwardDependencySkipError(
                     f"Skipping IP assignment because dependency `dcim.device` failed for {key}.",
                     model_string="ipam.ipaddress",
-                    context={"device": row["device"], "interface": row.get("interface")},
+                    context={
+                        "device": row["device"],
+                        "interface": row.get("interface"),
+                    },
                     data=row,
                 ) from exc
             raise ForwardSearchError(

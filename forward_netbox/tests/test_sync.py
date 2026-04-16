@@ -443,7 +443,9 @@ class ForwardSyncRunnerTest(TestCase):
         runner._record_issue = Mock()
 
         with self.assertRaises(ForwardSyncDataError):
-            runner._apply_model_rows("dcim.site", [{"name": "site-1", "slug": "site-1"}])
+            runner._apply_model_rows(
+                "dcim.site", [{"name": "site-1", "slug": "site-1"}]
+            )
 
         runner._record_issue.assert_called_once()
 
@@ -464,7 +466,9 @@ class ForwardSyncRunnerTest(TestCase):
         runner._record_issue = Mock()
 
         with self.assertRaises(ForwardSyncDataError):
-            runner._apply_model_rows("dcim.site", [{"name": "site-1", "slug": "site-1"}])
+            runner._apply_model_rows(
+                "dcim.site", [{"name": "site-1", "slug": "site-1"}]
+            )
 
         _, _, kwargs = runner._record_issue.mock_calls[0]
         self.assertEqual(kwargs["context"], {"slug": "site-1"})
@@ -495,7 +499,9 @@ class ForwardSyncRunnerTest(TestCase):
         )
 
         self.assertEqual(issue_1.pk, issue_2.pk)
-        self.assertEqual(ForwardIngestionIssue.objects.filter(ingestion=ingestion).count(), 1)
+        self.assertEqual(
+            ForwardIngestionIssue.objects.filter(ingestion=ingestion).count(), 1
+        )
 
     def test_apply_virtual_chassis_attaches_device_without_inventing_position(self):
         site = Site.objects.create(name="site-1", slug="site-1")

@@ -12,10 +12,10 @@ from rq.timeouts import JobTimeoutException
 from utilities.datetime import local_now
 from utilities.request import NetBoxFakeRequest
 
-from .choices import ForwardSyncStatusChoices
 from .choices import ForwardIngestionPhaseChoices
-from .models import ForwardIngestionIssue
+from .choices import ForwardSyncStatusChoices
 from .models import ForwardIngestion
+from .models import ForwardIngestionIssue
 from .models import ForwardSync
 from .utilities.logging import SyncLogging
 
@@ -79,10 +79,10 @@ def sync_forwardsync(job, *args, **kwargs):
             )
         )
         if timeout:
-            ingestion = ForwardIngestion.objects.filter(sync=sync).order_by("-pk").first()
-            message = (
-                "Forward sync job timed out. Increase RQ worker timeout and rerun the sync."
+            ingestion = (
+                ForwardIngestion.objects.filter(sync=sync).order_by("-pk").first()
             )
+            message = "Forward sync job timed out. Increase RQ worker timeout and rerun the sync."
             record_timeout_issue(
                 ingestion,
                 ForwardIngestionPhaseChoices.SYNC,
@@ -203,9 +203,7 @@ def merge_forwardingestion(job, remove_branch=False, *args, **kwargs):
             )
         )
         if timeout:
-            message = (
-                "Forward merge job timed out. Increase RQ worker timeout and rerun the merge."
-            )
+            message = "Forward merge job timed out. Increase RQ worker timeout and rerun the merge."
             record_timeout_issue(
                 ingestion,
                 ForwardIngestionPhaseChoices.MERGE,

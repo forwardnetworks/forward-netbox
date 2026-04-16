@@ -255,7 +255,9 @@ def _build_query_spec_from_map(query_map) -> QuerySpec:
                 query_name=query_map.name,
                 query=_read_query(query_default["filename"]),
                 parameters=query_map.parameters or {},
-                coalesce_fields=tuple(tuple(field_set) for field_set in normalized_coalesce),
+                coalesce_fields=tuple(
+                    tuple(field_set) for field_set in normalized_coalesce
+                ),
                 placeholder=False,
             )
     return QuerySpec(

@@ -6,7 +6,19 @@
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v0.1.4.1` | `4.5.x` only | Current unsupported release |
+| `v0.1.4.2` | `4.5.x` only | Current unsupported release |
+
+## Version History
+
+| Release | Summary |
+| --- | --- |
+| `v0.1.4.2` | CI/package patch release that applies repository formatting/import-order fixes and publishes a clean artifact line. |
+| `v0.1.4.1` | Patch release that bounds built-in `dcim.virtualchassis` names/domains to NetBox field limits. |
+| `v0.1.4` | Hardened built-in NQE mappings and docs for large real-world datasets. |
+| `v0.1.3` | Enforced deterministic model identity contracts during sync ingestion. |
+| `v0.1.2` | Improved ingestion safety, diagnostics, and compatibility with custom NetBox data. |
+| `v0.1.1` | Added pagination, shared built-in NQE helpers, and release/doc cleanup. |
+| `v0.1.0` | Initial unsupported NetBox plugin release with built-in Forward sync workflow and seeded NQE maps. |
 
 ## Support Disclaimer
 
@@ -44,13 +56,13 @@ This repository is provided for use at your own risk. It is an unsupported relea
 1. Install the plugin into the same Python environment as NetBox:
 
 ```bash
-pip install forward-netbox==0.1.4.1
+pip install forward-netbox==0.1.4.2
 ```
 
 If you need an offline or pinned artifact workflow, install the wheel or source archive from GitHub Releases instead:
 
 ```bash
-pip install /path/to/forward_netbox-0.1.4.1-py3-none-any.whl
+pip install /path/to/forward_netbox-0.1.4.2-py3-none-any.whl
 ```
 
 2. Enable both plugins in the NetBox configuration:
