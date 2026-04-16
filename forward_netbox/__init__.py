@@ -1,4 +1,7 @@
-from netbox.plugins import PluginConfig
+try:
+    from netbox.plugins import PluginConfig
+except ModuleNotFoundError:  # pragma: no cover - tooling imports outside NetBox
+    PluginConfig = object
 
 
 class NetboxForwardConfig(PluginConfig):

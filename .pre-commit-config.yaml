@@ -1,4 +1,18 @@
 repos:
+  - repo: local
+    hooks:
+      - id: sensitive-content-files
+        name: block sensitive customer identifiers in tracked content
+        entry: python scripts/check_sensitive_content.py
+        language: system
+        types: [text]
+      - id: sensitive-content-commit-msg
+        name: block sensitive customer identifiers in commit messages
+        entry: python scripts/check_sensitive_content.py --commit-msg-file
+        language: system
+        stages: [commit-msg]
+        pass_filenames: true
+        always_run: true
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
     hooks:
