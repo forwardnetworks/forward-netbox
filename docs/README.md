@@ -6,7 +6,19 @@
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v0.1.4.1` | `4.5.x` only | Current unsupported release |
+| `v0.1.4.2` | `4.5.x` only | Current unsupported release |
+
+## Version History
+
+| Release | Summary |
+| --- | --- |
+| `v0.1.4.2` | CI/package patch release that applies repository formatting/import-order fixes and publishes a clean artifact line. |
+| `v0.1.4.1` | Patch release that bounds built-in `dcim.virtualchassis` names and domains to NetBox limits. |
+| `v0.1.4` | Hardened built-in NQE mappings and docs for large dataset syncs. |
+| `v0.1.3` | Enforced deterministic model identity contracts across sync ingestion. |
+| `v0.1.2` | Improved ingestion safety, diagnostics, and compatibility with existing NetBox data. |
+| `v0.1.1` | Added NQE pagination, shared helper composition, and release hygiene updates. |
+| `v0.1.0` | Initial unsupported release of the Forward-to-NetBox sync plugin. |
 
 ## Support Disclaimer
 

@@ -452,7 +452,7 @@ class ForwardNQEMapForm(NetBoxModelForm):
     coalesce_fields = forms.JSONField(
         required=False,
         label="Coalesce Fields",
-        help_text="Ordered identity key sets used for upsert matching (for example [[\"slug\"], [\"name\"]]).",
+        help_text='Ordered identity key sets used for upsert matching (for example [["slug"], ["name"]]).',
     )
 
     class Meta:
