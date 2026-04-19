@@ -6,12 +6,13 @@
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v0.1.5` | `4.5.x` only | Current unsupported release |
+| `v0.1.5.1` | `4.5.x` only | Current unsupported release |
 
 ## Version History
 
 | Release | Summary |
 | --- | --- |
+| `v0.1.5.1` | Patch release that validates and hardens null-VRF coalesce behavior and inventory-item serial bounds against the live dataset. |
 | `v0.1.5` | Fixes null VRF coalesce handling, imports loopback interfaces for IP attachment, and hardens inventory-item identity fallbacks. |
 | `v0.1.4.2` | CI/package patch release that applies repository formatting/import-order fixes and publishes a clean artifact line. |
 | `v0.1.4.1` | Patch release that bounds built-in `dcim.virtualchassis` names/domains to NetBox field limits. |
@@ -57,13 +58,13 @@ This repository is provided for use at your own risk. It is an unsupported relea
 1. Install the plugin into the same Python environment as NetBox:
 
 ```bash
-pip install forward-netbox==0.1.5
+pip install forward-netbox==0.1.5.1
 ```
 
 If you need an offline or pinned artifact workflow, install the wheel or source archive from GitHub Releases instead:
 
 ```bash
-pip install /path/to/forward_netbox-0.1.5-py3-none-any.whl
+pip install /path/to/forward_netbox-0.1.5.1-py3-none-any.whl
 ```
 
 2. Enable both plugins in the NetBox configuration:

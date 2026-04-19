@@ -105,6 +105,30 @@ class ForwardSyncRunnerTest(TestCase):
             [["rd"], ["name"]],
         )
 
+    def test_validate_row_shape_allows_prefix_without_vrf(self):
+        validate_row_shape_for_model(
+            "ipam.prefix",
+            {
+                "prefix": "10.0.0.0/24",
+                "vrf": None,
+                "status": "active",
+            },
+            [["prefix", "vrf"], ["prefix"]],
+        )
+
+    def test_validate_row_shape_allows_ipaddress_without_vrf(self):
+        validate_row_shape_for_model(
+            "ipam.ipaddress",
+            {
+                "device": "device-1",
+                "interface": "Ethernet1/1",
+                "address": "10.0.0.1/24",
+                "vrf": None,
+                "status": "active",
+            },
+            [["address", "vrf"], ["address"]],
+        )
+
     def test_ensure_device_type_reuses_existing_slug_match(self):
         manufacturer = Manufacturer.objects.create(name="Cisco", slug="cisco")
         existing = DeviceType.objects.create(
