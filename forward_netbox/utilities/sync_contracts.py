@@ -83,12 +83,12 @@ MODEL_SYNC_CONTRACTS: dict[str, ModelSyncContract] = {
     "ipam.prefix": ModelSyncContract(
         required_fields=("prefix", "status"),
         allowed_coalesce_fields=("prefix", "vrf"),
-        default_coalesce_fields=(("prefix", "vrf"),),
+        default_coalesce_fields=(("prefix", "vrf"), ("prefix",)),
     ),
     "ipam.ipaddress": ModelSyncContract(
         required_fields=("device", "interface", "address", "status"),
         allowed_coalesce_fields=("address", "vrf"),
-        default_coalesce_fields=(("address", "vrf"),),
+        default_coalesce_fields=(("address", "vrf"), ("address",)),
     ),
     "dcim.inventoryitem": ModelSyncContract(
         required_fields=(

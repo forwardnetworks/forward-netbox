@@ -6,7 +6,9 @@ from forward_netbox.models import ForwardIngestion
 from forward_netbox.models import ForwardNQEMap
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
+from forward_netbox.signals import seed_builtin_nqe_maps
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
+from forward_netbox.utilities.query_registry import builtin_nqe_map_rows
 
 
 class ForwardSyncModelTest(TestCase):
@@ -123,6 +125,33 @@ class ForwardNQEMapModelTest(TestCase):
 
         self.assertEqual(query_map.coalesce_fields, [["slug"], ["name"]])
 
+    def test_prefix_map_defaults_include_vrf_optional_fallback(self):
+        netbox_model = ContentType.objects.get(app_label="ipam", model="prefix")
+        query_map = ForwardNQEMap(
+            name="Prefix Map",
+            netbox_model=netbox_model,
+            query='select {\n  prefix: "10.0.0.0/24",\n  vrf: null,\n  status: "active"\n}',
+        )
+
+        query_map.clean()
+
+        self.assertEqual(query_map.coalesce_fields, [["prefix", "vrf"], ["prefix"]])
+
+    def test_ipaddress_map_defaults_include_vrf_optional_fallback(self):
+        netbox_model = ContentType.objects.get(app_label="ipam", model="ipaddress")
+        query_map = ForwardNQEMap(
+            name="IP Address Map",
+            netbox_model=netbox_model,
+            query=(
+                'select {\n  device: "device-1",\n  interface: "Ethernet1/1",\n'
+                '  address: "10.0.0.1/24",\n  vrf: null,\n  status: "active"\n}'
+            ),
+        )
+
+        query_map.clean()
+
+        self.assertEqual(query_map.coalesce_fields, [["address", "vrf"], ["address"]])
+
     def test_map_rejects_invalid_coalesce_field(self):
         netbox_model = ContentType.objects.get(app_label="dcim", model="site")
         query_map = ForwardNQEMap(
@@ -149,3 +178,54 @@ class ForwardNQEMapModelTest(TestCase):
             query_map.clean()
 
         self.assertIn("missing required fields", str(ctx.exception))
+
+    def test_seed_builtin_maps_updates_existing_prefix_map_defaults(self):
+        netbox_model = ContentType.objects.get(app_label="ipam", model="prefix")
+        query_map = ForwardNQEMap.objects.get(
+            name="Forward IPv4 Prefixes",
+            netbox_model=netbox_model,
+            built_in=True,
+        )
+        query_map.coalesce_fields = [["prefix", "vrf"]]
+        query_map.query = (
+            'select {\n  prefix: "10.0.0.0/24",\n  vrf: null,\n  status: "active"\n}'
+        )
+        query_map.save(update_fields=["coalesce_fields", "query"])
+
+        seed_builtin_nqe_maps(type("Sender", (), {"label": "forward_netbox"}))
+
+        query_map.refresh_from_db()
+        expected_row = next(
+            row
+            for row in builtin_nqe_map_rows()
+            if row["model_string"] == "ipam.prefix"
+            and row["name"] == "Forward IPv4 Prefixes"
+        )
+        self.assertEqual(query_map.coalesce_fields, [["prefix", "vrf"], ["prefix"]])
+        self.assertEqual(query_map.query, expected_row["query"])
+
+    def test_seed_builtin_maps_updates_existing_inventory_query(self):
+        netbox_model = ContentType.objects.get(app_label="dcim", model="inventoryitem")
+        query_map = ForwardNQEMap.objects.get(
+            name="Forward Inventory Items",
+            netbox_model=netbox_model,
+            built_in=True,
+        )
+        query_map.query = (
+            'select {\n  device: "device-1",\n  name: "fan-1",\n  part_id: "fan-1",\n'
+            '  serial: "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz",\n'
+            '  status: "active",\n  discovered: true\n}'
+        )
+        query_map.save(update_fields=["query"])
+
+        seed_builtin_nqe_maps(type("Sender", (), {"label": "forward_netbox"}))
+
+        query_map.refresh_from_db()
+        expected_row = next(
+            row
+            for row in builtin_nqe_map_rows()
+            if row["model_string"] == "dcim.inventoryitem"
+            and row["name"] == "Forward Inventory Items"
+        )
+        self.assertEqual(query_map.query, expected_row["query"])
+        self.assertIn("truncate(value: String, max_len: Integer)", query_map.query)

@@ -330,7 +330,33 @@ class QueryRegistryTest(TestCase):
         self.assertIn(
             'component.description) && component.description != ""', spec.query
         )
+        self.assertIn("truncate(value: String, max_len: Integer)", spec.query)
         self.assertIn(
-            "else if isPresent(component_description) then component_description else role_name",
+            "else if isPresent(component_part_id) then truncate(component_part_id, 50)",
             spec.query,
+        )
+        self.assertIn(
+            "else if isPresent(component_name) then truncate(component_name, 50)",
+            spec.query,
+        )
+        self.assertIn(
+            "else truncate(role_name, 50)",
+            spec.query,
+        )
+
+    def test_builtin_specs_use_vrf_optional_coalesce_fallbacks_for_ip_models(self):
+        prefix_specs = BUILTIN_QUERY_SPECS["ipam.prefix"]
+        self.assertEqual(
+            prefix_specs[0].coalesce_fields,
+            (("prefix", "vrf"), ("prefix",)),
+        )
+        self.assertEqual(
+            prefix_specs[1].coalesce_fields,
+            (("prefix", "vrf"), ("prefix",)),
+        )
+
+        ip_spec = next(spec for spec in BUILTIN_QUERY_SPECS["ipam.ipaddress"])
+        self.assertEqual(
+            ip_spec.coalesce_fields,
+            (("address", "vrf"), ("address",)),
         )
