@@ -14,8 +14,8 @@ DEFAULT_COALESCE_FIELDS = {
     "dcim.macaddress": [["mac_address"]],
     "ipam.vlan": [["site", "vid"]],
     "ipam.vrf": [["rd"], ["name"]],
-    "ipam.prefix": [["prefix", "vrf"]],
-    "ipam.ipaddress": [["address", "vrf"]],
+    "ipam.prefix": [["prefix", "vrf"], ["prefix"]],
+    "ipam.ipaddress": [["address", "vrf"], ["address"]],
     "dcim.inventoryitem": [["device", "name", "part_id", "serial"]],
 }
 
