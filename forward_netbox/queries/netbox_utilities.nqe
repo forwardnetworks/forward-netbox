@@ -66,3 +66,14 @@ export slugify(value: String) =
     re`^-+|-+$`,
     ""
   );
+
+export slugifyNetboxModel(value: String) =
+  slugify(
+    replace(
+      replace(
+        replace(value, "+", " plus "),
+        "/", " slash "
+      ),
+      ".", " dot "
+    )
+  );

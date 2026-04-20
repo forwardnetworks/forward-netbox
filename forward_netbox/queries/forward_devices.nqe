@@ -18,7 +18,7 @@ let role_name = replace(toString(device_type), "DeviceType.", "")
 let role_slug = slugify(role_name)
 let platform_name = replace(toString(device.platform.os), "OS.", "")
 let platform_slug = slugify(platform_name)
-let device_type_slug = slugify(toString(model))
+let device_type_slug = slugifyNetboxModel(toString(model))
 let manufacturer_name = canonicalManufacturerName(device.platform.vendor)
 let manufacturer_slug = slugify(manufacturer_name)
 select {

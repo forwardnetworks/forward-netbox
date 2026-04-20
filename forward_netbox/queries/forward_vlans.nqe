@@ -5,17 +5,44 @@
 
 import "netbox_utilities";
 
-foreach device in network.devices
-where device.snapshotInfo.result == DeviceSnapshotResult.completed
-where device.platform.vendor != Vendor.FORWARD_CUSTOM
-foreach ni in device.networkInstances
-foreach vlan in ni.vlans
-let site_name = if isPresent(device.locationName) then toLowerCase(device.locationName) else "unknown"
-let site_slug = slugify(site_name)
-select distinct {
-  site: site_name,
-  site_slug: site_slug,
-  vid: vlan.vlanId,
-  name: if isPresent(vlan.name) then vlan.name else join(" ", ["VLAN", toString(vlan.vlanId)]),
-  status: "active"
-}
+candidate_rows =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  foreach ni in device.networkInstances
+  foreach vlan in ni.vlans
+  let site_name = if isPresent(device.locationName) then toLowerCase(device.locationName) else "unknown"
+  let site_slug = slugify(site_name)
+  select distinct {
+    site: site_name,
+    site_slug: site_slug,
+    vid: vlan.vlanId,
+    name: if isPresent(vlan.name) then vlan.name else join(" ", ["VLAN", toString(vlan.vlanId)]),
+    status: "active"
+  };
+
+foreach grouped in (
+  foreach row in candidate_rows
+  group row as grouped_rows by {
+    site: row.site,
+    site_slug: row.site_slug,
+    vid: row.vid
+  } as key
+  let preferred_name = min(
+    foreach candidate in grouped_rows
+    where candidate.name != join(" ", ["VLAN", toString(key.vid)])
+    where toLowerCase(candidate.name) != "default"
+    select candidate.name
+  )
+  let chosen_name = if isPresent(preferred_name)
+    then preferred_name
+    else min(foreach candidate in grouped_rows select candidate.name)
+  select {
+    site: key.site,
+    site_slug: key.site_slug,
+    vid: key.vid,
+    name: chosen_name,
+    status: "active"
+  }
+)
+select grouped

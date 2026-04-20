@@ -82,3 +82,20 @@ class SyncLogging:
             if outcome in {"applied", "failed", "skipped"}:
                 stats[outcome] += 1
             cache.set(self.cache_key, self.log_data, self.cache_timeout)
+
+    def add_statistics_total(self, model_string: str, amount: int) -> None:
+        if amount <= 0:
+            return
+        with self._lock:
+            stats = self.log_data.setdefault("statistics", {}).setdefault(
+                model_string,
+                {
+                    "current": 0,
+                    "total": 0,
+                    "applied": 0,
+                    "failed": 0,
+                    "skipped": 0,
+                },
+            )
+            stats["total"] += amount
+            cache.set(self.cache_key, self.log_data, self.cache_timeout)
