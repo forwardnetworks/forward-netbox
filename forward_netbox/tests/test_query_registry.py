@@ -196,14 +196,14 @@ class QueryRegistryTest(TestCase):
             if spec.query_name == "Forward Interfaces"
         )
 
-        self.assertIn("let ethernet_by_speed = [", spec.query)
-        self.assertIn("where profile.key == speed_key", spec.query)
+        self.assertIn("let ethernet_by_speed_mbps = [", spec.query)
+        self.assertIn("where profile.mbps == speed_mbps", spec.query)
         self.assertIn(
             'type: if isPresent(interface_type) then interface_type else "other"',
             spec.query,
         )
         self.assertIn(
-            "speed: if isPresent(interface_speed) then interface_speed else null : Integer",
+            "speed: if isPresent(speed_mbps) then speed_mbps * 1000 else null : Integer",
             spec.query,
         )
 
