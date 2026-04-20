@@ -8,8 +8,8 @@ from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.signals import seed_builtin_nqe_maps
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
-from forward_netbox.utilities.query_registry import QuerySpec
 from forward_netbox.utilities.query_registry import builtin_nqe_map_rows
+from forward_netbox.utilities.query_registry import QuerySpec
 
 
 class ForwardSyncModelTest(TestCase):
@@ -144,7 +144,7 @@ class ForwardSyncModelTest(TestCase):
                     QuerySpec(
                         model_string="dcim.device",
                         query_name="Device Query",
-                        query="select {name: \"device-1\"}",
+                        query='select {name: "device-1"}',
                     )
                 ],
                 current_snapshot_id="1248265",
