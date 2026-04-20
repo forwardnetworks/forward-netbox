@@ -13,8 +13,8 @@ from django.db import IntegrityError
 from django.test import TestCase
 
 from forward_netbox.choices import FORWARD_SUPPORTED_MODELS
-from forward_netbox.exceptions import ForwardDependencySkipError
 from forward_netbox.exceptions import ForwardClientError
+from forward_netbox.exceptions import ForwardDependencySkipError
 from forward_netbox.exceptions import ForwardQueryError
 from forward_netbox.exceptions import ForwardSyncDataError
 from forward_netbox.models import ForwardIngestion

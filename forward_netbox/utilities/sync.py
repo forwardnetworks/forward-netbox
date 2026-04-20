@@ -42,7 +42,9 @@ class ForwardSyncRunner:
 
     def _first_complete_coalesce_set(self, row, coalesce_sets):
         for field_set in coalesce_sets:
-            if all(field in row and row[field] not in ("", None) for field in field_set):
+            if all(
+                field in row and row[field] not in ("", None) for field in field_set
+            ):
                 return tuple(field_set)
         return None
 
@@ -969,25 +971,33 @@ class ForwardSyncRunner:
 
         manufacturer = None
         if row.get("manufacturer_slug"):
-            manufacturer = Manufacturer.objects.filter(
-                slug=row["manufacturer_slug"]
-            ).order_by("pk").first()
+            manufacturer = (
+                Manufacturer.objects.filter(slug=row["manufacturer_slug"])
+                .order_by("pk")
+                .first()
+            )
         if manufacturer is None and row.get("manufacturer"):
-            manufacturer = Manufacturer.objects.filter(
-                name=row["manufacturer"]
-            ).order_by("pk").first()
+            manufacturer = (
+                Manufacturer.objects.filter(name=row["manufacturer"])
+                .order_by("pk")
+                .first()
+            )
         if manufacturer is None:
             return False
 
         return self._delete_by_coalesce(
             DeviceType,
             [
-                {"manufacturer": manufacturer, "slug": row["slug"]}
-                if row.get("slug")
-                else {},
-                {"manufacturer": manufacturer, "model": row["model"]}
-                if row.get("model")
-                else {},
+                (
+                    {"manufacturer": manufacturer, "slug": row["slug"]}
+                    if row.get("slug")
+                    else {}
+                ),
+                (
+                    {"manufacturer": manufacturer, "model": row["model"]}
+                    if row.get("model")
+                    else {}
+                ),
             ],
         )
 
