@@ -16,7 +16,7 @@ class ForwardSourceFormTest(TestCase):
             "username": "user@example.com",
             "password": "secret",
             "network_id": "235937",
-            "timeout": 60,
+            "timeout": 1200,
             "verify": True,
         }
 

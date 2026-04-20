@@ -139,5 +139,25 @@ routed_vlan_ipv6 =
     status: "active"
   };
 
-subinterface_ipv4 + subinterface_ipv6 + bridge_ipv4 + bridge_ipv6 + tunnel_ipv4 + tunnel_ipv6
-  + routed_vlan_ipv4 + routed_vlan_ipv6
+candidate_rows =
+  foreach row in (
+  subinterface_ipv4 + subinterface_ipv6 + bridge_ipv4 + bridge_ipv6 + tunnel_ipv4 + tunnel_ipv6
+    + routed_vlan_ipv4 + routed_vlan_ipv6
+)
+  select distinct row;
+
+@primaryKey(address, vrf)
+foreach row in candidate_rows
+group row as grouped_rows by {address: row.address, vrf: row.vrf} as key
+let chosen_device = min(foreach candidate in grouped_rows
+  select candidate.device)
+let chosen_interface = min(foreach candidate in grouped_rows
+  where candidate.device == chosen_device
+  select candidate.interface)
+select {
+  device: chosen_device,
+  interface: chosen_interface,
+  vrf: key.vrf,
+  address: key.address,
+  status: "active"
+}

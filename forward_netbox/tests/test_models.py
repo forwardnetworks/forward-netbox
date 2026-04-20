@@ -8,6 +8,7 @@ from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.signals import seed_builtin_nqe_maps
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
+from forward_netbox.utilities.query_registry import QuerySpec
 from forward_netbox.utilities.query_registry import builtin_nqe_map_rows
 
 
@@ -21,7 +22,7 @@ class ForwardSyncModelTest(TestCase):
                 "username": "user@example.com",
                 "password": "secret",
                 "verify": True,
-                "timeout": 60,
+                "timeout": 1200,
                 "network_id": "235937",
             },
         )
@@ -47,6 +48,115 @@ class ForwardSyncModelTest(TestCase):
         self.assertIn("Unsupported Forward sync keys", str(ctx.exception))
         self.assertIn("query_overrides", str(ctx.exception))
 
+    def test_latest_baseline_ingestion_returns_latest_ready_snapshot(self):
+        sync = ForwardSync.objects.create(
+            name="sync-baseline",
+            source=self.source,
+            auto_merge=False,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+            },
+        )
+        ForwardIngestion.objects.create(
+            sync=sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="1248263",
+            baseline_ready=False,
+        )
+        expected = ForwardIngestion.objects.create(
+            sync=sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="1248264",
+            baseline_ready=True,
+        )
+        ForwardIngestion.objects.create(
+            sync=sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="",
+            baseline_ready=True,
+        )
+
+        self.assertEqual(sync.latest_baseline_ingestion(), expected)
+
+    def test_latest_baseline_ingestion_excludes_current_ingestion(self):
+        sync = ForwardSync.objects.create(
+            name="sync-baseline-exclude",
+            source=self.source,
+            auto_merge=False,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+            },
+        )
+        expected = ForwardIngestion.objects.create(
+            sync=sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="1248264",
+            baseline_ready=True,
+        )
+        current = ForwardIngestion.objects.create(
+            sync=sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="1248265",
+            baseline_ready=True,
+        )
+
+        self.assertEqual(
+            sync.latest_baseline_ingestion(exclude_ingestion_id=current.pk),
+            expected,
+        )
+
+    def test_incremental_diff_baseline_requires_latest_processed_and_query_ids(self):
+        sync = ForwardSync.objects.create(
+            name="sync-diff-baseline",
+            source=self.source,
+            auto_merge=False,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+            },
+        )
+        baseline = ForwardIngestion.objects.create(
+            sync=sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="1248264",
+            baseline_ready=True,
+        )
+        specs = [
+            QuerySpec(
+                model_string="dcim.device",
+                query_name="Device Query",
+                query_id="Q_device",
+            )
+        ]
+
+        self.assertEqual(
+            sync.incremental_diff_baseline(
+                specs=specs,
+                current_snapshot_id="1248265",
+            ),
+            baseline,
+        )
+        self.assertIsNone(
+            sync.incremental_diff_baseline(
+                specs=[
+                    QuerySpec(
+                        model_string="dcim.device",
+                        query_name="Device Query",
+                        query="select {name: \"device-1\"}",
+                    )
+                ],
+                current_snapshot_id="1248265",
+            )
+        )
+        self.assertIsNone(
+            sync.incremental_diff_baseline(
+                specs=specs,
+                current_snapshot_id="1248264",
+            )
+        )
+
 
 class ForwardIngestionSnapshotSummaryTest(TestCase):
     def setUp(self):
@@ -58,7 +168,7 @@ class ForwardIngestionSnapshotSummaryTest(TestCase):
                 "username": "user@example.com",
                 "password": "secret",
                 "verify": True,
-                "timeout": 60,
+                "timeout": 1200,
                 "network_id": "235937",
             },
         )
@@ -110,6 +220,16 @@ class ForwardIngestionSnapshotSummaryTest(TestCase):
                 "processingDuration": 900,
             },
         )
+
+    def test_ingestion_defaults_to_full_mode_and_not_baseline_ready(self):
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="1248264",
+        )
+
+        self.assertEqual(ingestion.sync_mode, "full")
+        self.assertFalse(ingestion.baseline_ready)
 
 
 class ForwardNQEMapModelTest(TestCase):

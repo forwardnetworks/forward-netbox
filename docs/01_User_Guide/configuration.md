@@ -26,6 +26,7 @@ Create a `Forward Source` for each Forward deployment or tenant you want to sync
   - The field is populated dynamically from the authenticated tenant when valid credentials are supplied.
 - `Timeout`
   - Forward API timeout in seconds.
+  - Defaults to `1200` (20 minutes), aligned to the NQE timeout boundary.
 - `Verify`
   - Only shown for custom deployments.
   - Leave enabled unless the custom deployment uses a self-signed certificate.
@@ -74,6 +75,8 @@ Each map must define exactly one of:
 
 Use `query_id` when you want the map to call a named or published Forward query. Use raw `query` when you want the exact NQE text stored directly in NetBox.
 
+`query_id` values are resolved from the Forward Org Repository. They are not properties of a `Forward Source`, and they should be tracked in custom `Forward NQE Maps` instead of source configuration.
+
 ### Identity Contract Validation
 
 The plugin enforces a strict identity contract:
@@ -93,6 +96,8 @@ Built-in maps are seeded automatically after migration. They are stored as the s
 Several built-in queries import the shared [`netbox_utilities.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/netbox_utilities.nqe) module. The plugin flattens those local imports at execution time for bundled built-ins, but the source files remain modular so the same query set can be uploaded into the Forward Org Repository and tested by `query_id`/`commit_id`.
 
 Manufacturer-bearing built-in maps canonicalize vendor names and slugs in NQE. If your NetBox already uses different curated manufacturer rows, copy the query set and adjust `manufacturer_name_overrides` in `netbox_utilities` before syncing.
+
+Large datasets should prefer saved queries plus `latestProcessed`. That keeps the first run as a full baseline, then lets later runs use Forward `nqe-diffs` directly. The current built-ins also collapse NetBox identities in NQE where the source emits many raw rows for one object, such as prefix, IP, MAC, and VLAN records.
 
 The current built-in map set is:
 
@@ -125,6 +130,20 @@ If you want Forward to own the modular source instead of storing raw NQE inside 
 2. Commit the folder in Forward.
 3. Use the resulting `query_id` and optional `commit_id` in a custom `Forward NQE Map`.
 4. Validate against a known snapshot before enabling the map in production syncs.
+
+### Large Dataset Recommendation
+
+For large datasets, prefer Org Repository-backed `query_id` maps over bundled raw `query` maps.
+
+- Keep the query source in Forward by committing the modular query set into the Org Repository.
+- Point custom `Forward NQE Maps` at the committed `query_id` values.
+- Leave the sync `Snapshot` at `latestProcessed`.
+- Run and merge one clean baseline ingestion first.
+- After that merged baseline exists, later `latestProcessed` runs can use Forward `nqe-diffs` for eligible `query_id` maps instead of rerunning every model as a full snapshot sync.
+
+This keeps NQE as the source of truth, lets Forward own the row-diff computation, and is the recommended operating mode for larger inventories.
+
+For very large inventories, expect the first full baseline to remain the slow path even after query optimization because NetBox must still materialize every staged object change. The largest steady-state win comes from switching later `latestProcessed` runs onto Forward `nqe-diffs`.
 
 ## Forward Syncs
 
@@ -167,3 +186,5 @@ For the first validation:
 3. Leave `Snapshot` at `latestProcessed` for the first validation.
 4. Keep the default model selection enabled.
 5. Run an adhoc ingestion from the sync detail page.
+
+For large datasets, treat that first run as the baseline establishment step: merge it before expecting later `latestProcessed` ingestions to switch to the incremental `nqe-diffs` path.

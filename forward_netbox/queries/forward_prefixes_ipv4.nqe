@@ -16,7 +16,7 @@ where !(length(entry.nextHops) > 0
     where hop.nextHopType != NextHopType.RECEIVE && hop.nextHopType != NextHopType.DROP
     select hop.nextHopType)) == 0
   && length(entry.prefix) == 32)
-select {
+select distinct {
   vrf: if ni.name != "default"
     then if toString(ni.instanceType) != "NetworkInstanceType.DEFAULT_INSTANCE" then ni.name else null : String
     else null : String,

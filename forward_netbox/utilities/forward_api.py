@@ -6,13 +6,14 @@ from ..exceptions import ForwardClientError
 from ..exceptions import ForwardConnectivityError
 
 LATEST_PROCESSED_SNAPSHOT = "latestProcessed"
+DEFAULT_FORWARD_API_TIMEOUT_SECONDS = 1200
 
 
 class ForwardClient:
     def __init__(self, source):
         self.source = source
         params = source.parameters or {}
-        self.timeout = params.get("timeout") or 60
+        self.timeout = params.get("timeout") or DEFAULT_FORWARD_API_TIMEOUT_SECONDS
         self.verify = params.get("verify", True)
         self.base_url = source.url.rstrip("/")
         self.username = params.get("username")
@@ -28,7 +29,7 @@ class ForwardClient:
         return {
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "forward-netbox/0.1.5.1",
+            "User-Agent": "forward-netbox/0.1.6.0",
         }
 
     def _auth(self):
@@ -150,6 +151,22 @@ class ForwardClient:
                 records.append(json.loads(json.dumps(item)))
         return records, data.get("totalNumItems")
 
+    def _parse_nqe_diff_rows(self, data):
+        rows = data.get("rows") or []
+        parsed_rows = []
+        for row in rows:
+            if not isinstance(row, dict):
+                parsed_rows.append(json.loads(json.dumps(row)))
+                continue
+            parsed_rows.append(
+                {
+                    "type": row.get("type"),
+                    "before": row.get("before"),
+                    "after": row.get("after"),
+                }
+            )
+        return parsed_rows, data.get("totalNumRows")
+
     def run_nqe_query(
         self,
         *,
@@ -231,3 +248,74 @@ class ForwardClient:
                     )
                 return all_records
             all_records.extend(page_records)
+
+    def run_nqe_diff(
+        self,
+        *,
+        query_id,
+        before_snapshot_id,
+        after_snapshot_id,
+        commit_id=None,
+        limit=10000,
+        offset=0,
+        item_format="JSON",
+        column_filters=None,
+        fetch_all=False,
+    ):
+        if not query_id:
+            raise ForwardClientError("`query_id` must be supplied.")
+        if not before_snapshot_id or not after_snapshot_id:
+            raise ForwardClientError(
+                "Both `before_snapshot_id` and `after_snapshot_id` must be supplied."
+            )
+        if limit < 1:
+            raise ForwardClientError("`limit` must be at least 1.")
+
+        def fetch_page(page_offset):
+            payload = {
+                "queryId": query_id,
+                "options": {
+                    "limit": limit,
+                    "offset": page_offset,
+                    "itemFormat": item_format,
+                },
+            }
+            if commit_id:
+                payload["commitId"] = commit_id
+            if column_filters:
+                payload["options"]["columnFilters"] = column_filters
+
+            response = self._request(
+                "POST",
+                f"/nqe-diffs/{before_snapshot_id}/{after_snapshot_id}",
+                json_body=payload,
+            )
+            return self._parse_nqe_diff_rows(response.json() or {})
+
+        rows, total_num_rows = fetch_page(offset)
+        if not fetch_all:
+            return rows
+
+        all_rows = list(rows)
+        expected_total = int(total_num_rows) if total_num_rows is not None else None
+        last_page_size = len(rows)
+
+        while True:
+            if expected_total is not None and len(all_rows) >= expected_total:
+                return all_rows
+            if expected_total is None and last_page_size < limit:
+                return all_rows
+
+            next_offset = offset + len(all_rows)
+            page_rows, page_total = fetch_page(next_offset)
+            if expected_total is None and page_total is not None:
+                expected_total = int(page_total)
+            last_page_size = len(page_rows)
+            if not page_rows:
+                if expected_total is not None and len(all_rows) < expected_total:
+                    raise ForwardClientError(
+                        "Forward NQE diff pagination ended early: "
+                        f"fetched {len(all_rows)} rows but API reported {expected_total}."
+                    )
+                return all_rows
+            all_rows.extend(page_rows)

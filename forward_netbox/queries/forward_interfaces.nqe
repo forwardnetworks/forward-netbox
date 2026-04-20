@@ -10,26 +10,22 @@ ethernet_interfaces =
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
   foreach interface in device.interfaces
   where interface.interfaceType == IfaceType.IF_ETHERNET
-  let speed = interface.ethernet.negotiatedPortSpeed
-  let speed_key = toString(speed)
-  let ethernet_by_speed = [
-    { key: "PortSpeed.SPEED_10MB", type: "other", speed: 10000 },
-    { key: "PortSpeed.SPEED_100MB", type: "100base-tx", speed: 100000 },
-    { key: "PortSpeed.SPEED_1GB", type: "1000base-t", speed: 1000000 },
-    { key: "PortSpeed.SPEED_2500MB", type: "2.5gbase-t", speed: 2500000 },
-    { key: "PortSpeed.SPEED_5GB", type: "5gbase-t", speed: 5000000 },
-    { key: "PortSpeed.SPEED_10GB", type: "10gbase-t", speed: 10000000 },
-    { key: "PortSpeed.SPEED_25GB", type: "25gbase-x-sfp28", speed: 25000000 },
-    { key: "PortSpeed.SPEED_40GB", type: "40gbase-x-qsfpp", speed: 40000000 },
-    { key: "PortSpeed.SPEED_50GB", type: "50gbase-x-sfp56", speed: 50000000 },
-    { key: "PortSpeed.SPEED_100GB", type: "100gbase-x-qsfp28", speed: 100000000 }
+  let speed_mbps = interface.ethernet.speedMbps
+  let ethernet_by_speed_mbps = [
+    { mbps: 10, type: "other" },
+    { mbps: 100, type: "100base-tx" },
+    { mbps: 1000, type: "1000base-t" },
+    { mbps: 2500, type: "2.5gbase-t" },
+    { mbps: 5000, type: "5gbase-t" },
+    { mbps: 10000, type: "10gbase-t" },
+    { mbps: 25000, type: "25gbase-x-sfp28" },
+    { mbps: 40000, type: "40gbase-x-qsfpp" },
+    { mbps: 50000, type: "50gbase-x-sfp56" },
+    { mbps: 100000, type: "100gbase-x-qsfp28" }
   ]
-  let interface_type = max(foreach profile in ethernet_by_speed
-    where profile.key == speed_key
+  let interface_type = max(foreach profile in ethernet_by_speed_mbps
+    where profile.mbps == speed_mbps
     select profile.type)
-  let interface_speed = max(foreach profile in ethernet_by_speed
-    where profile.key == speed_key
-    select profile.speed)
   select {
     device: device.name,
     name: interface.name,
@@ -37,7 +33,7 @@ ethernet_interfaces =
     enabled: interface.operStatus == OperStatus.UP,
     mtu: interface.mtu,
     description: if isPresent(interface.description) then interface.description else "",
-    speed: if isPresent(interface_speed) then interface_speed else null : Integer
+    speed: if isPresent(speed_mbps) then speed_mbps * 1000 else null : Integer
   };
 
 loopback_interfaces =
@@ -56,4 +52,5 @@ loopback_interfaces =
     speed: null : Integer
   };
 
-ethernet_interfaces + loopback_interfaces
+foreach row in (ethernet_interfaces + loopback_interfaces)
+select distinct row

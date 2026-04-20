@@ -11,7 +11,7 @@ where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
 let vendor = device.platform.vendor
 let model = device.platform.model
-let model_slug = slugify(toString(model))
+let model_slug = slugifyNetboxModel(toString(model))
 let manufacturer_name = canonicalManufacturerName(vendor)
 let manufacturer_slug = slugify(manufacturer_name)
 select distinct {

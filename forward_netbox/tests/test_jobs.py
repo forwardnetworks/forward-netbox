@@ -19,7 +19,7 @@ class ForwardJobsTest(TestCase):
                 "username": "user@example.com",
                 "password": "secret",
                 "verify": True,
-                "timeout": 60,
+                "timeout": 1200,
                 "network_id": "235937",
             },
         )

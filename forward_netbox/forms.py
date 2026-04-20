@@ -22,6 +22,7 @@ from .exceptions import ForwardSyncError
 from .models import ForwardNQEMap
 from .models import ForwardSource
 from .models import ForwardSync
+from .utilities.forward_api import DEFAULT_FORWARD_API_TIMEOUT_SECONDS
 from .utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 
 
@@ -138,7 +139,9 @@ class ForwardSourceForm(NetBoxModelForm):
             else (parameters.get("network_id") or "")
         )
         self.fields["username"].initial = existing_username
-        self.fields["timeout"].initial = parameters.get("timeout") or 60
+        self.fields["timeout"].initial = (
+            parameters.get("timeout") or DEFAULT_FORWARD_API_TIMEOUT_SECONDS
+        )
         self.fields["verify"].initial = parameters.get("verify", True)
         self.fields["network_id"].initial = existing_network_id
         self.fields["network_id"].choices = _selected_choice(existing_network_id)
@@ -202,7 +205,7 @@ class ForwardSourceForm(NetBoxModelForm):
             ),
             "timeout": cleaned.get("timeout")
             or existing_parameters.get("timeout")
-            or 60,
+            or DEFAULT_FORWARD_API_TIMEOUT_SECONDS,
             "network_id": selected_network_id,
         }
         self.instance.type = source_type
@@ -265,7 +268,7 @@ class ForwardSourceForm(NetBoxModelForm):
             ),
             "timeout": self.cleaned_data.get("timeout")
             or existing_parameters.get("timeout")
-            or 60,
+            or DEFAULT_FORWARD_API_TIMEOUT_SECONDS,
             "network_id": self.cleaned_data.get("network_id") or "",
         }
         self.instance.status = ForwardSourceStatusChoices.NEW

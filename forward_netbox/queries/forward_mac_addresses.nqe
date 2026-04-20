@@ -3,15 +3,32 @@
  * @description Raw NQE for NetBox MAC addresses derived from Forward interface ethernet state.
  */
 
-foreach device in network.devices
-where device.snapshotInfo.result == DeviceSnapshotResult.completed
-where device.platform.vendor != Vendor.FORWARD_CUSTOM
-foreach interface in device.interfaces
-where interface.interfaceType == IfaceType.IF_ETHERNET
-where isPresent(interface.ethernet.macAddress)
+candidate_rows =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  foreach interface in device.interfaces
+  where interface.interfaceType == IfaceType.IF_ETHERNET
+  where isPresent(interface.ethernet.macAddress)
+  select distinct {
+    device: device.name,
+    interface: interface.name,
+    mac: toString(interface.ethernet.macAddress),
+    mac_address: toString(interface.ethernet.macAddress)
+  };
+
+@primaryKey(mac_address)
+foreach row in candidate_rows
+where row.mac_address != "00:00:00:00:00:00"
+group row as grouped_rows by row.mac_address as mac_address
+let chosen_device = min(foreach candidate in grouped_rows
+  select candidate.device)
+let chosen_interface = min(foreach candidate in grouped_rows
+  where candidate.device == chosen_device
+  select candidate.interface)
 select {
-  device: device.name,
-  interface: interface.name,
-  mac: toString(interface.ethernet.macAddress),
-  mac_address: toString(interface.ethernet.macAddress)
+  device: chosen_device,
+  interface: chosen_interface,
+  mac: mac_address,
+  mac_address: mac_address
 }

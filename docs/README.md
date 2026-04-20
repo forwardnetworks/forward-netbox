@@ -6,12 +6,13 @@
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v0.1.5.1` | `4.5.x` only | Current unsupported release |
+| `v0.1.6.0` | `4.5.x` only | Current unsupported release |
 
 ## Version History
 
 | Release | Summary |
 | --- | --- |
+| `v0.1.6.0` | Adds explicit diff baselines, Forward `nqe-diffs` execution for eligible `query_id` maps, and updated large-dataset guidance for baseline versus incremental syncs. |
 | `v0.1.5.1` | Patch release that validates and hardens null-VRF coalesce behavior and inventory-item serial bounds against the live dataset. |
 | `v0.1.5` | Fixes null VRF coalesce handling, imports loopback interfaces for IP attachment, and hardens inventory-item identity fallbacks. |
 | `v0.1.4.2` | CI/package patch release that applies repository formatting/import-order fixes and publishes a clean artifact line. |
