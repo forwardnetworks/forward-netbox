@@ -12,31 +12,32 @@ Install the plugin package, enable the required plugins, run the migrations, and
 Install the package from PyPI into the same Python environment as NetBox:
 
 ```bash
-pip install forward-netbox==0.1.5.1
+pip install forward-netbox==0.1.6.0
 ```
 
 If you need an offline or pinned artifact workflow, install the wheel from GitHub Releases instead:
 
 ```bash
-pip install /path/to/forward_netbox-0.1.5.1-py3-none-any.whl
+pip install /path/to/forward_netbox-0.1.6.0-py3-none-any.whl
 ```
 
 Alternatively, install directly from the GitHub source archive:
 
 ```bash
-pip install /path/to/forward_netbox-0.1.5.1.tar.gz
+pip install /path/to/forward_netbox-0.1.6.0.tar.gz
 ```
 
 ## Release Compatibility
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v0.1.5.1` | `4.5.x` only | Current unsupported release |
+| `v0.1.6.0` | `4.5.x` only | Current unsupported release |
 
 ## Version History
 
 | Release | Summary |
 | --- | --- |
+| `v0.1.6.0` | Adds explicit diff baselines, Forward `nqe-diffs` execution for eligible `query_id` maps, and updated large-dataset guidance for baseline versus incremental syncs. |
 | `v0.1.5.1` | Patch release that validates and hardens null-VRF coalesce behavior and inventory-item serial bounds against the live dataset. |
 | `v0.1.5` | Fixes null VRF coalesce handling, imports loopback interfaces for IP attachment, and hardens inventory-item identity fallbacks. |
 | `v0.1.4.2` | CI/package patch release that applies repository formatting/import-order fixes and publishes a clean artifact line. |
