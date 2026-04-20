@@ -48,6 +48,12 @@ for model_string in FORWARD_SUPPORTED_MODELS:
     app_label, model_name = model_string.split(".")
     FORWARD_SUPPORTED_SYNC_MODELS |= Q(app_label=app_label, model=model_name)
 
+FORWARD_INGESTION_SYNC_MODE_CHOICES = (
+    ("full", _("Full")),
+    ("diff", _("Diff")),
+    ("hybrid", _("Hybrid")),
+)
+
 
 class ForwardSource(JobsMixin, PrimaryModel):
     objects = RestrictedQuerySet.as_manager()
@@ -284,6 +290,34 @@ class ForwardSync(JobsMixin, TagsMixin, ChangeLoggedModel):
     def last_ingestion(self):
         return self.forwardingestion_set.last()
 
+    def latest_baseline_ingestion(self, *, exclude_ingestion_id=None):
+        queryset = self.forwardingestion_set.filter(
+            baseline_ready=True,
+        ).exclude(snapshot_id="")
+        if exclude_ingestion_id is not None:
+            queryset = queryset.exclude(pk=exclude_ingestion_id)
+        return queryset.order_by("-pk").first()
+
+    def incremental_diff_baseline(
+        self,
+        *,
+        specs,
+        current_snapshot_id,
+        exclude_ingestion_id=None,
+    ):
+        if self.get_snapshot_id() != LATEST_PROCESSED_SNAPSHOT:
+            return None
+        if not specs or any(not getattr(spec, "query_id", None) for spec in specs):
+            return None
+        baseline = self.latest_baseline_ingestion(
+            exclude_ingestion_id=exclude_ingestion_id
+        )
+        if baseline is None:
+            return None
+        if baseline.snapshot_id == current_snapshot_id:
+            return None
+        return baseline
+
     def clean(self):
         super().clean()
         parameters = dict(self.parameters or {})
@@ -509,6 +543,12 @@ class ForwardIngestion(JobsMixin, models.Model):
     )
     snapshot_selector = models.CharField(max_length=100, blank=True, default="")
     snapshot_id = models.CharField(max_length=100, blank=True, default="")
+    sync_mode = models.CharField(
+        max_length=10,
+        choices=FORWARD_INGESTION_SYNC_MODE_CHOICES,
+        default="full",
+    )
+    baseline_ready = models.BooleanField(default=False)
     snapshot_info = models.JSONField(blank=True, default=dict)
     snapshot_metrics = models.JSONField(blank=True, default=dict)
     created = models.DateTimeField(default=timezone.now, editable=False)
@@ -607,6 +647,8 @@ class ForwardIngestion(JobsMixin, models.Model):
 
         try:
             merge_branch(ingestion=self, sync_logger=forwardsync.logger)
+            self.baseline_ready = True
+            ForwardIngestion.objects.filter(pk=self.pk).update(baseline_ready=True)
             forwardsync.status = ForwardSyncStatusChoices.COMPLETED
         except Exception:
             forwardsync.status = ForwardSyncStatusChoices.FAILED

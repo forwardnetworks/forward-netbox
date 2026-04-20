@@ -102,6 +102,17 @@ export slugify(value: String) =
     re`^-+|-+$`,
     ""
   );
+
+export slugifyNetboxModel(value: String) =
+  slugify(
+    replace(
+      replace(
+        replace(value, "+", " plus "),
+        "/", " slash "
+      ),
+      ".", " dot "
+    )
+  );
 ```
 
 ## Forward Locations
@@ -220,7 +231,7 @@ where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
 let vendor = device.platform.vendor
 let model = device.platform.model
-let model_slug = slugify(toString(model))
+let model_slug = slugifyNetboxModel(toString(model))
 let manufacturer_name = canonicalManufacturerName(vendor)
 let manufacturer_slug = slugify(manufacturer_name)
 select distinct {
@@ -253,7 +264,7 @@ let role_name = replace(toString(device_type), "DeviceType.", "")
 let role_slug = slugify(role_name)
 let platform_name = replace(toString(device.platform.os), "OS.", "")
 let platform_slug = slugify(platform_name)
-let device_type_slug = slugify(toString(model))
+let device_type_slug = slugifyNetboxModel(toString(model))
 let manufacturer_name = canonicalManufacturerName(device.platform.vendor)
 let manufacturer_slug = slugify(manufacturer_name)
 select {
@@ -289,36 +300,39 @@ compactMemberKey(value: String) =
   then value
   else join("", [substring(value, 0, 7), substring(value, length(value) - 7, length(value))]);
 
-foreach device in network.devices
-where device.snapshotInfo.result == DeviceSnapshotResult.completed
-where device.platform.vendor != Vendor.FORWARD_CUSTOM
-let has_vpc = isPresent(device.ha) && isPresent(device.ha.vpc) && isPresent(device.ha.vpc.domainId) && device.ha.vpc.domainId > 0
-let has_mlag_peer = isPresent(device.ha) && isPresent(device.ha.mlagPeer)
-let mlag_peer_name = if has_mlag_peer then toString(device.ha.mlagPeer) else ""
-where has_vpc || has_mlag_peer
-let site_name = if isPresent(device.locationName) then toLowerCase(device.locationName) else "unknown"
-let member_a = if has_mlag_peer
-  then if mlag_peer_name > device.name then device.name else mlag_peer_name
-  else device.name
-let member_b = if has_mlag_peer
-  then if mlag_peer_name > device.name then mlag_peer_name else device.name
-  else ""
-let raw_mlag_domain = join("--", [member_a, member_b])
-let bounded_mlag_domain = if length(raw_mlag_domain) <= 30
-  then raw_mlag_domain
-  else join("--", [compactMemberKey(member_a), compactMemberKey(member_b)])
-let vc_domain = if has_vpc
-  then toString(device.ha.vpc.domainId)
-  else bounded_mlag_domain
-let vc_name = if has_vpc
-  then join("-", [truncate(site_name, 48), "vpc", toString(device.ha.vpc.domainId)])
-  else join("-", [truncate(site_name, 28), "mlag", vc_domain])
-select {
-  device: device.name,
-  vc_name: vc_name,
-  name: vc_name,
-  vc_domain: vc_domain
-}
+foreach row in (
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  let has_vpc = isPresent(device.ha) && isPresent(device.ha.vpc) && isPresent(device.ha.vpc.domainId) && device.ha.vpc.domainId > 0
+  let has_mlag_peer = isPresent(device.ha) && isPresent(device.ha.mlagPeer)
+  let mlag_peer_name = if has_mlag_peer then toString(device.ha.mlagPeer) else ""
+  where has_vpc || has_mlag_peer
+  let site_name = if isPresent(device.locationName) then toLowerCase(device.locationName) else "unknown"
+  let member_a = if has_mlag_peer
+    then if mlag_peer_name > device.name then device.name else mlag_peer_name
+    else device.name
+  let member_b = if has_mlag_peer
+    then if mlag_peer_name > device.name then mlag_peer_name else device.name
+    else ""
+  let raw_mlag_domain = join("--", [member_a, member_b])
+  let bounded_mlag_domain = if length(raw_mlag_domain) <= 30
+    then raw_mlag_domain
+    else join("--", [compactMemberKey(member_a), compactMemberKey(member_b)])
+  let vc_domain = if has_vpc
+    then toString(device.ha.vpc.domainId)
+    else bounded_mlag_domain
+  let vc_name = if has_vpc
+    then join("-", [truncate(site_name, 48), "vpc", toString(device.ha.vpc.domainId)])
+    else join("-", [truncate(site_name, 28), "mlag", vc_domain])
+  select {
+    device: device.name,
+    vc_name: vc_name,
+    name: vc_name,
+    vc_domain: vc_domain
+  }
+)
+select distinct row
 ```
 
 ## Forward Interfaces
@@ -331,38 +345,36 @@ select {
 foreach device in network.devices
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
-foreach interface in device.interfaces
-where interface.interfaceType == IfaceType.IF_ETHERNET
-let speed = interface.ethernet.negotiatedPortSpeed
-let speed_key = toString(speed)
-let ethernet_by_speed = [
-  { key: "PortSpeed.SPEED_10MB", type: "other", speed: 10000 },
-  { key: "PortSpeed.SPEED_100MB", type: "100base-tx", speed: 100000 },
-  { key: "PortSpeed.SPEED_1GB", type: "1000base-t", speed: 1000000 },
-  { key: "PortSpeed.SPEED_2500MB", type: "2.5gbase-t", speed: 2500000 },
-  { key: "PortSpeed.SPEED_5GB", type: "5gbase-t", speed: 5000000 },
-  { key: "PortSpeed.SPEED_10GB", type: "10gbase-t", speed: 10000000 },
-  { key: "PortSpeed.SPEED_25GB", type: "25gbase-x-sfp28", speed: 25000000 },
-  { key: "PortSpeed.SPEED_40GB", type: "40gbase-x-qsfpp", speed: 40000000 },
-  { key: "PortSpeed.SPEED_50GB", type: "50gbase-x-sfp56", speed: 50000000 },
-  { key: "PortSpeed.SPEED_100GB", type: "100gbase-x-qsfp28", speed: 100000000 }
-]
-let interface_type = max(foreach profile in ethernet_by_speed
-  where profile.key == speed_key
-  select profile.type)
-let interface_speed = max(foreach profile in ethernet_by_speed
-  where profile.key == speed_key
-  select profile.speed)
-select {
-  device: device.name,
-  name: interface.name,
-  type: if isPresent(interface_type) then interface_type else "other",
-  enabled: interface.operStatus == OperStatus.UP,
-  mtu: interface.mtu,
-  description: if isPresent(interface.description) then interface.description else "",
-  speed: if isPresent(interface_speed) then interface_speed else null : Integer
-}
+  foreach interface in device.interfaces
+  where interface.interfaceType == IfaceType.IF_ETHERNET
+  let speed_mbps = interface.ethernet.speedMbps
+  let ethernet_by_speed_mbps = [
+    { mbps: 10, type: "other" },
+    { mbps: 100, type: "100base-tx" },
+    { mbps: 1000, type: "1000base-t" },
+    { mbps: 2500, type: "2.5gbase-t" },
+    { mbps: 5000, type: "5gbase-t" },
+    { mbps: 10000, type: "10gbase-t" },
+    { mbps: 25000, type: "25gbase-x-sfp28" },
+    { mbps: 40000, type: "40gbase-x-qsfpp" },
+    { mbps: 50000, type: "50gbase-x-sfp56" },
+    { mbps: 100000, type: "100gbase-x-qsfp28" }
+  ]
+  let interface_type = max(foreach profile in ethernet_by_speed_mbps
+    where profile.mbps == speed_mbps
+    select profile.type)
+  select {
+    device: device.name,
+    name: interface.name,
+    type: if isPresent(interface_type) then interface_type else "other",
+    enabled: interface.operStatus == OperStatus.UP,
+    mtu: interface.mtu,
+    description: if isPresent(interface.description) then interface.description else "",
+    speed: if isPresent(speed_mbps) then speed_mbps * 1000 else null : Integer
+  }
 ```
+
+The shipped query uses `speedMbps` as the authoritative interface speed and only maps well-known Ethernet rates to NetBox interface types. Unknown or aggregated rates still preserve the actual speed while falling back to interface type `other`. A final `select distinct` over the combined ethernet and loopback interface rows suppresses exact duplicates before NetBox ingestion.
 
 ## Forward MAC Addresses
 
@@ -371,18 +383,38 @@ select {
 - Query file: [`forward_mac_addresses.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_mac_addresses.nqe)
 
 ```nqe
-foreach device in network.devices
-where device.snapshotInfo.result == DeviceSnapshotResult.completed
-where device.platform.vendor != Vendor.FORWARD_CUSTOM
-foreach interface in device.interfaces
-where interface.interfaceType == IfaceType.IF_ETHERNET
-where isPresent(interface.ethernet.macAddress)
+candidate_rows =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  foreach interface in device.interfaces
+  where interface.interfaceType == IfaceType.IF_ETHERNET
+  where isPresent(interface.ethernet.macAddress)
+  select distinct {
+    device: device.name,
+    interface: interface.name,
+    mac: toString(interface.ethernet.macAddress),
+    mac_address: toString(interface.ethernet.macAddress)
+  };
+
+@primaryKey(mac_address)
+foreach row in candidate_rows
+where row.mac_address != "00:00:00:00:00:00"
+group row as grouped_rows by row.mac_address as mac_address
+let chosen_device = min(foreach candidate in grouped_rows
+  select candidate.device)
+let chosen_interface = min(foreach candidate in grouped_rows
+  where candidate.device == chosen_device
+  select candidate.interface)
 select {
-  device: device.name,
-  interface: interface.name,
-  mac: toString(interface.ethernet.macAddress)
+  device: chosen_device,
+  interface: chosen_interface,
+  mac: mac_address,
+  mac_address: mac_address
 }
 ```
+
+The shipped MAC query removes exact duplicate rows, filters the all-zero placeholder MAC, and then projects a single deterministic row per NetBox MAC identity before ingestion.
 
 ## Forward VLANs
 
@@ -393,20 +425,47 @@ select {
 ```nqe
 import "netbox_utilities";
 
-foreach device in network.devices
-where device.snapshotInfo.result == DeviceSnapshotResult.completed
-where device.platform.vendor != Vendor.FORWARD_CUSTOM
-foreach ni in device.networkInstances
-foreach vlan in ni.vlans
-let site_name = if isPresent(device.locationName) then toLowerCase(device.locationName) else "unknown"
-let site_slug = slugify(site_name)
-select distinct {
-  site: site_name,
-  site_slug: site_slug,
-  vid: vlan.vlanId,
-  name: if isPresent(vlan.name) then vlan.name else join(" ", ["VLAN", toString(vlan.vlanId)]),
-  status: "active"
-}
+candidate_rows =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  foreach ni in device.networkInstances
+  foreach vlan in ni.vlans
+  let site_name = if isPresent(device.locationName) then toLowerCase(device.locationName) else "unknown"
+  let site_slug = slugify(site_name)
+  select distinct {
+    site: site_name,
+    site_slug: site_slug,
+    vid: vlan.vlanId,
+    name: if isPresent(vlan.name) then vlan.name else join(" ", ["VLAN", toString(vlan.vlanId)]),
+    status: "active"
+  };
+
+foreach grouped in (
+  foreach row in candidate_rows
+  group row as grouped_rows by {
+    site: row.site,
+    site_slug: row.site_slug,
+    vid: row.vid
+  } as key
+  let preferred_name = min(
+    foreach candidate in grouped_rows
+    where candidate.name != join(" ", ["VLAN", toString(key.vid)])
+    where toLowerCase(candidate.name) != "default"
+    select candidate.name
+  )
+  let chosen_name = if isPresent(preferred_name)
+    then preferred_name
+    else min(foreach candidate in grouped_rows select candidate.name)
+  select {
+    site: key.site,
+    site_slug: key.site_slug,
+    vid: key.vid,
+    name: chosen_name,
+    status: "active"
+  }
+)
+select grouped
 ```
 
 ## Forward VRFs
@@ -492,7 +551,7 @@ select {
 - Expected fields: `device`, `interface`, `vrf`, `address`, `status`
 - Query file: [`forward_ip_addresses.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_ip_addresses.nqe)
 
-The shipped query combines rows from subinterfaces, bridge interfaces, tunnels, and routed VLAN interfaces. See the query file for the complete text:
+The shipped query combines rows from subinterfaces, bridge interfaces, tunnels, and routed VLAN interfaces, applies a final `select distinct` over the merged result, and then projects a single deterministic row per NetBox IP identity `(address, vrf)` before ingestion. See the query file for the complete text:
 
 - [`forward_ip_addresses.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_ip_addresses.nqe)
 
@@ -505,26 +564,33 @@ The shipped query combines rows from subinterfaces, bridge interfaces, tunnels, 
 ```nqe
 import "netbox_utilities";
 
-foreach device in network.devices
-where device.snapshotInfo.result == DeviceSnapshotResult.completed
-where device.platform.vendor != Vendor.FORWARD_CUSTOM
-foreach component in device.platform.components
-let manufacturer_name = canonicalManufacturerName(device.platform.vendor)
-let manufacturer_slug = slugify(manufacturer_name)
-let role_name = replace(replace(toString(component.partType), "DevicePartType.", ""), "_", " ")
-let role_slug = slugify(role_name)
-select {
-  device: device.name,
-  manufacturer: manufacturer_name,
-  manufacturer_slug: manufacturer_slug,
-  name: component.name,
-  part_id: if isPresent(component.partId) then component.partId else component.name,
-  serial: if isPresent(component.serialNumber) then component.serialNumber else if isPresent(component.description) then component.description else role_name,
-  role: role_name,
-  role_slug: role_slug,
-  role_color: "9e9e9e",
-  status: "active",
-  discovered: true,
-  description: if isPresent(component.description) then component.description else ""
-}
+foreach row in (
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  foreach component in device.platform.components
+  let manufacturer_name = canonicalManufacturerName(device.platform.vendor)
+  let manufacturer_slug = slugify(manufacturer_name)
+  let role_name = replace(replace(toString(component.partType), "DevicePartType.", ""), "_", " ")
+  let role_slug = slugify(role_name)
+  let component_name = if isPresent(component.name) && component.name != "" then component.name else null : String
+  let component_part_id = if isPresent(component.partId) && component.partId != "" then component.partId else null : String
+  let component_serial = if isPresent(component.serialNumber) && component.serialNumber != "" then component.serialNumber else null : String
+  let component_description = if isPresent(component.description) && component.description != "" then component.description else null : String
+  select {
+    device: device.name,
+    manufacturer: manufacturer_name,
+    manufacturer_slug: manufacturer_slug,
+    name: if isPresent(component_name) then component_name else if isPresent(component_part_id) then component_part_id else if isPresent(component_description) then component_description else role_name,
+    part_id: if isPresent(component_part_id) then component_part_id else if isPresent(component_name) then component_name else role_name,
+    serial: if isPresent(component_serial) then truncate(component_serial, 50) else if isPresent(component_part_id) then truncate(component_part_id, 50) else if isPresent(component_name) then truncate(component_name, 50) else truncate(role_name, 50),
+    role: role_name,
+    role_slug: role_slug,
+    role_color: "9e9e9e",
+    status: "active",
+    discovered: true,
+    description: if isPresent(component_description) then component_description else ""
+  }
+)
+select distinct row
 ```

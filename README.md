@@ -6,12 +6,13 @@
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v0.1.5.1` | `4.5.x` only | Current unsupported release |
+| `v0.1.6.0` | `4.5.x` only | Current unsupported release |
 
 ## Version History
 
 | Release | Summary |
 | --- | --- |
+| `v0.1.6.0` | Adds explicit diff baselines, Forward `nqe-diffs` execution for eligible `query_id` maps, and updated large-dataset guidance for baseline versus incremental syncs. |
 | `v0.1.5.1` | Patch release that validates and hardens null-VRF coalesce behavior and inventory-item serial bounds against the live dataset. |
 | `v0.1.5` | Fixes null VRF coalesce handling, imports loopback interfaces for IP attachment, and hardens inventory-item identity fallbacks. |
 | `v0.1.4.2` | CI/package patch release that applies repository formatting/import-order fixes and publishes a clean artifact line. |
@@ -58,13 +59,13 @@ This repository is provided for use at your own risk. It is an unsupported relea
 1. Install the plugin into the same Python environment as NetBox:
 
 ```bash
-pip install forward-netbox==0.1.5.1
+pip install forward-netbox==0.1.6.0
 ```
 
 If you need an offline or pinned artifact workflow, install the wheel or source archive from GitHub Releases instead:
 
 ```bash
-pip install /path/to/forward_netbox-0.1.5.1-py3-none-any.whl
+pip install /path/to/forward_netbox-0.1.6.0-py3-none-any.whl
 ```
 
 2. Enable both plugins in the NetBox configuration:
@@ -86,6 +87,8 @@ python manage.py migrate
 5. Select a Forward network for that source.
 6. Create a `Forward Sync`, choose the snapshot selector, and enable the NetBox models you want to sync.
 7. Run an adhoc ingestion, review the staged branch diff, review the recorded snapshot details and metrics, and merge when the changes look correct.
+
+For large datasets, prefer committed Forward Org Repository queries referenced by `query_id`, leave `Snapshot` at `latestProcessed`, and treat the first clean merge as the baseline. Later `latestProcessed` runs can then use Forward `nqe-diffs` instead of replaying every model as a full snapshot sync.
 
 ## Test It Yourself
 

@@ -4,6 +4,8 @@ from django.core.exceptions import ObjectDoesNotExist
 from django.db import IntegrityError
 
 from ..choices import ForwardIngestionPhaseChoices
+from ..exceptions import ForwardClientError
+from ..exceptions import ForwardConnectivityError
 from ..exceptions import ForwardDependencySkipError
 from ..exceptions import ForwardQueryError
 from ..exceptions import ForwardSearchError
@@ -37,6 +39,65 @@ class ForwardSyncRunner:
 
     def _conflict_policy(self, model_string):
         return self.MODEL_CONFLICT_POLICIES.get(model_string, "strict")
+
+    def _first_complete_coalesce_set(self, row, coalesce_sets):
+        for field_set in coalesce_sets:
+            if all(field in row and row[field] not in ("", None) for field in field_set):
+                return tuple(field_set)
+        return None
+
+    def _coalesce_identity(self, row, coalesce_sets):
+        field_set = self._first_complete_coalesce_set(row, coalesce_sets)
+        if field_set is None:
+            return None
+        return (
+            field_set,
+            tuple((field, row.get(field)) for field in field_set),
+        )
+
+    def _split_diff_rows(self, model_string, diff_rows):
+        coalesce_sets = self._model_coalesce_fields.get(model_string, [])
+        upsert_rows = []
+        delete_rows = []
+
+        for diff_row in diff_rows:
+            change_type = diff_row.get("type")
+            before = diff_row.get("before")
+            after = diff_row.get("after")
+
+            if change_type == "ADDED":
+                if not isinstance(after, dict):
+                    raise ForwardQueryError(
+                        f"Forward diff row for {model_string} was missing `after` data for ADDED."
+                    )
+                upsert_rows.append(after)
+                continue
+
+            if change_type == "DELETED":
+                if not isinstance(before, dict):
+                    raise ForwardQueryError(
+                        f"Forward diff row for {model_string} was missing `before` data for DELETED."
+                    )
+                delete_rows.append(before)
+                continue
+
+            if change_type == "MODIFIED":
+                if not isinstance(before, dict) or not isinstance(after, dict):
+                    raise ForwardQueryError(
+                        f"Forward diff row for {model_string} was missing `before`/`after` data for MODIFIED."
+                    )
+                upsert_rows.append(after)
+                if self._coalesce_identity(
+                    before, coalesce_sets
+                ) != self._coalesce_identity(after, coalesce_sets):
+                    delete_rows.append(before)
+                continue
+
+            raise ForwardQueryError(
+                f"Forward diff row for {model_string} had unsupported type `{change_type}`."
+            )
+
+        return upsert_rows, delete_rows
 
     def run(self):
         self.logger.log_info("Starting Forward ingestion sync stage.", obj=self.sync)
@@ -95,6 +156,23 @@ class ForwardSyncRunner:
             f"Using snapshot `{snapshot_id}` for network `{network_id}`.",
             obj=self.sync,
         )
+        baseline_ingestion = self.sync.latest_baseline_ingestion(
+            exclude_ingestion_id=self.ingestion.pk
+        )
+        if baseline_ingestion is None:
+            self.logger.log_info(
+                "No eligible diff baseline exists yet; this run will establish the first baseline if it completes without issues.",
+                obj=self.sync,
+            )
+        else:
+            self.logger.log_info(
+                f"Latest eligible diff baseline is ingestion `{baseline_ingestion.pk}` on snapshot `{baseline_ingestion.snapshot_id}`.",
+                obj=self.sync,
+            )
+
+        pending_deletes: dict[str, list[dict]] = {}
+        used_full = False
+        used_diff = False
 
         for model_string in self.sync.get_model_strings():
             self.logger.log_info(
@@ -110,36 +188,82 @@ class ForwardSyncRunner:
                     self._model_coalesce_fields[model_string] = (
                         default_coalesce_fields_for_model(model_string)
                     )
-                query_results = []
-                total_rows = 0
+                self.logger.init_statistics(model_string, 0)
+                model_delete_rows = pending_deletes.setdefault(model_string, [])
+                model_baseline = self.sync.incremental_diff_baseline(
+                    specs=specs,
+                    current_snapshot_id=snapshot_id,
+                    exclude_ingestion_id=self.ingestion.pk,
+                )
                 for spec in specs:
-                    self.logger.log_info(
-                        f"Running Forward {spec.execution_mode} `{spec.execution_value}` for {model_string}.",
-                        obj=self.sync,
-                    )
-                    rows = self.client.run_nqe_query(
-                        query=spec.query,
-                        query_id=spec.query_id,
-                        commit_id=spec.commit_id,
-                        snapshot_id=snapshot_id,
-                        parameters=spec.merged_parameters(query_parameters),
-                        fetch_all=True,
-                    )
-                    self.logger.log_info(
-                        f"Fetched {len(rows)} rows for {model_string} from {spec.execution_mode} `{spec.execution_value}`.",
-                        obj=self.sync,
-                    )
+                    rows = []
+                    delete_rows = []
+                    if model_baseline is not None and spec.query_id:
+                        try:
+                            self.logger.log_info(
+                                f"Running Forward NQE diff `{spec.execution_value}` for {model_string} "
+                                f"between snapshots `{model_baseline.snapshot_id}` and `{snapshot_id}`.",
+                                obj=self.sync,
+                            )
+                            diff_rows = self.client.run_nqe_diff(
+                                query_id=spec.query_id,
+                                commit_id=spec.commit_id,
+                                before_snapshot_id=model_baseline.snapshot_id,
+                                after_snapshot_id=snapshot_id,
+                                fetch_all=True,
+                            )
+                            rows, delete_rows = self._split_diff_rows(
+                                model_string, diff_rows
+                            )
+                            used_diff = True
+                            self.logger.log_info(
+                                f"Fetched {len(diff_rows)} diff rows for {model_string} from query_id `{spec.execution_value}`.",
+                                obj=self.sync,
+                            )
+                        except (ForwardClientError, ForwardConnectivityError) as exc:
+                            self.logger.log_warning(
+                                f"Forward NQE diff failed for {model_string} using `{spec.execution_value}`; falling back to full query execution: {exc}",
+                                obj=self.sync,
+                            )
+                            model_baseline = None
+
+                    if model_baseline is None or not spec.query_id:
+                        self.logger.log_info(
+                            f"Running Forward {spec.execution_mode} `{spec.execution_value}` for {model_string}.",
+                            obj=self.sync,
+                        )
+                        rows = self.client.run_nqe_query(
+                            query=spec.query,
+                            query_id=spec.query_id,
+                            commit_id=spec.commit_id,
+                            network_id=network_id,
+                            snapshot_id=snapshot_id,
+                            parameters=spec.merged_parameters(query_parameters),
+                            fetch_all=True,
+                        )
+                        used_full = True
+                        self.logger.log_info(
+                            f"Fetched {len(rows)} rows for {model_string} from {spec.execution_mode} `{spec.execution_value}`.",
+                            obj=self.sync,
+                        )
+
                     for row in rows:
                         validate_row_shape_for_model(
                             model_string,
                             row,
                             self._model_coalesce_fields[model_string],
                         )
-                    query_results.append(rows)
-                    total_rows += len(rows)
-                self.logger.init_statistics(model_string, total_rows)
-                for rows in query_results:
+                    for row in delete_rows:
+                        validate_row_shape_for_model(
+                            model_string,
+                            row,
+                            self._model_coalesce_fields[model_string],
+                        )
+                    self.logger.add_statistics_total(
+                        model_string, len(rows) + len(delete_rows)
+                    )
                     self._apply_model_rows(model_string, rows)
+                    model_delete_rows.extend(delete_rows)
                 stats = self.logger.log_data.get("statistics", {}).get(model_string, {})
                 self.logger.log_info(
                     f"Completed {model_string}: applied={stats.get('applied', 0)} failed={stats.get('failed', 0)} skipped={stats.get('skipped', 0)} total={stats.get('total', 0)}.",
@@ -163,6 +287,27 @@ class ForwardSyncRunner:
                     obj=self.sync,
                 )
                 continue
+
+        for model_string in reversed(self.sync.get_model_strings()):
+            delete_rows = pending_deletes.get(model_string, [])
+            if not delete_rows:
+                continue
+            try:
+                self._delete_model_rows(model_string, delete_rows)
+            except ForwardSyncDataError as exc:
+                self.logger.log_warning(
+                    f"Aborted delete phase for {model_string} after row failure: {exc}",
+                    obj=self.sync,
+                )
+                continue
+
+        if used_diff and used_full:
+            self.ingestion.sync_mode = "hybrid"
+        elif used_diff:
+            self.ingestion.sync_mode = "diff"
+        else:
+            self.ingestion.sync_mode = "full"
+        self.ingestion.save(update_fields=["sync_mode"])
         self.logger.log_info("Finished Forward ingestion sync stage.", obj=self.sync)
 
     def _record_issue(
@@ -489,6 +634,63 @@ class ForwardSyncRunner:
             obj=self.sync,
         )
 
+    def _delete_model_rows(self, model_string, rows):
+        handler_name = f"_delete_{model_string.replace('.', '_')}"
+        handler = getattr(self, handler_name, None)
+        if handler is None:
+            self.logger.log_warning(
+                f"No delete adapter is defined yet for {model_string}; skipping {len(rows)} rows.",
+                obj=self.sync,
+            )
+            return
+        self.logger.log_info(
+            f"Deleting {len(rows)} rows for {model_string}.",
+            obj=self.sync,
+        )
+        for row in rows:
+            try:
+                deleted = handler(row)
+                if deleted:
+                    self.logger.increment_statistics(model_string, outcome="applied")
+                else:
+                    self.logger.increment_statistics(model_string, outcome="skipped")
+            except (ForwardSearchError, ForwardQueryError) as exc:
+                logger.exception("Failed deleting %s row", model_string)
+                self.logger.increment_statistics(model_string, outcome="failed")
+                self._record_issue(
+                    model_string,
+                    str(exc),
+                    row,
+                    exception=exc,
+                    context=getattr(exc, "context", {}),
+                    defaults=getattr(exc, "defaults", {}),
+                )
+                raise ForwardSyncDataError(
+                    str(exc),
+                    model_string=model_string,
+                    context=getattr(exc, "context", {}),
+                    defaults=getattr(exc, "defaults", {}),
+                    data=row,
+                ) from exc
+            except Exception as exc:
+                logger.exception("Failed deleting %s row", model_string)
+                self.logger.increment_statistics(model_string, outcome="failed")
+                self._record_issue(
+                    model_string,
+                    str(exc),
+                    row,
+                    exception=exc,
+                )
+                raise ForwardSyncDataError(
+                    str(exc),
+                    model_string=model_string,
+                    data=row,
+                ) from exc
+        self.logger.log_info(
+            f"Finished deleting rows for {model_string}.",
+            obj=self.sync,
+        )
+
     def _ensure_site(self, row):
         from dcim.models import Site
 
@@ -703,6 +905,204 @@ class ForwardSyncRunner:
 
         return Interface.objects.filter(device=device, name=interface_name).first()
 
+    def _delete_by_coalesce(self, model, lookups):
+        filtered_lookups = [lookup for lookup in lookups if lookup]
+        if not filtered_lookups:
+            return False
+        obj = None
+        for lookup in filtered_lookups:
+            obj = self._get_unique_or_raise(model, lookup)
+            if obj is not None:
+                break
+        if obj is None:
+            return False
+        obj.delete()
+        return True
+
+    def _delete_dcim_site(self, row):
+        from dcim.models import Site
+
+        return self._delete_by_coalesce(
+            Site,
+            [
+                self._coalesce_lookup(row, "slug"),
+                self._coalesce_lookup(row, "name"),
+            ],
+        )
+
+    def _delete_dcim_manufacturer(self, row):
+        from dcim.models import Manufacturer
+
+        return self._delete_by_coalesce(
+            Manufacturer,
+            [
+                self._coalesce_lookup(row, "slug"),
+                self._coalesce_lookup(row, "name"),
+            ],
+        )
+
+    def _delete_dcim_devicerole(self, row):
+        from dcim.models import DeviceRole
+
+        return self._delete_by_coalesce(
+            DeviceRole,
+            [
+                self._coalesce_lookup(row, "slug"),
+                self._coalesce_lookup(row, "name"),
+            ],
+        )
+
+    def _delete_dcim_platform(self, row):
+        from dcim.models import Platform
+
+        return self._delete_by_coalesce(
+            Platform,
+            [
+                self._coalesce_lookup(row, "slug"),
+                self._coalesce_lookup(row, "name"),
+            ],
+        )
+
+    def _delete_dcim_devicetype(self, row):
+        from dcim.models import DeviceType
+        from dcim.models import Manufacturer
+
+        manufacturer = None
+        if row.get("manufacturer_slug"):
+            manufacturer = Manufacturer.objects.filter(
+                slug=row["manufacturer_slug"]
+            ).order_by("pk").first()
+        if manufacturer is None and row.get("manufacturer"):
+            manufacturer = Manufacturer.objects.filter(
+                name=row["manufacturer"]
+            ).order_by("pk").first()
+        if manufacturer is None:
+            return False
+
+        return self._delete_by_coalesce(
+            DeviceType,
+            [
+                {"manufacturer": manufacturer, "slug": row["slug"]}
+                if row.get("slug")
+                else {},
+                {"manufacturer": manufacturer, "model": row["model"]}
+                if row.get("model")
+                else {},
+            ],
+        )
+
+    def _delete_dcim_device(self, row):
+        from dcim.models import Device
+
+        return self._delete_by_coalesce(
+            Device,
+            [self._coalesce_lookup(row, "name")],
+        )
+
+    def _delete_dcim_virtualchassis(self, row):
+        from dcim.models import VirtualChassis
+
+        name = row.get("vc_name") or row.get("name")
+        if not name:
+            return False
+        return self._delete_by_coalesce(VirtualChassis, [{"name": name}])
+
+    def _delete_dcim_interface(self, row):
+        from dcim.models import Device
+        from dcim.models import Interface
+
+        device = Device.objects.filter(name=row.get("device")).order_by("pk").first()
+        if device is None or not row.get("name"):
+            return False
+        return self._delete_by_coalesce(
+            Interface,
+            [{"device": device, "name": row["name"]}],
+        )
+
+    def _delete_dcim_macaddress(self, row):
+        from dcim.models import MACAddress
+
+        mac_address = row.get("mac_address") or row.get("mac")
+        if not mac_address:
+            return False
+        return self._delete_by_coalesce(
+            MACAddress,
+            [{"mac_address": mac_address}],
+        )
+
+    def _delete_ipam_vlan(self, row):
+        from dcim.models import Site
+        from ipam.models import VLAN
+
+        site = None
+        if row.get("site_slug"):
+            site = Site.objects.filter(slug=row["site_slug"]).order_by("pk").first()
+        if site is None and row.get("site"):
+            site = Site.objects.filter(name=row["site"]).order_by("pk").first()
+        if site is None or row.get("vid") in (None, ""):
+            return False
+        return self._delete_by_coalesce(
+            VLAN,
+            [{"site": site, "vid": int(row["vid"])}],
+        )
+
+    def _delete_ipam_vrf(self, row):
+        from ipam.models import VRF
+
+        lookups = []
+        if row.get("rd"):
+            lookups.append({"rd": row["rd"]})
+        if row.get("name"):
+            lookups.append({"name": row["name"]})
+        return self._delete_by_coalesce(VRF, lookups)
+
+    def _delete_ipam_prefix(self, row):
+        from ipam.models import Prefix
+        from ipam.models import VRF
+
+        vrf = None
+        if row.get("vrf"):
+            vrf = VRF.objects.filter(name=row["vrf"]).order_by("pk").first()
+        lookups = []
+        if row.get("prefix") and vrf is not None:
+            lookups.append({"prefix": row["prefix"], "vrf": vrf})
+        if row.get("prefix"):
+            lookups.append({"prefix": row["prefix"]})
+        return self._delete_by_coalesce(Prefix, lookups)
+
+    def _delete_ipam_ipaddress(self, row):
+        from ipam.models import IPAddress
+        from ipam.models import VRF
+
+        vrf = None
+        if row.get("vrf"):
+            vrf = VRF.objects.filter(name=row["vrf"]).order_by("pk").first()
+        lookups = []
+        if row.get("address") and vrf is not None:
+            lookups.append({"address": row["address"], "vrf": vrf})
+        if row.get("address"):
+            lookups.append({"address": row["address"]})
+        return self._delete_by_coalesce(IPAddress, lookups)
+
+    def _delete_dcim_inventoryitem(self, row):
+        from dcim.models import Device
+        from dcim.models import InventoryItem
+
+        device = Device.objects.filter(name=row.get("device")).order_by("pk").first()
+        if device is None or not row.get("name"):
+            return False
+        return self._delete_by_coalesce(
+            InventoryItem,
+            [
+                {
+                    "device": device,
+                    "name": row["name"],
+                    "part_id": row.get("part_id") or "",
+                    "serial": row.get("serial") or "",
+                }
+            ],
+        )
+
     def _apply_dcim_site(self, row):
         self._ensure_site(row)
 
@@ -794,7 +1194,7 @@ class ForwardSyncRunner:
             "device_type": device_type,
             "platform": platform,
             "serial": row.get("serial", ""),
-            "status": row.get("status") or "active",
+            "status": row["status"],
         }
         if row.get("virtual_chassis"):
             defaults["virtual_chassis"] = self._apply_dcim_virtualchassis(

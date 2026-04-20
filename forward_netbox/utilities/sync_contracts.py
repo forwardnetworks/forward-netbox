@@ -51,6 +51,7 @@ MODEL_SYNC_CONTRACTS: dict[str, ModelSyncContract] = {
             "role",
             "role_slug",
             "role_color",
+            "status",
         ),
         allowed_coalesce_fields=("name",),
         default_coalesce_fields=(("name",),),
