@@ -21,10 +21,69 @@ from forward_netbox.models import ForwardIngestion
 from forward_netbox.models import ForwardIngestionIssue
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
+from forward_netbox.utilities.branch_budget import BranchWorkload
+from forward_netbox.utilities.branch_budget import build_branch_plan
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from forward_netbox.utilities.query_registry import QuerySpec
 from forward_netbox.utilities.sync import ForwardSyncRunner
 from forward_netbox.utilities.sync_contracts import validate_row_shape_for_model
+
+
+class ForwardBranchBudgetPlanTest(TestCase):
+    def test_under_budget_workload_uses_one_branch(self):
+        workload = BranchWorkload(
+            model_string="dcim.interface",
+            label="interfaces",
+            upsert_rows=[
+                {"device": "device-1", "name": "Ethernet1/1"},
+                {"device": "device-2", "name": "Ethernet1/1"},
+            ],
+            coalesce_fields=[["device", "name"]],
+        )
+
+        plan = build_branch_plan([workload], max_changes_per_branch=10)
+
+        self.assertEqual(len(plan), 1)
+        self.assertEqual(plan[0].estimated_changes, 2)
+
+    def test_large_device_keyed_workload_is_split_deterministically(self):
+        rows = [
+            {"device": f"device-{index // 2}", "name": f"Ethernet1/{index}"}
+            for index in range(12)
+        ]
+        workload = BranchWorkload(
+            model_string="dcim.interface",
+            label="interfaces",
+            upsert_rows=rows,
+            coalesce_fields=[["device", "name"]],
+        )
+
+        plan_a = build_branch_plan([workload], max_changes_per_branch=5)
+        plan_b = build_branch_plan([workload], max_changes_per_branch=5)
+
+        self.assertEqual(
+            [item.estimated_changes for item in plan_a],
+            [item.estimated_changes for item in plan_b],
+        )
+        self.assertTrue(all(item.estimated_changes <= 5 for item in plan_a))
+        self.assertEqual(sum(item.estimated_changes for item in plan_a), 12)
+
+    def test_oversized_single_device_bucket_fails(self):
+        workload = BranchWorkload(
+            model_string="dcim.interface",
+            label="interfaces",
+            upsert_rows=[
+                {"device": "device-1", "name": f"Ethernet1/{index}"}
+                for index in range(6)
+            ],
+            coalesce_fields=[["device", "name"]],
+        )
+
+        with self.assertRaisesRegex(
+            ForwardQueryError,
+            "device:device-1.*exceeds the branch budget",
+        ):
+            build_branch_plan([workload], max_changes_per_branch=5)
 
 
 class ForwardSyncRunnerTest(TestCase):
