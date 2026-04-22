@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import Mock
+from unittest.mock import patch
 
 from forward_netbox.exceptions import ForwardClientError
 from forward_netbox.utilities.forward_api import ForwardClient
@@ -24,6 +25,58 @@ class ForwardClientTest(TestCase):
         response = Mock()
         response.json.return_value = data
         return response
+
+    def test_request_uses_netbox_proxy_routers(self):
+        response = Mock()
+        client = Mock()
+        client.request.return_value = response
+        client_context = Mock()
+        client_context.__enter__ = Mock(return_value=client)
+        client_context.__exit__ = Mock(return_value=None)
+
+        with (
+            patch(
+                "forward_netbox.utilities.forward_api.resolve_proxies",
+                return_value={
+                    "http": None,
+                    "https": "http://proxy.example.com:3128",
+                },
+            ) as resolve_proxies,
+            patch(
+                "forward_netbox.utilities.forward_api.httpx.HTTPTransport",
+                side_effect=lambda proxy: f"transport:{proxy}",
+            ),
+            patch(
+                "forward_netbox.utilities.forward_api.httpx.Client",
+                return_value=client_context,
+            ) as http_client,
+        ):
+            result = self.client._request("GET", "/networks")
+
+        self.assertEqual(result, response)
+        resolve_proxies.assert_called_once_with(
+            url="https://fwd.app/api/networks",
+            context={
+                "client": self.client,
+                "source": self.client.source,
+            },
+        )
+        http_client.assert_called_once_with(
+            timeout=1200,
+            verify=True,
+            mounts={
+                "https://": "transport:http://proxy.example.com:3128",
+            },
+        )
+        client.request.assert_called_once_with(
+            "GET",
+            "https://fwd.app/api/networks",
+            params=None,
+            json=None,
+            headers=self.client._headers(),
+            auth=("user@example.com", "secret"),
+        )
+        response.raise_for_status.assert_called_once()
 
     def test_run_nqe_query_returns_single_page_by_default(self):
         self.client._request = Mock(

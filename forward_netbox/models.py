@@ -1,6 +1,5 @@
 import logging
 import traceback
-from uuid import uuid4
 
 from core.exceptions import SyncError
 from core.models import Job
@@ -26,7 +25,6 @@ from netbox_branching.choices import BranchStatusChoices
 from netbox_branching.contextvars import active_branch
 from netbox_branching.models import Branch
 from utilities.querysets import RestrictedQuerySet
-from utilities.request import NetBoxFakeRequest
 
 from .choices import FORWARD_SUPPORTED_MODELS
 from .choices import ForwardIngestionPhaseChoices
@@ -34,6 +32,7 @@ from .choices import ForwardSourceDeploymentChoices
 from .choices import ForwardSourceStatusChoices
 from .choices import ForwardSyncStatusChoices
 from .exceptions import ForwardSyncError
+from .utilities.branching import build_branch_request
 from .utilities.forward_api import ForwardClient
 from .utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from .utilities.logging import SyncLogging
@@ -418,8 +417,9 @@ class ForwardSync(JobsMixin, TagsMixin, ChangeLoggedModel):
             interval=None if adhoc else self.interval,
         )
 
-    def sync(self, job=None):
+    def sync(self, job=None, *, multi_branch=False, max_changes_per_branch=10000):
         from .utilities.sync import ForwardSyncRunner
+        from .utilities.multi_branch import ForwardMultiBranchExecutor
 
         if self.status in (
             ForwardSyncStatusChoices.SYNCING,
@@ -441,8 +441,32 @@ class ForwardSync(JobsMixin, TagsMixin, ChangeLoggedModel):
         self.status = ForwardSyncStatusChoices.SYNCING
         ForwardSync.objects.filter(pk=self.pk).update(status=self.status)
 
-        ingestion = ForwardIngestion.objects.create(sync=self, job=job)
+        ingestion = None
         try:
+            if multi_branch:
+                executor = ForwardMultiBranchExecutor(
+                    self,
+                    self.source.get_client(),
+                    self.logger,
+                    user=user,
+                    job=job,
+                )
+                ingestions = executor.run(
+                    max_changes_per_branch=max_changes_per_branch,
+                )
+                if not ingestions:
+                    self.status = ForwardSyncStatusChoices.COMPLETED
+                    self.logger.log_success("Forward ingestion completed.", obj=self)
+                    return
+                ingestion = ingestions[-1]
+                self.status = ForwardSyncStatusChoices.COMPLETED
+                self.logger.log_success(
+                    "Forward multi-branch ingestion completed.",
+                    obj=self,
+                )
+                return
+
+            ingestion = ForwardIngestion.objects.create(sync=self, job=job)
             branch = Branch(name=f"Forward Sync {self.name} - {timezone.now()}")
             branch.save(provision=False)
             ingestion.branch = branch
@@ -469,12 +493,13 @@ class ForwardSync(JobsMixin, TagsMixin, ChangeLoggedModel):
             current_branch = active_branch.get()
             request_token = None
             if current_request.get() is None:
-                request_token = current_request.set(
-                    NetBoxFakeRequest({"id": uuid4(), "user": user})
-                )
+                request_token = current_request.set(build_branch_request(user))
             try:
                 active_branch.set(branch)
-                runner.run()
+                try:
+                    runner.run()
+                finally:
+                    active_branch.set(None)
             finally:
                 active_branch.set(current_branch)
                 if request_token is not None:
@@ -492,6 +517,8 @@ class ForwardSync(JobsMixin, TagsMixin, ChangeLoggedModel):
         except Exception as exc:
             logger.exception("Forward sync failed")
             self.status = ForwardSyncStatusChoices.FAILED
+            if ingestion is None:
+                ingestion = ForwardIngestion.objects.create(sync=self, job=job)
             self.logger.log_failure(f"Forward ingestion failed: {exc}", obj=ingestion)
             ForwardIngestionIssue.objects.create(
                 ingestion=ingestion,
@@ -633,7 +660,7 @@ class ForwardIngestion(JobsMixin, models.Model):
                 statistics[model_string] = stats.get("current", 0) / total * 100
         return {"job_results": job_results, "statistics": statistics}
 
-    def sync_merge(self):
+    def sync_merge(self, *, mark_baseline_ready=True):
         from .utilities.merge import merge_branch
 
         forwardsync = self.sync
@@ -647,8 +674,9 @@ class ForwardIngestion(JobsMixin, models.Model):
 
         try:
             merge_branch(ingestion=self, sync_logger=forwardsync.logger)
-            self.baseline_ready = True
-            ForwardIngestion.objects.filter(pk=self.pk).update(baseline_ready=True)
+            if mark_baseline_ready:
+                self.baseline_ready = True
+                ForwardIngestion.objects.filter(pk=self.pk).update(baseline_ready=True)
             forwardsync.status = ForwardSyncStatusChoices.COMPLETED
         except Exception:
             forwardsync.status = ForwardSyncStatusChoices.FAILED

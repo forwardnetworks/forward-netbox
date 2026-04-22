@@ -30,6 +30,9 @@ Create a `Forward Source` for each Forward deployment or tenant you want to sync
 - `Verify`
   - Only shown for custom deployments.
   - Leave enabled unless the custom deployment uses a self-signed certificate.
+- Outbound proxy
+  - Forward API calls use NetBox's native outbound proxy routing.
+  - Set `HTTP_PROXIES` or `PROXY_ROUTERS` in NetBox `configuration.py`; do not configure a separate Forward plugin proxy.
 
 ### Source Behavior
 
@@ -144,6 +147,20 @@ For large datasets, prefer Org Repository-backed `query_id` maps over bundled ra
 This keeps NQE as the source of truth, lets Forward own the row-diff computation, and is the recommended operating mode for larger inventories.
 
 For very large inventories, expect the first full baseline to remain the slow path even after query optimization because NetBox must still materialize every staged object change. The largest steady-state win comes from switching later `latestProcessed` runs onto Forward `nqe-diffs`.
+
+NetBox Branching guidance favors smaller review branches. If a full baseline would stage tens or hundreds of thousands of changes, run the smoke sync with `--multi-branch --plan-only` first. The planner splits large model workloads into ordinary NetBox Branching branches using stable shard keys, with device-scoped models grouped by device.
+
+```bash
+invoke forward_netbox.smoke-sync --multi-branch --plan-only --max-changes-per-branch 10000
+```
+
+If the plan is acceptable, run the same sync with `--multi-branch --merge`. Each shard is staged in a native Branching branch and merged before the next shard runs. Only the final successful shard becomes the incremental diff baseline, so later `latestProcessed` runs can use Forward `nqe-diffs`.
+
+```bash
+invoke forward_netbox.smoke-sync --multi-branch --merge --max-changes-per-branch 10000
+```
+
+If the planner reports that one shard key exceeds the branch budget, reduce that source model with a narrower NQE map or split the source data so the largest device or coalesce-key group fits under the operational branch size.
 
 ## Forward Syncs
 

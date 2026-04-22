@@ -1,7 +1,10 @@
 import logging
 
+from core.signals import clear_events
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import IntegrityError
+from extras.events import flush_events
+from netbox.context import events_queue
 
 from ..choices import ForwardIngestionPhaseChoices
 from ..exceptions import ForwardClientError
@@ -15,6 +18,24 @@ from .sync_contracts import default_coalesce_fields_for_model
 from .sync_contracts import validate_row_shape_for_model
 
 logger = logging.getLogger("forward_netbox.sync")
+
+
+class EventsClearer:
+    def __init__(self, threshold=100):
+        self.threshold = threshold
+        self.counter = 0
+
+    def increment(self):
+        self.counter += 1
+        if self.counter >= self.threshold:
+            self.clear()
+
+    def clear(self):
+        queued_events = events_queue.get() or {}
+        if events := list(queued_events.values()):
+            flush_events(events)
+        clear_events.send(sender=None)
+        self.counter = 0
 
 
 class ForwardSyncRunner:
@@ -36,6 +57,7 @@ class ForwardSyncRunner:
         self._model_coalesce_fields: dict[str, list[list[str]]] = {}
         self._recorded_issue_ids: set[tuple] = set()
         self._failed_dependencies: dict[str, set[tuple]] = {}
+        self.events_clearer = EventsClearer()
 
     def _conflict_policy(self, model_string):
         return self.MODEL_CONFLICT_POLICIES.get(model_string, "strict")
@@ -578,6 +600,7 @@ class ForwardSyncRunner:
         for row in rows:
             try:
                 handler(row)
+                self.events_clearer.increment()
                 self.logger.increment_statistics(model_string, outcome="applied")
             except ForwardDependencySkipError as exc:
                 logger.exception("Failed applying %s row", model_string)
@@ -635,6 +658,7 @@ class ForwardSyncRunner:
             f"Finished applying rows for {model_string}.",
             obj=self.sync,
         )
+        self.events_clearer.clear()
 
     def _delete_model_rows(self, model_string, rows):
         handler_name = f"_delete_{model_string.replace('.', '_')}"
@@ -652,6 +676,7 @@ class ForwardSyncRunner:
         for row in rows:
             try:
                 deleted = handler(row)
+                self.events_clearer.increment()
                 if deleted:
                     self.logger.increment_statistics(model_string, outcome="applied")
                 else:
@@ -692,6 +717,7 @@ class ForwardSyncRunner:
             f"Finished deleting rows for {model_string}.",
             obj=self.sync,
         )
+        self.events_clearer.clear()
 
     def _ensure_site(self, row):
         from dcim.models import Site
