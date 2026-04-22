@@ -10,6 +10,8 @@ from forward_netbox.choices import ForwardSourceDeploymentChoices
 from forward_netbox.choices import ForwardSyncStatusChoices
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
+from forward_netbox.utilities.branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
+from forward_netbox.utilities.multi_branch import ForwardMultiBranchExecutor
 from forward_netbox.utilities.query_registry import get_query_specs
 
 
@@ -66,6 +68,27 @@ class Command(BaseCommand):
             default=int(os.getenv("FORWARD_SMOKE_QUERY_LIMIT", "5")),
             help="Maximum rows to fetch per query during --validate-only. Defaults to 5.",
         )
+        parser.add_argument(
+            "--multi-branch",
+            action="store_true",
+            help="Split the sync into multiple native NetBox Branching branches.",
+        )
+        parser.add_argument(
+            "--plan-only",
+            action="store_true",
+            help="Print the multi-branch plan without creating branches or applying changes.",
+        )
+        parser.add_argument(
+            "--max-changes-per-branch",
+            type=int,
+            default=int(
+                os.getenv(
+                    "FORWARD_SMOKE_MAX_CHANGES_PER_BRANCH",
+                    str(DEFAULT_MAX_CHANGES_PER_BRANCH),
+                )
+            ),
+            help="Maximum estimated changes per branch for --multi-branch.",
+        )
 
     def handle(self, *args, **options):
         username = options["username"]
@@ -79,6 +102,20 @@ class Command(BaseCommand):
             raise CommandError("Set --network-id or FORWARD_SMOKE_NETWORK_ID.")
         if options["query_limit"] < 1:
             raise CommandError("--query-limit must be at least 1.")
+        if options["max_changes_per_branch"] < 1:
+            raise CommandError("--max-changes-per-branch must be at least 1.")
+        if options["validate_only"] and options["plan_only"]:
+            raise CommandError("--validate-only and --plan-only cannot be combined.")
+        if options["plan_only"] and not options["multi_branch"]:
+            raise CommandError("--plan-only requires --multi-branch.")
+        if (
+            options["multi_branch"]
+            and not options["plan_only"]
+            and not options["merge"]
+        ):
+            raise CommandError(
+                "--multi-branch requires --merge unless using --plan-only."
+            )
 
         user_model = get_user_model()
         user = user_model.objects.filter(is_superuser=True).order_by("pk").first()
@@ -118,12 +155,22 @@ class Command(BaseCommand):
             self._run_validation_only(sync, query_limit=options["query_limit"])
             return
 
+        if options["plan_only"]:
+            self._run_plan_only(
+                sync,
+                max_changes_per_branch=options["max_changes_per_branch"],
+            )
+            return
+
         self.stdout.write(
             self.style.NOTICE(
                 f"Running smoke sync '{sync.name}' against source '{source.name}'"
             )
         )
-        sync.sync()
+        sync.sync(
+            multi_branch=options["multi_branch"],
+            max_changes_per_branch=options["max_changes_per_branch"],
+        )
         sync.refresh_from_db()
         ingestion = sync.last_ingestion
         if ingestion is None:
@@ -149,13 +196,44 @@ class Command(BaseCommand):
                 + ("" if issue_count <= 5 else f" (+{issue_count - 5} more)")
             )
 
-        if options["merge"]:
+        if options["merge"] and not options["multi_branch"]:
             self.stdout.write(self.style.NOTICE("Merging smoke sync branch"))
             ingestion.sync_merge()
             sync.refresh_from_db()
             self.stdout.write(f"Post-merge sync status: {sync.status}")
 
         self.stdout.write(self.style.SUCCESS("Forward smoke sync completed cleanly."))
+
+    def _run_plan_only(self, sync, *, max_changes_per_branch):
+        executor = ForwardMultiBranchExecutor(
+            sync,
+            sync.source.get_client(),
+            sync.logger,
+            user=sync.user,
+        )
+        context, plan = executor.plan(max_changes_per_branch=max_changes_per_branch)
+        self.stdout.write(
+            self.style.NOTICE(
+                f"Planning Forward multi-branch sync '{sync.name}' against "
+                f"network '{context['network_id']}' and snapshot '{context['snapshot_id']}' "
+                f"(selector: {context['snapshot_selector']})"
+            )
+        )
+        if not plan:
+            self.stdout.write("No branch work is needed.")
+            return
+        for item in plan:
+            self.stdout.write(
+                f"{item.index} | {item.model_string} | changes={item.estimated_changes} | "
+                f"upserts={len(item.upsert_rows)} | deletes={len(item.delete_rows)} | "
+                f"mode={item.sync_mode} | label={item.label}"
+            )
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"Planned {len(plan)} branches; max planned branch size is "
+                f"{max(item.estimated_changes for item in plan)}."
+            )
+        )
 
     def _build_source(
         self,

@@ -113,14 +113,28 @@ def docs(context):
 
 
 @task(name="smoke-sync")
-def smoke_sync(context, merge=False, validate_only=False, query_limit=5):
+def smoke_sync(
+    context,
+    merge=False,
+    validate_only=False,
+    query_limit=5,
+    multi_branch=False,
+    plan_only=False,
+    max_changes_per_branch=10000,
+):
     flags = []
     if merge:
         flags.append("--merge")
     if validate_only:
         flags.append("--validate-only")
+    if multi_branch:
+        flags.append("--multi-branch")
+    if plan_only:
+        flags.append("--plan-only")
     if query_limit != 5:
         flags.append(f"--query-limit {int(query_limit)}")
+    if max_changes_per_branch != 10000:
+        flags.append(f"--max-changes-per-branch {int(max_changes_per_branch)}")
     flag_string = f" {' '.join(flags)}" if flags else ""
     manage_py(context, f"forward_smoke_sync{flag_string}")
 

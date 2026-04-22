@@ -6,12 +6,13 @@
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v0.1.6.0` | `4.5.x` only | Current unsupported release |
+| `v0.2.0` | `4.5.x` only | Current unsupported release |
 
 ## Version History
 
 | Release | Summary |
 | --- | --- |
+| `v0.2.0` | Adds NetBox-native multi-branch baseline syncs for large datasets, uses NetBox outbound proxy routing for Forward API calls, and keeps branch event queues bounded during large imports. |
 | `v0.1.6.0` | Adds explicit diff baselines, Forward `nqe-diffs` execution for eligible `query_id` maps, and updated large-dataset guidance for baseline versus incremental syncs. |
 | `v0.1.5.1` | Patch release that validates and hardens null-VRF coalesce behavior and inventory-item serial bounds against the live dataset. |
 | `v0.1.5` | Fixes null VRF coalesce handling, imports loopback interfaces for IP attachment, and hardens inventory-item identity fallbacks. |
@@ -58,14 +59,10 @@ This repository is provided for use at your own risk. It is an unsupported relea
 
 1. Install the plugin into the same Python environment as NetBox:
 
-```bash
-pip install forward-netbox==0.1.6.0
-```
-
-If you need an offline or pinned artifact workflow, install the wheel or source archive from GitHub Releases instead:
+Install the wheel or source archive from GitHub Releases:
 
 ```bash
-pip install /path/to/forward_netbox-0.1.6.0-py3-none-any.whl
+pip install /path/to/forward_netbox-0.2.0-py3-none-any.whl
 ```
 
 2. Enable both plugins in the NetBox configuration:
@@ -129,6 +126,8 @@ Optional smoke-sync variables:
 - `FORWARD_SMOKE_MODELS` accepts a comma-separated subset such as `dcim.site,dcim.device,dcim.interface`
 - `invoke forward_netbox.smoke-sync --validate-only` runs live snapshot/query validation without executing an ingestion
 - `invoke forward_netbox.smoke-sync --merge` will merge the staged branch after a clean run
+- `invoke forward_netbox.smoke-sync --multi-branch --plan-only` prints the native NetBox Branching shard plan without creating branches
+- `invoke forward_netbox.smoke-sync --multi-branch --merge --max-changes-per-branch 10000` stages and merges large baselines in multiple native branches
 
 ## Documentation
 

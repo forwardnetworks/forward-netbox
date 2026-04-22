@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
 from django.test import TestCase
@@ -229,6 +231,19 @@ class ForwardIngestionSnapshotSummaryTest(TestCase):
         )
 
         self.assertEqual(ingestion.sync_mode, "full")
+        self.assertFalse(ingestion.baseline_ready)
+
+    def test_sync_merge_can_skip_baseline_marker_for_intermediate_branch(self):
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="1248264",
+        )
+
+        with patch("forward_netbox.utilities.merge.merge_branch"):
+            ingestion.sync_merge(mark_baseline_ready=False)
+
+        ingestion.refresh_from_db()
         self.assertFalse(ingestion.baseline_ready)
 
 
