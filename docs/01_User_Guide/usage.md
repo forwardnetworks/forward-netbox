@@ -138,6 +138,8 @@ Optional knobs:
 - `invoke forward_netbox.smoke-sync --validate-only` resolves the source/network/snapshot and executes the selected queries without creating an ingestion
 - `--query-limit` limits rows fetched per query during `--validate-only`; normal syncs page through the full NQE result set
 - `invoke forward_netbox.smoke-sync --merge` will merge the staged branch after a clean run
+- `invoke forward_netbox.smoke-sync --multi-branch --plan-only` prints the native NetBox Branching shard plan for large baselines
+- `invoke forward_netbox.smoke-sync --multi-branch --merge --max-changes-per-branch 10000` stages and merges large baselines in multiple native branches
 
 Expected result:
 

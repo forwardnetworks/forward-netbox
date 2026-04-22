@@ -5,6 +5,11 @@ import httpx
 from ..exceptions import ForwardClientError
 from ..exceptions import ForwardConnectivityError
 
+try:
+    from utilities.proxy import resolve_proxies
+except ImportError:  # pragma: no cover - NetBox always provides this at runtime.
+    resolve_proxies = None
+
 LATEST_PROCESSED_SNAPSHOT = "latestProcessed"
 DEFAULT_FORWARD_API_TIMEOUT_SECONDS = 1200
 
@@ -29,7 +34,7 @@ class ForwardClient:
         return {
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "forward-netbox/0.1.6.0",
+            "User-Agent": "forward-netbox/0.2.0",
         }
 
     def _auth(self):
@@ -37,18 +42,43 @@ class ForwardClient:
             return (self.username, self.password)
         return None
 
+    def _proxy_mounts(self, url):
+        if resolve_proxies is None:
+            return None
+        proxies = resolve_proxies(
+            url=url,
+            context={
+                "client": self,
+                "source": self.source,
+            },
+        )
+        if not proxies:
+            return None
+
+        mounts = {}
+        for protocol, proxy_url in proxies.items():
+            if not proxy_url:
+                continue
+            protocol = str(protocol).rstrip(":/")
+            mounts[f"{protocol}://"] = httpx.HTTPTransport(proxy=proxy_url)
+        return mounts or None
+
     def _request(self, method, path, *, params=None, json_body=None):
+        url = self._api_url(path)
         try:
-            response = httpx.request(
-                method,
-                self._api_url(path),
-                params=params,
-                json=json_body,
-                headers=self._headers(),
-                auth=self._auth(),
+            with httpx.Client(
                 timeout=self.timeout,
                 verify=self.verify,
-            )
+                mounts=self._proxy_mounts(url),
+            ) as client:
+                response = client.request(
+                    method,
+                    url,
+                    params=params,
+                    json=json_body,
+                    headers=self._headers(),
+                    auth=self._auth(),
+                )
             response.raise_for_status()
         except httpx.TimeoutException as exc:
             raise ForwardConnectivityError(
