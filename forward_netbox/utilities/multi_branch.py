@@ -5,13 +5,16 @@ from netbox_branching.choices import BranchStatusChoices
 from netbox_branching.contextvars import active_branch
 from netbox_branching.models import Branch
 
+from ..choices import ForwardIngestionPhaseChoices
 from ..choices import ForwardSyncStatusChoices
 from ..exceptions import ForwardClientError
 from ..exceptions import ForwardConnectivityError
 from ..exceptions import ForwardQueryError
 from .branch_budget import BranchWorkload
-from .branch_budget import build_branch_plan
+from .branch_budget import build_branch_plan_with_density
+from .branch_budget import DEFAULT_DENSITY_SAFETY_FACTOR
 from .branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
+from .branch_budget import split_workload
 from .branching import build_branch_request
 from .query_registry import get_query_specs
 from .sync import ForwardSyncRunner
@@ -19,6 +22,20 @@ from .sync_contracts import default_coalesce_fields_for_model
 from .sync_contracts import validate_row_shape_for_model
 
 DEFAULT_PREFLIGHT_ROW_LIMIT = 50
+AUTO_SPLIT_MIN_ROWS_PER_BRANCH = 1
+
+
+class BranchBudgetExceeded(SyncError):
+    def __init__(self, *, item, branch, ingestion, actual_changes, budget):
+        super().__init__(
+            f"Branch `{branch}` produced {actual_changes} changes, exceeding "
+            f"the branch budget of {budget}."
+        )
+        self.item = item
+        self.branch = branch
+        self.ingestion = ingestion
+        self.actual_changes = actual_changes
+        self.budget = budget
 
 
 class ForwardMultiBranchPlanner:
@@ -33,14 +50,17 @@ class ForwardMultiBranchPlanner:
         *,
         max_changes_per_branch=DEFAULT_MAX_CHANGES_PER_BRANCH,
         run_preflight=True,
+        model_change_density=None,
     ):
         context = self._resolve_context()
         if run_preflight:
             self._run_query_preflight(context)
         workloads = self._fetch_workloads(context)
-        plan = build_branch_plan(
+        plan = build_branch_plan_with_density(
             workloads,
             max_changes_per_branch=max_changes_per_branch,
+            model_change_density=model_change_density,
+            safety_factor=DEFAULT_DENSITY_SAFETY_FACTOR,
         )
         return context, plan
 
@@ -233,6 +253,7 @@ class ForwardMultiBranchExecutor:
         *,
         max_changes_per_branch=DEFAULT_MAX_CHANGES_PER_BRANCH,
         run_preflight=True,
+        model_change_density=None,
     ):
         planner = ForwardMultiBranchPlanner(
             self.sync,
@@ -243,11 +264,22 @@ class ForwardMultiBranchExecutor:
         return planner.build_plan(
             max_changes_per_branch=max_changes_per_branch,
             run_preflight=run_preflight,
+            model_change_density=model_change_density,
         )
 
     def run(self, *, max_changes_per_branch=DEFAULT_MAX_CHANGES_PER_BRANCH):
         self.max_changes_per_branch = max_changes_per_branch
         run_state = self.sync.get_branch_run_state()
+        persisted_density = self.sync.get_model_change_density()
+        run_state_density = run_state.get("model_change_density") or {}
+        self.model_change_density = {
+            **persisted_density,
+            **{
+                key: value
+                for key, value in run_state_density.items()
+                if isinstance(key, str)
+            },
+        }
         if run_state.get("awaiting_merge"):
             raise SyncError(
                 "Forward sync is waiting for the current shard branch to be merged."
@@ -256,6 +288,7 @@ class ForwardMultiBranchExecutor:
         context, plan = self.plan(
             max_changes_per_branch=max_changes_per_branch,
             run_preflight=next_plan_index <= 1,
+            model_change_density=self.model_change_density,
         )
         if not plan:
             self.logger.log_info("No Forward changes were returned for this run.")
@@ -276,23 +309,61 @@ class ForwardMultiBranchExecutor:
                 "total_plan_items": len(plan),
                 "auto_merge": self.sync.auto_merge,
                 "awaiting_merge": False,
+                "model_change_density": self.model_change_density,
             }
         )
 
         ingestions = []
-        start_index = next_plan_index - 1
-        for item in plan[start_index:]:
-            is_final = item.index == len(plan)
-            ingestion = self._run_plan_item(
-                item,
-                context,
-                mark_baseline_ready=is_final,
-                merge=self.sync.auto_merge,
-                total_plan_items=len(plan),
-            )
+        current_index = next_plan_index - 1
+        while current_index < len(plan):
+            item = plan[current_index]
+            is_final = current_index == len(plan) - 1
+            try:
+                ingestion = self._run_plan_item(
+                    item,
+                    context,
+                    mark_baseline_ready=is_final,
+                    merge=self.sync.auto_merge,
+                    total_plan_items=len(plan),
+                )
+            except BranchBudgetExceeded as exc:
+                self._record_model_density(
+                    exc.item.model_string,
+                    estimated_changes=exc.item.estimated_changes,
+                    actual_changes=exc.actual_changes,
+                )
+                self._cleanup_overflow_branch(exc)
+                split_items = self._split_overflow_item(exc.item)
+                if len(split_items) <= 1:
+                    raise SyncError(str(exc))
+                self.logger.log_warning(
+                    f"Auto-splitting shard {exc.item.index} for {exc.item.model_string} "
+                    f"after {exc.actual_changes} actual changes exceeded the branch budget "
+                    f"of {self.max_changes_per_branch}.",
+                    obj=self.sync,
+                )
+                plan.pop(current_index)
+                for split_item in reversed(split_items):
+                    plan.insert(current_index, split_item)
+                plan = self._reindex_plan(plan)
+                self.sync.set_branch_run_state(
+                    {
+                        "snapshot_selector": context["snapshot_selector"],
+                        "snapshot_id": context["snapshot_id"],
+                        "max_changes_per_branch": self.max_changes_per_branch,
+                        "next_plan_index": current_index + 1,
+                        "total_plan_items": len(plan),
+                        "auto_merge": self.sync.auto_merge,
+                        "awaiting_merge": False,
+                        "model_change_density": self.model_change_density,
+                    }
+                )
+                continue
+
             ingestions.append(ingestion)
             if not self.sync.auto_merge:
                 return ingestions
+            current_index += 1
 
         self.sync.clear_branch_run_state()
         return ingestions
@@ -357,10 +428,18 @@ class ForwardMultiBranchExecutor:
             )
 
         actual_changes = branch.get_unmerged_changes().count()
+        self._record_model_density(
+            item.model_string,
+            estimated_changes=item.estimated_changes,
+            actual_changes=actual_changes,
+        )
         if actual_changes > self.max_changes_per_branch:
-            raise SyncError(
-                f"Branch `{branch}` produced {actual_changes} changes, exceeding "
-                f"the branch budget of {self.max_changes_per_branch}."
+            raise BranchBudgetExceeded(
+                item=item,
+                branch=branch,
+                ingestion=ingestion,
+                actual_changes=actual_changes,
+                budget=self.max_changes_per_branch,
             )
 
         if not merge:
@@ -376,6 +455,7 @@ class ForwardMultiBranchExecutor:
                     "pending_ingestion_id": ingestion.pk,
                     "pending_plan_index": item.index,
                     "pending_is_final": mark_baseline_ready,
+                    "model_change_density": self.model_change_density,
                 }
             )
             self.sync.status = ForwardSyncStatusChoices.READY_TO_MERGE
@@ -401,6 +481,7 @@ class ForwardMultiBranchExecutor:
                     "total_plan_items": total_plan_items,
                     "auto_merge": True,
                     "awaiting_merge": False,
+                    "model_change_density": self.model_change_density,
                 }
             )
         return ingestion
@@ -446,3 +527,74 @@ class ForwardMultiBranchExecutor:
             active_branch.set(current_branch)
             if request_token is not None:
                 current_request.reset(request_token)
+
+    def _record_model_density(self, model_string, *, estimated_changes, actual_changes):
+        if estimated_changes <= 0 or actual_changes <= 0:
+            return
+        current_density = self.model_change_density.get(model_string)
+        observed_density = float(actual_changes) / float(estimated_changes)
+        if current_density is None:
+            updated_density = observed_density
+        else:
+            # Weighted moving average to dampen single-shard outliers.
+            updated_density = (0.7 * float(current_density)) + (0.3 * observed_density)
+        self.model_change_density[model_string] = max(0.01, updated_density)
+        self.sync.set_model_change_density(self.model_change_density)
+
+    def _split_overflow_item(self, item):
+        density = self.model_change_density.get(item.model_string) or 1.0
+        row_budget = int(
+            (self.max_changes_per_branch * DEFAULT_DENSITY_SAFETY_FACTOR)
+            / float(density)
+        )
+        row_budget = max(AUTO_SPLIT_MIN_ROWS_PER_BRANCH, row_budget)
+        if row_budget >= item.estimated_changes:
+            row_budget = max(
+                AUTO_SPLIT_MIN_ROWS_PER_BRANCH,
+                item.estimated_changes // 2,
+            )
+
+        workload = BranchWorkload(
+            model_string=item.model_string,
+            label=item.label,
+            upsert_rows=list(item.upsert_rows),
+            delete_rows=list(item.delete_rows),
+            sync_mode=item.sync_mode,
+            coalesce_fields=list(item.coalesce_fields),
+        )
+        split_items = split_workload(
+            workload,
+            max_changes_per_branch=row_budget,
+        )
+        return split_items
+
+    def _cleanup_overflow_branch(self, exc):
+        ingestion = exc.ingestion
+        branch = exc.branch
+        if ingestion is not None and branch is not None:
+            ingestion.issues.create(
+                message=(
+                    f"Branch budget retry: shard produced {exc.actual_changes} changes "
+                    f"against budget {exc.budget}; auto-splitting and retrying."
+                ),
+                phase=ForwardIngestionPhaseChoices.SYNC,
+            )
+            ingestion.branch = None
+            ingestion.save(update_fields=["branch"])
+            branch.delete()
+
+    def _reindex_plan(self, plan):
+        return [
+            item.__class__(
+                index=index,
+                model_string=item.model_string,
+                label=item.label,
+                estimated_changes=item.estimated_changes,
+                upsert_rows=item.upsert_rows,
+                delete_rows=item.delete_rows,
+                sync_mode=item.sync_mode,
+                coalesce_fields=item.coalesce_fields,
+                shard_keys=item.shard_keys,
+            )
+            for index, item in enumerate(plan, start=1)
+        ]

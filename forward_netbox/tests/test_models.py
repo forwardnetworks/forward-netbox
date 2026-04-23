@@ -98,6 +98,31 @@ class ForwardSyncModelTest(TestCase):
             DEFAULT_MAX_CHANGES_PER_BRANCH,
         )
 
+    def test_model_change_density_round_trip(self):
+        sync = ForwardSync.objects.create(
+            name="sync-density-round-trip",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+            },
+        )
+
+        sync.set_model_change_density(
+            {
+                "dcim.device": 9.9,
+                "dcim.interface": "4.2",
+                "invalid": "abc",
+                "dcim.site": -1,
+            }
+        )
+        sync.refresh_from_db()
+
+        self.assertEqual(
+            sync.get_model_change_density(),
+            {"dcim.device": 9.9, "dcim.interface": 4.2},
+        )
+
     @patch("forward_netbox.models.ForwardSource.get_client")
     @patch("forward_netbox.utilities.multi_branch.ForwardMultiBranchExecutor")
     def test_sync_job_uses_multi_branch_path_by_default(

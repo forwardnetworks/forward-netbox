@@ -34,6 +34,7 @@ from .choices import ForwardSyncStatusChoices
 from .exceptions import ForwardSyncError
 from .utilities.branch_budget import BRANCH_RUN_STATE_PARAMETER
 from .utilities.branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
+from .utilities.branch_budget import MODEL_CHANGE_DENSITY_PARAMETER
 from .utilities.forward_api import ForwardClient
 from .utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from .utilities.logging import SyncLogging
@@ -455,6 +456,10 @@ class ForwardSync(JobsMixin, TagsMixin, ChangeLoggedModel):
         state = (self.parameters or {}).get(BRANCH_RUN_STATE_PARAMETER) or {}
         return state if isinstance(state, dict) else {}
 
+    def get_model_change_density(self):
+        density = (self.parameters or {}).get(MODEL_CHANGE_DENSITY_PARAMETER) or {}
+        return density if isinstance(density, dict) else {}
+
     @property
     def has_pending_branch_run(self):
         state = self.get_branch_run_state()
@@ -480,6 +485,21 @@ class ForwardSync(JobsMixin, TagsMixin, ChangeLoggedModel):
             parameters.pop(BRANCH_RUN_STATE_PARAMETER, None)
             self.parameters = parameters
             ForwardSync.objects.filter(pk=self.pk).update(parameters=parameters)
+
+    def set_model_change_density(self, model_change_density):
+        normalized = {}
+        for model_string, density in (model_change_density or {}).items():
+            try:
+                density_value = float(density)
+            except (TypeError, ValueError):
+                continue
+            if density_value <= 0:
+                continue
+            normalized[str(model_string)] = density_value
+        parameters = dict(self.parameters or {})
+        parameters[MODEL_CHANGE_DENSITY_PARAMETER] = normalized
+        self.parameters = parameters
+        ForwardSync.objects.filter(pk=self.pk).update(parameters=parameters)
 
     def get_max_changes_per_branch(self):
         try:

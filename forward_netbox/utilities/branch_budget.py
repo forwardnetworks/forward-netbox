@@ -7,6 +7,8 @@ from ..exceptions import ForwardQueryError
 
 DEFAULT_MAX_CHANGES_PER_BRANCH = 10000
 BRANCH_RUN_STATE_PARAMETER = "_branch_run"
+MODEL_CHANGE_DENSITY_PARAMETER = "_model_change_density"
+DEFAULT_DENSITY_SAFETY_FACTOR = 0.7
 
 DEVICE_SHARD_MODELS = {
     "dcim.interface",
@@ -178,6 +180,67 @@ def build_branch_plan(workloads, *, max_changes_per_branch):
             split_workload(
                 workload,
                 max_changes_per_branch=max_changes_per_branch,
+            )
+        )
+    return [
+        BranchPlanItem(
+            index=index,
+            model_string=item.model_string,
+            label=item.label,
+            estimated_changes=item.estimated_changes,
+            upsert_rows=item.upsert_rows,
+            delete_rows=item.delete_rows,
+            sync_mode=item.sync_mode,
+            coalesce_fields=item.coalesce_fields,
+            shard_keys=item.shard_keys,
+        )
+        for index, item in enumerate(plan, start=1)
+    ]
+
+
+def effective_row_budget_for_model(
+    model_string,
+    *,
+    max_changes_per_branch,
+    model_change_density=None,
+    safety_factor=DEFAULT_DENSITY_SAFETY_FACTOR,
+):
+    if max_changes_per_branch < 1:
+        raise ValueError("`max_changes_per_branch` must be at least 1.")
+
+    density = (model_change_density or {}).get(model_string)
+    if density is None:
+        return max_changes_per_branch
+    try:
+        density_value = float(density)
+    except (TypeError, ValueError):
+        return max_changes_per_branch
+    if density_value <= 0:
+        return max_changes_per_branch
+
+    scaled_budget = int((max_changes_per_branch * float(safety_factor)) / density_value)
+    return max(1, min(max_changes_per_branch, scaled_budget))
+
+
+def build_branch_plan_with_density(
+    workloads,
+    *,
+    max_changes_per_branch,
+    model_change_density=None,
+    safety_factor=DEFAULT_DENSITY_SAFETY_FACTOR,
+):
+    plan = []
+    for workload in workloads:
+        model_budget = effective_row_budget_for_model(
+            workload.model_string,
+            max_changes_per_branch=max_changes_per_branch,
+            model_change_density=model_change_density,
+            safety_factor=safety_factor,
+        )
+        plan.extend(
+            split_workload(
+                workload,
+                max_changes_per_branch=model_budget,
             )
         )
     return [
