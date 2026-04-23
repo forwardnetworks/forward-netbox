@@ -23,8 +23,12 @@ from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.utilities.branch_budget import BranchWorkload
 from forward_netbox.utilities.branch_budget import build_branch_plan
+from forward_netbox.utilities.branch_budget import build_branch_plan_with_density
+from forward_netbox.utilities.branch_budget import effective_row_budget_for_model
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
+from forward_netbox.utilities.multi_branch import BranchBudgetExceeded
 from forward_netbox.utilities.multi_branch import DEFAULT_PREFLIGHT_ROW_LIMIT
+from forward_netbox.utilities.multi_branch import ForwardMultiBranchExecutor
 from forward_netbox.utilities.multi_branch import ForwardMultiBranchPlanner
 from forward_netbox.utilities.query_registry import QuerySpec
 from forward_netbox.utilities.sync import ForwardSyncRunner
@@ -86,6 +90,35 @@ class ForwardBranchBudgetPlanTest(TestCase):
             "device:device-1.*exceeds the branch budget",
         ):
             build_branch_plan([workload], max_changes_per_branch=5)
+
+    def test_effective_row_budget_scales_by_density(self):
+        budget = effective_row_budget_for_model(
+            "dcim.device",
+            max_changes_per_branch=10000,
+            model_change_density={"dcim.device": 5.0},
+        )
+
+        self.assertEqual(budget, 1400)
+
+    def test_build_branch_plan_with_density_splits_more_aggressively(self):
+        rows = [{"name": f"device-{index}"} for index in range(12)]
+        workload = BranchWorkload(
+            model_string="dcim.device",
+            label="devices",
+            upsert_rows=rows,
+            coalesce_fields=[["name"]],
+        )
+
+        default_plan = build_branch_plan([workload], max_changes_per_branch=10)
+        density_plan = build_branch_plan_with_density(
+            [workload],
+            max_changes_per_branch=10,
+            model_change_density={"dcim.device": 2.0},
+        )
+
+        self.assertEqual(len(default_plan), 2)
+        self.assertEqual(len(density_plan), 4)
+        self.assertTrue(all(item.estimated_changes <= 3 for item in density_plan))
 
 
 class ForwardMultiBranchPlannerPreflightTest(TestCase):
@@ -187,6 +220,100 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
             planner.build_plan(max_changes_per_branch=10, run_preflight=True)
 
         client.run_nqe_query.assert_called_once()
+
+
+class ForwardMultiBranchExecutorAdaptiveSplitTest(TestCase):
+    NETWORK_ID = "test-network"
+    SNAPSHOT_ID = "snapshot-under-test"
+
+    def setUp(self):
+        self.source = ForwardSource.objects.create(
+            name="source-adaptive-split",
+            type="saas",
+            url="https://fwd.app",
+            parameters={
+                "username": "user@example.com",
+                "password": "secret",
+                "verify": True,
+                "network_id": self.NETWORK_ID,
+            },
+        )
+        self.sync = ForwardSync.objects.create(
+            name="sync-adaptive-split",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+            },
+        )
+
+    def test_split_overflow_item_uses_density_based_row_budget(self):
+        workload = BranchWorkload(
+            model_string="dcim.device",
+            label="dcim.device | Forward Devices",
+            upsert_rows=[{"name": f"device-{index}"} for index in range(20)],
+            coalesce_fields=[["name"]],
+        )
+        item = build_branch_plan([workload], max_changes_per_branch=20)[0]
+        executor = ForwardMultiBranchExecutor(
+            sync=self.sync,
+            client=Mock(),
+            logger_=Mock(),
+        )
+        executor.max_changes_per_branch = 10
+        executor.model_change_density = {"dcim.device": 5.0}
+
+        split_items = executor._split_overflow_item(item)
+
+        self.assertGreater(len(split_items), 1)
+        self.assertTrue(all(part.estimated_changes <= 1 for part in split_items))
+
+    def test_run_retries_when_branch_budget_exceeded(self):
+        workload = BranchWorkload(
+            model_string="dcim.device",
+            label="dcim.device | Forward Devices",
+            upsert_rows=[{"name": f"device-{index}"} for index in range(8)],
+            coalesce_fields=[["name"]],
+        )
+        oversized_item = build_branch_plan([workload], max_changes_per_branch=10)[0]
+        split_items = build_branch_plan([workload], max_changes_per_branch=4)
+
+        executor = ForwardMultiBranchExecutor(
+            sync=self.sync,
+            client=Mock(),
+            logger_=Mock(),
+        )
+        self.sync.auto_merge = True
+        context = {
+            "snapshot_selector": "latest",
+            "snapshot_id": self.SNAPSHOT_ID,
+            "snapshot_info": {},
+            "snapshot_metrics": {},
+        }
+        executor.plan = Mock(return_value=(context, [oversized_item]))
+        executor._record_model_density = Mock()
+        executor._cleanup_overflow_branch = Mock()
+        executor._split_overflow_item = Mock(return_value=split_items)
+        executor._run_plan_item = Mock(
+            side_effect=[
+                BranchBudgetExceeded(
+                    item=oversized_item,
+                    actual_changes=25,
+                    budget=10,
+                    branch=None,
+                    ingestion=None,
+                ),
+                Mock(name="ingestion-1"),
+                Mock(name="ingestion-2"),
+            ]
+        )
+
+        ingestions = executor.run(max_changes_per_branch=10)
+
+        self.assertEqual(len(ingestions), 2)
+        self.assertEqual(executor._run_plan_item.call_count, 3)
+        self.assertEqual(executor._split_overflow_item.call_count, 1)
+        self.assertEqual(self.sync.get_branch_run_state(), {})
 
 
 class ForwardSyncRunnerTest(TestCase):
