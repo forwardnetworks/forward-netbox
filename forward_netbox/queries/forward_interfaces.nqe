@@ -52,5 +52,22 @@ loopback_interfaces =
     speed: null : Integer
   };
 
-foreach row in (ethernet_interfaces + loopback_interfaces)
+other_interfaces =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  foreach interface in device.interfaces
+  where interface.interfaceType != IfaceType.IF_ETHERNET
+  where interface.interfaceType != IfaceType.IF_LOOPBACK
+  select {
+    device: device.name,
+    name: interface.name,
+    type: "other",
+    enabled: interface.operStatus == OperStatus.UP,
+    mtu: interface.mtu,
+    description: if isPresent(interface.description) then interface.description else "",
+    speed: null : Integer
+  };
+
+foreach row in (ethernet_interfaces + loopback_interfaces + other_interfaces)
 select distinct row

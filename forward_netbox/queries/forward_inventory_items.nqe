@@ -26,7 +26,7 @@ foreach row in (
     manufacturer: manufacturer_name,
     manufacturer_slug: manufacturer_slug,
     name: if isPresent(component_name) then component_name else if isPresent(component_part_id) then component_part_id else if isPresent(component_description) then component_description else role_name,
-    part_id: if isPresent(component_part_id) then component_part_id else if isPresent(component_name) then component_name else role_name,
+    part_id: if isPresent(component_part_id) then truncate(component_part_id, 50) else if isPresent(component_name) then truncate(component_name, 50) else truncate(role_name, 50),
     serial: if isPresent(component_serial) then truncate(component_serial, 50) else if isPresent(component_part_id) then truncate(component_part_id, 50) else if isPresent(component_name) then truncate(component_name, 50) else truncate(role_name, 50),
     role: role_name,
     role_slug: role_slug,
