@@ -13,6 +13,8 @@ from forward_netbox.models import ForwardSync
 from forward_netbox.utilities.branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
 from forward_netbox.utilities.multi_branch import ForwardMultiBranchExecutor
 from forward_netbox.utilities.query_registry import get_query_specs
+from forward_netbox.utilities.sync_contracts import default_coalesce_fields_for_model
+from forward_netbox.utilities.sync_contracts import validate_row_shape_for_model
 
 
 class Command(BaseCommand):
@@ -298,6 +300,13 @@ class Command(BaseCommand):
                     parameters=spec.merged_parameters(query_parameters),
                     limit=query_limit,
                 )
+                coalesce_fields = (
+                    [list(field_set) for field_set in spec.coalesce_fields]
+                    if spec.coalesce_fields
+                    else default_coalesce_fields_for_model(model_string)
+                )
+                for row in rows:
+                    validate_row_shape_for_model(model_string, row, coalesce_fields)
                 elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
                 self.stdout.write(
                     f"{model_string} | {spec.query_name} | {spec.execution_mode} | "
