@@ -6,12 +6,13 @@
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v0.2.0` | `4.5.x` only | Current unsupported release |
+| `v0.2.1` | `4.5.x` only | Current unsupported release |
 
 ## Version History
 
 | Release | Summary |
 | --- | --- |
+| `v0.2.1` | Makes NetBox-native multi-branch execution the only UI/API sync path and exposes the branch budget in the sync form. |
 | `v0.2.0` | Adds NetBox-native multi-branch baseline syncs for large datasets, uses NetBox outbound proxy routing for Forward API calls, and keeps branch event queues bounded during large imports. |
 | `v0.1.6.0` | Adds explicit diff baselines, Forward `nqe-diffs` execution for eligible `query_id` maps, and updated large-dataset guidance for baseline versus incremental syncs. |
 | `v0.1.5.1` | Patch release that validates and hardens null-VRF coalesce behavior and inventory-item serial bounds against the live dataset. |
@@ -62,7 +63,7 @@ Current UI screenshots are stored in `docs/images/` and are captured from the cu
 - `forward-ingestions.jpg`
 - `forward-ingestion-detail.jpg`
 
-These screenshots reflect the current snapshot-aware workflow: source network on the source, snapshot selection on the sync, and snapshot details on the ingestion.
+These screenshots reflect the current snapshot-aware and native multi-branch workflow: source network on the source, snapshot selection and branch budget on the sync, and snapshot details on the ingestion. The NQE map list screenshot is filtered to built-in maps so published customer query IDs are not shown in documentation assets.
 
 ## Current Built-In Coverage
 

@@ -1,11 +1,16 @@
 from unittest.mock import patch
 
+from django.contrib.contenttypes.models import ContentType
 from django.test import TestCase
 
 from forward_netbox.choices import ForwardSourceDeploymentChoices
 from forward_netbox.exceptions import ForwardConnectivityError
 from forward_netbox.exceptions import ForwardSyncError
+from forward_netbox.forms import ForwardNQEMapForm
 from forward_netbox.forms import ForwardSourceForm
+from forward_netbox.forms import ForwardSyncForm
+from forward_netbox.models import ForwardSource
+from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 
 
 class ForwardSourceFormTest(TestCase):
@@ -61,3 +66,59 @@ class ForwardSourceFormTest(TestCase):
             "Could not connect to Forward. Verify the Forward URL and network connectivity",
             " ".join(form.non_field_errors()),
         )
+
+
+class ForwardSyncFormTest(TestCase):
+    def setUp(self):
+        self.source = ForwardSource.objects.create(
+            name="source-1",
+            type=ForwardSourceDeploymentChoices.SAAS,
+            url="https://fwd.app",
+            parameters={
+                "username": "user@example.com",
+                "password": "secret",
+                "network_id": "235937",
+            },
+        )
+
+    def test_form_preserves_auto_merge_and_forces_native_branching(self):
+        form = ForwardSyncForm(
+            data={
+                "name": "sync-1",
+                "source": self.source.pk,
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": "on",
+                "auto_merge": "",
+                "max_changes_per_branch": "10000",
+            }
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertTrue(form.instance.parameters["multi_branch"])
+        self.assertFalse(form.instance.parameters["auto_merge"])
+        self.assertFalse(form.instance.auto_merge)
+        self.assertEqual(form.instance.parameters["max_changes_per_branch"], 10000)
+
+
+class ForwardNQEMapFormTest(TestCase):
+    def test_coalesce_fields_are_not_normal_form_fields(self):
+        form = ForwardNQEMapForm()
+
+        self.assertNotIn("coalesce_fields", form.fields)
+
+    def test_form_defaults_coalesce_fields_from_model_contract(self):
+        netbox_model = ContentType.objects.get(app_label="dcim", model="site")
+        form = ForwardNQEMapForm(
+            data={
+                "name": "site-map",
+                "netbox_model": netbox_model.pk,
+                "query": 'select {\n  name: "site-a",\n  slug: "site-a"\n}',
+                "enabled": "on",
+                "weight": "100",
+            }
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+        instance = form.save(commit=False)
+        instance.clean()
+        self.assertEqual(instance.coalesce_fields, [["slug"], ["name"]])
