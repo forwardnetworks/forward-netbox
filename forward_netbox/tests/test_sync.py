@@ -24,6 +24,8 @@ from forward_netbox.models import ForwardSync
 from forward_netbox.utilities.branch_budget import BranchWorkload
 from forward_netbox.utilities.branch_budget import build_branch_plan
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
+from forward_netbox.utilities.multi_branch import DEFAULT_PREFLIGHT_ROW_LIMIT
+from forward_netbox.utilities.multi_branch import ForwardMultiBranchPlanner
 from forward_netbox.utilities.query_registry import QuerySpec
 from forward_netbox.utilities.sync import ForwardSyncRunner
 from forward_netbox.utilities.sync_contracts import validate_row_shape_for_model
@@ -84,6 +86,107 @@ class ForwardBranchBudgetPlanTest(TestCase):
             "device:device-1.*exceeds the branch budget",
         ):
             build_branch_plan([workload], max_changes_per_branch=5)
+
+
+class ForwardMultiBranchPlannerPreflightTest(TestCase):
+    def setUp(self):
+        self.source = ForwardSource.objects.create(
+            name="source-preflight",
+            type="saas",
+            url="https://fwd.app",
+            parameters={
+                "username": "user@example.com",
+                "password": "secret",
+                "verify": True,
+                "timeout": 1200,
+                "network_id": "235937",
+            },
+        )
+        self.sync = ForwardSync.objects.create(
+            name="sync-preflight",
+            source=self.source,
+            auto_merge=False,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.site": True,
+            },
+        )
+
+    @patch("forward_netbox.utilities.multi_branch.get_query_specs")
+    def test_build_plan_runs_query_preflight_before_fetching_full_rows(
+        self, mock_specs
+    ):
+        client = Mock()
+        client.get_snapshots.return_value = [
+            {
+                "id": "1248265",
+                "state": "PROCESSED",
+                "created_at": "",
+                "processed_at": "2026-03-31T12:15:00Z",
+            }
+        ]
+        client.get_snapshot_metrics.return_value = {}
+        client.run_nqe_query.side_effect = [
+            [{"name": "site-1", "slug": "site-1"}],
+            [{"name": "site-1", "slug": "site-1"}],
+        ]
+        self.sync.resolve_snapshot_id = lambda client=None: "1248265"
+        self.sync.get_model_strings = lambda: ["dcim.site"]
+        self.sync.incremental_diff_baseline = Mock(return_value=None)
+        mock_specs.return_value = [
+            QuerySpec(
+                model_string="dcim.site",
+                query_name="Forward Sites",
+                query='select {name: "site-1", slug: "site-1"}',
+            )
+        ]
+        planner = ForwardMultiBranchPlanner(
+            sync=self.sync,
+            client=client,
+            logger_=Mock(),
+        )
+
+        planner.build_plan(max_changes_per_branch=10, run_preflight=True)
+
+        first_call = client.run_nqe_query.call_args_list[0]
+        self.assertEqual(first_call.kwargs["limit"], DEFAULT_PREFLIGHT_ROW_LIMIT)
+        self.assertFalse(first_call.kwargs["fetch_all"])
+        second_call = client.run_nqe_query.call_args_list[1]
+        self.assertTrue(second_call.kwargs["fetch_all"])
+
+    @patch("forward_netbox.utilities.multi_branch.get_query_specs")
+    def test_preflight_raises_before_full_fetch_on_invalid_rows(self, mock_specs):
+        client = Mock()
+        client.get_snapshots.return_value = [
+            {
+                "id": "1248265",
+                "state": "PROCESSED",
+                "created_at": "",
+                "processed_at": "2026-03-31T12:15:00Z",
+            }
+        ]
+        client.get_snapshot_metrics.return_value = {}
+        client.run_nqe_query.return_value = [{"name": "site-1"}]
+        self.sync.resolve_snapshot_id = lambda client=None: "1248265"
+        self.sync.get_model_strings = lambda: ["dcim.site"]
+        self.sync.incremental_diff_baseline = Mock(return_value=None)
+        mock_specs.return_value = [
+            QuerySpec(
+                model_string="dcim.site",
+                query_name="Forward Sites",
+                query='select {name: "site-1"}',
+            )
+        ]
+        planner = ForwardMultiBranchPlanner(
+            sync=self.sync,
+            client=client,
+            logger_=Mock(),
+        )
+
+        with self.assertRaisesRegex(ForwardQueryError, "missing required fields: slug"):
+            planner.build_plan(max_changes_per_branch=10, run_preflight=True)
+
+        client.run_nqe_query.assert_called_once()
 
 
 class ForwardSyncRunnerTest(TestCase):
