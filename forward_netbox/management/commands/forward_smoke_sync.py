@@ -53,11 +53,6 @@ class Command(BaseCommand):
             help="Comma-separated NetBox models to enable. Defaults to all supported models.",
         )
         parser.add_argument(
-            "--merge",
-            action="store_true",
-            help="Merge the resulting branch after the sync completes successfully.",
-        )
-        parser.add_argument(
             "--validate-only",
             action="store_true",
             help="Validate snapshot resolution and built-in/custom query execution without running an ingestion.",
@@ -69,14 +64,14 @@ class Command(BaseCommand):
             help="Maximum rows to fetch per query during --validate-only. Defaults to 5.",
         )
         parser.add_argument(
-            "--multi-branch",
-            action="store_true",
-            help="Split the sync into multiple native NetBox Branching branches.",
-        )
-        parser.add_argument(
             "--plan-only",
             action="store_true",
-            help="Print the multi-branch plan without creating branches or applying changes.",
+            help="Print the native Branching shard plan without creating branches or applying changes.",
+        )
+        parser.add_argument(
+            "--no-auto-merge",
+            action="store_true",
+            help="Stage one native Branching shard and pause for manual review/merge.",
         )
         parser.add_argument(
             "--max-changes-per-branch",
@@ -87,7 +82,7 @@ class Command(BaseCommand):
                     str(DEFAULT_MAX_CHANGES_PER_BRANCH),
                 )
             ),
-            help="Maximum estimated changes per branch for --multi-branch.",
+            help="Maximum estimated changes per native Branching shard.",
         )
 
     def handle(self, *args, **options):
@@ -106,17 +101,6 @@ class Command(BaseCommand):
             raise CommandError("--max-changes-per-branch must be at least 1.")
         if options["validate_only"] and options["plan_only"]:
             raise CommandError("--validate-only and --plan-only cannot be combined.")
-        if options["plan_only"] and not options["multi_branch"]:
-            raise CommandError("--plan-only requires --multi-branch.")
-        if (
-            options["multi_branch"]
-            and not options["plan_only"]
-            and not options["merge"]
-        ):
-            raise CommandError(
-                "--multi-branch requires --merge unless using --plan-only."
-            )
-
         user_model = get_user_model()
         user = user_model.objects.filter(is_superuser=True).order_by("pk").first()
         if user is None:
@@ -149,6 +133,7 @@ class Command(BaseCommand):
             user=user,
             snapshot_id=options["snapshot_id"],
             selected_models=selected_models,
+            auto_merge=not options["no_auto_merge"],
         )
 
         if options["validate_only"]:
@@ -167,10 +152,7 @@ class Command(BaseCommand):
                 f"Running smoke sync '{sync.name}' against source '{source.name}'"
             )
         )
-        sync.sync(
-            multi_branch=options["multi_branch"],
-            max_changes_per_branch=options["max_changes_per_branch"],
-        )
+        sync.sync(max_changes_per_branch=options["max_changes_per_branch"])
         sync.refresh_from_db()
         ingestion = sync.last_ingestion
         if ingestion is None:
@@ -195,12 +177,6 @@ class Command(BaseCommand):
                 + "; ".join(messages)
                 + ("" if issue_count <= 5 else f" (+{issue_count - 5} more)")
             )
-
-        if options["merge"] and not options["multi_branch"]:
-            self.stdout.write(self.style.NOTICE("Merging smoke sync branch"))
-            ingestion.sync_merge()
-            sync.refresh_from_db()
-            self.stdout.write(f"Post-merge sync status: {sync.status}")
 
         self.stdout.write(self.style.SUCCESS("Forward smoke sync completed cleanly."))
 
@@ -262,8 +238,17 @@ class Command(BaseCommand):
         source.save()
         return source
 
-    def _build_sync(self, *, sync_name, source, user, snapshot_id, selected_models):
-        sync_parameters = {"snapshot_id": snapshot_id, "auto_merge": False}
+    def _build_sync(
+        self,
+        *,
+        sync_name,
+        source,
+        user,
+        snapshot_id,
+        selected_models,
+        auto_merge,
+    ):
+        sync_parameters = {"snapshot_id": snapshot_id, "auto_merge": auto_merge}
         for model_string in FORWARD_SUPPORTED_MODELS:
             sync_parameters[model_string] = model_string in selected_models
 
@@ -272,7 +257,7 @@ class Command(BaseCommand):
             defaults={
                 "source": source,
                 "user": user,
-                "auto_merge": False,
+                "auto_merge": auto_merge,
                 "parameters": sync_parameters,
             },
         )

@@ -49,8 +49,10 @@ Recommended first pass:
 
 - Select the source you just created.
 - Leave `Snapshot` at `latestProcessed`.
+- Leave `Max changes per branch` at `10000` unless local Branching guidance says otherwise.
 - Keep the default model selection enabled.
-- Leave `Auto merge` disabled for the first test.
+- Leave `Auto merge` enabled to advance through all native Branching shards automatically.
+- Disable `Auto merge` when you want to review and manually merge each shard before clicking `Continue Ingestion`.
 
 Expected result:
 
@@ -67,8 +69,9 @@ Expected result:
 
 - A new `Forward Ingestion` is created.
 - The sync status progresses into the branch-backed staging flow.
-- The ingestion links to the created branch and any job records.
+- The sync creates one ingestion per shard, and each shard links to its native NetBox Branching branch.
 - The ingestion records both the selected snapshot mode and the resolved snapshot ID used for NQE execution.
+- If `Auto merge` is disabled, the sync pauses after the current shard reaches `Ready to merge`.
 
 ### 5. Review The Ingestion
 
@@ -94,14 +97,13 @@ Expected result:
 
 ![Forward Ingestion Detail](../images/forward-ingestion-detail.jpg)
 
-### 6. Merge The Branch
+### 6. Confirm The Merged Branches
 
-If the staged changes are correct, merge the ingestion branch.
+With `Auto merge` enabled, Forward syncs merge each native Branching shard before the next shard runs. With `Auto merge` disabled, review and merge the current shard, then click `Continue Ingestion` on the sync to stage the next shard.
 
 Expected result:
 
-- The merge job completes successfully.
-- The branch is removed if you keep the default merge option.
+- Each shard branch is marked merged.
 - The synced objects are visible in standard NetBox object views.
 
 ## What To Check After A Successful Test
@@ -137,9 +139,11 @@ Optional knobs:
 - `FORWARD_SMOKE_MODELS` accepts a comma-separated list of enabled NetBox models
 - `invoke forward_netbox.smoke-sync --validate-only` resolves the source/network/snapshot and executes the selected queries without creating an ingestion
 - `--query-limit` limits rows fetched per query during `--validate-only`; normal syncs page through the full NQE result set
-- `invoke forward_netbox.smoke-sync --merge` will merge the staged branch after a clean run
-- `invoke forward_netbox.smoke-sync --multi-branch --plan-only` prints the native NetBox Branching shard plan for large baselines
-- `invoke forward_netbox.smoke-sync --multi-branch --merge --max-changes-per-branch 10000` stages and merges large baselines in multiple native branches
+- `invoke forward_netbox.smoke-sync --plan-only --max-changes-per-branch 10000` prints the native NetBox Branching shard plan for large baselines
+- `invoke forward_netbox.smoke-sync --max-changes-per-branch 10000` stages and merges large baselines in multiple native branches
+- `invoke forward_netbox.smoke-sync --no-auto-merge --max-changes-per-branch 10000` stages one native Branching shard and pauses for review
+
+The normal UI/API `Run Sync` path uses the same native multi-branch execution. Use the command-line smoke sync when you need explicit plan-only output or a targeted model subset.
 
 Expected result:
 
