@@ -18,6 +18,8 @@ from .sync import ForwardSyncRunner
 from .sync_contracts import default_coalesce_fields_for_model
 from .sync_contracts import validate_row_shape_for_model
 
+DEFAULT_PREFLIGHT_ROW_LIMIT = 50
+
 
 class ForwardMultiBranchPlanner:
     def __init__(self, sync, client, logger_, *, branch_run_state=None):
@@ -26,14 +28,53 @@ class ForwardMultiBranchPlanner:
         self.logger = logger_
         self.branch_run_state = branch_run_state or {}
 
-    def build_plan(self, *, max_changes_per_branch=DEFAULT_MAX_CHANGES_PER_BRANCH):
+    def build_plan(
+        self,
+        *,
+        max_changes_per_branch=DEFAULT_MAX_CHANGES_PER_BRANCH,
+        run_preflight=True,
+    ):
         context = self._resolve_context()
+        if run_preflight:
+            self._run_query_preflight(context)
         workloads = self._fetch_workloads(context)
         plan = build_branch_plan(
             workloads,
             max_changes_per_branch=max_changes_per_branch,
         )
         return context, plan
+
+    def _run_query_preflight(self, context):
+        self.logger.log_info(
+            "Running Forward query preflight before full multi-branch planning.",
+            obj=self.sync,
+        )
+        for model_string in self.sync.get_model_strings():
+            specs = get_query_specs(model_string, maps=context["maps"])
+            if specs:
+                coalesce_fields = [
+                    list(field_set) for field_set in specs[0].coalesce_fields
+                ] or default_coalesce_fields_for_model(model_string)
+            else:
+                coalesce_fields = default_coalesce_fields_for_model(model_string)
+
+            for spec in specs:
+                preflight_rows = self.client.run_nqe_query(
+                    query=spec.query,
+                    query_id=spec.query_id,
+                    commit_id=spec.commit_id,
+                    network_id=context["network_id"],
+                    snapshot_id=context["snapshot_id"],
+                    parameters=spec.merged_parameters(context["query_parameters"]),
+                    limit=DEFAULT_PREFLIGHT_ROW_LIMIT,
+                    fetch_all=False,
+                )
+                for row in preflight_rows:
+                    validate_row_shape_for_model(model_string, row, coalesce_fields)
+                self.logger.log_info(
+                    f"Preflight validated {len(preflight_rows)} rows for {model_string} from {spec.execution_mode} `{spec.execution_value}`.",
+                    obj=self.sync,
+                )
 
     def _resolve_context(self):
         network_id = self.sync.get_network_id()
@@ -187,14 +228,22 @@ class ForwardMultiBranchExecutor:
         self.job = job
         self.current_ingestion = None
 
-    def plan(self, *, max_changes_per_branch=DEFAULT_MAX_CHANGES_PER_BRANCH):
+    def plan(
+        self,
+        *,
+        max_changes_per_branch=DEFAULT_MAX_CHANGES_PER_BRANCH,
+        run_preflight=True,
+    ):
         planner = ForwardMultiBranchPlanner(
             self.sync,
             self.client,
             self.logger,
             branch_run_state=self.sync.get_branch_run_state(),
         )
-        return planner.build_plan(max_changes_per_branch=max_changes_per_branch)
+        return planner.build_plan(
+            max_changes_per_branch=max_changes_per_branch,
+            run_preflight=run_preflight,
+        )
 
     def run(self, *, max_changes_per_branch=DEFAULT_MAX_CHANGES_PER_BRANCH):
         self.max_changes_per_branch = max_changes_per_branch
@@ -203,13 +252,16 @@ class ForwardMultiBranchExecutor:
             raise SyncError(
                 "Forward sync is waiting for the current shard branch to be merged."
             )
-        context, plan = self.plan(max_changes_per_branch=max_changes_per_branch)
+        next_plan_index = int(run_state.get("next_plan_index") or 1)
+        context, plan = self.plan(
+            max_changes_per_branch=max_changes_per_branch,
+            run_preflight=next_plan_index <= 1,
+        )
         if not plan:
             self.logger.log_info("No Forward changes were returned for this run.")
             self.sync.clear_branch_run_state()
             return [self._create_noop_ingestion(context)]
 
-        next_plan_index = int(run_state.get("next_plan_index") or 1)
         if next_plan_index > len(plan):
             self.sync.clear_branch_run_state()
             self.logger.log_info("Forward multi-branch sync already completed.")
