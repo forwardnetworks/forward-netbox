@@ -12,31 +12,32 @@ Install the plugin package, enable the required plugins, run the migrations, and
 Install the wheel from GitHub Releases into the same Python environment as NetBox:
 
 ```bash
-pip install /path/to/forward_netbox-0.2.0-py3-none-any.whl
+pip install /path/to/forward_netbox-0.2.1-py3-none-any.whl
 ```
 
 Alternatively, install directly from the GitHub source archive:
 
 ```bash
-pip install /path/to/forward_netbox-0.2.0.tar.gz
+pip install /path/to/forward_netbox-0.2.1.tar.gz
 ```
 
 If you mirror the package into a private Python index, pin the same release version:
 
 ```bash
-pip install forward-netbox==0.2.0
+pip install forward-netbox==0.2.1
 ```
 
 ## Release Compatibility
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v0.2.0` | `4.5.x` only | Current unsupported release |
+| `v0.2.1` | `4.5.x` only | Current unsupported release |
 
 ## Version History
 
 | Release | Summary |
 | --- | --- |
+| `v0.2.1` | Makes NetBox-native multi-branch execution the only UI/API sync path and exposes the branch budget in the sync form. |
 | `v0.2.0` | Adds NetBox-native multi-branch baseline syncs for large datasets, uses NetBox outbound proxy routing for Forward API calls, and keeps branch event queues bounded during large imports. |
 | `v0.1.6.0` | Adds explicit diff baselines, Forward `nqe-diffs` execution for eligible `query_id` maps, and updated large-dataset guidance for baseline versus incremental syncs. |
 | `v0.1.5.1` | Patch release that validates and hardens null-VRF coalesce behavior and inventory-item serial bounds against the live dataset. |

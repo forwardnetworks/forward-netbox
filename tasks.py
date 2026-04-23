@@ -115,22 +115,19 @@ def docs(context):
 @task(name="smoke-sync")
 def smoke_sync(
     context,
-    merge=False,
     validate_only=False,
     query_limit=5,
-    multi_branch=False,
     plan_only=False,
+    no_auto_merge=False,
     max_changes_per_branch=10000,
 ):
     flags = []
-    if merge:
-        flags.append("--merge")
     if validate_only:
         flags.append("--validate-only")
-    if multi_branch:
-        flags.append("--multi-branch")
     if plan_only:
         flags.append("--plan-only")
+    if no_auto_merge:
+        flags.append("--no-auto-merge")
     if query_limit != 5:
         flags.append(f"--query-limit {int(query_limit)}")
     if max_changes_per_branch != 10000:

@@ -1,4 +1,5 @@
 from core.choices import ObjectChangeActionChoices
+from core.exceptions import SyncError
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.db import models
@@ -219,8 +220,13 @@ class ForwardStartSyncView(BaseObjectView):
 
     def post(self, request, pk):
         sync = get_object_or_404(self.queryset, pk=pk)
-        job = sync.enqueue_sync_job(user=request.user, adhoc=True)
-        messages.success(request, f"Queued job #{job.pk} to run {sync}.")
+        try:
+            job = sync.enqueue_sync_job(user=request.user, adhoc=True)
+        except SyncError as exc:
+            messages.error(request, str(exc))
+            return redirect(sync.get_absolute_url())
+        action = "continue" if sync.has_pending_branch_run else "run"
+        messages.success(request, f"Queued job #{job.pk} to {action} {sync}.")
         return redirect(sync.get_absolute_url())
 
 

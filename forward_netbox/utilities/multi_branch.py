@@ -20,10 +20,11 @@ from .sync_contracts import validate_row_shape_for_model
 
 
 class ForwardMultiBranchPlanner:
-    def __init__(self, sync, client, logger_):
+    def __init__(self, sync, client, logger_, *, branch_run_state=None):
         self.sync = sync
         self.client = client
         self.logger = logger_
+        self.branch_run_state = branch_run_state or {}
 
     def build_plan(self, *, max_changes_per_branch=DEFAULT_MAX_CHANGES_PER_BRANCH):
         context = self._resolve_context()
@@ -36,8 +37,13 @@ class ForwardMultiBranchPlanner:
 
     def _resolve_context(self):
         network_id = self.sync.get_network_id()
-        snapshot_selector = self.sync.get_snapshot_id()
-        snapshot_id = self.sync.resolve_snapshot_id(self.client)
+        snapshot_selector = (
+            self.branch_run_state.get("snapshot_selector")
+            or self.sync.get_snapshot_id()
+        )
+        snapshot_id = self.branch_run_state.get("snapshot_id")
+        if not snapshot_id:
+            snapshot_id = self.sync.resolve_snapshot_id(self.client)
         if not network_id:
             raise ForwardQueryError(
                 "Forward sync requires a network ID on the sync or its source."
@@ -47,7 +53,7 @@ class ForwardMultiBranchPlanner:
                 "Forward sync requires a snapshot ID for NQE execution."
             )
         snapshot_info = {}
-        if snapshot_selector == snapshot_id:
+        if snapshot_selector == snapshot_id or self.branch_run_state:
             for snapshot in self.client.get_snapshots(network_id):
                 if snapshot["id"] == snapshot_id:
                     snapshot_info = {
@@ -179,23 +185,64 @@ class ForwardMultiBranchExecutor:
         self.logger = logger_
         self.user = user
         self.job = job
+        self.current_ingestion = None
 
     def plan(self, *, max_changes_per_branch=DEFAULT_MAX_CHANGES_PER_BRANCH):
-        planner = ForwardMultiBranchPlanner(self.sync, self.client, self.logger)
+        planner = ForwardMultiBranchPlanner(
+            self.sync,
+            self.client,
+            self.logger,
+            branch_run_state=self.sync.get_branch_run_state(),
+        )
         return planner.build_plan(max_changes_per_branch=max_changes_per_branch)
 
     def run(self, *, max_changes_per_branch=DEFAULT_MAX_CHANGES_PER_BRANCH):
         self.max_changes_per_branch = max_changes_per_branch
+        run_state = self.sync.get_branch_run_state()
+        if run_state.get("awaiting_merge"):
+            raise SyncError(
+                "Forward sync is waiting for the current shard branch to be merged."
+            )
         context, plan = self.plan(max_changes_per_branch=max_changes_per_branch)
         if not plan:
             self.logger.log_info("No Forward changes were returned for this run.")
+            self.sync.clear_branch_run_state()
             return [self._create_noop_ingestion(context)]
 
+        next_plan_index = int(run_state.get("next_plan_index") or 1)
+        if next_plan_index > len(plan):
+            self.sync.clear_branch_run_state()
+            self.logger.log_info("Forward multi-branch sync already completed.")
+            return []
+
+        self.sync.set_branch_run_state(
+            {
+                "snapshot_selector": context["snapshot_selector"],
+                "snapshot_id": context["snapshot_id"],
+                "max_changes_per_branch": max_changes_per_branch,
+                "next_plan_index": next_plan_index,
+                "total_plan_items": len(plan),
+                "auto_merge": self.sync.auto_merge,
+                "awaiting_merge": False,
+            }
+        )
+
         ingestions = []
-        for offset, item in enumerate(plan):
-            is_final = offset == len(plan) - 1
-            ingestion = self._run_plan_item(item, context, mark_baseline_ready=is_final)
+        start_index = next_plan_index - 1
+        for item in plan[start_index:]:
+            is_final = item.index == len(plan)
+            ingestion = self._run_plan_item(
+                item,
+                context,
+                mark_baseline_ready=is_final,
+                merge=self.sync.auto_merge,
+                total_plan_items=len(plan),
+            )
             ingestions.append(ingestion)
+            if not self.sync.auto_merge:
+                return ingestions
+
+        self.sync.clear_branch_run_state()
         return ingestions
 
     def _create_noop_ingestion(self, context):
@@ -216,7 +263,9 @@ class ForwardMultiBranchExecutor:
             self.job.save(update_fields=["object_type", "object_id"])
         return ingestion
 
-    def _run_plan_item(self, item, context, *, mark_baseline_ready):
+    def _run_plan_item(
+        self, item, context, *, mark_baseline_ready, merge, total_plan_items
+    ):
         from ..models import ForwardIngestion
 
         self.sync.status = ForwardSyncStatusChoices.SYNCING
@@ -224,6 +273,7 @@ class ForwardMultiBranchExecutor:
             status=self.sync.status
         )
         ingestion = ForwardIngestion.objects.create(sync=self.sync, job=self.job)
+        self.current_ingestion = ingestion
         branch = Branch(
             name=f"Forward Sync {self.sync.name} - part {item.index} {item.model_string}"
         )
@@ -261,7 +311,46 @@ class ForwardMultiBranchExecutor:
                 f"the branch budget of {self.max_changes_per_branch}."
             )
 
+        if not merge:
+            self.sync.set_branch_run_state(
+                {
+                    "snapshot_selector": context["snapshot_selector"],
+                    "snapshot_id": context["snapshot_id"],
+                    "max_changes_per_branch": self.max_changes_per_branch,
+                    "next_plan_index": item.index + 1,
+                    "total_plan_items": total_plan_items,
+                    "auto_merge": False,
+                    "awaiting_merge": True,
+                    "pending_ingestion_id": ingestion.pk,
+                    "pending_plan_index": item.index,
+                    "pending_is_final": mark_baseline_ready,
+                }
+            )
+            self.sync.status = ForwardSyncStatusChoices.READY_TO_MERGE
+            self.sync.__class__.objects.filter(pk=self.sync.pk).update(
+                status=self.sync.status,
+            )
+            self.logger.log_info(
+                f"Forward sync paused after shard {item.index}/{total_plan_items}; merge the branch to continue.",
+                obj=ingestion,
+            )
+            return ingestion
+
         ingestion.sync_merge(mark_baseline_ready=mark_baseline_ready)
+        if mark_baseline_ready:
+            self.sync.clear_branch_run_state()
+        else:
+            self.sync.set_branch_run_state(
+                {
+                    "snapshot_selector": context["snapshot_selector"],
+                    "snapshot_id": context["snapshot_id"],
+                    "max_changes_per_branch": self.max_changes_per_branch,
+                    "next_plan_index": item.index + 1,
+                    "total_plan_items": total_plan_items,
+                    "auto_merge": True,
+                    "awaiting_merge": False,
+                }
+            )
         return ingestion
 
     def _run_item_in_branch(self, item, context, ingestion, branch):

@@ -1,8 +1,10 @@
 from core.api.serializers_.jobs import JobSerializer
+from core.exceptions import SyncError
 from django.core.exceptions import PermissionDenied
 from drf_spectacular.utils import extend_schema
 from netbox.api.viewsets import NetBoxModelViewSet
 from netbox.api.viewsets import NetBoxReadOnlyModelViewSet
+from rest_framework import status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
@@ -205,7 +207,10 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
                 "This user does not have permission to run a Forward sync."
             )
         sync = self.get_object()
-        job = sync.enqueue_sync_job(user=request.user, adhoc=True)
+        try:
+            job = sync.enqueue_sync_job(user=request.user, adhoc=True)
+        except SyncError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
         return Response(
             JobSerializer(job, context={"request": request}).data, status=201
         )

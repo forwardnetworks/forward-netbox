@@ -1,5 +1,6 @@
 from unittest.mock import patch
 
+from core.exceptions import SyncError
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
 from django.test import TestCase
@@ -9,6 +10,7 @@ from forward_netbox.models import ForwardNQEMap
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.signals import seed_builtin_nqe_maps
+from forward_netbox.utilities.branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from forward_netbox.utilities.query_registry import builtin_nqe_map_rows
 from forward_netbox.utilities.query_registry import QuerySpec
@@ -49,6 +51,146 @@ class ForwardSyncModelTest(TestCase):
 
         self.assertIn("Unsupported Forward sync keys", str(ctx.exception))
         self.assertIn("query_overrides", str(ctx.exception))
+
+    def test_sync_forces_native_branching_budget(self):
+        sync = ForwardSync(
+            name="sync-default-branching",
+            source=self.source,
+            auto_merge=False,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "auto_merge": False,
+                "multi_branch": False,
+                "dcim.device": True,
+            },
+        )
+
+        sync.clean()
+
+        self.assertTrue(sync.uses_multi_branch())
+        self.assertEqual(
+            sync.get_max_changes_per_branch(),
+            DEFAULT_MAX_CHANGES_PER_BRANCH,
+        )
+        self.assertTrue(sync.get_display_parameters()["multi_branch"])
+        self.assertFalse(sync.get_display_parameters()["auto_merge"])
+        self.assertFalse(sync.auto_merge)
+
+    def test_save_forces_native_branching_execution_flags(self):
+        sync = ForwardSync.objects.create(
+            name="sync-forced-branching-save",
+            source=self.source,
+            auto_merge=False,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "auto_merge": False,
+                "multi_branch": False,
+                "max_changes_per_branch": "invalid",
+                "dcim.device": True,
+            },
+        )
+
+        self.assertFalse(sync.auto_merge)
+        self.assertFalse(sync.parameters["auto_merge"])
+        self.assertTrue(sync.parameters["multi_branch"])
+        self.assertEqual(
+            sync.parameters["max_changes_per_branch"],
+            DEFAULT_MAX_CHANGES_PER_BRANCH,
+        )
+
+    @patch("forward_netbox.models.ForwardSource.get_client")
+    @patch("forward_netbox.utilities.multi_branch.ForwardMultiBranchExecutor")
+    def test_sync_job_uses_multi_branch_path_by_default(
+        self,
+        mock_executor_class,
+        _mock_get_client,
+    ):
+        mock_executor = mock_executor_class.return_value
+        mock_executor.run.return_value = []
+        sync = ForwardSync.objects.create(
+            name="sync-default-exec",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+            },
+        )
+
+        sync.sync()
+
+        mock_executor.run.assert_called_once_with(
+            max_changes_per_branch=DEFAULT_MAX_CHANGES_PER_BRANCH,
+        )
+
+    def test_enqueue_rejects_sync_waiting_for_branch_merge(self):
+        sync = ForwardSync.objects.create(
+            name="sync-awaiting-merge-enqueue",
+            source=self.source,
+            status="ready_to_merge",
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+                "_branch_run": {
+                    "snapshot_id": "1248264",
+                    "next_plan_index": 2,
+                    "total_plan_items": 3,
+                    "awaiting_merge": True,
+                },
+            },
+        )
+
+        with self.assertRaises(SyncError):
+            sync.enqueue_sync_job(adhoc=True)
+
+        sync.refresh_from_db()
+        self.assertEqual(sync.status, "ready_to_merge")
+
+    def test_sync_does_not_fail_sync_waiting_for_branch_merge(self):
+        sync = ForwardSync.objects.create(
+            name="sync-awaiting-merge-run",
+            source=self.source,
+            status="ready_to_merge",
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+                "_branch_run": {
+                    "snapshot_id": "1248264",
+                    "next_plan_index": 2,
+                    "total_plan_items": 3,
+                    "awaiting_merge": True,
+                },
+            },
+        )
+
+        sync.sync()
+
+        sync.refresh_from_db()
+        self.assertEqual(sync.status, "ready_to_merge")
+
+    @patch("forward_netbox.models.ForwardSource.get_client")
+    @patch("forward_netbox.utilities.multi_branch.ForwardMultiBranchExecutor")
+    def test_sync_failure_records_issue_on_current_executor_ingestion(
+        self,
+        mock_executor_class,
+        _mock_get_client,
+    ):
+        sync = ForwardSync.objects.create(
+            name="sync-current-ingestion-failure",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+            },
+        )
+        ingestion = ForwardIngestion.objects.create(sync=sync)
+        mock_executor = mock_executor_class.return_value
+        mock_executor.current_ingestion = ingestion
+        mock_executor.run.side_effect = RuntimeError("boom")
+
+        sync.sync()
+
+        self.assertEqual(ForwardIngestion.objects.filter(sync=sync).count(), 1)
+        self.assertTrue(ingestion.issues.filter(message="boom").exists())
 
     def test_latest_baseline_ingestion_returns_latest_ready_snapshot(self):
         sync = ForwardSync.objects.create(
@@ -245,6 +387,84 @@ class ForwardIngestionSnapshotSummaryTest(TestCase):
 
         ingestion.refresh_from_db()
         self.assertFalse(ingestion.baseline_ready)
+
+    def test_sync_merge_uses_shared_signal_suppression_context(self):
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="1248264",
+        )
+
+        with (
+            patch(
+                "forward_netbox.models.suppress_branch_merge_side_effect_signals"
+            ) as mock_suppress,
+            patch("forward_netbox.utilities.merge.merge_branch"),
+        ):
+            ingestion.sync_merge(mark_baseline_ready=False)
+
+        mock_suppress.assert_called_once_with()
+
+    def test_sync_merge_advances_gated_branch_run_after_review_merge(self):
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="1248264",
+        )
+        self.sync.set_branch_run_state(
+            {
+                "snapshot_selector": LATEST_PROCESSED_SNAPSHOT,
+                "snapshot_id": "1248264",
+                "max_changes_per_branch": DEFAULT_MAX_CHANGES_PER_BRANCH,
+                "next_plan_index": 2,
+                "total_plan_items": 3,
+                "auto_merge": False,
+                "awaiting_merge": True,
+                "pending_ingestion_id": ingestion.pk,
+                "pending_plan_index": 1,
+                "pending_is_final": False,
+            }
+        )
+
+        with patch("forward_netbox.utilities.merge.merge_branch"):
+            ingestion.sync_merge()
+
+        self.sync.refresh_from_db()
+        ingestion.refresh_from_db()
+        state = self.sync.get_branch_run_state()
+        self.assertFalse(ingestion.baseline_ready)
+        self.assertFalse(state["awaiting_merge"])
+        self.assertEqual(state["next_plan_index"], 2)
+        self.assertTrue(self.sync.ready_to_continue_sync)
+
+    def test_sync_merge_clears_gated_branch_run_after_final_merge(self):
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="1248264",
+        )
+        self.sync.set_branch_run_state(
+            {
+                "snapshot_selector": LATEST_PROCESSED_SNAPSHOT,
+                "snapshot_id": "1248264",
+                "max_changes_per_branch": DEFAULT_MAX_CHANGES_PER_BRANCH,
+                "next_plan_index": 4,
+                "total_plan_items": 3,
+                "auto_merge": False,
+                "awaiting_merge": True,
+                "pending_ingestion_id": ingestion.pk,
+                "pending_plan_index": 3,
+                "pending_is_final": True,
+            }
+        )
+
+        with patch("forward_netbox.utilities.merge.merge_branch"):
+            ingestion.sync_merge()
+
+        self.sync.refresh_from_db()
+        ingestion.refresh_from_db()
+        self.assertTrue(ingestion.baseline_ready)
+        self.assertEqual(self.sync.get_branch_run_state(), {})
 
 
 class ForwardNQEMapModelTest(TestCase):

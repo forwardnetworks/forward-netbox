@@ -3,10 +3,6 @@ from datetime import timedelta
 
 from core.choices import JobStatusChoices
 from core.exceptions import SyncError
-from dcim.models import Site
-from dcim.models import VirtualChassis
-from dcim.signals import assign_virtualchassis_master
-from django.db.models import signals
 from netbox.context_managers import event_tracking
 from rq.timeouts import JobTimeoutException
 from utilities.datetime import local_now
@@ -20,11 +16,6 @@ from .models import ForwardSync
 from .utilities.logging import SyncLogging
 
 logger = logging.getLogger(__name__)
-
-try:
-    from dcim.signals import sync_cached_scope_fields
-except ImportError:  # pragma: no cover - compatibility with older NetBox point releases
-    sync_cached_scope_fields = None
 
 
 def safe_save_job_data(job, obj_with_logger):
@@ -160,21 +151,7 @@ def merge_forwardingestion(job, remove_branch=False, *args, **kwargs):
         ingestion.save(update_fields=["merge_job"])
         ingestion.sync.logger = SyncLogging(job=job.pk)
         with event_tracking(request):
-            try:
-                signals.post_save.disconnect(
-                    assign_virtualchassis_master,
-                    sender=VirtualChassis,
-                )
-                if sync_cached_scope_fields is not None:
-                    signals.post_save.disconnect(sync_cached_scope_fields, sender=Site)
-                ingestion.sync_merge()
-            finally:
-                signals.post_save.connect(
-                    assign_virtualchassis_master,
-                    sender=VirtualChassis,
-                )
-                if sync_cached_scope_fields is not None:
-                    signals.post_save.connect(sync_cached_scope_fields, sender=Site)
+            ingestion.sync_merge()
 
         if (
             remove_branch

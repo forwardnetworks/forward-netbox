@@ -22,6 +22,7 @@ from .exceptions import ForwardSyncError
 from .models import ForwardNQEMap
 from .models import ForwardSource
 from .models import ForwardSync
+from .utilities.branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
 from .utilities.forward_api import DEFAULT_FORWARD_API_TIMEOUT_SECONDS
 from .utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 
@@ -311,7 +312,17 @@ class ForwardSyncForm(NetBoxModelForm):
     auto_merge = forms.BooleanField(
         required=False,
         label="Auto merge",
-        help_text="Automatically merge the staged branch into main NetBox after a successful sync.",
+        initial=True,
+        help_text=(
+            "Automatically merge each native Branching shard and continue to the next shard. "
+            "Leave unchecked to pause for review after each shard."
+        ),
+    )
+    max_changes_per_branch = forms.IntegerField(
+        required=False,
+        min_value=1,
+        label="Max changes per branch",
+        help_text="Maximum planned changes per native Branching shard.",
     )
     snapshot_id = forms.ChoiceField(
         required=False,
@@ -349,7 +360,11 @@ class ForwardSyncForm(NetBoxModelForm):
         kwargs["initial"] = initial
         super().__init__(*args, **kwargs)
         parameters = self.instance.parameters or {}
-        self.fields["auto_merge"].initial = parameters.get("auto_merge", False)
+        self.fields["auto_merge"].initial = parameters.get("auto_merge", True)
+        self.fields["max_changes_per_branch"].initial = parameters.get(
+            "max_changes_per_branch",
+            DEFAULT_MAX_CHANGES_PER_BRANCH,
+        )
         selected_snapshot_id = (
             self.data.get("snapshot_id")
             if self.is_bound
@@ -373,7 +388,13 @@ class ForwardSyncForm(NetBoxModelForm):
             FieldSet("name", "source", name="Forward Sync"),
             FieldSet("snapshot_id", name="Snapshot"),
             FieldSet(*FORWARD_SUPPORTED_MODELS, name="Model Selection"),
-            FieldSet("auto_merge", "scheduled", "interval", name="Scheduling"),
+            FieldSet(
+                "max_changes_per_branch",
+                "auto_merge",
+                "scheduled",
+                "interval",
+                name="Execution",
+            ),
             FieldSet("tags", name="Tags"),
         ]
 
@@ -408,6 +429,9 @@ class ForwardSyncForm(NetBoxModelForm):
             raise forms.ValidationError("Select at least one NetBox model to sync.")
         parameters = {
             "auto_merge": cleaned.get("auto_merge", False),
+            "multi_branch": True,
+            "max_changes_per_branch": cleaned.get("max_changes_per_branch")
+            or DEFAULT_MAX_CHANGES_PER_BRANCH,
             "snapshot_id": snapshot_id,
         }
         for model_string in FORWARD_SUPPORTED_MODELS:
@@ -419,6 +443,9 @@ class ForwardSyncForm(NetBoxModelForm):
     def save(self, *args, **kwargs):
         parameters = {
             "auto_merge": self.cleaned_data.get("auto_merge", False),
+            "multi_branch": True,
+            "max_changes_per_branch": self.cleaned_data.get("max_changes_per_branch")
+            or DEFAULT_MAX_CHANGES_PER_BRANCH,
             "snapshot_id": self.cleaned_data.get("snapshot_id")
             or LATEST_PROCESSED_SNAPSHOT,
         }
@@ -452,11 +479,6 @@ class ForwardNQEMapForm(NetBoxModelForm):
         label="Commit ID",
         help_text="Optional published query revision. Only applies when `Query ID` is used.",
     )
-    coalesce_fields = forms.JSONField(
-        required=False,
-        label="Coalesce Fields",
-        help_text='Ordered identity key sets used for upsert matching (for example [["slug"], ["name"]]).',
-    )
 
     class Meta:
         model = ForwardNQEMap
@@ -466,7 +488,6 @@ class ForwardNQEMapForm(NetBoxModelForm):
             "query_id",
             "query",
             "commit_id",
-            "coalesce_fields",
             "enabled",
             "weight",
         )
@@ -477,7 +498,6 @@ class ForwardNQEMapForm(NetBoxModelForm):
             "query_id",
             "query",
             "commit_id",
-            "coalesce_fields",
             "enabled",
             "weight",
             name="Query Definition",

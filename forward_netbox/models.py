@@ -1,10 +1,12 @@
 import logging
 import traceback
+from contextlib import contextmanager
 
 from core.exceptions import SyncError
 from core.models import Job
-from core.models import ObjectType
 from core.signals import pre_sync
+from dcim.models import Site
+from dcim.models import VirtualChassis
 from django.conf import settings
 from django.contrib.contenttypes.models import ContentType
 from django.core.cache import cache
@@ -12,17 +14,15 @@ from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator
 from django.db import models
 from django.db.models import Q
+from django.db.models import signals
 from django.urls import reverse
 from django.utils import timezone
 from django.utils.module_loading import import_string
 from django.utils.translation import gettext as _
-from netbox.context import current_request
 from netbox.models import ChangeLoggedModel
 from netbox.models import PrimaryModel
 from netbox.models.features import JobsMixin
 from netbox.models.features import TagsMixin
-from netbox_branching.choices import BranchStatusChoices
-from netbox_branching.contextvars import active_branch
 from netbox_branching.models import Branch
 from utilities.querysets import RestrictedQuerySet
 
@@ -32,7 +32,8 @@ from .choices import ForwardSourceDeploymentChoices
 from .choices import ForwardSourceStatusChoices
 from .choices import ForwardSyncStatusChoices
 from .exceptions import ForwardSyncError
-from .utilities.branching import build_branch_request
+from .utilities.branch_budget import BRANCH_RUN_STATE_PARAMETER
+from .utilities.branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
 from .utilities.forward_api import ForwardClient
 from .utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from .utilities.logging import SyncLogging
@@ -40,6 +41,11 @@ from .utilities.sync_contracts import normalize_coalesce_fields
 from .utilities.sync_contracts import validate_query_shape_for_model
 
 logger = logging.getLogger("forward_netbox.models")
+
+try:
+    from dcim.signals import sync_cached_scope_fields
+except ImportError:  # pragma: no cover - compatibility with older NetBox point releases
+    sync_cached_scope_fields = None
 
 
 FORWARD_SUPPORTED_SYNC_MODELS = Q()
@@ -52,6 +58,27 @@ FORWARD_INGESTION_SYNC_MODE_CHOICES = (
     ("diff", _("Diff")),
     ("hybrid", _("Hybrid")),
 )
+
+
+@contextmanager
+def suppress_branch_merge_side_effect_signals():
+    from dcim.signals import assign_virtualchassis_master
+
+    signals.post_save.disconnect(
+        assign_virtualchassis_master,
+        sender=VirtualChassis,
+    )
+    if sync_cached_scope_fields is not None:
+        signals.post_save.disconnect(sync_cached_scope_fields, sender=Site)
+    try:
+        yield
+    finally:
+        signals.post_save.connect(
+            assign_virtualchassis_master,
+            sender=VirtualChassis,
+        )
+        if sync_cached_scope_fields is not None:
+            signals.post_save.connect(sync_cached_scope_fields, sender=Site)
 
 
 class ForwardSource(JobsMixin, PrimaryModel):
@@ -279,11 +306,15 @@ class ForwardSync(JobsMixin, TagsMixin, ChangeLoggedModel):
 
     @property
     def ready_for_sync(self):
-        return self.status not in (
+        return not self.is_waiting_for_branch_merge and self.status not in (
             ForwardSyncStatusChoices.QUEUED,
             ForwardSyncStatusChoices.SYNCING,
             ForwardSyncStatusChoices.MERGING,
         )
+
+    @property
+    def ready_to_continue_sync(self):
+        return self.has_pending_branch_run and self.ready_for_sync
 
     @property
     def last_ingestion(self):
@@ -322,7 +353,14 @@ class ForwardSync(JobsMixin, TagsMixin, ChangeLoggedModel):
         parameters = dict(self.parameters or {})
         invalid = sorted(
             set(parameters.keys())
-            - {"auto_merge", "snapshot_id", *FORWARD_SUPPORTED_MODELS}
+            - {
+                "auto_merge",
+                "multi_branch",
+                "max_changes_per_branch",
+                BRANCH_RUN_STATE_PARAMETER,
+                "snapshot_id",
+                *FORWARD_SUPPORTED_MODELS,
+            }
         )
         if invalid:
             raise ValidationError(_(f"Unsupported Forward sync keys: {invalid}"))
@@ -331,6 +369,23 @@ class ForwardSync(JobsMixin, TagsMixin, ChangeLoggedModel):
             raise ValidationError(_("`snapshot_id` must be a string."))
         parameters["snapshot_id"] = snapshot_id
         parameters["auto_merge"] = bool(parameters.get("auto_merge", self.auto_merge))
+        parameters["multi_branch"] = True
+        try:
+            max_changes_per_branch = int(
+                parameters.get(
+                    "max_changes_per_branch",
+                    DEFAULT_MAX_CHANGES_PER_BRANCH,
+                )
+            )
+        except (TypeError, ValueError):
+            raise ValidationError(
+                _("`max_changes_per_branch` must be a positive integer.")
+            )
+        if max_changes_per_branch < 1:
+            raise ValidationError(
+                _("`max_changes_per_branch` must be a positive integer.")
+            )
+        parameters["max_changes_per_branch"] = max_changes_per_branch
         if self.scheduled and self.scheduled < timezone.now():
             raise ValidationError(
                 {"scheduled": _("Scheduled time must be in the future.")}
@@ -343,7 +398,24 @@ class ForwardSync(JobsMixin, TagsMixin, ChangeLoggedModel):
         self.auto_merge = parameters["auto_merge"]
         self.parameters = parameters
 
+    def _force_native_branching_execution(self):
+        parameters = dict(self.parameters or {})
+        parameters["multi_branch"] = True
+        try:
+            max_changes_per_branch = int(
+                parameters.get(
+                    "max_changes_per_branch",
+                    DEFAULT_MAX_CHANGES_PER_BRANCH,
+                )
+            )
+        except (TypeError, ValueError):
+            max_changes_per_branch = DEFAULT_MAX_CHANGES_PER_BRANCH
+        parameters["max_changes_per_branch"] = max(1, max_changes_per_branch)
+        self.auto_merge = bool(parameters.get("auto_merge", self.auto_merge))
+        self.parameters = parameters
+
     def save(self, *args, **kwargs):
+        self._force_native_branching_execution()
         super().save(*args, **kwargs)
         if self.scheduled:
             self.enqueue_sync_job()
@@ -376,6 +448,51 @@ class ForwardSync(JobsMixin, TagsMixin, ChangeLoggedModel):
     def get_query_parameters(self):
         return {}
 
+    def uses_multi_branch(self):
+        return True
+
+    def get_branch_run_state(self):
+        state = (self.parameters or {}).get(BRANCH_RUN_STATE_PARAMETER) or {}
+        return state if isinstance(state, dict) else {}
+
+    @property
+    def has_pending_branch_run(self):
+        state = self.get_branch_run_state()
+        return bool(
+            state
+            and int(state.get("next_plan_index") or 1)
+            <= int(state.get("total_plan_items") or 0)
+        )
+
+    @property
+    def is_waiting_for_branch_merge(self):
+        return bool(self.get_branch_run_state().get("awaiting_merge"))
+
+    def set_branch_run_state(self, state):
+        parameters = dict(self.parameters or {})
+        parameters[BRANCH_RUN_STATE_PARAMETER] = dict(state)
+        self.parameters = parameters
+        ForwardSync.objects.filter(pk=self.pk).update(parameters=parameters)
+
+    def clear_branch_run_state(self):
+        parameters = dict(self.parameters or {})
+        if BRANCH_RUN_STATE_PARAMETER in parameters:
+            parameters.pop(BRANCH_RUN_STATE_PARAMETER, None)
+            self.parameters = parameters
+            ForwardSync.objects.filter(pk=self.pk).update(parameters=parameters)
+
+    def get_max_changes_per_branch(self):
+        try:
+            value = int(
+                (self.parameters or {}).get(
+                    "max_changes_per_branch",
+                    DEFAULT_MAX_CHANGES_PER_BRANCH,
+                )
+            )
+        except (TypeError, ValueError):
+            return DEFAULT_MAX_CHANGES_PER_BRANCH
+        return max(1, value)
+
     def get_model_strings(self):
         return self.enabled_models()
 
@@ -388,6 +505,16 @@ class ForwardSync(JobsMixin, TagsMixin, ChangeLoggedModel):
         parameters["auto_merge"] = bool(
             (self.parameters or {}).get("auto_merge", self.auto_merge)
         )
+        parameters["multi_branch"] = self.uses_multi_branch()
+        parameters["max_changes_per_branch"] = self.get_max_changes_per_branch()
+        if self.has_pending_branch_run:
+            state = self.get_branch_run_state()
+            parameters["branch_run"] = {
+                "snapshot_id": state.get("snapshot_id") or "",
+                "next_plan_index": state.get("next_plan_index"),
+                "total_plan_items": state.get("total_plan_items"),
+                "awaiting_merge": bool(state.get("awaiting_merge")),
+            }
         parameters["models"] = self.get_model_strings()
         return parameters
 
@@ -403,6 +530,10 @@ class ForwardSync(JobsMixin, TagsMixin, ChangeLoggedModel):
         ]
 
     def enqueue_sync_job(self, adhoc=False, user=None):
+        if self.is_waiting_for_branch_merge:
+            raise SyncError(
+                "Forward sync is waiting for the current shard branch to be merged."
+            )
         if not user:
             user = self.user
         self.status = ForwardSyncStatusChoices.QUEUED
@@ -417,9 +548,15 @@ class ForwardSync(JobsMixin, TagsMixin, ChangeLoggedModel):
             interval=None if adhoc else self.interval,
         )
 
-    def sync(self, job=None, *, multi_branch=False, max_changes_per_branch=10000):
-        from .utilities.sync import ForwardSyncRunner
+    def sync(self, job=None, *, max_changes_per_branch=None):
         from .utilities.multi_branch import ForwardMultiBranchExecutor
+
+        if self.is_waiting_for_branch_merge:
+            self.logger.log_warning(
+                "Forward sync is waiting for the current shard branch to be merged.",
+                obj=self,
+            )
+            return
 
         if self.status in (
             ForwardSyncStatusChoices.SYNCING,
@@ -440,83 +577,44 @@ class ForwardSync(JobsMixin, TagsMixin, ChangeLoggedModel):
 
         self.status = ForwardSyncStatusChoices.SYNCING
         ForwardSync.objects.filter(pk=self.pk).update(status=self.status)
+        if max_changes_per_branch is None:
+            max_changes_per_branch = self.get_max_changes_per_branch()
 
         ingestion = None
+        executor = None
         try:
-            if multi_branch:
-                executor = ForwardMultiBranchExecutor(
-                    self,
-                    self.source.get_client(),
-                    self.logger,
-                    user=user,
-                    job=job,
-                )
-                ingestions = executor.run(
-                    max_changes_per_branch=max_changes_per_branch,
-                )
-                if not ingestions:
-                    self.status = ForwardSyncStatusChoices.COMPLETED
-                    self.logger.log_success("Forward ingestion completed.", obj=self)
-                    return
-                ingestion = ingestions[-1]
+            executor = ForwardMultiBranchExecutor(
+                self,
+                self.source.get_client(),
+                self.logger,
+                user=user,
+                job=job,
+            )
+            ingestions = executor.run(
+                max_changes_per_branch=max_changes_per_branch,
+            )
+            if not ingestions:
                 self.status = ForwardSyncStatusChoices.COMPLETED
+                self.logger.log_success("Forward ingestion completed.", obj=self)
+                return
+            ingestion = ingestions[-1]
+            if self.status == ForwardSyncStatusChoices.READY_TO_MERGE:
                 self.logger.log_success(
-                    "Forward multi-branch ingestion completed.",
+                    "Forward multi-branch shard staged for review.",
                     obj=self,
                 )
                 return
-
-            ingestion = ForwardIngestion.objects.create(sync=self, job=job)
-            branch = Branch(name=f"Forward Sync {self.name} - {timezone.now()}")
-            branch.save(provision=False)
-            ingestion.branch = branch
-            ingestion.save(update_fields=["branch"])
-
-            if job:
-                job.object_type = ObjectType.objects.get_for_model(ingestion)
-                job.object_id = ingestion.pk
-                job.save(update_fields=["object_type", "object_id"])
-
-            branch.provision(user=user)
-            branch.refresh_from_db()
-            if branch.status == BranchStatusChoices.FAILED:
-                self.logger.log_failure(f"Branch failed: `{branch}`", obj=branch)
-                raise SyncError("Branch creation failed.")
-
-            self.logger.log_info(f"New branch created {branch.name}", obj=branch)
-            runner = ForwardSyncRunner(
-                sync=self,
-                ingestion=ingestion,
-                client=self.source.get_client(),
-                logger_=self.logger,
+            self.status = ForwardSyncStatusChoices.COMPLETED
+            self.logger.log_success(
+                "Forward multi-branch ingestion completed.",
+                obj=self,
             )
-            current_branch = active_branch.get()
-            request_token = None
-            if current_request.get() is None:
-                request_token = current_request.set(build_branch_request(user))
-            try:
-                active_branch.set(branch)
-                try:
-                    runner.run()
-                finally:
-                    active_branch.set(None)
-            finally:
-                active_branch.set(current_branch)
-                if request_token is not None:
-                    current_request.reset(request_token)
-
-            if self.status != ForwardSyncStatusChoices.FAILED:
-                self.status = ForwardSyncStatusChoices.READY_TO_MERGE
-            self.logger.log_success("Forward ingestion completed.", obj=self)
-            if (
-                self.auto_merge
-                and self.status == ForwardSyncStatusChoices.READY_TO_MERGE
-            ):
-                ingestion.enqueue_merge_job(user=user, remove_branch=True)
-                self.logger.log_info("Auto merge job enqueued.", obj=ingestion)
+            return
         except Exception as exc:
             logger.exception("Forward sync failed")
             self.status = ForwardSyncStatusChoices.FAILED
+            if ingestion is None:
+                ingestion = getattr(executor, "current_ingestion", None)
             if ingestion is None:
                 ingestion = ForwardIngestion.objects.create(sync=self, job=job)
             self.logger.log_failure(f"Forward ingestion failed: {exc}", obj=ingestion)
@@ -660,7 +758,7 @@ class ForwardIngestion(JobsMixin, models.Model):
                 statistics[model_string] = stats.get("current", 0) / total * 100
         return {"job_results": job_results, "statistics": statistics}
 
-    def sync_merge(self, *, mark_baseline_ready=True):
+    def sync_merge(self, *, mark_baseline_ready=None):
         from .utilities.merge import merge_branch
 
         forwardsync = self.sync
@@ -669,14 +767,33 @@ class ForwardIngestion(JobsMixin, models.Model):
 
         pre_sync.send(sender=self.__class__, instance=self)
 
+        branch_run_state = forwardsync.get_branch_run_state()
+        is_pending_branch_run = branch_run_state.get(
+            "pending_ingestion_id"
+        ) == self.pk and branch_run_state.get("awaiting_merge")
+        if mark_baseline_ready is None:
+            mark_baseline_ready = not is_pending_branch_run or bool(
+                branch_run_state.get("pending_is_final")
+            )
+
         forwardsync.status = ForwardSyncStatusChoices.MERGING
         ForwardSync.objects.filter(pk=self.sync.pk).update(status=forwardsync.status)
 
         try:
-            merge_branch(ingestion=self, sync_logger=forwardsync.logger)
+            with suppress_branch_merge_side_effect_signals():
+                merge_branch(ingestion=self, sync_logger=forwardsync.logger)
             if mark_baseline_ready:
                 self.baseline_ready = True
                 ForwardIngestion.objects.filter(pk=self.pk).update(baseline_ready=True)
+            if is_pending_branch_run:
+                if branch_run_state.get("pending_is_final"):
+                    forwardsync.clear_branch_run_state()
+                else:
+                    branch_run_state["awaiting_merge"] = False
+                    branch_run_state.pop("pending_ingestion_id", None)
+                    branch_run_state.pop("pending_plan_index", None)
+                    branch_run_state.pop("pending_is_final", None)
+                    forwardsync.set_branch_run_state(branch_run_state)
             forwardsync.status = ForwardSyncStatusChoices.COMPLETED
         except Exception:
             forwardsync.status = ForwardSyncStatusChoices.FAILED

@@ -6,6 +6,7 @@ from dataclasses import field
 from ..exceptions import ForwardQueryError
 
 DEFAULT_MAX_CHANGES_PER_BRANCH = 10000
+BRANCH_RUN_STATE_PARAMETER = "_branch_run"
 
 DEVICE_SHARD_MODELS = {
     "dcim.interface",
