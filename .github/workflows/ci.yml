@@ -32,6 +32,8 @@ jobs:
         run: pre-commit run --all-files
       - name: Check repository harness
         run: python scripts/check_harness.py
+      - name: Run harness tests
+        run: python -m unittest discover -s scripts/tests -p 'test_*.py'
       - name: Compile plugin modules
         run: python -m py_compile $(find forward_netbox -name '*.py' -print)
       - name: Build docs
@@ -47,6 +49,14 @@ jobs:
             -f development/docker-compose.yml \
             exec -T netbox bash -lc \
             "cd /opt/netbox/netbox && python manage.py check"
+      - name: Run synthetic scenario tests
+        run: |
+          docker compose --env-file development/.env \
+            -f development/docker-compose.yml \
+            exec -T netbox bash -lc \
+            "cd /opt/netbox/netbox && \
+            python manage.py test --keepdb --noinput \
+            forward_netbox.tests.test_synthetic_scenarios"
       - name: Run plugin tests
         run: |
           docker compose --env-file development/.env \

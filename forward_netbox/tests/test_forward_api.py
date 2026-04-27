@@ -229,8 +229,8 @@ class ForwardClientTest(TestCase):
 
         rows = self.client.run_nqe_diff(
             query_id="Q_sites",
-            before_snapshot_id="1248264",
-            after_snapshot_id="1248265",
+            before_snapshot_id="snapshot-before",
+            after_snapshot_id="snapshot-after",
         )
 
         self.assertEqual(
@@ -267,8 +267,8 @@ class ForwardClientTest(TestCase):
 
         rows = self.client.run_nqe_diff(
             query_id="Q_sites",
-            before_snapshot_id="1248264",
-            after_snapshot_id="1248265",
+            before_snapshot_id="snapshot-before",
+            after_snapshot_id="snapshot-after",
             limit=2,
             fetch_all=True,
         )
@@ -310,8 +310,8 @@ class ForwardClientTest(TestCase):
         ):
             self.client.run_nqe_diff(
                 query_id="Q_sites",
-                before_snapshot_id="1248264",
-                after_snapshot_id="1248265",
+                before_snapshot_id="snapshot-before",
+                after_snapshot_id="snapshot-after",
                 limit=2,
                 fetch_all=True,
             )

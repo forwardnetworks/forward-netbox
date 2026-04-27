@@ -13,8 +13,10 @@ Use this playbook for direct release pushes.
 
 ```bash
 invoke harness-check
+invoke harness-test
 invoke lint
 invoke check
+invoke scenario-test
 invoke test
 invoke docs
 python -m build

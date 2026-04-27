@@ -20,7 +20,7 @@ class ForwardJobsTest(TestCase):
                 "password": "secret",
                 "verify": True,
                 "timeout": 1200,
-                "network_id": "235937",
+                "network_id": "test-network",
             },
         )
         self.sync = ForwardSync.objects.create(
