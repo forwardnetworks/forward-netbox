@@ -61,6 +61,12 @@ FORWARD_INGESTION_SYNC_MODE_CHOICES = (
 )
 
 
+class ForwardPluginModelDocsMixin:
+    @property
+    def docs_url(self):
+        return ""
+
+
 @contextmanager
 def suppress_branch_merge_side_effect_signals():
     from dcim.signals import assign_virtualchassis_master
@@ -82,7 +88,7 @@ def suppress_branch_merge_side_effect_signals():
             signals.post_save.connect(sync_cached_scope_fields, sender=Site)
 
 
-class ForwardSource(JobsMixin, PrimaryModel):
+class ForwardSource(ForwardPluginModelDocsMixin, JobsMixin, PrimaryModel):
     objects = RestrictedQuerySet.as_manager()
 
     name = models.CharField(max_length=100, unique=True)
@@ -181,7 +187,7 @@ class ForwardSource(JobsMixin, PrimaryModel):
             )
 
 
-class ForwardNQEMap(ChangeLoggedModel):
+class ForwardNQEMap(ForwardPluginModelDocsMixin, ChangeLoggedModel):
     objects = RestrictedQuerySet.as_manager()
 
     name = models.CharField(max_length=200)
@@ -251,7 +257,7 @@ class ForwardNQEMap(ChangeLoggedModel):
                 raise ValidationError(_(str(exc)))
 
 
-class ForwardSync(JobsMixin, TagsMixin, ChangeLoggedModel):
+class ForwardSync(ForwardPluginModelDocsMixin, JobsMixin, TagsMixin, ChangeLoggedModel):
     objects = RestrictedQuerySet.as_manager()
 
     name = models.CharField(max_length=100, unique=True)
@@ -556,8 +562,9 @@ class ForwardSync(JobsMixin, TagsMixin, ChangeLoggedModel):
             )
         if not user:
             user = self.user
-        self.status = ForwardSyncStatusChoices.QUEUED
-        ForwardSync.objects.filter(pk=self.pk).update(status=self.status)
+        if adhoc or self.status == ForwardSyncStatusChoices.NEW:
+            self.status = ForwardSyncStatusChoices.QUEUED
+            ForwardSync.objects.filter(pk=self.pk).update(status=self.status)
         return Job.enqueue(
             import_string("forward_netbox.jobs.sync_forwardsync"),
             instance=self,
@@ -671,7 +678,7 @@ class ForwardSync(JobsMixin, TagsMixin, ChangeLoggedModel):
                 job.save(update_fields=["data"])
 
 
-class ForwardIngestion(JobsMixin, models.Model):
+class ForwardIngestion(ForwardPluginModelDocsMixin, JobsMixin, models.Model):
     objects = RestrictedQuerySet.as_manager()
 
     sync = models.ForeignKey(ForwardSync, on_delete=models.CASCADE)
@@ -826,7 +833,7 @@ class ForwardIngestion(JobsMixin, models.Model):
         )
 
 
-class ForwardIngestionIssue(models.Model):
+class ForwardIngestionIssue(ForwardPluginModelDocsMixin, models.Model):
     objects = RestrictedQuerySet.as_manager()
 
     ingestion = models.ForeignKey(

@@ -95,6 +95,7 @@ class ForwardSyncTable(NetBoxTable):
             "name",
             "status",
             "source",
+            "scheduled",
             "auto_merge",
             "last_ingestion",
             "last_synced",
