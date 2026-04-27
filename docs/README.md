@@ -45,6 +45,7 @@ This repository is provided for use at your own risk. It is an unsupported relea
 
 ## Start Here
 
+- [Project Knowledge](00_Project_Knowledge/README.md)
 - [Installation](01_User_Guide/README.md)
 - [Configuration](01_User_Guide/configuration.md)
 - [Usage and Validation](01_User_Guide/usage.md)

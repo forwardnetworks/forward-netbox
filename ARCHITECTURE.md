@@ -1,0 +1,54 @@
+# Forward NetBox Architecture
+
+`forward_netbox` is a NetBox plugin with one primary workflow: fetch Forward Networks data through Forward API/NQE, transform rows into NetBox model operations, stage those operations in NetBox Branching branches, and optionally merge those branches.
+
+## Runtime Flow
+
+1. A `ForwardSource` stores Forward connection settings and resolves available networks.
+2. A `ForwardSync` selects models, snapshot mode, branch budget, and auto-merge behavior.
+3. The sync job resolves the Forward snapshot, validates query shape, fetches NQE rows, and builds a branch plan.
+4. Each branch shard applies rows through NetBox model adapters under an active Branching branch.
+5. The branch is reviewed or merged through native NetBox Branching behavior.
+6. `ForwardIngestion` and `ForwardIngestionIssue` retain run metadata, logs, statistics, and issues.
+
+## Production Boundaries
+
+- Plugin state and job entrypoints: `forward_netbox/models.py`
+- UI workflow: `forward_netbox/views.py`, `forms.py`, `tables.py`, and templates
+- REST API workflow: `forward_netbox/api/`
+- Forward API client: `forward_netbox/utilities/forward_api.py`
+- Query registry and shipped query loading: `forward_netbox/utilities/query_registry.py` and `forward_netbox/queries/`
+- Branch planning and branch-budget behavior: `forward_netbox/utilities/branch_budget.py`
+- Multi-branch execution and retry behavior: `forward_netbox/utilities/multi_branch.py`
+- NetBox row application and model adapters: `forward_netbox/utilities/sync.py`
+- Logging/statistics: `forward_netbox/utilities/logging.py`
+- Sensitive-content guard: `forward_netbox/utilities/sensitive_content.py` and `scripts/check_sensitive_content.py`
+
+## Overgrown But Stable Areas
+
+The following modules are intentionally treated as stable boundaries until a dedicated refactor plan exists:
+
+- `forward_netbox/utilities/sync.py`: model adapters, coalesce behavior, dependency failure handling, and row application.
+- `forward_netbox/models.py`: persisted model behavior, job state transitions, and branch-run state.
+- `forward_netbox/utilities/multi_branch.py`: snapshot context, query preflight, branch execution, auto-merge, and overflow retry.
+
+Do not move code out of these modules as drive-by cleanup. Refactors should first add or update tests that pin the existing behavior.
+
+## Intended Future Layers
+
+Future refactors should move toward these smaller layers without changing public behavior:
+
+- contracts: validation of row shape, model identity, and coalesce rules
+- query fetch: snapshot resolution, query execution, pagination, and diffs
+- planning: workload grouping, shard sizing, and branch budget estimation
+- execution: branch lifecycle, shard retries, merge handoff, and resume state
+- adapters: per-NetBox-model row apply/delete behavior
+- reporting: logs, statistics, issues, and operator-facing progress
+
+## Non-Negotiable Constraints
+
+- Keep sync and merge behavior NetBox-native and Branching-native.
+- Preserve the UI/API sync workflow; do not add a separate import path for large datasets.
+- Keep branch budgets configurable and bounded according to NetBox Branching guidance.
+- Never persist customer data, credentials, private network IDs, or snapshot IDs in committed tests/docs.
+- Keep shipped query changes paired with tests and reference documentation.
