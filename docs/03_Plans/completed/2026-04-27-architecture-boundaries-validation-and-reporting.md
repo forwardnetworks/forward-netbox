@@ -40,6 +40,7 @@ Move the remaining sync architecture toward explicit harness layers while preser
 - `invoke check`
 - targeted Django tests for sync/model changes
 - full `invoke test`
+- fresh-format `pre-commit run --all-files` after GitHub CI reported Black drift in the validation guard code
 
 ## Rollback
 
