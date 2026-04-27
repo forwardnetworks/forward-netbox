@@ -72,3 +72,29 @@ class ForwardIngestionPhaseChoices(ChoiceSet):
         (SYNC, _("Sync"), "blue"),
         (MERGE, _("Merge"), "purple"),
     )
+
+
+class ForwardValidationStatusChoices(ChoiceSet):
+    QUEUED = "queued"
+    RUNNING = "running"
+    PASSED = "passed"
+    BLOCKED = "blocked"
+    FAILED = "failed"
+
+    CHOICES = (
+        (QUEUED, _("Queued"), "orange"),
+        (RUNNING, _("Running"), "cyan"),
+        (PASSED, _("Passed"), "green"),
+        (BLOCKED, _("Blocked"), "red"),
+        (FAILED, _("Failed"), "red"),
+    )
+
+
+class ForwardDriftPolicyBaselineChoices(ChoiceSet):
+    LATEST_MERGED = "latest_merged"
+    NONE = "none"
+
+    CHOICES = (
+        (LATEST_MERGED, _("Latest merged ingestion"), "blue"),
+        (NONE, _("No baseline"), "gray"),
+    )

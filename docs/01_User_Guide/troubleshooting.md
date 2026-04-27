@@ -59,13 +59,31 @@ Symptoms:
 
 - The sync status moves to failed quickly.
 - A new ingestion is created with early issues.
+- The latest validation run is `Blocked` or `Failed`.
 
 Checks:
 
 - Confirm the source has a valid `Network` selected.
 - Confirm the selected `Snapshot` is valid for that source network, or leave it at `latestProcessed`.
 - Confirm the required NQE maps are enabled.
+- Open the latest `Forward Validation Run` from the sync detail page and review `Blocking Reasons`, `Drift Summary`, and `Model Results`.
+- If a drift policy blocked the run, adjust the policy or fix the query/source data before rerunning the sync.
 - Check `Forward Ingestion Issues` for the failing model and error text.
+
+## Validation Blocks The Sync
+
+Symptoms:
+
+- No Branching branch is created.
+- The validation run status is `Blocked`.
+- The ingestion issue mentions `Forward validation blocked sync`.
+
+Checks:
+
+- For snapshot checks, confirm the selected snapshot is processed.
+- For zero-row checks, confirm the enabled model should return rows and that the active NQE map targets the selected snapshot.
+- For deletion thresholds, review whether the run used a diff baseline and whether the destructive-change count is expected.
+- Use `Validate` on the sync page to rerun policy checks before staging changes.
 
 ## Sync Or Merge Times Out
 
@@ -145,6 +163,10 @@ curl -sS -H "Authorization: Token ${NETBOX_TOKEN}" \
 # Latest ingestions (includes snapshot metadata)
 curl -sS -H "Authorization: Token ${NETBOX_TOKEN}" \
   "${NETBOX_URL}/api/plugins/forward/ingestion/?limit=50"
+
+# Latest validation runs (includes drift summary and blocking reasons)
+curl -sS -H "Authorization: Token ${NETBOX_TOKEN}" \
+  "${NETBOX_URL}/api/plugins/forward/validation-run/?limit=50"
 
 # All ingestion issues (filter locally by ingestion/model/message as needed)
 curl -sS -H "Authorization: Token ${NETBOX_TOKEN}" \

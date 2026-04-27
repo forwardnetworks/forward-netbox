@@ -11,6 +11,7 @@ from django.conf import settings
 from django.contrib.contenttypes.models import ContentType
 from django.core.cache import cache
 from django.core.exceptions import ValidationError
+from django.core.validators import MaxValueValidator
 from django.core.validators import MinValueValidator
 from django.db import models
 from django.db.models import Q
@@ -27,10 +28,12 @@ from netbox_branching.models import Branch
 from utilities.querysets import RestrictedQuerySet
 
 from .choices import FORWARD_SUPPORTED_MODELS
+from .choices import ForwardDriftPolicyBaselineChoices
 from .choices import ForwardIngestionPhaseChoices
 from .choices import ForwardSourceDeploymentChoices
 from .choices import ForwardSourceStatusChoices
 from .choices import ForwardSyncStatusChoices
+from .choices import ForwardValidationStatusChoices
 from .exceptions import ForwardSyncError
 from .utilities.branch_budget import BRANCH_RUN_STATE_PARAMETER
 from .utilities.branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
@@ -289,6 +292,13 @@ class ForwardSync(ForwardPluginModelDocsMixin, JobsMixin, TagsMixin, ChangeLogge
         blank=True,
         null=True,
     )
+    drift_policy = models.ForeignKey(
+        to="ForwardDriftPolicy",
+        on_delete=models.SET_NULL,
+        related_name="syncs",
+        blank=True,
+        null=True,
+    )
 
     class Meta:
         ordering = ("pk",)
@@ -326,6 +336,10 @@ class ForwardSync(ForwardPluginModelDocsMixin, JobsMixin, TagsMixin, ChangeLogge
     @property
     def last_ingestion(self):
         return self.forwardingestion_set.last()
+
+    @property
+    def latest_validation_run(self):
+        return self.validation_runs.order_by("-pk").first()
 
     def latest_baseline_ingestion(self, *, exclude_ingestion_id=None):
         queryset = self.forwardingestion_set.filter(
@@ -540,6 +554,7 @@ class ForwardSync(ForwardPluginModelDocsMixin, JobsMixin, TagsMixin, ChangeLogge
                 "next_plan_index": state.get("next_plan_index"),
                 "total_plan_items": state.get("total_plan_items"),
                 "awaiting_merge": bool(state.get("awaiting_merge")),
+                "validation_run_id": state.get("validation_run_id"),
             }
         parameters["models"] = self.get_model_strings()
         return parameters
@@ -573,6 +588,19 @@ class ForwardSync(ForwardPluginModelDocsMixin, JobsMixin, TagsMixin, ChangeLogge
             adhoc=adhoc,
             schedule_at=None if adhoc else self.scheduled,
             interval=None if adhoc else self.interval,
+        )
+
+    def enqueue_validation_job(self, adhoc=False, user=None):
+        if not user:
+            user = self.user
+        return Job.enqueue(
+            import_string("forward_netbox.jobs.validate_forwardsync"),
+            instance=self,
+            user=user,
+            name=f"{self.name} - validation",
+            adhoc=adhoc,
+            schedule_at=None,
+            interval=None,
         )
 
     def sync(self, job=None, *, max_changes_per_branch=None):
@@ -643,7 +671,26 @@ class ForwardSync(ForwardPluginModelDocsMixin, JobsMixin, TagsMixin, ChangeLogge
             if ingestion is None:
                 ingestion = getattr(executor, "current_ingestion", None)
             if ingestion is None:
-                ingestion = ForwardIngestion.objects.create(sync=self, job=job)
+                validation_run = getattr(executor, "last_validation_run", None)
+                if not isinstance(validation_run, ForwardValidationRun):
+                    validation_run = None
+                model_results = getattr(executor, "last_model_results", [])
+                if not isinstance(model_results, list):
+                    model_results = []
+                ingestion = ForwardIngestion.objects.create(
+                    sync=self,
+                    job=job,
+                    validation_run=validation_run,
+                    model_results=model_results,
+                )
+            else:
+                validation_run = getattr(executor, "last_validation_run", None)
+                if (
+                    isinstance(validation_run, ForwardValidationRun)
+                    and not ingestion.validation_run
+                ):
+                    ingestion.validation_run = validation_run
+                    ingestion.save(update_fields=["validation_run"])
             self.logger.log_failure(f"Forward ingestion failed: {exc}", obj=ingestion)
             ForwardIngestionIssue.objects.create(
                 ingestion=ingestion,
@@ -678,6 +725,95 @@ class ForwardSync(ForwardPluginModelDocsMixin, JobsMixin, TagsMixin, ChangeLogge
                 job.save(update_fields=["data"])
 
 
+class ForwardDriftPolicy(ForwardPluginModelDocsMixin, ChangeLoggedModel):
+    objects = RestrictedQuerySet.as_manager()
+
+    name = models.CharField(max_length=100, unique=True)
+    enabled = models.BooleanField(default=True)
+    baseline_mode = models.CharField(
+        max_length=30,
+        choices=ForwardDriftPolicyBaselineChoices,
+        default=ForwardDriftPolicyBaselineChoices.LATEST_MERGED,
+    )
+    require_processed_snapshot = models.BooleanField(default=True)
+    block_on_query_errors = models.BooleanField(default=True)
+    block_on_zero_rows = models.BooleanField(default=False)
+    max_deleted_objects = models.PositiveIntegerField(blank=True, null=True)
+    max_deleted_percent = models.PositiveIntegerField(
+        blank=True,
+        null=True,
+        validators=(MinValueValidator(0), MaxValueValidator(100)),
+    )
+
+    class Meta:
+        ordering = ("name",)
+        verbose_name = _("Forward Drift Policy")
+        verbose_name_plural = _("Forward Drift Policies")
+        db_table = "forward_netbox_drift_policy"
+
+    def __str__(self):
+        return self.name
+
+    def get_absolute_url(self):
+        return reverse("plugins:forward_netbox:forwarddriftpolicy", args=[self.pk])
+
+    def clean(self):
+        super().clean()
+        if self.max_deleted_objects is None and self.max_deleted_percent is None:
+            return
+        if self.baseline_mode == ForwardDriftPolicyBaselineChoices.NONE:
+            raise ValidationError(
+                _("Deletion thresholds require a baseline-enabled policy.")
+            )
+
+
+class ForwardValidationRun(ForwardPluginModelDocsMixin, models.Model):
+    objects = RestrictedQuerySet.as_manager()
+
+    sync = models.ForeignKey(
+        ForwardSync,
+        on_delete=models.CASCADE,
+        related_name="validation_runs",
+    )
+    policy = models.ForeignKey(
+        ForwardDriftPolicy,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="validation_runs",
+    )
+    job = models.ForeignKey(Job, on_delete=models.SET_NULL, null=True, blank=True)
+    status = models.CharField(
+        max_length=20,
+        choices=ForwardValidationStatusChoices,
+        default=ForwardValidationStatusChoices.QUEUED,
+    )
+    allowed = models.BooleanField(default=False)
+    snapshot_selector = models.CharField(max_length=100, blank=True, default="")
+    snapshot_id = models.CharField(max_length=100, blank=True, default="")
+    baseline_snapshot_id = models.CharField(max_length=100, blank=True, default="")
+    snapshot_info = models.JSONField(blank=True, default=dict)
+    snapshot_metrics = models.JSONField(blank=True, default=dict)
+    model_results = models.JSONField(blank=True, default=list)
+    drift_summary = models.JSONField(blank=True, default=dict)
+    blocking_reasons = models.JSONField(blank=True, default=list)
+    created = models.DateTimeField(default=timezone.now, editable=False)
+    started = models.DateTimeField(blank=True, null=True)
+    completed = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        ordering = ("-pk",)
+        verbose_name = _("Forward Validation Run")
+        verbose_name_plural = _("Forward Validation Runs")
+        db_table = "forward_netbox_validation_run"
+
+    def __str__(self):
+        return f"{self.sync} validation {self.pk or ''}".strip()
+
+    def get_absolute_url(self):
+        return reverse("plugins:forward_netbox:forwardvalidationrun", args=[self.pk])
+
+
 class ForwardIngestion(ForwardPluginModelDocsMixin, JobsMixin, models.Model):
     objects = RestrictedQuerySet.as_manager()
 
@@ -689,6 +825,13 @@ class ForwardIngestion(ForwardPluginModelDocsMixin, JobsMixin, models.Model):
         null=True,
         blank=True,
         related_name="merge_ingestion",
+    )
+    validation_run = models.ForeignKey(
+        ForwardValidationRun,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="ingestions",
     )
     branch = models.OneToOneField(
         Branch, on_delete=models.SET_NULL, null=True, blank=True
@@ -703,6 +846,7 @@ class ForwardIngestion(ForwardPluginModelDocsMixin, JobsMixin, models.Model):
     baseline_ready = models.BooleanField(default=False)
     snapshot_info = models.JSONField(blank=True, default=dict)
     snapshot_metrics = models.JSONField(blank=True, default=dict)
+    model_results = models.JSONField(blank=True, default=list)
     created = models.DateTimeField(default=timezone.now, editable=False)
 
     class Meta:
@@ -751,6 +895,9 @@ class ForwardIngestion(ForwardPluginModelDocsMixin, JobsMixin, models.Model):
             "processingDuration",
         )
         return {key: metrics[key] for key in keys if key in metrics}
+
+    def get_model_results_summary(self):
+        return list(self.model_results or [])
 
     @staticmethod
     def get_job_logs(job):

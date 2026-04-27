@@ -19,6 +19,7 @@ from .choices import ForwardSourceStatusChoices
 from .choices import ForwardSyncStatusChoices
 from .exceptions import ForwardConnectivityError
 from .exceptions import ForwardSyncError
+from .models import ForwardDriftPolicy
 from .models import ForwardNQEMap
 from .models import ForwardSource
 from .models import ForwardSync
@@ -342,10 +343,16 @@ class ForwardSyncForm(NetBoxModelForm):
         label="Recurs every",
         widget=NumberWithOptions(options=JobIntervalChoices),
     )
+    drift_policy = forms.ModelChoiceField(
+        queryset=ForwardDriftPolicy.objects.all(),
+        required=False,
+        label="Drift policy",
+        help_text="Optional validation policy applied before branch creation.",
+    )
 
     class Meta:
         model = ForwardSync
-        fields = ("name", "source", "tags", "scheduled", "interval")
+        fields = ("name", "source", "drift_policy", "tags", "scheduled", "interval")
 
     def __init__(self, *args, **kwargs):
         initial = kwargs.get("initial", {}).copy()
@@ -385,7 +392,7 @@ class ForwardSyncForm(NetBoxModelForm):
             )
 
         self.fieldsets = [
-            FieldSet("name", "source", name="Forward Sync"),
+            FieldSet("name", "source", "drift_policy", name="Forward Sync"),
             FieldSet("snapshot_id", name="Snapshot"),
             FieldSet(*FORWARD_SUPPORTED_MODELS, name="Model Selection"),
             FieldSet(
@@ -508,4 +515,40 @@ class ForwardNQEMapForm(NetBoxModelForm):
 class ForwardNQEMapBulkEditForm(NetBoxModelBulkEditForm):
     enabled = forms.NullBooleanField(required=False, label="Enabled")
     model = ForwardNQEMap
+    fields = ("enabled",)
+
+
+class ForwardDriftPolicyForm(NetBoxModelForm):
+    class Meta:
+        model = ForwardDriftPolicy
+        fields = (
+            "name",
+            "enabled",
+            "baseline_mode",
+            "require_processed_snapshot",
+            "block_on_query_errors",
+            "block_on_zero_rows",
+            "max_deleted_objects",
+            "max_deleted_percent",
+        )
+
+    fieldsets = (
+        FieldSet("name", "enabled", "baseline_mode", name="Policy"),
+        FieldSet(
+            "require_processed_snapshot",
+            "block_on_query_errors",
+            "block_on_zero_rows",
+            name="Blocking Checks",
+        ),
+        FieldSet(
+            "max_deleted_objects",
+            "max_deleted_percent",
+            name="Destructive Change Limits",
+        ),
+    )
+
+
+class ForwardDriftPolicyBulkEditForm(NetBoxModelBulkEditForm):
+    enabled = forms.NullBooleanField(required=False, label="Enabled")
+    model = ForwardDriftPolicy
     fields = ("enabled",)

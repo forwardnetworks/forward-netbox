@@ -1,5 +1,4 @@
 import os
-import time
 
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand
@@ -12,9 +11,7 @@ from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.utilities.branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
 from forward_netbox.utilities.multi_branch import ForwardMultiBranchExecutor
-from forward_netbox.utilities.query_registry import get_query_specs
-from forward_netbox.utilities.sync_contracts import default_coalesce_fields_for_model
-from forward_netbox.utilities.sync_contracts import validate_row_shape_for_model
+from forward_netbox.utilities.query_fetch import ForwardQueryFetcher
 
 
 class Command(BaseCommand):
@@ -204,7 +201,8 @@ class Command(BaseCommand):
             self.stdout.write(
                 f"{item.index} | {item.model_string} | changes={item.estimated_changes} | "
                 f"upserts={len(item.upsert_rows)} | deletes={len(item.delete_rows)} | "
-                f"mode={item.sync_mode} | label={item.label}"
+                f"mode={item.sync_mode} | execution={item.execution_mode or 'unknown'} | "
+                f"label={item.label}"
             )
         self.stdout.write(
             self.style.SUCCESS(
@@ -268,50 +266,23 @@ class Command(BaseCommand):
         return sync
 
     def _run_validation_only(self, sync, *, query_limit):
-        client = sync.source.get_client()
-        network_id = sync.get_network_id()
-        snapshot_selector = sync.get_snapshot_id()
-        snapshot_id = sync.resolve_snapshot_id(client)
-        query_parameters = sync.get_query_parameters()
-        maps = sync.get_maps()
+        fetcher = ForwardQueryFetcher(sync, sync.source.get_client(), sync.logger)
+        context = fetcher.resolve_context()
 
         self.stdout.write(
             self.style.NOTICE(
-                f"Validating Forward queries for sync '{sync.name}' against network '{network_id}' "
-                f"and snapshot '{snapshot_id}' (selector: {snapshot_selector})"
+                f"Validating Forward queries for sync '{sync.name}' against network '{context.network_id}' "
+                f"and snapshot '{context.snapshot_id}' (selector: {context.snapshot_selector})"
             )
         )
 
-        for model_string in sync.get_model_strings():
-            specs = get_query_specs(model_string, maps=maps)
-            if not specs:
-                raise CommandError(
-                    f"No enabled built-in or custom query maps were resolved for {model_string}."
-                )
-
-            for spec in specs:
-                started = time.perf_counter()
-                rows = client.run_nqe_query(
-                    query=spec.query,
-                    query_id=spec.query_id,
-                    commit_id=spec.commit_id,
-                    network_id=network_id,
-                    snapshot_id=snapshot_id,
-                    parameters=spec.merged_parameters(query_parameters),
-                    limit=query_limit,
-                )
-                coalesce_fields = (
-                    [list(field_set) for field_set in spec.coalesce_fields]
-                    if spec.coalesce_fields
-                    else default_coalesce_fields_for_model(model_string)
-                )
-                for row in rows:
-                    validate_row_shape_for_model(model_string, row, coalesce_fields)
-                elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
-                self.stdout.write(
-                    f"{model_string} | {spec.query_name} | {spec.execution_mode} | "
-                    f"rows={len(rows)} | runtime_ms={elapsed_ms}"
-                )
+        fetcher.fetch_sample_results(context, row_limit=query_limit)
+        for result in fetcher.model_results:
+            self.stdout.write(
+                f"{result.model_string} | {result.query_name} | {result.execution_mode} | "
+                f"rows={result.row_count} | deletes={result.delete_count} | "
+                f"mode={result.sync_mode} | runtime_ms={result.runtime_ms}"
+            )
 
         self.stdout.write(
             self.style.SUCCESS("Forward query validation completed cleanly.")

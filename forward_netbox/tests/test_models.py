@@ -9,13 +9,16 @@ from django.core.exceptions import ValidationError
 from django.test import TestCase
 from django.utils import timezone
 
+from forward_netbox.choices import ForwardDriftPolicyBaselineChoices
 from forward_netbox.choices import ForwardSyncStatusChoices
 from forward_netbox.jobs import sync_forwardsync
+from forward_netbox.models import ForwardDriftPolicy
 from forward_netbox.models import ForwardIngestion
 from forward_netbox.models import ForwardIngestionIssue
 from forward_netbox.models import ForwardNQEMap
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
+from forward_netbox.models import ForwardValidationRun
 from forward_netbox.signals import seed_builtin_nqe_maps
 from forward_netbox.tables import ForwardSyncTable
 from forward_netbox.utilities.branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
@@ -245,6 +248,16 @@ class ForwardSyncModelTest(TestCase):
         self.assertEqual(sync.status, ForwardSyncStatusChoices.COMPLETED)
         mock_enqueue.assert_called_once()
 
+    def test_drift_policy_rejects_delete_threshold_without_baseline(self):
+        policy = ForwardDriftPolicy(
+            name="no-baseline-delete-threshold",
+            baseline_mode=ForwardDriftPolicyBaselineChoices.NONE,
+            max_deleted_objects=10,
+        )
+
+        with self.assertRaises(ValidationError):
+            policy.full_clean()
+
     @patch("forward_netbox.models.Job.enqueue")
     @patch.object(ForwardSync, "sync", autospec=True)
     def test_recurring_reschedule_preserves_last_terminal_status(
@@ -306,7 +319,9 @@ class ForwardSyncModelTest(TestCase):
         models = (
             ForwardSource,
             ForwardNQEMap,
+            ForwardDriftPolicy,
             ForwardSync,
+            ForwardValidationRun,
             ForwardIngestion,
             ForwardIngestionIssue,
         )

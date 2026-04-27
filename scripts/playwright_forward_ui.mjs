@@ -53,7 +53,11 @@ function assert(condition, message) {
 }
 
 async function expectVisible(page, text) {
-  await page.getByText(text, { exact: false }).first().waitFor({ state: "visible" });
+  await page
+    .getByText(text, { exact: false })
+    .filter({ visible: true })
+    .first()
+    .waitFor({ state: "visible" });
 }
 
 async function assertNoHorizontalOverflow(page, label) {
@@ -117,12 +121,29 @@ async function main() {
     await expectVisible(page, "Sync Information");
     await expectVisible(page, "Enabled Models");
     await expectVisible(page, "Adhoc Ingestion");
+    await expectVisible(page, "Validate");
+    await expectVisible(page, "Drift Policy");
+    await expectVisible(page, "Latest Validation");
+    await expectVisible(page, "ui-harness-drift-policy");
     await expectVisible(page, "latestProcessed");
     await expectVisible(page, "max_changes_per_branch");
     await assertNoHorizontalOverflow(page, "desktop sync detail");
     evidence.screenshots.push(await screenshot(page, "desktop-sync-detail.jpg"));
-    evidence.checks.push("sync detail exposes native branch budget and run control");
+    evidence.checks.push("sync detail exposes validation, native branch budget, and run controls");
 
+    await page.getByRole("link", { name: "Passed" }).first().click();
+    await expectVisible(page, "Validation Run");
+    await expectVisible(page, "Drift Summary");
+    await expectVisible(page, "Model Results");
+    await expectVisible(page, "ui-harness-sync");
+    await assertNoHorizontalOverflow(page, "desktop validation detail");
+    evidence.screenshots.push(await screenshot(page, "desktop-validation-detail.jpg"));
+    evidence.checks.push("validation detail renders drift summary and model results");
+
+    await page.goto(`${baseURL}/plugins/forward/sync/`, {
+      waitUntil: "domcontentloaded",
+    });
+    await page.getByRole("link", { name: "ui-harness-sync" }).first().click();
     await page
       .getByRole("link", { name: /ui-harness-sync \(Ingestion \d+\)/ })
       .click();
@@ -130,6 +151,8 @@ async function main() {
     await expectVisible(page, "Progress");
     await expectVisible(page, "Statistics");
     await expectVisible(page, "Forward Snapshot Metrics");
+    await expectVisible(page, "Validation");
+    await expectVisible(page, "Model Results");
     await expectVisible(page, "Sync Results");
     await expectVisible(page, "Synthetic UI harness ingestion completed.");
     await assertNoHorizontalOverflow(page, "desktop ingestion detail");
@@ -142,6 +165,7 @@ async function main() {
     await expectVisible(page, "Forward Sync");
     await expectVisible(page, "Model Selection");
     await expectVisible(page, "Execution");
+    await expectVisible(page, "Drift policy");
     await expectVisible(page, "Max changes per branch");
     await expectVisible(page, "Auto merge");
     await assertNoHorizontalOverflow(page, "desktop sync form");

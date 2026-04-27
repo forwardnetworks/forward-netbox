@@ -3,6 +3,7 @@ from datetime import timedelta
 
 from core.choices import JobStatusChoices
 from core.exceptions import SyncError
+from core.models import ObjectType
 from netbox.context_managers import event_tracking
 from rq.timeouts import JobTimeoutException
 from utilities.datetime import local_now
@@ -10,10 +11,12 @@ from utilities.request import NetBoxFakeRequest
 
 from .choices import ForwardIngestionPhaseChoices
 from .choices import ForwardSyncStatusChoices
+from .exceptions import ForwardSyncError
 from .models import ForwardIngestion
 from .models import ForwardIngestionIssue
 from .models import ForwardSync
 from .utilities.logging import SyncLogging
+from .utilities.validation import ForwardValidationRunner
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +83,7 @@ def sync_forwardsync(job, *args, **kwargs):
                 message,
             )
             sync.logger.log_failure(message, obj=sync)
-        if type(exc) in (SyncError, JobTimeoutException):
+        if isinstance(exc, (ForwardSyncError, SyncError, JobTimeoutException)):
             logger.error(exc)
         else:
             raise
@@ -128,6 +131,32 @@ def sync_forwardsync(job, *args, **kwargs):
                     sync.pk,
                     new_scheduled_time,
                 )
+
+
+def validate_forwardsync(job, *args, **kwargs):
+    sync = ForwardSync.objects.get(pk=job.object_id)
+
+    try:
+        job.start()
+        sync.logger = SyncLogging(job=job.pk)
+        validation_run = ForwardValidationRunner(
+            sync,
+            sync.source.get_client(),
+            sync.logger,
+            job=job,
+        ).run_query_validation()
+        safe_save_job_data(job, sync)
+        job.object_type = ObjectType.objects.get_for_model(validation_run)
+        job.object_id = validation_run.pk
+        job.save(update_fields=["object_type", "object_id"])
+        job.terminate()
+    except Exception as exc:
+        safe_save_job_data(job, sync)
+        job.terminate(status=JobStatusChoices.STATUS_ERRORED)
+        if type(exc) in (SyncError, JobTimeoutException):
+            logger.error(exc)
+        else:
+            raise
 
 
 def merge_forwardingestion(job, remove_branch=False, *args, **kwargs):

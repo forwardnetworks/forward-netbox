@@ -49,7 +49,7 @@ class SyntheticSyncScenarioHarnessTest(TestCase):
         self.assertGreater(len(plan), 1)
         self.assertTrue(all(item.estimated_changes <= 5 for item in plan))
 
-    @patch("forward_netbox.utilities.multi_branch.get_query_specs")
+    @patch("forward_netbox.utilities.query_fetch.get_query_specs")
     def test_bad_model_rows_fail_during_preflight(self, mock_specs):
         client = Mock()
         client.get_snapshots.return_value = [scenarios.snapshot()]

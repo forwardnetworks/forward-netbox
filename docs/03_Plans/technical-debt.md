@@ -9,14 +9,15 @@ This tracker records known follow-up work that should be handled through explici
 
 ## Intended Harness Layers
 
-Future refactors should move toward these smaller layers without changing public behavior:
+The current architecture has explicit boundaries for contracts, query fetch, planning, validation, execution, adapters, and reporting. Future refactors should keep changes inside these layers without changing public behavior:
 
 - `contracts`: validation of row shape, model identity, and coalesce rules.
-- `query fetch`: snapshot resolution, query execution, pagination, and diffs.
+- `query fetch`: snapshot resolution, query execution, pagination, diffs, and model-result metadata.
 - `planning`: workload grouping, shard sizing, and branch budget estimation.
 - `execution`: branch lifecycle, shard retries, merge handoff, and resume state.
+- `validation`: drift policy decisions and pre-branch gating.
 - `adapters`: per-NetBox-model row apply/delete behavior.
-- `reporting`: logs, statistics, issues, and operator-facing progress.
+- `reporting`: logs, statistics, model results, issues, and operator-facing progress.
 
 Required first step: add behavior-preserving tests around the current module boundaries before moving code.
 

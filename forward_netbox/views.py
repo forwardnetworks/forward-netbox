@@ -23,12 +23,16 @@ from utilities.views import get_viewname
 from utilities.views import register_model_view
 from utilities.views import ViewTab
 
+from .filtersets import ForwardDriftPolicyFilterSet
 from .filtersets import ForwardIngestionChangeFilterSet
 from .filtersets import ForwardIngestionFilterSet
 from .filtersets import ForwardIngestionIssueFilterSet
 from .filtersets import ForwardNQEMapFilterSet
 from .filtersets import ForwardSourceFilterSet
 from .filtersets import ForwardSyncFilterSet
+from .filtersets import ForwardValidationRunFilterSet
+from .forms import ForwardDriftPolicyBulkEditForm
+from .forms import ForwardDriftPolicyForm
 from .forms import ForwardIngestionMergeForm
 from .forms import ForwardNQEMapBulkEditForm
 from .forms import ForwardNQEMapForm
@@ -36,17 +40,21 @@ from .forms import ForwardSourceBulkEditForm
 from .forms import ForwardSourceForm
 from .forms import ForwardSyncBulkEditForm
 from .forms import ForwardSyncForm
+from .models import ForwardDriftPolicy
 from .models import ForwardIngestion
 from .models import ForwardIngestionIssue
 from .models import ForwardNQEMap
 from .models import ForwardSource
 from .models import ForwardSync
+from .models import ForwardValidationRun
+from .tables import ForwardDriftPolicyTable
 from .tables import ForwardIngestionChangesTable
 from .tables import ForwardIngestionIssueTable
 from .tables import ForwardIngestionTable
 from .tables import ForwardNQEMapTable
 from .tables import ForwardSourceTable
 from .tables import ForwardSyncTable
+from .tables import ForwardValidationRunTable
 
 
 def annotate_statistics(queryset):
@@ -200,6 +208,7 @@ class ForwardSyncView(generic.ObjectView):
     def get_extra_context(self, request, instance):
         data = {
             "last_ingestion": instance.last_ingestion,
+            "latest_validation_run": instance.latest_validation_run,
             "enabled_models": instance.enabled_models(),
         }
         if instance.last_ingestion:
@@ -227,6 +236,24 @@ class ForwardStartSyncView(BaseObjectView):
             return redirect(sync.get_absolute_url())
         action = "continue" if sync.has_pending_branch_run else "run"
         messages.success(request, f"Queued job #{job.pk} to {action} {sync}.")
+        return redirect(sync.get_absolute_url())
+
+
+@register_model_view(ForwardSync, "validate")
+class ForwardStartValidationView(BaseObjectView):
+    queryset = ForwardSync.objects.all()
+
+    def get_required_permission(self):
+        return "forward_netbox.run_forwardsync"
+
+    def get(self, request, pk):
+        sync = get_object_or_404(self.queryset, pk=pk)
+        return redirect(sync.get_absolute_url())
+
+    def post(self, request, pk):
+        sync = get_object_or_404(self.queryset, pk=pk)
+        job = sync.enqueue_validation_job(user=request.user, adhoc=True)
+        messages.success(request, f"Queued job #{job.pk} to validate {sync}.")
         return redirect(sync.get_absolute_url())
 
 
@@ -479,3 +506,72 @@ class ForwardIngestionDeleteView(generic.ObjectDeleteView):
 class ForwardIngestionBulkDeleteView(generic.BulkDeleteView):
     queryset = ForwardIngestion.objects.all()
     table = ForwardIngestionTable
+
+
+@register_model_view(ForwardDriftPolicy, "list", path="", detail=False)
+class ForwardDriftPolicyListView(generic.ObjectListView):
+    queryset = ForwardDriftPolicy.objects.all()
+    filterset = ForwardDriftPolicyFilterSet
+    table = ForwardDriftPolicyTable
+    actions = (AddObject, BulkExport, BulkEdit, BulkRename, BulkDelete)
+
+
+@register_model_view(ForwardDriftPolicy, "add", detail=False)
+@register_model_view(ForwardDriftPolicy, "edit")
+class ForwardDriftPolicyEditView(generic.ObjectEditView):
+    queryset = ForwardDriftPolicy.objects.all()
+    form = ForwardDriftPolicyForm
+
+
+@register_model_view(ForwardDriftPolicy)
+class ForwardDriftPolicyView(generic.ObjectView):
+    queryset = ForwardDriftPolicy.objects.all()
+    template_name = "forward_netbox/forwarddriftpolicy.html"
+
+
+@register_model_view(ForwardDriftPolicy, "delete")
+class ForwardDriftPolicyDeleteView(generic.ObjectDeleteView):
+    queryset = ForwardDriftPolicy.objects.all()
+
+
+@register_model_view(ForwardDriftPolicy, "bulk_edit", path="edit", detail=False)
+class ForwardDriftPolicyBulkEditView(generic.BulkEditView):
+    queryset = ForwardDriftPolicy.objects.all()
+    table = ForwardDriftPolicyTable
+    form = ForwardDriftPolicyBulkEditForm
+
+
+@register_model_view(ForwardDriftPolicy, "bulk_rename", path="rename", detail=False)
+class ForwardDriftPolicyBulkRenameView(generic.BulkRenameView):
+    queryset = ForwardDriftPolicy.objects.all()
+
+
+@register_model_view(ForwardDriftPolicy, "bulk_delete", path="delete", detail=False)
+class ForwardDriftPolicyBulkDeleteView(generic.BulkDeleteView):
+    queryset = ForwardDriftPolicy.objects.all()
+    table = ForwardDriftPolicyTable
+
+
+@register_model_view(ForwardValidationRun, "list", path="", detail=False)
+class ForwardValidationRunListView(generic.ObjectListView):
+    queryset = ForwardValidationRun.objects.select_related("sync", "policy")
+    filterset = ForwardValidationRunFilterSet
+    table = ForwardValidationRunTable
+    actions = (BulkExport, BulkDelete)
+
+
+@register_model_view(ForwardValidationRun)
+class ForwardValidationRunView(generic.ObjectView):
+    queryset = ForwardValidationRun.objects.select_related("sync", "policy", "job")
+    template_name = "forward_netbox/forwardvalidationrun.html"
+
+
+@register_model_view(ForwardValidationRun, "delete")
+class ForwardValidationRunDeleteView(generic.ObjectDeleteView):
+    queryset = ForwardValidationRun.objects.all()
+
+
+@register_model_view(ForwardValidationRun, "bulk_delete", path="delete", detail=False)
+class ForwardValidationRunBulkDeleteView(generic.BulkDeleteView):
+    queryset = ForwardValidationRun.objects.all()
+    table = ForwardValidationRunTable

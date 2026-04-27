@@ -26,6 +26,11 @@ class BranchWorkload:
     delete_rows: list[dict] = field(default_factory=list)
     sync_mode: str = "full"
     coalesce_fields: list[list[str]] = field(default_factory=list)
+    query_name: str = ""
+    execution_mode: str = ""
+    execution_value: str = ""
+    query_runtime_ms: float | None = None
+    baseline_snapshot_id: str = ""
 
     @property
     def estimated_changes(self):
@@ -43,6 +48,11 @@ class BranchPlanItem:
     sync_mode: str
     coalesce_fields: list[list[str]] = field(default_factory=list)
     shard_keys: tuple[str, ...] = ()
+    query_name: str = ""
+    execution_mode: str = ""
+    execution_value: str = ""
+    query_runtime_ms: float | None = None
+    baseline_snapshot_id: str = ""
 
 
 def row_shard_key(model_string, row, coalesce_fields):
@@ -83,6 +93,11 @@ def split_workload(workload, *, max_changes_per_branch):
                 delete_rows=workload.delete_rows,
                 sync_mode=workload.sync_mode,
                 coalesce_fields=workload.coalesce_fields,
+                query_name=workload.query_name,
+                execution_mode=workload.execution_mode,
+                execution_value=workload.execution_value,
+                query_runtime_ms=workload.query_runtime_ms,
+                baseline_snapshot_id=workload.baseline_snapshot_id,
             )
         ]
 
@@ -168,6 +183,11 @@ def split_workload(workload, *, max_changes_per_branch):
                 sync_mode=workload.sync_mode,
                 coalesce_fields=workload.coalesce_fields,
                 shard_keys=tuple(sorted(branch["shard_keys"])),
+                query_name=workload.query_name,
+                execution_mode=workload.execution_mode,
+                execution_value=workload.execution_value,
+                query_runtime_ms=workload.query_runtime_ms,
+                baseline_snapshot_id=workload.baseline_snapshot_id,
             )
         )
     return plan_items
@@ -193,6 +213,11 @@ def build_branch_plan(workloads, *, max_changes_per_branch):
             sync_mode=item.sync_mode,
             coalesce_fields=item.coalesce_fields,
             shard_keys=item.shard_keys,
+            query_name=item.query_name,
+            execution_mode=item.execution_mode,
+            execution_value=item.execution_value,
+            query_runtime_ms=item.query_runtime_ms,
+            baseline_snapshot_id=item.baseline_snapshot_id,
         )
         for index, item in enumerate(plan, start=1)
     ]
@@ -254,6 +279,11 @@ def build_branch_plan_with_density(
             sync_mode=item.sync_mode,
             coalesce_fields=item.coalesce_fields,
             shard_keys=item.shard_keys,
+            query_name=item.query_name,
+            execution_mode=item.execution_mode,
+            execution_value=item.execution_value,
+            query_runtime_ms=item.query_runtime_ms,
+            baseline_snapshot_id=item.baseline_snapshot_id,
         )
         for index, item in enumerate(plan, start=1)
     ]
