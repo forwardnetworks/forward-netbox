@@ -38,8 +38,10 @@ Use the smallest relevant set while developing, and run the full gate before rel
 
 ```bash
 invoke harness-check
+invoke harness-test
 invoke lint
 invoke check
+invoke scenario-test
 invoke test
 invoke docs
 invoke ci

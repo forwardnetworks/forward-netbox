@@ -48,6 +48,24 @@ class SensitiveContentTest(TestCase):
 
         self.assertEqual(findings, [])
 
+    def test_builtin_patterns_flag_quoted_identifier_values(self):
+        patterns = load_sensitive_patterns(Path.cwd())
+        network_id = "".join(["54", "321"])
+        snapshot_id = "".join(["98", "765"])
+
+        findings = scan_text(
+            "\n".join(
+                [
+                    f'"network_id": "{network_id}"',
+                    f"snapshot_id='{snapshot_id}'",
+                ]
+            ),
+            source="test_fixture.py",
+            patterns=patterns,
+        )
+
+        self.assertEqual(len(findings), 2)
+
     def test_local_pattern_file_blocks_customer_name_literals_and_regexes(self):
         with TemporaryDirectory() as temp_dir:
             repo_root = Path(temp_dir)

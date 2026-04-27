@@ -20,7 +20,7 @@ class ForwardSourceFormTest(TestCase):
             "type": ForwardSourceDeploymentChoices.SAAS,
             "username": "user@example.com",
             "password": "secret",
-            "network_id": "235937",
+            "network_id": "test-network",
             "timeout": 1200,
             "verify": True,
         }
@@ -77,7 +77,7 @@ class ForwardSyncFormTest(TestCase):
             parameters={
                 "username": "user@example.com",
                 "password": "secret",
-                "network_id": "235937",
+                "network_id": "test-network",
             },
         )
 
