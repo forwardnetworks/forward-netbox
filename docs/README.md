@@ -52,7 +52,8 @@ This repository is provided for use at your own risk. It is an unsupported relea
 - [Troubleshooting](01_User_Guide/troubleshooting.md)
 - [Built-In NQE Reference](02_Reference/built-in-nqe-maps.md)
 - [Model Mapping Matrix](02_Reference/model-mapping-matrix.md)
-- [TODO And Improvements](03_Plans/todo-and-improvements.md)
+- [Active Implementation Plans](03_Plans/active/README.md)
+- [Technical Debt Tracker](03_Plans/technical-debt.md)
 - [Shipped NQE Query Files](https://github.com/forwardnetworks/forward-netbox/tree/main/forward_netbox/queries)
 
 ## Screenshot Set
