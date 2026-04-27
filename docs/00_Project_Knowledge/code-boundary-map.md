@@ -14,6 +14,12 @@ This map describes where changes belong. It is intentionally behavior-based rath
 - Responsibilities: shipped NQE query discovery, raw query flattening, `query_id` support, coalesce maps, and model-to-query registration.
 - Required tests: registry loading, import flattening, query ID behavior, and sensitive-content checks.
 
+## Query Fetch Boundary
+
+- Owner: `forward_netbox/utilities/query_fetch.py`
+- Responsibilities: snapshot context resolution, preflight sample execution, full NQE execution, NQE diff fallback, row-shape validation handoff, and per-model result metadata.
+- Required tests: preflight fail-fast, diff/full fallback behavior, model-result persistence, and smoke validation output.
+
 ## Branch Planning Boundary
 
 - Owner: `forward_netbox/utilities/branch_budget.py`
@@ -23,8 +29,14 @@ This map describes where changes belong. It is intentionally behavior-based rath
 ## Branch Execution Boundary
 
 - Owner: `forward_netbox/utilities/multi_branch.py`
-- Responsibilities: snapshot context, preflight, plan state, branch lifecycle, branch-budget overflow retry, auto-merge, and resume behavior.
+- Responsibilities: plan state, branch lifecycle, branch-budget overflow retry, auto-merge, validation handoff, and resume behavior.
 - Required tests: preflight fail-fast, state transitions, retry behavior, auto-merge interaction, and stale branch recovery.
+
+## Validation Boundary
+
+- Owner: `forward_netbox/utilities/validation.py`
+- Responsibilities: validation-run persistence, drift-policy checks, blocking reasons, and pre-branch sync gating.
+- Required tests: policy validation, blocked-before-branch behavior, standalone validation jobs, and UI/API visibility.
 
 ## NetBox Adapter Boundary
 
@@ -35,7 +47,7 @@ This map describes where changes belong. It is intentionally behavior-based rath
 ## Plugin State Boundary
 
 - Owner: `forward_netbox/models.py`
-- Responsibilities: persisted plugin models, sync parameters, branch-run state, density persistence, job enqueueing, and merge handoff.
+- Responsibilities: persisted plugin models, sync parameters, branch-run state, density persistence, validation/drift models, job enqueueing, and merge handoff.
 - Required tests: parameter validation, state helpers, job enqueue behavior, and ingestion metadata.
 
 ## UI/API Boundary

@@ -38,4 +38,20 @@ urlpatterns = (
         "nqe-map/<int:pk>/",
         include(get_model_urls("forward_netbox", "forwardnqemap")),
     ),
+    path(
+        "drift-policy/",
+        include(get_model_urls("forward_netbox", "forwarddriftpolicy", detail=False)),
+    ),
+    path(
+        "drift-policy/<int:pk>/",
+        include(get_model_urls("forward_netbox", "forwarddriftpolicy")),
+    ),
+    path(
+        "validation-run/",
+        include(get_model_urls("forward_netbox", "forwardvalidationrun", detail=False)),
+    ),
+    path(
+        "validation-run/<int:pk>/",
+        include(get_model_urls("forward_netbox", "forwardvalidationrun")),
+    ),
 )

@@ -8,6 +8,7 @@ Run the smallest gate that proves the change, then run the release gate before p
 | Query map or NQE helper change | `invoke harness-check`, `invoke harness-test`, `invoke lint`, `invoke test`, update built-in NQE reference |
 | Forward API client change | `invoke lint`, `invoke check`, `invoke test` |
 | Sync planning or branch budget change | `invoke lint`, `invoke check`, `invoke scenario-test`, `invoke test`, local Docker sync smoke test |
+| Validation or drift policy change | `invoke lint`, `invoke check`, `invoke scenario-test`, `invoke test`, `invoke playwright-test`, validation-only smoke test |
 | NetBox model adapter change | `invoke lint`, `invoke check`, `invoke scenario-test`, `invoke test`, targeted local Docker sync |
 | UI/API workflow change | `invoke lint`, `invoke check`, `invoke test`, `invoke playwright-test`, browser/UI verification when visible behavior changes |
 | Release | `invoke ci`, GitHub CI success on `main` and tag |

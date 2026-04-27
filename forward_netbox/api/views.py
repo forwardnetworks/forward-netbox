@@ -11,19 +11,25 @@ from rest_framework.response import Response
 from ..exceptions import ForwardConnectivityError
 from ..exceptions import ForwardSyncError
 from .serializers import EmptySerializer
+from .serializers import ForwardDriftPolicySerializer
 from .serializers import ForwardIngestionIssueSerializer
 from .serializers import ForwardIngestionSerializer
 from .serializers import ForwardNQEMapSerializer
 from .serializers import ForwardSourceSerializer
 from .serializers import ForwardSyncSerializer
+from .serializers import ForwardValidationRunSerializer
+from forward_netbox.filtersets import ForwardDriftPolicyFilterSet
 from forward_netbox.filtersets import ForwardNQEMapFilterSet
 from forward_netbox.filtersets import ForwardSourceFilterSet
 from forward_netbox.filtersets import ForwardSyncFilterSet
+from forward_netbox.filtersets import ForwardValidationRunFilterSet
+from forward_netbox.models import ForwardDriftPolicy
 from forward_netbox.models import ForwardIngestion
 from forward_netbox.models import ForwardIngestionIssue
 from forward_netbox.models import ForwardNQEMap
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
+from forward_netbox.models import ForwardValidationRun
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 
 
@@ -215,6 +221,21 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
             JobSerializer(job, context={"request": request}).data, status=201
         )
 
+    @extend_schema(
+        methods=["post"], request=EmptySerializer(), responses={201: JobSerializer()}
+    )
+    @action(detail=True, methods=["post"])
+    def validate(self, request, pk):
+        if not request.user.has_perm("forward_netbox.run_forwardsync"):
+            raise PermissionDenied(
+                "This user does not have permission to validate a Forward sync."
+            )
+        sync = self.get_object()
+        job = sync.enqueue_validation_job(user=request.user, adhoc=True)
+        return Response(
+            JobSerializer(job, context={"request": request}).data, status=201
+        )
+
 
 class ForwardIngestionViewSet(NetBoxReadOnlyModelViewSet):
     queryset = ForwardIngestion.objects.all()
@@ -224,3 +245,15 @@ class ForwardIngestionViewSet(NetBoxReadOnlyModelViewSet):
 class ForwardIngestionIssueViewSet(NetBoxReadOnlyModelViewSet):
     queryset = ForwardIngestionIssue.objects.all()
     serializer_class = ForwardIngestionIssueSerializer
+
+
+class ForwardDriftPolicyViewSet(NetBoxModelViewSet):
+    queryset = ForwardDriftPolicy.objects.all()
+    serializer_class = ForwardDriftPolicySerializer
+    filterset_class = ForwardDriftPolicyFilterSet
+
+
+class ForwardValidationRunViewSet(NetBoxReadOnlyModelViewSet):
+    queryset = ForwardValidationRun.objects.all()
+    serializer_class = ForwardValidationRunSerializer
+    filterset_class = ForwardValidationRunFilterSet

@@ -1,0 +1,72 @@
+{% extends 'generic/object.html' %}
+{% load helpers %}
+{% load i18n %}
+
+{% block content %}
+<div class="row mb-3">
+  <div class="col col-md-6">
+    <div class="card">
+      <h5 class="card-header">{% trans "Validation Run" %}</h5>
+      <div class="card-body">
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">{% trans "Sync" %}</th>
+            <td><a href="{{ object.sync.get_absolute_url }}">{{ object.sync }}</a></td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Policy" %}</th>
+            <td>
+              {% if object.policy %}
+                <a href="{{ object.policy.get_absolute_url }}">{{ object.policy }}</a>
+              {% else %}
+                {{ ""|placeholder }}
+              {% endif %}
+            </td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Status" %}</th>
+            <td>{{ object.get_status_display }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Allowed" %}</th>
+            <td>{{ object.allowed|yesno:"Yes,No" }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Snapshot Selection" %}</th>
+            <td>{{ object.snapshot_selector|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Snapshot ID" %}</th>
+            <td>{{ object.snapshot_id|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Baseline Snapshot" %}</th>
+            <td>{{ object.baseline_snapshot_id|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Started" %}</th>
+            <td>{{ object.started|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Completed" %}</th>
+            <td>{{ object.completed|placeholder }}</td>
+          </tr>
+        </table>
+      </div>
+    </div>
+  </div>
+  <div class="col col-md-6">
+    {% if object.blocking_reasons %}
+      <div class="card">
+        {% include 'extras/inc/configcontext_data.html' with title="Blocking Reasons" data=object.blocking_reasons format="json" copyid="forward-validation-blocking-reasons" %}
+      </div>
+    {% endif %}
+    <div class="card">
+      {% include 'extras/inc/configcontext_data.html' with title="Drift Summary" data=object.drift_summary format="json" copyid="forward-validation-drift-summary" %}
+    </div>
+    <div class="card">
+      {% include 'extras/inc/configcontext_data.html' with title="Model Results" data=object.model_results format="json" copyid="forward-validation-model-results" %}
+    </div>
+  </div>
+</div>
+{% endblock content %}
