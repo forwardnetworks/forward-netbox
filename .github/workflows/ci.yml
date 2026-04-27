@@ -19,6 +19,11 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
       - name: Check commit history for sensitive content
         run: python scripts/check_sensitive_content.py --all-history
       - name: Install validation dependencies
@@ -32,6 +37,10 @@ jobs:
             mkdocs-awesome-pages-plugin \
             mdx-truly-sane-lists \
             pymdown-extensions
+      - name: Install browser validation dependencies
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
       - name: Run pre-commit
         run: pre-commit run --all-files
       - name: Check repository harness
@@ -42,29 +51,52 @@ jobs:
         run: python -m py_compile $(find forward_netbox -name '*.py' -print)
       - name: Build docs
         run: mkdocs build --strict
-      - name: Start NetBox development stack
+      - name: Build NetBox development image
         run: |
-          docker compose --env-file development/.env \
-            -f development/docker-compose.yml \
-            up -d --build postgres redis netbox
+          docker compose --project-name forward-netbox \
+            --project-directory development \
+            build netbox
+      - name: Start NetBox data services
+        run: |
+          docker compose --project-name forward-netbox \
+            --project-directory development \
+            up -d postgres redis
+      - name: Run NetBox database migrations
+        run: |
+          docker compose --project-name forward-netbox \
+            --project-directory development \
+            run --rm --no-deps netbox bash -lc \
+            "cd /opt/netbox/netbox && python manage.py migrate --noinput"
+      - name: Start NetBox web service
+        run: |
+          docker compose --project-name forward-netbox \
+            --project-directory development \
+            up -d --wait netbox
       - name: Run Django system checks
         run: |
-          docker compose --env-file development/.env \
-            -f development/docker-compose.yml \
+          docker compose --project-name forward-netbox \
+            --project-directory development \
             exec -T netbox bash -lc \
             "cd /opt/netbox/netbox && python manage.py check"
+      - name: Run Playwright UI harness
+        env:
+          NETBOX_URL: http://127.0.0.1:8000
+          NETBOX_USERNAME: admin
+          NETBOX_PASSWORD: admin
+          PLAYWRIGHT_SKIP_MIGRATE: "true"
+        run: npm run test:ui
       - name: Run synthetic scenario tests
         run: |
-          docker compose --env-file development/.env \
-            -f development/docker-compose.yml \
+          docker compose --project-name forward-netbox \
+            --project-directory development \
             exec -T netbox bash -lc \
             "cd /opt/netbox/netbox && \
             python manage.py test --keepdb --noinput \
             forward_netbox.tests.test_synthetic_scenarios"
       - name: Run plugin tests
         run: |
-          docker compose --env-file development/.env \
-            -f development/docker-compose.yml \
+          docker compose --project-name forward-netbox \
+            --project-directory development \
             exec -T netbox bash -lc \
             "cd /opt/netbox/netbox && \
             python manage.py test --keepdb --noinput forward_netbox.tests"
@@ -73,15 +105,15 @@ jobs:
       - name: Show container logs on failure
         if: failure()
         run: |
-          docker compose --env-file development/.env \
-            -f development/docker-compose.yml \
+          docker compose --project-name forward-netbox \
+            --project-directory development \
             logs --no-color netbox
-          docker compose --env-file development/.env \
-            -f development/docker-compose.yml \
+          docker compose --project-name forward-netbox \
+            --project-directory development \
             logs --no-color netbox-worker
       - name: Stop NetBox development stack
         if: always()
         run: |
-          docker compose --env-file development/.env \
-            -f development/docker-compose.yml \
+          docker compose --project-name forward-netbox \
+            --project-directory development \
             down -v

@@ -18,6 +18,7 @@ invoke lint
 invoke check
 invoke scenario-test
 invoke test
+invoke playwright-test
 invoke docs
 python -m build
 ```

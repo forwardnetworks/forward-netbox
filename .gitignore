@@ -136,3 +136,9 @@ dmypy.json
 
 # Local-only sensitive content denylist
 .sensitive-patterns.local.txt
+
+# Browser harness artifacts
+node_modules/
+playwright-report/
+test-results/
+.playwright-artifacts/

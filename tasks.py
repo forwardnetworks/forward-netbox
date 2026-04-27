@@ -120,6 +120,11 @@ def scenario_test(context):
     )
 
 
+@task(name="playwright-test")
+def playwright_test(context):
+    context.run("npm run test:ui")
+
+
 @task
 def package(context):
     context.run("python -m build")
@@ -165,6 +170,7 @@ def smoke_sync(
         check,
         scenario_test,
         test,
+        playwright_test,
         docs,
         package,
     ]

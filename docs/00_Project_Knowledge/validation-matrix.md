@@ -9,7 +9,7 @@ Run the smallest gate that proves the change, then run the release gate before p
 | Forward API client change | `invoke lint`, `invoke check`, `invoke test` |
 | Sync planning or branch budget change | `invoke lint`, `invoke check`, `invoke scenario-test`, `invoke test`, local Docker sync smoke test |
 | NetBox model adapter change | `invoke lint`, `invoke check`, `invoke scenario-test`, `invoke test`, targeted local Docker sync |
-| UI/API workflow change | `invoke lint`, `invoke check`, `invoke test`, browser/UI verification when visible behavior changes |
+| UI/API workflow change | `invoke lint`, `invoke check`, `invoke test`, `invoke playwright-test`, browser/UI verification when visible behavior changes |
 | Release | `invoke ci`, GitHub CI success on `main` and tag |
 
 ## Core Commands
@@ -21,6 +21,7 @@ invoke lint
 invoke check
 invoke scenario-test
 invoke test
+invoke playwright-test
 invoke docs
 invoke package
 invoke ci
