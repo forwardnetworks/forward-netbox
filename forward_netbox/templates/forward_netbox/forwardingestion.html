@@ -72,6 +72,16 @@
             <td><div id="ingestion_status">{% include 'forward_netbox/partials/ingestion_status.html' with object=object %}</div></td>
           </tr>
           <tr>
+            <th scope="row">{% trans "Validation" %}</th>
+            <td>
+              {% if object.validation_run %}
+                <a href="{{ object.validation_run.get_absolute_url }}">{{ object.validation_run.get_status_display }}</a>
+              {% else %}
+                {{ ""|placeholder }}
+              {% endif %}
+            </td>
+          </tr>
+          <tr>
             <th scope="row">{% trans "Snapshot Selection" %}</th>
             <td>{{ object.get_snapshot_summary.snapshot_selector|placeholder }}</td>
           </tr>
@@ -127,6 +137,11 @@
     {% if object.snapshot_metrics %}
       <div class="card">
         {% include 'extras/inc/configcontext_data.html' with title="Snapshot Metrics (Raw)" data=object.snapshot_metrics format="json" copyid="forward-ingestion-snapshot-metrics" %}
+      </div>
+    {% endif %}
+    {% if object.model_results %}
+      <div class="card">
+        {% include 'extras/inc/configcontext_data.html' with title="Model Results" data=object.get_model_results_summary format="json" copyid="forward-ingestion-model-results" %}
       </div>
     {% endif %}
     {% include 'inc/panels/custom_fields.html' %}

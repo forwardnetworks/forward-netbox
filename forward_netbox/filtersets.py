@@ -6,15 +6,19 @@ from netbox.filtersets import ChangeLoggedModelFilterSet
 from netbox.filtersets import NetBoxModelFilterSet
 from netbox_branching.models import ChangeDiff
 
+from .choices import ForwardDriftPolicyBaselineChoices
 from .choices import ForwardIngestionPhaseChoices
 from .choices import ForwardSourceDeploymentChoices
 from .choices import ForwardSourceStatusChoices
 from .choices import ForwardSyncStatusChoices
+from .choices import ForwardValidationStatusChoices
+from .models import ForwardDriftPolicy
 from .models import ForwardIngestion
 from .models import ForwardIngestionIssue
 from .models import ForwardNQEMap
 from .models import ForwardSource
 from .models import ForwardSync
+from .models import ForwardValidationRun
 
 
 class ForwardSourceFilterSet(NetBoxModelFilterSet):
@@ -72,7 +76,7 @@ class ForwardSyncFilterSet(ChangeLoggedModelFilterSet):
 
     class Meta:
         model = ForwardSync
-        fields = ("id", "name", "status", "source")
+        fields = ("id", "name", "status", "source", "drift_policy")
 
     def search(self, queryset, name, value):
         if not value.strip():
@@ -118,7 +122,7 @@ class ForwardIngestionFilterSet(BaseFilterSet):
 
     class Meta:
         model = ForwardIngestion
-        fields = ("id", "branch", "sync")
+        fields = ("id", "branch", "sync", "validation_run")
 
     def search(self, queryset, name, value):
         if not value.strip():
@@ -147,4 +151,42 @@ class ForwardIngestionIssueFilterSet(BaseFilterSet):
             | Q(model__icontains=value)
             | Q(exception__icontains=value)
             | Q(message__icontains=value)
+        )
+
+
+class ForwardDriftPolicyFilterSet(ChangeLoggedModelFilterSet):
+    q = django_filters.CharFilter(method="search")
+    baseline_mode = django_filters.MultipleChoiceFilter(
+        choices=ForwardDriftPolicyBaselineChoices,
+        null_value=None,
+    )
+
+    class Meta:
+        model = ForwardDriftPolicy
+        fields = ("id", "name", "enabled", "baseline_mode")
+
+    def search(self, queryset, name, value):
+        if not value.strip():
+            return queryset
+        return queryset.filter(Q(name__icontains=value))
+
+
+class ForwardValidationRunFilterSet(BaseFilterSet):
+    q = django_filters.CharFilter(method="search")
+    status = django_filters.MultipleChoiceFilter(
+        choices=ForwardValidationStatusChoices,
+        null_value=None,
+    )
+
+    class Meta:
+        model = ForwardValidationRun
+        fields = ("id", "sync", "policy", "status", "allowed", "snapshot_id")
+
+    def search(self, queryset, name, value):
+        if not value.strip():
+            return queryset
+        return queryset.filter(
+            Q(sync__name__icontains=value)
+            | Q(snapshot_id__icontains=value)
+            | Q(baseline_snapshot_id__icontains=value)
         )

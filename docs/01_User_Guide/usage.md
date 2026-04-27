@@ -48,6 +48,7 @@ Open `Plugins > Forward Networks > Syncs > Add`.
 Recommended first pass:
 
 - Select the source you just created.
+- Optionally select a `Drift policy` if you want validation to block unsafe changes before any branch is created.
 - Leave `Snapshot` at `latestProcessed`.
 - Leave `Max changes per branch` at `10000` unless local Branching guidance says otherwise.
 - Keep the default model selection enabled.
@@ -57,23 +58,37 @@ Recommended first pass:
 Expected result:
 
 - The sync saves cleanly.
-- The sync detail page shows the selected source, network, snapshot selection, and enabled model list.
+- The sync detail page shows the selected source, network, snapshot selection, drift policy, latest validation result, and enabled model list.
 
 ![Forward Sync Detail](../images/forward-sync-detail.jpg)
 
-### 4. Run An Adhoc Ingestion
+### 4. Validate The Sync
+
+From the sync detail page, click `Validate`.
+
+Expected result:
+
+- A `Forward Validation Run` is created without creating NetBox Branching branches.
+- The validation run records the resolved snapshot, optional baseline snapshot, per-model query results, drift summary, and blocking reasons.
+- If the selected drift policy blocks the run, the sync can be corrected before staging NetBox changes.
+
+![Forward Validation Detail](../images/forward-validation-detail.jpg)
+
+### 5. Run An Adhoc Ingestion
 
 From the sync detail page, click `Adhoc Ingestion`.
 
 Expected result:
 
+- A validation run is recorded before branch creation.
 - A new `Forward Ingestion` is created.
 - The sync status progresses into the branch-backed staging flow.
 - The sync creates one ingestion per shard, and each shard links to its native NetBox Branching branch.
 - The ingestion records both the selected snapshot mode and the resolved snapshot ID used for NQE execution.
+- The ingestion links to the validation run and persists per-model query execution results.
 - If `Auto merge` is disabled, the sync pauses after the current shard reaches `Ready to merge`.
 
-### 5. Review The Ingestion
+### 6. Review The Ingestion
 
 Open the ingestion detail page and inspect:
 
@@ -81,6 +96,7 @@ Open the ingestion detail page and inspect:
 - snapshot selection and resolved snapshot ID
 - snapshot state and processed time
 - Forward snapshot metrics
+- model results and validation status
 - ingestion issues
 - change diff
 - branch linkage
@@ -90,6 +106,7 @@ Expected result:
 - The ingestion detail page loads successfully.
 - The ingestion shows the snapshot actually used for NQE execution.
 - The ingestion shows Forward snapshot metrics for the selected snapshot when Forward returns them.
+- The ingestion shows per-model execution mode, row count, delete count, runtime, and shard metadata when available.
 - `Issues` is empty or contains actionable query/persistence errors.
 - The change diff represents the staged NetBox changes for review.
 
@@ -97,7 +114,7 @@ Expected result:
 
 ![Forward Ingestion Detail](../images/forward-ingestion-detail.jpg)
 
-### 6. Confirm The Merged Branches
+### 7. Confirm The Merged Branches
 
 With `Auto merge` enabled, Forward syncs merge each native Branching shard before the next shard runs. With `Auto merge` disabled, review and merge the current shard, then click `Continue Ingestion` on the sync to stage the next shard.
 
@@ -149,5 +166,6 @@ Expected result:
 
 - the command creates or updates a disposable smoke `Source` and `Sync`
 - the sync resolves the selected snapshot and runs a real ingestion
+- the sync records validation and per-model execution metadata before branch staging
 - the command exits non-zero if the sync fails or any ingestion issues are recorded
 - in `--validate-only` mode, the command prints per-model query execution mode, row count, and runtime and exits non-zero on any query failure

@@ -17,10 +17,13 @@ from forward_netbox.exceptions import ForwardClientError
 from forward_netbox.exceptions import ForwardDependencySkipError
 from forward_netbox.exceptions import ForwardQueryError
 from forward_netbox.exceptions import ForwardSyncDataError
+from forward_netbox.exceptions import ForwardSyncError
+from forward_netbox.models import ForwardDriftPolicy
 from forward_netbox.models import ForwardIngestion
 from forward_netbox.models import ForwardIngestionIssue
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
+from forward_netbox.models import ForwardValidationRun
 from forward_netbox.utilities.branch_budget import BranchWorkload
 from forward_netbox.utilities.branch_budget import build_branch_plan
 from forward_netbox.utilities.branch_budget import build_branch_plan_with_density
@@ -145,7 +148,7 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
             },
         )
 
-    @patch("forward_netbox.utilities.multi_branch.get_query_specs")
+    @patch("forward_netbox.utilities.query_fetch.get_query_specs")
     def test_build_plan_runs_query_preflight_before_fetching_full_rows(
         self, mock_specs
     ):
@@ -187,7 +190,7 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
         second_call = client.run_nqe_query.call_args_list[1]
         self.assertTrue(second_call.kwargs["fetch_all"])
 
-    @patch("forward_netbox.utilities.multi_branch.get_query_specs")
+    @patch("forward_netbox.utilities.query_fetch.get_query_specs")
     def test_preflight_raises_before_full_fetch_on_invalid_rows(self, mock_specs):
         client = Mock()
         client.get_snapshots.return_value = [
@@ -314,6 +317,74 @@ class ForwardMultiBranchExecutorAdaptiveSplitTest(TestCase):
         self.assertEqual(executor._run_plan_item.call_count, 3)
         self.assertEqual(executor._split_overflow_item.call_count, 1)
         self.assertEqual(self.sync.get_branch_run_state(), {})
+
+    def test_run_records_validation_and_model_results_before_noop_ingestion(self):
+        executor = ForwardMultiBranchExecutor(
+            sync=self.sync,
+            client=Mock(),
+            logger_=Mock(),
+        )
+        context = {
+            "snapshot_selector": "latestProcessed",
+            "snapshot_id": self.SNAPSHOT_ID,
+            "snapshot_info": {"state": "PROCESSED"},
+            "snapshot_metrics": {},
+        }
+        executor.plan = Mock(return_value=(context, []))
+        executor.last_model_results = [
+            {
+                "model": "dcim.device",
+                "query_name": "Forward Devices",
+                "execution_mode": "query_id",
+                "execution_value": "Q_devices",
+                "sync_mode": "full",
+                "row_count": 0,
+                "delete_count": 0,
+                "failure_count": 0,
+                "runtime_ms": 1.0,
+                "snapshot_id": self.SNAPSHOT_ID,
+                "baseline_snapshot_id": "",
+            }
+        ]
+
+        ingestions = executor.run(max_changes_per_branch=10)
+
+        self.assertEqual(len(ingestions), 1)
+        ingestion = ingestions[0]
+        validation_run = ForwardValidationRun.objects.get(sync=self.sync)
+        self.assertEqual(ingestion.validation_run, validation_run)
+        self.assertEqual(ingestion.model_results, executor.last_model_results)
+        self.assertTrue(validation_run.allowed)
+        self.assertEqual(validation_run.snapshot_id, self.SNAPSHOT_ID)
+
+    def test_zero_row_policy_blocks_before_branch_creation(self):
+        policy = ForwardDriftPolicy.objects.create(
+            name="block-empty-models",
+            block_on_zero_rows=True,
+        )
+        self.sync.drift_policy = policy
+        self.sync.save()
+        executor = ForwardMultiBranchExecutor(
+            sync=self.sync,
+            client=Mock(),
+            logger_=Mock(),
+        )
+        context = {
+            "snapshot_selector": "latestProcessed",
+            "snapshot_id": self.SNAPSHOT_ID,
+            "snapshot_info": {"state": "PROCESSED"},
+            "snapshot_metrics": {},
+        }
+        executor.plan = Mock(return_value=(context, []))
+        executor._run_plan_item = Mock()
+
+        with self.assertRaisesRegex(ForwardSyncError, "No rows were returned"):
+            executor.run(max_changes_per_branch=10)
+
+        executor._run_plan_item.assert_not_called()
+        validation_run = ForwardValidationRun.objects.get(sync=self.sync)
+        self.assertFalse(validation_run.allowed)
+        self.assertEqual(validation_run.status, "blocked")
 
 
 class ForwardSyncRunnerTest(TestCase):

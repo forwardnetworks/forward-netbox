@@ -1,0 +1,49 @@
+{% extends 'generic/object.html' %}
+{% load helpers %}
+{% load i18n %}
+
+{% block content %}
+<div class="row mb-3">
+  <div class="col col-md-6">
+    <div class="card">
+      <h5 class="card-header">{% trans "Drift Policy" %}</h5>
+      <div class="card-body">
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">{% trans "Name" %}</th>
+            <td>{{ object.name }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Enabled" %}</th>
+            <td>{{ object.enabled|yesno:"Yes,No" }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Baseline Mode" %}</th>
+            <td>{{ object.get_baseline_mode_display }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Require Processed Snapshot" %}</th>
+            <td>{{ object.require_processed_snapshot|yesno:"Yes,No" }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Block On Query Errors" %}</th>
+            <td>{{ object.block_on_query_errors|yesno:"Yes,No" }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Block On Zero Rows" %}</th>
+            <td>{{ object.block_on_zero_rows|yesno:"Yes,No" }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Max Deleted Objects" %}</th>
+            <td>{{ object.max_deleted_objects|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Max Deleted Percent" %}</th>
+            <td>{{ object.max_deleted_percent|placeholder }}</td>
+          </tr>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock content %}

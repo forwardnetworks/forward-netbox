@@ -13,6 +13,12 @@
         </button>
       </form>
     {% elif object.ready_for_sync %}
+      <form action="{% url 'plugins:forward_netbox:forwardsync_validate' pk=object.pk %}" method="post">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-outline-primary">
+          <i class="mdi mdi-shield-check" aria-hidden="true"></i>&nbsp;{% trans "Validate" %}
+        </button>
+      </form>
       <form action="{% url 'plugins:forward_netbox:forwardsync_run' pk=object.pk %}" method="post">
         {% csrf_token %}
         <button type="submit" class="btn btn-primary">
@@ -85,6 +91,26 @@
           <tr>
             <th scope="row">{% trans "Auto merge" %}</th>
             <td>{{ object.auto_merge|yesno:"Yes,No" }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Drift Policy" %}</th>
+            <td>
+              {% if object.drift_policy %}
+                <a href="{{ object.drift_policy.get_absolute_url }}">{{ object.drift_policy }}</a>
+              {% else %}
+                {{ ""|placeholder }}
+              {% endif %}
+            </td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Latest Validation" %}</th>
+            <td>
+              {% if latest_validation_run %}
+                <a href="{{ latest_validation_run.get_absolute_url }}">{{ latest_validation_run.get_status_display }}</a>
+              {% else %}
+                {{ ""|placeholder }}
+              {% endif %}
+            </td>
           </tr>
         </table>
       </div>
