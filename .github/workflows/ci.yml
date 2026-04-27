@@ -30,6 +30,8 @@ jobs:
             pymdown-extensions
       - name: Run pre-commit
         run: pre-commit run --all-files
+      - name: Check repository harness
+        run: python scripts/check_harness.py
       - name: Compile plugin modules
         run: python -m py_compile $(find forward_netbox -name '*.py' -print)
       - name: Build docs
