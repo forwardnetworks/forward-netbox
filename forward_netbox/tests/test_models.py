@@ -1,15 +1,23 @@
+from datetime import timedelta
 from unittest.mock import patch
+from uuid import uuid4
 
 from core.exceptions import SyncError
+from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
 from django.test import TestCase
+from django.utils import timezone
 
+from forward_netbox.choices import ForwardSyncStatusChoices
+from forward_netbox.jobs import sync_forwardsync
 from forward_netbox.models import ForwardIngestion
+from forward_netbox.models import ForwardIngestionIssue
 from forward_netbox.models import ForwardNQEMap
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.signals import seed_builtin_nqe_maps
+from forward_netbox.tables import ForwardSyncTable
 from forward_netbox.utilities.branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from forward_netbox.utilities.query_registry import builtin_nqe_map_rows
@@ -191,6 +199,124 @@ class ForwardSyncModelTest(TestCase):
 
         sync.refresh_from_db()
         self.assertEqual(sync.status, "ready_to_merge")
+
+    @patch("forward_netbox.models.Job.enqueue")
+    def test_scheduled_enqueue_sets_queued_only_for_new_sync(self, mock_enqueue):
+        sync = ForwardSync.objects.create(
+            name="sync-first-scheduled-enqueue",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+            },
+        )
+        ForwardSync.objects.filter(pk=sync.pk).update(
+            scheduled=timezone.now() + timedelta(minutes=10),
+            interval=30,
+        )
+        sync.refresh_from_db()
+
+        sync.enqueue_sync_job()
+
+        sync.refresh_from_db()
+        self.assertEqual(sync.status, ForwardSyncStatusChoices.QUEUED)
+        mock_enqueue.assert_called_once()
+
+    @patch("forward_netbox.models.Job.enqueue")
+    def test_scheduled_enqueue_preserves_last_terminal_status(self, mock_enqueue):
+        sync = ForwardSync.objects.create(
+            name="sync-terminal-scheduled-enqueue",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+            },
+        )
+        ForwardSync.objects.filter(pk=sync.pk).update(
+            status=ForwardSyncStatusChoices.COMPLETED,
+            scheduled=timezone.now() + timedelta(minutes=10),
+            interval=30,
+        )
+        sync.refresh_from_db()
+
+        sync.enqueue_sync_job()
+
+        sync.refresh_from_db()
+        self.assertEqual(sync.status, ForwardSyncStatusChoices.COMPLETED)
+        mock_enqueue.assert_called_once()
+
+    @patch("forward_netbox.models.Job.enqueue")
+    @patch.object(ForwardSync, "sync", autospec=True)
+    def test_recurring_reschedule_preserves_last_terminal_status(
+        self,
+        mock_sync,
+        mock_enqueue,
+    ):
+        sync = ForwardSync.objects.create(
+            name="sync-recurring-status",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+            },
+        )
+        user = get_user_model().objects.create_user(username="recurring-user")
+        started = timezone.now()
+        ForwardSync.objects.filter(pk=sync.pk).update(
+            status=ForwardSyncStatusChoices.QUEUED,
+            scheduled=started - timedelta(minutes=1),
+            interval=30,
+            user=user,
+        )
+
+        def complete_sync(instance, job=None, **kwargs):
+            ForwardSync.objects.filter(pk=instance.pk).update(
+                status=ForwardSyncStatusChoices.COMPLETED
+            )
+
+        mock_sync.side_effect = complete_sync
+
+        class DummyJob:
+            object_id = sync.pk
+            pk = 1001
+            job_id = uuid4()
+            user = None
+            data = None
+
+            def start(self):
+                return None
+
+            def save(self, **kwargs):
+                return None
+
+            def terminate(self, **kwargs):
+                return None
+
+        job = DummyJob()
+        job.started = started
+        job.user = user
+        sync_forwardsync(job)
+
+        sync.refresh_from_db()
+        self.assertEqual(sync.status, ForwardSyncStatusChoices.COMPLETED)
+        self.assertGreater(sync.scheduled, started)
+        mock_enqueue.assert_called_once()
+
+    def test_plugin_models_disable_local_docs_url(self):
+        models = (
+            ForwardSource,
+            ForwardNQEMap,
+            ForwardSync,
+            ForwardIngestion,
+            ForwardIngestionIssue,
+        )
+
+        for model in models:
+            with self.subTest(model=model.__name__):
+                self.assertEqual(model().docs_url, "")
+
+    def test_sync_table_shows_scheduled_by_default(self):
+        self.assertIn("scheduled", ForwardSyncTable.Meta.default_columns)
 
     @patch("forward_netbox.models.ForwardSource.get_client")
     @patch("forward_netbox.utilities.multi_branch.ForwardMultiBranchExecutor")

@@ -7,6 +7,19 @@ This tracker records known follow-up work that should be handled through explici
 - `forward_netbox/utilities/sync.py` should eventually be split into contracts, adapter helpers, and per-model adapter modules.
 - Required first step: add behavior-preserving tests around each adapter family.
 
+## Intended Harness Layers
+
+Future refactors should move toward these smaller layers without changing public behavior:
+
+- `contracts`: validation of row shape, model identity, and coalesce rules.
+- `query fetch`: snapshot resolution, query execution, pagination, and diffs.
+- `planning`: workload grouping, shard sizing, and branch budget estimation.
+- `execution`: branch lifecycle, shard retries, merge handoff, and resume state.
+- `adapters`: per-NetBox-model row apply/delete behavior.
+- `reporting`: logs, statistics, issues, and operator-facing progress.
+
+Required first step: add behavior-preserving tests around the current module boundaries before moving code.
+
 ## Model State Boundaries
 
 - `forward_netbox/models.py` combines persisted models, state helpers, and job orchestration.
@@ -21,3 +34,8 @@ This tracker records known follow-up work that should be handled through explici
 
 - Repeated local UI sync tests can collide with stale Branching branch names.
 - Required first step: design an operator-safe cleanup or branch naming strategy that does not hide production failures.
+
+## Roadmap Discipline
+
+- New roadmap work should update or complete a plan in `docs/03_Plans/active/`.
+- Broad follow-up lists belong here only when they are not yet ready for an implementation plan.
