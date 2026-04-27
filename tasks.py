@@ -92,6 +92,11 @@ def sensitive_check(context):
     context.run("python scripts/check_sensitive_content.py --all-history")
 
 
+@task(name="harness-check")
+def harness_check(context):
+    context.run("python scripts/check_harness.py")
+
+
 @task
 def check(context):
     manage_py(context, "check")
@@ -136,6 +141,8 @@ def smoke_sync(
     manage_py(context, f"forward_smoke_sync{flag_string}")
 
 
-@task(pre=[sensitive_check, lint, build, start, check, test, docs, package])
+@task(
+    pre=[sensitive_check, harness_check, lint, build, start, check, test, docs, package]
+)
 def ci(context):
     """Run the local CI-equivalent validation flow."""
