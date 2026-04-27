@@ -117,7 +117,9 @@ class ForwardValidationRunner:
             reasons.append("Target snapshot is not processed.")
 
         if policy.block_on_query_errors:
-            failures = sum(int(result.get("failure_count") or 0) for result in model_results)
+            failures = sum(
+                int(result.get("failure_count") or 0) for result in model_results
+            )
             if failures:
                 reasons.append(f"{failures} query failures were reported.")
 
@@ -140,8 +142,13 @@ class ForwardValidationRunner:
                     + "."
                 )
 
-        total_deletes = sum(int(result.get("delete_count") or 0) for result in model_results)
-        if policy.max_deleted_objects is not None and total_deletes > policy.max_deleted_objects:
+        total_deletes = sum(
+            int(result.get("delete_count") or 0) for result in model_results
+        )
+        if (
+            policy.max_deleted_objects is not None
+            and total_deletes > policy.max_deleted_objects
+        ):
             reasons.append(
                 f"Delete count {total_deletes} exceeds policy limit {policy.max_deleted_objects}."
             )
