@@ -104,6 +104,14 @@ REQUIRED_TEXT = {
         "Rollback",
         "Decision Log",
     ],
+    ".github/workflows/ci.yml": [
+        "actions/checkout@v6",
+        "actions/setup-python@v6",
+        "FORCE_JAVASCRIPT_ACTIONS_TO_NODE24",
+        "contents: read",
+        "Run harness tests",
+        "Run synthetic scenario tests",
+    ],
 }
 
 
