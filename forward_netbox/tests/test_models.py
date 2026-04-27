@@ -27,7 +27,7 @@ class ForwardSyncModelTest(TestCase):
                 "password": "secret",
                 "verify": True,
                 "timeout": 1200,
-                "network_id": "235937",
+                "network_id": "test-network",
             },
         )
 
@@ -156,7 +156,7 @@ class ForwardSyncModelTest(TestCase):
                 "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
                 "dcim.device": True,
                 "_branch_run": {
-                    "snapshot_id": "1248264",
+                    "snapshot_id": "snapshot-before",
                     "next_plan_index": 2,
                     "total_plan_items": 3,
                     "awaiting_merge": True,
@@ -179,7 +179,7 @@ class ForwardSyncModelTest(TestCase):
                 "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
                 "dcim.device": True,
                 "_branch_run": {
-                    "snapshot_id": "1248264",
+                    "snapshot_id": "snapshot-before",
                     "next_plan_index": 2,
                     "total_plan_items": 3,
                     "awaiting_merge": True,
@@ -230,13 +230,13 @@ class ForwardSyncModelTest(TestCase):
         ForwardIngestion.objects.create(
             sync=sync,
             snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id="1248263",
+            snapshot_id="snapshot-old",
             baseline_ready=False,
         )
         expected = ForwardIngestion.objects.create(
             sync=sync,
             snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id="1248264",
+            snapshot_id="snapshot-before",
             baseline_ready=True,
         )
         ForwardIngestion.objects.create(
@@ -261,13 +261,13 @@ class ForwardSyncModelTest(TestCase):
         expected = ForwardIngestion.objects.create(
             sync=sync,
             snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id="1248264",
+            snapshot_id="snapshot-before",
             baseline_ready=True,
         )
         current = ForwardIngestion.objects.create(
             sync=sync,
             snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id="1248265",
+            snapshot_id="snapshot-after",
             baseline_ready=True,
         )
 
@@ -289,7 +289,7 @@ class ForwardSyncModelTest(TestCase):
         baseline = ForwardIngestion.objects.create(
             sync=sync,
             snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id="1248264",
+            snapshot_id="snapshot-before",
             baseline_ready=True,
         )
         specs = [
@@ -303,7 +303,7 @@ class ForwardSyncModelTest(TestCase):
         self.assertEqual(
             sync.incremental_diff_baseline(
                 specs=specs,
-                current_snapshot_id="1248265",
+                current_snapshot_id="snapshot-after",
             ),
             baseline,
         )
@@ -316,13 +316,13 @@ class ForwardSyncModelTest(TestCase):
                         query='select {name: "device-1"}',
                     )
                 ],
-                current_snapshot_id="1248265",
+                current_snapshot_id="snapshot-after",
             )
         )
         self.assertIsNone(
             sync.incremental_diff_baseline(
                 specs=specs,
-                current_snapshot_id="1248264",
+                current_snapshot_id="snapshot-before",
             )
         )
 
@@ -338,7 +338,7 @@ class ForwardIngestionSnapshotSummaryTest(TestCase):
                 "password": "secret",
                 "verify": True,
                 "timeout": 1200,
-                "network_id": "235937",
+                "network_id": "test-network",
             },
         )
         self.sync = ForwardSync.objects.create(
@@ -355,7 +355,7 @@ class ForwardIngestionSnapshotSummaryTest(TestCase):
         ingestion = ForwardIngestion.objects.create(
             sync=self.sync,
             snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id="1248264",
+            snapshot_id="snapshot-before",
             snapshot_info={
                 "state": "PROCESSED",
                 "createdAt": "2026-03-31T12:00:00Z",
@@ -374,7 +374,7 @@ class ForwardIngestionSnapshotSummaryTest(TestCase):
             ingestion.get_snapshot_summary(),
             {
                 "snapshot_selector": LATEST_PROCESSED_SNAPSHOT,
-                "snapshot_id": "1248264",
+                "snapshot_id": "snapshot-before",
                 "state": "PROCESSED",
                 "created_at": "2026-03-31T12:00:00Z",
                 "processed_at": "2026-03-31T12:15:00Z",
@@ -394,7 +394,7 @@ class ForwardIngestionSnapshotSummaryTest(TestCase):
         ingestion = ForwardIngestion.objects.create(
             sync=self.sync,
             snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id="1248264",
+            snapshot_id="snapshot-before",
         )
 
         self.assertEqual(ingestion.sync_mode, "full")
@@ -404,7 +404,7 @@ class ForwardIngestionSnapshotSummaryTest(TestCase):
         ingestion = ForwardIngestion.objects.create(
             sync=self.sync,
             snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id="1248264",
+            snapshot_id="snapshot-before",
         )
 
         with patch("forward_netbox.utilities.merge.merge_branch"):
@@ -417,7 +417,7 @@ class ForwardIngestionSnapshotSummaryTest(TestCase):
         ingestion = ForwardIngestion.objects.create(
             sync=self.sync,
             snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id="1248264",
+            snapshot_id="snapshot-before",
         )
 
         with (
@@ -434,12 +434,12 @@ class ForwardIngestionSnapshotSummaryTest(TestCase):
         ingestion = ForwardIngestion.objects.create(
             sync=self.sync,
             snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id="1248264",
+            snapshot_id="snapshot-before",
         )
         self.sync.set_branch_run_state(
             {
                 "snapshot_selector": LATEST_PROCESSED_SNAPSHOT,
-                "snapshot_id": "1248264",
+                "snapshot_id": "snapshot-before",
                 "max_changes_per_branch": DEFAULT_MAX_CHANGES_PER_BRANCH,
                 "next_plan_index": 2,
                 "total_plan_items": 3,
@@ -466,12 +466,12 @@ class ForwardIngestionSnapshotSummaryTest(TestCase):
         ingestion = ForwardIngestion.objects.create(
             sync=self.sync,
             snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id="1248264",
+            snapshot_id="snapshot-before",
         )
         self.sync.set_branch_run_state(
             {
                 "snapshot_selector": LATEST_PROCESSED_SNAPSHOT,
-                "snapshot_id": "1248264",
+                "snapshot_id": "snapshot-before",
                 "max_changes_per_branch": DEFAULT_MAX_CHANGES_PER_BRANCH,
                 "next_plan_index": 4,
                 "total_plan_items": 3,

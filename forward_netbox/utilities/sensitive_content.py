@@ -42,11 +42,11 @@ BUILTIN_PATTERNS = (
     ),
     _builtin_pattern(
         "Forward network identifier",
-        r"\bnetwork(?:[ _-]?id)?\b\s*[:=]?\s*\d{5,}\b",
+        r"\bnetwork(?:[ _-]?id)?\b[\"']?\s*[:=]?\s*[\"']?\d{5,}\b",
     ),
     _builtin_pattern(
         "Forward snapshot identifier",
-        r"\bsnapshot(?:[ _-]?id)?\b\s*[:=]?\s*\d{5,}\b",
+        r"\bsnapshot(?:[ _-]?id)?\b[\"']?\s*[:=]?\s*[\"']?\d{5,}\b",
     ),
 )
 

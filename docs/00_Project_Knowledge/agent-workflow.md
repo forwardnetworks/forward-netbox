@@ -30,8 +30,10 @@ Use this workflow before changing the repository.
 
 ```bash
 invoke harness-check
+invoke harness-test
 invoke lint
 invoke check
+invoke scenario-test
 invoke test
 ```
 

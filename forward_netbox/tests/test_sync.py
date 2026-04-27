@@ -132,7 +132,7 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
                 "password": "secret",
                 "verify": True,
                 "timeout": 1200,
-                "network_id": "235937",
+                "network_id": "test-network",
             },
         )
         self.sync = ForwardSync.objects.create(
@@ -152,7 +152,7 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
         client = Mock()
         client.get_snapshots.return_value = [
             {
-                "id": "1248265",
+                "id": "snapshot-after",
                 "state": "PROCESSED",
                 "created_at": "",
                 "processed_at": "2026-03-31T12:15:00Z",
@@ -163,7 +163,7 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
             [{"name": "site-1", "slug": "site-1"}],
             [{"name": "site-1", "slug": "site-1"}],
         ]
-        self.sync.resolve_snapshot_id = lambda client=None: "1248265"
+        self.sync.resolve_snapshot_id = lambda client=None: "snapshot-after"
         self.sync.get_model_strings = lambda: ["dcim.site"]
         self.sync.incremental_diff_baseline = Mock(return_value=None)
         mock_specs.return_value = [
@@ -192,7 +192,7 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
         client = Mock()
         client.get_snapshots.return_value = [
             {
-                "id": "1248265",
+                "id": "snapshot-after",
                 "state": "PROCESSED",
                 "created_at": "",
                 "processed_at": "2026-03-31T12:15:00Z",
@@ -200,7 +200,7 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
         ]
         client.get_snapshot_metrics.return_value = {}
         client.run_nqe_query.return_value = [{"name": "site-1"}]
-        self.sync.resolve_snapshot_id = lambda client=None: "1248265"
+        self.sync.resolve_snapshot_id = lambda client=None: "snapshot-after"
         self.sync.get_model_strings = lambda: ["dcim.site"]
         self.sync.incremental_diff_baseline = Mock(return_value=None)
         mock_specs.return_value = [
@@ -327,7 +327,7 @@ class ForwardSyncRunnerTest(TestCase):
                 "password": "secret",
                 "verify": True,
                 "timeout": 1200,
-                "network_id": "235937",
+                "network_id": "test-network",
             },
         )
         self.sync = ForwardSync.objects.create(
@@ -585,7 +585,7 @@ class ForwardSyncRunnerTest(TestCase):
         ingestion = ForwardIngestion.objects.create(sync=self.sync)
         client = Mock()
         client.get_latest_processed_snapshot.return_value = {
-            "id": "1248264",
+            "id": "snapshot-before",
             "state": "PROCESSED",
             "createdAt": "2026-03-31T12:00:00Z",
             "processedAt": "2026-03-31T12:15:00Z",
@@ -604,17 +604,17 @@ class ForwardSyncRunnerTest(TestCase):
         )
 
         self.sync.get_model_strings = lambda: []
-        self.sync.resolve_snapshot_id = lambda client=None: "1248264"
+        self.sync.resolve_snapshot_id = lambda client=None: "snapshot-before"
 
         runner.run()
         ingestion.refresh_from_db()
 
         self.assertEqual(ingestion.snapshot_selector, LATEST_PROCESSED_SNAPSHOT)
-        self.assertEqual(ingestion.snapshot_id, "1248264")
+        self.assertEqual(ingestion.snapshot_id, "snapshot-before")
         self.assertEqual(
             ingestion.snapshot_info,
             {
-                "id": "1248264",
+                "id": "snapshot-before",
                 "state": "PROCESSED",
                 "createdAt": "2026-03-31T12:00:00Z",
                 "processedAt": "2026-03-31T12:15:00Z",
@@ -628,14 +628,14 @@ class ForwardSyncRunnerTest(TestCase):
                 "numSuccessfulEndpoints": 1213,
             },
         )
-        client.get_latest_processed_snapshot.assert_called_once_with("235937")
-        client.get_snapshot_metrics.assert_called_once_with("1248264")
+        client.get_latest_processed_snapshot.assert_called_once_with("test-network")
+        client.get_snapshot_metrics.assert_called_once_with("snapshot-before")
 
     def test_run_fetches_all_pages_for_sync_queries(self):
         ingestion = ForwardIngestion.objects.create(sync=self.sync)
         client = Mock()
         client.get_latest_processed_snapshot.return_value = {
-            "id": "1248264",
+            "id": "snapshot-before",
             "processedAt": "2026-03-31T12:15:00Z",
         }
         client.get_snapshot_metrics.return_value = {}
@@ -649,7 +649,7 @@ class ForwardSyncRunnerTest(TestCase):
         runner._apply_model_rows = Mock()
 
         self.sync.get_model_strings = lambda: ["dcim.device"]
-        self.sync.resolve_snapshot_id = lambda client=None: "1248264"
+        self.sync.resolve_snapshot_id = lambda client=None: "snapshot-before"
 
         with patch(
             "forward_netbox.utilities.sync.get_query_specs",
@@ -667,8 +667,8 @@ class ForwardSyncRunnerTest(TestCase):
             query="foreach device select {name: device.name}",
             query_id=None,
             commit_id=None,
-            network_id="235937",
-            snapshot_id="1248264",
+            network_id="test-network",
+            snapshot_id="snapshot-before",
             parameters={},
             fetch_all=True,
         )
@@ -677,7 +677,7 @@ class ForwardSyncRunnerTest(TestCase):
         ingestion = ForwardIngestion.objects.create(sync=self.sync)
         client = Mock()
         client.get_latest_processed_snapshot.return_value = {
-            "id": "1248264",
+            "id": "snapshot-before",
             "processedAt": "2026-03-31T12:15:00Z",
         }
         client.get_snapshot_metrics.return_value = {}
@@ -696,7 +696,7 @@ class ForwardSyncRunnerTest(TestCase):
         runner._apply_model_rows = Mock()
 
         self.sync.get_model_strings = lambda: ["dcim.site"]
-        self.sync.resolve_snapshot_id = lambda client=None: "1248264"
+        self.sync.resolve_snapshot_id = lambda client=None: "snapshot-before"
 
         with patch(
             "forward_netbox.utilities.sync.get_query_specs",
@@ -720,13 +720,13 @@ class ForwardSyncRunnerTest(TestCase):
         baseline = ForwardIngestion.objects.create(
             sync=self.sync,
             snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id="1248264",
+            snapshot_id="snapshot-before",
             baseline_ready=True,
         )
         ingestion = ForwardIngestion.objects.create(sync=self.sync)
         client = Mock()
         client.get_latest_processed_snapshot.return_value = {
-            "id": "1248265",
+            "id": "snapshot-after",
             "processedAt": "2026-03-31T12:15:00Z",
         }
         client.get_snapshot_metrics.return_value = {}
@@ -758,7 +758,7 @@ class ForwardSyncRunnerTest(TestCase):
         runner._delete_model_rows = Mock()
 
         self.sync.get_model_strings = lambda: ["dcim.site"]
-        self.sync.resolve_snapshot_id = lambda client=None: "1248265"
+        self.sync.resolve_snapshot_id = lambda client=None: "snapshot-after"
 
         with patch(
             "forward_netbox.utilities.sync.get_query_specs",
@@ -776,7 +776,7 @@ class ForwardSyncRunnerTest(TestCase):
             query_id="Q_sites",
             commit_id=None,
             before_snapshot_id=baseline.snapshot_id,
-            after_snapshot_id="1248265",
+            after_snapshot_id="snapshot-after",
             fetch_all=True,
         )
         client.run_nqe_query.assert_not_called()
@@ -799,13 +799,13 @@ class ForwardSyncRunnerTest(TestCase):
         ForwardIngestion.objects.create(
             sync=self.sync,
             snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id="1248264",
+            snapshot_id="snapshot-before",
             baseline_ready=True,
         )
         ingestion = ForwardIngestion.objects.create(sync=self.sync)
         client = Mock()
         client.get_latest_processed_snapshot.return_value = {
-            "id": "1248265",
+            "id": "snapshot-after",
             "processedAt": "2026-03-31T12:15:00Z",
         }
         client.get_snapshot_metrics.return_value = {}
@@ -822,7 +822,7 @@ class ForwardSyncRunnerTest(TestCase):
         runner._delete_model_rows = Mock()
 
         self.sync.get_model_strings = lambda: ["dcim.site"]
-        self.sync.resolve_snapshot_id = lambda client=None: "1248265"
+        self.sync.resolve_snapshot_id = lambda client=None: "snapshot-after"
 
         with patch(
             "forward_netbox.utilities.sync.get_query_specs",
@@ -846,7 +846,7 @@ class ForwardSyncRunnerTest(TestCase):
         ingestion = ForwardIngestion.objects.create(sync=self.sync)
         client = Mock()
         client.get_latest_processed_snapshot.return_value = {
-            "id": "1248264",
+            "id": "snapshot-before",
             "processedAt": "2026-03-31T12:15:00Z",
         }
         client.get_snapshot_metrics.return_value = {}
@@ -859,7 +859,7 @@ class ForwardSyncRunnerTest(TestCase):
         )
 
         self.sync.get_model_strings = lambda: ["dcim.device"]
-        self.sync.resolve_snapshot_id = lambda client=None: "1248264"
+        self.sync.resolve_snapshot_id = lambda client=None: "snapshot-before"
 
         with patch(
             "forward_netbox.utilities.sync.get_query_specs",
@@ -883,7 +883,7 @@ class ForwardSyncRunnerTest(TestCase):
         ingestion = ForwardIngestion.objects.create(sync=self.sync)
         client = Mock()
         client.get_latest_processed_snapshot.return_value = {
-            "id": "1248264",
+            "id": "snapshot-before",
             "processedAt": "2026-03-31T12:15:00Z",
         }
         client.get_snapshot_metrics.return_value = {}
@@ -906,7 +906,7 @@ class ForwardSyncRunnerTest(TestCase):
         )
 
         self.sync.get_model_strings = lambda: ["dcim.site", "dcim.manufacturer"]
-        self.sync.resolve_snapshot_id = lambda client=None: "1248264"
+        self.sync.resolve_snapshot_id = lambda client=None: "snapshot-before"
 
         with patch(
             "forward_netbox.utilities.sync.get_query_specs",

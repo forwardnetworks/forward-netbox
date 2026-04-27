@@ -97,6 +97,11 @@ def harness_check(context):
     context.run("python scripts/check_harness.py")
 
 
+@task(name="harness-test")
+def harness_test(context):
+    context.run("python -m unittest discover -s scripts/tests -p 'test_*.py'")
+
+
 @task
 def check(context):
     manage_py(context, "check")
@@ -105,6 +110,14 @@ def check(context):
 @task
 def test(context):
     manage_py(context, "test --keepdb --noinput forward_netbox.tests")
+
+
+@task(name="scenario-test")
+def scenario_test(context):
+    manage_py(
+        context,
+        "test --keepdb --noinput forward_netbox.tests.test_synthetic_scenarios",
+    )
 
 
 @task
@@ -142,7 +155,19 @@ def smoke_sync(
 
 
 @task(
-    pre=[sensitive_check, harness_check, lint, build, start, check, test, docs, package]
+    pre=[
+        sensitive_check,
+        harness_check,
+        harness_test,
+        lint,
+        build,
+        start,
+        check,
+        scenario_test,
+        test,
+        docs,
+        package,
+    ]
 )
 def ci(context):
     """Run the local CI-equivalent validation flow."""
