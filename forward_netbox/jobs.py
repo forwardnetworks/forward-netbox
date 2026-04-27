@@ -121,7 +121,6 @@ def sync_forwardsync(job, *args, **kwargs):
 
                 with event_tracking(request):
                     sync.scheduled = new_scheduled_time
-                    sync.status = ForwardSyncStatusChoices.QUEUED
                     sync.full_clean()
                     sync.save()
                 logger.info(
