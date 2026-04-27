@@ -33,7 +33,7 @@ invoke ci
 
 1. Commit with a lore-style message that includes `Tested:` and `Not-tested:` trailers.
 2. Push `main`.
-3. Create and push an annotated tag, for example `v0.2.5`.
+3. Create and push an annotated tag, for example `v0.3.0`.
 4. Wait for GitHub CI on both `main` and the tag.
 5. Build artifacts from the tagged commit.
 6. Create the GitHub Release using a notes file or carefully quoted notes.

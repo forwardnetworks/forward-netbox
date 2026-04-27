@@ -4,7 +4,7 @@ Install the plugin package, enable the required plugins, run the migrations, and
 
 ## Requirements
 
-- NetBox 4.5.x
+- NetBox 4.5.8 validated; NetBox 4.5.x only
 - `netboxlabs-netbox-branching`
 
 ## Package Installation
@@ -12,31 +12,32 @@ Install the plugin package, enable the required plugins, run the migrations, and
 Install the wheel from GitHub Releases into the same Python environment as NetBox:
 
 ```bash
-pip install /path/to/forward_netbox-0.2.4-py3-none-any.whl
+pip install /path/to/forward_netbox-0.3.0-py3-none-any.whl
 ```
 
 Alternatively, install directly from the GitHub source archive:
 
 ```bash
-pip install /path/to/forward_netbox-0.2.4.tar.gz
+pip install /path/to/forward_netbox-0.3.0.tar.gz
 ```
 
 If you mirror the package into a private Python index, pin the same release version:
 
 ```bash
-pip install forward-netbox==0.2.4
+pip install forward-netbox==0.3.0
 ```
 
 ## Release Compatibility
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v0.2.4` | `4.5.x` only | Current unsupported release |
+| `v0.3.0` | `4.5.8` validated; `4.5.x` only | Current unsupported release |
 
 ## Version History
 
 | Release | Summary |
 | --- | --- |
+| `v0.3.0` | Adds the NetBox 4.5.8-validated harness architecture with first-class validation runs, drift policies, query-fetch boundaries, model-result reporting, and Playwright-covered UI workflow validation. |
 | `v0.2.4` | Hardens native multi-branch resilience with adaptive shard splitting and retry on branch-budget overflow, plus model-density tracking to keep large initial syncs within NetBox branching guidance. |
 | `v0.2.3` | Adds native sync preflight validation before full multi-branch planning so invalid model/query rows fail earlier in the UI/API run path. |
 | `v0.2.2` | NQE-only correction release: filters zero-length prefixes, broadens interface coverage for IP assignment targets, and enforces inventory `part_id` length limits. |

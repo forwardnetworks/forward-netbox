@@ -7,11 +7,13 @@ from netbox.tables import columns
 from netbox.tables import NetBoxTable
 from netbox_branching.models import ChangeDiff
 
+from .models import ForwardDriftPolicy
 from .models import ForwardIngestion
 from .models import ForwardIngestionIssue
 from .models import ForwardNQEMap
 from .models import ForwardSource
 from .models import ForwardSync
+from .models import ForwardValidationRun
 
 
 DIFF_BUTTON = """
@@ -72,6 +74,7 @@ class ForwardSyncTable(NetBoxTable):
     status = columns.ChoiceFieldColumn()
     source = tables.Column(linkify=True, verbose_name=_("Source"))
     last_ingestion = tables.Column(accessor="last_ingestion", linkify=True)
+    drift_policy = tables.Column(linkify=True, verbose_name=_("Drift Policy"))
 
     def render_last_ingestion(self, value):
         return getattr(value, "name", "---") if value else "---"
@@ -84,6 +87,7 @@ class ForwardSyncTable(NetBoxTable):
             "status",
             "source",
             "auto_merge",
+            "drift_policy",
             "last_synced",
             "last_ingestion",
             "scheduled",
@@ -97,6 +101,7 @@ class ForwardSyncTable(NetBoxTable):
             "source",
             "scheduled",
             "auto_merge",
+            "drift_policy",
             "last_ingestion",
             "last_synced",
         )
@@ -106,6 +111,7 @@ class ForwardIngestionTable(NetBoxTable):
     name = tables.Column(linkify=True, order_by=("branch_name", "sync_name", "id"))
     sync = tables.Column(linkify=True)
     branch = tables.Column(linkify=True)
+    validation_run = tables.Column(linkify=True)
     changes = tables.Column(
         accessor="staged_changes",
         verbose_name=_("Number of Changes"),
@@ -121,8 +127,64 @@ class ForwardIngestionTable(NetBoxTable):
 
     class Meta(NetBoxTable.Meta):
         model = ForwardIngestion
-        fields = ("name", "sync", "branch", "user", "changes")
+        fields = ("name", "sync", "branch", "validation_run", "user", "changes")
         default_columns = ("name", "sync", "branch", "user", "changes")
+
+
+class ForwardDriftPolicyTable(NetBoxTable):
+    name = tables.Column(linkify=True)
+    baseline_mode = columns.ChoiceFieldColumn()
+
+    class Meta(NetBoxTable.Meta):
+        model = ForwardDriftPolicy
+        fields = (
+            "pk",
+            "name",
+            "enabled",
+            "baseline_mode",
+            "require_processed_snapshot",
+            "block_on_query_errors",
+            "block_on_zero_rows",
+            "max_deleted_objects",
+            "max_deleted_percent",
+        )
+        default_columns = (
+            "pk",
+            "name",
+            "enabled",
+            "baseline_mode",
+            "require_processed_snapshot",
+            "block_on_query_errors",
+        )
+
+
+class ForwardValidationRunTable(NetBoxTable):
+    sync = tables.Column(linkify=True)
+    policy = tables.Column(linkify=True)
+    status = columns.ChoiceFieldColumn()
+
+    class Meta(NetBoxTable.Meta):
+        model = ForwardValidationRun
+        fields = (
+            "pk",
+            "sync",
+            "policy",
+            "status",
+            "allowed",
+            "snapshot_id",
+            "baseline_snapshot_id",
+            "created",
+            "completed",
+        )
+        default_columns = (
+            "pk",
+            "sync",
+            "status",
+            "allowed",
+            "snapshot_id",
+            "baseline_snapshot_id",
+            "completed",
+        )
 
 
 class ForwardIngestionChangesTable(NetBoxTable):

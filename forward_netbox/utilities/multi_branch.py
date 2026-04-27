@@ -7,21 +7,18 @@ from netbox_branching.models import Branch
 
 from ..choices import ForwardIngestionPhaseChoices
 from ..choices import ForwardSyncStatusChoices
-from ..exceptions import ForwardClientError
-from ..exceptions import ForwardConnectivityError
-from ..exceptions import ForwardQueryError
 from .branch_budget import BranchWorkload
 from .branch_budget import build_branch_plan_with_density
 from .branch_budget import DEFAULT_DENSITY_SAFETY_FACTOR
 from .branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
 from .branch_budget import split_workload
 from .branching import build_branch_request
-from .query_registry import get_query_specs
+from .query_fetch import DEFAULT_PREFLIGHT_ROW_LIMIT  # noqa: F401
+from .query_fetch import ForwardQueryFetcher
+from .query_fetch import plan_item_model_result
 from .sync import ForwardSyncRunner
-from .sync_contracts import default_coalesce_fields_for_model
-from .sync_contracts import validate_row_shape_for_model
+from .validation import ForwardValidationRunner
 
-DEFAULT_PREFLIGHT_ROW_LIMIT = 50
 AUTO_SPLIT_MIN_ROWS_PER_BRANCH = 1
 
 
@@ -44,6 +41,7 @@ class ForwardMultiBranchPlanner:
         self.client = client
         self.logger = logger_
         self.branch_run_state = branch_run_state or {}
+        self.model_results = []
 
     def build_plan(
         self,
@@ -52,191 +50,19 @@ class ForwardMultiBranchPlanner:
         run_preflight=True,
         model_change_density=None,
     ):
-        context = self._resolve_context()
+        fetcher = ForwardQueryFetcher(self.sync, self.client, self.logger)
+        context = fetcher.resolve_context(branch_run_state=self.branch_run_state)
         if run_preflight:
-            self._run_query_preflight(context)
-        workloads = self._fetch_workloads(context)
+            fetcher.run_preflight(context)
+        workloads = fetcher.fetch_workloads(context)
+        self.model_results = [result.as_dict() for result in fetcher.model_results]
         plan = build_branch_plan_with_density(
             workloads,
             max_changes_per_branch=max_changes_per_branch,
             model_change_density=model_change_density,
             safety_factor=DEFAULT_DENSITY_SAFETY_FACTOR,
         )
-        return context, plan
-
-    def _run_query_preflight(self, context):
-        self.logger.log_info(
-            "Running Forward query preflight before full multi-branch planning.",
-            obj=self.sync,
-        )
-        for model_string in self.sync.get_model_strings():
-            specs = get_query_specs(model_string, maps=context["maps"])
-            if specs:
-                coalesce_fields = [
-                    list(field_set) for field_set in specs[0].coalesce_fields
-                ] or default_coalesce_fields_for_model(model_string)
-            else:
-                coalesce_fields = default_coalesce_fields_for_model(model_string)
-
-            for spec in specs:
-                preflight_rows = self.client.run_nqe_query(
-                    query=spec.query,
-                    query_id=spec.query_id,
-                    commit_id=spec.commit_id,
-                    network_id=context["network_id"],
-                    snapshot_id=context["snapshot_id"],
-                    parameters=spec.merged_parameters(context["query_parameters"]),
-                    limit=DEFAULT_PREFLIGHT_ROW_LIMIT,
-                    fetch_all=False,
-                )
-                for row in preflight_rows:
-                    validate_row_shape_for_model(model_string, row, coalesce_fields)
-                self.logger.log_info(
-                    f"Preflight validated {len(preflight_rows)} rows for {model_string} from {spec.execution_mode} `{spec.execution_value}`.",
-                    obj=self.sync,
-                )
-
-    def _resolve_context(self):
-        network_id = self.sync.get_network_id()
-        snapshot_selector = (
-            self.branch_run_state.get("snapshot_selector")
-            or self.sync.get_snapshot_id()
-        )
-        snapshot_id = self.branch_run_state.get("snapshot_id")
-        if not snapshot_id:
-            snapshot_id = self.sync.resolve_snapshot_id(self.client)
-        if not network_id:
-            raise ForwardQueryError(
-                "Forward sync requires a network ID on the sync or its source."
-            )
-        if not snapshot_id:
-            raise ForwardQueryError(
-                "Forward sync requires a snapshot ID for NQE execution."
-            )
-        snapshot_info = {}
-        if snapshot_selector == snapshot_id or self.branch_run_state:
-            for snapshot in self.client.get_snapshots(network_id):
-                if snapshot["id"] == snapshot_id:
-                    snapshot_info = {
-                        "id": snapshot["id"],
-                        "state": snapshot.get("state") or "",
-                        "createdAt": snapshot.get("created_at") or "",
-                        "processedAt": snapshot.get("processed_at") or "",
-                    }
-                    break
-        else:
-            snapshot_info = self.client.get_latest_processed_snapshot(network_id)
-
-        snapshot_metrics = {}
-        try:
-            snapshot_metrics = self.client.get_snapshot_metrics(snapshot_id)
-        except Exception as exc:
-            self.logger.log_warning(
-                f"Unable to fetch Forward snapshot metrics for `{snapshot_id}`: {exc}",
-                obj=self.sync,
-            )
-        return {
-            "network_id": network_id,
-            "snapshot_selector": snapshot_selector,
-            "snapshot_id": snapshot_id,
-            "snapshot_info": snapshot_info or {},
-            "snapshot_metrics": snapshot_metrics or {},
-            "query_parameters": self.sync.get_query_parameters(),
-            "maps": self.sync.get_maps(),
-        }
-
-    def _fetch_workloads(self, context):
-        workloads = []
-        for model_string in self.sync.get_model_strings():
-            specs = get_query_specs(model_string, maps=context["maps"])
-            if specs:
-                coalesce_fields = [
-                    list(field_set) for field_set in specs[0].coalesce_fields
-                ] or default_coalesce_fields_for_model(model_string)
-            else:
-                coalesce_fields = default_coalesce_fields_for_model(model_string)
-
-            baseline = self.sync.incremental_diff_baseline(
-                specs=specs,
-                current_snapshot_id=context["snapshot_id"],
-            )
-            for spec in specs:
-                rows, delete_rows, sync_mode = self._fetch_spec_rows(
-                    model_string,
-                    spec,
-                    baseline,
-                    context,
-                    coalesce_fields,
-                )
-                if not rows and not delete_rows:
-                    continue
-                workloads.append(
-                    BranchWorkload(
-                        model_string=model_string,
-                        label=f"{model_string} | {spec.query_name}",
-                        upsert_rows=rows,
-                        delete_rows=delete_rows,
-                        sync_mode=sync_mode,
-                        coalesce_fields=coalesce_fields,
-                    )
-                )
-        return workloads
-
-    def _fetch_spec_rows(self, model_string, spec, baseline, context, coalesce_fields):
-        runner = ForwardSyncRunner(
-            sync=self.sync,
-            ingestion=None,
-            client=self.client,
-            logger_=self.logger,
-        )
-        runner._model_coalesce_fields[model_string] = coalesce_fields
-
-        if baseline is not None and spec.query_id:
-            try:
-                diff_rows = self.client.run_nqe_diff(
-                    query_id=spec.query_id,
-                    commit_id=spec.commit_id,
-                    before_snapshot_id=baseline.snapshot_id,
-                    after_snapshot_id=context["snapshot_id"],
-                    fetch_all=True,
-                )
-                rows, delete_rows = runner._split_diff_rows(model_string, diff_rows)
-                sync_mode = "diff"
-            except (ForwardClientError, ForwardConnectivityError) as exc:
-                self.logger.log_warning(
-                    f"Forward NQE diff failed for {model_string} using `{spec.execution_value}`; "
-                    f"falling back to full query execution: {exc}",
-                    obj=self.sync,
-                )
-                rows = self.client.run_nqe_query(
-                    query=spec.query,
-                    query_id=spec.query_id,
-                    commit_id=spec.commit_id,
-                    network_id=context["network_id"],
-                    snapshot_id=context["snapshot_id"],
-                    parameters=spec.merged_parameters(context["query_parameters"]),
-                    fetch_all=True,
-                )
-                delete_rows = []
-                sync_mode = "full"
-        else:
-            rows = self.client.run_nqe_query(
-                query=spec.query,
-                query_id=spec.query_id,
-                commit_id=spec.commit_id,
-                network_id=context["network_id"],
-                snapshot_id=context["snapshot_id"],
-                parameters=spec.merged_parameters(context["query_parameters"]),
-                fetch_all=True,
-            )
-            delete_rows = []
-            sync_mode = "full"
-
-        for row in rows:
-            validate_row_shape_for_model(model_string, row, coalesce_fields)
-        for row in delete_rows:
-            validate_row_shape_for_model(model_string, row, coalesce_fields)
-        return rows, delete_rows, sync_mode
+        return context.as_dict(), plan
 
 
 class ForwardMultiBranchExecutor:
@@ -247,6 +73,8 @@ class ForwardMultiBranchExecutor:
         self.user = user
         self.job = job
         self.current_ingestion = None
+        self.last_model_results = []
+        self.last_validation_run = None
 
     def plan(
         self,
@@ -261,11 +89,13 @@ class ForwardMultiBranchExecutor:
             self.logger,
             branch_run_state=self.sync.get_branch_run_state(),
         )
-        return planner.build_plan(
+        context, plan = planner.build_plan(
             max_changes_per_branch=max_changes_per_branch,
             run_preflight=run_preflight,
             model_change_density=model_change_density,
         )
+        self.last_model_results = planner.model_results
+        return context, plan
 
     def run(self, *, max_changes_per_branch=DEFAULT_MAX_CHANGES_PER_BRANCH):
         self.max_changes_per_branch = max_changes_per_branch
@@ -290,6 +120,20 @@ class ForwardMultiBranchExecutor:
             run_preflight=next_plan_index <= 1,
             model_change_density=self.model_change_density,
         )
+        if next_plan_index <= 1:
+            self.last_validation_run = ForwardValidationRunner(
+                self.sync,
+                self.client,
+                self.logger,
+                job=self.job,
+            ).record_plan_validation(
+                context,
+                plan,
+                self.last_model_results,
+            )
+        else:
+            self.last_validation_run = self._validation_run_from_state(run_state)
+
         if not plan:
             self.logger.log_info("No Forward changes were returned for this run.")
             self.sync.clear_branch_run_state()
@@ -310,6 +154,7 @@ class ForwardMultiBranchExecutor:
                 "auto_merge": self.sync.auto_merge,
                 "awaiting_merge": False,
                 "model_change_density": self.model_change_density,
+                "validation_run_id": getattr(self.last_validation_run, "pk", None),
             }
         )
 
@@ -356,6 +201,11 @@ class ForwardMultiBranchExecutor:
                         "auto_merge": self.sync.auto_merge,
                         "awaiting_merge": False,
                         "model_change_density": self.model_change_density,
+                        "validation_run_id": getattr(
+                            self.last_validation_run,
+                            "pk",
+                            None,
+                        ),
                     }
                 )
                 continue
@@ -379,6 +229,8 @@ class ForwardMultiBranchExecutor:
             snapshot_info=context["snapshot_info"],
             snapshot_metrics=context["snapshot_metrics"],
             baseline_ready=True,
+            model_results=self.last_model_results,
+            validation_run=self.last_validation_run,
         )
         if self.job:
             self.job.object_type = ObjectType.objects.get_for_model(ingestion)
@@ -395,7 +247,11 @@ class ForwardMultiBranchExecutor:
         self.sync.__class__.objects.filter(pk=self.sync.pk).update(
             status=self.sync.status
         )
-        ingestion = ForwardIngestion.objects.create(sync=self.sync, job=self.job)
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            job=self.job,
+            validation_run=self.last_validation_run,
+        )
         self.current_ingestion = ingestion
         branch = Branch(
             name=f"Forward Sync {self.sync.name} - part {item.index} {item.model_string}"
@@ -419,7 +275,13 @@ class ForwardMultiBranchExecutor:
             f"New branch created {branch.name} for {item.estimated_changes} estimated changes.",
             obj=branch,
         )
-        self._run_item_in_branch(item, context, ingestion, branch)
+        self._run_item_in_branch(
+            item,
+            context,
+            ingestion,
+            branch,
+            total_plan_items=total_plan_items,
+        )
         if ingestion.issues.exists():
             messages = list(ingestion.issues.values_list("message", flat=True)[:5])
             raise SyncError(
@@ -456,6 +318,7 @@ class ForwardMultiBranchExecutor:
                     "pending_plan_index": item.index,
                     "pending_is_final": mark_baseline_ready,
                     "model_change_density": self.model_change_density,
+                    "validation_run_id": getattr(self.last_validation_run, "pk", None),
                 }
             )
             self.sync.status = ForwardSyncStatusChoices.READY_TO_MERGE
@@ -482,11 +345,25 @@ class ForwardMultiBranchExecutor:
                     "auto_merge": True,
                     "awaiting_merge": False,
                     "model_change_density": self.model_change_density,
+                    "validation_run_id": getattr(self.last_validation_run, "pk", None),
                 }
             )
         return ingestion
 
-    def _run_item_in_branch(self, item, context, ingestion, branch):
+    def _validation_run_from_state(self, run_state):
+        validation_run_id = run_state.get("validation_run_id")
+        if not validation_run_id:
+            return None
+        try:
+            from ..models import ForwardValidationRun
+
+            return ForwardValidationRun.objects.get(pk=validation_run_id)
+        except Exception:
+            return None
+
+    def _run_item_in_branch(
+        self, item, context, ingestion, branch, *, total_plan_items
+    ):
         runner = ForwardSyncRunner(
             sync=self.sync,
             ingestion=ingestion,
@@ -499,6 +376,13 @@ class ForwardMultiBranchExecutor:
         ingestion.snapshot_info = context["snapshot_info"]
         ingestion.snapshot_metrics = context["snapshot_metrics"]
         ingestion.sync_mode = item.sync_mode
+        ingestion.model_results = [
+            plan_item_model_result(
+                item,
+                context,
+                total_plan_items=total_plan_items,
+            )
+        ]
         ingestion.save(
             update_fields=[
                 "snapshot_selector",
@@ -506,6 +390,7 @@ class ForwardMultiBranchExecutor:
                 "snapshot_info",
                 "snapshot_metrics",
                 "sync_mode",
+                "model_results",
             ],
         )
         self.logger.init_statistics(item.model_string, 0)
@@ -561,6 +446,11 @@ class ForwardMultiBranchExecutor:
             delete_rows=list(item.delete_rows),
             sync_mode=item.sync_mode,
             coalesce_fields=list(item.coalesce_fields),
+            query_name=item.query_name,
+            execution_mode=item.execution_mode,
+            execution_value=item.execution_value,
+            query_runtime_ms=item.query_runtime_ms,
+            baseline_snapshot_id=item.baseline_snapshot_id,
         )
         split_items = split_workload(
             workload,
@@ -595,6 +485,11 @@ class ForwardMultiBranchExecutor:
                 sync_mode=item.sync_mode,
                 coalesce_fields=item.coalesce_fields,
                 shard_keys=item.shard_keys,
+                query_name=item.query_name,
+                execution_mode=item.execution_mode,
+                execution_value=item.execution_value,
+                query_runtime_ms=item.query_runtime_ms,
+                baseline_snapshot_id=item.baseline_snapshot_id,
             )
             for index, item in enumerate(plan, start=1)
         ]

@@ -5,16 +5,20 @@ from netbox.api.serializers import NestedGroupModelSerializer
 from netbox_branching.api.serializers import BranchSerializer
 from rest_framework import serializers
 
+from forward_netbox.choices import ForwardDriftPolicyBaselineChoices
 from forward_netbox.choices import ForwardIngestionPhaseChoices
 from forward_netbox.choices import ForwardSourceDeploymentChoices
 from forward_netbox.choices import ForwardSourceStatusChoices
 from forward_netbox.choices import ForwardSyncStatusChoices
+from forward_netbox.choices import ForwardValidationStatusChoices
 from forward_netbox.models import FORWARD_SUPPORTED_SYNC_MODELS
+from forward_netbox.models import ForwardDriftPolicy
 from forward_netbox.models import ForwardIngestion
 from forward_netbox.models import ForwardIngestionIssue
 from forward_netbox.models import ForwardNQEMap
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
+from forward_netbox.models import ForwardValidationRun
 
 
 class EmptySerializer(serializers.Serializer):
@@ -98,6 +102,7 @@ class ForwardSyncSerializer(NestedGroupModelSerializer):
     status = ChoiceField(choices=ForwardSyncStatusChoices, read_only=True)
     source = ForwardSourceSerializer(nested=True)
     enabled_models = serializers.SerializerMethodField(read_only=True)
+    latest_validation_run = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = ForwardSync
@@ -110,6 +115,8 @@ class ForwardSyncSerializer(NestedGroupModelSerializer):
             "status",
             "parameters",
             "auto_merge",
+            "drift_policy",
+            "latest_validation_run",
             "last_synced",
             "scheduled",
             "interval",
@@ -130,15 +137,72 @@ class ForwardSyncSerializer(NestedGroupModelSerializer):
     def get_enabled_models(self, obj):
         return obj.enabled_models()
 
+    def get_latest_validation_run(self, obj):
+        validation_run = obj.latest_validation_run
+        return validation_run.pk if validation_run else None
+
     def to_representation(self, instance):
         data = super().to_representation(instance)
         data["parameters"] = instance.get_display_parameters()
         return data
 
 
+class ForwardDriftPolicySerializer(NestedGroupModelSerializer):
+    baseline_mode = ChoiceField(choices=ForwardDriftPolicyBaselineChoices)
+
+    class Meta:
+        model = ForwardDriftPolicy
+        fields = (
+            "id",
+            "display",
+            "name",
+            "enabled",
+            "baseline_mode",
+            "require_processed_snapshot",
+            "block_on_query_errors",
+            "block_on_zero_rows",
+            "max_deleted_objects",
+            "max_deleted_percent",
+            "created",
+            "last_updated",
+        )
+        brief_fields = ("id", "display", "name", "enabled", "baseline_mode")
+
+
+class ForwardValidationRunSerializer(NestedGroupModelSerializer):
+    status = ChoiceField(choices=ForwardValidationStatusChoices, read_only=True)
+    sync = ForwardSyncSerializer(nested=True)
+    policy = ForwardDriftPolicySerializer(nested=True, required=False, allow_null=True)
+
+    class Meta:
+        model = ForwardValidationRun
+        fields = (
+            "id",
+            "display",
+            "sync",
+            "policy",
+            "job",
+            "status",
+            "allowed",
+            "snapshot_selector",
+            "snapshot_id",
+            "baseline_snapshot_id",
+            "snapshot_info",
+            "snapshot_metrics",
+            "model_results",
+            "drift_summary",
+            "blocking_reasons",
+            "created",
+            "started",
+            "completed",
+        )
+        brief_fields = ("id", "display", "sync", "status", "allowed", "snapshot_id")
+
+
 class ForwardIngestionSerializer(NestedGroupModelSerializer):
     branch = BranchSerializer(read_only=True)
     sync = ForwardSyncSerializer(nested=True)
+    validation_run = ForwardValidationRunSerializer(nested=True, required=False)
 
     class Meta:
         model = ForwardIngestion
@@ -148,10 +212,12 @@ class ForwardIngestionSerializer(NestedGroupModelSerializer):
             "name",
             "branch",
             "sync",
+            "validation_run",
             "snapshot_selector",
             "snapshot_id",
             "snapshot_info",
             "snapshot_metrics",
+            "model_results",
             "created",
         )
         brief_fields = ("id", "display", "name", "branch", "sync", "snapshot_id")
