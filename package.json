@@ -1,0 +1,12 @@
+{
+  "name": "forward-netbox-harness",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:ui": "node scripts/playwright_forward_ui.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.59.1"
+  }
+}
