@@ -26,5 +26,6 @@ This matrix summarizes how the shipped Forward NQE maps populate each NetBox mod
 
 - `dcim.virtualchassis` is a pragmatic approximation for HA pairs and domains, not a claim that all Forward HA constructs are shared-control-plane switch stacks.
 - The plugin intentionally keeps NetBox-ready shaping in NQE where possible. Python adapters apply rows and enforce object lookups; they should not silently normalize meaning after the query runs.
-- Manufacturer-bearing built-in queries intentionally canonicalize vendor names and slugs in NQE through the shared `netbox_utilities` module. If your NetBox already uses different curated manufacturer rows, copy the query set and update `manufacturer_name_overrides` there before syncing.
+- Manufacturer-bearing built-in queries intentionally canonicalize vendor names and slugs in NQE through the shared `netbox_utilities` module. If your NetBox already uses different curated manufacturer rows with the default maps, copy the query set and update `manufacturer_name_overrides` there before syncing.
+- Disabled alias-aware variants for `dcim.devicetype` and `dcim.device` can map Forward model strings to NetBox Device Type Library model/slug values through the `netbox_device_type_aliases` Forward data file. That data file can also carry manufacturer override rows for the alias-aware maps.
 - Interface and IP assignment remain intentionally strict: if the built-in queries drift from exact interface names, the sync should record issues rather than guessing.
