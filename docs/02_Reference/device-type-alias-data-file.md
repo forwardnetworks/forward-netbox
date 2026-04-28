@@ -1,6 +1,11 @@
 # Device Type Alias Data File
 
-The default device type maps do not require a Forward data file. They remain the safe default and continue to emit Forward model strings directly.
+The shipped query set intentionally keeps two paths:
+
+- Default device type maps that do not require a Forward data file.
+- Optional alias-aware device type maps that use a Forward data file when a snapshot exposes it.
+
+The default maps remain the safe default and continue to emit Forward model strings directly.
 
 For environments that pre-load NetBox device types from the NetBox Device Type Library, the plugin also seeds two disabled alternate NQE maps:
 
@@ -17,9 +22,9 @@ Create a Forward data file with:
 - NQE name: `netbox_device_type_aliases`
 - File type: `JSON`
 
-Attach the data file to the Forward network used by the sync. Forward's interactive inventory-query/report paths can evaluate against latest data files immediately after upload. The public `/api/nqe` path used by the plugin runs against the selected snapshot, so the selected sync snapshot must include the uploaded data file value before aliases affect plugin results.
+Attach the data file to the Forward network used by the sync, then run or reprocess a Forward snapshot. Forward's interactive inventory-query/report paths can evaluate against latest data files immediately after upload. The public `/api/nqe` path used by the plugin runs against the selected snapshot, so the selected sync snapshot must include the uploaded data file value before aliases affect plugin results.
 
-If this data file is not uploaded and attached, do not enable the alias-aware NQE maps. Forward's NQE schema only exposes data files that exist for the network, so a query that references a missing data file will fail validation. The default maps remain the fallback.
+If this data file is not uploaded, attached, and visible in the selected snapshot, do not enable the alias-aware NQE maps for plugin syncs. Forward's NQE schema only exposes data files that exist for the network, so a query that references a missing data file will fail validation. The default maps remain the fallback.
 
 If the data-file field exists but the selected snapshot has no attached value, the alias-aware maps fall back to the raw Forward model strings instead of returning zero rows. This keeps the optional path safe, but it also means no Device Type Library aliases are applied until Forward exposes rows in `network.extensions.netbox_device_type_aliases.value`.
 
@@ -86,9 +91,11 @@ Exact model aliases take precedence over part-number aliases. Conflicting derive
 ## Enable In NetBox
 
 1. Upload and attach `netbox_device_type_aliases.json` in Forward.
-2. In NetBox, open `Plugins > Forward Networks > NQE Maps`.
-3. Disable `Forward Device Models` and enable `Forward Device Models with NetBox Device Type Aliases`.
-4. Disable `Forward Devices` and enable `Forward Devices with NetBox Device Type Aliases`.
-5. For large datasets, copy the alias-aware query text into the Forward Org Repository and configure the NetBox NQE maps to use the committed query IDs.
+2. Run or reprocess a Forward snapshot after the upload.
+3. Confirm the selected snapshot exposes `network.extensions.netbox_device_type_aliases.value`.
+4. In NetBox, open `Plugins > Forward Networks > NQE Maps`.
+5. Disable `Forward Device Models` and enable `Forward Device Models with NetBox Device Type Aliases`.
+6. Disable `Forward Devices` and enable `Forward Devices with NetBox Device Type Aliases`.
+7. For large datasets, copy the alias-aware query text into the Forward Org Repository and configure the NetBox NQE maps to use the committed query IDs.
 
 Only switch both maps together. The device query and device model query should agree on the same `device_type` and `device_type_slug` values.
