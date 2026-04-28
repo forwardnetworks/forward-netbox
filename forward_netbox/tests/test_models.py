@@ -750,3 +750,35 @@ class ForwardNQEMapModelTest(TestCase):
         )
         self.assertEqual(query_map.query, expected_row["query"])
         self.assertIn("truncate(value: String, max_len: Integer)", query_map.query)
+
+    def test_seed_builtin_maps_preserves_existing_enabled_state(self):
+        netbox_model = ContentType.objects.get(app_label="dcim", model="device")
+        query_map = ForwardNQEMap.objects.get(
+            name="Forward Devices",
+            netbox_model=netbox_model,
+            built_in=True,
+        )
+        query_map.enabled = False
+        query_map.save(update_fields=["enabled"])
+
+        seed_builtin_nqe_maps(type("Sender", (), {"label": "forward_netbox"}))
+
+        query_map.refresh_from_db()
+        self.assertFalse(query_map.enabled)
+
+    def test_seed_builtin_maps_creates_optional_alias_maps_disabled(self):
+        netbox_model = ContentType.objects.get(app_label="dcim", model="device")
+        ForwardNQEMap.objects.filter(
+            name="Forward Devices with NetBox Device Type Aliases",
+            netbox_model=netbox_model,
+            built_in=True,
+        ).delete()
+
+        seed_builtin_nqe_maps(type("Sender", (), {"label": "forward_netbox"}))
+
+        query_map = ForwardNQEMap.objects.get(
+            name="Forward Devices with NetBox Device Type Aliases",
+            netbox_model=netbox_model,
+            built_in=True,
+        )
+        self.assertFalse(query_map.enabled)

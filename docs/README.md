@@ -42,6 +42,7 @@ This repository is provided for use at your own risk. It is an unsupported relea
 - First-class `Sources`, `NQE Maps`, `Syncs`, and `Ingestions`
 - Branch-backed review and merge flow through `netbox_branching`
 - Built-in shipped NQE maps that can be used as-is or copied into custom map definitions
+- Disabled alternate NQE maps for NetBox Device Type Library alias matching through a Forward JSON data file
 - Support for both `query_id` and raw `query` execution modes
 - Snapshot selection per sync, including `latestProcessed`
 - Snapshot details and Forward metrics recorded on each ingestion
@@ -54,6 +55,7 @@ This repository is provided for use at your own risk. It is an unsupported relea
 - [Usage and Validation](01_User_Guide/usage.md)
 - [Troubleshooting](01_User_Guide/troubleshooting.md)
 - [Built-In NQE Reference](02_Reference/built-in-nqe-maps.md)
+- [Device Type Alias Data File](02_Reference/device-type-alias-data-file.md)
 - [Model Mapping Matrix](02_Reference/model-mapping-matrix.md)
 - [Active Implementation Plans](03_Plans/active/README.md)
 - [Technical Debt Tracker](03_Plans/technical-debt.md)

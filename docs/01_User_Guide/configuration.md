@@ -97,7 +97,9 @@ Built-in maps are seeded automatically after migration. They are stored as the s
 
 Several built-in queries import the shared [`netbox_utilities.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/netbox_utilities.nqe) module. The plugin flattens those local imports at execution time for bundled built-ins, but the source files remain modular so the same query set can be uploaded into the Forward Org Repository and tested by `query_id`/`commit_id`.
 
-Manufacturer-bearing built-in maps canonicalize vendor names and slugs in NQE. If your NetBox already uses different curated manufacturer rows, copy the query set and adjust `manufacturer_name_overrides` in `netbox_utilities` before syncing.
+Manufacturer-bearing built-in maps canonicalize vendor names and slugs in NQE. If your NetBox already uses different curated manufacturer rows with the default maps, copy the query set and adjust `manufacturer_name_overrides` in `netbox_utilities` before syncing.
+
+The plugin also seeds disabled alias-aware variants for `Forward Device Models` and `Forward Devices`. These require a Forward JSON data file named `netbox_device_type_aliases.json` with NQE name `netbox_device_type_aliases`. That file can carry both Device Type Library aliases and manufacturer override rows, so alias-aware customizations stay data-driven instead of embedded in query code. Leave the default non-data-file maps enabled unless that data file has been uploaded and attached to the Forward network. See [Device Type Alias Data File](../02_Reference/device-type-alias-data-file.md).
 
 Large datasets should prefer saved queries plus `latestProcessed`. That keeps the first run as a full baseline, then lets later runs use Forward `nqe-diffs` directly. The current built-ins also collapse NetBox identities in NQE where the source emits many raw rows for one object, such as prefix, IP, MAC, and VLAN records.
 

@@ -21,7 +21,9 @@ All built-in maps are executed against the sync-selected Forward snapshot. The e
 | Forward Device Types | `dcim.devicerole` | [`forward_device_types.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_device_types.nqe) |
 | Forward Platforms | `dcim.platform` | [`forward_platforms.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_platforms.nqe) |
 | Forward Device Models | `dcim.devicetype` | [`forward_device_models.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_device_models.nqe) |
+| Forward Device Models with NetBox Device Type Aliases | `dcim.devicetype` | [`forward_device_models_with_netbox_aliases.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_device_models_with_netbox_aliases.nqe) |
 | Forward Devices | `dcim.device` | [`forward_devices.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_devices.nqe) |
+| Forward Devices with NetBox Device Type Aliases | `dcim.device` | [`forward_devices_with_netbox_aliases.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_devices_with_netbox_aliases.nqe) |
 | Forward Virtual Chassis | `dcim.virtualchassis` | [`forward_virtual_chassis.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_virtual_chassis.nqe) |
 | Forward Interfaces | `dcim.interface` | [`forward_interfaces.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_interfaces.nqe) |
 | Forward MAC Addresses | `dcim.macaddress` | [`forward_mac_addresses.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_mac_addresses.nqe) |
@@ -222,6 +224,7 @@ select distinct {
 - `NetBox Model`: `dcim.devicetype`
 - Expected fields: `manufacturer`, `manufacturer_slug`, `model`, `part_number`, `slug`
 - Query file: [`forward_device_models.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_device_models.nqe)
+- Default behavior: does not require a Forward data file.
 
 ```nqe
 import "netbox_utilities";
@@ -243,11 +246,76 @@ select distinct {
 }
 ```
 
+## Forward Device Models with NetBox Device Type Aliases
+
+- `NetBox Model`: `dcim.devicetype`
+- Expected fields: `manufacturer`, `manufacturer_slug`, `model`, `part_number`, `slug`
+- Query file: [`forward_device_models_with_netbox_aliases.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_device_models_with_netbox_aliases.nqe)
+- Seed state: disabled by default.
+- Requirement: Forward data file `netbox_device_type_aliases.json` with NQE name `netbox_device_type_aliases` must be uploaded and attached to the network.
+
+Use this map only with `Forward Devices with NetBox Device Type Aliases`, so device type creation and device assignment use the same model and slug mapping.
+
+```nqe
+import "netbox_utilities";
+
+foreach extensions in [network.extensions]
+let aliases = extensions.netbox_device_type_aliases
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+let vendor = device.platform.vendor
+let raw_model = toString(device.platform.model)
+let raw_model_slug = slugifyNetboxModel(raw_model)
+let data_manufacturer_name = if isPresent(aliases.value) then max(
+    foreach alias in aliases.value
+    where alias.record_type == "manufacturer_override"
+    where alias.forward_vendor == toString(vendor)
+    select alias.manufacturer
+  )
+  else null : String
+let data_manufacturer_slug = if isPresent(aliases.value) then max(
+    foreach alias in aliases.value
+    where alias.record_type == "manufacturer_override"
+    where alias.forward_vendor == toString(vendor)
+    select alias.manufacturer_slug
+  )
+  else null : String
+let manufacturer_name = if isPresent(data_manufacturer_name) then data_manufacturer_name else canonicalManufacturerName(vendor)
+let manufacturer_slug = if isPresent(data_manufacturer_slug) then data_manufacturer_slug else slugify(manufacturer_name)
+let mapped_model = if isPresent(aliases.value) then max(
+    foreach alias in aliases.value
+    where alias.record_type == "device_type_alias"
+    where alias.forward_manufacturer_slug == manufacturer_slug
+    where alias.forward_model_slug == raw_model_slug
+    select alias.netbox_model
+  )
+  else null : String
+let mapped_slug = if isPresent(aliases.value) then max(
+    foreach alias in aliases.value
+    where alias.record_type == "device_type_alias"
+    where alias.forward_manufacturer_slug == manufacturer_slug
+    where alias.forward_model_slug == raw_model_slug
+    select alias.netbox_slug
+  )
+  else null : String
+let model = if isPresent(mapped_model) then mapped_model else raw_model
+let model_slug = if isPresent(mapped_slug) then mapped_slug else raw_model_slug
+select distinct {
+  manufacturer: manufacturer_name,
+  manufacturer_slug: manufacturer_slug,
+  model: model,
+  part_number: raw_model,
+  slug: model_slug
+}
+```
+
 ## Forward Devices
 
 - `NetBox Model`: `dcim.device`
 - Expected fields: `name`, `manufacturer`, `manufacturer_slug`, `device_type`, `device_type_slug`, `site`, `site_slug`, `role`, `role_slug`, `role_color`, `platform`, `platform_slug`, `status`
 - Query file: [`forward_devices.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_devices.nqe)
+- Default behavior: does not require a Forward data file.
 
 ```nqe
 import "netbox_utilities";
@@ -271,6 +339,86 @@ select {
   name: device.name,
   manufacturer: manufacturer_name,
   device_type: model,
+  device_type_slug: device_type_slug,
+  site: site_name,
+  site_slug: site_slug,
+  role: device_type,
+  role_slug: role_slug,
+  role_color: "9e9e9e",
+  platform: platform_name,
+  platform_slug: platform_slug,
+  status: "active",
+  manufacturer_slug: manufacturer_slug
+}
+```
+
+## Forward Devices with NetBox Device Type Aliases
+
+- `NetBox Model`: `dcim.device`
+- Expected fields: `name`, `manufacturer`, `manufacturer_slug`, `device_type`, `device_type_slug`, `site`, `site_slug`, `role`, `role_slug`, `role_color`, `platform`, `platform_slug`, `status`
+- Query file: [`forward_devices_with_netbox_aliases.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_devices_with_netbox_aliases.nqe)
+- Seed state: disabled by default.
+- Requirement: Forward data file `netbox_device_type_aliases.json` with NQE name `netbox_device_type_aliases` must be uploaded and attached to the network.
+
+Use this map only with `Forward Device Models with NetBox Device Type Aliases`.
+
+```nqe
+import "netbox_utilities";
+
+foreach extensions in [network.extensions]
+let aliases = extensions.netbox_device_type_aliases
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+let location = device.locationName
+let raw_model = toString(device.platform.model)
+let raw_model_slug = slugifyNetboxModel(raw_model)
+let device_type = device.platform.deviceType
+let site_name = if isPresent(location) then toLowerCase(location) else "unknown"
+let site_slug = slugify(site_name)
+let role_name = replace(toString(device_type), "DeviceType.", "")
+let role_slug = slugify(role_name)
+let platform_name = replace(toString(device.platform.os), "OS.", "")
+let platform_slug = slugify(platform_name)
+let vendor = device.platform.vendor
+let data_manufacturer_name = if isPresent(aliases.value) then max(
+    foreach alias in aliases.value
+    where alias.record_type == "manufacturer_override"
+    where alias.forward_vendor == toString(vendor)
+    select alias.manufacturer
+  )
+  else null : String
+let data_manufacturer_slug = if isPresent(aliases.value) then max(
+    foreach alias in aliases.value
+    where alias.record_type == "manufacturer_override"
+    where alias.forward_vendor == toString(vendor)
+    select alias.manufacturer_slug
+  )
+  else null : String
+let manufacturer_name = if isPresent(data_manufacturer_name) then data_manufacturer_name else canonicalManufacturerName(vendor)
+let manufacturer_slug = if isPresent(data_manufacturer_slug) then data_manufacturer_slug else slugify(manufacturer_name)
+let mapped_model = if isPresent(aliases.value) then max(
+    foreach alias in aliases.value
+    where alias.record_type == "device_type_alias"
+    where alias.forward_manufacturer_slug == manufacturer_slug
+    where alias.forward_model_slug == raw_model_slug
+    select alias.netbox_model
+  )
+  else null : String
+let mapped_slug = if isPresent(aliases.value) then max(
+    foreach alias in aliases.value
+    where alias.record_type == "device_type_alias"
+    where alias.forward_manufacturer_slug == manufacturer_slug
+    where alias.forward_model_slug == raw_model_slug
+    select alias.netbox_slug
+  )
+  else null : String
+let device_type_model = if isPresent(mapped_model) then mapped_model else raw_model
+let device_type_slug = if isPresent(mapped_slug) then mapped_slug else raw_model_slug
+select {
+  name: device.name,
+  manufacturer: manufacturer_name,
+  device_type: device_type_model,
   device_type_slug: device_type_slug,
   site: site_name,
   site_slug: site_slug,

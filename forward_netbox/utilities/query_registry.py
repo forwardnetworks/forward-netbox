@@ -199,15 +199,35 @@ BUILTIN_QUERY_MAPS = [
     },
 ]
 
+BUILTIN_OPTIONAL_QUERY_MAPS = [
+    {
+        "model_string": "dcim.devicetype",
+        "name": "Forward Device Models with NetBox Device Type Aliases",
+        "filename": "forward_device_models_with_netbox_aliases.nqe",
+        "enabled": False,
+    },
+    {
+        "model_string": "dcim.device",
+        "name": "Forward Devices with NetBox Device Type Aliases",
+        "filename": "forward_devices_with_netbox_aliases.nqe",
+        "enabled": False,
+    },
+]
+
+BUILTIN_SEEDED_QUERY_MAPS = [
+    *BUILTIN_QUERY_MAPS,
+    *BUILTIN_OPTIONAL_QUERY_MAPS,
+]
+
 BUILTIN_QUERY_DEFAULTS = {
     (query_default["model_string"], query_default["name"]): query_default
-    for query_default in BUILTIN_QUERY_MAPS
+    for query_default in BUILTIN_SEEDED_QUERY_MAPS
 }
 
 
 def builtin_nqe_map_rows() -> list[dict[str, Any]]:
     rows = []
-    for index, query_default in enumerate(BUILTIN_QUERY_MAPS, start=1):
+    for index, query_default in enumerate(BUILTIN_SEEDED_QUERY_MAPS, start=1):
         rows.append(
             {
                 "model_string": query_default["model_string"],
@@ -220,6 +240,7 @@ def builtin_nqe_map_rows() -> list[dict[str, Any]]:
                     query_default["model_string"]
                 ),
                 "weight": index * 100,
+                "enabled": query_default.get("enabled", True),
             }
         )
     return rows
