@@ -28,6 +28,7 @@ from forward_netbox.utilities.branch_budget import BranchWorkload
 from forward_netbox.utilities.branch_budget import build_branch_plan
 from forward_netbox.utilities.branch_budget import build_branch_plan_with_density
 from forward_netbox.utilities.branch_budget import effective_row_budget_for_model
+from forward_netbox.utilities.execution import TurboBulkBranchExecutionBackend
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from forward_netbox.utilities.multi_branch import BranchBudgetExceeded
 from forward_netbox.utilities.multi_branch import DEFAULT_PREFLIGHT_ROW_LIMIT
@@ -36,6 +37,7 @@ from forward_netbox.utilities.multi_branch import ForwardMultiBranchPlanner
 from forward_netbox.utilities.query_registry import QuerySpec
 from forward_netbox.utilities.sync import ForwardSyncRunner
 from forward_netbox.utilities.sync_contracts import validate_row_shape_for_model
+from forward_netbox.utilities.turbobulk import TurboBulkCapability
 
 
 class ForwardBranchBudgetPlanTest(TestCase):
@@ -270,6 +272,64 @@ class ForwardMultiBranchExecutorAdaptiveSplitTest(TestCase):
 
         self.assertGreater(len(split_items), 1)
         self.assertTrue(all(part.estimated_changes <= 1 for part in split_items))
+
+    def test_run_item_in_branch_delegates_to_execution_backend(self):
+        workload = BranchWorkload(
+            model_string="dcim.site",
+            label="sites",
+            upsert_rows=[{"name": "site-1", "slug": "site-1"}],
+            coalesce_fields=[["slug"]],
+        )
+        item = build_branch_plan([workload], max_changes_per_branch=10)[0]
+        backend = Mock()
+        executor = ForwardMultiBranchExecutor(
+            sync=self.sync,
+            client=Mock(),
+            logger_=Mock(),
+            execution_backend=backend,
+        )
+        context = {
+            "snapshot_selector": "latestProcessed",
+            "snapshot_id": self.SNAPSHOT_ID,
+            "snapshot_info": {},
+            "snapshot_metrics": {},
+        }
+        ingestion = Mock()
+        branch = Mock()
+
+        executor._run_item_in_branch(
+            item,
+            context,
+            ingestion,
+            branch,
+            total_plan_items=3,
+        )
+
+        backend.apply_plan_item.assert_called_once_with(
+            item,
+            context,
+            ingestion,
+            branch,
+            total_plan_items=3,
+        )
+
+    def test_turbobulk_backend_fails_before_writes_when_unavailable(self):
+        backend = TurboBulkBranchExecutionBackend(
+            capability=TurboBulkCapability(
+                available=False,
+                reason="TurboBulk plugin endpoint was not found.",
+                status_code=404,
+            )
+        )
+
+        with self.assertRaisesRegex(ForwardSyncError, "TurboBulk plugin endpoint"):
+            backend.apply_plan_item(
+                Mock(),
+                {},
+                Mock(),
+                Mock(),
+                total_plan_items=1,
+            )
 
     def test_run_retries_when_branch_budget_exceeded(self):
         workload = BranchWorkload(

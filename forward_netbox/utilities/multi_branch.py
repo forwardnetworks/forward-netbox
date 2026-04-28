@@ -1,8 +1,6 @@
 from core.exceptions import SyncError
 from core.models import ObjectType
-from netbox.context import current_request
 from netbox_branching.choices import BranchStatusChoices
-from netbox_branching.contextvars import active_branch
 from netbox_branching.models import Branch
 
 from ..choices import ForwardIngestionPhaseChoices
@@ -12,11 +10,9 @@ from .branch_budget import build_branch_plan_with_density
 from .branch_budget import DEFAULT_DENSITY_SAFETY_FACTOR
 from .branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
 from .branch_budget import split_workload
-from .branching import build_branch_request
+from .execution import NativeBranchExecutionBackend
 from .query_fetch import DEFAULT_PREFLIGHT_ROW_LIMIT  # noqa: F401
 from .query_fetch import ForwardQueryFetcher
-from .query_fetch import plan_item_model_result
-from .sync import ForwardSyncRunner
 from .validation import ForwardValidationRunner
 
 AUTO_SPLIT_MIN_ROWS_PER_BRANCH = 1
@@ -66,12 +62,27 @@ class ForwardMultiBranchPlanner:
 
 
 class ForwardMultiBranchExecutor:
-    def __init__(self, sync, client, logger_, *, user=None, job=None):
+    def __init__(
+        self,
+        sync,
+        client,
+        logger_,
+        *,
+        user=None,
+        job=None,
+        execution_backend=None,
+    ):
         self.sync = sync
         self.client = client
         self.logger = logger_
         self.user = user
         self.job = job
+        self.execution_backend = execution_backend or NativeBranchExecutionBackend(
+            sync=sync,
+            client=client,
+            logger_=logger_,
+            user=user,
+        )
         self.current_ingestion = None
         self.last_model_results = []
         self.last_validation_run = None
@@ -364,54 +375,13 @@ class ForwardMultiBranchExecutor:
     def _run_item_in_branch(
         self, item, context, ingestion, branch, *, total_plan_items
     ):
-        runner = ForwardSyncRunner(
-            sync=self.sync,
-            ingestion=ingestion,
-            client=self.client,
-            logger_=self.logger,
+        self.execution_backend.apply_plan_item(
+            item,
+            context,
+            ingestion,
+            branch,
+            total_plan_items=total_plan_items,
         )
-        runner._model_coalesce_fields[item.model_string] = item.coalesce_fields
-        ingestion.snapshot_selector = context["snapshot_selector"]
-        ingestion.snapshot_id = context["snapshot_id"]
-        ingestion.snapshot_info = context["snapshot_info"]
-        ingestion.snapshot_metrics = context["snapshot_metrics"]
-        ingestion.sync_mode = item.sync_mode
-        ingestion.model_results = [
-            plan_item_model_result(
-                item,
-                context,
-                total_plan_items=total_plan_items,
-            )
-        ]
-        ingestion.save(
-            update_fields=[
-                "snapshot_selector",
-                "snapshot_id",
-                "snapshot_info",
-                "snapshot_metrics",
-                "sync_mode",
-                "model_results",
-            ],
-        )
-        self.logger.init_statistics(item.model_string, 0)
-        self.logger.add_statistics_total(item.model_string, item.estimated_changes)
-
-        current_branch = active_branch.get()
-        request_token = None
-        if current_request.get() is None:
-            request_token = current_request.set(build_branch_request(self.user))
-        try:
-            active_branch.set(branch)
-            try:
-                runner._apply_model_rows(item.model_string, item.upsert_rows)
-                if item.delete_rows:
-                    runner._delete_model_rows(item.model_string, item.delete_rows)
-            finally:
-                active_branch.set(None)
-        finally:
-            active_branch.set(current_branch)
-            if request_token is not None:
-                current_request.reset(request_token)
 
     def _record_model_density(self, model_string, *, estimated_changes, actual_changes):
         if estimated_changes <= 0 or actual_changes <= 0:

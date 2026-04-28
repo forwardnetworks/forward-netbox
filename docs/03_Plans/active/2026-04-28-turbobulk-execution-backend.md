@@ -4,9 +4,11 @@
 
 Prepare a future implementation path for using NetBox Labs TurboBulk as an optional execution backend for very large Forward sync workloads while preserving the current NetBox-native UI workflow, Branching review model, branch budgeting, validation/drift gates, and REST/Django adapter path as the default behavior.
 
-This is a planning branch only. TurboBulk is not implemented or enabled by this plan.
+This branch does not implement or enable TurboBulk writes.
 
 Reference: https://github.com/netboxlabs/netbox-turbobulk-public
+
+Current branch scope: implement the internal capability probe and execution-backend seam only. TurboBulk writes remain disabled until a later branch proves load-file generation, model-specific conflict handling, and live TurboBulk behavior.
 
 ## Constraints
 
@@ -31,6 +33,7 @@ Reference: https://github.com/netboxlabs/netbox-turbobulk-public
 - `forward_netbox/utilities/sync.py`: current Django adapter path remains default; any TurboBulk work should move behind a new execution boundary rather than expanding this module.
 - `forward_netbox/utilities/validation.py`: map TurboBulk dry-run/full-validation failures into current blocking policy and issue reporting.
 - New execution boundary, likely under `forward_netbox/utilities/execution/`, after tests pin current behavior.
+- `forward_netbox/utilities/turbobulk.py`: capability probing for the public TurboBulk API surface.
 - Tests: unit tests for capability detection, row materialization, branch handoff, validation mapping, and fallback behavior; scenario tests for large model planning.
 - Docs: configuration, architecture, model mapping, validation matrix, and operator guidance.
 
@@ -40,11 +43,13 @@ Reference: https://github.com/netboxlabs/netbox-turbobulk-public
    - Probe `/api/plugins/turbobulk/models/` with the NetBox API token.
    - Treat `404` as unavailable, `401/403` as unavailable or insufficient permission, and explicit write-disabled errors as a clear preflight failure when TurboBulk is selected.
    - Cache capability per run only; do not persist server details beyond normal run metadata.
+   - Status: initial client/probe implemented and covered by unit tests.
 
 2. Introduce an execution backend boundary before adding TurboBulk writes.
    - Keep the existing Django/NetBox adapter executor as the default backend.
    - Define a narrow interface around `validate`, `apply_upserts`, `apply_deletes`, and `summarize_result`.
    - `multi_branch.py` should continue to own branch planning, branch readiness, retries, and merge handoff.
+   - Status: initial `NativeBranchExecutionBackend` is wired as the default; `TurboBulkBranchExecutionBackend` is intentionally a placeholder.
 
 3. Materialize TurboBulk load files from validated plan rows.
    - Prefer JSONL.gz first because it avoids a required Parquet dependency.
