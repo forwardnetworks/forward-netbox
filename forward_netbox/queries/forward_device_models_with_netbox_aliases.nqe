@@ -1,0 +1,59 @@
+/**
+ * @intent Device models found by Forward with NetBox device type library aliases
+ * @description Alias-aware variant of Forward Device Models. Requires a Forward NQE
+ * data file named netbox_device_type_aliases with value rows generated from the
+ * NetBox Device Type Library. If that data file is not uploaded and attached to
+ * the network, use the default forward_device_models.nqe query instead.
+ */
+
+import "netbox_utilities";
+
+foreach extensions in [network.extensions]
+let aliases = extensions.netbox_device_type_aliases
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+let vendor = device.platform.vendor
+let raw_model = toString(device.platform.model)
+let raw_model_slug = slugifyNetboxModel(raw_model)
+let data_manufacturer_name = if isPresent(aliases.value) then max(
+    foreach alias in aliases.value
+    where alias.record_type == "manufacturer_override"
+    where alias.forward_vendor == toString(vendor)
+    select alias.manufacturer
+  )
+  else null : String
+let data_manufacturer_slug = if isPresent(aliases.value) then max(
+    foreach alias in aliases.value
+    where alias.record_type == "manufacturer_override"
+    where alias.forward_vendor == toString(vendor)
+    select alias.manufacturer_slug
+  )
+  else null : String
+let manufacturer_name = if isPresent(data_manufacturer_name) then data_manufacturer_name else canonicalManufacturerName(vendor)
+let manufacturer_slug = if isPresent(data_manufacturer_slug) then data_manufacturer_slug else slugify(manufacturer_name)
+let mapped_model = if isPresent(aliases.value) then max(
+    foreach alias in aliases.value
+    where alias.record_type == "device_type_alias"
+    where alias.forward_manufacturer_slug == manufacturer_slug
+    where alias.forward_model_slug == raw_model_slug
+    select alias.netbox_model
+  )
+  else null : String
+let mapped_slug = if isPresent(aliases.value) then max(
+    foreach alias in aliases.value
+    where alias.record_type == "device_type_alias"
+    where alias.forward_manufacturer_slug == manufacturer_slug
+    where alias.forward_model_slug == raw_model_slug
+    select alias.netbox_slug
+  )
+  else null : String
+let model = if isPresent(mapped_model) then mapped_model else raw_model
+let model_slug = if isPresent(mapped_slug) then mapped_slug else raw_model_slug
+select distinct {
+  manufacturer: manufacturer_name,
+  manufacturer_slug: manufacturer_slug,
+  model: model,
+  part_number: raw_model,
+  slug: model_slug
+}

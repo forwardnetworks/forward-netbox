@@ -5,6 +5,7 @@ from django.test import TestCase
 
 from forward_netbox.models import ForwardNQEMap
 from forward_netbox.utilities.query_registry import builtin_nqe_map_rows
+from forward_netbox.utilities.query_registry import BUILTIN_OPTIONAL_QUERY_MAPS
 from forward_netbox.utilities.query_registry import BUILTIN_QUERY_MAPS
 from forward_netbox.utilities.query_registry import BUILTIN_QUERY_SPECS
 from forward_netbox.utilities.query_registry import get_query_specs
@@ -302,6 +303,29 @@ class QueryRegistryTest(TestCase):
         self.assertNotIn('import "netbox_utilities";', spec.query)
         self.assertIn("manufacturer_name_overrides = [", spec.query)
         self.assertEqual(spec.coalesce_fields, (("slug",), ("name",)))
+
+    def test_optional_device_type_alias_maps_are_seeded_disabled(self):
+        rows = {
+            (row["model_string"], row["name"]): row for row in builtin_nqe_map_rows()
+        }
+
+        self.assertEqual(len(BUILTIN_OPTIONAL_QUERY_MAPS), 2)
+        for query_default in BUILTIN_OPTIONAL_QUERY_MAPS:
+            row = rows[(query_default["model_string"], query_default["name"])]
+            self.assertFalse(row["enabled"])
+            self.assertIn("netbox_device_type_aliases", row["query"])
+            self.assertIn('alias.record_type == "device_type_alias"', row["query"])
+            self.assertIn('alias.record_type == "manufacturer_override"', row["query"])
+            self.assertNotIn("where isPresent(aliases.value)", row["query"])
+
+        self.assertNotIn(
+            "Forward Device Models with NetBox Device Type Aliases",
+            {query_default["name"] for query_default in BUILTIN_QUERY_MAPS},
+        )
+        self.assertNotIn(
+            "Forward Devices with NetBox Device Type Aliases",
+            {query_default["name"] for query_default in BUILTIN_QUERY_MAPS},
+        )
 
     def test_interface_query_includes_loopbacks_for_ip_bearing_logical_interfaces(self):
         spec = next(

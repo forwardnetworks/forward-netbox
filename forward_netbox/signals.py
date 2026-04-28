@@ -21,7 +21,7 @@ def seed_builtin_nqe_maps(sender, **kwargs):
         except ContentType.DoesNotExist:
             continue
 
-        ForwardNQEMap.objects.update_or_create(
+        query_map, created = ForwardNQEMap.objects.update_or_create(
             netbox_model=netbox_model,
             name=row["name"],
             built_in=True,
@@ -32,6 +32,8 @@ def seed_builtin_nqe_maps(sender, **kwargs):
                 "parameters": row["parameters"],
                 "coalesce_fields": row["coalesce_fields"],
                 "weight": row["weight"],
-                "enabled": True,
             },
         )
+        if created and query_map.enabled != row.get("enabled", True):
+            query_map.enabled = row.get("enabled", True)
+            query_map.save(update_fields=["enabled"])

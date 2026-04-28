@@ -44,6 +44,7 @@ This repository is provided for use at your own risk. It is an unsupported relea
 - Explicit identity contracts per map (`coalesce_fields`) with strict sync-time ambiguity detection
 - Repository-authored built-in queries can share local helper modules and still execute as flattened raw NQE when bundled
 - Automatic paging across multi-page Forward NQE result sets during sync execution
+- Optional disabled NQE maps for NetBox Device Type Library alias matching through a Forward JSON data file
 - Snapshot-aware execution with `latestProcessed` or an explicit Forward snapshot per sync
 - Ingestion records that preserve the selected snapshot mode, resolved snapshot ID, and Forward snapshot metrics
 - Built-in coverage for:
@@ -93,6 +94,8 @@ python manage.py migrate
 7. Run an adhoc ingestion, review the staged branch diff, review the recorded snapshot details and metrics, and merge when the changes look correct.
 
 For large datasets, prefer committed Forward Org Repository queries referenced by `query_id`, leave `Snapshot` at `latestProcessed`, and treat the first clean merge as the baseline. Later `latestProcessed` runs can then use Forward `nqe-diffs` instead of replaying every model as a full snapshot sync.
+
+If your NetBox device types are pre-loaded from the NetBox Device Type Library, upload a Forward JSON data file named `netbox_device_type_aliases.json` with NQE name `netbox_device_type_aliases`, then enable the disabled alias-aware device maps or use committed query IDs for those variants. The generated file carries both device type aliases and manufacturer override rows for the alias-aware maps. Without that data file, leave the default non-data-file maps enabled.
 
 ## Test It Yourself
 
@@ -146,6 +149,7 @@ Normal UI/API sync jobs always use native multi-branch execution, with a default
 - [Usage and Validation](docs/01_User_Guide/usage.md)
 - [Troubleshooting](docs/01_User_Guide/troubleshooting.md)
 - [Built-In NQE Reference](docs/02_Reference/built-in-nqe-maps.md)
+- [Device Type Alias Data File](docs/02_Reference/device-type-alias-data-file.md)
 - [Model Mapping Matrix](docs/02_Reference/model-mapping-matrix.md)
 - [Shipped NQE Query Files](https://github.com/forwardnetworks/forward-netbox/tree/main/forward_netbox/queries)
 - [License](LICENSE)
