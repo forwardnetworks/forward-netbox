@@ -131,6 +131,19 @@ async function main() {
     evidence.screenshots.push(await screenshot(page, "desktop-sync-detail.jpg"));
     evidence.checks.push("sync detail exposes validation, native branch budget, and run controls");
 
+    await page.goto(`${baseURL}/plugins/forward/validation-run/`, {
+      waitUntil: "domcontentloaded",
+    });
+    await expectVisible(page, "Forward Validation Runs");
+    await expectVisible(page, "ui-harness-sync");
+    await expectVisible(page, "Passed");
+    await assertNoHorizontalOverflow(page, "desktop validation run list");
+    evidence.checks.push("validation run list renders seeded validation records");
+
+    await page.goto(`${baseURL}/plugins/forward/sync/`, {
+      waitUntil: "domcontentloaded",
+    });
+    await page.getByRole("link", { name: "ui-harness-sync" }).first().click();
     await page.getByRole("link", { name: "Passed" }).first().click();
     await expectVisible(page, "Validation Run");
     await expectVisible(page, "Drift Summary");
