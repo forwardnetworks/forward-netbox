@@ -162,6 +162,7 @@ class ForwardValidationRunTable(NetBoxTable):
     sync = tables.Column(linkify=True)
     policy = tables.Column(linkify=True)
     status = columns.ChoiceFieldColumn()
+    actions = columns.ActionsColumn(actions=("delete",))
 
     class Meta(NetBoxTable.Meta):
         model = ForwardValidationRun
