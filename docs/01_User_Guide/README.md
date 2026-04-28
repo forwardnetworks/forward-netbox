@@ -12,32 +12,34 @@ Install the plugin package, enable the required plugins, run the migrations, and
 Install the wheel from GitHub Releases into the same Python environment as NetBox:
 
 ```bash
-pip install /path/to/forward_netbox-0.3.0.1-py3-none-any.whl
+pip install /path/to/forward_netbox-0.3.1-py3-none-any.whl
 ```
 
 Alternatively, install directly from the GitHub source archive:
 
 ```bash
-pip install /path/to/forward_netbox-0.3.0.1.tar.gz
+pip install /path/to/forward_netbox-0.3.1.tar.gz
 ```
 
 If you mirror the package into a private Python index, pin the same release version:
 
 ```bash
-pip install forward-netbox==0.3.0.1
+pip install forward-netbox==0.3.1
 ```
 
 ## Release Compatibility
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v0.3.0.1` | `4.5.8` validated; `4.5.x` only | Current unsupported release |
+| `v0.3.1` | `4.5.8` validated; `4.5.x` only | Current unsupported release |
+| `v0.3.0.1` | `4.5.8` validated; `4.5.x` only | Superseded by `v0.3.1` |
 | `v0.3.0` | `4.5.8` validated; `4.5.x` only | Superseded by `v0.3.0.1` |
 
 ## Version History
 
 | Release | Summary |
 | --- | --- |
+| `v0.3.1` | Adds optional data-file-aware device type alias maps, a Device Type Library alias data-file builder, and documentation for the snapshot requirement while keeping the default no-data-file maps available. |
 | `v0.3.0.1` | Fixes the validation-run list UI by removing unsupported edit actions from read-only validation records, and adds Playwright coverage for the validation-run list route. |
 | `v0.3.0` | Adds the NetBox 4.5.8-validated harness architecture with first-class validation runs, drift policies, query-fetch boundaries, model-result reporting, and Playwright-covered UI workflow validation. |
 | `v0.2.4` | Hardens native multi-branch resilience with adaptive shard splitting and retry on branch-budget overflow, plus model-density tracking to keep large initial syncs within NetBox branching guidance. |
