@@ -51,6 +51,29 @@ jobs:
         run: python -m py_compile $(find forward_netbox -name '*.py' -print)
       - name: Build docs
         run: mkdocs build --strict
+      - name: Build missing NetBox base image
+        run: |
+          NETBOX_VER="$(
+            grep '^NETBOX_VER=' development/.env |
+              cut -d= -f2- |
+              tr -d '"'
+          )"
+          IMAGE="netboxcommunity/netbox:${NETBOX_VER}"
+          if docker manifest inspect "${IMAGE}" >/dev/null 2>&1; then
+            echo "Using published netboxcommunity/netbox:${NETBOX_VER}"
+            exit 0
+          fi
+
+          echo "Building missing netboxcommunity/netbox:${NETBOX_VER} locally"
+          sudo apt-get update
+          sudo apt-get install -y skopeo
+          git clone --depth 1 \
+            https://github.com/netbox-community/netbox-docker.git \
+            /tmp/netbox-docker
+          (
+            cd /tmp/netbox-docker
+            ./build.sh "${NETBOX_VER}"
+          )
       - name: Build NetBox development image
         run: |
           docker compose --project-name forward-netbox \

@@ -1,0 +1,15 @@
+.git
+.mypy_cache
+.pytest_cache
+.ruff_cache
+.venv
+.venv-*
+.playwright-artifacts
+build
+dist
+development/logs
+node_modules
+site
+*.egg-info
+__pycache__
+*.py[cod]

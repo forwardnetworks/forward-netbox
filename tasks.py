@@ -132,7 +132,11 @@ def package(context):
 
 @task
 def docs(context):
-    context.run("mkdocs build --strict")
+    docs_env = os.environ.copy()
+    docs_venv_bin = os.path.join(os.path.dirname(__file__), ".venv-docs", "bin")
+    if os.path.isdir(docs_venv_bin):
+        docs_env["PATH"] = f"{docs_venv_bin}{os.pathsep}{docs_env['PATH']}"
+    context.run("mkdocs build --strict", env=docs_env)
 
 
 @task(name="smoke-sync")
