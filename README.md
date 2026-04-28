@@ -6,12 +6,14 @@
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v0.3.0` | `4.5.8` validated; `4.5.x` only | Current unsupported release |
+| `v0.3.0.1` | `4.5.8` validated; `4.5.x` only | Current unsupported release |
+| `v0.3.0` | `4.5.8` validated; `4.5.x` only | Superseded by `v0.3.0.1` |
 
 ## Version History
 
 | Release | Summary |
 | --- | --- |
+| `v0.3.0.1` | Fixes the validation-run list UI by removing unsupported edit actions from read-only validation records, and adds Playwright coverage for the validation-run list route. |
 | `v0.3.0` | Adds the NetBox 4.5.8-validated harness architecture with first-class validation runs, drift policies, query-fetch boundaries, model-result reporting, and Playwright-covered UI workflow validation. |
 | `v0.2.4` | Hardens native multi-branch resilience with adaptive shard splitting and retry on branch-budget overflow, plus model-density tracking to keep large initial syncs within NetBox branching guidance. |
 | `v0.2.3` | Adds native sync preflight validation before full multi-branch planning so invalid model/query rows fail earlier in the UI/API run path. |
@@ -67,7 +69,7 @@ This repository is provided for use at your own risk. It is an unsupported relea
 Install the wheel or source archive from GitHub Releases:
 
 ```bash
-pip install /path/to/forward_netbox-0.3.0-py3-none-any.whl
+pip install /path/to/forward_netbox-0.3.0.1-py3-none-any.whl
 ```
 
 2. Enable both plugins in the NetBox configuration:
