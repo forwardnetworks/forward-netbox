@@ -10,7 +10,7 @@ Each entry includes:
 - the shipped query file in the repository
 - the exact shipped source text
 
-All built-in maps are executed against the sync-selected Forward snapshot. The examples below are the shipped query source from this repository. Queries that import `netbox_utilities` are flattened by the plugin at execution time for bundled built-ins, but the source modules shown here can also be copied into the Forward Org Repository and tested by `query_id`.
+All built-in maps are executed against the sync-selected Forward snapshot. The shipped query set includes default maps that require no Forward data file and disabled alias-aware variants that require the selected snapshot to expose `network.extensions.netbox_device_type_aliases.value`. The examples below are the shipped query source from this repository. Queries that import `netbox_utilities` are flattened by the plugin at execution time for bundled built-ins, but the source modules shown here can also be copied into the Forward Org Repository and tested by `query_id`.
 
 ## Summary
 
@@ -252,7 +252,7 @@ select distinct {
 - Expected fields: `manufacturer`, `manufacturer_slug`, `model`, `part_number`, `slug`
 - Query file: [`forward_device_models_with_netbox_aliases.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_device_models_with_netbox_aliases.nqe)
 - Seed state: disabled by default.
-- Requirement: Forward data file `netbox_device_type_aliases.json` with NQE name `netbox_device_type_aliases` must be uploaded and attached to the network.
+- Requirement: Forward data file `netbox_device_type_aliases.json` with NQE name `netbox_device_type_aliases` must be uploaded, attached to the network, and visible in the selected snapshot.
 
 Use this map only with `Forward Devices with NetBox Device Type Aliases`, so device type creation and device assignment use the same model and slug mapping.
 
@@ -358,7 +358,7 @@ select {
 - Expected fields: `name`, `manufacturer`, `manufacturer_slug`, `device_type`, `device_type_slug`, `site`, `site_slug`, `role`, `role_slug`, `role_color`, `platform`, `platform_slug`, `status`
 - Query file: [`forward_devices_with_netbox_aliases.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_devices_with_netbox_aliases.nqe)
 - Seed state: disabled by default.
-- Requirement: Forward data file `netbox_device_type_aliases.json` with NQE name `netbox_device_type_aliases` must be uploaded and attached to the network.
+- Requirement: Forward data file `netbox_device_type_aliases.json` with NQE name `netbox_device_type_aliases` must be uploaded, attached to the network, and visible in the selected snapshot.
 
 Use this map only with `Forward Device Models with NetBox Device Type Aliases`.
 

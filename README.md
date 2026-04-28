@@ -95,7 +95,7 @@ python manage.py migrate
 
 For large datasets, prefer committed Forward Org Repository queries referenced by `query_id`, leave `Snapshot` at `latestProcessed`, and treat the first clean merge as the baseline. Later `latestProcessed` runs can then use Forward `nqe-diffs` instead of replaying every model as a full snapshot sync.
 
-If your NetBox device types are pre-loaded from the NetBox Device Type Library, upload a Forward JSON data file named `netbox_device_type_aliases.json` with NQE name `netbox_device_type_aliases`, then enable the disabled alias-aware device maps or use committed query IDs for those variants. The generated file carries both device type aliases and manufacturer override rows for the alias-aware maps. Without that data file, leave the default non-data-file maps enabled.
+The shipped query set includes both default maps and optional alias-aware maps. If your NetBox device types are pre-loaded from the NetBox Device Type Library, upload a Forward JSON data file named `netbox_device_type_aliases.json` with NQE name `netbox_device_type_aliases`, attach it to the Forward network, and run or reprocess a Forward snapshot before enabling the disabled alias-aware device maps or using committed query IDs for those variants. The NetBox plugin runs public `/api/nqe` against the selected snapshot, so latest uploaded data files do not affect plugin sync results until the selected snapshot exposes the data file value. The generated file carries both device type aliases and manufacturer override rows for the alias-aware maps. Without that data file in the selected snapshot, leave the default non-data-file maps enabled.
 
 ## Test It Yourself
 

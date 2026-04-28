@@ -99,7 +99,12 @@ Several built-in queries import the shared [`netbox_utilities.nqe`](https://gith
 
 Manufacturer-bearing built-in maps canonicalize vendor names and slugs in NQE. If your NetBox already uses different curated manufacturer rows with the default maps, copy the query set and adjust `manufacturer_name_overrides` in `netbox_utilities` before syncing.
 
-The plugin also seeds disabled alias-aware variants for `Forward Device Models` and `Forward Devices`. These require a Forward JSON data file named `netbox_device_type_aliases.json` with NQE name `netbox_device_type_aliases`. That file can carry both Device Type Library aliases and manufacturer override rows, so alias-aware customizations stay data-driven instead of embedded in query code. Leave the default non-data-file maps enabled unless that data file has been uploaded and attached to the Forward network. See [Device Type Alias Data File](../02_Reference/device-type-alias-data-file.md).
+The plugin seeds two query families for device type matching:
+
+- Default maps that do not require a Forward data file.
+- Disabled alias-aware variants for `Forward Device Models` and `Forward Devices`.
+
+The alias-aware variants require a Forward JSON data file named `netbox_device_type_aliases.json` with NQE name `netbox_device_type_aliases`. That file can carry both Device Type Library aliases and manufacturer override rows, so alias-aware customizations stay data-driven instead of embedded in query code. Upload and attach the data file, then run or reprocess a Forward snapshot before enabling the alias-aware maps for plugin syncs. The plugin executes public `/api/nqe` against the selected snapshot and cannot force Forward's latest-data-file mode. Leave the default non-data-file maps enabled unless the selected snapshot exposes the data file value. See [Device Type Alias Data File](../02_Reference/device-type-alias-data-file.md).
 
 Large datasets should prefer saved queries plus `latestProcessed`. That keeps the first run as a full baseline, then lets later runs use Forward `nqe-diffs` directly. The current built-ins also collapse NetBox identities in NQE where the source emits many raw rows for one object, such as prefix, IP, MAC, and VLAN records.
 
