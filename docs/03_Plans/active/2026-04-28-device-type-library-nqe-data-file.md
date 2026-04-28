@@ -11,6 +11,7 @@ Add a documented, repeatable path for using a Forward NQE data file to map Forwa
 - Do not commit customer identifiers, network IDs, snapshot IDs, credentials, or exported customer data.
 - Provide a user-facing script to build the data file from a local checkout of the device type library.
 - Do not rely on `useLatestDataFiles` in the public `/api/nqe` plugin path; the selected snapshot must expose the data file value for aliases to affect plugin sync output.
+- Keep both query families: default non-data-file maps and optional data-file-aware maps.
 
 ## Touched Surfaces
 
@@ -25,6 +26,7 @@ Add a documented, repeatable path for using a Forward NQE data file to map Forwa
 - Add alias-aware NQE variants for `dcim.devicetype` and `dcim.device`.
 - Store alias rows and manufacturer override rows in one stable-schema JSON data file, distinguished by `record_type`.
 - Keep the existing built-in files as the non-failing default path.
+- Seed the alias-aware maps disabled so operators must intentionally switch from the default maps after the data file is visible in the selected snapshot.
 - Document the required Forward data file name and NQE name.
 - Add script coverage for JSON generation and alias precedence.
 - Validate alias-aware NQE against the Forward instance, including the safe fallback when the selected snapshot has no data file value.
