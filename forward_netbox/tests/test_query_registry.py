@@ -384,3 +384,19 @@ class QueryRegistryTest(TestCase):
             ip_spec.coalesce_fields,
             (("address", "vrf"), ("address",)),
         )
+
+    def test_prefix_queries_exclude_host_routes(self):
+        ipv4_spec = next(
+            spec
+            for spec in BUILTIN_QUERY_SPECS["ipam.prefix"]
+            if spec.query_name == "Forward IPv4 Prefixes"
+        )
+        ipv6_spec = next(
+            spec
+            for spec in BUILTIN_QUERY_SPECS["ipam.prefix"]
+            if spec.query_name == "Forward IPv6 Prefixes"
+        )
+
+        self.assertIn("where length(entry.prefix) < 32", ipv4_spec.query)
+        self.assertNotIn("length(entry.prefix) <= 32", ipv4_spec.query)
+        self.assertIn("where length(entry.prefix) < 128", ipv6_spec.query)
