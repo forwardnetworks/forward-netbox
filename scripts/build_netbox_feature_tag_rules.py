@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Build a Forward NQE JSON data file for NetBox feature tag rules."""
-
 import argparse
 import json
 from pathlib import Path
