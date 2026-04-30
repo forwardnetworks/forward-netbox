@@ -10,7 +10,7 @@ Each entry includes:
 - the shipped query file in the repository
 - the exact shipped source text
 
-All built-in maps are executed against the sync-selected Forward snapshot. The shipped query set includes default maps that require no Forward data file and disabled alias-aware variants that require the selected snapshot to expose `network.extensions.netbox_device_type_aliases.value`. The examples below are the shipped query source from this repository. Queries that import `netbox_utilities` are flattened by the plugin at execution time for bundled built-ins, but the source modules shown here can also be copied into the Forward Org Repository and tested by `query_id`.
+All built-in maps are executed against the sync-selected Forward snapshot. The shipped query set includes default maps that require no Forward data file and disabled data-file-aware variants that require the selected snapshot to expose fields such as `network.extensions.netbox_device_type_aliases.value` or `network.extensions.netbox_feature_tag_rules.value`. The examples below are the shipped query source from this repository. Queries that import `netbox_utilities` are flattened by the plugin at execution time for bundled built-ins, but the source modules shown here can also be copied into the Forward Org Repository and tested by `query_id`.
 
 ## Summary
 
@@ -25,7 +25,10 @@ All built-in maps are executed against the sync-selected Forward snapshot. The s
 | Forward Devices | `dcim.device` | [`forward_devices.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_devices.nqe) |
 | Forward Devices with NetBox Device Type Aliases | `dcim.device` | [`forward_devices_with_netbox_aliases.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_devices_with_netbox_aliases.nqe) |
 | Forward Virtual Chassis | `dcim.virtualchassis` | [`forward_virtual_chassis.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_virtual_chassis.nqe) |
+| Forward Device Feature Tags | `extras.taggeditem` | [`forward_device_feature_tags.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_device_feature_tags.nqe) |
+| Forward Device Feature Tags with Rules | `extras.taggeditem` | [`forward_device_feature_tags_with_rules.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_device_feature_tags_with_rules.nqe) |
 | Forward Interfaces | `dcim.interface` | [`forward_interfaces.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_interfaces.nqe) |
+| Forward Inferred Interface Cables | `dcim.cable` | [`forward_inferred_interface_cables.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_inferred_interface_cables.nqe) |
 | Forward MAC Addresses | `dcim.macaddress` | [`forward_mac_addresses.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_mac_addresses.nqe) |
 | Forward VLANs | `ipam.vlan` | [`forward_vlans.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_vlans.nqe) |
 | Forward VRFs | `ipam.vrf` | [`forward_vrfs.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_vrfs.nqe) |
@@ -255,13 +258,13 @@ select distinct {
 - Requirement: Forward data file `netbox_device_type_aliases.json` with NQE name `netbox_device_type_aliases` must be uploaded, attached to the network, and visible in the selected snapshot.
 
 Use this map only with `Forward Devices with NetBox Device Type Aliases`, so device type creation and device assignment use the same model and slug mapping.
+The query intentionally starts with `foreach device in network.devices` so Forward can use its automatic per-device execution path where available.
 
 ```nqe
 import "netbox_utilities";
 
-foreach extensions in [network.extensions]
-let aliases = extensions.netbox_device_type_aliases
 foreach device in network.devices
+let aliases = network.extensions.netbox_device_type_aliases
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
 let vendor = device.platform.vendor
@@ -361,13 +364,13 @@ select {
 - Requirement: Forward data file `netbox_device_type_aliases.json` with NQE name `netbox_device_type_aliases` must be uploaded, attached to the network, and visible in the selected snapshot.
 
 Use this map only with `Forward Device Models with NetBox Device Type Aliases`.
+The query intentionally starts with `foreach device in network.devices` so Forward can use its automatic per-device execution path where available.
 
 ```nqe
 import "netbox_utilities";
 
-foreach extensions in [network.extensions]
-let aliases = extensions.netbox_device_type_aliases
 foreach device in network.devices
+let aliases = network.extensions.netbox_device_type_aliases
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
 let location = device.locationName
@@ -438,6 +441,7 @@ select {
 - Expected fields: `device`, `vc_name`, `name`, `vc_domain`
 - Query file: [`forward_virtual_chassis.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_virtual_chassis.nqe)
 - Current semantics: emits virtual chassis rows for Forward HA `vpc` domains and `mlagPeer` pairs, while bounding `name` and `domain` to NetBox field limits.
+The query intentionally starts with `foreach device in network.devices` so Forward can use its automatic per-device execution path where available.
 
 ```nqe
 truncate(value: String, max_len: Integer) =
@@ -448,40 +452,100 @@ compactMemberKey(value: String) =
   then value
   else join("", [substring(value, 0, 7), substring(value, length(value) - 7, length(value))]);
 
-foreach row in (
-  foreach device in network.devices
-  where device.snapshotInfo.result == DeviceSnapshotResult.completed
-  where device.platform.vendor != Vendor.FORWARD_CUSTOM
-  let has_vpc = isPresent(device.ha) && isPresent(device.ha.vpc) && isPresent(device.ha.vpc.domainId) && device.ha.vpc.domainId > 0
-  let has_mlag_peer = isPresent(device.ha) && isPresent(device.ha.mlagPeer)
-  let mlag_peer_name = if has_mlag_peer then toString(device.ha.mlagPeer) else ""
-  where has_vpc || has_mlag_peer
-  let site_name = if isPresent(device.locationName) then toLowerCase(device.locationName) else "unknown"
-  let member_a = if has_mlag_peer
-    then if mlag_peer_name > device.name then device.name else mlag_peer_name
-    else device.name
-  let member_b = if has_mlag_peer
-    then if mlag_peer_name > device.name then mlag_peer_name else device.name
-    else ""
-  let raw_mlag_domain = join("--", [member_a, member_b])
-  let bounded_mlag_domain = if length(raw_mlag_domain) <= 30
-    then raw_mlag_domain
-    else join("--", [compactMemberKey(member_a), compactMemberKey(member_b)])
-  let vc_domain = if has_vpc
-    then toString(device.ha.vpc.domainId)
-    else bounded_mlag_domain
-  let vc_name = if has_vpc
-    then join("-", [truncate(site_name, 48), "vpc", toString(device.ha.vpc.domainId)])
-    else join("-", [truncate(site_name, 28), "mlag", vc_domain])
-  select {
-    device: device.name,
-    vc_name: vc_name,
-    name: vc_name,
-    vc_domain: vc_domain
-  }
-)
-select distinct row
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+let has_vpc = isPresent(device.ha) && isPresent(device.ha.vpc) && isPresent(device.ha.vpc.domainId) && device.ha.vpc.domainId > 0
+let has_mlag_peer = isPresent(device.ha) && isPresent(device.ha.mlagPeer)
+let mlag_peer_name = if has_mlag_peer then toString(device.ha.mlagPeer) else ""
+where has_vpc || has_mlag_peer
+let site_name = if isPresent(device.locationName) then toLowerCase(device.locationName) else "unknown"
+let member_a = if has_mlag_peer
+  then if mlag_peer_name > device.name then device.name else mlag_peer_name
+  else device.name
+let member_b = if has_mlag_peer
+  then if mlag_peer_name > device.name then mlag_peer_name else device.name
+  else ""
+let raw_mlag_domain = join("--", [member_a, member_b])
+let bounded_mlag_domain = if length(raw_mlag_domain) <= 30
+  then raw_mlag_domain
+  else join("--", [compactMemberKey(member_a), compactMemberKey(member_b)])
+let vc_domain = if has_vpc
+  then toString(device.ha.vpc.domainId)
+  else bounded_mlag_domain
+let vc_name = if has_vpc
+  then join("-", [truncate(site_name, 48), "vpc", toString(device.ha.vpc.domainId)])
+  else join("-", [truncate(site_name, 28), "mlag", vc_domain])
+select distinct {
+  device: device.name,
+  vc_name: vc_name,
+  name: vc_name,
+  vc_domain: vc_domain
+}
 ```
+
+## Forward Device Feature Tags
+
+- `NetBox Model`: `extras.taggeditem`
+- Expected fields: `device`, `tag`, `tag_slug`, `tag_color`
+- Query file: [`forward_device_feature_tags.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_device_feature_tags.nqe)
+
+```nqe
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+foreach networkInstance in device.networkInstances
+foreach protocol in networkInstance.protocols
+where isPresent(protocol.bgp)
+select distinct {
+  device: device.name,
+  tag: "Prot_BGP",
+  tag_slug: "prot-bgp",
+  tag_color: "2196f3"
+}
+```
+
+The shipped query uses Forward protocol state as the feature source, so BGP tagging is driven by parsed network evidence rather than vendor-specific raw configuration text. The adapter creates or updates the NetBox tag by slug, attaches it to the exact matching device, and removes the device/tag association during diff deletes without deleting the global Tag object.
+
+## Forward Device Feature Tags with Rules
+
+- `NetBox Model`: `extras.taggeditem`
+- Expected fields: `device`, `tag`, `tag_slug`, `tag_color`
+- Query file: [`forward_device_feature_tags_with_rules.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_device_feature_tags_with_rules.nqe)
+- Requirement: Forward data file `netbox_feature_tag_rules.json` with NQE name `netbox_feature_tag_rules` must be uploaded, attached to the network, and visible in the selected snapshot.
+- Default state: disabled. Keep `Forward Device Feature Tags` enabled unless the selected snapshot exposes the data file value.
+The query intentionally starts with `foreach device in network.devices` so Forward can use its automatic per-device execution path where available.
+
+```nqe
+foreach device in network.devices
+let rules = network.extensions.netbox_feature_tag_rules
+let empty_rules = (foreach x in fromTo(1, 0) select {
+  record_type: "",
+  enabled: false,
+  feature: "",
+  tag: "",
+  tag_slug: "",
+  tag_color: ""
+})
+let rule_rows = if isPresent(rules.value) then rules.value else empty_rules
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+foreach networkInstance in device.networkInstances
+foreach protocol in networkInstance.protocols
+foreach rule in rule_rows
+where rule.record_type == "structured_feature_tag_rule"
+where rule.enabled
+where rule.feature == "bgp"
+where isPresent(protocol.bgp)
+select distinct {
+  device: device.name,
+  tag: rule.tag,
+  tag_slug: rule.tag_slug,
+  tag_color: rule.tag_color
+}
+```
+
+The rules-aware query keeps matching on Forward structured protocol state while moving tag names, slugs, colors, and enabled/disabled policy into a data file. The initial supported structured feature is `bgp`; unsupported feature values are ignored by this query.
 
 ## Forward Interfaces
 
@@ -523,6 +587,34 @@ where device.platform.vendor != Vendor.FORWARD_CUSTOM
 ```
 
 The shipped query uses `speedMbps` as the authoritative interface speed and only maps well-known Ethernet rates to NetBox interface types. Unknown or aggregated rates still preserve the actual speed while falling back to interface type `other`. A final `select distinct` over the combined ethernet and loopback interface rows suppresses exact duplicates before NetBox ingestion.
+
+## Forward Inferred Interface Cables
+
+- `NetBox Model`: `dcim.cable`
+- Expected fields: `device`, `interface`, `remote_device`, `remote_interface`, `status`
+- Query file: [`forward_inferred_interface_cables.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_inferred_interface_cables.nqe)
+
+```nqe
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+foreach interface in device.interfaces
+foreach link in interface.links
+where link.deviceName != ""
+where link.ifaceName != ""
+where device.name != link.deviceName || interface.name != link.ifaceName
+let local_first = device.name < link.deviceName ||
+  (device.name == link.deviceName && interface.name < link.ifaceName)
+select distinct {
+  device: if local_first then device.name else link.deviceName,
+  interface: if local_first then interface.name else link.ifaceName,
+  remote_device: if local_first then link.deviceName else device.name,
+  remote_interface: if local_first then link.ifaceName else interface.name,
+  status: "connected"
+}
+```
+
+The shipped query uses Forward-resolved interface links, which are derived from topology discovery data such as LLDP, CDP, and other topology inference where available. The adapter reuses an existing cable between the same two interfaces, refuses to overwrite a different existing cable, and lets Branching expose the resulting cable changes for review before merge.
 
 ## Forward MAC Addresses
 
@@ -708,37 +800,35 @@ The shipped query combines rows from subinterfaces, bridge interfaces, tunnels, 
 - `NetBox Model`: `dcim.inventoryitem`
 - Expected fields: `device`, `manufacturer`, `manufacturer_slug`, `name`, `part_id`, `serial`, `role`, `role_slug`, `role_color`, `status`, `discovered`, `description`
 - Query file: [`forward_inventory_items.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_inventory_items.nqe)
+The query intentionally starts with `foreach device in network.devices` so Forward can use its automatic per-device execution path where available.
 
 ```nqe
 import "netbox_utilities";
 
-foreach row in (
-  foreach device in network.devices
-  where device.snapshotInfo.result == DeviceSnapshotResult.completed
-  where device.platform.vendor != Vendor.FORWARD_CUSTOM
-  foreach component in device.platform.components
-  let manufacturer_name = canonicalManufacturerName(device.platform.vendor)
-  let manufacturer_slug = slugify(manufacturer_name)
-  let role_name = replace(replace(toString(component.partType), "DevicePartType.", ""), "_", " ")
-  let role_slug = slugify(role_name)
-  let component_name = if isPresent(component.name) && component.name != "" then component.name else null : String
-  let component_part_id = if isPresent(component.partId) && component.partId != "" then component.partId else null : String
-  let component_serial = if isPresent(component.serialNumber) && component.serialNumber != "" then component.serialNumber else null : String
-  let component_description = if isPresent(component.description) && component.description != "" then component.description else null : String
-  select {
-    device: device.name,
-    manufacturer: manufacturer_name,
-    manufacturer_slug: manufacturer_slug,
-    name: if isPresent(component_name) then component_name else if isPresent(component_part_id) then component_part_id else if isPresent(component_description) then component_description else role_name,
-    part_id: if isPresent(component_part_id) then component_part_id else if isPresent(component_name) then component_name else role_name,
-    serial: if isPresent(component_serial) then truncate(component_serial, 50) else if isPresent(component_part_id) then truncate(component_part_id, 50) else if isPresent(component_name) then truncate(component_name, 50) else truncate(role_name, 50),
-    role: role_name,
-    role_slug: role_slug,
-    role_color: "9e9e9e",
-    status: "active",
-    discovered: true,
-    description: if isPresent(component_description) then component_description else ""
-  }
-)
-select distinct row
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+foreach component in device.platform.components
+let manufacturer_name = canonicalManufacturerName(device.platform.vendor)
+let manufacturer_slug = slugify(manufacturer_name)
+let role_name = replace(replace(toString(component.partType), "DevicePartType.", ""), "_", " ")
+let role_slug = slugify(role_name)
+let component_name = if isPresent(component.name) && component.name != "" then component.name else null : String
+let component_part_id = if isPresent(component.partId) && component.partId != "" then component.partId else null : String
+let component_serial = if isPresent(component.serialNumber) && component.serialNumber != "" then component.serialNumber else null : String
+let component_description = if isPresent(component.description) && component.description != "" then component.description else null : String
+select distinct {
+  device: device.name,
+  manufacturer: manufacturer_name,
+  manufacturer_slug: manufacturer_slug,
+  name: if isPresent(component_name) then component_name else if isPresent(component_part_id) then component_part_id else if isPresent(component_description) then component_description else role_name,
+  part_id: if isPresent(component_part_id) then truncate(component_part_id, 50) else if isPresent(component_name) then truncate(component_name, 50) else truncate(role_name, 50),
+  serial: if isPresent(component_serial) then truncate(component_serial, 50) else if isPresent(component_part_id) then truncate(component_part_id, 50) else if isPresent(component_name) then truncate(component_name, 50) else truncate(role_name, 50),
+  role: role_name,
+  role_slug: role_slug,
+  role_color: "9e9e9e",
+  status: "active",
+  discovered: true,
+  description: if isPresent(component_description) then component_description else ""
+}
 ```

@@ -11,36 +11,33 @@ compactMemberKey(value: String) =
   then value
   else join("", [substring(value, 0, 7), substring(value, length(value) - 7, length(value))]);
 
-foreach row in (
-  foreach device in network.devices
-  where device.snapshotInfo.result == DeviceSnapshotResult.completed
-  where device.platform.vendor != Vendor.FORWARD_CUSTOM
-  let has_vpc = isPresent(device.ha) && isPresent(device.ha.vpc) && isPresent(device.ha.vpc.domainId) && device.ha.vpc.domainId > 0
-  let has_mlag_peer = isPresent(device.ha) && isPresent(device.ha.mlagPeer)
-  let mlag_peer_name = if has_mlag_peer then toString(device.ha.mlagPeer) else ""
-  where has_vpc || has_mlag_peer
-  let site_name = if isPresent(device.locationName) then toLowerCase(device.locationName) else "unknown"
-  let member_a = if has_mlag_peer
-    then if mlag_peer_name > device.name then device.name else mlag_peer_name
-    else device.name
-  let member_b = if has_mlag_peer
-    then if mlag_peer_name > device.name then mlag_peer_name else device.name
-    else ""
-  let raw_mlag_domain = join("--", [member_a, member_b])
-  let bounded_mlag_domain = if length(raw_mlag_domain) <= 30
-    then raw_mlag_domain
-    else join("--", [compactMemberKey(member_a), compactMemberKey(member_b)])
-  let vc_domain = if has_vpc
-    then toString(device.ha.vpc.domainId)
-    else bounded_mlag_domain
-  let vc_name = if has_vpc
-    then join("-", [truncate(site_name, 48), "vpc", toString(device.ha.vpc.domainId)])
-    else join("-", [truncate(site_name, 28), "mlag", vc_domain])
-  select {
-    device: device.name,
-    vc_name: vc_name,
-    name: vc_name,
-    vc_domain: vc_domain
-  }
-)
-select distinct row
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+let has_vpc = isPresent(device.ha) && isPresent(device.ha.vpc) && isPresent(device.ha.vpc.domainId) && device.ha.vpc.domainId > 0
+let has_mlag_peer = isPresent(device.ha) && isPresent(device.ha.mlagPeer)
+let mlag_peer_name = if has_mlag_peer then toString(device.ha.mlagPeer) else ""
+where has_vpc || has_mlag_peer
+let site_name = if isPresent(device.locationName) then toLowerCase(device.locationName) else "unknown"
+let member_a = if has_mlag_peer
+  then if mlag_peer_name > device.name then device.name else mlag_peer_name
+  else device.name
+let member_b = if has_mlag_peer
+  then if mlag_peer_name > device.name then mlag_peer_name else device.name
+  else ""
+let raw_mlag_domain = join("--", [member_a, member_b])
+let bounded_mlag_domain = if length(raw_mlag_domain) <= 30
+  then raw_mlag_domain
+  else join("--", [compactMemberKey(member_a), compactMemberKey(member_b)])
+let vc_domain = if has_vpc
+  then toString(device.ha.vpc.domainId)
+  else bounded_mlag_domain
+let vc_name = if has_vpc
+  then join("-", [truncate(site_name, 48), "vpc", toString(device.ha.vpc.domainId)])
+  else join("-", [truncate(site_name, 28), "mlag", vc_domain])
+select distinct {
+  device: device.name,
+  vc_name: vc_name,
+  name: vc_name,
+  vc_domain: vc_domain
+}

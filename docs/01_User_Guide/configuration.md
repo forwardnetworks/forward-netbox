@@ -106,6 +106,8 @@ The plugin seeds two query families for device type matching:
 
 The alias-aware variants require a Forward JSON data file named `netbox_device_type_aliases.json` with NQE name `netbox_device_type_aliases`. That file can carry both Device Type Library aliases and manufacturer override rows, so alias-aware customizations stay data-driven instead of embedded in query code. Upload and attach the data file, then run or reprocess a Forward snapshot before enabling the alias-aware maps for plugin syncs. The plugin executes public `/api/nqe` against the selected snapshot and cannot force Forward's latest-data-file mode. Leave the default non-data-file maps enabled unless the selected snapshot exposes the data file value. See [Device Type Alias Data File](../02_Reference/device-type-alias-data-file.md).
 
+The plugin also seeds a default `Forward Device Feature Tags` map and a disabled `Forward Device Feature Tags with Rules` variant. The default map requires no data file and tags BGP-enabled devices as `Prot_BGP` from Forward's structured protocol state. The rules-aware variant requires a Forward JSON data file named `netbox_feature_tag_rules.json` with NQE name `netbox_feature_tag_rules`; use it when operators need to rename tags, change colors, or apply multiple tags from the same structured feature. See [Feature Tag Rules Data File](../02_Reference/feature-tag-rules-data-file.md).
+
 Large datasets should prefer saved queries plus `latestProcessed`. That keeps the first run as a full baseline, then lets later runs use Forward `nqe-diffs` directly. The current built-ins also collapse NetBox identities in NQE where the source emits many raw rows for one object, such as prefix, IP, MAC, and VLAN records.
 
 The current built-in map set is:
@@ -117,7 +119,9 @@ The current built-in map set is:
 - `Forward Device Models`
 - `Forward Devices`
 - `Forward Virtual Chassis`
+- `Forward Device Feature Tags`
 - `Forward Interfaces`
+- `Forward Inferred Interface Cables`
 - `Forward MAC Addresses`
 - `Forward VLANs`
 - `Forward VRFs`

@@ -8,32 +8,29 @@ import "netbox_utilities";
 truncate(value: String, max_len: Integer) =
   if length(value) <= max_len then value else substring(value, 0, max_len);
 
-foreach row in (
-  foreach device in network.devices
-  where device.snapshotInfo.result == DeviceSnapshotResult.completed
-  where device.platform.vendor != Vendor.FORWARD_CUSTOM
-  foreach component in device.platform.components
-  let manufacturer_name = canonicalManufacturerName(device.platform.vendor)
-  let manufacturer_slug = slugify(manufacturer_name)
-  let role_name = replace(replace(toString(component.partType), "DevicePartType.", ""), "_", " ")
-  let role_slug = slugify(role_name)
-  let component_name = if isPresent(component.name) && component.name != "" then component.name else null : String
-  let component_part_id = if isPresent(component.partId) && component.partId != "" then component.partId else null : String
-  let component_serial = if isPresent(component.serialNumber) && component.serialNumber != "" then component.serialNumber else null : String
-  let component_description = if isPresent(component.description) && component.description != "" then component.description else null : String
-  select {
-    device: device.name,
-    manufacturer: manufacturer_name,
-    manufacturer_slug: manufacturer_slug,
-    name: if isPresent(component_name) then component_name else if isPresent(component_part_id) then component_part_id else if isPresent(component_description) then component_description else role_name,
-    part_id: if isPresent(component_part_id) then truncate(component_part_id, 50) else if isPresent(component_name) then truncate(component_name, 50) else truncate(role_name, 50),
-    serial: if isPresent(component_serial) then truncate(component_serial, 50) else if isPresent(component_part_id) then truncate(component_part_id, 50) else if isPresent(component_name) then truncate(component_name, 50) else truncate(role_name, 50),
-    role: role_name,
-    role_slug: role_slug,
-    role_color: "9e9e9e",
-    status: "active",
-    discovered: true,
-    description: if isPresent(component_description) then component_description else ""
-  }
-)
-select distinct row
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+foreach component in device.platform.components
+let manufacturer_name = canonicalManufacturerName(device.platform.vendor)
+let manufacturer_slug = slugify(manufacturer_name)
+let role_name = replace(replace(toString(component.partType), "DevicePartType.", ""), "_", " ")
+let role_slug = slugify(role_name)
+let component_name = if isPresent(component.name) && component.name != "" then component.name else null : String
+let component_part_id = if isPresent(component.partId) && component.partId != "" then component.partId else null : String
+let component_serial = if isPresent(component.serialNumber) && component.serialNumber != "" then component.serialNumber else null : String
+let component_description = if isPresent(component.description) && component.description != "" then component.description else null : String
+select distinct {
+  device: device.name,
+  manufacturer: manufacturer_name,
+  manufacturer_slug: manufacturer_slug,
+  name: if isPresent(component_name) then component_name else if isPresent(component_part_id) then component_part_id else if isPresent(component_description) then component_description else role_name,
+  part_id: if isPresent(component_part_id) then truncate(component_part_id, 50) else if isPresent(component_name) then truncate(component_name, 50) else truncate(role_name, 50),
+  serial: if isPresent(component_serial) then truncate(component_serial, 50) else if isPresent(component_part_id) then truncate(component_part_id, 50) else if isPresent(component_name) then truncate(component_name, 50) else truncate(role_name, 50),
+  role: role_name,
+  role_slug: role_slug,
+  role_color: "9e9e9e",
+  status: "active",
+  discovered: true,
+  description: if isPresent(component_description) then component_description else ""
+}
