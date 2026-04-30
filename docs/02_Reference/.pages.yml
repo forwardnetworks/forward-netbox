@@ -1,3 +1,6 @@
 nav:
   - README.md
   - built-in-nqe-maps.md
+  - device-type-alias-data-file.md
+  - feature-tag-rules-data-file.md
+  - model-mapping-matrix.md

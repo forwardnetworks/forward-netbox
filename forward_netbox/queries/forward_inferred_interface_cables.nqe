@@ -1,0 +1,22 @@
+/**
+ * @intent Forward Inferred Interface Cables
+ * @description NetBox cable rows derived from Forward resolved interface links.
+ */
+
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+foreach interface in device.interfaces
+foreach link in interface.links
+where link.deviceName != ""
+where link.ifaceName != ""
+where device.name != link.deviceName || interface.name != link.ifaceName
+let local_first = device.name < link.deviceName ||
+  (device.name == link.deviceName && interface.name < link.ifaceName)
+select distinct {
+  device: if local_first then device.name else link.deviceName,
+  interface: if local_first then interface.name else link.ifaceName,
+  remote_device: if local_first then link.deviceName else device.name,
+  remote_interface: if local_first then link.ifaceName else interface.name,
+  status: "connected"
+}

@@ -1,0 +1,17 @@
+/**
+ * @intent Forward Device Feature Tags
+ * @description NetBox device tags derived from enabled protocol/config features.
+ */
+
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+foreach networkInstance in device.networkInstances
+foreach protocol in networkInstance.protocols
+where isPresent(protocol.bgp)
+select distinct {
+  device: device.name,
+  tag: "Prot_BGP",
+  tag_slug: "prot-bgp",
+  tag_color: "2196f3"
+}
