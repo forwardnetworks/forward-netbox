@@ -61,10 +61,33 @@ MODEL_SYNC_CONTRACTS: dict[str, ModelSyncContract] = {
         allowed_coalesce_fields=("name",),
         default_coalesce_fields=(("name",),),
     ),
+    "extras.taggeditem": ModelSyncContract(
+        required_fields=("device", "tag", "tag_slug", "tag_color"),
+        allowed_coalesce_fields=("device", "tag_slug"),
+        default_coalesce_fields=(("device", "tag_slug"),),
+    ),
     "dcim.interface": ModelSyncContract(
         required_fields=("device", "name", "type", "enabled"),
         allowed_coalesce_fields=("device", "name"),
         default_coalesce_fields=(("device", "name"),),
+    ),
+    "dcim.cable": ModelSyncContract(
+        required_fields=(
+            "device",
+            "interface",
+            "remote_device",
+            "remote_interface",
+            "status",
+        ),
+        allowed_coalesce_fields=(
+            "device",
+            "interface",
+            "remote_device",
+            "remote_interface",
+        ),
+        default_coalesce_fields=(
+            ("device", "interface", "remote_device", "remote_interface"),
+        ),
     ),
     "dcim.macaddress": ModelSyncContract(
         required_fields=("device", "interface", "mac"),

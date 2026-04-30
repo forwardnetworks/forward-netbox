@@ -1,0 +1,33 @@
+/**
+ * @intent Forward Device Feature Tags with Rules
+ * @description Data-file-aware variant of Forward Device Feature Tags. Requires
+ * a Forward NQE data file named netbox_feature_tag_rules. The initial rule
+ * type maps Forward structured features to NetBox device tags.
+ */
+
+foreach device in network.devices
+let rules = network.extensions.netbox_feature_tag_rules
+let empty_rules = (foreach x in fromTo(1, 0) select {
+  record_type: "",
+  enabled: false,
+  feature: "",
+  tag: "",
+  tag_slug: "",
+  tag_color: ""
+})
+let rule_rows = if isPresent(rules.value) then rules.value else empty_rules
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+foreach networkInstance in device.networkInstances
+foreach protocol in networkInstance.protocols
+foreach rule in rule_rows
+where rule.record_type == "structured_feature_tag_rule"
+where rule.enabled
+where rule.feature == "bgp"
+where isPresent(protocol.bgp)
+select distinct {
+  device: device.name,
+  tag: rule.tag,
+  tag_slug: rule.tag_slug,
+  tag_color: rule.tag_color
+}
