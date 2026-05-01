@@ -36,4 +36,3 @@ Revert this plan and the associated helper/use sites to restore directional cabl
 
 - `pre-commit run --all-files`
 - `python manage.py test --keepdb --noinput forward_netbox.tests.test_sync` inside the NetBox development container
-
