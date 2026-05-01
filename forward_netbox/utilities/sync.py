@@ -14,6 +14,7 @@ from ..exceptions import ForwardQueryError
 from ..exceptions import ForwardSearchError
 from ..exceptions import ForwardSyncDataError
 from .query_registry import get_query_specs
+from .sync_contracts import canonical_cable_endpoint_identity
 from .sync_contracts import default_coalesce_fields_for_model
 from .sync_contracts import validate_row_shape_for_model
 
@@ -70,7 +71,11 @@ class ForwardSyncRunner:
                 return tuple(field_set)
         return None
 
-    def _coalesce_identity(self, row, coalesce_sets):
+    def _coalesce_identity(self, model_string, row, coalesce_sets):
+        if model_string == "dcim.cable":
+            canonical_identity = canonical_cable_endpoint_identity(row)
+            if canonical_identity is not None:
+                return ("canonical_cable_endpoints", canonical_identity)
         field_set = self._first_complete_coalesce_set(row, coalesce_sets)
         if field_set is None:
             return None
@@ -112,8 +117,8 @@ class ForwardSyncRunner:
                     )
                 upsert_rows.append(after)
                 if self._coalesce_identity(
-                    before, coalesce_sets
-                ) != self._coalesce_identity(after, coalesce_sets):
+                    model_string, before, coalesce_sets
+                ) != self._coalesce_identity(model_string, after, coalesce_sets):
                     delete_rows.append(before)
                 continue
 

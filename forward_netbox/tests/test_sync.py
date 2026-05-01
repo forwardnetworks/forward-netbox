@@ -31,6 +31,7 @@ from forward_netbox.utilities.branch_budget import BranchWorkload
 from forward_netbox.utilities.branch_budget import build_branch_plan
 from forward_netbox.utilities.branch_budget import build_branch_plan_with_density
 from forward_netbox.utilities.branch_budget import effective_row_budget_for_model
+from forward_netbox.utilities.branch_budget import row_shard_key
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from forward_netbox.utilities.multi_branch import BranchBudgetExceeded
 from forward_netbox.utilities.multi_branch import DEFAULT_PREFLIGHT_ROW_LIMIT
@@ -96,6 +97,26 @@ class ForwardBranchBudgetPlanTest(TestCase):
             "device:device-1.*exceeds the branch budget",
         ):
             build_branch_plan([workload], max_changes_per_branch=5)
+
+    def test_cable_shard_key_is_direction_insensitive(self):
+        row = {
+            "device": "device-a",
+            "interface": "Ethernet1/1",
+            "remote_device": "device-b",
+            "remote_interface": "Ethernet1/2",
+        }
+        reversed_row = {
+            "device": "device-b",
+            "interface": "Ethernet1/2",
+            "remote_device": "device-a",
+            "remote_interface": "Ethernet1/1",
+        }
+        coalesce_fields = [["device", "interface", "remote_device", "remote_interface"]]
+
+        self.assertEqual(
+            row_shard_key("dcim.cable", row, coalesce_fields),
+            row_shard_key("dcim.cable", reversed_row, coalesce_fields),
+        )
 
     def test_effective_row_budget_scales_by_density(self):
         budget = effective_row_budget_for_model(
@@ -643,6 +664,40 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertTrue(runner._delete_dcim_cable(row))
         self.assertEqual(Cable.objects.count(), 0)
         self.assertFalse(runner._delete_dcim_cable(row))
+
+    def test_split_diff_rows_treats_reversed_cable_endpoints_as_same_identity(self):
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        runner._model_coalesce_fields["dcim.cable"] = [
+            ["device", "interface", "remote_device", "remote_interface"]
+        ]
+
+        upsert_rows, delete_rows = runner._split_diff_rows(
+            "dcim.cable",
+            [
+                {
+                    "type": "MODIFIED",
+                    "before": {
+                        "device": "device-a",
+                        "interface": "Ethernet1/1",
+                        "remote_device": "device-b",
+                        "remote_interface": "Ethernet1/2",
+                        "status": "connected",
+                    },
+                    "after": {
+                        "device": "device-b",
+                        "interface": "Ethernet1/2",
+                        "remote_device": "device-a",
+                        "remote_interface": "Ethernet1/1",
+                        "status": "connected",
+                    },
+                }
+            ],
+        )
+
+        self.assertEqual(len(upsert_rows), 1)
+        self.assertEqual(delete_rows, [])
 
     def test_coalesce_lookup_ignores_null_and_empty_values(self):
         runner = ForwardSyncRunner(

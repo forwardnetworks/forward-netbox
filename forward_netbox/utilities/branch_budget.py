@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from dataclasses import field
 
 from ..exceptions import ForwardQueryError
+from .sync_contracts import canonical_cable_endpoint_identity
 
 DEFAULT_MAX_CHANGES_PER_BRANCH = 10000
 BRANCH_RUN_STATE_PARAMETER = "_branch_run"
@@ -58,6 +59,13 @@ class BranchPlanItem:
 
 
 def row_shard_key(model_string, row, coalesce_fields):
+    if model_string == "dcim.cable":
+        canonical_identity = canonical_cable_endpoint_identity(row)
+        if canonical_identity is not None:
+            return "cable:" + "|".join(
+                f"{device}:{interface}" for device, interface in canonical_identity
+            )
+
     if model_string in DEVICE_SHARD_MODELS and row.get("device") not in ("", None):
         return f"device:{row['device']}"
 
