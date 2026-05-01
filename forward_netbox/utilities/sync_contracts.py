@@ -129,6 +129,18 @@ MODEL_SYNC_CONTRACTS: dict[str, ModelSyncContract] = {
 }
 
 
+def canonical_cable_endpoint_identity(row: dict) -> tuple[tuple[str, str], ...] | None:
+    endpoint_a = (row.get("device"), row.get("interface"))
+    endpoint_b = (row.get("remote_device"), row.get("remote_interface"))
+    if any(
+        value in ("", None)
+        for endpoint in (endpoint_a, endpoint_b)
+        for value in endpoint
+    ):
+        return None
+    return tuple(sorted((endpoint_a, endpoint_b)))
+
+
 def contract_for_model(model_string: str) -> ModelSyncContract:
     try:
         return MODEL_SYNC_CONTRACTS[model_string]
