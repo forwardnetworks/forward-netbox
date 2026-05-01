@@ -932,7 +932,15 @@ class ForwardIngestion(ForwardPluginModelDocsMixin, JobsMixin, models.Model):
                 statistics[model_string] = stats.get("current", 0) / total * 100
         return {"job_results": job_results, "statistics": statistics}
 
-    def sync_merge(self, *, mark_baseline_ready=None):
+    def _cleanup_merged_branch(self):
+        if not self.branch:
+            return
+        branching_branch = self.branch
+        self.branch = None
+        ForwardIngestion.objects.filter(pk=self.pk).update(branch=None)
+        branching_branch.delete()
+
+    def sync_merge(self, *, mark_baseline_ready=None, remove_branch=True):
         from .utilities.merge import merge_branch
 
         forwardsync = self.sync
@@ -968,6 +976,8 @@ class ForwardIngestion(ForwardPluginModelDocsMixin, JobsMixin, models.Model):
                     branch_run_state.pop("pending_plan_index", None)
                     branch_run_state.pop("pending_is_final", None)
                     forwardsync.set_branch_run_state(branch_run_state)
+            if remove_branch:
+                self._cleanup_merged_branch()
             forwardsync.status = ForwardSyncStatusChoices.COMPLETED
         except Exception:
             forwardsync.status = ForwardSyncStatusChoices.FAILED

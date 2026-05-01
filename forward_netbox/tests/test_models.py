@@ -571,6 +571,36 @@ class ForwardIngestionSnapshotSummaryTest(TestCase):
 
         mock_suppress.assert_called_once_with()
 
+    def test_sync_merge_removes_branch_by_default(self):
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-before",
+        )
+
+        with (
+            patch("forward_netbox.utilities.merge.merge_branch"),
+            patch.object(ForwardIngestion, "_cleanup_merged_branch") as mock_cleanup,
+        ):
+            ingestion.sync_merge(mark_baseline_ready=False)
+
+        mock_cleanup.assert_called_once_with()
+
+    def test_sync_merge_can_preserve_branch_when_requested(self):
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-before",
+        )
+
+        with (
+            patch("forward_netbox.utilities.merge.merge_branch"),
+            patch.object(ForwardIngestion, "_cleanup_merged_branch") as mock_cleanup,
+        ):
+            ingestion.sync_merge(mark_baseline_ready=False, remove_branch=False)
+
+        mock_cleanup.assert_not_called()
+
     def test_sync_merge_advances_gated_branch_run_after_review_merge(self):
         ingestion = ForwardIngestion.objects.create(
             sync=self.sync,

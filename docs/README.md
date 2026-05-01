@@ -6,7 +6,9 @@
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v0.3.1` | `4.5.8` validated; `4.5.x` only | Current unsupported release |
+| `v0.5.1` | `4.5.9` validated; `4.5.x` only | Current release |
+| `v0.4.0` | `4.5.9` validated; `4.5.x` only | Current unsupported release |
+| `v0.3.1` | `4.5.8` validated; `4.5.x` only | Superseded by `v0.4.0` |
 | `v0.3.0.1` | `4.5.8` validated; `4.5.x` only | Superseded by `v0.3.1` |
 | `v0.3.0` | `4.5.8` validated; `4.5.x` only | Superseded by `v0.3.0.1` |
 
@@ -14,6 +16,8 @@
 
 | Release | Summary |
 | --- | --- |
+| `v0.5.1` | Adds default merged-branch cleanup to deprovision temporary branch schemas after successful merges, plus inferred interface cable import, device feature tag rules, and data-file-aware alias query workflows. |
+| `v0.4.0` | Corrects built-in IPv4/IPv6 prefix NQE filters to exclude host routes (`/32` and `/128`) from prefix import and validates the behavior against a live smoke dataset. |
 | `v0.3.1` | Adds optional data-file-aware device type alias maps, a Device Type Library alias data-file builder, and documentation for the snapshot requirement while keeping the default no-data-file maps available. |
 | `v0.3.0.1` | Fixes the validation-run list UI by removing unsupported edit actions from read-only validation records, and adds Playwright coverage for the validation-run list route. |
 | `v0.3.0` | Adds the NetBox 4.5.8-validated harness architecture with first-class validation runs, drift policies, query-fetch boundaries, model-result reporting, and Playwright-covered UI workflow validation. |
@@ -45,6 +49,7 @@ This repository is provided for use at your own risk. It is an unsupported relea
 - Branch-backed review and merge flow through `netbox_branching`
 - Built-in shipped NQE maps that can be used as-is or copied into custom map definitions
 - Disabled alternate NQE maps for NetBox Device Type Library alias matching through a Forward JSON data file
+- Disabled alternate NQE map for data-file-driven device feature tag rules
 - Support for both `query_id` and raw `query` execution modes
 - Snapshot selection per sync, including `latestProcessed`
 - Snapshot details and Forward metrics recorded on each ingestion
@@ -88,7 +93,9 @@ The shipped built-in NQE maps currently cover:
 - Device types
 - Devices
 - Virtual chassis
+- Device feature tags
 - Interfaces
+- Cables from exact Forward inferred interface matches
 - MAC addresses
 - Inventory items
 - VLANs
