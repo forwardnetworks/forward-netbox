@@ -159,7 +159,7 @@ def validate_forwardsync(job, *args, **kwargs):
             raise
 
 
-def merge_forwardingestion(job, remove_branch=False, *args, **kwargs):
+def merge_forwardingestion(job, remove_branch=True, *args, **kwargs):
     ingestion = ForwardIngestion.objects.get(pk=job.object_id)
     try:
         request = NetBoxFakeRequest(
@@ -179,17 +179,7 @@ def merge_forwardingestion(job, remove_branch=False, *args, **kwargs):
         ingestion.save(update_fields=["merge_job"])
         ingestion.sync.logger = SyncLogging(job=job.pk)
         with event_tracking(request):
-            ingestion.sync_merge()
-
-        if (
-            remove_branch
-            and ingestion.sync.status != ForwardSyncStatusChoices.FAILED
-            and ingestion.branch
-        ):
-            branching_branch = ingestion.branch
-            ingestion.branch = None
-            ingestion.save(update_fields=["branch"])
-            branching_branch.delete()
+            ingestion.sync_merge(remove_branch=remove_branch)
 
         safe_save_job_data(job, ingestion.sync)
         job.terminate()
