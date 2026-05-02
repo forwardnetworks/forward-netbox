@@ -898,6 +898,11 @@ class ForwardIngestion(ForwardPluginModelDocsMixin, JobsMixin, models.Model):
         default="full",
     )
     baseline_ready = models.BooleanField(default=False)
+    applied_change_count = models.PositiveIntegerField(default=0)
+    failed_change_count = models.PositiveIntegerField(default=0)
+    created_change_count = models.PositiveIntegerField(default=0)
+    updated_change_count = models.PositiveIntegerField(default=0)
+    deleted_change_count = models.PositiveIntegerField(default=0)
     snapshot_info = models.JSONField(blank=True, default=dict)
     snapshot_metrics = models.JSONField(blank=True, default=dict)
     model_results = models.JSONField(blank=True, default=list)
@@ -984,7 +989,37 @@ class ForwardIngestion(ForwardPluginModelDocsMixin, JobsMixin, models.Model):
             total = stats.get("total", 0)
             if total:
                 statistics[model_string] = stats.get("current", 0) / total * 100
+        if not getattr(self, "num_created", 0):
+            self.num_created = self.created_change_count
+        if not getattr(self, "num_updated", 0):
+            self.num_updated = self.updated_change_count
+        if not getattr(self, "num_deleted", 0):
+            self.num_deleted = self.deleted_change_count
+        if not getattr(self, "staged_changes", 0):
+            self.staged_changes = self.applied_change_count
         return {"job_results": job_results, "statistics": statistics}
+
+    def record_change_totals(
+        self,
+        *,
+        applied,
+        failed,
+        created=0,
+        updated=0,
+        deleted=0,
+    ):
+        self.applied_change_count = max(0, int(applied))
+        self.failed_change_count = max(0, int(failed))
+        self.created_change_count = max(0, int(created))
+        self.updated_change_count = max(0, int(updated))
+        self.deleted_change_count = max(0, int(deleted))
+        ForwardIngestion.objects.filter(pk=self.pk).update(
+            applied_change_count=self.applied_change_count,
+            failed_change_count=self.failed_change_count,
+            created_change_count=self.created_change_count,
+            updated_change_count=self.updated_change_count,
+            deleted_change_count=self.deleted_change_count,
+        )
 
     def _cleanup_merged_branch(self):
         if not self.branch:
