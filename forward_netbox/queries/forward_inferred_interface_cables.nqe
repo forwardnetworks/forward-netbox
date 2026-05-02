@@ -1,0 +1,30 @@
+/**
+ * @intent Forward Inferred Interface Cables
+ * @description NetBox cable rows derived from Forward resolved interface links.
+ */
+
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+foreach interface in device.interfaces
+foreach link in interface.links
+where link.deviceName != ""
+where link.ifaceName != ""
+where link.deviceName in (
+  foreach snapshot_device in network.devices
+  where snapshot_device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where snapshot_device.platform.vendor != Vendor.FORWARD_CUSTOM
+  select snapshot_device.name
+)
+where device.name != link.deviceName || interface.name != link.ifaceName
+select distinct {
+  device: if device.name < link.deviceName || (device.name == link.deviceName && interface.name < link.ifaceName)
+    then device.name else link.deviceName,
+  interface: if device.name < link.deviceName || (device.name == link.deviceName && interface.name < link.ifaceName)
+    then interface.name else link.ifaceName,
+  remote_device: if device.name < link.deviceName || (device.name == link.deviceName && interface.name < link.ifaceName)
+    then link.deviceName else device.name,
+  remote_interface: if device.name < link.deviceName || (device.name == link.deviceName && interface.name < link.ifaceName)
+    then link.ifaceName else interface.name,
+  status: "connected"
+}
