@@ -91,10 +91,14 @@ class ForwardClientTest(TestCase):
             )
         )
 
-        rows = self.client.run_nqe_query(query="select {n: 1}", limit=2)
+        rows = self.client.run_nqe_query(query="select {n: 1}")
 
         self.assertEqual(rows, [{"n": 1}, {"n": 2}])
         self.client._request.assert_called_once()
+        self.assertEqual(
+            self.client._request.call_args.kwargs["json_body"]["queryOptions"]["limit"],
+            1000,
+        )
 
     def test_run_nqe_query_fetch_all_pages_until_total_num_items(self):
         self.client._request = Mock(
@@ -241,6 +245,10 @@ class ForwardClientTest(TestCase):
             ],
         )
         self.client._request.assert_called_once()
+        self.assertEqual(
+            self.client._request.call_args.kwargs["json_body"]["options"]["limit"],
+            1000,
+        )
 
     def test_run_nqe_diff_fetch_all_pages_until_total_num_rows(self):
         self.client._request = Mock(

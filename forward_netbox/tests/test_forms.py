@@ -22,6 +22,7 @@ class ForwardSourceFormTest(TestCase):
             "password": "secret",
             "network_id": "test-network",
             "timeout": 1200,
+            "nqe_page_size": 1000,
             "verify": True,
         }
 
@@ -98,6 +99,25 @@ class ForwardSyncFormTest(TestCase):
         self.assertFalse(form.instance.parameters["auto_merge"])
         self.assertFalse(form.instance.auto_merge)
         self.assertEqual(form.instance.parameters["max_changes_per_branch"], 10000)
+
+    @patch("forward_netbox.forms.ForwardSource.validate_connection")
+    def test_source_form_persists_nqe_page_size(self, _mock_validate_connection):
+        form = ForwardSourceForm(
+            data={
+                "name": "source-2",
+                "type": ForwardSourceDeploymentChoices.SAAS,
+                "username": "user@example.com",
+                "password": "secret",
+                "network_id": "test-network",
+                "timeout": 1200,
+                "nqe_page_size": 1000,
+                "verify": True,
+            }
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+        source = form.save()
+        self.assertEqual(source.parameters["nqe_page_size"], 1000)
 
 
 class ForwardNQEMapFormTest(TestCase):
