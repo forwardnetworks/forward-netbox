@@ -39,7 +39,30 @@ class ForwardSyncModelTest(TestCase):
                 "verify": True,
                 "timeout": 1200,
                 "network_id": "test-network",
+                "nqe_page_size": 1000,
             },
+        )
+
+    def test_source_rejects_invalid_nqe_page_size(self):
+        source = ForwardSource(
+            name="source-invalid-page-size",
+            type="saas",
+            url="https://fwd.app",
+            parameters={
+                "username": "user@example.com",
+                "password": "secret",
+                "verify": True,
+                "timeout": 1200,
+                "network_id": "test-network",
+                "nqe_page_size": 10001,
+            },
+        )
+
+        with self.assertRaises(ValidationError) as ctx:
+            source.clean()
+
+        self.assertIn(
+            "`nqe_page_size` must be between 1 and 10000.", str(ctx.exception)
         )
 
     def test_sync_rejects_query_overrides_parameter(self):
