@@ -6,7 +6,7 @@
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v0.5.1` | `4.5.9` validated; `4.5.x` only | Current release |
+| `v0.5.2` | `4.5.9` validated; `4.5.x` only | Current release |
 | `v0.4.0` | `4.5.9` validated; `4.5.x` only | Current unsupported release |
 | `v0.3.1` | `4.5.8` validated; `4.5.x` only | Superseded by `v0.4.0` |
 | `v0.3.0.1` | `4.5.8` validated; `4.5.x` only | Superseded by `v0.3.1` |
@@ -16,7 +16,7 @@
 
 | Release | Summary |
 | --- | --- |
-| `v0.5.1` | Adds default merged-branch cleanup to deprovision temporary branch schemas after successful merges, plus inferred interface cable import, device feature tag rules, and data-file-aware alias query workflows. |
+| `v0.5.2` | Aligns `/api/nqe` paging to `queryOptions` request shape and adds configurable source-level `NQE Page Size` (default `1000`) for stable large-dataset pagination. |
 | `v0.4.0` | Corrects built-in IPv4/IPv6 prefix NQE filters to exclude host routes (`/32` and `/128`) from prefix import and validates the behavior against a live smoke dataset. |
 | `v0.3.1` | Adds optional data-file-aware device type alias maps, a Device Type Library alias data-file builder, and documentation for the snapshot requirement while keeping the default no-data-file maps available. |
 | `v0.3.0.1` | Fixes the validation-run list UI by removing unsupported edit actions from read-only validation records, and adds Playwright coverage for the validation-run list route. |
@@ -79,7 +79,7 @@ This repository is provided for use at your own risk. It is an unsupported relea
 Install the wheel or source archive from GitHub Releases:
 
 ```bash
-pip install /path/to/forward_netbox-0.5.1-py3-none-any.whl
+pip install /path/to/forward_netbox-0.5.2-py3-none-any.whl
 ```
 
 2. Enable both plugins in the NetBox configuration:

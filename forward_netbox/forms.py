@@ -25,7 +25,9 @@ from .models import ForwardSource
 from .models import ForwardSync
 from .utilities.branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
 from .utilities.forward_api import DEFAULT_FORWARD_API_TIMEOUT_SECONDS
+from .utilities.forward_api import DEFAULT_NQE_PAGE_SIZE
 from .utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
+from .utilities.forward_api import MAX_NQE_PAGE_SIZE
 
 
 def _configure_api_select(widget, query_params=None):
@@ -105,6 +107,14 @@ class ForwardSourceForm(NetBoxModelForm):
             help_text="Timeout for Forward API requests in seconds.",
             widget=forms.NumberInput(attrs={"class": "form-control"}),
         )
+        self.fields["nqe_page_size"] = forms.IntegerField(
+            required=False,
+            min_value=1,
+            max_value=MAX_NQE_PAGE_SIZE,
+            label="NQE Page Size",
+            help_text=f"Rows requested per NQE page. Default: {DEFAULT_NQE_PAGE_SIZE}.",
+            widget=forms.NumberInput(attrs={"class": "form-control"}),
+        )
         self.fields["verify"] = forms.BooleanField(
             required=False,
             initial=True,
@@ -144,6 +154,9 @@ class ForwardSourceForm(NetBoxModelForm):
         self.fields["timeout"].initial = (
             parameters.get("timeout") or DEFAULT_FORWARD_API_TIMEOUT_SECONDS
         )
+        self.fields["nqe_page_size"].initial = (
+            parameters.get("nqe_page_size") or DEFAULT_NQE_PAGE_SIZE
+        )
         self.fields["verify"].initial = parameters.get("verify", True)
         self.fields["network_id"].initial = existing_network_id
         self.fields["network_id"].choices = _selected_choice(existing_network_id)
@@ -159,6 +172,7 @@ class ForwardSourceForm(NetBoxModelForm):
                     "password",
                     "network_id",
                     "timeout",
+                    "nqe_page_size",
                     name="Parameters",
                 )
             )
@@ -170,6 +184,7 @@ class ForwardSourceForm(NetBoxModelForm):
                     "verify",
                     "network_id",
                     "timeout",
+                    "nqe_page_size",
                     name="Parameters",
                 )
             )
@@ -208,6 +223,9 @@ class ForwardSourceForm(NetBoxModelForm):
             "timeout": cleaned.get("timeout")
             or existing_parameters.get("timeout")
             or DEFAULT_FORWARD_API_TIMEOUT_SECONDS,
+            "nqe_page_size": cleaned.get("nqe_page_size")
+            or existing_parameters.get("nqe_page_size")
+            or DEFAULT_NQE_PAGE_SIZE,
             "network_id": selected_network_id,
         }
         self.instance.type = source_type
@@ -271,6 +289,9 @@ class ForwardSourceForm(NetBoxModelForm):
             "timeout": self.cleaned_data.get("timeout")
             or existing_parameters.get("timeout")
             or DEFAULT_FORWARD_API_TIMEOUT_SECONDS,
+            "nqe_page_size": self.cleaned_data.get("nqe_page_size")
+            or existing_parameters.get("nqe_page_size")
+            or DEFAULT_NQE_PAGE_SIZE,
             "network_id": self.cleaned_data.get("network_id") or "",
         }
         self.instance.status = ForwardSourceStatusChoices.NEW
