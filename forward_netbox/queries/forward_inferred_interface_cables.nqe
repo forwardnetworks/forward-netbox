@@ -3,6 +3,13 @@
  * @description NetBox cable rows derived from Forward resolved interface links.
  */
 
+let snapshot_device_names = (
+  foreach snapshot_device in network.devices
+  where snapshot_device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where snapshot_device.platform.vendor != Vendor.FORWARD_CUSTOM
+  select snapshot_device.name
+)
+
 foreach device in network.devices
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
@@ -10,6 +17,7 @@ foreach interface in device.interfaces
 foreach link in interface.links
 where link.deviceName != ""
 where link.ifaceName != ""
+where link.deviceName in snapshot_device_names
 where device.name != link.deviceName || interface.name != link.ifaceName
 let local_first = device.name < link.deviceName ||
   (device.name == link.deviceName && interface.name < link.ifaceName)
