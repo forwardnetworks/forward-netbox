@@ -27,6 +27,10 @@ Create a `Forward Source` for each Forward deployment or tenant you want to sync
 - `Timeout`
   - Forward API timeout in seconds.
   - Defaults to `1200` (20 minutes), aligned to the NQE timeout boundary.
+- `NQE Page Size`
+  - Rows requested per `/api/nqe` page.
+  - Defaults to `1000`; valid range is `1..10000`.
+  - This controls request paging (`queryOptions.offset/limit`) only. It does not change query semantics.
 - `Verify`
   - Only shown for custom deployments.
   - Leave enabled unless the custom deployment uses a self-signed certificate.

@@ -37,4 +37,3 @@ Revert this patch set to restore prior behavior where unresolved cable endpoints
 - `pre-commit run --all-files`
 - `python manage.py test --keepdb --noinput forward_netbox.tests.test_sync` (container)
 - `python manage.py test --keepdb --noinput forward_netbox.tests.test_query_registry` (container)
-
