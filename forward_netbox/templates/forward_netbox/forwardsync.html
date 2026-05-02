@@ -55,6 +55,10 @@
             <td>{{ object.get_status_display }}</td>
           </tr>
           <tr>
+            <th scope="row">{% trans "Current activity" %}</th>
+            <td>{{ object.get_sync_activity|placeholder }}</td>
+          </tr>
+          <tr>
             <th scope="row">{% trans "Last synced" %}</th>
             <td>{{ object.last_synced|placeholder }}</td>
           </tr>

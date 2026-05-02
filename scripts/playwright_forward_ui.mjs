@@ -127,9 +127,13 @@ async function main() {
     await expectVisible(page, "ui-harness-drift-policy");
     await expectVisible(page, "latestProcessed");
     await expectVisible(page, "max_changes_per_branch");
+    await expectVisible(page, "Current activity");
+    await expectVisible(page, "Resolving snapshot, running query preflight, and building shard plan.");
     await assertNoHorizontalOverflow(page, "desktop sync detail");
     evidence.screenshots.push(await screenshot(page, "desktop-sync-detail.jpg"));
-    evidence.checks.push("sync detail exposes validation, native branch budget, and run controls");
+    evidence.checks.push(
+      "sync detail exposes validation, native branch budget, run controls, and preflight activity",
+    );
 
     await page.goto(`${baseURL}/plugins/forward/validation-run/`, {
       waitUntil: "domcontentloaded",
