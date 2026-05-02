@@ -1,5 +1,6 @@
 import os
 import uuid
+from datetime import timedelta
 
 from core.choices import JobStatusChoices
 from core.models import Job
@@ -160,6 +161,14 @@ class Command(BaseCommand):
         )
         sync.full_clean()
         sync.save()
+        sync.set_branch_run_state(
+            {
+                "phase": "planning",
+                "phase_message": "Resolving snapshot, running query preflight, and building shard plan.",
+                "phase_started": (timezone.now() - timedelta(minutes=3)).isoformat(),
+                "awaiting_merge": False,
+            }
+        )
         return sync
 
     def _model_results(self, snapshot_id):
