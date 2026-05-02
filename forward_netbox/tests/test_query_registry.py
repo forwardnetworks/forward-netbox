@@ -420,6 +420,8 @@ class QueryRegistryTest(TestCase):
         self.assertIn("foreach link in interface.links", spec.query)
         self.assertIn("link.deviceName", spec.query)
         self.assertIn("link.ifaceName", spec.query)
+        self.assertIn("snapshot_device_names", spec.query)
+        self.assertIn("where link.deviceName in snapshot_device_names", spec.query)
         self.assertIn("select distinct", spec.query)
         self.assertEqual(
             spec.coalesce_fields,
