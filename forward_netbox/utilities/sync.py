@@ -604,9 +604,12 @@ class ForwardSyncRunner:
         )
         for row in rows:
             try:
-                handler(row)
+                result = handler(row)
                 self.events_clearer.increment()
-                self.logger.increment_statistics(model_string, outcome="applied")
+                if result is False:
+                    self.logger.increment_statistics(model_string, outcome="skipped")
+                else:
+                    self.logger.increment_statistics(model_string, outcome="applied")
             except ForwardDependencySkipError as exc:
                 logger.exception("Failed applying %s row", model_string)
                 self.logger.increment_statistics(model_string, outcome="skipped")
@@ -1387,12 +1390,11 @@ class ForwardSyncRunner:
                     },
                     data=row,
                 ) from exc
-            raise ForwardSearchError(
-                f"Unable to find device `{row['device']}` for cable import.",
-                model_string="dcim.cable",
-                context={"device": row["device"], "interface": row.get("interface")},
-                data=row,
-            ) from exc
+            self.logger.log_warning(
+                f"Skipping cable row because device `{row['device']}` was not found.",
+                obj=self.sync,
+            )
+            return False
 
         try:
             remote_device = Device.objects.get(name=row["remote_device"])
@@ -1408,15 +1410,11 @@ class ForwardSyncRunner:
                     },
                     data=row,
                 ) from exc
-            raise ForwardSearchError(
-                f"Unable to find remote device `{row['remote_device']}` for cable import.",
-                model_string="dcim.cable",
-                context={
-                    "device": row["remote_device"],
-                    "interface": row.get("remote_interface"),
-                },
-                data=row,
-            ) from exc
+            self.logger.log_warning(
+                f"Skipping cable row because remote device `{row['remote_device']}` was not found.",
+                obj=self.sync,
+            )
+            return False
 
         interface = self._lookup_interface(device, row["interface"])
         if interface is None:
@@ -1428,12 +1426,11 @@ class ForwardSyncRunner:
                     context={"device": device.name, "interface": row["interface"]},
                     data=row,
                 )
-            raise ForwardSearchError(
-                f"Unable to find interface {row['interface']} on device {device.name} for cable import.",
-                model_string="dcim.cable",
-                context={"device": device.name, "interface": row["interface"]},
-                data=row,
+            self.logger.log_warning(
+                f"Skipping cable row because interface `{row['interface']}` was not found on `{device.name}`.",
+                obj=self.sync,
             )
+            return False
 
         remote_interface = self._lookup_interface(
             remote_device, row["remote_interface"]
@@ -1450,15 +1447,11 @@ class ForwardSyncRunner:
                     },
                     data=row,
                 )
-            raise ForwardSearchError(
-                f"Unable to find interface {row['remote_interface']} on device {remote_device.name} for cable import.",
-                model_string="dcim.cable",
-                context={
-                    "device": remote_device.name,
-                    "interface": row["remote_interface"],
-                },
-                data=row,
+            self.logger.log_warning(
+                f"Skipping cable row because interface `{row['remote_interface']}` was not found on `{remote_device.name}`.",
+                obj=self.sync,
             )
+            return False
 
         cable = self._lookup_cable_between(interface, remote_interface)
         if cable is not None:
