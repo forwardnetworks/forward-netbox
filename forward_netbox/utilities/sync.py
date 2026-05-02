@@ -1076,6 +1076,19 @@ class ForwardSyncRunner:
             [{"device": device, "name": row["name"]}],
         )
 
+    def _delete_dcim_cablebundle(self, row):
+        try:
+            from dcim.models import CableBundle
+        except ImportError:
+            return False
+
+        if not row.get("name"):
+            return False
+        return self._delete_by_coalesce(
+            CableBundle,
+            [{"name": row["name"]}],
+        )
+
     def _delete_dcim_cable(self, row):
         from dcim.models import Device
 
@@ -1372,9 +1385,54 @@ class ForwardSyncRunner:
             return interface.cable
         return None
 
+    def _apply_dcim_cablebundle(self, row):
+        try:
+            from dcim.models import CableBundle
+        except ImportError:
+            self.logger.log_warning(
+                "Skipping cable bundle row because this NetBox version does not provide dcim.CableBundle.",
+                obj=self.sync,
+            )
+            return False
+
+        self._upsert_row_from_defaults(
+            "dcim.cablebundle",
+            CableBundle,
+            row=row,
+            coalesce_sets=self._coalesce_sets_for(
+                "dcim.cablebundle",
+                [("name",)],
+            ),
+            defaults={"name": row["name"]},
+        )
+
     def _apply_dcim_cable(self, row):
         from dcim.models import Cable
         from dcim.models import Device
+
+        cable_supports_bundle = any(
+            field.name == "bundle" for field in Cable._meta.get_fields()
+        )
+        bundle_name = row.get("bundle_name")
+        bundle = None
+        if cable_supports_bundle and "bundle_name" in row and bundle_name:
+            try:
+                from dcim.models import CableBundle
+            except ImportError:
+                self.logger.log_warning(
+                    "Ignoring cable bundle assignment because this NetBox version does not provide dcim.CableBundle.",
+                    obj=self.sync,
+                )
+            else:
+                bundle, _ = self._upsert_values_from_defaults(
+                    "dcim.cablebundle",
+                    CableBundle,
+                    values={"name": bundle_name},
+                    coalesce_sets=self._coalesce_sets_for(
+                        "dcim.cablebundle",
+                        [("name",)],
+                    ),
+                )
 
         try:
             device = Device.objects.get(name=row["device"])
@@ -1456,6 +1514,8 @@ class ForwardSyncRunner:
         cable = self._lookup_cable_between(interface, remote_interface)
         if cable is not None:
             cable.status = row["status"]
+            if cable_supports_bundle and "bundle_name" in row:
+                cable.bundle = bundle
             cable.full_clean()
             cable.save()
             return
@@ -1475,10 +1535,15 @@ class ForwardSyncRunner:
                 data=row,
             )
 
+        cable_kwargs = {
+            "a_terminations": [interface],
+            "b_terminations": [remote_interface],
+            "status": row["status"],
+        }
+        if cable_supports_bundle:
+            cable_kwargs["bundle"] = bundle
         cable = Cable(
-            a_terminations=[interface],
-            b_terminations=[remote_interface],
-            status=row["status"],
+            **cable_kwargs,
         )
         cable.full_clean()
         cable.save()

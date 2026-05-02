@@ -71,6 +71,11 @@ MODEL_SYNC_CONTRACTS: dict[str, ModelSyncContract] = {
         allowed_coalesce_fields=("device", "name"),
         default_coalesce_fields=(("device", "name"),),
     ),
+    "dcim.cablebundle": ModelSyncContract(
+        required_fields=("name",),
+        allowed_coalesce_fields=("name",),
+        default_coalesce_fields=(("name",),),
+    ),
     "dcim.cable": ModelSyncContract(
         required_fields=(
             "device",

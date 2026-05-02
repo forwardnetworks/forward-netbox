@@ -1,0 +1,25 @@
+/**
+ * @intent Forward Cable Bundles
+ * @description Optional NetBox cable bundle rows derived from inferred interface links.
+ * Enable this map only on NetBox versions that support dcim.CableBundle (4.6+).
+ */
+
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+foreach interface in device.interfaces
+foreach link in interface.links
+where link.deviceName != ""
+where link.ifaceName != ""
+where link.deviceName in (
+  foreach snapshot_device in network.devices
+  where snapshot_device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where snapshot_device.platform.vendor != Vendor.FORWARD_CUSTOM
+  select snapshot_device.name
+)
+where device.name != link.deviceName || interface.name != link.ifaceName
+select distinct {
+  name: if device.name < link.deviceName
+    then device.name + "__" + link.deviceName
+    else link.deviceName + "__" + device.name
+}

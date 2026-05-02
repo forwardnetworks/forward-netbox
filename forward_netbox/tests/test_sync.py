@@ -1,3 +1,4 @@
+import unittest
 from unittest.mock import Mock
 from unittest.mock import patch
 
@@ -40,6 +41,11 @@ from forward_netbox.utilities.multi_branch import ForwardMultiBranchPlanner
 from forward_netbox.utilities.query_registry import QuerySpec
 from forward_netbox.utilities.sync import ForwardSyncRunner
 from forward_netbox.utilities.sync_contracts import validate_row_shape_for_model
+
+try:
+    from dcim.models import CableBundle
+except ImportError:  # NetBox < 4.6
+    CableBundle = None
 
 
 class ForwardBranchBudgetPlanTest(TestCase):
@@ -690,6 +696,51 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertTrue(runner._delete_dcim_cable(row))
         self.assertEqual(Cable.objects.count(), 0)
         self.assertFalse(runner._delete_dcim_cable(row))
+
+    @unittest.skipUnless(
+        CableBundle is not None, "requires NetBox with dcim.CableBundle"
+    )
+    def test_apply_dcim_cable_creates_bundle_when_bundle_name_is_present(self):
+        device = self._create_device("device-a")
+        remote_device = self._create_device("device-b")
+        Interface.objects.create(device=device, name="Ethernet1/1", type="1000base-t")
+        Interface.objects.create(
+            device=remote_device,
+            name="Ethernet1/2",
+            type="1000base-t",
+        )
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        runner._apply_dcim_cable(
+            {
+                "device": "device-a",
+                "interface": "Ethernet1/1",
+                "remote_device": "device-b",
+                "remote_interface": "Ethernet1/2",
+                "bundle_name": "device-a__device-b",
+                "status": "connected",
+            }
+        )
+
+        cable = Cable.objects.get()
+        self.assertIsNotNone(cable.bundle)
+        self.assertEqual(cable.bundle.name, "device-a__device-b")
+        self.assertEqual(CableBundle.objects.count(), 1)
+
+    @unittest.skipUnless(
+        CableBundle is not None, "requires NetBox with dcim.CableBundle"
+    )
+    def test_delete_dcim_cablebundle_deletes_by_name(self):
+        CableBundle.objects.create(name="bundle-a")
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        self.assertTrue(runner._delete_dcim_cablebundle({"name": "bundle-a"}))
+        self.assertEqual(CableBundle.objects.count(), 0)
+        self.assertFalse(runner._delete_dcim_cablebundle({"name": "bundle-a"}))
 
     def test_split_diff_rows_treats_reversed_cable_endpoints_as_same_identity(self):
         runner = ForwardSyncRunner(

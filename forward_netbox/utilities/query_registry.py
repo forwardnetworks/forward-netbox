@@ -223,6 +223,12 @@ BUILTIN_OPTIONAL_QUERY_MAPS = [
         "enabled": False,
     },
     {
+        "model_string": "dcim.cablebundle",
+        "name": "Forward Cable Bundles",
+        "filename": "forward_cable_bundles.nqe",
+        "enabled": False,
+    },
+    {
         "model_string": "extras.taggeditem",
         "name": "Forward Device Feature Tags with Rules",
         "filename": "forward_device_feature_tags_with_rules.nqe",

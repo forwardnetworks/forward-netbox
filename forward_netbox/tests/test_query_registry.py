@@ -362,8 +362,16 @@ class QueryRegistryTest(TestCase):
             "Forward Device Feature Tags with Rules",
             {query_default["name"] for query_default in BUILTIN_OPTIONAL_QUERY_MAPS},
         )
+        self.assertIn(
+            "Forward Cable Bundles",
+            {query_default["name"] for query_default in BUILTIN_OPTIONAL_QUERY_MAPS},
+        )
         self.assertNotIn(
             "Forward Device Feature Tags with Rules",
+            {query_default["name"] for query_default in BUILTIN_QUERY_MAPS},
+        )
+        self.assertNotIn(
+            "Forward Cable Bundles",
             {query_default["name"] for query_default in BUILTIN_QUERY_MAPS},
         )
 
@@ -423,10 +431,24 @@ class QueryRegistryTest(TestCase):
         self.assertIn("where link.deviceName in (", spec.query)
         self.assertIn("foreach snapshot_device in network.devices", spec.query)
         self.assertIn("select distinct", spec.query)
+        self.assertIn("bundle_name:", spec.query)
         self.assertEqual(
             spec.coalesce_fields,
             (("device", "interface", "remote_device", "remote_interface"),),
         )
+
+    def test_optional_cable_bundle_query_is_seeded_disabled(self):
+        row = next(
+            row
+            for row in builtin_nqe_map_rows()
+            if row["name"] == "Forward Cable Bundles"
+        )
+
+        self.assertEqual(row["model_string"], "dcim.cablebundle")
+        self.assertFalse(row["enabled"])
+        self.assertIn("foreach link in interface.links", row["query"])
+        self.assertIn("select distinct", row["query"])
+        self.assertIn("name:", row["query"])
 
     def test_device_feature_tag_query_emits_bgp_tag(self):
         spec = next(

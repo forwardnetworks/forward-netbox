@@ -26,5 +26,8 @@ select distinct {
     then link.deviceName else device.name,
   remote_interface: if device.name < link.deviceName || (device.name == link.deviceName && interface.name < link.ifaceName)
     then link.ifaceName else interface.name,
+  bundle_name: if device.name < link.deviceName
+    then device.name + "__" + link.deviceName
+    else link.deviceName + "__" + device.name,
   status: "connected"
 }

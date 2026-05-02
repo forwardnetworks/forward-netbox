@@ -12,6 +12,7 @@ FORWARD_SUPPORTED_MODELS = (
     "dcim.virtualchassis",
     "extras.taggeditem",
     "dcim.interface",
+    "dcim.cablebundle",
     "dcim.cable",
     "dcim.macaddress",
     "ipam.vlan",
