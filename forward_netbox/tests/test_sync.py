@@ -18,7 +18,6 @@ from forward_netbox.choices import FORWARD_SUPPORTED_MODELS
 from forward_netbox.exceptions import ForwardClientError
 from forward_netbox.exceptions import ForwardDependencySkipError
 from forward_netbox.exceptions import ForwardQueryError
-from forward_netbox.exceptions import ForwardSearchError
 from forward_netbox.exceptions import ForwardSyncDataError
 from forward_netbox.exceptions import ForwardSyncError
 from forward_netbox.models import ForwardDriftPolicy
@@ -597,7 +596,7 @@ class ForwardSyncRunnerTest(TestCase):
 
         self.assertEqual(Cable.objects.count(), 1)
 
-    def test_apply_dcim_cable_rejects_conflicting_existing_cable(self):
+    def test_apply_dcim_cable_skips_conflicting_existing_cable(self):
         device = self._create_device("device-a")
         remote_device = self._create_device("device-b")
         other_device = self._create_device("device-c")
@@ -621,20 +620,73 @@ class ForwardSyncRunnerTest(TestCase):
             b_terminations=[other_interface],
             status="connected",
         ).save()
+        logger = Mock()
         runner = ForwardSyncRunner(
-            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+            sync=self.sync, ingestion=None, client=None, logger_=logger
         )
 
-        with self.assertRaises(ForwardSearchError):
-            runner._apply_dcim_cable(
-                {
-                    "device": "device-a",
-                    "interface": "Ethernet1/1",
-                    "remote_device": "device-b",
-                    "remote_interface": "Ethernet1/2",
-                    "status": "connected",
-                }
-            )
+        result = runner._apply_dcim_cable(
+            {
+                "device": "device-a",
+                "interface": "Ethernet1/1",
+                "remote_device": "device-b",
+                "remote_interface": "Ethernet1/2",
+                "status": "connected",
+            }
+        )
+
+        self.assertFalse(result)
+        self.assertEqual(Cable.objects.count(), 1)
+        logger.log_warning.assert_called_once()
+
+    def test_apply_dcim_cable_aggregates_conflict_warnings(self):
+        device = self._create_device("device-a")
+        remote_device = self._create_device("device-b")
+        other_device = self._create_device("device-c")
+        interface = Interface.objects.create(
+            device=device,
+            name="Ethernet1/1",
+            type="1000base-t",
+        )
+        Interface.objects.create(
+            device=remote_device,
+            name="Ethernet1/2",
+            type="1000base-t",
+        )
+        other_interface = Interface.objects.create(
+            device=other_device,
+            name="Ethernet1/3",
+            type="1000base-t",
+        )
+        Cable(
+            a_terminations=[interface],
+            b_terminations=[other_interface],
+            status="connected",
+        ).save()
+        logger = Mock()
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=logger
+        )
+        rows = [
+            {
+                "device": "device-a",
+                "interface": "Ethernet1/1",
+                "remote_device": "device-b",
+                "remote_interface": "Ethernet1/2",
+                "status": "connected",
+            }
+            for _ in range(ForwardSyncRunner.CONFLICT_WARNING_DETAIL_LIMIT + 3)
+        ]
+
+        runner._apply_model_rows("dcim.cable", rows)
+
+        warning_messages = [call.args[0] for call in logger.log_warning.call_args_list]
+        self.assertEqual(len(warning_messages), 21)
+        self.assertEqual(
+            warning_messages[-1],
+            "Suppressed 3 additional dcim.cable conflict warnings for "
+            "`interface-already-cabled` after the first 20.",
+        )
 
     def test_apply_dcim_cable_skips_unknown_remote_device(self):
         device = self._create_device("device-a")
