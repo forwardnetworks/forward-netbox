@@ -390,6 +390,7 @@ class QueryRegistryTest(TestCase):
         self.assertIn("tag: rule.tag", row["query"])
         self.assertIn("tag_slug: rule.tag_slug", row["query"])
         self.assertEqual(row["coalesce_fields"], [["device", "tag_slug"]])
+
     def test_inventory_query_treats_empty_strings_as_missing_identity_values(self):
         spec = next(
             spec
