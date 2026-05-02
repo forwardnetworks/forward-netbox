@@ -339,6 +339,57 @@ class QueryRegistryTest(TestCase):
         self.assertIn('type: "virtual"', spec.query)
         self.assertIn("ethernet_interfaces + loopback_interfaces", spec.query)
 
+    def test_inferred_interface_cable_query_uses_resolved_interface_links(self):
+        spec = next(
+            spec
+            for spec in BUILTIN_QUERY_SPECS["dcim.cable"]
+            if spec.query_name == "Forward Inferred Interface Cables"
+        )
+
+        self.assertIn("foreach link in interface.links", spec.query)
+        self.assertIn("link.deviceName", spec.query)
+        self.assertIn("link.ifaceName", spec.query)
+        self.assertIn("where link.deviceName in (", spec.query)
+        self.assertIn("foreach snapshot_device in network.devices", spec.query)
+        self.assertIn("select distinct", spec.query)
+        self.assertEqual(
+            spec.coalesce_fields,
+            (("device", "interface", "remote_device", "remote_interface"),),
+        )
+
+    def test_device_feature_tag_query_emits_bgp_tag(self):
+        spec = next(
+            spec
+            for spec in BUILTIN_QUERY_SPECS["extras.taggeditem"]
+            if spec.query_name == "Forward Device Feature Tags"
+        )
+
+        self.assertIn("where isPresent(protocol.bgp)", spec.query)
+        self.assertIn('tag: "Prot_BGP"', spec.query)
+        self.assertIn('tag_slug: "prot-bgp"', spec.query)
+        self.assertEqual(spec.coalesce_fields, (("device", "tag_slug"),))
+
+    def test_optional_device_feature_tag_rules_query_uses_data_file(self):
+        row = next(
+            row
+            for row in builtin_nqe_map_rows()
+            if row["name"] == "Forward Device Feature Tags with Rules"
+        )
+
+        self.assertEqual(row["model_string"], "extras.taggeditem")
+        self.assertFalse(row["enabled"])
+        self.assertIn("netbox_feature_tag_rules", row["query"])
+        self.assertIn(
+            'rule.record_type == "structured_feature_tag_rule"',
+            row["query"],
+        )
+        self.assertIn("let rule_rows = if isPresent(rules.value)", row["query"])
+        self.assertIn("foreach rule in rule_rows", row["query"])
+        self.assertIn('rule.feature == "bgp"', row["query"])
+        self.assertIn("where isPresent(protocol.bgp)", row["query"])
+        self.assertIn("tag: rule.tag", row["query"])
+        self.assertIn("tag_slug: rule.tag_slug", row["query"])
+        self.assertEqual(row["coalesce_fields"], [["device", "tag_slug"]])
     def test_inventory_query_treats_empty_strings_as_missing_identity_values(self):
         spec = next(
             spec
