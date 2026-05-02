@@ -40,6 +40,7 @@ class EventsClearer:
 
 
 class ForwardSyncRunner:
+    CONFLICT_WARNING_DETAIL_LIMIT = 20
     MODEL_CONFLICT_POLICIES = {
         "dcim.site": "reuse_on_unique_conflict",
         "dcim.manufacturer": "reuse_on_unique_conflict",
@@ -47,6 +48,7 @@ class ForwardSyncRunner:
         "dcim.platform": "reuse_on_unique_conflict",
         "dcim.devicetype": "reuse_on_unique_conflict",
         "dcim.inventoryitemrole": "reuse_on_unique_conflict",
+        "dcim.cable": "skip_warn_aggregate",
     }
 
     def __init__(self, sync, ingestion, client, logger_):
@@ -58,7 +60,37 @@ class ForwardSyncRunner:
         self._model_coalesce_fields: dict[str, list[list[str]]] = {}
         self._recorded_issue_ids: set[tuple] = set()
         self._failed_dependencies: dict[str, set[tuple]] = {}
+        self._aggregated_conflict_warning_counts: dict[tuple[str, str], int] = {}
+        self._aggregated_conflict_warning_suppressed: dict[tuple[str, str], int] = {}
         self.events_clearer = EventsClearer()
+
+    def _record_aggregated_conflict_warning(
+        self, *, model_string, reason, warning_message
+    ):
+        key = (model_string, reason)
+        count = self._aggregated_conflict_warning_counts.get(key, 0)
+        if count < self.CONFLICT_WARNING_DETAIL_LIMIT:
+            self.logger.log_warning(
+                warning_message,
+                obj=self.sync,
+            )
+        else:
+            self._aggregated_conflict_warning_suppressed[key] = (
+                self._aggregated_conflict_warning_suppressed.get(key, 0) + 1
+            )
+        self._aggregated_conflict_warning_counts[key] = count + 1
+
+    def _emit_aggregated_conflict_warning_summaries(self, model_string):
+        for (warning_model, reason), suppressed_count in sorted(
+            self._aggregated_conflict_warning_suppressed.items()
+        ):
+            if warning_model != model_string or suppressed_count <= 0:
+                continue
+            self.logger.log_warning(
+                f"Suppressed {suppressed_count} additional {model_string} conflict warnings "
+                f"for `{reason}` after the first {self.CONFLICT_WARNING_DETAIL_LIMIT}.",
+                obj=self.sync,
+            )
 
     def _conflict_policy(self, model_string):
         return self.MODEL_CONFLICT_POLICIES.get(model_string, "strict")
@@ -666,6 +698,7 @@ class ForwardSyncRunner:
             f"Finished applying rows for {model_string}.",
             obj=self.sync,
         )
+        self._emit_aggregated_conflict_warning_summaries(model_string)
         self.events_clearer.clear()
 
     def _delete_model_rows(self, model_string, rows):
@@ -1463,14 +1496,23 @@ class ForwardSyncRunner:
         interface.refresh_from_db(fields=["cable"])
         remote_interface.refresh_from_db(fields=["cable"])
         if interface.cable_id or remote_interface.cable_id:
-            raise ForwardSearchError(
+            if self._conflict_policy("dcim.cable") == "skip_warn_aggregate":
+                self._record_aggregated_conflict_warning(
+                    model_string="dcim.cable",
+                    reason="interface-already-cabled",
+                    warning_message=(
+                        "Skipping cable row because one or both interfaces are already connected to a different cable."
+                    ),
+                )
+                return False
+            raise ForwardSyncDataError(
                 "Unable to create cable because one or both interfaces are already connected to a different cable.",
                 model_string="dcim.cable",
                 context={
-                    "device": device.name,
-                    "interface": interface.name,
-                    "remote_device": remote_device.name,
-                    "remote_interface": remote_interface.name,
+                    "device": row.get("device"),
+                    "interface": row.get("interface"),
+                    "remote_device": row.get("remote_device"),
+                    "remote_interface": row.get("remote_interface"),
                 },
                 data=row,
             )
