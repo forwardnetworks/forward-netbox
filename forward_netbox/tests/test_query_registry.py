@@ -39,6 +39,7 @@ REQUIRED_FIELDS_BY_QUERY_NAME = {
         "status",
     },
     "Forward Virtual Chassis": {"device", "vc_name", "name", "vc_domain"},
+    "Forward Device Feature Tags": {"device", "tag", "tag_slug", "tag_color"},
     "Forward Interfaces": {
         "device",
         "name",
@@ -47,6 +48,13 @@ REQUIRED_FIELDS_BY_QUERY_NAME = {
         "mtu",
         "description",
         "speed",
+    },
+    "Forward Inferred Interface Cables": {
+        "device",
+        "interface",
+        "remote_device",
+        "remote_interface",
+        "status",
     },
     "Forward MAC Addresses": {"device", "interface", "mac", "mac_address"},
     "Forward VLANs": {"site", "site_slug", "vid", "name", "status"},
@@ -240,6 +248,24 @@ class QueryRegistryTest(TestCase):
         self.assertNotIn("where has_vpc or has_mlag_peer", spec.query)
         self.assertNotIn("?.", spec.query)
 
+    def test_wrapped_device_queries_keep_device_first_parallel_shape(self):
+        rows = {row["name"]: row for row in builtin_nqe_map_rows()}
+
+        for query_name in ("Forward Virtual Chassis", "Forward Inventory Items"):
+            query = rows[query_name]["query"]
+
+            self.assertIn("foreach device in network.devices", query)
+            self.assertNotIn(
+                "foreach row in (",
+                query,
+                msg=f"{query_name} should not wrap the device iterator.",
+            )
+            self.assertNotIn(
+                "select distinct row",
+                query,
+                msg=f"{query_name} should deduplicate the projected record directly.",
+            )
+
     def test_custom_maps_win_over_built_in_maps_for_a_model(self):
         netbox_model = ContentType.objects.get(app_label="dcim", model="device")
         builtin_map = ForwardNQEMap.objects.create(
@@ -309,8 +335,14 @@ class QueryRegistryTest(TestCase):
             (row["model_string"], row["name"]): row for row in builtin_nqe_map_rows()
         }
 
-        self.assertEqual(len(BUILTIN_OPTIONAL_QUERY_MAPS), 2)
-        for query_default in BUILTIN_OPTIONAL_QUERY_MAPS:
+        alias_query_defaults = [
+            query_default
+            for query_default in BUILTIN_OPTIONAL_QUERY_MAPS
+            if query_default["model_string"] in {"dcim.devicetype", "dcim.device"}
+        ]
+
+        self.assertEqual(len(alias_query_defaults), 2)
+        for query_default in alias_query_defaults:
             row = rows[(query_default["model_string"], query_default["name"])]
             self.assertFalse(row["enabled"])
             self.assertIn("netbox_device_type_aliases", row["query"])
@@ -326,6 +358,45 @@ class QueryRegistryTest(TestCase):
             "Forward Devices with NetBox Device Type Aliases",
             {query_default["name"] for query_default in BUILTIN_QUERY_MAPS},
         )
+        self.assertIn(
+            "Forward Device Feature Tags with Rules",
+            {query_default["name"] for query_default in BUILTIN_OPTIONAL_QUERY_MAPS},
+        )
+        self.assertNotIn(
+            "Forward Device Feature Tags with Rules",
+            {query_default["name"] for query_default in BUILTIN_QUERY_MAPS},
+        )
+
+    def test_data_file_queries_keep_device_first_parallel_shape(self):
+        rows = {row["name"]: row for row in builtin_nqe_map_rows()}
+
+        for query_name in (
+            "Forward Device Models with NetBox Device Type Aliases",
+            "Forward Devices with NetBox Device Type Aliases",
+            "Forward Device Feature Tags with Rules",
+        ):
+            query = re.sub(r"/\*.*?\*/", "", rows[query_name]["query"], flags=re.S)
+            clauses = [
+                line.strip()
+                for line in query.splitlines()
+                if line.strip() and not line.strip().startswith("import ")
+            ]
+
+            self.assertEqual(
+                clauses[0],
+                "foreach device in network.devices",
+                msg=f"{query_name} no longer starts with the device iterator.",
+            )
+            self.assertEqual(
+                query.count("network.devices"),
+                1,
+                msg=f"{query_name} should reference network.devices exactly once.",
+            )
+            self.assertNotIn(
+                "foreach extensions in [network.extensions]",
+                query,
+                msg=f"{query_name} should not bind extensions before devices.",
+            )
 
     def test_interface_query_includes_loopbacks_for_ip_bearing_logical_interfaces(self):
         spec = next(
@@ -340,8 +411,6 @@ class QueryRegistryTest(TestCase):
         self.assertIn("ethernet_interfaces + loopback_interfaces", spec.query)
 
     def test_inferred_interface_cable_query_uses_resolved_interface_links(self):
-        if "dcim.cable" not in BUILTIN_QUERY_SPECS:
-            return
         spec = next(
             spec
             for spec in BUILTIN_QUERY_SPECS["dcim.cable"]
@@ -360,8 +429,6 @@ class QueryRegistryTest(TestCase):
         )
 
     def test_device_feature_tag_query_emits_bgp_tag(self):
-        if "extras.taggeditem" not in BUILTIN_QUERY_SPECS:
-            return
         spec = next(
             spec
             for spec in BUILTIN_QUERY_SPECS["extras.taggeditem"]
@@ -375,15 +442,10 @@ class QueryRegistryTest(TestCase):
 
     def test_optional_device_feature_tag_rules_query_uses_data_file(self):
         row = next(
-            (
-                row
-                for row in builtin_nqe_map_rows()
-                if row["name"] == "Forward Device Feature Tags with Rules"
-            ),
-            None,
+            row
+            for row in builtin_nqe_map_rows()
+            if row["name"] == "Forward Device Feature Tags with Rules"
         )
-        if row is None:
-            return
 
         self.assertEqual(row["model_string"], "extras.taggeditem")
         self.assertFalse(row["enabled"])
@@ -445,3 +507,19 @@ class QueryRegistryTest(TestCase):
             ip_spec.coalesce_fields,
             (("address", "vrf"), ("address",)),
         )
+
+    def test_prefix_queries_exclude_host_routes(self):
+        ipv4_spec = next(
+            spec
+            for spec in BUILTIN_QUERY_SPECS["ipam.prefix"]
+            if spec.query_name == "Forward IPv4 Prefixes"
+        )
+        ipv6_spec = next(
+            spec
+            for spec in BUILTIN_QUERY_SPECS["ipam.prefix"]
+            if spec.query_name == "Forward IPv6 Prefixes"
+        )
+
+        self.assertIn("where length(entry.prefix) < 32", ipv4_spec.query)
+        self.assertNotIn("length(entry.prefix) <= 32", ipv4_spec.query)
+        self.assertIn("where length(entry.prefix) < 128", ipv6_spec.query)

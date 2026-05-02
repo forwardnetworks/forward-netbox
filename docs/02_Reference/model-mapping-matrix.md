@@ -13,7 +13,9 @@ This matrix summarizes how the shipped Forward NQE maps populate each NetBox mod
 | `dcim.devicetype` | `Forward Device Models` | `device.platform.model` plus vendor | Best-fit | Forward model is used as both model and part number. |
 | `dcim.device` | `Forward Devices` | `network.devices` | Exact | Device lookup is by NetBox device name. |
 | `dcim.virtualchassis` | `Forward Virtual Chassis` | `device.ha.vpc.domainId` and `device.ha.mlagPeer` | Best-fit | Maps vPC/MLAG-style HA to NetBox virtual chassis with deterministic naming and domain keys. |
+| `extras.taggeditem` | `Forward Device Feature Tags` | Forward structured protocol feature evidence | Best-fit | Adds NetBox tags to devices by exact device name; the default map tags BGP-enabled devices as `Prot_BGP`, and the disabled rules-aware variant can source tag policy from `netbox_feature_tag_rules`. |
 | `dcim.interface` | `Forward Interfaces` | Ethernet interfaces under `device.interfaces` | Best-fit | NetBox interface type is derived from negotiated speed lookup values. |
+| `dcim.cable` | `Forward Inferred Interface Cables` | `interface.links` resolved from Forward topology discovery | Best-fit | Creates cables only when the resolved neighbor device and port exactly match NetBox device/interface names. |
 | `dcim.macaddress` | `Forward MAC Addresses` | `interface.ethernet.macAddress` | Exact | MACs are assigned to interfaces by exact interface name. |
 | `dcim.inventoryitem` | `Forward Inventory Items` | `device.platform.components` | Best-fit | Forward component part type is used as the inventory item role. |
 | `ipam.vlan` | `Forward VLANs` | `device.networkInstances[].vlans` | Best-fit | VLANs are site-scoped using the device location. |
@@ -28,4 +30,5 @@ This matrix summarizes how the shipped Forward NQE maps populate each NetBox mod
 - The plugin intentionally keeps NetBox-ready shaping in NQE where possible. Python adapters apply rows and enforce object lookups; they should not silently normalize meaning after the query runs.
 - Manufacturer-bearing built-in queries intentionally canonicalize vendor names and slugs in NQE through the shared `netbox_utilities` module. If your NetBox already uses different curated manufacturer rows with the default maps, copy the query set and update `manufacturer_name_overrides` there before syncing.
 - Disabled alias-aware variants for `dcim.devicetype` and `dcim.device` can map Forward model strings to NetBox Device Type Library model/slug values through the `netbox_device_type_aliases` Forward data file. That data file can also carry manufacturer override rows for the alias-aware maps. Keep the default maps enabled unless the selected Forward snapshot exposes the data file value.
-- Interface and IP assignment remain intentionally strict: if the built-in queries drift from exact interface names, the sync should record issues rather than guessing.
+- The disabled feature-tag rules variant can map Forward structured features to NetBox tags through the `netbox_feature_tag_rules` Forward data file. Keep the default feature-tag map enabled unless the selected Forward snapshot exposes that data file value.
+- Interface, cable, and IP assignment remain intentionally strict: if the built-in queries drift from exact interface names, the sync should record issues rather than guessing.

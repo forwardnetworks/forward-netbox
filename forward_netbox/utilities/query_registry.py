@@ -158,9 +158,19 @@ BUILTIN_QUERY_MAPS = [
         "filename": "forward_virtual_chassis.nqe",
     },
     {
+        "model_string": "extras.taggeditem",
+        "name": "Forward Device Feature Tags",
+        "filename": "forward_device_feature_tags.nqe",
+    },
+    {
         "model_string": "dcim.interface",
         "name": "Forward Interfaces",
         "filename": "forward_interfaces.nqe",
+    },
+    {
+        "model_string": "dcim.cable",
+        "name": "Forward Inferred Interface Cables",
+        "filename": "forward_inferred_interface_cables.nqe",
     },
     {
         "model_string": "dcim.macaddress",
@@ -210,6 +220,12 @@ BUILTIN_OPTIONAL_QUERY_MAPS = [
         "model_string": "dcim.device",
         "name": "Forward Devices with NetBox Device Type Aliases",
         "filename": "forward_devices_with_netbox_aliases.nqe",
+        "enabled": False,
+    },
+    {
+        "model_string": "extras.taggeditem",
+        "name": "Forward Device Feature Tags with Rules",
+        "filename": "forward_device_feature_tags_with_rules.nqe",
         "enabled": False,
     },
 ]

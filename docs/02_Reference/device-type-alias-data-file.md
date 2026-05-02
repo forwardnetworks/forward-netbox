@@ -14,6 +14,8 @@ For environments that pre-load NetBox device types from the NetBox Device Type L
 
 These alternates use a Forward NQE data file to map collected Forward model strings, such as part numbers, to canonical NetBox library `model` and `slug` values. The same file also carries Forward vendor to NetBox manufacturer override rows for the alias-aware maps, keeping site-specific data separate from query logic.
 
+The alias-aware query text is shaped device-first (`foreach device in network.devices`) so Forward can use its automatic per-device NQE execution path on large networks. Keep that shape if you copy and customize the queries in the Forward Org Repository.
+
 ## Required Forward Data File
 
 Create a Forward data file with:

@@ -40,6 +40,7 @@ from .utilities.branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
 from .utilities.branch_budget import MODEL_CHANGE_DENSITY_PARAMETER
 from .utilities.forward_api import ForwardClient
 from .utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
+from .utilities.forward_api import MAX_NQE_PAGE_SIZE
 from .utilities.logging import SyncLogging
 from .utilities.sync_contracts import normalize_coalesce_fields
 from .utilities.sync_contracts import validate_query_shape_for_model
@@ -135,6 +136,7 @@ class ForwardSource(ForwardPluginModelDocsMixin, JobsMixin, PrimaryModel):
                 "verify",
                 "timeout",
                 "network_id",
+                "nqe_page_size",
             }
         )
         if invalid:
@@ -150,6 +152,16 @@ class ForwardSource(ForwardPluginModelDocsMixin, JobsMixin, PrimaryModel):
             parameters.get("network_id"), str
         ):
             raise ValidationError(_("`network_id` must be a string."))
+        if parameters.get("nqe_page_size") is not None:
+            try:
+                nqe_page_size = int(parameters.get("nqe_page_size"))
+            except (TypeError, ValueError) as exc:
+                raise ValidationError(_("`nqe_page_size` must be an integer.")) from exc
+            if nqe_page_size < 1 or nqe_page_size > MAX_NQE_PAGE_SIZE:
+                raise ValidationError(
+                    _(f"`nqe_page_size` must be between 1 and {MAX_NQE_PAGE_SIZE}.")
+                )
+            parameters["nqe_page_size"] = nqe_page_size
         self.parameters = parameters
 
     def get_client(self):
@@ -162,6 +174,7 @@ class ForwardSource(ForwardPluginModelDocsMixin, JobsMixin, PrimaryModel):
             "verify",
             "timeout",
             "network_id",
+            "nqe_page_size",
         }
         parameters = {
             key: value

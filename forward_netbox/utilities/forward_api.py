@@ -12,6 +12,8 @@ except ImportError:  # pragma: no cover - NetBox always provides this at runtime
 
 LATEST_PROCESSED_SNAPSHOT = "latestProcessed"
 DEFAULT_FORWARD_API_TIMEOUT_SECONDS = 1200
+DEFAULT_NQE_PAGE_SIZE = 1000
+MAX_NQE_PAGE_SIZE = 10000
 
 
 class ForwardClient:
@@ -20,9 +22,19 @@ class ForwardClient:
         params = source.parameters or {}
         self.timeout = params.get("timeout") or DEFAULT_FORWARD_API_TIMEOUT_SECONDS
         self.verify = params.get("verify", True)
+        self.nqe_page_size = self._coerce_nqe_page_size(params.get("nqe_page_size"))
         self.base_url = source.url.rstrip("/")
         self.username = params.get("username")
         self.password = params.get("password")
+
+    def _coerce_nqe_page_size(self, value):
+        if value is None:
+            return DEFAULT_NQE_PAGE_SIZE
+        try:
+            size = int(value)
+        except (TypeError, ValueError):
+            return DEFAULT_NQE_PAGE_SIZE
+        return max(1, min(size, MAX_NQE_PAGE_SIZE))
 
     def _api_url(self, path):
         base_url = self.base_url
@@ -34,7 +46,7 @@ class ForwardClient:
         return {
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "forward-netbox/0.3.1",
+            "User-Agent": "forward-netbox/0.4.0",
         }
 
     def _auth(self):
@@ -206,7 +218,7 @@ class ForwardClient:
         network_id=None,
         snapshot_id=None,
         parameters=None,
-        limit=10000,
+        limit=None,
         offset=0,
         item_format="JSON",
         column_filters=None,
@@ -216,6 +228,8 @@ class ForwardClient:
             raise ForwardClientError(
                 "Exactly one of `query` or `query_id` must be supplied."
             )
+        if limit is None:
+            limit = self.nqe_page_size
         if limit < 1:
             raise ForwardClientError("`limit` must be at least 1.")
 
@@ -286,7 +300,7 @@ class ForwardClient:
         before_snapshot_id,
         after_snapshot_id,
         commit_id=None,
-        limit=10000,
+        limit=None,
         offset=0,
         item_format="JSON",
         column_filters=None,
@@ -298,6 +312,8 @@ class ForwardClient:
             raise ForwardClientError(
                 "Both `before_snapshot_id` and `after_snapshot_id` must be supplied."
             )
+        if limit is None:
+            limit = self.nqe_page_size
         if limit < 1:
             raise ForwardClientError("`limit` must be at least 1.")
 

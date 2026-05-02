@@ -8,9 +8,8 @@
 
 import "netbox_utilities";
 
-foreach extensions in [network.extensions]
-let aliases = extensions.netbox_device_type_aliases
 foreach device in network.devices
+let aliases = network.extensions.netbox_device_type_aliases
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
 let vendor = device.platform.vendor

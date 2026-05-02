@@ -6,6 +6,7 @@ from core.models import Job
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
 from django.core.management.base import BaseCommand
+from django.db import connection
 from django.utils import timezone
 
 from forward_netbox.choices import FORWARD_SUPPORTED_MODELS
@@ -289,6 +290,7 @@ class Command(BaseCommand):
         return ingestion
 
     def _ensure_job(self, *, ingestion, user):
+        self._ensure_core_job_compat_defaults()
         content_type = ContentType.objects.get_for_model(ForwardIngestion)
         now = timezone.now()
         return Job.objects.create(
@@ -318,3 +320,24 @@ class Command(BaseCommand):
                 ],
             },
         )
+
+    def _ensure_core_job_compat_defaults(self):
+        # Local harness databases may have a legacy non-null notifications
+        # column even when the active NetBox Django model has no such field.
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                select 1
+                from information_schema.columns
+                where table_name = %s and column_name = %s
+                """,
+                ["core_job", "notifications"],
+            )
+            if cursor.fetchone() is None:
+                return
+            cursor.execute(
+                "alter table core_job alter column notifications set default '[]'::jsonb"
+            )
+            cursor.execute(
+                "update core_job set notifications = '[]'::jsonb where notifications is null"
+            )

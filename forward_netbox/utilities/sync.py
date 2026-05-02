@@ -14,6 +14,7 @@ from ..exceptions import ForwardQueryError
 from ..exceptions import ForwardSearchError
 from ..exceptions import ForwardSyncDataError
 from .query_registry import get_query_specs
+from .sync_contracts import canonical_cable_endpoint_identity
 from .sync_contracts import default_coalesce_fields_for_model
 from .sync_contracts import validate_row_shape_for_model
 
@@ -70,7 +71,11 @@ class ForwardSyncRunner:
                 return tuple(field_set)
         return None
 
-    def _coalesce_identity(self, row, coalesce_sets):
+    def _coalesce_identity(self, model_string, row, coalesce_sets):
+        if model_string == "dcim.cable":
+            canonical_identity = canonical_cable_endpoint_identity(row)
+            if canonical_identity is not None:
+                return ("canonical_cable_endpoints", canonical_identity)
         field_set = self._first_complete_coalesce_set(row, coalesce_sets)
         if field_set is None:
             return None
@@ -112,8 +117,8 @@ class ForwardSyncRunner:
                     )
                 upsert_rows.append(after)
                 if self._coalesce_identity(
-                    before, coalesce_sets
-                ) != self._coalesce_identity(after, coalesce_sets):
+                    model_string, before, coalesce_sets
+                ) != self._coalesce_identity(model_string, after, coalesce_sets):
                     delete_rows.append(before)
                 continue
 
@@ -599,9 +604,12 @@ class ForwardSyncRunner:
         )
         for row in rows:
             try:
-                handler(row)
+                result = handler(row)
                 self.events_clearer.increment()
-                self.logger.increment_statistics(model_string, outcome="applied")
+                if result is False:
+                    self.logger.increment_statistics(model_string, outcome="skipped")
+                else:
+                    self.logger.increment_statistics(model_string, outcome="applied")
             except ForwardDependencySkipError as exc:
                 logger.exception("Failed applying %s row", model_string)
                 self.logger.increment_statistics(model_string, outcome="skipped")
@@ -1043,6 +1051,19 @@ class ForwardSyncRunner:
             return False
         return self._delete_by_coalesce(VirtualChassis, [{"name": name}])
 
+    def _delete_extras_taggeditem(self, row):
+        from dcim.models import Device
+        from extras.models import Tag
+
+        device = Device.objects.filter(name=row.get("device")).order_by("pk").first()
+        tag = Tag.objects.filter(slug=row.get("tag_slug")).order_by("pk").first()
+        if device is None or tag is None:
+            return False
+        if tag not in device.tags.all():
+            return False
+        device.tags.remove(tag)
+        return True
+
     def _delete_dcim_interface(self, row):
         from dcim.models import Device
         from dcim.models import Interface
@@ -1054,6 +1075,27 @@ class ForwardSyncRunner:
             Interface,
             [{"device": device, "name": row["name"]}],
         )
+
+    def _delete_dcim_cable(self, row):
+        from dcim.models import Device
+
+        device = Device.objects.filter(name=row.get("device")).order_by("pk").first()
+        remote_device = (
+            Device.objects.filter(name=row.get("remote_device")).order_by("pk").first()
+        )
+        if device is None or remote_device is None:
+            return False
+        interface = self._lookup_interface(device, row.get("interface"))
+        remote_interface = self._lookup_interface(
+            remote_device, row.get("remote_interface")
+        )
+        if interface is None or remote_interface is None:
+            return False
+        cable = self._lookup_cable_between(interface, remote_interface)
+        if cable is None:
+            return False
+        cable.delete()
+        return True
 
     def _delete_dcim_macaddress(self, row):
         from dcim.models import MACAddress
@@ -1288,6 +1330,158 @@ class ForwardSyncRunner:
                 [("device", "name")],
             ),
         )
+
+    def _apply_extras_taggeditem(self, row):
+        from dcim.models import Device
+        from extras.models import Tag
+
+        try:
+            device = Device.objects.get(name=row["device"])
+        except ObjectDoesNotExist as exc:
+            key = (row["device"],)
+            if self._dependency_failed("dcim.device", key):
+                raise ForwardDependencySkipError(
+                    f"Skipping feature tag `{row.get('tag')}` because dependency `dcim.device` failed for {key}.",
+                    model_string="extras.taggeditem",
+                    context={"device": row["device"], "tag": row.get("tag")},
+                    data=row,
+                ) from exc
+            raise ForwardSearchError(
+                f"Unable to find device `{row['device']}` for feature tag `{row.get('tag')}`.",
+                model_string="extras.taggeditem",
+                context={"device": row["device"], "tag": row.get("tag")},
+                data=row,
+            ) from exc
+
+        tag, _ = self._upsert_values_from_defaults(
+            "extras.taggeditem",
+            Tag,
+            values={
+                "name": row["tag"],
+                "slug": row["tag_slug"],
+                "color": row["tag_color"],
+            },
+            coalesce_sets=[("slug",)],
+        )
+        device.tags.add(tag)
+
+    def _lookup_cable_between(self, interface, remote_interface):
+        interface.refresh_from_db(fields=["cable"])
+        remote_interface.refresh_from_db(fields=["cable"])
+        if interface.cable_id and interface.cable_id == remote_interface.cable_id:
+            return interface.cable
+        return None
+
+    def _apply_dcim_cable(self, row):
+        from dcim.models import Cable
+        from dcim.models import Device
+
+        try:
+            device = Device.objects.get(name=row["device"])
+        except ObjectDoesNotExist as exc:
+            key = (row["device"],)
+            if self._dependency_failed("dcim.device", key):
+                raise ForwardDependencySkipError(
+                    f"Skipping cable because dependency `dcim.device` failed for {key}.",
+                    model_string="dcim.cable",
+                    context={
+                        "device": row["device"],
+                        "interface": row.get("interface"),
+                    },
+                    data=row,
+                ) from exc
+            self.logger.log_warning(
+                f"Skipping cable row because device `{row['device']}` was not found.",
+                obj=self.sync,
+            )
+            return False
+
+        try:
+            remote_device = Device.objects.get(name=row["remote_device"])
+        except ObjectDoesNotExist as exc:
+            key = (row["remote_device"],)
+            if self._dependency_failed("dcim.device", key):
+                raise ForwardDependencySkipError(
+                    f"Skipping cable because dependency `dcim.device` failed for {key}.",
+                    model_string="dcim.cable",
+                    context={
+                        "device": row["remote_device"],
+                        "interface": row.get("remote_interface"),
+                    },
+                    data=row,
+                ) from exc
+            self.logger.log_warning(
+                f"Skipping cable row because remote device `{row['remote_device']}` was not found.",
+                obj=self.sync,
+            )
+            return False
+
+        interface = self._lookup_interface(device, row["interface"])
+        if interface is None:
+            key = (device.name, row["interface"])
+            if self._dependency_failed("dcim.interface", key):
+                raise ForwardDependencySkipError(
+                    f"Skipping cable because dependency `dcim.interface` failed for {key}.",
+                    model_string="dcim.cable",
+                    context={"device": device.name, "interface": row["interface"]},
+                    data=row,
+                )
+            self.logger.log_warning(
+                f"Skipping cable row because interface `{row['interface']}` was not found on `{device.name}`.",
+                obj=self.sync,
+            )
+            return False
+
+        remote_interface = self._lookup_interface(
+            remote_device, row["remote_interface"]
+        )
+        if remote_interface is None:
+            key = (remote_device.name, row["remote_interface"])
+            if self._dependency_failed("dcim.interface", key):
+                raise ForwardDependencySkipError(
+                    f"Skipping cable because dependency `dcim.interface` failed for {key}.",
+                    model_string="dcim.cable",
+                    context={
+                        "device": remote_device.name,
+                        "interface": row["remote_interface"],
+                    },
+                    data=row,
+                )
+            self.logger.log_warning(
+                f"Skipping cable row because interface `{row['remote_interface']}` was not found on `{remote_device.name}`.",
+                obj=self.sync,
+            )
+            return False
+
+        cable = self._lookup_cable_between(interface, remote_interface)
+        if cable is not None:
+            cable.status = row["status"]
+            cable.full_clean()
+            cable.save()
+            return
+
+        interface.refresh_from_db(fields=["cable"])
+        remote_interface.refresh_from_db(fields=["cable"])
+        if interface.cable_id or remote_interface.cable_id:
+            raise ForwardSearchError(
+                "Unable to create cable because one or both interfaces are already connected to a different cable.",
+                model_string="dcim.cable",
+                context={
+                    "device": device.name,
+                    "interface": interface.name,
+                    "remote_device": remote_device.name,
+                    "remote_interface": remote_interface.name,
+                },
+                data=row,
+            )
+
+        cable = Cable(
+            a_terminations=[interface],
+            b_terminations=[remote_interface],
+            status=row["status"],
+        )
+        cable.full_clean()
+        cable.save()
 
     def _apply_dcim_macaddress(self, row):
         from dcim.models import Device

@@ -1,6 +1,7 @@
 from unittest.mock import Mock
 from unittest.mock import patch
 
+from dcim.models import Cable
 from dcim.models import Device
 from dcim.models import DeviceRole
 from dcim.models import DeviceType
@@ -11,11 +12,13 @@ from dcim.models import VirtualChassis
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 from django.test import TestCase
+from extras.models import Tag
 
 from forward_netbox.choices import FORWARD_SUPPORTED_MODELS
 from forward_netbox.exceptions import ForwardClientError
 from forward_netbox.exceptions import ForwardDependencySkipError
 from forward_netbox.exceptions import ForwardQueryError
+from forward_netbox.exceptions import ForwardSearchError
 from forward_netbox.exceptions import ForwardSyncDataError
 from forward_netbox.exceptions import ForwardSyncError
 from forward_netbox.models import ForwardDriftPolicy
@@ -28,7 +31,7 @@ from forward_netbox.utilities.branch_budget import BranchWorkload
 from forward_netbox.utilities.branch_budget import build_branch_plan
 from forward_netbox.utilities.branch_budget import build_branch_plan_with_density
 from forward_netbox.utilities.branch_budget import effective_row_budget_for_model
-from forward_netbox.utilities.execution import TurboBulkBranchExecutionBackend
+from forward_netbox.utilities.branch_budget import row_shard_key
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from forward_netbox.utilities.multi_branch import BranchBudgetExceeded
 from forward_netbox.utilities.multi_branch import DEFAULT_PREFLIGHT_ROW_LIMIT
@@ -37,7 +40,6 @@ from forward_netbox.utilities.multi_branch import ForwardMultiBranchPlanner
 from forward_netbox.utilities.query_registry import QuerySpec
 from forward_netbox.utilities.sync import ForwardSyncRunner
 from forward_netbox.utilities.sync_contracts import validate_row_shape_for_model
-from forward_netbox.utilities.turbobulk import TurboBulkCapability
 
 
 class ForwardBranchBudgetPlanTest(TestCase):
@@ -95,6 +97,26 @@ class ForwardBranchBudgetPlanTest(TestCase):
             "device:device-1.*exceeds the branch budget",
         ):
             build_branch_plan([workload], max_changes_per_branch=5)
+
+    def test_cable_shard_key_is_direction_insensitive(self):
+        row = {
+            "device": "device-a",
+            "interface": "Ethernet1/1",
+            "remote_device": "device-b",
+            "remote_interface": "Ethernet1/2",
+        }
+        reversed_row = {
+            "device": "device-b",
+            "interface": "Ethernet1/2",
+            "remote_device": "device-a",
+            "remote_interface": "Ethernet1/1",
+        }
+        coalesce_fields = [["device", "interface", "remote_device", "remote_interface"]]
+
+        self.assertEqual(
+            row_shard_key("dcim.cable", row, coalesce_fields),
+            row_shard_key("dcim.cable", reversed_row, coalesce_fields),
+        )
 
     def test_effective_row_budget_scales_by_density(self):
         budget = effective_row_budget_for_model(
@@ -273,64 +295,6 @@ class ForwardMultiBranchExecutorAdaptiveSplitTest(TestCase):
         self.assertGreater(len(split_items), 1)
         self.assertTrue(all(part.estimated_changes <= 1 for part in split_items))
 
-    def test_run_item_in_branch_delegates_to_execution_backend(self):
-        workload = BranchWorkload(
-            model_string="dcim.site",
-            label="sites",
-            upsert_rows=[{"name": "site-1", "slug": "site-1"}],
-            coalesce_fields=[["slug"]],
-        )
-        item = build_branch_plan([workload], max_changes_per_branch=10)[0]
-        backend = Mock()
-        executor = ForwardMultiBranchExecutor(
-            sync=self.sync,
-            client=Mock(),
-            logger_=Mock(),
-            execution_backend=backend,
-        )
-        context = {
-            "snapshot_selector": "latestProcessed",
-            "snapshot_id": self.SNAPSHOT_ID,
-            "snapshot_info": {},
-            "snapshot_metrics": {},
-        }
-        ingestion = Mock()
-        branch = Mock()
-
-        executor._run_item_in_branch(
-            item,
-            context,
-            ingestion,
-            branch,
-            total_plan_items=3,
-        )
-
-        backend.apply_plan_item.assert_called_once_with(
-            item,
-            context,
-            ingestion,
-            branch,
-            total_plan_items=3,
-        )
-
-    def test_turbobulk_backend_fails_before_writes_when_unavailable(self):
-        backend = TurboBulkBranchExecutionBackend(
-            capability=TurboBulkCapability(
-                available=False,
-                reason="TurboBulk plugin endpoint was not found.",
-                status_code=404,
-            )
-        )
-
-        with self.assertRaisesRegex(ForwardSyncError, "TurboBulk plugin endpoint"):
-            backend.apply_plan_item(
-                Mock(),
-                {},
-                Mock(),
-                Mock(),
-                total_plan_items=1,
-            )
-
     def test_run_retries_when_branch_budget_exceeded(self):
         workload = BranchWorkload(
             model_string="dcim.device",
@@ -471,22 +435,29 @@ class ForwardSyncRunnerTest(TestCase):
             },
         )
 
-    def test_lookup_interface_requires_exact_name(self):
-        site = Site.objects.create(name="site-1", slug="site-1")
-        manufacturer = Manufacturer.objects.create(name="vendor-1", slug="vendor-1")
-        role = DeviceRole.objects.create(name="role-1", slug="role-1", color="9e9e9e")
-        device_type = DeviceType.objects.create(
+    def _create_device(self, name):
+        site, _ = Site.objects.get_or_create(name="site-1", slug="site-1")
+        manufacturer, _ = Manufacturer.objects.get_or_create(
+            name="vendor-1", slug="vendor-1"
+        )
+        role, _ = DeviceRole.objects.get_or_create(
+            name="role-1", slug="role-1", defaults={"color": "9e9e9e"}
+        )
+        device_type, _ = DeviceType.objects.get_or_create(
             manufacturer=manufacturer,
             model="model-1",
             slug="model-1",
         )
-        device = Device.objects.create(
-            name="device-1",
+        return Device.objects.create(
+            name=name,
             site=site,
             role=role,
             device_type=device_type,
             status="active",
         )
+
+    def test_lookup_interface_requires_exact_name(self):
+        device = self._create_device("device-1")
         interface = Interface.objects.create(
             device=device,
             name="Ethernet1/1",
@@ -498,6 +469,261 @@ class ForwardSyncRunnerTest(TestCase):
 
         self.assertEqual(runner._lookup_interface(device, "Ethernet1/1"), interface)
         self.assertIsNone(runner._lookup_interface(device, "ethernet1/1"))
+
+    def test_apply_extras_taggeditem_adds_feature_tag_to_device(self):
+        device = self._create_device("device-1")
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        runner._apply_extras_taggeditem(
+            {
+                "device": "device-1",
+                "tag": "Prot_BGP",
+                "tag_slug": "prot-bgp",
+                "tag_color": "2196f3",
+            }
+        )
+
+        tag = Tag.objects.get(slug="prot-bgp")
+        self.assertEqual(tag.name, "Prot_BGP")
+        self.assertIn(tag, device.tags.all())
+
+    def test_apply_extras_taggeditem_reuses_existing_tag(self):
+        device = self._create_device("device-1")
+        tag = Tag.objects.create(name="BGP", slug="prot-bgp", color="9e9e9e")
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        runner._apply_extras_taggeditem(
+            {
+                "device": "device-1",
+                "tag": "Prot_BGP",
+                "tag_slug": "prot-bgp",
+                "tag_color": "2196f3",
+            }
+        )
+
+        tag.refresh_from_db()
+        self.assertEqual(tag.name, "Prot_BGP")
+        self.assertEqual(tag.color, "2196f3")
+        self.assertIn(tag, device.tags.all())
+
+    def test_delete_extras_taggeditem_removes_tag_from_device(self):
+        device = self._create_device("device-1")
+        tag = Tag.objects.create(name="Prot_BGP", slug="prot-bgp", color="2196f3")
+        device.tags.add(tag)
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "device": "device-1",
+            "tag": "Prot_BGP",
+            "tag_slug": "prot-bgp",
+            "tag_color": "2196f3",
+        }
+
+        self.assertTrue(runner._delete_extras_taggeditem(row))
+        self.assertNotIn(tag, device.tags.all())
+        self.assertFalse(runner._delete_extras_taggeditem(row))
+
+    def test_apply_dcim_cable_creates_cable_between_interfaces(self):
+        device = self._create_device("device-a")
+        remote_device = self._create_device("device-b")
+        interface = Interface.objects.create(
+            device=device,
+            name="Ethernet1/1",
+            type="1000base-t",
+        )
+        remote_interface = Interface.objects.create(
+            device=remote_device,
+            name="Ethernet1/2",
+            type="1000base-t",
+        )
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        runner._apply_dcim_cable(
+            {
+                "device": "device-a",
+                "interface": "Ethernet1/1",
+                "remote_device": "device-b",
+                "remote_interface": "Ethernet1/2",
+                "status": "connected",
+            }
+        )
+
+        self.assertEqual(Cable.objects.count(), 1)
+        interface.refresh_from_db()
+        remote_interface.refresh_from_db()
+        self.assertEqual(interface.cable_id, remote_interface.cable_id)
+
+    def test_apply_dcim_cable_reuses_existing_reverse_cable(self):
+        device = self._create_device("device-a")
+        remote_device = self._create_device("device-b")
+        Interface.objects.create(
+            device=device,
+            name="Ethernet1/1",
+            type="1000base-t",
+        )
+        Interface.objects.create(
+            device=remote_device,
+            name="Ethernet1/2",
+            type="1000base-t",
+        )
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "device": "device-a",
+            "interface": "Ethernet1/1",
+            "remote_device": "device-b",
+            "remote_interface": "Ethernet1/2",
+            "status": "connected",
+        }
+
+        runner._apply_dcim_cable(row)
+        runner._apply_dcim_cable(
+            {
+                "device": "device-b",
+                "interface": "Ethernet1/2",
+                "remote_device": "device-a",
+                "remote_interface": "Ethernet1/1",
+                "status": "connected",
+            }
+        )
+
+        self.assertEqual(Cable.objects.count(), 1)
+
+    def test_apply_dcim_cable_rejects_conflicting_existing_cable(self):
+        device = self._create_device("device-a")
+        remote_device = self._create_device("device-b")
+        other_device = self._create_device("device-c")
+        interface = Interface.objects.create(
+            device=device,
+            name="Ethernet1/1",
+            type="1000base-t",
+        )
+        Interface.objects.create(
+            device=remote_device,
+            name="Ethernet1/2",
+            type="1000base-t",
+        )
+        other_interface = Interface.objects.create(
+            device=other_device,
+            name="Ethernet1/3",
+            type="1000base-t",
+        )
+        Cable(
+            a_terminations=[interface],
+            b_terminations=[other_interface],
+            status="connected",
+        ).save()
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        with self.assertRaises(ForwardSearchError):
+            runner._apply_dcim_cable(
+                {
+                    "device": "device-a",
+                    "interface": "Ethernet1/1",
+                    "remote_device": "device-b",
+                    "remote_interface": "Ethernet1/2",
+                    "status": "connected",
+                }
+            )
+
+    def test_apply_dcim_cable_skips_unknown_remote_device(self):
+        device = self._create_device("device-a")
+        Interface.objects.create(
+            device=device,
+            name="Ethernet1/1",
+            type="1000base-t",
+        )
+        logger = Mock()
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=logger
+        )
+
+        result = runner._apply_dcim_cable(
+            {
+                "device": "device-a",
+                "interface": "Ethernet1/1",
+                "remote_device": "synthetic-node",
+                "remote_interface": "Ethernet1/2",
+                "status": "connected",
+            }
+        )
+
+        self.assertFalse(result)
+        self.assertEqual(Cable.objects.count(), 0)
+        logger.log_warning.assert_called_once()
+
+    def test_delete_dcim_cable_deletes_exact_cable(self):
+        device = self._create_device("device-a")
+        remote_device = self._create_device("device-b")
+        Interface.objects.create(
+            device=device,
+            name="Ethernet1/1",
+            type="1000base-t",
+        )
+        Interface.objects.create(
+            device=remote_device,
+            name="Ethernet1/2",
+            type="1000base-t",
+        )
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "device": "device-a",
+            "interface": "Ethernet1/1",
+            "remote_device": "device-b",
+            "remote_interface": "Ethernet1/2",
+            "status": "connected",
+        }
+        runner._apply_dcim_cable(row)
+
+        self.assertTrue(runner._delete_dcim_cable(row))
+        self.assertEqual(Cable.objects.count(), 0)
+        self.assertFalse(runner._delete_dcim_cable(row))
+
+    def test_split_diff_rows_treats_reversed_cable_endpoints_as_same_identity(self):
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        runner._model_coalesce_fields["dcim.cable"] = [
+            ["device", "interface", "remote_device", "remote_interface"]
+        ]
+
+        upsert_rows, delete_rows = runner._split_diff_rows(
+            "dcim.cable",
+            [
+                {
+                    "type": "MODIFIED",
+                    "before": {
+                        "device": "device-a",
+                        "interface": "Ethernet1/1",
+                        "remote_device": "device-b",
+                        "remote_interface": "Ethernet1/2",
+                        "status": "connected",
+                    },
+                    "after": {
+                        "device": "device-b",
+                        "interface": "Ethernet1/2",
+                        "remote_device": "device-a",
+                        "remote_interface": "Ethernet1/1",
+                        "status": "connected",
+                    },
+                }
+            ],
+        )
+
+        self.assertEqual(len(upsert_rows), 1)
+        self.assertEqual(delete_rows, [])
 
     def test_coalesce_lookup_ignores_null_and_empty_values(self):
         runner = ForwardSyncRunner(
@@ -548,6 +774,31 @@ class ForwardSyncRunnerTest(TestCase):
                 "status": "active",
             },
             [["address", "vrf"], ["address"]],
+        )
+
+    def test_validate_row_shape_allows_cable_endpoint_identity(self):
+        validate_row_shape_for_model(
+            "dcim.cable",
+            {
+                "device": "device-a",
+                "interface": "Ethernet1/1",
+                "remote_device": "device-b",
+                "remote_interface": "Ethernet1/2",
+                "status": "connected",
+            },
+            [["device", "interface", "remote_device", "remote_interface"]],
+        )
+
+    def test_validate_row_shape_allows_device_feature_tag_identity(self):
+        validate_row_shape_for_model(
+            "extras.taggeditem",
+            {
+                "device": "device-1",
+                "tag": "Prot_BGP",
+                "tag_slug": "prot-bgp",
+                "tag_color": "2196f3",
+            },
+            [["device", "tag_slug"]],
         )
 
     def test_ensure_device_type_reuses_existing_slug_match(self):
@@ -1116,6 +1367,18 @@ class ForwardSyncRunnerTest(TestCase):
         _, _, kwargs = runner._record_issue.mock_calls[0]
         self.assertEqual(kwargs["context"], {"slug": "site-1"})
         self.assertEqual(kwargs["defaults"], {"name": "site-1"})
+
+    def test_apply_model_rows_marks_handler_false_as_skipped(self):
+        logger = Mock()
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=logger
+        )
+
+        runner._apply_dcim_site = Mock(return_value=False)
+
+        runner._apply_model_rows("dcim.site", [{"name": "site-1", "slug": "site-1"}])
+
+        logger.increment_statistics.assert_called_with("dcim.site", outcome="skipped")
 
     def test_record_issue_reuses_issue_id_and_does_not_duplicate(self):
         ingestion = ForwardIngestion.objects.create(sync=self.sync)
