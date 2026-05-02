@@ -636,6 +636,32 @@ class ForwardSyncRunnerTest(TestCase):
                 }
             )
 
+    def test_apply_dcim_cable_skips_unknown_remote_device(self):
+        device = self._create_device("device-a")
+        Interface.objects.create(
+            device=device,
+            name="Ethernet1/1",
+            type="1000base-t",
+        )
+        logger = Mock()
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=logger
+        )
+
+        result = runner._apply_dcim_cable(
+            {
+                "device": "device-a",
+                "interface": "Ethernet1/1",
+                "remote_device": "synthetic-node",
+                "remote_interface": "Ethernet1/2",
+                "status": "connected",
+            }
+        )
+
+        self.assertFalse(result)
+        self.assertEqual(Cable.objects.count(), 0)
+        logger.log_warning.assert_called_once()
+
     def test_delete_dcim_cable_deletes_exact_cable(self):
         device = self._create_device("device-a")
         remote_device = self._create_device("device-b")
@@ -1341,6 +1367,18 @@ class ForwardSyncRunnerTest(TestCase):
         _, _, kwargs = runner._record_issue.mock_calls[0]
         self.assertEqual(kwargs["context"], {"slug": "site-1"})
         self.assertEqual(kwargs["defaults"], {"name": "site-1"})
+
+    def test_apply_model_rows_marks_handler_false_as_skipped(self):
+        logger = Mock()
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=logger
+        )
+
+        runner._apply_dcim_site = Mock(return_value=False)
+
+        runner._apply_model_rows("dcim.site", [{"name": "site-1", "slug": "site-1"}])
+
+        logger.increment_statistics.assert_called_with("dcim.site", outcome="skipped")
 
     def test_record_issue_reuses_issue_id_and_does_not_duplicate(self):
         ingestion = ForwardIngestion.objects.create(sync=self.sync)
