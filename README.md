@@ -6,7 +6,8 @@
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v0.5.3` | `4.5.9` validated; `4.5.x` only | Current release |
+| `v0.5.4` | `4.5.9` validated; `4.5.x` only | Current release |
+| `v0.5.3` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.5.4` |
 | `v0.5.2.1` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.5.3` |
 | `v0.4.0` | `4.5.9` validated; `4.5.x` only | Current unsupported release |
 | `v0.3.1` | `4.5.8` validated; `4.5.x` only | Superseded by `v0.4.0` |
@@ -17,6 +18,7 @@
 
 | Release | Summary |
 | --- | --- |
+| `v0.5.4` | Persists ingestion change counters so list/detail values stay consistent after branch merge cleanup, matching merge summaries. |
 | `v0.5.3` | Surfaces preflight activity and elapsed phase timing on sync detail, emits early phase logs before ingestion rows, and sets source status to `Syncing` while runs are active. |
 | `v0.5.2.1` | Fixes plugin admin version display and ships inferred cable query parser compatibility update (no `let` declarations) while preserving synthetic endpoint filtering. |
 | `v0.4.0` | Corrects built-in IPv4/IPv6 prefix NQE filters to exclude host routes (`/32` and `/128`) from prefix import and validates the behavior against a live smoke dataset. |
@@ -81,7 +83,7 @@ This repository is provided for use at your own risk. It is an unsupported relea
 Install the wheel or source archive from GitHub Releases:
 
 ```bash
-pip install /path/to/forward_netbox-0.5.3-py3-none-any.whl
+pip install /path/to/forward_netbox-0.5.4-py3-none-any.whl
 ```
 
 2. Enable both plugins in the NetBox configuration:

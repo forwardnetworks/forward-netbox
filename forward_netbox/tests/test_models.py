@@ -26,6 +26,7 @@ from forward_netbox.utilities.branch_budget import DEFAULT_MAX_CHANGES_PER_BRANC
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from forward_netbox.utilities.query_registry import builtin_nqe_map_rows
 from forward_netbox.utilities.query_registry import QuerySpec
+from forward_netbox.views import annotate_statistics
 
 
 class ForwardSyncModelTest(TestCase):
@@ -780,6 +781,24 @@ class ForwardIngestionSnapshotSummaryTest(TestCase):
         ingestion.refresh_from_db()
         self.assertTrue(ingestion.baseline_ready)
         self.assertEqual(self.sync.get_branch_run_state(), {})
+
+    def test_annotate_statistics_uses_persisted_counts_when_branch_missing(self):
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-before",
+            applied_change_count=157,
+            created_change_count=7,
+            updated_change_count=130,
+            deleted_change_count=20,
+        )
+
+        annotated = annotate_statistics(ForwardIngestion.objects).get(pk=ingestion.pk)
+
+        self.assertEqual(annotated.staged_changes, 157)
+        self.assertEqual(annotated.num_created, 7)
+        self.assertEqual(annotated.num_updated, 130)
+        self.assertEqual(annotated.num_deleted, 20)
 
 
 class ForwardNQEMapModelTest(TestCase):
