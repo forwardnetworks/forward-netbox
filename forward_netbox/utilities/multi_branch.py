@@ -1,5 +1,6 @@
 from core.exceptions import SyncError
 from core.models import ObjectType
+from django.utils import timezone
 from netbox.context import current_request
 from netbox_branching.choices import BranchStatusChoices
 from netbox_branching.contextvars import active_branch
@@ -99,6 +100,10 @@ class ForwardMultiBranchExecutor:
 
     def run(self, *, max_changes_per_branch=DEFAULT_MAX_CHANGES_PER_BRANCH):
         self.max_changes_per_branch = max_changes_per_branch
+        self._set_runtime_phase(
+            "initializing",
+            "Starting sync preflight.",
+        )
         run_state = self.sync.get_branch_run_state()
         persisted_density = self.sync.get_model_change_density()
         run_state_density = run_state.get("model_change_density") or {}
@@ -115,12 +120,22 @@ class ForwardMultiBranchExecutor:
                 "Forward sync is waiting for the current shard branch to be merged."
             )
         next_plan_index = int(run_state.get("next_plan_index") or 1)
+        self._set_runtime_phase(
+            "planning",
+            "Resolving snapshot, running query preflight, and building shard plan.",
+            next_plan_index=next_plan_index,
+        )
         context, plan = self.plan(
             max_changes_per_branch=max_changes_per_branch,
             run_preflight=next_plan_index <= 1,
             model_change_density=self.model_change_density,
         )
         if next_plan_index <= 1:
+            self._set_runtime_phase(
+                "validating",
+                "Recording plan validation results.",
+                total_plan_items=len(plan),
+            )
             self.last_validation_run = ForwardValidationRunner(
                 self.sync,
                 self.client,
@@ -155,6 +170,8 @@ class ForwardMultiBranchExecutor:
                 "awaiting_merge": False,
                 "model_change_density": self.model_change_density,
                 "validation_run_id": getattr(self.last_validation_run, "pk", None),
+                "phase": "executing",
+                "phase_message": "Applying planned shard changes.",
             }
         )
 
@@ -163,6 +180,12 @@ class ForwardMultiBranchExecutor:
         while current_index < len(plan):
             item = plan[current_index]
             is_final = current_index == len(plan) - 1
+            self._set_runtime_phase(
+                "executing",
+                f"Applying shard {item.index}/{len(plan)} for {item.model_string}.",
+                next_plan_index=item.index,
+                total_plan_items=len(plan),
+            )
             try:
                 ingestion = self._run_plan_item(
                     item,
@@ -217,6 +240,26 @@ class ForwardMultiBranchExecutor:
 
         self.sync.clear_branch_run_state()
         return ingestions
+
+    def _set_runtime_phase(
+        self,
+        phase,
+        message,
+        *,
+        next_plan_index=None,
+        total_plan_items=None,
+    ):
+        state = self.sync.get_branch_run_state()
+        if next_plan_index is not None:
+            state["next_plan_index"] = int(next_plan_index)
+        if total_plan_items is not None:
+            state["total_plan_items"] = int(total_plan_items)
+        if state.get("phase") != str(phase):
+            state["phase_started"] = timezone.now().isoformat()
+        state["phase"] = str(phase)
+        state["phase_message"] = str(message)
+        self.sync.set_branch_run_state(state)
+        self.logger.log_info(message, obj=self.sync)
 
     def _create_noop_ingestion(self, context):
         from ..models import ForwardIngestion

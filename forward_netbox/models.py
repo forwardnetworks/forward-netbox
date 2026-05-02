@@ -18,6 +18,7 @@ from django.db.models import Q
 from django.db.models import signals
 from django.urls import reverse
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from django.utils.module_loading import import_string
 from django.utils.translation import gettext as _
 from netbox.models import ChangeLoggedModel
@@ -560,17 +561,53 @@ class ForwardSync(ForwardPluginModelDocsMixin, JobsMixin, TagsMixin, ChangeLogge
         )
         parameters["multi_branch"] = self.uses_multi_branch()
         parameters["max_changes_per_branch"] = self.get_max_changes_per_branch()
-        if self.has_pending_branch_run:
-            state = self.get_branch_run_state()
+        state = self.get_branch_run_state()
+        if state:
             parameters["branch_run"] = {
                 "snapshot_id": state.get("snapshot_id") or "",
                 "next_plan_index": state.get("next_plan_index"),
                 "total_plan_items": state.get("total_plan_items"),
                 "awaiting_merge": bool(state.get("awaiting_merge")),
                 "validation_run_id": state.get("validation_run_id"),
+                "phase": state.get("phase") or "",
+                "phase_message": state.get("phase_message") or "",
+                "phase_started": state.get("phase_started") or "",
             }
         parameters["models"] = self.get_model_strings()
         return parameters
+
+    def get_sync_activity(self):
+        state = self.get_branch_run_state()
+        phase_message = state.get("phase_message") or ""
+        phase = state.get("phase") or ""
+        elapsed = self._format_phase_elapsed(state.get("phase_started"))
+        if phase_message:
+            return f"{phase_message} ({elapsed})" if elapsed else phase_message
+        if phase:
+            phase_label = phase.replace("_", " ")
+            return f"{phase_label} ({elapsed})" if elapsed else phase_label
+        if self.status == ForwardSyncStatusChoices.SYNCING:
+            return "Sync is running."
+        if self.is_waiting_for_branch_merge:
+            return "Waiting for branch merge."
+        return ""
+
+    def _format_phase_elapsed(self, phase_started):
+        if not phase_started:
+            return ""
+        started = parse_datetime(str(phase_started))
+        if started is None:
+            return ""
+        if timezone.is_naive(started):
+            started = timezone.make_aware(started, timezone.get_current_timezone())
+        elapsed_seconds = max(0, int((timezone.now() - started).total_seconds()))
+        minutes, seconds = divmod(elapsed_seconds, 60)
+        hours, minutes = divmod(minutes, 60)
+        if hours:
+            return f"{hours}h {minutes}m"
+        if minutes:
+            return f"{minutes}m {seconds}s"
+        return f"{seconds}s"
 
     def is_model_enabled(self, model_string):
         parameters = self.parameters or {}
@@ -645,6 +682,10 @@ class ForwardSync(ForwardPluginModelDocsMixin, JobsMixin, TagsMixin, ChangeLogge
 
         self.status = ForwardSyncStatusChoices.SYNCING
         ForwardSync.objects.filter(pk=self.pk).update(status=self.status)
+        self.source.status = ForwardSourceStatusChoices.SYNCING
+        ForwardSource.objects.filter(pk=self.source.pk).update(
+            status=self.source.status
+        )
         if max_changes_per_branch is None:
             max_changes_per_branch = self.get_max_changes_per_branch()
 

@@ -24,11 +24,13 @@ FORWARD_SUPPORTED_MODELS = (
 
 class ForwardSourceStatusChoices(ChoiceSet):
     NEW = "new"
+    SYNCING = "syncing"
     READY = "ready"
     FAILED = "failed"
 
     CHOICES = (
         (NEW, _("New"), "gray"),
+        (SYNCING, _("Syncing"), "cyan"),
         (READY, _("Ready"), "green"),
         (FAILED, _("Failed"), "red"),
     )

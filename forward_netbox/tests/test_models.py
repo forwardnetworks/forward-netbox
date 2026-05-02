@@ -10,6 +10,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from forward_netbox.choices import ForwardDriftPolicyBaselineChoices
+from forward_netbox.choices import ForwardSourceStatusChoices
 from forward_netbox.choices import ForwardSyncStatusChoices
 from forward_netbox.jobs import sync_forwardsync
 from forward_netbox.models import ForwardDriftPolicy
@@ -110,6 +111,72 @@ class ForwardSyncModelTest(TestCase):
         self.assertFalse(sync.get_display_parameters()["auto_merge"])
         self.assertFalse(sync.auto_merge)
 
+    def test_display_parameters_include_branch_phase_details(self):
+        sync = ForwardSync.objects.create(
+            name="sync-display-phase",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+            },
+        )
+        sync.set_branch_run_state(
+            {
+                "snapshot_id": "snapshot-1",
+                "next_plan_index": 1,
+                "total_plan_items": 3,
+                "awaiting_merge": False,
+                "phase": "planning",
+                "phase_message": "Building shard plan.",
+            }
+        )
+
+        params = sync.get_display_parameters()
+
+        self.assertIn("branch_run", params)
+        self.assertEqual(params["branch_run"]["phase"], "planning")
+        self.assertEqual(params["branch_run"]["phase_message"], "Building shard plan.")
+
+    def test_get_sync_activity_prefers_phase_message(self):
+        sync = ForwardSync.objects.create(
+            name="sync-activity-phase-msg",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+            },
+        )
+        sync.set_branch_run_state(
+            {
+                "phase": "planning",
+                "phase_message": "Resolving snapshot context.",
+            }
+        )
+
+        self.assertEqual(sync.get_sync_activity(), "Resolving snapshot context.")
+
+    def test_get_sync_activity_appends_elapsed_phase_time(self):
+        sync = ForwardSync.objects.create(
+            name="sync-activity-phase-elapsed",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+            },
+        )
+        started = (timezone.now() - timedelta(minutes=2, seconds=5)).isoformat()
+        sync.set_branch_run_state(
+            {
+                "phase": "planning",
+                "phase_message": "Resolving snapshot context.",
+                "phase_started": started,
+            }
+        )
+
+        activity = sync.get_sync_activity()
+        self.assertIn("Resolving snapshot context.", activity)
+        self.assertRegex(activity, r"\(\d+m \d+s\)$")
+
     def test_save_forces_native_branching_execution_flags(self):
         sync = ForwardSync.objects.create(
             name="sync-forced-branching-save",
@@ -180,6 +247,35 @@ class ForwardSyncModelTest(TestCase):
         mock_executor.run.assert_called_once_with(
             max_changes_per_branch=DEFAULT_MAX_CHANGES_PER_BRANCH,
         )
+
+    @patch("forward_netbox.models.ForwardSource.get_client")
+    @patch("forward_netbox.utilities.multi_branch.ForwardMultiBranchExecutor")
+    def test_sync_sets_source_status_to_syncing_during_run(
+        self,
+        mock_executor_class,
+        _mock_get_client,
+    ):
+        sync = ForwardSync.objects.create(
+            name="sync-source-status-syncing",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+            },
+        )
+
+        def run_side_effect(*args, **kwargs):
+            self.source.refresh_from_db()
+            self.assertEqual(
+                self.source.status,
+                ForwardSourceStatusChoices.SYNCING,
+            )
+            return []
+
+        mock_executor = mock_executor_class.return_value
+        mock_executor.run.side_effect = run_side_effect
+
+        sync.sync()
 
     def test_enqueue_rejects_sync_waiting_for_branch_merge(self):
         sync = ForwardSync.objects.create(
