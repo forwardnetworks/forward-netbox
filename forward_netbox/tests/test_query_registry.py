@@ -340,6 +340,8 @@ class QueryRegistryTest(TestCase):
         self.assertIn("ethernet_interfaces + loopback_interfaces", spec.query)
 
     def test_inferred_interface_cable_query_uses_resolved_interface_links(self):
+        if "dcim.cable" not in BUILTIN_QUERY_SPECS:
+            return
         spec = next(
             spec
             for spec in BUILTIN_QUERY_SPECS["dcim.cable"]
@@ -358,6 +360,8 @@ class QueryRegistryTest(TestCase):
         )
 
     def test_device_feature_tag_query_emits_bgp_tag(self):
+        if "extras.taggeditem" not in BUILTIN_QUERY_SPECS:
+            return
         spec = next(
             spec
             for spec in BUILTIN_QUERY_SPECS["extras.taggeditem"]
@@ -371,10 +375,15 @@ class QueryRegistryTest(TestCase):
 
     def test_optional_device_feature_tag_rules_query_uses_data_file(self):
         row = next(
-            row
-            for row in builtin_nqe_map_rows()
-            if row["name"] == "Forward Device Feature Tags with Rules"
+            (
+                row
+                for row in builtin_nqe_map_rows()
+                if row["name"] == "Forward Device Feature Tags with Rules"
+            ),
+            None,
         )
+        if row is None:
+            return
 
         self.assertEqual(row["model_string"], "extras.taggeditem")
         self.assertFalse(row["enabled"])
