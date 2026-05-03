@@ -311,3 +311,19 @@ def build_branch_plan_with_density(
         )
         for index, item in enumerate(plan, start=1)
     ]
+
+
+def build_branch_budget_hints(
+    model_strings,
+    *,
+    max_changes_per_branch,
+    model_change_density=None,
+):
+    return {
+        model_string: effective_row_budget_for_model(
+            model_string,
+            max_changes_per_branch=max_changes_per_branch,
+            model_change_density=model_change_density,
+        )
+        for model_string in model_strings
+    }
