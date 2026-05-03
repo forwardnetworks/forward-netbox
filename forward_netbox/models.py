@@ -38,6 +38,7 @@ from .choices import ForwardValidationStatusChoices
 from .exceptions import ForwardSyncError
 from .utilities.branch_budget import BRANCH_RUN_STATE_PARAMETER
 from .utilities.branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
+from .utilities.branch_budget import effective_row_budget_for_model
 from .utilities.branch_budget import MODEL_CHANGE_DENSITY_PARAMETER
 from .utilities.forward_api import ForwardClient
 from .utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
@@ -561,6 +562,19 @@ class ForwardSync(ForwardPluginModelDocsMixin, JobsMixin, TagsMixin, ChangeLogge
         )
         parameters["multi_branch"] = self.uses_multi_branch()
         parameters["max_changes_per_branch"] = self.get_max_changes_per_branch()
+        model_change_density = self.get_model_change_density()
+        if model_change_density:
+            parameters["model_change_density"] = model_change_density
+        enabled_models = self.get_model_strings()
+        if enabled_models:
+            parameters["branch_budget_hints"] = {
+                model_string: effective_row_budget_for_model(
+                    model_string,
+                    max_changes_per_branch=parameters["max_changes_per_branch"],
+                    model_change_density=model_change_density,
+                )
+                for model_string in enabled_models
+            }
         state = self.get_branch_run_state()
         if state:
             parameters["branch_run"] = {
@@ -573,7 +587,7 @@ class ForwardSync(ForwardPluginModelDocsMixin, JobsMixin, TagsMixin, ChangeLogge
                 "phase_message": state.get("phase_message") or "",
                 "phase_started": state.get("phase_started") or "",
             }
-        parameters["models"] = self.get_model_strings()
+        parameters["models"] = enabled_models
         return parameters
 
     def get_sync_activity(self):
