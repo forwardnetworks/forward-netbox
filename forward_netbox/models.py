@@ -590,6 +590,30 @@ class ForwardSync(ForwardPluginModelDocsMixin, JobsMixin, TagsMixin, ChangeLogge
         parameters["models"] = enabled_models
         return parameters
 
+    def get_execution_summary(self):
+        summary = {
+            "max_changes_per_branch": self.get_max_changes_per_branch(),
+            "model_change_density": self.get_model_change_density(),
+            "branch_budget_hints": self.get_display_parameters().get(
+                "branch_budget_hints", {}
+            ),
+            "enabled_models": self.get_model_strings(),
+        }
+        state = self.get_branch_run_state()
+        if state:
+            summary["branch_run"] = {
+                "phase": state.get("phase") or "",
+                "phase_message": state.get("phase_message") or "",
+                "next_plan_index": state.get("next_plan_index"),
+                "total_plan_items": state.get("total_plan_items"),
+                "awaiting_merge": bool(state.get("awaiting_merge")),
+                "model_change_density": state.get("model_change_density") or {},
+            }
+        last_ingestion = self.last_ingestion
+        if last_ingestion:
+            summary["latest_ingestion"] = last_ingestion.get_execution_summary()
+        return summary
+
     def get_sync_activity(self):
         state = self.get_branch_run_state()
         phase_message = state.get("phase_message") or ""
@@ -971,6 +995,73 @@ class ForwardIngestion(ForwardPluginModelDocsMixin, JobsMixin, models.Model):
 
     def get_model_results_summary(self):
         return list(self.model_results or [])
+
+    def get_execution_summary(self):
+        def _coerce_int(value):
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return 0
+
+        def _coerce_float(value):
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return 0.0
+
+        model_results = self.get_model_results_summary()
+        total_rows = 0
+        total_deletes = 0
+        total_estimated = 0
+        total_runtime_ms = 0.0
+        retry_count = 0
+        slowest_model = {}
+        shard_count = 0
+
+        for result in model_results:
+            row_count = _coerce_int(result.get("row_count"))
+            delete_count = _coerce_int(result.get("delete_count"))
+            estimated_changes = _coerce_int(result.get("estimated_changes"))
+            runtime_ms = _coerce_float(result.get("runtime_ms"))
+            branch_plan_total = _coerce_int(result.get("branch_plan_total"))
+
+            total_rows += row_count
+            total_deletes += delete_count
+            total_runtime_ms += runtime_ms
+            total_estimated += estimated_changes or (row_count + delete_count)
+            shard_count = max(shard_count, branch_plan_total)
+            if runtime_ms and runtime_ms >= _coerce_float(
+                slowest_model.get("runtime_ms")
+            ):
+                slowest_model = {
+                    "model": result.get("model") or "",
+                    "query_name": result.get("query_name") or "",
+                    "runtime_ms": runtime_ms,
+                }
+
+        job_results = self.get_job_logs(self.job)
+        for entry in job_results.get("logs", []):
+            if isinstance(entry, (list, tuple)) and len(entry) >= 5:
+                message = str(entry[4] or "")
+                if message.startswith("Branch budget retry:"):
+                    retry_count += 1
+
+        return {
+            "model_count": len(model_results),
+            "shard_count": shard_count or len(model_results),
+            "retry_count": retry_count,
+            "estimated_changes": total_estimated,
+            "row_count": total_rows,
+            "delete_count": total_deletes,
+            "runtime_ms": round(total_runtime_ms, 1),
+            "slowest_model": slowest_model,
+            "applied_change_count": self.applied_change_count,
+            "failed_change_count": self.failed_change_count,
+            "created_change_count": self.created_change_count,
+            "updated_change_count": self.updated_change_count,
+            "deleted_change_count": self.deleted_change_count,
+            "model_results": model_results,
+        }
 
     @staticmethod
     def get_job_logs(job):
