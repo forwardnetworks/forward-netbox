@@ -12,6 +12,7 @@ from .branch_budget import BranchWorkload
 from .branch_budget import build_branch_plan_with_density
 from .branch_budget import DEFAULT_DENSITY_SAFETY_FACTOR
 from .branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
+from .branch_budget import effective_row_budget_for_model
 from .branch_budget import split_workload
 from .branching import build_branch_request
 from .query_fetch import DEFAULT_PREFLIGHT_ROW_LIMIT  # noqa: F401
@@ -470,10 +471,11 @@ class ForwardMultiBranchExecutor:
         self.sync.set_model_change_density(self.model_change_density)
 
     def _split_overflow_item(self, item):
-        density = self.model_change_density.get(item.model_string) or 1.0
-        row_budget = int(
-            (self.max_changes_per_branch * DEFAULT_DENSITY_SAFETY_FACTOR)
-            / float(density)
+        row_budget = effective_row_budget_for_model(
+            item.model_string,
+            max_changes_per_branch=self.max_changes_per_branch,
+            model_change_density=self.model_change_density,
+            safety_factor=DEFAULT_DENSITY_SAFETY_FACTOR,
         )
         row_budget = max(AUTO_SPLIT_MIN_ROWS_PER_BRANCH, row_budget)
         if row_budget >= item.estimated_changes:
