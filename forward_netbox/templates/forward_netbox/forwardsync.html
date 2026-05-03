@@ -140,6 +140,9 @@
     <div class="card">
       {% include 'extras/inc/configcontext_data.html' with title="Parameters" data=object.get_display_parameters format="json" copyid="forward-sync-parameters" %}
     </div>
+    <div class="card">
+      {% include 'extras/inc/configcontext_data.html' with title="Execution Summary" data=object.get_execution_summary format="json" copyid="forward-sync-execution-summary" %}
+    </div>
     {% include 'inc/panels/custom_fields.html' %}
     {% plugin_right_page object %}
   </div>

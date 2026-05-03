@@ -257,6 +257,81 @@ class ForwardSyncModelTest(TestCase):
             {"dcim.device": 9.9, "dcim.interface": 4.2},
         )
 
+    def test_execution_summary_includes_latest_ingestion_telemetry(self):
+        sync = ForwardSync.objects.create(
+            name="sync-execution-summary",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.cable": True,
+            },
+        )
+        ingestion = ForwardIngestion.objects.create(
+            sync=sync,
+            model_results=[
+                {
+                    "model": "dcim.cable",
+                    "query_name": "Forward Cabling",
+                    "runtime_ms": 12.5,
+                    "row_count": 2,
+                    "delete_count": 1,
+                    "estimated_changes": 5,
+                    "branch_plan_index": 1,
+                    "branch_plan_total": 3,
+                },
+                {
+                    "model": "dcim.device",
+                    "query_name": "Forward Devices",
+                    "runtime_ms": 8.0,
+                    "row_count": 10,
+                    "delete_count": 0,
+                    "branch_plan_index": 2,
+                    "branch_plan_total": 3,
+                },
+            ],
+            applied_change_count=17,
+            failed_change_count=2,
+            created_change_count=10,
+            updated_change_count=5,
+            deleted_change_count=2,
+        )
+
+        with patch.object(
+            ForwardIngestion,
+            "get_job_logs",
+            return_value={
+                "logs": [
+                    (
+                        "2026-05-03T10:00:00Z",
+                        "warning",
+                        None,
+                        None,
+                        "Branch budget retry: shard produced 22 changes against budget 10; auto-splitting and retrying.",
+                    ),
+                    (
+                        "2026-05-03T10:00:01Z",
+                        "info",
+                        None,
+                        None,
+                        "Forward ingestion completed.",
+                    ),
+                ]
+            },
+        ):
+            summary = ingestion.get_execution_summary()
+            sync_summary = sync.get_execution_summary()
+
+        self.assertEqual(summary["model_count"], 2)
+        self.assertEqual(summary["shard_count"], 3)
+        self.assertEqual(summary["retry_count"], 1)
+        self.assertEqual(summary["estimated_changes"], 15)
+        self.assertEqual(summary["runtime_ms"], 20.5)
+        self.assertEqual(summary["slowest_model"]["model"], "dcim.cable")
+        self.assertEqual(summary["applied_change_count"], 17)
+        self.assertEqual(sync_summary["branch_budget_hints"]["dcim.cable"], 1666)
+        self.assertIn("latest_ingestion", sync_summary)
+        self.assertEqual(sync_summary["latest_ingestion"]["retry_count"], 1)
+
     @patch("forward_netbox.models.ForwardSource.get_client")
     @patch("forward_netbox.utilities.multi_branch.ForwardMultiBranchExecutor")
     def test_sync_job_uses_multi_branch_path_by_default(
