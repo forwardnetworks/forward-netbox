@@ -138,6 +138,38 @@ class ForwardSyncModelTest(TestCase):
         self.assertEqual(params["branch_run"]["phase"], "planning")
         self.assertEqual(params["branch_run"]["phase_message"], "Building shard plan.")
 
+    def test_display_parameters_include_branch_budget_hints(self):
+        sync = ForwardSync.objects.create(
+            name="sync-display-budget",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.cable": True,
+            },
+        )
+
+        params = sync.get_display_parameters()
+
+        self.assertIn("branch_budget_hints", params)
+        self.assertEqual(params["branch_budget_hints"]["dcim.cable"], 1666)
+        self.assertNotIn("model_change_density", params)
+
+    def test_display_parameters_include_model_change_density_when_present(self):
+        sync = ForwardSync.objects.create(
+            name="sync-display-density",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.cable": True,
+            },
+        )
+        sync.set_model_change_density({"dcim.cable": 2.0})
+
+        params = sync.get_display_parameters()
+
+        self.assertEqual(params["model_change_density"]["dcim.cable"], 2.0)
+        self.assertEqual(params["branch_budget_hints"]["dcim.cable"], 2500)
+
     def test_get_sync_activity_prefers_phase_message(self):
         sync = ForwardSync.objects.create(
             name="sync-activity-phase-msg",
