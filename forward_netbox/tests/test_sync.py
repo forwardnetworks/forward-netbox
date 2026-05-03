@@ -268,6 +268,77 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
 
         client.run_nqe_query.assert_called_once()
 
+    @patch("forward_netbox.utilities.query_fetch.get_query_specs")
+    def test_build_plan_handles_multiple_specs_with_shared_model(self, mock_specs):
+        client = Mock()
+        client.get_snapshots.return_value = [
+            {
+                "id": "snapshot-after",
+                "state": "PROCESSED",
+                "created_at": "",
+                "processed_at": "2026-03-31T12:15:00Z",
+            }
+        ]
+        client.get_snapshot_metrics.return_value = {}
+        client.run_nqe_query.side_effect = [
+            [{"name": "site-1", "slug": "site-1"}],
+            [{"name": "site-2", "slug": "site-2"}],
+            [{"name": "site-1", "slug": "site-1"}],
+            [{"name": "site-2", "slug": "site-2"}],
+        ]
+        self.sync.resolve_snapshot_id = lambda client=None: "snapshot-after"
+        self.sync.get_model_strings = lambda: ["dcim.site"]
+        self.sync.incremental_diff_baseline = Mock(return_value=None)
+        mock_specs.return_value = [
+            QuerySpec(
+                model_string="dcim.site",
+                query_name="Forward Sites A",
+                query='select {name: "site-1", slug: "site-1"}',
+            ),
+            QuerySpec(
+                model_string="dcim.site",
+                query_name="Forward Sites B",
+                query='select {name: "site-2", slug: "site-2"}',
+            ),
+        ]
+        planner = ForwardMultiBranchPlanner(
+            sync=self.sync,
+            client=client,
+            logger_=Mock(),
+        )
+
+        context, plan = planner.build_plan(
+            max_changes_per_branch=10, run_preflight=True
+        )
+
+        self.assertEqual(context["snapshot_id"], "snapshot-after")
+        self.assertEqual(len(plan), 2)
+        self.assertEqual(
+            [result["query_name"] for result in planner.model_results],
+            [
+                "Forward Sites A",
+                "Forward Sites B",
+            ],
+        )
+        self.assertEqual(client.run_nqe_query.call_count, 4)
+        self.assertEqual(
+            sum(
+                1
+                for call in client.run_nqe_query.call_args_list
+                if call.kwargs["fetch_all"]
+            ),
+            2,
+        )
+        self.assertEqual(
+            sum(
+                1
+                for call in client.run_nqe_query.call_args_list
+                if call.kwargs.get("limit") == DEFAULT_PREFLIGHT_ROW_LIMIT
+                and not call.kwargs["fetch_all"]
+            ),
+            2,
+        )
+
 
 class ForwardMultiBranchExecutorAdaptiveSplitTest(TestCase):
     NETWORK_ID = "test-network"

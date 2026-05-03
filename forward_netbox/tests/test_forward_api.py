@@ -97,7 +97,7 @@ class ForwardClientTest(TestCase):
         self.client._request.assert_called_once()
         self.assertEqual(
             self.client._request.call_args.kwargs["json_body"]["queryOptions"]["limit"],
-            1000,
+            10000,
         )
 
     def test_run_nqe_query_fetch_all_pages_until_total_num_items(self):
@@ -247,7 +247,7 @@ class ForwardClientTest(TestCase):
         self.client._request.assert_called_once()
         self.assertEqual(
             self.client._request.call_args.kwargs["json_body"]["options"]["limit"],
-            1000,
+            10000,
         )
 
     def test_run_nqe_diff_fetch_all_pages_until_total_num_rows(self):

@@ -12,8 +12,8 @@ except ImportError:  # pragma: no cover - NetBox always provides this at runtime
 
 LATEST_PROCESSED_SNAPSHOT = "latestProcessed"
 DEFAULT_FORWARD_API_TIMEOUT_SECONDS = 1200
-DEFAULT_NQE_PAGE_SIZE = 1000
 MAX_NQE_PAGE_SIZE = 10000
+DEFAULT_NQE_PAGE_SIZE = 10000
 
 
 class ForwardClient:
