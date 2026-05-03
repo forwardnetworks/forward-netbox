@@ -126,6 +126,26 @@ class ForwardBranchBudgetPlanTest(TestCase):
 
         self.assertEqual(budget, 1400)
 
+    def test_effective_row_budget_uses_cable_default_density_and_safety(self):
+        budget = effective_row_budget_for_model(
+            "dcim.cable",
+            max_changes_per_branch=10000,
+            model_change_density={},
+        )
+
+        self.assertEqual(budget, 1666)
+
+    def test_effective_row_budget_uses_cable_safety_override_with_observed_density(
+        self,
+    ):
+        budget = effective_row_budget_for_model(
+            "dcim.cable",
+            max_changes_per_branch=10000,
+            model_change_density={"dcim.cable": 2.0},
+        )
+
+        self.assertEqual(budget, 2500)
+
     def test_build_branch_plan_with_density_splits_more_aggressively(self):
         rows = [{"name": f"device-{index}"} for index in range(12)]
         workload = BranchWorkload(
