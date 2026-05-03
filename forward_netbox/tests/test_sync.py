@@ -37,6 +37,7 @@ from forward_netbox.utilities.multi_branch import DEFAULT_PREFLIGHT_ROW_LIMIT
 from forward_netbox.utilities.multi_branch import ForwardMultiBranchExecutor
 from forward_netbox.utilities.multi_branch import ForwardMultiBranchPlanner
 from forward_netbox.utilities.query_registry import QuerySpec
+from forward_netbox.utilities.sync import EventsClearer
 from forward_netbox.utilities.sync import ForwardSyncRunner
 from forward_netbox.utilities.sync_contracts import validate_row_shape_for_model
 
@@ -1548,3 +1549,28 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertEqual(device.virtual_chassis, vc)
         self.assertEqual(device.vc_position, 2)
         self.assertEqual(VirtualChassis.objects.get(pk=vc.pk).domain, "100")
+
+
+class EventsClearerTest(TestCase):
+    @patch(
+        "forward_netbox.utilities.sync.transaction.on_commit",
+        side_effect=lambda callback: callback(),
+    )
+    @patch("forward_netbox.utilities.sync.clear_events.send")
+    @patch("forward_netbox.utilities.sync.flush_events")
+    @patch("forward_netbox.utilities.sync.events_queue")
+    def test_events_clearer_flushes_on_commit(
+        self,
+        mock_events_queue,
+        mock_flush_events,
+        mock_clear_events_send,
+        mock_on_commit,
+    ):
+        mock_events_queue.get.return_value = {
+            "event-1": {"event_type": "create"},
+        }
+        clearer = EventsClearer()
+        clearer.clear()
+        mock_on_commit.assert_called_once()
+        mock_flush_events.assert_called_once_with([{"event_type": "create"}])
+        mock_clear_events_send.assert_called_once_with(sender=None)
