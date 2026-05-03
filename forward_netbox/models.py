@@ -37,9 +37,12 @@ from .choices import ForwardSyncStatusChoices
 from .choices import ForwardValidationStatusChoices
 from .exceptions import ForwardSyncError
 from .utilities.branch_budget import BRANCH_RUN_STATE_PARAMETER
+from .utilities.branch_budget import build_branch_budget_hints
 from .utilities.branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
-from .utilities.branch_budget import effective_row_budget_for_model
 from .utilities.branch_budget import MODEL_CHANGE_DENSITY_PARAMETER
+from .utilities.execution_telemetry import build_branch_run_summary
+from .utilities.execution_telemetry import build_ingestion_execution_summary
+from .utilities.execution_telemetry import build_sync_execution_summary
 from .utilities.forward_api import ForwardClient
 from .utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from .utilities.forward_api import MAX_NQE_PAGE_SIZE
@@ -567,52 +570,32 @@ class ForwardSync(ForwardPluginModelDocsMixin, JobsMixin, TagsMixin, ChangeLogge
             parameters["model_change_density"] = model_change_density
         enabled_models = self.get_model_strings()
         if enabled_models:
-            parameters["branch_budget_hints"] = {
-                model_string: effective_row_budget_for_model(
-                    model_string,
-                    max_changes_per_branch=parameters["max_changes_per_branch"],
-                    model_change_density=model_change_density,
-                )
-                for model_string in enabled_models
-            }
+            parameters["branch_budget_hints"] = build_branch_budget_hints(
+                enabled_models,
+                max_changes_per_branch=parameters["max_changes_per_branch"],
+                model_change_density=model_change_density,
+            )
         state = self.get_branch_run_state()
         if state:
-            parameters["branch_run"] = {
-                "snapshot_id": state.get("snapshot_id") or "",
-                "next_plan_index": state.get("next_plan_index"),
-                "total_plan_items": state.get("total_plan_items"),
-                "awaiting_merge": bool(state.get("awaiting_merge")),
-                "validation_run_id": state.get("validation_run_id"),
-                "phase": state.get("phase") or "",
-                "phase_message": state.get("phase_message") or "",
-                "phase_started": state.get("phase_started") or "",
-            }
+            parameters["branch_run"] = build_branch_run_summary(state)
         parameters["models"] = enabled_models
         return parameters
 
     def get_execution_summary(self):
-        summary = {
-            "max_changes_per_branch": self.get_max_changes_per_branch(),
-            "model_change_density": self.get_model_change_density(),
-            "branch_budget_hints": self.get_display_parameters().get(
-                "branch_budget_hints", {}
-            ),
-            "enabled_models": self.get_model_strings(),
-        }
+        enabled_models = self.get_model_strings()
+        max_changes_per_branch = self.get_max_changes_per_branch()
+        model_change_density = self.get_model_change_density()
         state = self.get_branch_run_state()
-        if state:
-            summary["branch_run"] = {
-                "phase": state.get("phase") or "",
-                "phase_message": state.get("phase_message") or "",
-                "next_plan_index": state.get("next_plan_index"),
-                "total_plan_items": state.get("total_plan_items"),
-                "awaiting_merge": bool(state.get("awaiting_merge")),
-                "model_change_density": state.get("model_change_density") or {},
-            }
         last_ingestion = self.last_ingestion
-        if last_ingestion:
-            summary["latest_ingestion"] = last_ingestion.get_execution_summary()
-        return summary
+        return build_sync_execution_summary(
+            enabled_models=enabled_models,
+            max_changes_per_branch=max_changes_per_branch,
+            model_change_density=model_change_density,
+            branch_run_state=state,
+            latest_ingestion_summary=(
+                last_ingestion.get_execution_summary() if last_ingestion else None
+            ),
+        )
 
     def get_sync_activity(self):
         state = self.get_branch_run_state()
@@ -997,71 +980,15 @@ class ForwardIngestion(ForwardPluginModelDocsMixin, JobsMixin, models.Model):
         return list(self.model_results or [])
 
     def get_execution_summary(self):
-        def _coerce_int(value):
-            try:
-                return int(value)
-            except (TypeError, ValueError):
-                return 0
-
-        def _coerce_float(value):
-            try:
-                return float(value)
-            except (TypeError, ValueError):
-                return 0.0
-
-        model_results = self.get_model_results_summary()
-        total_rows = 0
-        total_deletes = 0
-        total_estimated = 0
-        total_runtime_ms = 0.0
-        retry_count = 0
-        slowest_model = {}
-        shard_count = 0
-
-        for result in model_results:
-            row_count = _coerce_int(result.get("row_count"))
-            delete_count = _coerce_int(result.get("delete_count"))
-            estimated_changes = _coerce_int(result.get("estimated_changes"))
-            runtime_ms = _coerce_float(result.get("runtime_ms"))
-            branch_plan_total = _coerce_int(result.get("branch_plan_total"))
-
-            total_rows += row_count
-            total_deletes += delete_count
-            total_runtime_ms += runtime_ms
-            total_estimated += estimated_changes or (row_count + delete_count)
-            shard_count = max(shard_count, branch_plan_total)
-            if runtime_ms and runtime_ms >= _coerce_float(
-                slowest_model.get("runtime_ms")
-            ):
-                slowest_model = {
-                    "model": result.get("model") or "",
-                    "query_name": result.get("query_name") or "",
-                    "runtime_ms": runtime_ms,
-                }
-
-        job_results = self.get_job_logs(self.job)
-        for entry in job_results.get("logs", []):
-            if isinstance(entry, (list, tuple)) and len(entry) >= 5:
-                message = str(entry[4] or "")
-                if message.startswith("Branch budget retry:"):
-                    retry_count += 1
-
-        return {
-            "model_count": len(model_results),
-            "shard_count": shard_count or len(model_results),
-            "retry_count": retry_count,
-            "estimated_changes": total_estimated,
-            "row_count": total_rows,
-            "delete_count": total_deletes,
-            "runtime_ms": round(total_runtime_ms, 1),
-            "slowest_model": slowest_model,
-            "applied_change_count": self.applied_change_count,
-            "failed_change_count": self.failed_change_count,
-            "created_change_count": self.created_change_count,
-            "updated_change_count": self.updated_change_count,
-            "deleted_change_count": self.deleted_change_count,
-            "model_results": model_results,
-        }
+        return build_ingestion_execution_summary(
+            model_results=self.get_model_results_summary(),
+            job_logs=self.get_job_logs(self.job).get("logs", []),
+            applied_change_count=self.applied_change_count,
+            failed_change_count=self.failed_change_count,
+            created_change_count=self.created_change_count,
+            updated_change_count=self.updated_change_count,
+            deleted_change_count=self.deleted_change_count,
+        )
 
     @staticmethod
     def get_job_logs(job):

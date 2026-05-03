@@ -16,13 +16,16 @@ Expose a concise run-level summary on sync and ingestion detail that shows shard
 - `forward_netbox/templates/forward_netbox/forwardsync.html`
 - `forward_netbox/templates/forward_netbox/forwardingestion.html`
 - `forward_netbox/tests/test_models.py`
+- `forward_netbox/utilities/execution_telemetry.py`
 
 ## Approach
 
 1. Add a reusable execution-summary helper on `ForwardIngestion`.
 2. Add a sync-level wrapper that reuses the latest ingestion summary.
 3. Render the summary on sync and ingestion detail pages.
-4. Add tests for retry counting, runtime aggregation, and sync-level reuse.
+4. Add a shared telemetry utility so summary assembly is centralized instead of split across model methods.
+5. Add a pre-run estimate payload to the branch run state so the sync page can show the planned shard count and retry risk before the first branch is created.
+6. Add tests for retry counting, runtime aggregation, sync-level reuse, shared helper shapes, and preview payload shape.
 
 ## Decision Log
 
