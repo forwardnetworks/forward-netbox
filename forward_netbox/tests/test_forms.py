@@ -22,7 +22,7 @@ class ForwardSourceFormTest(TestCase):
             "password": "secret",
             "network_id": "test-network",
             "timeout": 1200,
-            "nqe_page_size": 1000,
+            "nqe_page_size": 10000,
             "verify": True,
         }
 
@@ -110,14 +110,14 @@ class ForwardSyncFormTest(TestCase):
                 "password": "secret",
                 "network_id": "test-network",
                 "timeout": 1200,
-                "nqe_page_size": 1000,
+                "nqe_page_size": 10000,
                 "verify": True,
             }
         )
 
         self.assertTrue(form.is_valid(), form.errors)
         source = form.save()
-        self.assertEqual(source.parameters["nqe_page_size"], 1000)
+        self.assertEqual(source.parameters["nqe_page_size"], 10000)
 
 
 class ForwardNQEMapFormTest(TestCase):
