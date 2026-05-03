@@ -15,6 +15,7 @@ from .branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
 from .branch_budget import effective_row_budget_for_model
 from .branch_budget import split_workload
 from .branching import build_branch_request
+from .execution_telemetry import build_plan_preview
 from .query_fetch import DEFAULT_PREFLIGHT_ROW_LIMIT  # noqa: F401
 from .query_fetch import ForwardQueryFetcher
 from .query_fetch import plan_item_model_result
@@ -131,6 +132,10 @@ class ForwardMultiBranchExecutor:
             run_preflight=next_plan_index <= 1,
             model_change_density=self.model_change_density,
         )
+        plan_preview = build_plan_preview(
+            plan,
+            max_changes_per_branch=self.max_changes_per_branch,
+        )
         if next_plan_index <= 1:
             self._set_runtime_phase(
                 "validating",
@@ -171,6 +176,7 @@ class ForwardMultiBranchExecutor:
                 "awaiting_merge": False,
                 "model_change_density": self.model_change_density,
                 "validation_run_id": getattr(self.last_validation_run, "pk", None),
+                "plan_preview": plan_preview,
                 "phase": "executing",
                 "phase_message": "Applying planned shard changes.",
             }
@@ -194,6 +200,7 @@ class ForwardMultiBranchExecutor:
                     mark_baseline_ready=is_final,
                     merge=self.sync.auto_merge,
                     total_plan_items=len(plan),
+                    plan_preview=plan_preview,
                 )
             except BranchBudgetExceeded as exc:
                 self._record_model_density(
@@ -229,6 +236,10 @@ class ForwardMultiBranchExecutor:
                             self.last_validation_run,
                             "pk",
                             None,
+                        ),
+                        "plan_preview": build_plan_preview(
+                            plan,
+                            max_changes_per_branch=self.max_changes_per_branch,
                         ),
                     }
                 )
@@ -283,7 +294,14 @@ class ForwardMultiBranchExecutor:
         return ingestion
 
     def _run_plan_item(
-        self, item, context, *, mark_baseline_ready, merge, total_plan_items
+        self,
+        item,
+        context,
+        *,
+        mark_baseline_ready,
+        merge,
+        total_plan_items,
+        plan_preview,
     ):
         from ..models import ForwardIngestion
 
@@ -363,6 +381,7 @@ class ForwardMultiBranchExecutor:
                     "pending_is_final": mark_baseline_ready,
                     "model_change_density": self.model_change_density,
                     "validation_run_id": getattr(self.last_validation_run, "pk", None),
+                    "plan_preview": plan_preview,
                 }
             )
             self.sync.status = ForwardSyncStatusChoices.READY_TO_MERGE
@@ -390,6 +409,7 @@ class ForwardMultiBranchExecutor:
                     "awaiting_merge": False,
                     "model_change_density": self.model_change_density,
                     "validation_run_id": getattr(self.last_validation_run, "pk", None),
+                    "plan_preview": plan_preview,
                 }
             )
         return ingestion

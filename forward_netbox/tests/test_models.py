@@ -22,7 +22,14 @@ from forward_netbox.models import ForwardSync
 from forward_netbox.models import ForwardValidationRun
 from forward_netbox.signals import seed_builtin_nqe_maps
 from forward_netbox.tables import ForwardSyncTable
+from forward_netbox.utilities.branch_budget import build_branch_budget_hints
 from forward_netbox.utilities.branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
+from forward_netbox.utilities.execution_telemetry import build_branch_run_summary
+from forward_netbox.utilities.execution_telemetry import (
+    build_ingestion_execution_summary,
+)
+from forward_netbox.utilities.execution_telemetry import build_plan_preview
+from forward_netbox.utilities.execution_telemetry import build_sync_execution_summary
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from forward_netbox.utilities.query_registry import builtin_nqe_map_rows
 from forward_netbox.utilities.query_registry import QuerySpec
@@ -137,6 +144,7 @@ class ForwardSyncModelTest(TestCase):
         self.assertIn("branch_run", params)
         self.assertEqual(params["branch_run"]["phase"], "planning")
         self.assertEqual(params["branch_run"]["phase_message"], "Building shard plan.")
+        self.assertEqual(params["branch_run"]["plan_preview"], {})
 
     def test_display_parameters_include_branch_budget_hints(self):
         sync = ForwardSync.objects.create(
@@ -257,6 +265,57 @@ class ForwardSyncModelTest(TestCase):
             {"dcim.device": 9.9, "dcim.interface": 4.2},
         )
 
+    def test_shared_telemetry_helpers_build_consistent_shapes(self):
+        plan_preview = build_plan_preview([], max_changes_per_branch=10000)
+        self.assertEqual(plan_preview["planned_shards"], 0)
+        self.assertEqual(plan_preview["models"], {})
+
+        branch_run = build_branch_run_summary(
+            {
+                "snapshot_id": "snapshot-2",
+                "next_plan_index": 4,
+                "total_plan_items": 9,
+                "awaiting_merge": True,
+                "phase": "executing",
+                "phase_message": "Applying planned shard changes.",
+            }
+        )
+        self.assertEqual(branch_run["snapshot_id"], "snapshot-2")
+        self.assertTrue(branch_run["awaiting_merge"])
+        self.assertEqual(branch_run["phase"], "executing")
+
+        hints = build_branch_budget_hints(
+            ["dcim.cable", "dcim.device"],
+            max_changes_per_branch=10000,
+            model_change_density={"dcim.cable": 2.0},
+        )
+        self.assertEqual(hints["dcim.cable"], 2500)
+        self.assertEqual(hints["dcim.device"], 10000)
+
+        ingestion_summary = build_ingestion_execution_summary(
+            model_results=[],
+            job_logs=[],
+            applied_change_count=0,
+            failed_change_count=0,
+            created_change_count=0,
+            updated_change_count=0,
+            deleted_change_count=0,
+        )
+        self.assertEqual(ingestion_summary["model_count"], 0)
+        self.assertEqual(ingestion_summary["retry_count"], 0)
+        self.assertEqual(ingestion_summary["model_results"], [])
+
+        sync_summary = build_sync_execution_summary(
+            enabled_models=["dcim.cable"],
+            max_changes_per_branch=10000,
+            model_change_density={"dcim.cable": 2.0},
+            branch_run_state={"plan_preview": plan_preview},
+            latest_ingestion_summary=ingestion_summary,
+        )
+        self.assertEqual(sync_summary["branch_budget_hints"]["dcim.cable"], 2500)
+        self.assertEqual(sync_summary["pre_run_estimate"]["planned_shards"], 0)
+        self.assertEqual(sync_summary["latest_ingestion"]["retry_count"], 0)
+
     def test_execution_summary_includes_latest_ingestion_telemetry(self):
         sync = ForwardSync.objects.create(
             name="sync-execution-summary",
@@ -295,6 +354,24 @@ class ForwardSyncModelTest(TestCase):
             updated_change_count=5,
             deleted_change_count=2,
         )
+        sync.set_branch_run_state(
+            {
+                "phase": "planning",
+                "phase_message": "Planning shard layout.",
+                "plan_preview": {
+                    "planned_shards": 3,
+                    "estimated_changes": 15,
+                    "model_count": 2,
+                    "retry_risk": "medium",
+                    "slowest_model": {
+                        "model": "dcim.cable",
+                        "query_name": "Forward Cabling",
+                        "estimated_changes": 5,
+                        "query_runtime_ms": 12.5,
+                    },
+                },
+            }
+        )
 
         with patch.object(
             ForwardIngestion,
@@ -329,6 +406,7 @@ class ForwardSyncModelTest(TestCase):
         self.assertEqual(summary["slowest_model"]["model"], "dcim.cable")
         self.assertEqual(summary["applied_change_count"], 17)
         self.assertEqual(sync_summary["branch_budget_hints"]["dcim.cable"], 1666)
+        self.assertEqual(sync_summary["pre_run_estimate"]["retry_risk"], "medium")
         self.assertIn("latest_ingestion", sync_summary)
         self.assertEqual(sync_summary["latest_ingestion"]["retry_count"], 1)
 
