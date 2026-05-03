@@ -48,7 +48,7 @@ class ForwardSyncModelTest(TestCase):
                 "verify": True,
                 "timeout": 1200,
                 "network_id": "test-network",
-                "nqe_page_size": 1000,
+                "nqe_page_size": 10000,
             },
         )
 

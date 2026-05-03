@@ -12,26 +12,27 @@ Install the plugin package, enable the required plugins, run the migrations, and
 Install the wheel from GitHub Releases into the same Python environment as NetBox:
 
 ```bash
-pip install /path/to/forward_netbox-0.5.8-py3-none-any.whl
+pip install /path/to/forward_netbox-0.5.9-py3-none-any.whl
 ```
 
 Alternatively, install directly from the GitHub source archive:
 
 ```bash
-pip install /path/to/forward_netbox-0.5.8.tar.gz
+pip install /path/to/forward_netbox-0.5.9.tar.gz
 ```
 
 If you mirror the package into a private Python index, pin the same release version:
 
 ```bash
-pip install --pre forward-netbox==0.5.8
+pip install --pre forward-netbox==0.5.9
 ```
 
 ## Release Compatibility
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v0.5.8` | `4.5.9` validated; `4.5.x` only | Current release |
+| `v0.5.9` | `4.5.9` validated; `4.5.x` only | Current release |
+| `v0.5.8` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.5.9` |
 | `v0.5.7` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.5.8` |
 | `v0.5.1` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.5.3` |
 | `v0.4.0` | `4.5.9` validated; `4.5.x` only | Current unsupported release |
@@ -43,6 +44,7 @@ pip install --pre forward-netbox==0.5.8
 
 | Release | Summary |
 | --- | --- |
+| `v0.5.9` | Balances query preflight and workload fetch with bounded parallelism, reducing long planning pauses on large datasets. |
 | `v0.5.8` | Defers event flushing until commit so large prefix ingestions do not trip transaction state changes mid-run. |
 | `v0.5.5` | Applies a consistent model conflict policy for cable sync rows: skip occupied-interface conflicts, aggregate warning spam, and keep non-conflict updates/creates unchanged. |
 | `v0.5.4` | Persists ingestion change counters so list/detail values stay consistent after branch merge cleanup, matching merge summaries. |
