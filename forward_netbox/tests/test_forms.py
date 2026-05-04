@@ -82,6 +82,11 @@ class ForwardSyncFormTest(TestCase):
             },
         )
 
+    def test_optional_module_model_defaults_unchecked(self):
+        form = ForwardSyncForm()
+
+        self.assertFalse(form.fields["dcim.module"].initial)
+
     def test_form_preserves_auto_merge_and_forces_native_branching(self):
         form = ForwardSyncForm(
             data={

@@ -12,6 +12,7 @@ MODEL_CHANGE_DENSITY_PARAMETER = "_model_change_density"
 DEFAULT_DENSITY_SAFETY_FACTOR = 0.7
 DEFAULT_MODEL_CHANGE_DENSITY = {
     "dcim.cable": 3.0,
+    "dcim.module": 2.0,
 }
 MODEL_DENSITY_SAFETY_FACTORS = {
     "dcim.cable": 0.5,
@@ -22,6 +23,7 @@ DEVICE_SHARD_MODELS = {
     "dcim.interface",
     "dcim.macaddress",
     "dcim.inventoryitem",
+    "dcim.module",
     "extras.taggeditem",
     "ipam.ipaddress",
 }

@@ -228,6 +228,12 @@ BUILTIN_OPTIONAL_QUERY_MAPS = [
         "filename": "forward_device_feature_tags_with_rules.nqe",
         "enabled": False,
     },
+    {
+        "model_string": "dcim.module",
+        "name": "Forward Modules",
+        "filename": "forward_modules.nqe",
+        "enabled": False,
+    },
 ]
 
 BUILTIN_SEEDED_QUERY_MAPS = [
@@ -331,6 +337,15 @@ def get_query_specs(
     if maps:
         return []
     return BUILTIN_QUERY_SPECS[model_string]
+
+
+def get_seeded_builtin_query_spec(model_string: str, query_name: str) -> QuerySpec:
+    query_default = BUILTIN_QUERY_DEFAULTS.get((model_string, query_name))
+    if query_default is None:
+        raise KeyError(
+            f"No seeded built-in query named `{query_name}` for {model_string}."
+        )
+    return _build_builtin_query_spec(query_default)
 
 
 BUILTIN_QUERY_SPECS = {model_string: [] for model_string in FORWARD_SUPPORTED_MODELS}

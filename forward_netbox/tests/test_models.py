@@ -178,6 +178,18 @@ class ForwardSyncModelTest(TestCase):
         self.assertEqual(params["model_change_density"]["dcim.cable"], 2.0)
         self.assertEqual(params["branch_budget_hints"]["dcim.cable"], 2500)
 
+    def test_optional_module_model_is_disabled_by_default(self):
+        sync = ForwardSync.objects.create(
+            name="sync-optional-module-default",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+            },
+        )
+
+        self.assertFalse(sync.is_model_enabled("dcim.module"))
+        self.assertNotIn("dcim.module", sync.enabled_models())
+
     def test_get_sync_activity_prefers_phase_message(self):
         sync = ForwardSync.objects.create(
             name="sync-activity-phase-msg",
@@ -1025,6 +1037,29 @@ class ForwardNQEMapModelTest(TestCase):
         query_map.clean()
 
         self.assertEqual(query_map.coalesce_fields, [["address", "vrf"], ["address"]])
+
+    def test_inventory_item_defaults_allow_missing_part_or_serial(self):
+        netbox_model = ContentType.objects.get(app_label="dcim", model="inventoryitem")
+        query_map = ForwardNQEMap(
+            name="Inventory Map",
+            netbox_model=netbox_model,
+            query=(
+                'select {\n  device: "device-1",\n  name: "fan-1",\n'
+                '  part_id: "",\n  serial: "",\n  status: "active",\n'
+                "  discovered: true\n}"
+            ),
+        )
+
+        query_map.clean()
+
+        self.assertEqual(
+            query_map.coalesce_fields,
+            [
+                ["device", "name", "part_id", "serial"],
+                ["device", "name", "part_id"],
+                ["device", "name"],
+            ],
+        )
 
     def test_map_rejects_invalid_coalesce_field(self):
         netbox_model = ContentType.objects.get(app_label="dcim", model="site")

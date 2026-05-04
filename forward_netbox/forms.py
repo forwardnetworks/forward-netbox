@@ -13,6 +13,7 @@ from utilities.forms.widgets import DateTimePicker
 from utilities.forms.widgets import HTMXSelect
 from utilities.forms.widgets import NumberWithOptions
 
+from .choices import FORWARD_OPTIONAL_MODELS
 from .choices import FORWARD_SUPPORTED_MODELS
 from .choices import ForwardSourceDeploymentChoices
 from .choices import ForwardSourceStatusChoices
@@ -408,7 +409,10 @@ class ForwardSyncForm(NetBoxModelForm):
         for model_string in FORWARD_SUPPORTED_MODELS:
             self.fields[model_string] = forms.BooleanField(
                 required=False,
-                initial=parameters.get(model_string, True),
+                initial=parameters.get(
+                    model_string,
+                    model_string not in FORWARD_OPTIONAL_MODELS,
+                ),
                 label=model_string,
             )
 

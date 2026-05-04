@@ -6,9 +6,13 @@ from dcim.models import Device
 from dcim.models import DeviceRole
 from dcim.models import DeviceType
 from dcim.models import Interface
+from dcim.models import InventoryItem
 from dcim.models import Manufacturer
+from dcim.models import Module
 from dcim.models import Site
 from dcim.models import VirtualChassis
+from dcim.models.device_components import ModuleBay
+from dcim.models.modules import ModuleType
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 from django.test import TestCase
@@ -135,6 +139,15 @@ class ForwardBranchBudgetPlanTest(TestCase):
         )
 
         self.assertEqual(budget, 1666)
+
+    def test_effective_row_budget_uses_module_default_density(self):
+        budget = effective_row_budget_for_model(
+            "dcim.module",
+            max_changes_per_branch=10000,
+            model_change_density={},
+        )
+
+        self.assertEqual(budget, 3500)
 
     def test_effective_row_budget_uses_cable_safety_override_with_observed_density(
         self,
@@ -547,6 +560,14 @@ class ForwardSyncRunnerTest(TestCase):
             status="active",
         )
 
+    def _create_module_bay(self, device, name="Slot 1", position="1"):
+        return ModuleBay.objects.create(
+            device=device,
+            name=name,
+            label=name,
+            position=position,
+        )
+
     def test_lookup_interface_requires_exact_name(self):
         device = self._create_device("device-1")
         interface = Interface.objects.create(
@@ -618,6 +639,86 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertTrue(runner._delete_extras_taggeditem(row))
         self.assertNotIn(tag, device.tags.all())
         self.assertFalse(runner._delete_extras_taggeditem(row))
+
+    def test_apply_dcim_inventoryitem_sets_native_optional_fields(self):
+        device = self._create_device("device-1")
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        runner._apply_dcim_inventoryitem(
+            {
+                "device": "device-1",
+                "manufacturer": "vendor-1",
+                "manufacturer_slug": "vendor-1",
+                "name": "Power Supply 1",
+                "label": "PSU 1",
+                "part_id": "",
+                "serial": "",
+                "asset_tag": "ASSET-1",
+                "role": "POWER SUPPLY",
+                "role_slug": "power-supply",
+                "role_color": "ff9800",
+                "part_type": "POWER SUPPLY",
+                "module_component": False,
+                "status": "active",
+                "discovered": True,
+                "description": "Version: V01",
+            }
+        )
+
+        item = InventoryItem.objects.get(device=device, name="Power Supply 1")
+        self.assertEqual(item.label, "PSU 1")
+        self.assertEqual(item.part_id, "")
+        self.assertEqual(item.serial, "")
+        self.assertEqual(item.asset_tag, "ASSET-1")
+        self.assertEqual(item.role.slug, "power-supply")
+        self.assertEqual(item.role.color, "ff9800")
+        self.assertEqual(item.description, "Version: V01")
+
+    def test_apply_dcim_inventoryitem_cleans_module_backed_rows_when_modules_enabled(
+        self,
+    ):
+        device = self._create_device("device-1")
+        InventoryItem.objects.create(
+            device=device,
+            name="Slot 1",
+            part_id="LC-1",
+            serial="SN-1",
+            status="active",
+            discovered=True,
+        )
+        self.sync.parameters = {**self.sync.parameters, "dcim.module": True}
+        self.sync.save(update_fields=["parameters"])
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        result = runner._apply_dcim_inventoryitem(
+            {
+                "device": "device-1",
+                "manufacturer": "vendor-1",
+                "manufacturer_slug": "vendor-1",
+                "name": "Slot 1",
+                "label": "Slot 1",
+                "part_id": "LC-1",
+                "serial": "SN-1",
+                "asset_tag": None,
+                "role": "LINE CARD",
+                "role_slug": "line-card",
+                "role_color": "3f51b5",
+                "part_type": "LINE CARD",
+                "module_component": True,
+                "status": "active",
+                "discovered": True,
+                "description": "Line card",
+            }
+        )
+
+        self.assertIsNone(result)
+        self.assertFalse(
+            InventoryItem.objects.filter(device=device, name="Slot 1").exists()
+        )
 
     def test_apply_dcim_cable_creates_cable_between_interfaces(self):
         device = self._create_device("device-a")
@@ -834,6 +935,151 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertTrue(runner._delete_dcim_cable(row))
         self.assertEqual(Cable.objects.count(), 0)
         self.assertFalse(runner._delete_dcim_cable(row))
+
+    def test_apply_dcim_module_creates_module_when_module_bay_exists(self):
+        device = self._create_device("device-a")
+        module_bay = self._create_module_bay(device)
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "device": device.name,
+            "module_bay": "Slot 1",
+            "manufacturer": "vendor-1",
+            "manufacturer_slug": "vendor-1",
+            "model": "Line Card 1",
+            "part_number": "LC-1",
+            "status": "active",
+            "serial": "SN-1",
+            "asset_tag": "AT-1",
+            "description": "line card",
+        }
+
+        runner._apply_dcim_module(row)
+
+        module = Module.objects.get(device=device, module_bay=module_bay)
+        self.assertEqual(module_bay.label, "Slot 1")
+        self.assertEqual(module.module_type.manufacturer.slug, "vendor-1")
+        self.assertEqual(module.module_type.model, "Line Card 1")
+        self.assertEqual(module.module_type.part_number, "LC-1")
+        self.assertEqual(module.status, "active")
+        self.assertEqual(module.serial, "SN-1")
+        self.assertEqual(module.asset_tag, "AT-1")
+
+    def test_apply_dcim_module_creates_missing_module_bay_natively(self):
+        device = self._create_device("device-a")
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "device": device.name,
+            "module_bay": "Slot 2",
+            "manufacturer": "vendor-1",
+            "manufacturer_slug": "vendor-1",
+            "model": "Line Card 1",
+            "part_number": "LC-1",
+            "status": "active",
+        }
+
+        runner._apply_dcim_module(row)
+
+        module_bay = ModuleBay.objects.get(device=device, name="Slot 2")
+        module = Module.objects.get(device=device, module_bay=module_bay)
+        self.assertEqual(module_bay.label, "Slot 2")
+        self.assertEqual(module_bay.position, "2")
+        self.assertEqual(module.module_type.model, "Line Card 1")
+
+    def test_apply_dcim_module_reuses_existing_module_bay_and_module_type(self):
+        device = self._create_device("device-a")
+        manufacturer = Manufacturer.objects.get(slug="vendor-1")
+        module_type = ModuleType.objects.create(
+            manufacturer=manufacturer,
+            model="Line Card 1",
+            part_number="LC-1",
+            description="",
+            comments="",
+        )
+        module_bay = self._create_module_bay(device)
+        module = Module.objects.create(
+            device=device,
+            module_bay=module_bay,
+            module_type=module_type,
+            status="active",
+            serial="SN-1",
+            asset_tag="AT-1",
+            description="line card",
+            comments="",
+        )
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "device": device.name,
+            "module_bay": "Slot 1",
+            "manufacturer": "vendor-1",
+            "manufacturer_slug": "vendor-1",
+            "model": "Line Card 1",
+            "part_number": "LC-1",
+            "status": "active",
+            "serial": "SN-2",
+            "asset_tag": "AT-2",
+            "description": "line card",
+        }
+
+        runner._apply_dcim_module(row)
+
+        module.refresh_from_db()
+        self.assertEqual(module.pk, Module.objects.get(pk=module.pk).pk)
+        self.assertEqual(module.status, "active")
+        self.assertEqual(module.serial, "SN-2")
+        self.assertEqual(module.asset_tag, "AT-2")
+        self.assertEqual(module.module_bay, module_bay)
+        self.assertEqual(
+            ModuleType.objects.filter(
+                manufacturer=manufacturer, model="Line Card 1"
+            ).count(),
+            1,
+        )
+
+    def test_delete_dcim_module_deletes_exact_module(self):
+        device = self._create_device("device-a")
+        manufacturer = Manufacturer.objects.get(slug="vendor-1")
+        module_type = ModuleType.objects.create(
+            manufacturer=manufacturer,
+            model="Line Card 1",
+            part_number="LC-1",
+            description="",
+            comments="",
+        )
+        module_bay = self._create_module_bay(device)
+        Module.objects.create(
+            device=device,
+            module_bay=module_bay,
+            module_type=module_type,
+            status="active",
+            serial="SN-1",
+            asset_tag="AT-1",
+            description="line card",
+            comments="",
+        )
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "device": device.name,
+            "module_bay": "Slot 1",
+            "manufacturer": "vendor-1",
+            "manufacturer_slug": "vendor-1",
+            "model": "Line Card 1",
+            "part_number": "LC-1",
+            "status": "active",
+        }
+
+        self.assertTrue(runner._delete_dcim_module(row))
+        self.assertFalse(runner._delete_dcim_module(row))
+        self.assertEqual(
+            ModuleBay.objects.filter(device=device, name="Slot 1").count(), 1
+        )
 
     def test_split_diff_rows_treats_reversed_cable_endpoints_as_same_identity(self):
         runner = ForwardSyncRunner(

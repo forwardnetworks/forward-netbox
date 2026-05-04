@@ -19,7 +19,12 @@ FORWARD_SUPPORTED_MODELS = (
     "ipam.prefix",
     "ipam.ipaddress",
     "dcim.inventoryitem",
+    "dcim.module",
 )
+
+FORWARD_OPTIONAL_MODELS = {
+    "dcim.module",
+}
 
 
 class ForwardSourceStatusChoices(ChoiceSet):
