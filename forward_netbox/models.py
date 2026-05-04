@@ -28,6 +28,7 @@ from netbox.models.features import TagsMixin
 from netbox_branching.models import Branch
 from utilities.querysets import RestrictedQuerySet
 
+from .choices import FORWARD_OPTIONAL_MODELS
 from .choices import FORWARD_SUPPORTED_MODELS
 from .choices import ForwardDriftPolicyBaselineChoices
 from .choices import ForwardIngestionPhaseChoices
@@ -632,7 +633,10 @@ class ForwardSync(ForwardPluginModelDocsMixin, JobsMixin, TagsMixin, ChangeLogge
 
     def is_model_enabled(self, model_string):
         parameters = self.parameters or {}
-        return parameters.get(model_string, True)
+        return parameters.get(
+            model_string,
+            model_string not in FORWARD_OPTIONAL_MODELS,
+        )
 
     def enabled_models(self):
         return [
