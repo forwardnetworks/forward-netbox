@@ -6,7 +6,8 @@
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v0.5.9` | `4.5.9` validated; `4.5.x` only | Current release |
+| `v0.5.9.1` | `4.5.9` validated; `4.5.x` only | Current release |
+| `v0.5.9` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.5.9.1` |
 | `v0.5.8` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.5.9` |
 | `v0.5.7` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.5.8` |
 | `v0.5.2.1` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.5.3` |
@@ -19,6 +20,7 @@
 
 | Release | Summary |
 | --- | --- |
+| `v0.5.9.1` | Keeps job logs visible during execution by persisting plugin log entries into the native NetBox job log tab while preserving the full plugin ingestion log view. |
 | `v0.5.9` | Balances query preflight and workload fetch with bounded parallelism, reducing long planning pauses on large datasets. |
 | `v0.5.8` | Defers event flushing until commit so large prefix ingestions do not trip transaction state changes mid-run. |
 | `v0.5.5` | Applies a consistent model conflict policy for cable sync rows: skip occupied-interface conflicts, aggregate warning spam, and keep non-conflict updates/creates unchanged. |
@@ -87,7 +89,7 @@ This repository is provided for use at your own risk. It is an unsupported relea
 Install the wheel or source archive from GitHub Releases:
 
 ```bash
-pip install /path/to/forward_netbox-0.5.9-py3-none-any.whl
+pip install /path/to/forward_netbox-0.5.9.1-py3-none-any.whl
 ```
 
 2. Enable both plugins in the NetBox configuration:
