@@ -4,6 +4,7 @@ from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand
 from django.core.management.base import CommandError
 
+from forward_netbox.choices import FORWARD_OPTIONAL_MODELS
 from forward_netbox.choices import FORWARD_SUPPORTED_MODELS
 from forward_netbox.choices import ForwardSourceDeploymentChoices
 from forward_netbox.choices import ForwardSyncStatusChoices
@@ -49,7 +50,7 @@ class Command(BaseCommand):
         parser.add_argument(
             "--models",
             default=os.getenv("FORWARD_SMOKE_MODELS", ""),
-            help="Comma-separated NetBox models to enable. Defaults to all supported models.",
+            help="Comma-separated NetBox models to enable. Defaults to the required supported models.",
         )
         parser.add_argument(
             "--validate-only",
@@ -290,7 +291,7 @@ class Command(BaseCommand):
 
     def _selected_models(self, raw_models):
         if not raw_models.strip():
-            return set(FORWARD_SUPPORTED_MODELS)
+            return set(FORWARD_SUPPORTED_MODELS) - set(FORWARD_OPTIONAL_MODELS)
 
         selected_models = {
             model.strip() for model in raw_models.split(",") if model.strip()
