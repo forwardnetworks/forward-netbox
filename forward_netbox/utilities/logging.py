@@ -1,6 +1,7 @@
 import logging
 import threading
 
+from core.models import Job
 from django.core.cache import cache
 from django.utils import timezone
 from extras.choices import LogLevelChoices
@@ -14,7 +15,7 @@ class SyncLogging:
         self.cache_timeout = cache_timeout
         self.log_data = {"logs": [], "statistics": {}}
         self.logger = logging.getLogger("forward_netbox.sync")
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
     def __getstate__(self):
         state = self.__dict__.copy()
@@ -23,19 +24,58 @@ class SyncLogging:
 
     def __setstate__(self, state):
         self.__dict__.update(state)
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
     def _log(self, obj, message, level=LogLevelChoices.LOG_INFO):
+        timestamp = timezone.now()
         entry = (
-            timezone.now().isoformat(),
+            timestamp.isoformat(),
             level,
             str(obj) if obj else None,
             obj.get_absolute_url() if hasattr(obj, "get_absolute_url") else None,
             message,
         )
+        job_entry = {
+            "timestamp": timestamp,
+            "level": self._normalize_job_level(level),
+            "message": message,
+        }
         with self._lock:
             self.log_data["logs"].append(entry)
             cache.set(self.cache_key, self.log_data, self.cache_timeout)
+            self._persist_core_job_entry(job_entry)
+
+    @staticmethod
+    def _normalize_job_level(level):
+        return {
+            LogLevelChoices.LOG_SUCCESS: "info",
+            LogLevelChoices.LOG_FAILURE: "error",
+        }.get(level, level)
+
+    def _persist_core_job_entry(self, entry):
+        if not self.job_id:
+            return
+        try:
+            job = Job.objects.get(pk=self.job_id)
+        except Job.DoesNotExist:
+            return
+        except Exception as exc:
+            self.logger.warning(
+                "Failed to load core job %s for log persistence: %s", self.job_id, exc
+            )
+            return
+
+        log_entries = list(job.log_entries or [])
+        log_entries.append(entry)
+        job.log_entries = log_entries
+        try:
+            job.save(update_fields=["log_entries"])
+        except Exception as exc:
+            self.logger.warning(
+                "Failed to persist core job log entry for job %s: %s",
+                self.job_id,
+                exc,
+            )
 
     def log_success(self, message, obj=None):
         self._log(obj, message, level=LogLevelChoices.LOG_SUCCESS)
