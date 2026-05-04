@@ -9,6 +9,7 @@ from forward_netbox.utilities.query_registry import BUILTIN_OPTIONAL_QUERY_MAPS
 from forward_netbox.utilities.query_registry import BUILTIN_QUERY_MAPS
 from forward_netbox.utilities.query_registry import BUILTIN_QUERY_SPECS
 from forward_netbox.utilities.query_registry import get_query_specs
+from forward_netbox.utilities.query_registry import get_seeded_builtin_query_spec
 
 
 REQUIRED_FIELDS_BY_QUERY_NAME = {
@@ -76,6 +77,15 @@ REQUIRED_FIELDS_BY_QUERY_NAME = {
         "discovered",
         "description",
     },
+    "Forward Modules": {
+        "device",
+        "module_bay",
+        "manufacturer",
+        "manufacturer_slug",
+        "model",
+        "part_number",
+        "status",
+    },
 }
 
 SLUG_QUERY_NAMES = {
@@ -87,6 +97,7 @@ SLUG_QUERY_NAMES = {
     "Forward Devices",
     "Forward VLANs",
     "Forward Inventory Items",
+    "Forward Modules",
 }
 
 MANUFACTURER_QUERY_NAMES = {
@@ -95,6 +106,7 @@ MANUFACTURER_QUERY_NAMES = {
     "Forward Device Models",
     "Forward Devices",
     "Forward Inventory Items",
+    "Forward Modules",
 }
 
 
@@ -251,7 +263,11 @@ class QueryRegistryTest(TestCase):
     def test_wrapped_device_queries_keep_device_first_parallel_shape(self):
         rows = {row["name"]: row for row in builtin_nqe_map_rows()}
 
-        for query_name in ("Forward Virtual Chassis", "Forward Inventory Items"):
+        for query_name in (
+            "Forward Virtual Chassis",
+            "Forward Inventory Items",
+            "Forward Modules",
+        ):
             query = rows[query_name]["query"]
 
             self.assertIn("foreach device in network.devices", query)
@@ -367,6 +383,46 @@ class QueryRegistryTest(TestCase):
             {query_default["name"] for query_default in BUILTIN_QUERY_MAPS},
         )
 
+    def test_optional_module_maps_are_seeded_disabled(self):
+        rows = {
+            (row["model_string"], row["name"]): row for row in builtin_nqe_map_rows()
+        }
+
+        row = rows[("dcim.module", "Forward Modules")]
+        self.assertFalse(row["enabled"])
+        self.assertIn("device.platform.components", row["query"])
+        self.assertIn("isNetBoxModuleComponent(component)", row["query"])
+        self.assertIn("component.partType == DevicePartType.LINE_CARD", row["query"])
+        self.assertIn("component.partType == DevicePartType.SUPERVISOR", row["query"])
+        self.assertIn(
+            "component.partType == DevicePartType.FABRIC_MODULE", row["query"]
+        )
+        self.assertIn(
+            "component.partType == DevicePartType.ROUTING_ENGINE", row["query"]
+        )
+        self.assertNotIn("DevicePartType.TRANSCEIVER", row["query"])
+        self.assertIn("canonicalManufacturerName(", row["query"])
+        self.assertIn("manufacturer: manufacturer_name", row["query"])
+        self.assertIn("module_bay:", row["query"])
+        self.assertIn("part_number:", row["query"])
+        self.assertIn("asset_tag: null", row["query"])
+        self.assertNotIn("where isPresent(module_bay)", row["query"])
+        self.assertNotIn(
+            "Forward Modules",
+            {query_default["name"] for query_default in BUILTIN_QUERY_MAPS},
+        )
+        self.assertIn(
+            "Forward Modules",
+            {query_default["name"] for query_default in BUILTIN_OPTIONAL_QUERY_MAPS},
+        )
+
+    def test_seeded_builtin_query_spec_resolves_optional_module_query(self):
+        spec = get_seeded_builtin_query_spec("dcim.module", "Forward Modules")
+
+        self.assertEqual(spec.model_string, "dcim.module")
+        self.assertEqual(spec.query_name, "Forward Modules")
+        self.assertIn("isNetBoxModuleComponent", spec.query)
+
     def test_data_file_queries_keep_device_first_parallel_shape(self):
         rows = {row["name"]: row for row in builtin_nqe_map_rows()}
 
@@ -479,15 +535,27 @@ class QueryRegistryTest(TestCase):
         )
         self.assertIn("truncate(value: String, max_len: Integer)", spec.query)
         self.assertIn(
-            "else if isPresent(component_part_id) then truncate(component_part_id, 50)",
+            'part_id: if isPresent(component_part_id) then truncate(component_part_id, 50) else ""',
             spec.query,
         )
         self.assertIn(
-            "else if isPresent(component_name) then truncate(component_name, 50)",
+            'serial: if isPresent(component_serial) then truncate(component_serial, 50) else ""',
             spec.query,
         )
         self.assertIn(
-            "else truncate(role_name, 50)",
+            'role_name != "APPLICATION"',
+            spec.query,
+        )
+        self.assertIn(
+            "module_component: isNetBoxModuleRole(role_name)",
+            spec.query,
+        )
+        self.assertIn(
+            'label: if isPresent(component_name) then truncate(component_name, 64) else ""',
+            spec.query,
+        )
+        self.assertIn(
+            "component.versionId",
             spec.query,
         )
 

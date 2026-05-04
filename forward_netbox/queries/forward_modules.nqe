@@ -1,0 +1,43 @@
+/**
+ * @intent Forward Modules
+ * @description It provides a list of chassis modules and similar replaceable hardware
+ * collected by Forward Networks to be added or updated in NetBox using POST and PATCH
+ * requests to the /api/dcim/modules/ REST API endpoint.
+ */
+
+import "netbox_utilities";
+
+truncate(value: String, max_len: Integer) =
+  if length(value) <= max_len then value else substring(value, 0, max_len);
+
+isNetBoxModuleComponent(component: DevicePart) =
+  component.partType == DevicePartType.LINE_CARD ||
+  component.partType == DevicePartType.SUPERVISOR ||
+  component.partType == DevicePartType.FABRIC_MODULE ||
+  component.partType == DevicePartType.ROUTING_ENGINE;
+
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+foreach component in device.platform.components
+where isNetBoxModuleComponent(component)
+let manufacturer_name = canonicalManufacturerName(device.platform.vendor)
+let manufacturer_slug = slugify(manufacturer_name)
+let component_name = if isPresent(component.name) && component.name != "" then component.name else null : String
+let component_part_id = if isPresent(component.partId) && component.partId != "" then component.partId else null : String
+let component_serial = if isPresent(component.serialNumber) && component.serialNumber != "" then component.serialNumber else null : String
+let component_description = if isPresent(component.description) && component.description != "" then component.description else null : String
+let module_bay_name = if isPresent(component_name) then component_name else if isPresent(component_part_id) then component_part_id else replace(replace(toString(component.partType), "DevicePartType.", ""), "_", " ")
+let module_model = if isPresent(component_part_id) then component_part_id else if isPresent(component_description) then component_description else module_bay_name
+select distinct {
+  device: device.name,
+  module_bay: truncate(module_bay_name, 100),
+  manufacturer: manufacturer_name,
+  manufacturer_slug: manufacturer_slug,
+  model: truncate(module_model, 100),
+  part_number: if isPresent(component_part_id) then truncate(component_part_id, 50) else truncate(module_model, 50),
+  status: "active",
+  serial: if isPresent(component_serial) then truncate(component_serial, 50) else null : String,
+  asset_tag: null : String,
+  description: if isPresent(component_description) then component_description else ""
+}

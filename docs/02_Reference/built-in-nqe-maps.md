@@ -798,12 +798,38 @@ The shipped query combines rows from subinterfaces, bridge interfaces, tunnels, 
 ## Forward Inventory Items
 
 - `NetBox Model`: `dcim.inventoryitem`
-- Expected fields: `device`, `manufacturer`, `manufacturer_slug`, `name`, `part_id`, `serial`, `role`, `role_slug`, `role_color`, `status`, `discovered`, `description`
+- Expected fields: `device`, `manufacturer`, `manufacturer_slug`, `name`, `label`, `part_id`, `serial`, `asset_tag`, `role`, `role_slug`, `role_color`, `part_type`, `module_component`, `status`, `discovered`, `description`
 - Query file: [`forward_inventory_items.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_inventory_items.nqe)
-The query intentionally starts with `foreach device in network.devices` so Forward can use its automatic per-device execution path where available.
+
+The query intentionally starts with `foreach device in network.devices` so Forward can use its automatic per-device execution path where available. It imports hardware component part types as inventory items, excludes application pseudo-parts, and leaves unknown part IDs or serial numbers blank instead of synthesizing identifiers. When `dcim.module` is enabled, rows marked `module_component` are cleaned out of generic inventory and modeled by the module adapter.
+
+Forward may expose component lifecycle support fields under `component.support`, but the built-in map does not copy those dates into descriptions because NetBox `InventoryItem` has no native lifecycle fields. Use a custom query or custom fields if you want lifecycle reporting in NetBox.
 
 ```nqe
 import "netbox_utilities";
+
+truncate(value: String, max_len: Integer) =
+  if length(value) <= max_len then value else substring(value, 0, max_len);
+
+isInventoryHardwareRole(role_name: String) =
+  role_name != "APPLICATION" &&
+  role_name != "UNMODELED BACKUP DEVICE";
+
+isNetBoxModuleRole(role_name: String) =
+  role_name == "LINE CARD" ||
+  role_name == "SUPERVISOR" ||
+  role_name == "FABRIC MODULE" ||
+  role_name == "ROUTING ENGINE";
+
+inventoryRoleColor(role_name: String) =
+  if role_name == "TRANSCEIVER" then "2196f3"
+  else if role_name == "POWER SUPPLY" then "ff9800"
+  else if role_name == "FAN MODULE" then "00bcd4"
+  else if role_name == "CHASSIS" then "607d8b"
+  else if role_name == "MOTHERBOARD" then "673ab7"
+  else if role_name == "STACK" || role_name == "STACK SWITCH" || role_name == "STACK PORT" || role_name == "STACK MODULE" then "4caf50"
+  else if isNetBoxModuleRole(role_name) then "3f51b5"
+  else "9e9e9e";
 
 foreach device in network.devices
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
@@ -812,23 +838,89 @@ foreach component in device.platform.components
 let manufacturer_name = canonicalManufacturerName(device.platform.vendor)
 let manufacturer_slug = slugify(manufacturer_name)
 let role_name = replace(replace(toString(component.partType), "DevicePartType.", ""), "_", " ")
+where isInventoryHardwareRole(role_name)
 let role_slug = slugify(role_name)
 let component_name = if isPresent(component.name) && component.name != "" then component.name else null : String
 let component_part_id = if isPresent(component.partId) && component.partId != "" then component.partId else null : String
 let component_serial = if isPresent(component.serialNumber) && component.serialNumber != "" then component.serialNumber else null : String
 let component_description = if isPresent(component.description) && component.description != "" then component.description else null : String
+let component_version = if isPresent(component.versionId) && component.versionId != "" then component.versionId else null : String
+let inventory_name = if isPresent(component_name) then component_name else if isPresent(component_part_id) then component_part_id else if isPresent(component_description) then component_description else role_name
+let inventory_description = if isPresent(component_description) && isPresent(component_version) then truncate(join(" | ", [component_description, join(": ", ["Version", component_version])]), 200) else if isPresent(component_description) then truncate(component_description, 200) else if isPresent(component_version) then truncate(join(": ", ["Version", component_version]), 200) else ""
 select distinct {
   device: device.name,
   manufacturer: manufacturer_name,
   manufacturer_slug: manufacturer_slug,
-  name: if isPresent(component_name) then component_name else if isPresent(component_part_id) then component_part_id else if isPresent(component_description) then component_description else role_name,
-  part_id: if isPresent(component_part_id) then truncate(component_part_id, 50) else if isPresent(component_name) then truncate(component_name, 50) else truncate(role_name, 50),
-  serial: if isPresent(component_serial) then truncate(component_serial, 50) else if isPresent(component_part_id) then truncate(component_part_id, 50) else if isPresent(component_name) then truncate(component_name, 50) else truncate(role_name, 50),
+  name: truncate(inventory_name, 64),
+  label: if isPresent(component_name) then truncate(component_name, 64) else "",
+  part_id: if isPresent(component_part_id) then truncate(component_part_id, 50) else "",
+  serial: if isPresent(component_serial) then truncate(component_serial, 50) else "",
+  asset_tag: null : String,
   role: role_name,
   role_slug: role_slug,
-  role_color: "9e9e9e",
+  role_color: inventoryRoleColor(role_name),
+  part_type: role_name,
+  module_component: isNetBoxModuleRole(role_name),
   status: "active",
   discovered: true,
+  description: inventory_description
+}
+```
+
+## Forward Modules
+
+- `NetBox Model`: `dcim.module`
+- Expected fields: `device`, `module_bay`, `manufacturer`, `manufacturer_slug`, `model`, `part_number`, `status`, `serial`, `asset_tag`, `description`
+- Query file: [`forward_modules.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_modules.nqe)
+- Enabled: disabled by default
+- Stability: beta in `v0.6.0`; review staged module and module-bay changes carefully before merging
+
+The module map uses the same device-first parallel shape as the inventory-item map, but keeps the target model separate so bay-aware chassis hardware can be modeled without overlapping the generic inventory-item fallback. NQE is the classification layer: this map emits only `LINE_CARD`, `SUPERVISOR`, `FABRIC_MODULE`, and `ROUTING_ENGINE` components. Transceivers, fans, power supplies, chassis records, stack artifacts, and motherboards remain inventory-item candidates; application pseudo-parts are not imported as inventory items by default.
+
+```nqe
+import "netbox_utilities";
+
+truncate(value: String, max_len: Integer) =
+  if length(value) <= max_len then value else substring(value, 0, max_len);
+
+isNetBoxModuleComponent(component: DevicePart) =
+  component.partType == DevicePartType.LINE_CARD ||
+  component.partType == DevicePartType.SUPERVISOR ||
+  component.partType == DevicePartType.FABRIC_MODULE ||
+  component.partType == DevicePartType.ROUTING_ENGINE;
+
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+foreach component in device.platform.components
+where isNetBoxModuleComponent(component)
+let manufacturer_name = canonicalManufacturerName(device.platform.vendor)
+let manufacturer_slug = slugify(manufacturer_name)
+let component_name = if isPresent(component.name) && component.name != "" then component.name else null : String
+let component_part_id = if isPresent(component.partId) && component.partId != "" then component.partId else null : String
+let component_serial = if isPresent(component.serialNumber) && component.serialNumber != "" then component.serialNumber else null : String
+let component_description = if isPresent(component.description) && component.description != "" then component.description else null : String
+let module_bay_name = if isPresent(component_name) then component_name else if isPresent(component_part_id) then component_part_id else replace(replace(toString(component.partType), "DevicePartType.", ""), "_", " ")
+let module_model = if isPresent(component_part_id) then component_part_id else if isPresent(component_description) then component_description else module_bay_name
+select distinct {
+  device: device.name,
+  module_bay: truncate(module_bay_name, 100),
+  manufacturer: manufacturer_name,
+  manufacturer_slug: manufacturer_slug,
+  model: truncate(module_model, 100),
+  part_number: if isPresent(component_part_id) then truncate(component_part_id, 50) else truncate(module_model, 50),
+  status: "active",
+  serial: if isPresent(component_serial) then truncate(component_serial, 50) else null : String,
+  asset_tag: null : String,
   description: if isPresent(component_description) then component_description else ""
 }
 ```
+
+## Important Caveats
+
+- `dcim.inventoryitem` remains the default best-fit path for generic components.
+- `dcim.module` is disabled by default and should only be enabled when you want bay-aware hardware modeled as modules instead of inventory items.
+- The module path uses native NetBox model operations to create missing module bays from the NQE `module_bay` field when `dcim.module` is enabled. Those bay creations are part of the normal Branching diff.
+- Before enabling module sync, run `python manage.py forward_module_readiness --sync-name "<sync name>"` to generate a readiness summary and an optional native NetBox module-bay import CSV for missing bays.
+- `dcim.module` uses a default branch density of 2 changes per NQE row because a new row can create both a module bay and a module.
+- SFP/transceiver rows remain in the inventory-item path by default; do not enable module import expecting optics to become NetBox modules unless the query is customized for device types that expose matching module bays.

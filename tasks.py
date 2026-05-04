@@ -159,6 +159,24 @@ def smoke_sync(
     manage_py(context, f"forward_smoke_sync{flag_string}")
 
 
+@task(name="module-readiness")
+def module_readiness(
+    context,
+    sync_name="",
+    source_name="",
+    output_dir="",
+):
+    flags = []
+    if sync_name:
+        flags.append(f'--sync-name "{sync_name}"')
+    if source_name:
+        flags.append(f'--source-name "{source_name}"')
+    if output_dir:
+        flags.append(f'--output-dir "{output_dir}"')
+    flag_string = f" {' '.join(flags)}" if flags else ""
+    manage_py(context, f"forward_module_readiness{flag_string}")
+
+
 @task(
     pre=[
         sensitive_check,

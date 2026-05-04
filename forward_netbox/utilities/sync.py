@@ -14,6 +14,7 @@ from ..exceptions import ForwardDependencySkipError
 from ..exceptions import ForwardQueryError
 from ..exceptions import ForwardSearchError
 from ..exceptions import ForwardSyncDataError
+from .module_readiness import module_bay_import_row
 from .query_registry import get_query_specs
 from .sync_contracts import canonical_cable_endpoint_identity
 from .sync_contracts import default_coalesce_fields_for_model
@@ -42,6 +43,12 @@ class EventsClearer:
 
 class ForwardSyncRunner:
     CONFLICT_WARNING_DETAIL_LIMIT = 20
+    MODULE_NATIVE_INVENTORY_PART_TYPES = {
+        "FABRIC MODULE",
+        "LINE CARD",
+        "ROUTING ENGINE",
+        "SUPERVISOR",
+    }
     MODEL_CONFLICT_POLICIES = {
         "dcim.site": "reuse_on_unique_conflict",
         "dcim.manufacturer": "reuse_on_unique_conflict",
@@ -63,6 +70,8 @@ class ForwardSyncRunner:
         self._failed_dependencies: dict[str, set[tuple]] = {}
         self._aggregated_conflict_warning_counts: dict[tuple[str, str], int] = {}
         self._aggregated_conflict_warning_suppressed: dict[tuple[str, str], int] = {}
+        self._aggregated_skip_warning_counts: dict[tuple[str, str], int] = {}
+        self._aggregated_skip_warning_suppressed: dict[tuple[str, str], int] = {}
         self.events_clearer = EventsClearer()
 
     def _record_aggregated_conflict_warning(
@@ -93,8 +102,39 @@ class ForwardSyncRunner:
                 obj=self.sync,
             )
 
+    def _record_aggregated_skip_warning(self, *, model_string, reason, warning_message):
+        key = (model_string, reason)
+        count = self._aggregated_skip_warning_counts.get(key, 0)
+        if count < self.CONFLICT_WARNING_DETAIL_LIMIT:
+            self.logger.log_warning(
+                warning_message,
+                obj=self.sync,
+            )
+        else:
+            self._aggregated_skip_warning_suppressed[key] = (
+                self._aggregated_skip_warning_suppressed.get(key, 0) + 1
+            )
+        self._aggregated_skip_warning_counts[key] = count + 1
+
+    def _emit_aggregated_skip_warning_summaries(self, model_string):
+        for (warning_model, reason), suppressed_count in sorted(
+            self._aggregated_skip_warning_suppressed.items()
+        ):
+            if warning_model != model_string or suppressed_count <= 0:
+                continue
+            self.logger.log_warning(
+                f"Suppressed {suppressed_count} additional {model_string} skip warnings "
+                f"for `{reason}` after the first {self.CONFLICT_WARNING_DETAIL_LIMIT}.",
+                obj=self.sync,
+            )
+
     def _conflict_policy(self, model_string):
         return self.MODEL_CONFLICT_POLICIES.get(model_string, "strict")
+
+    def _is_module_native_inventory_row(self, row):
+        if row.get("module_component") is True:
+            return True
+        return row.get("part_type") in self.MODULE_NATIVE_INVENTORY_PART_TYPES
 
     def _first_complete_coalesce_set(self, row, coalesce_sets):
         for field_set in coalesce_sets:
@@ -700,6 +740,7 @@ class ForwardSyncRunner:
             obj=self.sync,
         )
         self._emit_aggregated_conflict_warning_summaries(model_string)
+        self._emit_aggregated_skip_warning_summaries(model_string)
         self.events_clearer.clear()
 
     def _delete_model_rows(self, model_string, rows):
@@ -962,6 +1003,42 @@ class ForwardSyncRunner:
         )
         return role
 
+    def _ensure_module_type(self, row):
+        from dcim.models.modules import ModuleType
+
+        manufacturer = self._ensure_manufacturer(
+            {"name": row["manufacturer"], "slug": row["manufacturer_slug"]}
+        )
+        values = {
+            "manufacturer": manufacturer,
+            "model": row["model"],
+            "part_number": row.get("part_number") or "",
+            "description": row.get("description") or "",
+            "comments": row.get("comments") or "",
+        }
+        module_type, _ = self._upsert_values_from_defaults(
+            "dcim.module",
+            ModuleType,
+            values=values,
+            coalesce_sets=[("manufacturer", "model")],
+        )
+        return module_type
+
+    def _lookup_module_bay(self, device, module_bay_name):
+        return device.modulebays.filter(name=module_bay_name).order_by("pk").first()
+
+    def _ensure_module_bay(self, device, row):
+        module_bay = self._lookup_module_bay(device, row["module_bay"])
+        if module_bay is not None:
+            return module_bay
+        import_row = module_bay_import_row(row)
+        return device.modulebays.create(
+            name=import_row["name"],
+            label=import_row["label"],
+            position=import_row["position"],
+            description=import_row["description"],
+        )
+
     def _content_type_for(self, model):
         from django.contrib.contenttypes.models import ContentType
 
@@ -1211,8 +1288,29 @@ class ForwardSyncRunner:
                     "name": row["name"],
                     "part_id": row.get("part_id") or "",
                     "serial": row.get("serial") or "",
-                }
+                },
+                {
+                    "device": device,
+                    "name": row["name"],
+                    "part_id": row.get("part_id") or "",
+                },
+                {"device": device, "name": row["name"]},
             ],
+        )
+
+    def _delete_dcim_module(self, row):
+        from dcim.models import Device
+        from dcim.models import Module
+
+        device = Device.objects.filter(name=row.get("device")).order_by("pk").first()
+        if device is None or not row.get("module_bay"):
+            return False
+        module_bay = self._lookup_module_bay(device, row["module_bay"])
+        if module_bay is None:
+            return False
+        return self._delete_by_coalesce(
+            Module,
+            [{"device": device, "module_bay": module_bay}],
         )
 
     def _apply_dcim_site(self, row):
@@ -1716,6 +1814,10 @@ class ForwardSyncRunner:
                 context={"device": row["device"], "name": row.get("name")},
                 data=row,
             ) from exc
+        if self.sync.is_model_enabled(
+            "dcim.module"
+        ) and self._is_module_native_inventory_row(row):
+            return None if self._delete_dcim_inventoryitem(row) else False
         manufacturer = None
         if row.get("manufacturer"):
             manufacturer = self._ensure_manufacturer(
@@ -1728,8 +1830,10 @@ class ForwardSyncRunner:
             values={
                 "device": device,
                 "name": row["name"],
+                "label": row.get("label") or "",
                 "part_id": row.get("part_id") or "",
                 "serial": row.get("serial") or "",
+                "asset_tag": row.get("asset_tag") or None,
                 "status": row["status"],
                 "role": role,
                 "manufacturer": manufacturer,
@@ -1738,6 +1842,69 @@ class ForwardSyncRunner:
             },
             coalesce_sets=self._coalesce_sets_for(
                 "dcim.inventoryitem",
-                [("device", "name", "part_id", "serial")],
+                [
+                    ("device", "name", "part_id", "serial"),
+                    ("device", "name", "part_id"),
+                    ("device", "name"),
+                ],
+            ),
+        )
+
+    def _apply_dcim_module(self, row):
+        from dcim.models import Device
+        from dcim.models import Module
+
+        try:
+            device = Device.objects.get(name=row["device"])
+        except ObjectDoesNotExist as exc:
+            key = (row["device"],)
+            if self._dependency_failed("dcim.device", key):
+                raise ForwardDependencySkipError(
+                    f"Skipping module because dependency `dcim.device` failed for {key}.",
+                    model_string="dcim.module",
+                    context={
+                        "device": row["device"],
+                        "module_bay": row.get("module_bay"),
+                    },
+                    data=row,
+                ) from exc
+            raise ForwardSearchError(
+                f"Unable to find device `{row['device']}` for module `{row.get('module_bay')}`.",
+                model_string="dcim.module",
+                context={
+                    "device": row["device"],
+                    "module_bay": row.get("module_bay"),
+                },
+                data=row,
+            ) from exc
+
+        if not row.get("module_bay"):
+            self._record_aggregated_skip_warning(
+                model_string="dcim.module",
+                reason="missing-module-bay",
+                warning_message=(
+                    f"Skipping module row because no module bay was provided for "
+                    f"`{device.name}`."
+                ),
+            )
+            return False
+        module_bay = self._ensure_module_bay(device, row)
+        module_type = self._ensure_module_type(row)
+        self._upsert_values_from_defaults(
+            "dcim.module",
+            Module,
+            values={
+                "device": device,
+                "module_bay": module_bay,
+                "module_type": module_type,
+                "status": row["status"],
+                "serial": row.get("serial") or "",
+                "asset_tag": row.get("asset_tag") or None,
+                "description": row.get("description") or "",
+                "comments": row.get("comments") or "",
+            },
+            coalesce_sets=self._coalesce_sets_for(
+                "dcim.module",
+                [("device", "module_bay")],
             ),
         )

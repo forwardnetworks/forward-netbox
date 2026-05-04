@@ -124,7 +124,24 @@ MODEL_SYNC_CONTRACTS: dict[str, ModelSyncContract] = {
             "discovered",
         ),
         allowed_coalesce_fields=("device", "name", "part_id", "serial"),
-        default_coalesce_fields=(("device", "name", "part_id", "serial"),),
+        default_coalesce_fields=(
+            ("device", "name", "part_id", "serial"),
+            ("device", "name", "part_id"),
+            ("device", "name"),
+        ),
+    ),
+    "dcim.module": ModelSyncContract(
+        required_fields=(
+            "device",
+            "module_bay",
+            "manufacturer",
+            "manufacturer_slug",
+            "model",
+            "part_number",
+            "status",
+        ),
+        allowed_coalesce_fields=("device", "module_bay"),
+        default_coalesce_fields=(("device", "module_bay"),),
     ),
 }
 
