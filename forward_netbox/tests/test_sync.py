@@ -17,6 +17,7 @@ from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 from django.test import TestCase
 from extras.models import Tag
+from ipam.models import IPAddress
 
 from forward_netbox.choices import FORWARD_SUPPORTED_MODELS
 from forward_netbox.exceptions import ForwardClientError
@@ -351,6 +352,81 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
             ),
             2,
         )
+
+    @patch("forward_netbox.utilities.query_fetch.get_query_specs")
+    def test_build_plan_records_unassignable_ipaddress_diagnostics(self, mock_specs):
+        client = Mock()
+        client.get_snapshots.return_value = [
+            {
+                "id": "snapshot-after",
+                "state": "PROCESSED",
+                "created_at": "",
+                "processed_at": "2026-03-31T12:15:00Z",
+            }
+        ]
+        client.get_snapshot_metrics.return_value = {}
+        client.run_nqe_query.side_effect = [
+            [
+                {
+                    "device": "device-1",
+                    "interface": "Ethernet1/1",
+                    "address": "10.0.0.1/24",
+                    "vrf": None,
+                    "status": "active",
+                }
+            ],
+            [
+                {
+                    "reason": "ipv4-subnet-network-id",
+                    "device": "device-1",
+                    "interface": "VLAN699",
+                    "address": "11.138.0.16/28",
+                },
+                {
+                    "reason": "ipv4-broadcast-address",
+                    "device": "device-1",
+                    "interface": "VLAN699",
+                    "address": "11.138.0.31/28",
+                },
+            ],
+        ]
+        self.sync.resolve_snapshot_id = lambda client=None: "snapshot-after"
+        self.sync.get_model_strings = lambda: ["ipam.ipaddress"]
+        self.sync.incremental_diff_baseline = Mock(return_value=None)
+        mock_specs.return_value = [
+            QuerySpec(
+                model_string="ipam.ipaddress",
+                query_name="Forward IP Addresses",
+                query=(
+                    'select {device: "device-1", interface: "Ethernet1/1", '
+                    'address: ipSubnet("10.0.0.1/24"), vrf: null:String, '
+                    'status: "active"}'
+                ),
+            )
+        ]
+        logger = Mock()
+        planner = ForwardMultiBranchPlanner(
+            sync=self.sync,
+            client=client,
+            logger_=logger,
+        )
+
+        planner.build_plan(max_changes_per_branch=10, run_preflight=False)
+
+        diagnostic = planner.model_results[0]["diagnostics"][0]
+        self.assertEqual(diagnostic["total"], 2)
+        self.assertEqual(
+            diagnostic["counts"],
+            {
+                "ipv4-subnet-network-id": 1,
+                "ipv4-broadcast-address": 1,
+            },
+        )
+        self.assertEqual(len(diagnostic["examples"]), 2)
+        warning_messages = [call.args[0] for call in logger.log_warning.call_args_list]
+        self.assertIn("filtered 2 interface addresses", warning_messages[0])
+        self.assertIn("11.138.0.16/28", warning_messages[1])
+        self.assertIn("11.138.0.31/28", warning_messages[2])
 
 
 class ForwardMultiBranchExecutorAdaptiveSplitTest(TestCase):
@@ -1165,6 +1241,64 @@ class ForwardSyncRunnerTest(TestCase):
             },
             [["address", "vrf"], ["address"]],
         )
+
+    def test_apply_ipam_ipaddress_skips_unassignable_network_and_broadcast_addresses(
+        self,
+    ):
+        device = self._create_device("device-1")
+        Interface.objects.create(device=device, name="VLAN699", type="virtual")
+        logger = Mock()
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=logger
+        )
+
+        runner._apply_model_rows(
+            "ipam.ipaddress",
+            [
+                {
+                    "device": "device-1",
+                    "interface": "VLAN699",
+                    "address": "11.138.0.16/28",
+                    "vrf": None,
+                    "status": "active",
+                },
+                {
+                    "device": "device-1",
+                    "interface": "VLAN699",
+                    "address": "11.138.0.31/28",
+                    "vrf": None,
+                    "status": "active",
+                },
+            ],
+        )
+
+        self.assertEqual(IPAddress.objects.count(), 0)
+        warning_messages = [call.args[0] for call in logger.log_warning.call_args_list]
+        self.assertEqual(len(warning_messages), 2)
+        self.assertIn("subnet network IDs", warning_messages[0])
+        self.assertIn("broadcast addresses", warning_messages[1])
+        logger.increment_statistics.assert_any_call("ipam.ipaddress", outcome="skipped")
+
+    def test_apply_ipam_ipaddress_allows_point_to_point_endpoint_addresses(self):
+        device = self._create_device("device-1")
+        Interface.objects.create(device=device, name="Ethernet1/1", type="1000base-t")
+        logger = Mock()
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=logger
+        )
+
+        runner._apply_ipam_ipaddress(
+            {
+                "device": "device-1",
+                "interface": "Ethernet1/1",
+                "address": "10.0.0.0/31",
+                "vrf": None,
+                "status": "active",
+            }
+        )
+
+        self.assertEqual(str(IPAddress.objects.get().address), "10.0.0.0/31")
+        logger.log_warning.assert_not_called()
 
     def test_validate_row_shape_allows_cable_endpoint_identity(self):
         validate_row_shape_for_model(
