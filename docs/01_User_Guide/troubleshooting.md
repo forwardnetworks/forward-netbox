@@ -66,6 +66,9 @@ Checks:
 - Confirm the source has a valid `Network` selected.
 - Confirm the selected `Snapshot` is valid for that source network, or leave it at `latestProcessed`.
 - Confirm the required NQE maps are enabled.
+- If the selected model is `dcim.module`, enable the `Forward Modules` NQE Map
+  or disable the `dcim.module` model on the sync. The native module path is beta
+  and its built-in map is intentionally disabled by default.
 - Open the latest `Forward Validation Run` from the sync detail page and review `Blocking Reasons`, `Drift Summary`, and `Model Results`.
 - If a drift policy blocked the run, adjust the policy or fix the query/source data before rerunning the sync.
 - Check `Forward Ingestion Issues` for the failing model and error text.
