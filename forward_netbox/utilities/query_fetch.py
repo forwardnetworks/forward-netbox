@@ -5,6 +5,7 @@ from dataclasses import field
 from dataclasses import replace
 from typing import Any
 
+from ..choices import FORWARD_OPTIONAL_MODELS
 from ..exceptions import ForwardClientError
 from ..exceptions import ForwardConnectivityError
 from ..exceptions import ForwardQueryError
@@ -14,6 +15,7 @@ from .forward_api import LATEST_PROCESSED_SNAPSHOT
 from .query_registry import get_query_specs
 from .query_registry import ipaddress_unassignable_diagnostic_query
 from .query_registry import IPADDRESS_UNASSIGNABLE_DIAGNOSTIC_QUERY_NAME
+from .query_registry import optional_builtin_query_names_for_model
 from .sync import ForwardSyncRunner
 from .sync_contracts import default_coalesce_fields_for_model
 from .sync_contracts import validate_row_shape_for_model
@@ -178,13 +180,31 @@ class ForwardQueryFetcher:
         for model_string in self.sync.get_model_strings():
             specs = get_query_specs(model_string, maps=context.maps)
             if not specs:
-                raise ForwardQueryError(
-                    f"No enabled built-in or custom query maps were resolved for {model_string}."
-                )
+                raise ForwardQueryError(self._missing_query_specs_message(model_string))
             coalesce_fields = self._coalesce_fields(model_string, specs)
             for spec in specs:
                 jobs.append((model_string, spec, coalesce_fields))
         return jobs
+
+    def _missing_query_specs_message(self, model_string: str) -> str:
+        optional_map_names = optional_builtin_query_names_for_model(model_string)
+        if optional_map_names:
+            quoted_names = ", ".join(f"`{name}`" for name in optional_map_names)
+            return (
+                f"No enabled NQE maps were resolved for {model_string}. "
+                f"Enable the {quoted_names} NQE Map or disable the `{model_string}` "
+                "model on the sync."
+            )
+        if model_string in FORWARD_OPTIONAL_MODELS:
+            return (
+                f"No enabled NQE maps were resolved for {model_string}. "
+                f"Enable at least one NQE Map for `{model_string}` or disable the "
+                f"`{model_string}` model on the sync."
+            )
+        return (
+            f"No enabled built-in or custom query maps were resolved for {model_string}. "
+            "Enable at least one NQE Map for this model before running the sync."
+        )
 
     def fetch_workloads(
         self,
@@ -213,6 +233,8 @@ class ForwardQueryFetcher:
         jobs = []
         for model_string in self.sync.get_model_strings():
             specs = get_query_specs(model_string, maps=context.maps)
+            if not specs:
+                raise ForwardQueryError(self._missing_query_specs_message(model_string))
             coalesce_fields = self._coalesce_fields(model_string, specs)
             baseline = self.sync.incremental_diff_baseline(
                 specs=specs,
