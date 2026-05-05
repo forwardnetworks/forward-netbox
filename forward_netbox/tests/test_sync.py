@@ -13,6 +13,7 @@ from dcim.models import Site
 from dcim.models import VirtualChassis
 from dcim.models.device_components import ModuleBay
 from dcim.models.modules import ModuleType
+from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 from django.test import TestCase
@@ -28,6 +29,7 @@ from forward_netbox.exceptions import ForwardSyncError
 from forward_netbox.models import ForwardDriftPolicy
 from forward_netbox.models import ForwardIngestion
 from forward_netbox.models import ForwardIngestionIssue
+from forward_netbox.models import ForwardNQEMap
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.models import ForwardValidationRun
@@ -281,6 +283,49 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
             planner.build_plan(max_changes_per_branch=10, run_preflight=True)
 
         client.run_nqe_query.assert_called_once()
+
+    def test_preflight_error_explains_disabled_optional_module_map(self):
+        site_type = ContentType.objects.get(app_label="dcim", model="site")
+        module_type = ContentType.objects.get(app_label="dcim", model="module")
+        ForwardNQEMap.objects.create(
+            name="Forward Locations",
+            netbox_model=site_type,
+            query='select {name: "site-1", slug: "site-1"}',
+            coalesce_fields=[["name"]],
+            enabled=True,
+            built_in=True,
+        )
+        ForwardNQEMap.objects.create(
+            name="Forward Modules",
+            netbox_model=module_type,
+            query='select {device: "device-1", module_bay: "Slot 1"}',
+            coalesce_fields=[["device", "module_bay"]],
+            enabled=False,
+            built_in=True,
+        )
+        self.sync.get_model_strings = lambda: ["dcim.module"]
+        client = Mock()
+        client.get_snapshots.return_value = [
+            {
+                "id": "snapshot-after",
+                "state": "PROCESSED",
+                "created_at": "",
+                "processed_at": "2026-03-31T12:15:00Z",
+            }
+        ]
+        client.get_snapshot_metrics.return_value = {}
+        self.sync.resolve_snapshot_id = lambda client=None: "snapshot-after"
+        planner = ForwardMultiBranchPlanner(
+            sync=self.sync,
+            client=client,
+            logger_=Mock(),
+        )
+
+        with self.assertRaisesRegex(
+            ForwardQueryError,
+            "Enable the `Forward Modules` NQE Map or disable the `dcim.module` model",
+        ):
+            planner.build_plan(max_changes_per_branch=10, run_preflight=True)
 
     @patch("forward_netbox.utilities.query_fetch.get_query_specs")
     def test_build_plan_handles_multiple_specs_with_shared_model(self, mock_specs):
