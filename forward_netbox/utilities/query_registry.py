@@ -337,6 +337,14 @@ def _resolve_map_query_specs(model_string: str, maps) -> list[QuerySpec]:
     return [_build_query_spec_from_map(query_map) for query_map in chosen_maps]
 
 
+def optional_builtin_query_names_for_model(model_string: str) -> list[str]:
+    return [
+        query_default["name"]
+        for query_default in BUILTIN_OPTIONAL_QUERY_MAPS
+        if query_default["model_string"] == model_string
+    ]
+
+
 def get_query_specs(
     model_string: str,
     maps=None,
