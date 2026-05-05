@@ -1051,12 +1051,17 @@ class ForwardSyncRunner:
         if module_bay is not None:
             return module_bay
         import_row = module_bay_import_row(row)
-        return device.modulebays.create(
-            name=import_row["name"],
-            label=import_row["label"],
-            position=import_row["position"],
-            description=import_row["description"],
-        )
+        values = {
+            "name": import_row["name"],
+            "label": import_row["label"],
+            "position": import_row["position"],
+            "description": import_row["description"],
+        }
+        if any(
+            field.name == "enabled" for field in device.modulebays.model._meta.fields
+        ):
+            values["enabled"] = True
+        return device.modulebays.create(**values)
 
     def _content_type_for(self, model):
         from django.contrib.contenttypes.models import ContentType
