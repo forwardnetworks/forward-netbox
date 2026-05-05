@@ -43,6 +43,12 @@ class QuerySpec:
 
 QUERY_DIR = Path(__file__).resolve().parents[1] / "queries"
 LOCAL_IMPORT_RE = re.compile(r'^\s*import\s+"([^"]+)"\s*;\s*$')
+IPADDRESS_UNASSIGNABLE_DIAGNOSTIC_QUERY_NAME = (
+    "Forward IP Address Assignment Diagnostics"
+)
+IPADDRESS_UNASSIGNABLE_DIAGNOSTIC_QUERY_FILE = (
+    "forward_ip_addresses_unassignable_diagnostics.nqe"
+)
 
 
 def _read_query_source(filename: str) -> str:
@@ -119,6 +125,10 @@ def _compile_query_file(
 
 def _read_query(filename: str) -> str:
     return _compile_query_file(QUERY_DIR / filename)
+
+
+def ipaddress_unassignable_diagnostic_query() -> str:
+    return _read_query(IPADDRESS_UNASSIGNABLE_DIAGNOSTIC_QUERY_FILE)
 
 
 BUILTIN_QUERY_MAPS = [

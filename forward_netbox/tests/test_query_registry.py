@@ -10,6 +10,12 @@ from forward_netbox.utilities.query_registry import BUILTIN_QUERY_MAPS
 from forward_netbox.utilities.query_registry import BUILTIN_QUERY_SPECS
 from forward_netbox.utilities.query_registry import get_query_specs
 from forward_netbox.utilities.query_registry import get_seeded_builtin_query_spec
+from forward_netbox.utilities.query_registry import (
+    ipaddress_unassignable_diagnostic_query,
+)
+from forward_netbox.utilities.query_registry import (
+    IPADDRESS_UNASSIGNABLE_DIAGNOSTIC_QUERY_NAME,
+)
 
 
 REQUIRED_FIELDS_BY_QUERY_NAME = {
@@ -591,3 +597,37 @@ class QueryRegistryTest(TestCase):
         self.assertIn("where length(entry.prefix) < 32", ipv4_spec.query)
         self.assertNotIn("length(entry.prefix) <= 32", ipv4_spec.query)
         self.assertIn("where length(entry.prefix) < 128", ipv6_spec.query)
+
+    def test_ipaddress_query_excludes_unassignable_interface_addresses(self):
+        ip_spec = next(spec for spec in BUILTIN_QUERY_SPECS["ipam.ipaddress"])
+
+        self.assertEqual(
+            ip_spec.query.count(
+                "where address.prefixLength >= 31 || address.ip != networkAddress"
+            ),
+            4,
+        )
+        self.assertEqual(
+            ip_spec.query.count(
+                "where address.prefixLength >= 31 || address.ip != broadcastAddress"
+            ),
+            4,
+        )
+        self.assertEqual(
+            ip_spec.query.count(
+                "where address.prefixLength >= 127 || address.ip != networkAddress"
+            ),
+            4,
+        )
+
+    def test_ipaddress_unassignable_diagnostic_query_is_not_seeded_as_import_map(
+        self,
+    ):
+        seeded_names = {row["name"] for row in builtin_nqe_map_rows()}
+        diagnostic_query = ipaddress_unassignable_diagnostic_query()
+
+        self.assertNotIn(IPADDRESS_UNASSIGNABLE_DIAGNOSTIC_QUERY_NAME, seeded_names)
+        self.assertIn('reason: "ipv4-subnet-network-id"', diagnostic_query)
+        self.assertIn('reason: "ipv4-broadcast-address"', diagnostic_query)
+        self.assertIn('reason: "ipv6-subnet-network-id"', diagnostic_query)
+        self.assertIn("select distinct row", diagnostic_query)
