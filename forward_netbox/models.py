@@ -18,6 +18,7 @@ from django.db.models import Q
 from django.db.models import signals
 from django.urls import reverse
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from django.utils.module_loading import import_string
 from django.utils.translation import gettext as _
 from netbox.models import ChangeLoggedModel
@@ -27,6 +28,7 @@ from netbox.models.features import TagsMixin
 from netbox_branching.models import Branch
 from utilities.querysets import RestrictedQuerySet
 
+from .choices import FORWARD_OPTIONAL_MODELS
 from .choices import FORWARD_SUPPORTED_MODELS
 from .choices import ForwardDriftPolicyBaselineChoices
 from .choices import ForwardIngestionPhaseChoices
@@ -36,8 +38,12 @@ from .choices import ForwardSyncStatusChoices
 from .choices import ForwardValidationStatusChoices
 from .exceptions import ForwardSyncError
 from .utilities.branch_budget import BRANCH_RUN_STATE_PARAMETER
+from .utilities.branch_budget import build_branch_budget_hints
 from .utilities.branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
 from .utilities.branch_budget import MODEL_CHANGE_DENSITY_PARAMETER
+from .utilities.execution_telemetry import build_branch_run_summary
+from .utilities.execution_telemetry import build_ingestion_execution_summary
+from .utilities.execution_telemetry import build_sync_execution_summary
 from .utilities.forward_api import ForwardClient
 from .utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from .utilities.forward_api import MAX_NQE_PAGE_SIZE
@@ -560,21 +566,77 @@ class ForwardSync(ForwardPluginModelDocsMixin, JobsMixin, TagsMixin, ChangeLogge
         )
         parameters["multi_branch"] = self.uses_multi_branch()
         parameters["max_changes_per_branch"] = self.get_max_changes_per_branch()
-        if self.has_pending_branch_run:
-            state = self.get_branch_run_state()
-            parameters["branch_run"] = {
-                "snapshot_id": state.get("snapshot_id") or "",
-                "next_plan_index": state.get("next_plan_index"),
-                "total_plan_items": state.get("total_plan_items"),
-                "awaiting_merge": bool(state.get("awaiting_merge")),
-                "validation_run_id": state.get("validation_run_id"),
-            }
-        parameters["models"] = self.get_model_strings()
+        model_change_density = self.get_model_change_density()
+        if model_change_density:
+            parameters["model_change_density"] = model_change_density
+        enabled_models = self.get_model_strings()
+        if enabled_models:
+            parameters["branch_budget_hints"] = build_branch_budget_hints(
+                enabled_models,
+                max_changes_per_branch=parameters["max_changes_per_branch"],
+                model_change_density=model_change_density,
+            )
+        state = self.get_branch_run_state()
+        if state:
+            parameters["branch_run"] = build_branch_run_summary(state)
+        parameters["models"] = enabled_models
         return parameters
+
+    def get_execution_summary(self):
+        enabled_models = self.get_model_strings()
+        max_changes_per_branch = self.get_max_changes_per_branch()
+        model_change_density = self.get_model_change_density()
+        state = self.get_branch_run_state()
+        last_ingestion = self.last_ingestion
+        return build_sync_execution_summary(
+            enabled_models=enabled_models,
+            max_changes_per_branch=max_changes_per_branch,
+            model_change_density=model_change_density,
+            branch_run_state=state,
+            latest_ingestion_summary=(
+                last_ingestion.get_execution_summary() if last_ingestion else None
+            ),
+        )
+
+    def get_sync_activity(self):
+        state = self.get_branch_run_state()
+        phase_message = state.get("phase_message") or ""
+        phase = state.get("phase") or ""
+        elapsed = self._format_phase_elapsed(state.get("phase_started"))
+        if phase_message:
+            return f"{phase_message} ({elapsed})" if elapsed else phase_message
+        if phase:
+            phase_label = phase.replace("_", " ")
+            return f"{phase_label} ({elapsed})" if elapsed else phase_label
+        if self.status == ForwardSyncStatusChoices.SYNCING:
+            return "Sync is running."
+        if self.is_waiting_for_branch_merge:
+            return "Waiting for branch merge."
+        return ""
+
+    def _format_phase_elapsed(self, phase_started):
+        if not phase_started:
+            return ""
+        started = parse_datetime(str(phase_started))
+        if started is None:
+            return ""
+        if timezone.is_naive(started):
+            started = timezone.make_aware(started, timezone.get_current_timezone())
+        elapsed_seconds = max(0, int((timezone.now() - started).total_seconds()))
+        minutes, seconds = divmod(elapsed_seconds, 60)
+        hours, minutes = divmod(minutes, 60)
+        if hours:
+            return f"{hours}h {minutes}m"
+        if minutes:
+            return f"{minutes}m {seconds}s"
+        return f"{seconds}s"
 
     def is_model_enabled(self, model_string):
         parameters = self.parameters or {}
-        return parameters.get(model_string, True)
+        return parameters.get(
+            model_string,
+            model_string not in FORWARD_OPTIONAL_MODELS,
+        )
 
     def enabled_models(self):
         return [
@@ -645,6 +707,10 @@ class ForwardSync(ForwardPluginModelDocsMixin, JobsMixin, TagsMixin, ChangeLogge
 
         self.status = ForwardSyncStatusChoices.SYNCING
         ForwardSync.objects.filter(pk=self.pk).update(status=self.status)
+        self.source.status = ForwardSourceStatusChoices.SYNCING
+        ForwardSource.objects.filter(pk=self.source.pk).update(
+            status=self.source.status
+        )
         if max_changes_per_branch is None:
             max_changes_per_branch = self.get_max_changes_per_branch()
 
@@ -857,6 +923,11 @@ class ForwardIngestion(ForwardPluginModelDocsMixin, JobsMixin, models.Model):
         default="full",
     )
     baseline_ready = models.BooleanField(default=False)
+    applied_change_count = models.PositiveIntegerField(default=0)
+    failed_change_count = models.PositiveIntegerField(default=0)
+    created_change_count = models.PositiveIntegerField(default=0)
+    updated_change_count = models.PositiveIntegerField(default=0)
+    deleted_change_count = models.PositiveIntegerField(default=0)
     snapshot_info = models.JSONField(blank=True, default=dict)
     snapshot_metrics = models.JSONField(blank=True, default=dict)
     model_results = models.JSONField(blank=True, default=list)
@@ -912,6 +983,17 @@ class ForwardIngestion(ForwardPluginModelDocsMixin, JobsMixin, models.Model):
     def get_model_results_summary(self):
         return list(self.model_results or [])
 
+    def get_execution_summary(self):
+        return build_ingestion_execution_summary(
+            model_results=self.get_model_results_summary(),
+            job_logs=self.get_job_logs(self.job).get("logs", []),
+            applied_change_count=self.applied_change_count,
+            failed_change_count=self.failed_change_count,
+            created_change_count=self.created_change_count,
+            updated_change_count=self.updated_change_count,
+            deleted_change_count=self.deleted_change_count,
+        )
+
     @staticmethod
     def get_job_logs(job):
         if not job:
@@ -943,7 +1025,37 @@ class ForwardIngestion(ForwardPluginModelDocsMixin, JobsMixin, models.Model):
             total = stats.get("total", 0)
             if total:
                 statistics[model_string] = stats.get("current", 0) / total * 100
+        if not getattr(self, "num_created", 0):
+            self.num_created = self.created_change_count
+        if not getattr(self, "num_updated", 0):
+            self.num_updated = self.updated_change_count
+        if not getattr(self, "num_deleted", 0):
+            self.num_deleted = self.deleted_change_count
+        if not getattr(self, "staged_changes", 0):
+            self.staged_changes = self.applied_change_count
         return {"job_results": job_results, "statistics": statistics}
+
+    def record_change_totals(
+        self,
+        *,
+        applied,
+        failed,
+        created=0,
+        updated=0,
+        deleted=0,
+    ):
+        self.applied_change_count = max(0, int(applied))
+        self.failed_change_count = max(0, int(failed))
+        self.created_change_count = max(0, int(created))
+        self.updated_change_count = max(0, int(updated))
+        self.deleted_change_count = max(0, int(deleted))
+        ForwardIngestion.objects.filter(pk=self.pk).update(
+            applied_change_count=self.applied_change_count,
+            failed_change_count=self.failed_change_count,
+            created_change_count=self.created_change_count,
+            updated_change_count=self.updated_change_count,
+            deleted_change_count=self.deleted_change_count,
+        )
 
     def _cleanup_merged_branch(self):
         if not self.branch:

@@ -10,12 +10,20 @@ DEFAULT_MAX_CHANGES_PER_BRANCH = 10000
 BRANCH_RUN_STATE_PARAMETER = "_branch_run"
 MODEL_CHANGE_DENSITY_PARAMETER = "_model_change_density"
 DEFAULT_DENSITY_SAFETY_FACTOR = 0.7
+DEFAULT_MODEL_CHANGE_DENSITY = {
+    "dcim.cable": 3.0,
+    "dcim.module": 2.0,
+}
+MODEL_DENSITY_SAFETY_FACTORS = {
+    "dcim.cable": 0.5,
+}
 
 DEVICE_SHARD_MODELS = {
     "dcim.cable",
     "dcim.interface",
     "dcim.macaddress",
     "dcim.inventoryitem",
+    "dcim.module",
     "extras.taggeditem",
     "ipam.ipaddress",
 }
@@ -245,6 +253,8 @@ def effective_row_budget_for_model(
 
     density = (model_change_density or {}).get(model_string)
     if density is None:
+        density = DEFAULT_MODEL_CHANGE_DENSITY.get(model_string)
+    if density is None:
         return max_changes_per_branch
     try:
         density_value = float(density)
@@ -253,7 +263,13 @@ def effective_row_budget_for_model(
     if density_value <= 0:
         return max_changes_per_branch
 
-    scaled_budget = int((max_changes_per_branch * float(safety_factor)) / density_value)
+    effective_safety_factor = MODEL_DENSITY_SAFETY_FACTORS.get(
+        model_string,
+        float(safety_factor),
+    )
+    scaled_budget = int(
+        (max_changes_per_branch * float(effective_safety_factor)) / density_value
+    )
     return max(1, min(max_changes_per_branch, scaled_budget))
 
 
@@ -297,3 +313,19 @@ def build_branch_plan_with_density(
         )
         for index, item in enumerate(plan, start=1)
     ]
+
+
+def build_branch_budget_hints(
+    model_strings,
+    *,
+    max_changes_per_branch,
+    model_change_density=None,
+):
+    return {
+        model_string: effective_row_budget_for_model(
+            model_string,
+            max_changes_per_branch=max_changes_per_branch,
+            model_change_density=model_change_density,
+        )
+        for model_string in model_strings
+    }

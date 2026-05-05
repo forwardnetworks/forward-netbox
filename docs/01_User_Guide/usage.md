@@ -162,6 +162,32 @@ Optional knobs:
 
 The normal UI/API `Run Sync` path uses the same native multi-branch execution. Use the command-line smoke sync when you need explicit plan-only output or a targeted model subset.
 
+## Optional Module Import Readiness
+
+The built-in `Forward Modules` map is disabled by default. The native `dcim.module` import path is beta in `v0.6.x`: use it when you want chassis modules, line cards, supervisors, fabric modules, or routing engines modeled as native NetBox `dcim.module` objects instead of generic inventory items, and review the staged branch carefully before merging.
+
+NetBox modules require matching module bays on the device. When `dcim.module` is enabled, the sync creates missing module bays with native NetBox model operations in the same branch shard as the module import. To preview that work before enabling the model, run the readiness helper against the same Forward Sync you plan to use:
+
+```bash
+python manage.py forward_module_readiness --sync-name "Forward Sync"
+```
+
+Local Docker shortcut:
+
+```bash
+invoke forward_netbox.module-readiness --sync-name "Forward Sync"
+```
+
+Expected result:
+
+- the helper runs the module NQE map through the normal Forward API path
+- it compares every `(device, module_bay)` result to existing NetBox module bays
+- it writes `summary.json` and `netbox-module-bays.csv`
+- if you want to pre-stage module bays before the sync, import `netbox-module-bays.csv` through the native NetBox `Module Bays` import UI, then rerun the helper
+- if you do not pre-import the CSV, the sync creates the missing module bays in the native Branching diff when `dcim.module` is enabled
+
+After the readiness helper reports zero missing devices, enable the `dcim.module` model and the `Forward Modules` NQE map for the sync. SFPs and other optics remain in the inventory-item path by default. When module sync is enabled, matching generic inventory rows for module-native component classes are removed during inventory ingestion so the same hardware is not represented twice.
+
 Expected result:
 
 - the command creates or updates a disposable smoke `Source` and `Sync`

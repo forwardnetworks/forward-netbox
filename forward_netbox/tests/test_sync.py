@@ -7,24 +7,30 @@ from dcim.models import Device
 from dcim.models import DeviceRole
 from dcim.models import DeviceType
 from dcim.models import Interface
+from dcim.models import InventoryItem
 from dcim.models import Manufacturer
+from dcim.models import Module
 from dcim.models import Site
 from dcim.models import VirtualChassis
+from dcim.models.device_components import ModuleBay
+from dcim.models.modules import ModuleType
+from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 from django.test import TestCase
 from extras.models import Tag
+from ipam.models import IPAddress
 
 from forward_netbox.choices import FORWARD_SUPPORTED_MODELS
 from forward_netbox.exceptions import ForwardClientError
 from forward_netbox.exceptions import ForwardDependencySkipError
 from forward_netbox.exceptions import ForwardQueryError
-from forward_netbox.exceptions import ForwardSearchError
 from forward_netbox.exceptions import ForwardSyncDataError
 from forward_netbox.exceptions import ForwardSyncError
 from forward_netbox.models import ForwardDriftPolicy
 from forward_netbox.models import ForwardIngestion
 from forward_netbox.models import ForwardIngestionIssue
+from forward_netbox.models import ForwardNQEMap
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.models import ForwardValidationRun
@@ -39,6 +45,7 @@ from forward_netbox.utilities.multi_branch import DEFAULT_PREFLIGHT_ROW_LIMIT
 from forward_netbox.utilities.multi_branch import ForwardMultiBranchExecutor
 from forward_netbox.utilities.multi_branch import ForwardMultiBranchPlanner
 from forward_netbox.utilities.query_registry import QuerySpec
+from forward_netbox.utilities.sync import EventsClearer
 from forward_netbox.utilities.sync import ForwardSyncRunner
 from forward_netbox.utilities.sync_contracts import validate_row_shape_for_model
 
@@ -132,6 +139,35 @@ class ForwardBranchBudgetPlanTest(TestCase):
         )
 
         self.assertEqual(budget, 1400)
+
+    def test_effective_row_budget_uses_cable_default_density_and_safety(self):
+        budget = effective_row_budget_for_model(
+            "dcim.cable",
+            max_changes_per_branch=10000,
+            model_change_density={},
+        )
+
+        self.assertEqual(budget, 1666)
+
+    def test_effective_row_budget_uses_module_default_density(self):
+        budget = effective_row_budget_for_model(
+            "dcim.module",
+            max_changes_per_branch=10000,
+            model_change_density={},
+        )
+
+        self.assertEqual(budget, 3500)
+
+    def test_effective_row_budget_uses_cable_safety_override_with_observed_density(
+        self,
+    ):
+        budget = effective_row_budget_for_model(
+            "dcim.cable",
+            max_changes_per_branch=10000,
+            model_change_density={"dcim.cable": 2.0},
+        )
+
+        self.assertEqual(budget, 2500)
 
     def test_build_branch_plan_with_density_splits_more_aggressively(self):
         rows = [{"name": f"device-{index}"} for index in range(12)]
@@ -253,6 +289,243 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
             planner.build_plan(max_changes_per_branch=10, run_preflight=True)
 
         client.run_nqe_query.assert_called_once()
+
+    def test_preflight_error_explains_disabled_optional_module_map(self):
+        site_type = ContentType.objects.get(app_label="dcim", model="site")
+        module_type = ContentType.objects.get(app_label="dcim", model="module")
+        ForwardNQEMap.objects.create(
+            name="Forward Locations",
+            netbox_model=site_type,
+            query='select {name: "site-1", slug: "site-1"}',
+            coalesce_fields=[["name"]],
+            enabled=True,
+            built_in=True,
+        )
+        ForwardNQEMap.objects.create(
+            name="Forward Modules",
+            netbox_model=module_type,
+            query='select {device: "device-1", module_bay: "Slot 1"}',
+            coalesce_fields=[["device", "module_bay"]],
+            enabled=False,
+            built_in=True,
+        )
+        self.sync.get_model_strings = lambda: ["dcim.module"]
+        client = Mock()
+        client.get_snapshots.return_value = [
+            {
+                "id": "snapshot-after",
+                "state": "PROCESSED",
+                "created_at": "",
+                "processed_at": "2026-03-31T12:15:00Z",
+            }
+        ]
+        client.get_snapshot_metrics.return_value = {}
+        self.sync.resolve_snapshot_id = lambda client=None: "snapshot-after"
+        planner = ForwardMultiBranchPlanner(
+            sync=self.sync,
+            client=client,
+            logger_=Mock(),
+        )
+
+        with self.assertRaisesRegex(
+            ForwardQueryError,
+            "Enable the `Forward Modules` NQE Map or disable the `dcim.module` model",
+        ):
+            planner.build_plan(max_changes_per_branch=10, run_preflight=True)
+
+    @unittest.skipUnless(
+        CableBundle is not None, "requires NetBox with dcim.CableBundle"
+    )
+    def test_preflight_error_explains_disabled_optional_cablebundle_map(self):
+        site_type = ContentType.objects.get(app_label="dcim", model="site")
+        cablebundle_type = ContentType.objects.get(
+            app_label="dcim", model="cablebundle"
+        )
+        ForwardNQEMap.objects.create(
+            name="Forward Locations",
+            netbox_model=site_type,
+            query='select {name: "site-1", slug: "site-1"}',
+            coalesce_fields=[["name"]],
+            enabled=True,
+            built_in=True,
+        )
+        ForwardNQEMap.objects.create(
+            name="Forward Cable Bundles",
+            netbox_model=cablebundle_type,
+            query='select {name: "bundle-1"}',
+            coalesce_fields=[["name"]],
+            enabled=False,
+            built_in=True,
+        )
+        self.sync.get_model_strings = lambda: ["dcim.cablebundle"]
+        client = Mock()
+        client.get_snapshots.return_value = [
+            {
+                "id": "snapshot-after",
+                "state": "PROCESSED",
+                "created_at": "",
+                "processed_at": "2026-03-31T12:15:00Z",
+            }
+        ]
+        client.get_snapshot_metrics.return_value = {}
+        self.sync.resolve_snapshot_id = lambda client=None: "snapshot-after"
+        planner = ForwardMultiBranchPlanner(
+            sync=self.sync,
+            client=client,
+            logger_=Mock(),
+        )
+
+        with self.assertRaisesRegex(
+            ForwardQueryError,
+            "Enable the `Forward Cable Bundles` NQE Map or disable the `dcim.cablebundle` model",
+        ):
+            planner.build_plan(max_changes_per_branch=10, run_preflight=True)
+
+    @patch("forward_netbox.utilities.query_fetch.get_query_specs")
+    def test_build_plan_handles_multiple_specs_with_shared_model(self, mock_specs):
+        client = Mock()
+        client.get_snapshots.return_value = [
+            {
+                "id": "snapshot-after",
+                "state": "PROCESSED",
+                "created_at": "",
+                "processed_at": "2026-03-31T12:15:00Z",
+            }
+        ]
+        client.get_snapshot_metrics.return_value = {}
+        client.run_nqe_query.side_effect = [
+            [{"name": "site-1", "slug": "site-1"}],
+            [{"name": "site-2", "slug": "site-2"}],
+            [{"name": "site-1", "slug": "site-1"}],
+            [{"name": "site-2", "slug": "site-2"}],
+        ]
+        self.sync.resolve_snapshot_id = lambda client=None: "snapshot-after"
+        self.sync.get_model_strings = lambda: ["dcim.site"]
+        self.sync.incremental_diff_baseline = Mock(return_value=None)
+        mock_specs.return_value = [
+            QuerySpec(
+                model_string="dcim.site",
+                query_name="Forward Sites A",
+                query='select {name: "site-1", slug: "site-1"}',
+            ),
+            QuerySpec(
+                model_string="dcim.site",
+                query_name="Forward Sites B",
+                query='select {name: "site-2", slug: "site-2"}',
+            ),
+        ]
+        planner = ForwardMultiBranchPlanner(
+            sync=self.sync,
+            client=client,
+            logger_=Mock(),
+        )
+
+        context, plan = planner.build_plan(
+            max_changes_per_branch=10, run_preflight=True
+        )
+
+        self.assertEqual(context["snapshot_id"], "snapshot-after")
+        self.assertEqual(len(plan), 2)
+        self.assertEqual(
+            [result["query_name"] for result in planner.model_results],
+            [
+                "Forward Sites A",
+                "Forward Sites B",
+            ],
+        )
+        self.assertEqual(client.run_nqe_query.call_count, 4)
+        self.assertEqual(
+            sum(
+                1
+                for call in client.run_nqe_query.call_args_list
+                if call.kwargs["fetch_all"]
+            ),
+            2,
+        )
+        self.assertEqual(
+            sum(
+                1
+                for call in client.run_nqe_query.call_args_list
+                if call.kwargs.get("limit") == DEFAULT_PREFLIGHT_ROW_LIMIT
+                and not call.kwargs["fetch_all"]
+            ),
+            2,
+        )
+
+    @patch("forward_netbox.utilities.query_fetch.get_query_specs")
+    def test_build_plan_records_unassignable_ipaddress_diagnostics(self, mock_specs):
+        client = Mock()
+        client.get_snapshots.return_value = [
+            {
+                "id": "snapshot-after",
+                "state": "PROCESSED",
+                "created_at": "",
+                "processed_at": "2026-03-31T12:15:00Z",
+            }
+        ]
+        client.get_snapshot_metrics.return_value = {}
+        client.run_nqe_query.side_effect = [
+            [
+                {
+                    "device": "device-1",
+                    "interface": "Ethernet1/1",
+                    "address": "10.0.0.1/24",
+                    "vrf": None,
+                    "status": "active",
+                }
+            ],
+            [
+                {
+                    "reason": "ipv4-subnet-network-id",
+                    "device": "device-1",
+                    "interface": "VLAN699",
+                    "address": "11.138.0.16/28",
+                },
+                {
+                    "reason": "ipv4-broadcast-address",
+                    "device": "device-1",
+                    "interface": "VLAN699",
+                    "address": "11.138.0.31/28",
+                },
+            ],
+        ]
+        self.sync.resolve_snapshot_id = lambda client=None: "snapshot-after"
+        self.sync.get_model_strings = lambda: ["ipam.ipaddress"]
+        self.sync.incremental_diff_baseline = Mock(return_value=None)
+        mock_specs.return_value = [
+            QuerySpec(
+                model_string="ipam.ipaddress",
+                query_name="Forward IP Addresses",
+                query=(
+                    'select {device: "device-1", interface: "Ethernet1/1", '
+                    'address: ipSubnet("10.0.0.1/24"), vrf: null:String, '
+                    'status: "active"}'
+                ),
+            )
+        ]
+        logger = Mock()
+        planner = ForwardMultiBranchPlanner(
+            sync=self.sync,
+            client=client,
+            logger_=logger,
+        )
+
+        planner.build_plan(max_changes_per_branch=10, run_preflight=False)
+
+        diagnostic = planner.model_results[0]["diagnostics"][0]
+        self.assertEqual(diagnostic["total"], 2)
+        self.assertEqual(
+            diagnostic["counts"],
+            {
+                "ipv4-subnet-network-id": 1,
+                "ipv4-broadcast-address": 1,
+            },
+        )
+        self.assertEqual(len(diagnostic["examples"]), 2)
+        warning_messages = [call.args[0] for call in logger.log_warning.call_args_list]
+        self.assertIn("filtered 2 interface addresses", warning_messages[0])
+        self.assertIn("11.138.0.16/28", warning_messages[1])
+        self.assertIn("11.138.0.31/28", warning_messages[2])
 
 
 class ForwardMultiBranchExecutorAdaptiveSplitTest(TestCase):
@@ -462,6 +735,17 @@ class ForwardSyncRunnerTest(TestCase):
             status="active",
         )
 
+    def _create_module_bay(self, device, name="Slot 1", position="1"):
+        values = {
+            "device": device,
+            "name": name,
+            "label": name,
+            "position": position,
+        }
+        if any(field.name == "enabled" for field in ModuleBay._meta.fields):
+            values["enabled"] = True
+        return ModuleBay.objects.create(**values)
+
     def test_lookup_interface_requires_exact_name(self):
         device = self._create_device("device-1")
         interface = Interface.objects.create(
@@ -534,6 +818,86 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertNotIn(tag, device.tags.all())
         self.assertFalse(runner._delete_extras_taggeditem(row))
 
+    def test_apply_dcim_inventoryitem_sets_native_optional_fields(self):
+        device = self._create_device("device-1")
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        runner._apply_dcim_inventoryitem(
+            {
+                "device": "device-1",
+                "manufacturer": "vendor-1",
+                "manufacturer_slug": "vendor-1",
+                "name": "Power Supply 1",
+                "label": "PSU 1",
+                "part_id": "",
+                "serial": "",
+                "asset_tag": "ASSET-1",
+                "role": "POWER SUPPLY",
+                "role_slug": "power-supply",
+                "role_color": "ff9800",
+                "part_type": "POWER SUPPLY",
+                "module_component": False,
+                "status": "active",
+                "discovered": True,
+                "description": "Version: V01",
+            }
+        )
+
+        item = InventoryItem.objects.get(device=device, name="Power Supply 1")
+        self.assertEqual(item.label, "PSU 1")
+        self.assertEqual(item.part_id, "")
+        self.assertEqual(item.serial, "")
+        self.assertEqual(item.asset_tag, "ASSET-1")
+        self.assertEqual(item.role.slug, "power-supply")
+        self.assertEqual(item.role.color, "ff9800")
+        self.assertEqual(item.description, "Version: V01")
+
+    def test_apply_dcim_inventoryitem_cleans_module_backed_rows_when_modules_enabled(
+        self,
+    ):
+        device = self._create_device("device-1")
+        InventoryItem.objects.create(
+            device=device,
+            name="Slot 1",
+            part_id="LC-1",
+            serial="SN-1",
+            status="active",
+            discovered=True,
+        )
+        self.sync.parameters = {**self.sync.parameters, "dcim.module": True}
+        self.sync.save(update_fields=["parameters"])
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        result = runner._apply_dcim_inventoryitem(
+            {
+                "device": "device-1",
+                "manufacturer": "vendor-1",
+                "manufacturer_slug": "vendor-1",
+                "name": "Slot 1",
+                "label": "Slot 1",
+                "part_id": "LC-1",
+                "serial": "SN-1",
+                "asset_tag": None,
+                "role": "LINE CARD",
+                "role_slug": "line-card",
+                "role_color": "3f51b5",
+                "part_type": "LINE CARD",
+                "module_component": True,
+                "status": "active",
+                "discovered": True,
+                "description": "Line card",
+            }
+        )
+
+        self.assertIsNone(result)
+        self.assertFalse(
+            InventoryItem.objects.filter(device=device, name="Slot 1").exists()
+        )
+
     def test_apply_dcim_cable_creates_cable_between_interfaces(self):
         device = self._create_device("device-a")
         remote_device = self._create_device("device-b")
@@ -603,7 +967,7 @@ class ForwardSyncRunnerTest(TestCase):
 
         self.assertEqual(Cable.objects.count(), 1)
 
-    def test_apply_dcim_cable_rejects_conflicting_existing_cable(self):
+    def test_apply_dcim_cable_skips_conflicting_existing_cable(self):
         device = self._create_device("device-a")
         remote_device = self._create_device("device-b")
         other_device = self._create_device("device-c")
@@ -627,20 +991,73 @@ class ForwardSyncRunnerTest(TestCase):
             b_terminations=[other_interface],
             status="connected",
         ).save()
+        logger = Mock()
         runner = ForwardSyncRunner(
-            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+            sync=self.sync, ingestion=None, client=None, logger_=logger
         )
 
-        with self.assertRaises(ForwardSearchError):
-            runner._apply_dcim_cable(
-                {
-                    "device": "device-a",
-                    "interface": "Ethernet1/1",
-                    "remote_device": "device-b",
-                    "remote_interface": "Ethernet1/2",
-                    "status": "connected",
-                }
-            )
+        result = runner._apply_dcim_cable(
+            {
+                "device": "device-a",
+                "interface": "Ethernet1/1",
+                "remote_device": "device-b",
+                "remote_interface": "Ethernet1/2",
+                "status": "connected",
+            }
+        )
+
+        self.assertFalse(result)
+        self.assertEqual(Cable.objects.count(), 1)
+        logger.log_warning.assert_called_once()
+
+    def test_apply_dcim_cable_aggregates_conflict_warnings(self):
+        device = self._create_device("device-a")
+        remote_device = self._create_device("device-b")
+        other_device = self._create_device("device-c")
+        interface = Interface.objects.create(
+            device=device,
+            name="Ethernet1/1",
+            type="1000base-t",
+        )
+        Interface.objects.create(
+            device=remote_device,
+            name="Ethernet1/2",
+            type="1000base-t",
+        )
+        other_interface = Interface.objects.create(
+            device=other_device,
+            name="Ethernet1/3",
+            type="1000base-t",
+        )
+        Cable(
+            a_terminations=[interface],
+            b_terminations=[other_interface],
+            status="connected",
+        ).save()
+        logger = Mock()
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=logger
+        )
+        rows = [
+            {
+                "device": "device-a",
+                "interface": "Ethernet1/1",
+                "remote_device": "device-b",
+                "remote_interface": "Ethernet1/2",
+                "status": "connected",
+            }
+            for _ in range(ForwardSyncRunner.CONFLICT_WARNING_DETAIL_LIMIT + 3)
+        ]
+
+        runner._apply_model_rows("dcim.cable", rows)
+
+        warning_messages = [call.args[0] for call in logger.log_warning.call_args_list]
+        self.assertEqual(len(warning_messages), 21)
+        self.assertEqual(
+            warning_messages[-1],
+            "Suppressed 3 additional dcim.cable conflict warnings for "
+            "`interface-already-cabled` after the first 20.",
+        )
 
     def test_apply_dcim_cable_skips_unknown_remote_device(self):
         device = self._create_device("device-a")
@@ -742,6 +1159,152 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertEqual(CableBundle.objects.count(), 0)
         self.assertFalse(runner._delete_dcim_cablebundle({"name": "bundle-a"}))
 
+    def test_apply_dcim_module_creates_module_when_module_bay_exists(self):
+        device = self._create_device("device-a")
+        module_bay = self._create_module_bay(device)
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "device": device.name,
+            "module_bay": "Slot 1",
+            "manufacturer": "vendor-1",
+            "manufacturer_slug": "vendor-1",
+            "model": "Line Card 1",
+            "part_number": "LC-1",
+            "status": "active",
+            "serial": "SN-1",
+            "asset_tag": "AT-1",
+            "description": "line card",
+        }
+
+        runner._apply_dcim_module(row)
+
+        module = Module.objects.get(device=device, module_bay=module_bay)
+        self.assertEqual(module_bay.label, "Slot 1")
+        self.assertEqual(module.module_type.manufacturer.slug, "vendor-1")
+        self.assertEqual(module.module_type.model, "Line Card 1")
+        self.assertEqual(module.module_type.part_number, "LC-1")
+        self.assertEqual(module.status, "active")
+        self.assertEqual(module.serial, "SN-1")
+        self.assertEqual(module.asset_tag, "AT-1")
+
+    def test_apply_dcim_module_creates_missing_module_bay_natively(self):
+        device = self._create_device("device-a")
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "device": device.name,
+            "module_bay": "Slot 2",
+            "manufacturer": "vendor-1",
+            "manufacturer_slug": "vendor-1",
+            "model": "Line Card 1",
+            "part_number": "LC-1",
+            "status": "active",
+        }
+
+        runner._apply_dcim_module(row)
+
+        module_bay = ModuleBay.objects.get(device=device, name="Slot 2")
+        module = Module.objects.get(device=device, module_bay=module_bay)
+        self.assertEqual(module_bay.label, "Slot 2")
+        self.assertEqual(module_bay.position, "2")
+        self.assertEqual(module.module_type.model, "Line Card 1")
+
+    def test_apply_dcim_module_reuses_existing_module_bay_and_module_type(self):
+        device = self._create_device("device-a")
+        manufacturer = Manufacturer.objects.get(slug="vendor-1")
+        module_type = ModuleType.objects.create(
+            manufacturer=manufacturer,
+            model="Line Card 1",
+            part_number="LC-1",
+            description="",
+            comments="",
+        )
+        module_bay = self._create_module_bay(device)
+        module = Module.objects.create(
+            device=device,
+            module_bay=module_bay,
+            module_type=module_type,
+            status="active",
+            serial="SN-1",
+            asset_tag="AT-1",
+            description="line card",
+            comments="",
+        )
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        row = {
+            "device": device.name,
+            "module_bay": "Slot 1",
+            "manufacturer": "vendor-1",
+            "manufacturer_slug": "vendor-1",
+            "model": "Line Card 1",
+            "part_number": "LC-1",
+            "status": "active",
+            "serial": "SN-2",
+            "asset_tag": "AT-2",
+            "description": "line card",
+        }
+
+        runner._apply_dcim_module(row)
+
+        module.refresh_from_db()
+        self.assertEqual(module.pk, Module.objects.get(pk=module.pk).pk)
+        self.assertEqual(module.status, "active")
+        self.assertEqual(module.serial, "SN-2")
+        self.assertEqual(module.asset_tag, "AT-2")
+        self.assertEqual(module.module_bay, module_bay)
+        self.assertEqual(
+            ModuleType.objects.filter(
+                manufacturer=manufacturer, model="Line Card 1"
+            ).count(),
+            1,
+        )
+
+    def test_delete_dcim_module_deletes_exact_module(self):
+        device = self._create_device("device-a")
+        manufacturer = Manufacturer.objects.get(slug="vendor-1")
+        module_type = ModuleType.objects.create(
+            manufacturer=manufacturer,
+            model="Line Card 1",
+            part_number="LC-1",
+            description="",
+            comments="",
+        )
+        module_bay = self._create_module_bay(device)
+        Module.objects.create(
+            device=device,
+            module_bay=module_bay,
+            module_type=module_type,
+            status="active",
+            serial="SN-1",
+            asset_tag="AT-1",
+            description="line card",
+            comments="",
+        )
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "device": device.name,
+            "module_bay": "Slot 1",
+            "manufacturer": "vendor-1",
+            "manufacturer_slug": "vendor-1",
+            "model": "Line Card 1",
+            "part_number": "LC-1",
+            "status": "active",
+        }
+
+        self.assertTrue(runner._delete_dcim_module(row))
+        self.assertFalse(runner._delete_dcim_module(row))
+        self.assertEqual(
+            ModuleBay.objects.filter(device=device, name="Slot 1").count(), 1
+        )
+
     def test_split_diff_rows_treats_reversed_cable_endpoints_as_same_identity(self):
         runner = ForwardSyncRunner(
             sync=self.sync, ingestion=None, client=None, logger_=Mock()
@@ -826,6 +1389,64 @@ class ForwardSyncRunnerTest(TestCase):
             },
             [["address", "vrf"], ["address"]],
         )
+
+    def test_apply_ipam_ipaddress_skips_unassignable_network_and_broadcast_addresses(
+        self,
+    ):
+        device = self._create_device("device-1")
+        Interface.objects.create(device=device, name="VLAN699", type="virtual")
+        logger = Mock()
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=logger
+        )
+
+        runner._apply_model_rows(
+            "ipam.ipaddress",
+            [
+                {
+                    "device": "device-1",
+                    "interface": "VLAN699",
+                    "address": "11.138.0.16/28",
+                    "vrf": None,
+                    "status": "active",
+                },
+                {
+                    "device": "device-1",
+                    "interface": "VLAN699",
+                    "address": "11.138.0.31/28",
+                    "vrf": None,
+                    "status": "active",
+                },
+            ],
+        )
+
+        self.assertEqual(IPAddress.objects.count(), 0)
+        warning_messages = [call.args[0] for call in logger.log_warning.call_args_list]
+        self.assertEqual(len(warning_messages), 2)
+        self.assertIn("subnet network IDs", warning_messages[0])
+        self.assertIn("broadcast addresses", warning_messages[1])
+        logger.increment_statistics.assert_any_call("ipam.ipaddress", outcome="skipped")
+
+    def test_apply_ipam_ipaddress_allows_point_to_point_endpoint_addresses(self):
+        device = self._create_device("device-1")
+        Interface.objects.create(device=device, name="Ethernet1/1", type="1000base-t")
+        logger = Mock()
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=logger
+        )
+
+        runner._apply_ipam_ipaddress(
+            {
+                "device": "device-1",
+                "interface": "Ethernet1/1",
+                "address": "10.0.0.0/31",
+                "vrf": None,
+                "status": "active",
+            }
+        )
+
+        self.assertEqual(str(IPAddress.objects.get().address), "10.0.0.0/31")
+        logger.log_warning.assert_not_called()
 
     def test_validate_row_shape_allows_cable_endpoint_identity(self):
         validate_row_shape_for_model(
@@ -1527,3 +2148,28 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertEqual(device.virtual_chassis, vc)
         self.assertEqual(device.vc_position, 2)
         self.assertEqual(VirtualChassis.objects.get(pk=vc.pk).domain, "100")
+
+
+class EventsClearerTest(TestCase):
+    @patch(
+        "forward_netbox.utilities.sync.transaction.on_commit",
+        side_effect=lambda callback: callback(),
+    )
+    @patch("forward_netbox.utilities.sync.clear_events.send")
+    @patch("forward_netbox.utilities.sync.flush_events")
+    @patch("forward_netbox.utilities.sync.events_queue")
+    def test_events_clearer_flushes_on_commit(
+        self,
+        mock_events_queue,
+        mock_flush_events,
+        mock_clear_events_send,
+        mock_on_commit,
+    ):
+        mock_events_queue.get.return_value = {
+            "event-1": {"event_type": "create"},
+        }
+        clearer = EventsClearer()
+        clearer.clear()
+        mock_on_commit.assert_called_once()
+        mock_flush_events.assert_called_once_with([{"event_type": "create"}])
+        mock_clear_events_send.assert_called_once_with(sender=None)

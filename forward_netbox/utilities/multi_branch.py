@@ -1,5 +1,6 @@
 from core.exceptions import SyncError
 from core.models import ObjectType
+from django.utils import timezone
 from netbox_branching.choices import BranchStatusChoices
 from netbox_branching.models import Branch
 
@@ -9,8 +10,10 @@ from .branch_budget import BranchWorkload
 from .branch_budget import build_branch_plan_with_density
 from .branch_budget import DEFAULT_DENSITY_SAFETY_FACTOR
 from .branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
+from .branch_budget import effective_row_budget_for_model
 from .branch_budget import split_workload
 from .execution import NativeBranchExecutionBackend
+from .execution_telemetry import build_plan_preview
 from .query_fetch import DEFAULT_PREFLIGHT_ROW_LIMIT  # noqa: F401
 from .query_fetch import ForwardQueryFetcher
 from .validation import ForwardValidationRunner
@@ -110,6 +113,10 @@ class ForwardMultiBranchExecutor:
 
     def run(self, *, max_changes_per_branch=DEFAULT_MAX_CHANGES_PER_BRANCH):
         self.max_changes_per_branch = max_changes_per_branch
+        self._set_runtime_phase(
+            "initializing",
+            "Starting sync preflight.",
+        )
         run_state = self.sync.get_branch_run_state()
         persisted_density = self.sync.get_model_change_density()
         run_state_density = run_state.get("model_change_density") or {}
@@ -126,12 +133,26 @@ class ForwardMultiBranchExecutor:
                 "Forward sync is waiting for the current shard branch to be merged."
             )
         next_plan_index = int(run_state.get("next_plan_index") or 1)
+        self._set_runtime_phase(
+            "planning",
+            "Resolving snapshot, running query preflight, and building shard plan.",
+            next_plan_index=next_plan_index,
+        )
         context, plan = self.plan(
             max_changes_per_branch=max_changes_per_branch,
             run_preflight=next_plan_index <= 1,
             model_change_density=self.model_change_density,
         )
+        plan_preview = build_plan_preview(
+            plan,
+            max_changes_per_branch=self.max_changes_per_branch,
+        )
         if next_plan_index <= 1:
+            self._set_runtime_phase(
+                "validating",
+                "Recording plan validation results.",
+                total_plan_items=len(plan),
+            )
             self.last_validation_run = ForwardValidationRunner(
                 self.sync,
                 self.client,
@@ -166,6 +187,9 @@ class ForwardMultiBranchExecutor:
                 "awaiting_merge": False,
                 "model_change_density": self.model_change_density,
                 "validation_run_id": getattr(self.last_validation_run, "pk", None),
+                "plan_preview": plan_preview,
+                "phase": "executing",
+                "phase_message": "Applying planned shard changes.",
             }
         )
 
@@ -174,6 +198,12 @@ class ForwardMultiBranchExecutor:
         while current_index < len(plan):
             item = plan[current_index]
             is_final = current_index == len(plan) - 1
+            self._set_runtime_phase(
+                "executing",
+                f"Applying shard {item.index}/{len(plan)} for {item.model_string}.",
+                next_plan_index=item.index,
+                total_plan_items=len(plan),
+            )
             try:
                 ingestion = self._run_plan_item(
                     item,
@@ -181,6 +211,7 @@ class ForwardMultiBranchExecutor:
                     mark_baseline_ready=is_final,
                     merge=self.sync.auto_merge,
                     total_plan_items=len(plan),
+                    plan_preview=plan_preview,
                 )
             except BranchBudgetExceeded as exc:
                 self._record_model_density(
@@ -217,6 +248,10 @@ class ForwardMultiBranchExecutor:
                             "pk",
                             None,
                         ),
+                        "plan_preview": build_plan_preview(
+                            plan,
+                            max_changes_per_branch=self.max_changes_per_branch,
+                        ),
                     }
                 )
                 continue
@@ -228,6 +263,26 @@ class ForwardMultiBranchExecutor:
 
         self.sync.clear_branch_run_state()
         return ingestions
+
+    def _set_runtime_phase(
+        self,
+        phase,
+        message,
+        *,
+        next_plan_index=None,
+        total_plan_items=None,
+    ):
+        state = self.sync.get_branch_run_state()
+        if next_plan_index is not None:
+            state["next_plan_index"] = int(next_plan_index)
+        if total_plan_items is not None:
+            state["total_plan_items"] = int(total_plan_items)
+        if state.get("phase") != str(phase):
+            state["phase_started"] = timezone.now().isoformat()
+        state["phase"] = str(phase)
+        state["phase_message"] = str(message)
+        self.sync.set_branch_run_state(state)
+        self.logger.log_info(message, obj=self.sync)
 
     def _create_noop_ingestion(self, context):
         from ..models import ForwardIngestion
@@ -250,7 +305,14 @@ class ForwardMultiBranchExecutor:
         return ingestion
 
     def _run_plan_item(
-        self, item, context, *, mark_baseline_ready, merge, total_plan_items
+        self,
+        item,
+        context,
+        *,
+        mark_baseline_ready,
+        merge,
+        total_plan_items,
+        plan_preview,
     ):
         from ..models import ForwardIngestion
 
@@ -330,6 +392,7 @@ class ForwardMultiBranchExecutor:
                     "pending_is_final": mark_baseline_ready,
                     "model_change_density": self.model_change_density,
                     "validation_run_id": getattr(self.last_validation_run, "pk", None),
+                    "plan_preview": plan_preview,
                 }
             )
             self.sync.status = ForwardSyncStatusChoices.READY_TO_MERGE
@@ -357,6 +420,7 @@ class ForwardMultiBranchExecutor:
                     "awaiting_merge": False,
                     "model_change_density": self.model_change_density,
                     "validation_run_id": getattr(self.last_validation_run, "pk", None),
+                    "plan_preview": plan_preview,
                 }
             )
         return ingestion
@@ -397,10 +461,11 @@ class ForwardMultiBranchExecutor:
         self.sync.set_model_change_density(self.model_change_density)
 
     def _split_overflow_item(self, item):
-        density = self.model_change_density.get(item.model_string) or 1.0
-        row_budget = int(
-            (self.max_changes_per_branch * DEFAULT_DENSITY_SAFETY_FACTOR)
-            / float(density)
+        row_budget = effective_row_budget_for_model(
+            item.model_string,
+            max_changes_per_branch=self.max_changes_per_branch,
+            model_change_density=self.model_change_density,
+            safety_factor=DEFAULT_DENSITY_SAFETY_FACTOR,
         )
         row_budget = max(AUTO_SPLIT_MIN_ROWS_PER_BRANCH, row_budget)
         if row_budget >= item.estimated_changes:

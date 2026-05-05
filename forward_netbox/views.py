@@ -59,30 +59,58 @@ from .tables import ForwardValidationRunTable
 
 def annotate_statistics(queryset):
     return queryset.annotate(
-        num_created=models.Count(
-            "branch__changediff",
-            filter=models.Q(
-                branch__changediff__action=ObjectChangeActionChoices.ACTION_CREATE
-            )
-            & ~models.Q(branch__changediff__object_type__model="objectchange"),
+        num_created=models.Case(
+            models.When(
+                branch__isnull=True,
+                then=models.F("created_change_count"),
+            ),
+            default=models.Count(
+                "branch__changediff",
+                filter=models.Q(
+                    branch__changediff__action=ObjectChangeActionChoices.ACTION_CREATE
+                )
+                & ~models.Q(branch__changediff__object_type__model="objectchange"),
+            ),
+            output_field=models.IntegerField(),
         ),
-        num_updated=models.Count(
-            "branch__changediff",
-            filter=models.Q(
-                branch__changediff__action=ObjectChangeActionChoices.ACTION_UPDATE
-            )
-            & ~models.Q(branch__changediff__object_type__model="objectchange"),
+        num_updated=models.Case(
+            models.When(
+                branch__isnull=True,
+                then=models.F("updated_change_count"),
+            ),
+            default=models.Count(
+                "branch__changediff",
+                filter=models.Q(
+                    branch__changediff__action=ObjectChangeActionChoices.ACTION_UPDATE
+                )
+                & ~models.Q(branch__changediff__object_type__model="objectchange"),
+            ),
+            output_field=models.IntegerField(),
         ),
-        num_deleted=models.Count(
-            "branch__changediff",
-            filter=models.Q(
-                branch__changediff__action=ObjectChangeActionChoices.ACTION_DELETE
-            )
-            & ~models.Q(branch__changediff__object_type__model="objectchange"),
+        num_deleted=models.Case(
+            models.When(
+                branch__isnull=True,
+                then=models.F("deleted_change_count"),
+            ),
+            default=models.Count(
+                "branch__changediff",
+                filter=models.Q(
+                    branch__changediff__action=ObjectChangeActionChoices.ACTION_DELETE
+                )
+                & ~models.Q(branch__changediff__object_type__model="objectchange"),
+            ),
+            output_field=models.IntegerField(),
         ),
         description=models.F("branch__description"),
         user=models.F("sync__user__username"),
-        staged_changes=models.Count(models.F("branch__changediff")),
+        staged_changes=models.Case(
+            models.When(
+                branch__isnull=True,
+                then=models.F("applied_change_count"),
+            ),
+            default=models.Count(models.F("branch__changediff")),
+            output_field=models.IntegerField(),
+        ),
         branch_name=models.F("branch__name"),
         sync_name=models.F("sync__name"),
     )

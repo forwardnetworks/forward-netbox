@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime
 from datetime import timedelta
 
 from core.choices import JobStatusChoices
@@ -21,13 +22,45 @@ from .utilities.validation import ForwardValidationRunner
 logger = logging.getLogger(__name__)
 
 
+def _normalize_job_log_level(level):
+    return {
+        "success": "info",
+        "failure": "error",
+    }.get(level, level)
+
+
+def _build_job_log_entries(log_data):
+    entries = []
+    for entry in (log_data or {}).get("logs", []):
+        if not isinstance(entry, (list, tuple)) or len(entry) < 5:
+            continue
+        timestamp = entry[0]
+        if isinstance(timestamp, str):
+            try:
+                timestamp = datetime.fromisoformat(timestamp)
+            except ValueError:
+                timestamp = local_now()
+        entries.append(
+            {
+                "timestamp": timestamp,
+                "level": _normalize_job_log_level(entry[1]),
+                "message": entry[4],
+            }
+        )
+    return entries
+
+
 def safe_save_job_data(job, obj_with_logger):
     try:
         if hasattr(obj_with_logger, "logger") and hasattr(
             obj_with_logger.logger, "log_data"
         ):
-            job.data = obj_with_logger.logger.log_data
-            job.save(update_fields=["data"])
+            log_data = obj_with_logger.logger.log_data
+            update_fields = ["data"]
+            job.data = log_data
+            job.log_entries = _build_job_log_entries(log_data)
+            update_fields.append("log_entries")
+            job.save(update_fields=update_fields)
     except Exception as exc:
         logger.warning("Failed to save job data for job %s: %s", job.pk, exc)
 

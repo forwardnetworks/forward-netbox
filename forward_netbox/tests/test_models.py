@@ -10,6 +10,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from forward_netbox.choices import ForwardDriftPolicyBaselineChoices
+from forward_netbox.choices import ForwardSourceStatusChoices
 from forward_netbox.choices import ForwardSyncStatusChoices
 from forward_netbox.jobs import sync_forwardsync
 from forward_netbox.models import ForwardDriftPolicy
@@ -21,10 +22,18 @@ from forward_netbox.models import ForwardSync
 from forward_netbox.models import ForwardValidationRun
 from forward_netbox.signals import seed_builtin_nqe_maps
 from forward_netbox.tables import ForwardSyncTable
+from forward_netbox.utilities.branch_budget import build_branch_budget_hints
 from forward_netbox.utilities.branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
+from forward_netbox.utilities.execution_telemetry import build_branch_run_summary
+from forward_netbox.utilities.execution_telemetry import (
+    build_ingestion_execution_summary,
+)
+from forward_netbox.utilities.execution_telemetry import build_plan_preview
+from forward_netbox.utilities.execution_telemetry import build_sync_execution_summary
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from forward_netbox.utilities.query_registry import builtin_nqe_map_rows
 from forward_netbox.utilities.query_registry import QuerySpec
+from forward_netbox.views import annotate_statistics
 
 
 class ForwardSyncModelTest(TestCase):
@@ -39,7 +48,7 @@ class ForwardSyncModelTest(TestCase):
                 "verify": True,
                 "timeout": 1200,
                 "network_id": "test-network",
-                "nqe_page_size": 1000,
+                "nqe_page_size": 10000,
             },
         )
 
@@ -110,6 +119,117 @@ class ForwardSyncModelTest(TestCase):
         self.assertFalse(sync.get_display_parameters()["auto_merge"])
         self.assertFalse(sync.auto_merge)
 
+    def test_display_parameters_include_branch_phase_details(self):
+        sync = ForwardSync.objects.create(
+            name="sync-display-phase",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+            },
+        )
+        sync.set_branch_run_state(
+            {
+                "snapshot_id": "snapshot-1",
+                "next_plan_index": 1,
+                "total_plan_items": 3,
+                "awaiting_merge": False,
+                "phase": "planning",
+                "phase_message": "Building shard plan.",
+            }
+        )
+
+        params = sync.get_display_parameters()
+
+        self.assertIn("branch_run", params)
+        self.assertEqual(params["branch_run"]["phase"], "planning")
+        self.assertEqual(params["branch_run"]["phase_message"], "Building shard plan.")
+        self.assertEqual(params["branch_run"]["plan_preview"], {})
+
+    def test_display_parameters_include_branch_budget_hints(self):
+        sync = ForwardSync.objects.create(
+            name="sync-display-budget",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.cable": True,
+            },
+        )
+
+        params = sync.get_display_parameters()
+
+        self.assertIn("branch_budget_hints", params)
+        self.assertEqual(params["branch_budget_hints"]["dcim.cable"], 1666)
+        self.assertNotIn("model_change_density", params)
+
+    def test_display_parameters_include_model_change_density_when_present(self):
+        sync = ForwardSync.objects.create(
+            name="sync-display-density",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.cable": True,
+            },
+        )
+        sync.set_model_change_density({"dcim.cable": 2.0})
+
+        params = sync.get_display_parameters()
+
+        self.assertEqual(params["model_change_density"]["dcim.cable"], 2.0)
+        self.assertEqual(params["branch_budget_hints"]["dcim.cable"], 2500)
+
+    def test_optional_module_model_is_disabled_by_default(self):
+        sync = ForwardSync.objects.create(
+            name="sync-optional-module-default",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+            },
+        )
+
+        self.assertFalse(sync.is_model_enabled("dcim.module"))
+        self.assertNotIn("dcim.module", sync.enabled_models())
+
+    def test_get_sync_activity_prefers_phase_message(self):
+        sync = ForwardSync.objects.create(
+            name="sync-activity-phase-msg",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+            },
+        )
+        sync.set_branch_run_state(
+            {
+                "phase": "planning",
+                "phase_message": "Resolving snapshot context.",
+            }
+        )
+
+        self.assertEqual(sync.get_sync_activity(), "Resolving snapshot context.")
+
+    def test_get_sync_activity_appends_elapsed_phase_time(self):
+        sync = ForwardSync.objects.create(
+            name="sync-activity-phase-elapsed",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+            },
+        )
+        started = (timezone.now() - timedelta(minutes=2, seconds=5)).isoformat()
+        sync.set_branch_run_state(
+            {
+                "phase": "planning",
+                "phase_message": "Resolving snapshot context.",
+                "phase_started": started,
+            }
+        )
+
+        activity = sync.get_sync_activity()
+        self.assertIn("Resolving snapshot context.", activity)
+        self.assertRegex(activity, r"\(\d+m \d+s\)$")
+
     def test_save_forces_native_branching_execution_flags(self):
         sync = ForwardSync.objects.create(
             name="sync-forced-branching-save",
@@ -157,6 +277,151 @@ class ForwardSyncModelTest(TestCase):
             {"dcim.device": 9.9, "dcim.interface": 4.2},
         )
 
+    def test_shared_telemetry_helpers_build_consistent_shapes(self):
+        plan_preview = build_plan_preview([], max_changes_per_branch=10000)
+        self.assertEqual(plan_preview["planned_shards"], 0)
+        self.assertEqual(plan_preview["models"], {})
+
+        branch_run = build_branch_run_summary(
+            {
+                "snapshot_id": "snapshot-2",
+                "next_plan_index": 4,
+                "total_plan_items": 9,
+                "awaiting_merge": True,
+                "phase": "executing",
+                "phase_message": "Applying planned shard changes.",
+            }
+        )
+        self.assertEqual(branch_run["snapshot_id"], "snapshot-2")
+        self.assertTrue(branch_run["awaiting_merge"])
+        self.assertEqual(branch_run["phase"], "executing")
+
+        hints = build_branch_budget_hints(
+            ["dcim.cable", "dcim.device"],
+            max_changes_per_branch=10000,
+            model_change_density={"dcim.cable": 2.0},
+        )
+        self.assertEqual(hints["dcim.cable"], 2500)
+        self.assertEqual(hints["dcim.device"], 10000)
+
+        ingestion_summary = build_ingestion_execution_summary(
+            model_results=[],
+            job_logs=[],
+            applied_change_count=0,
+            failed_change_count=0,
+            created_change_count=0,
+            updated_change_count=0,
+            deleted_change_count=0,
+        )
+        self.assertEqual(ingestion_summary["model_count"], 0)
+        self.assertEqual(ingestion_summary["retry_count"], 0)
+        self.assertEqual(ingestion_summary["model_results"], [])
+
+        sync_summary = build_sync_execution_summary(
+            enabled_models=["dcim.cable"],
+            max_changes_per_branch=10000,
+            model_change_density={"dcim.cable": 2.0},
+            branch_run_state={"plan_preview": plan_preview},
+            latest_ingestion_summary=ingestion_summary,
+        )
+        self.assertEqual(sync_summary["branch_budget_hints"]["dcim.cable"], 2500)
+        self.assertEqual(sync_summary["pre_run_estimate"]["planned_shards"], 0)
+        self.assertEqual(sync_summary["latest_ingestion"]["retry_count"], 0)
+
+    def test_execution_summary_includes_latest_ingestion_telemetry(self):
+        sync = ForwardSync.objects.create(
+            name="sync-execution-summary",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.cable": True,
+            },
+        )
+        ingestion = ForwardIngestion.objects.create(
+            sync=sync,
+            model_results=[
+                {
+                    "model": "dcim.cable",
+                    "query_name": "Forward Cabling",
+                    "runtime_ms": 12.5,
+                    "row_count": 2,
+                    "delete_count": 1,
+                    "estimated_changes": 5,
+                    "branch_plan_index": 1,
+                    "branch_plan_total": 3,
+                },
+                {
+                    "model": "dcim.device",
+                    "query_name": "Forward Devices",
+                    "runtime_ms": 8.0,
+                    "row_count": 10,
+                    "delete_count": 0,
+                    "branch_plan_index": 2,
+                    "branch_plan_total": 3,
+                },
+            ],
+            applied_change_count=17,
+            failed_change_count=2,
+            created_change_count=10,
+            updated_change_count=5,
+            deleted_change_count=2,
+        )
+        sync.set_branch_run_state(
+            {
+                "phase": "planning",
+                "phase_message": "Planning shard layout.",
+                "plan_preview": {
+                    "planned_shards": 3,
+                    "estimated_changes": 15,
+                    "model_count": 2,
+                    "retry_risk": "medium",
+                    "slowest_model": {
+                        "model": "dcim.cable",
+                        "query_name": "Forward Cabling",
+                        "estimated_changes": 5,
+                        "query_runtime_ms": 12.5,
+                    },
+                },
+            }
+        )
+
+        with patch.object(
+            ForwardIngestion,
+            "get_job_logs",
+            return_value={
+                "logs": [
+                    (
+                        "2026-05-03T10:00:00Z",
+                        "warning",
+                        None,
+                        None,
+                        "Branch budget retry: shard produced 22 changes against budget 10; auto-splitting and retrying.",
+                    ),
+                    (
+                        "2026-05-03T10:00:01Z",
+                        "info",
+                        None,
+                        None,
+                        "Forward ingestion completed.",
+                    ),
+                ]
+            },
+        ):
+            summary = ingestion.get_execution_summary()
+            sync_summary = sync.get_execution_summary()
+
+        self.assertEqual(summary["model_count"], 2)
+        self.assertEqual(summary["shard_count"], 3)
+        self.assertEqual(summary["retry_count"], 1)
+        self.assertEqual(summary["estimated_changes"], 15)
+        self.assertEqual(summary["runtime_ms"], 20.5)
+        self.assertEqual(summary["slowest_model"]["model"], "dcim.cable")
+        self.assertEqual(summary["applied_change_count"], 17)
+        self.assertEqual(sync_summary["branch_budget_hints"]["dcim.cable"], 1666)
+        self.assertEqual(sync_summary["pre_run_estimate"]["retry_risk"], "medium")
+        self.assertIn("latest_ingestion", sync_summary)
+        self.assertEqual(sync_summary["latest_ingestion"]["retry_count"], 1)
+
     @patch("forward_netbox.models.ForwardSource.get_client")
     @patch("forward_netbox.utilities.multi_branch.ForwardMultiBranchExecutor")
     def test_sync_job_uses_multi_branch_path_by_default(
@@ -180,6 +445,35 @@ class ForwardSyncModelTest(TestCase):
         mock_executor.run.assert_called_once_with(
             max_changes_per_branch=DEFAULT_MAX_CHANGES_PER_BRANCH,
         )
+
+    @patch("forward_netbox.models.ForwardSource.get_client")
+    @patch("forward_netbox.utilities.multi_branch.ForwardMultiBranchExecutor")
+    def test_sync_sets_source_status_to_syncing_during_run(
+        self,
+        mock_executor_class,
+        _mock_get_client,
+    ):
+        sync = ForwardSync.objects.create(
+            name="sync-source-status-syncing",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+            },
+        )
+
+        def run_side_effect(*args, **kwargs):
+            self.source.refresh_from_db()
+            self.assertEqual(
+                self.source.status,
+                ForwardSourceStatusChoices.SYNCING,
+            )
+            return []
+
+        mock_executor = mock_executor_class.return_value
+        mock_executor.run.side_effect = run_side_effect
+
+        sync.sync()
 
     def test_enqueue_rejects_sync_waiting_for_branch_merge(self):
         sync = ForwardSync.objects.create(
@@ -685,6 +979,24 @@ class ForwardIngestionSnapshotSummaryTest(TestCase):
         self.assertTrue(ingestion.baseline_ready)
         self.assertEqual(self.sync.get_branch_run_state(), {})
 
+    def test_annotate_statistics_uses_persisted_counts_when_branch_missing(self):
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-before",
+            applied_change_count=157,
+            created_change_count=7,
+            updated_change_count=130,
+            deleted_change_count=20,
+        )
+
+        annotated = annotate_statistics(ForwardIngestion.objects).get(pk=ingestion.pk)
+
+        self.assertEqual(annotated.staged_changes, 157)
+        self.assertEqual(annotated.num_created, 7)
+        self.assertEqual(annotated.num_updated, 130)
+        self.assertEqual(annotated.num_deleted, 20)
+
 
 class ForwardNQEMapModelTest(TestCase):
     def test_map_defaults_coalesce_fields_from_model_contract(self):
@@ -725,6 +1037,29 @@ class ForwardNQEMapModelTest(TestCase):
         query_map.clean()
 
         self.assertEqual(query_map.coalesce_fields, [["address", "vrf"], ["address"]])
+
+    def test_inventory_item_defaults_allow_missing_part_or_serial(self):
+        netbox_model = ContentType.objects.get(app_label="dcim", model="inventoryitem")
+        query_map = ForwardNQEMap(
+            name="Inventory Map",
+            netbox_model=netbox_model,
+            query=(
+                'select {\n  device: "device-1",\n  name: "fan-1",\n'
+                '  part_id: "",\n  serial: "",\n  status: "active",\n'
+                "  discovered: true\n}"
+            ),
+        )
+
+        query_map.clean()
+
+        self.assertEqual(
+            query_map.coalesce_fields,
+            [
+                ["device", "name", "part_id", "serial"],
+                ["device", "name", "part_id"],
+                ["device", "name"],
+            ],
+        )
 
     def test_map_rejects_invalid_coalesce_field(self):
         netbox_model = ContentType.objects.get(app_label="dcim", model="site")
