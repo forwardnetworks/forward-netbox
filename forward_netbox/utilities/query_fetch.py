@@ -2,6 +2,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from dataclasses import field
+from dataclasses import replace
 from typing import Any
 
 from ..exceptions import ForwardClientError
@@ -11,12 +12,20 @@ from .branch_budget import BranchPlanItem
 from .branch_budget import BranchWorkload
 from .forward_api import LATEST_PROCESSED_SNAPSHOT
 from .query_registry import get_query_specs
+from .query_registry import ipaddress_unassignable_diagnostic_query
+from .query_registry import IPADDRESS_UNASSIGNABLE_DIAGNOSTIC_QUERY_NAME
 from .sync import ForwardSyncRunner
 from .sync_contracts import default_coalesce_fields_for_model
 from .sync_contracts import validate_row_shape_for_model
 
 DEFAULT_PREFLIGHT_ROW_LIMIT = 50
 DEFAULT_QUERY_FETCH_CONCURRENCY = 4
+IPADDRESS_DIAGNOSTIC_DETAIL_LIMIT = 20
+IPADDRESS_DIAGNOSTIC_LABELS = {
+    "ipv4-subnet-network-id": "IPv4 subnet network IDs",
+    "ipv4-broadcast-address": "IPv4 broadcast addresses",
+    "ipv6-subnet-network-id": "IPv6 subnet network IDs",
+}
 
 
 @dataclass(frozen=True)
@@ -54,6 +63,7 @@ class ForwardModelResult:
     runtime_ms: float | None = None
     snapshot_id: str = ""
     baseline_snapshot_id: str = ""
+    diagnostics: list[dict[str, Any]] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -68,6 +78,7 @@ class ForwardModelResult:
             "runtime_ms": self.runtime_ms,
             "snapshot_id": self.snapshot_id,
             "baseline_snapshot_id": self.baseline_snapshot_id,
+            "diagnostics": self.diagnostics,
         }
 
 
@@ -195,6 +206,7 @@ class ForwardQueryFetcher:
                 self.model_results.append(model_result)
                 if workload is not None:
                     workloads.append(workload)
+        self._append_ipaddress_diagnostics(context)
         return workloads
 
     def _build_workload_jobs(self, context: ForwardQueryContext):
@@ -261,6 +273,96 @@ class ForwardQueryFetcher:
             )
         return model_result, workload
 
+    def _append_ipaddress_diagnostics(self, context: ForwardQueryContext) -> None:
+        if "ipam.ipaddress" not in self.sync.get_model_strings():
+            return
+        diagnostic = self._run_ipaddress_unassignable_diagnostic(context)
+        if not diagnostic:
+            return
+        self.model_results = [
+            (
+                replace(result, diagnostics=[*result.diagnostics, diagnostic])
+                if result.model_string == "ipam.ipaddress"
+                else result
+            )
+            for result in self.model_results
+        ]
+
+    def _run_ipaddress_unassignable_diagnostic(
+        self,
+        context: ForwardQueryContext,
+    ) -> dict[str, Any] | None:
+        try:
+            rows = self.client.run_nqe_query(
+                query=ipaddress_unassignable_diagnostic_query(),
+                network_id=context.network_id,
+                snapshot_id=context.snapshot_id,
+                parameters=context.query_parameters,
+                fetch_all=True,
+            )
+        except Exception as exc:
+            self.logger.log_warning(
+                "Unable to run Forward IP address assignment diagnostics; "
+                f"filtered address counts will not be reported: {exc}",
+                obj=self.sync,
+            )
+            return None
+
+        diagnostic = self._summarize_unassignable_ipaddress_rows(rows)
+        if diagnostic["total"] <= 0:
+            return None
+
+        count_summary = ", ".join(
+            f"{IPADDRESS_DIAGNOSTIC_LABELS.get(reason, reason)}={count}"
+            for reason, count in sorted(diagnostic["counts"].items())
+        )
+        self.logger.log_warning(
+            "Forward IP Addresses filtered "
+            f"{diagnostic['total']} interface addresses that NetBox cannot assign: "
+            f"{count_summary}.",
+            obj=self.sync,
+        )
+        for example in diagnostic["examples"]:
+            self.logger.log_warning(
+                "Filtered unassignable IP address "
+                f"`{example['address']}` on `{example['device']}` "
+                f"`{example['interface']}` ({example['reason']}).",
+                obj=self.sync,
+            )
+        suppressed = diagnostic["total"] - len(diagnostic["examples"])
+        if suppressed > 0:
+            self.logger.log_warning(
+                "Suppressed "
+                f"{suppressed} additional filtered IP address diagnostic examples "
+                f"after the first {IPADDRESS_DIAGNOSTIC_DETAIL_LIMIT}.",
+                obj=self.sync,
+            )
+        return diagnostic
+
+    def _summarize_unassignable_ipaddress_rows(self, rows: list[dict]) -> dict:
+        counts: dict[str, int] = {}
+        examples: list[dict[str, str]] = []
+        for row in rows:
+            reason = str(row.get("reason") or "unknown")
+            counts[reason] = counts.get(reason, 0) + 1
+            if len(examples) >= IPADDRESS_DIAGNOSTIC_DETAIL_LIMIT:
+                continue
+            examples.append(
+                {
+                    "reason": IPADDRESS_DIAGNOSTIC_LABELS.get(reason, reason),
+                    "device": str(row.get("device") or ""),
+                    "interface": str(row.get("interface") or ""),
+                    "address": str(row.get("address") or ""),
+                }
+            )
+        return {
+            "name": "unassignable_interface_addresses",
+            "query_name": IPADDRESS_UNASSIGNABLE_DIAGNOSTIC_QUERY_NAME,
+            "total": sum(counts.values()),
+            "counts": counts,
+            "examples": examples,
+        }
+
     def fetch_sample_results(
         self,
         context: ForwardQueryContext,
@@ -278,6 +380,7 @@ class ForwardQueryFetcher:
                 ((context, row_limit, job) for job in jobs),
             ):
                 self.model_results.append(result)
+        self._append_ipaddress_diagnostics(context)
         return self.model_results
 
     def _run_sample_job(self, payload):

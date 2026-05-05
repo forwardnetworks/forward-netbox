@@ -10,6 +10,8 @@ subinterface_ipv4 =
   foreach interface in device.interfaces
   foreach subinterface in interface.subinterfaces
   foreach address in subinterface.ipv4.addresses
+  where address.prefixLength >= 31 || address.ip != networkAddress(ipSubnet(address.ip, address.prefixLength))
+  where address.prefixLength >= 31 || address.ip != broadcastAddress(ipSubnet(address.ip, address.prefixLength))
   select {
     device: device.name,
     interface: interface.name,
@@ -27,6 +29,7 @@ subinterface_ipv6 =
   foreach interface in device.interfaces
   foreach subinterface in interface.subinterfaces
   foreach address in subinterface.ipv6.addresses
+  where address.prefixLength >= 127 || address.ip != networkAddress(ipSubnet(address.ip, address.prefixLength))
   select {
     device: device.name,
     interface: interface.name,
@@ -44,6 +47,8 @@ bridge_ipv4 =
   foreach interface in device.interfaces
   where isPresent(interface.bridge?.ipv4?.addresses)
   foreach address in interface.bridge.ipv4.addresses
+  where address.prefixLength >= 31 || address.ip != networkAddress(ipSubnet(address.ip, address.prefixLength))
+  where address.prefixLength >= 31 || address.ip != broadcastAddress(ipSubnet(address.ip, address.prefixLength))
   select {
     device: device.name,
     interface: interface.name,
@@ -61,6 +66,7 @@ bridge_ipv6 =
   foreach interface in device.interfaces
   where isPresent(interface.bridge?.ipv6?.addresses)
   foreach address in interface.bridge.ipv6.addresses
+  where address.prefixLength >= 127 || address.ip != networkAddress(ipSubnet(address.ip, address.prefixLength))
   select {
     device: device.name,
     interface: interface.name,
@@ -78,6 +84,8 @@ tunnel_ipv4 =
   foreach interface in device.interfaces
   where isPresent(interface.tunnel?.ipv4?.addresses)
   foreach address in interface.tunnel.ipv4.addresses
+  where address.prefixLength >= 31 || address.ip != networkAddress(ipSubnet(address.ip, address.prefixLength))
+  where address.prefixLength >= 31 || address.ip != broadcastAddress(ipSubnet(address.ip, address.prefixLength))
   select {
     device: device.name,
     interface: interface.name,
@@ -95,6 +103,7 @@ tunnel_ipv6 =
   foreach interface in device.interfaces
   where isPresent(interface.tunnel?.ipv6?.addresses)
   foreach address in interface.tunnel.ipv6.addresses
+  where address.prefixLength >= 127 || address.ip != networkAddress(ipSubnet(address.ip, address.prefixLength))
   select {
     device: device.name,
     interface: interface.name,
@@ -112,6 +121,8 @@ routed_vlan_ipv4 =
   foreach interface in device.interfaces
   where isPresent(interface.routedVlan?.ipv4?.addresses)
   foreach address in interface.routedVlan.ipv4.addresses
+  where address.prefixLength >= 31 || address.ip != networkAddress(ipSubnet(address.ip, address.prefixLength))
+  where address.prefixLength >= 31 || address.ip != broadcastAddress(ipSubnet(address.ip, address.prefixLength))
   select {
     device: device.name,
     interface: interface.name,
@@ -129,6 +140,7 @@ routed_vlan_ipv6 =
   foreach interface in device.interfaces
   where isPresent(interface.routedVlan?.ipv6?.addresses)
   foreach address in interface.routedVlan.ipv6.addresses
+  where address.prefixLength >= 127 || address.ip != networkAddress(ipSubnet(address.ip, address.prefixLength))
   select {
     device: device.name,
     interface: interface.name,
