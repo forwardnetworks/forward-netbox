@@ -1,4 +1,5 @@
 import logging
+from ipaddress import ip_interface
 
 from core.signals import clear_events
 from django.core.exceptions import ObjectDoesNotExist
@@ -135,6 +136,24 @@ class ForwardSyncRunner:
         if row.get("module_component") is True:
             return True
         return row.get("part_type") in self.MODULE_NATIVE_INVENTORY_PART_TYPES
+
+    def _ipaddress_assignment_skip_reason(self, address):
+        try:
+            interface = ip_interface(str(address))
+        except ValueError:
+            return None
+
+        network = interface.network
+        ip_address = interface.ip
+        if network.version == 4 and network.prefixlen < 31:
+            if ip_address == network.network_address:
+                return "network-id"
+            if ip_address == network.broadcast_address:
+                return "broadcast-address"
+        if network.version == 6 and network.prefixlen < 127:
+            if ip_address == network.network_address:
+                return "network-id"
+        return None
 
     def _first_complete_coalesce_set(self, row, coalesce_sets):
         for field_set in coalesce_sets:
@@ -1765,6 +1784,22 @@ class ForwardSyncRunner:
                 context={"device": device.name, "interface": row["interface"]},
                 data=row,
             )
+        skip_reason = self._ipaddress_assignment_skip_reason(row["address"])
+        if skip_reason:
+            reason_label = {
+                "network-id": "subnet network IDs",
+                "broadcast-address": "broadcast addresses",
+            }[skip_reason]
+            self._record_aggregated_skip_warning(
+                model_string="ipam.ipaddress",
+                reason=skip_reason,
+                warning_message=(
+                    f"Skipping IP address `{row['address']}` on `{device.name}` "
+                    f"`{row['interface']}` because NetBox cannot assign {reason_label} "
+                    "to interfaces."
+                ),
+            )
+            return False
         vrf = (
             self._ensure_vrf(
                 {

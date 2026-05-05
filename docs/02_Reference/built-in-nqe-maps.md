@@ -791,7 +791,9 @@ select {
 - Expected fields: `device`, `interface`, `vrf`, `address`, `status`
 - Query file: [`forward_ip_addresses.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_ip_addresses.nqe)
 
-The shipped query combines rows from subinterfaces, bridge interfaces, tunnels, and routed VLAN interfaces, applies a final `select distinct` over the merged result, and then projects a single deterministic row per NetBox IP identity `(address, vrf)` before ingestion. See the query file for the complete text:
+The shipped query combines rows from subinterfaces, bridge interfaces, tunnels, and routed VLAN interfaces, applies a final `select distinct` over the merged result, and then projects a single deterministic row per NetBox IP identity `(address, vrf)` before ingestion. It skips subnet network IDs and IPv4 broadcast addresses that NetBox cannot assign to interfaces, while preserving point-to-point endpoint prefixes such as IPv4 `/31` and IPv6 `/127`. These rows are skipped rather than rewritten because there is no NetBox-native host address to infer safely from the device configuration.
+
+When `ipam.ipaddress` is enabled, the sync also runs an internal read-only diagnostic query that reports how many Forward interface addresses were filtered for this reason and logs capped examples. This diagnostic query is not seeded as a NetBox import map and does not create, update, or delete NetBox objects. See the query file for the complete import text:
 
 - [`forward_ip_addresses.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_ip_addresses.nqe)
 
@@ -873,7 +875,7 @@ select distinct {
 - Expected fields: `device`, `module_bay`, `manufacturer`, `manufacturer_slug`, `model`, `part_number`, `status`, `serial`, `asset_tag`, `description`
 - Query file: [`forward_modules.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_modules.nqe)
 - Enabled: disabled by default
-- Stability: beta in `v0.6.0`; review staged module and module-bay changes carefully before merging
+- Stability: beta in `v0.6.x`; review staged module and module-bay changes carefully before merging
 
 The module map uses the same device-first parallel shape as the inventory-item map, but keeps the target model separate so bay-aware chassis hardware can be modeled without overlapping the generic inventory-item fallback. NQE is the classification layer: this map emits only `LINE_CARD`, `SUPERVISOR`, `FABRIC_MODULE`, and `ROUTING_ENGINE` components. Transceivers, fans, power supplies, chassis records, stack artifacts, and motherboards remain inventory-item candidates; application pseudo-parts are not imported as inventory items by default.
 
