@@ -19,6 +19,8 @@ subinterface_ipv4 =
       then if subinterface.networkInstanceName != "default" then subinterface.networkInstanceName else null : String
       else null : String,
     address: ipSubnet(address.ip, address.prefixLength),
+    host_ip: address.ip,
+    prefix_length: address.prefixLength,
     status: "active"
   };
 
@@ -37,6 +39,8 @@ subinterface_ipv6 =
       then if subinterface.networkInstanceName != "default" then subinterface.networkInstanceName else null : String
       else null : String,
     address: ipSubnet(address.ip, address.prefixLength),
+    host_ip: address.ip,
+    prefix_length: address.prefixLength,
     status: "active"
   };
 
@@ -56,6 +60,8 @@ bridge_ipv4 =
       then if interface.bridge.networkInstanceName != "default" then interface.bridge.networkInstanceName else null : String
       else null : String,
     address: ipSubnet(address.ip, address.prefixLength),
+    host_ip: address.ip,
+    prefix_length: address.prefixLength,
     status: "active"
   };
 
@@ -74,6 +80,8 @@ bridge_ipv6 =
       then if interface.bridge.networkInstanceName != "default" then interface.bridge.networkInstanceName else null : String
       else null : String,
     address: ipSubnet(address.ip, address.prefixLength),
+    host_ip: address.ip,
+    prefix_length: address.prefixLength,
     status: "active"
   };
 
@@ -93,6 +101,8 @@ tunnel_ipv4 =
       then if interface.tunnel.networkInstanceName != "default" then interface.tunnel.networkInstanceName else null : String
       else null : String,
     address: ipSubnet(address.ip, address.prefixLength),
+    host_ip: address.ip,
+    prefix_length: address.prefixLength,
     status: "active"
   };
 
@@ -111,6 +121,8 @@ tunnel_ipv6 =
       then if interface.tunnel.networkInstanceName != "default" then interface.tunnel.networkInstanceName else null : String
       else null : String,
     address: ipSubnet(address.ip, address.prefixLength),
+    host_ip: address.ip,
+    prefix_length: address.prefixLength,
     status: "active"
   };
 
@@ -130,6 +142,8 @@ routed_vlan_ipv4 =
       then if interface.routedVlan.networkInstanceName != "default" then interface.routedVlan.networkInstanceName else null : String
       else null : String,
     address: ipSubnet(address.ip, address.prefixLength),
+    host_ip: address.ip,
+    prefix_length: address.prefixLength,
     status: "active"
   };
 
@@ -148,6 +162,8 @@ routed_vlan_ipv6 =
       then if interface.routedVlan.networkInstanceName != "default" then interface.routedVlan.networkInstanceName else null : String
       else null : String,
     address: ipSubnet(address.ip, address.prefixLength),
+    host_ip: address.ip,
+    prefix_length: address.prefixLength,
     status: "active"
   };
 
@@ -158,18 +174,51 @@ candidate_rows =
 )
   select distinct row;
 
+global_candidate_rows =
+  foreach row in candidate_rows
+  where !isPresent(row.vrf)
+  select row;
+
+global_rows =
+  foreach row in global_candidate_rows
+  group row as grouped_rows by row.host_ip as host_ip
+  let chosen_prefix_length = max(foreach candidate in grouped_rows
+    select candidate.prefix_length)
+  let chosen_device = min(foreach candidate in grouped_rows
+    where candidate.prefix_length == chosen_prefix_length
+    select candidate.device)
+  let chosen_interface = min(foreach candidate in grouped_rows
+    where candidate.prefix_length == chosen_prefix_length
+    select candidate.interface)
+  select {
+    device: chosen_device,
+    interface: chosen_interface,
+    vrf: null : String,
+    address: ipSubnet(host_ip, chosen_prefix_length),
+    status: "active"
+  };
+
+vrf_candidate_rows =
+  foreach row in candidate_rows
+  where isPresent(row.vrf)
+  select row;
+
+vrf_rows =
+  foreach row in vrf_candidate_rows
+  group row as grouped_rows by {address: row.address, vrf: row.vrf} as key
+  let chosen_device = min(foreach candidate in grouped_rows
+    select candidate.device)
+  let chosen_interface = min(foreach candidate in grouped_rows
+    where candidate.device == chosen_device
+    select candidate.interface)
+  select {
+    device: chosen_device,
+    interface: chosen_interface,
+    vrf: key.vrf,
+    address: key.address,
+    status: "active"
+  };
+
 @primaryKey(address, vrf)
-foreach row in candidate_rows
-group row as grouped_rows by {address: row.address, vrf: row.vrf} as key
-let chosen_device = min(foreach candidate in grouped_rows
-  select candidate.device)
-let chosen_interface = min(foreach candidate in grouped_rows
-  where candidate.device == chosen_device
-  select candidate.interface)
-select {
-  device: chosen_device,
-  interface: chosen_interface,
-  vrf: key.vrf,
-  address: key.address,
-  status: "active"
-}
+foreach row in (global_rows + vrf_rows)
+select distinct row

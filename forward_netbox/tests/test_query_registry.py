@@ -613,6 +613,16 @@ class QueryRegistryTest(TestCase):
             ),
             4,
         )
+        self.assertIn("host_ip: address.ip", ip_spec.query)
+        self.assertIn("prefix_length: address.prefixLength", ip_spec.query)
+        self.assertIn(
+            "group row as grouped_rows by row.host_ip as host_ip",
+            ip_spec.query,
+        )
+        self.assertIn(
+            "let chosen_prefix_length = max(foreach candidate in grouped_rows",
+            ip_spec.query,
+        )
         self.assertEqual(
             ip_spec.query.count(
                 "where address.prefixLength >= 127 || address.ip != networkAddress"

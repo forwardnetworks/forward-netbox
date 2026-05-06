@@ -24,6 +24,7 @@ from forward_netbox.choices import FORWARD_SUPPORTED_MODELS
 from forward_netbox.exceptions import ForwardClientError
 from forward_netbox.exceptions import ForwardDependencySkipError
 from forward_netbox.exceptions import ForwardQueryError
+from forward_netbox.exceptions import ForwardSearchError
 from forward_netbox.exceptions import ForwardSyncDataError
 from forward_netbox.exceptions import ForwardSyncError
 from forward_netbox.models import ForwardDriftPolicy
@@ -1348,6 +1349,40 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertEqual(str(IPAddress.objects.get().address), "10.0.0.0/31")
         logger.log_warning.assert_not_called()
 
+    def test_apply_ipam_ipaddress_updates_existing_global_host_ip_row(self):
+        device = self._create_device("device-1")
+        interface = Interface.objects.create(
+            device=device,
+            name="VLAN897",
+            type="virtual",
+        )
+        IPAddress.objects.create(
+            address="192.0.2.3/17",
+            vrf=None,
+            status="active",
+            assigned_object_type=ContentType.objects.get_for_model(Interface),
+            assigned_object_id=interface.pk,
+        )
+        logger = Mock()
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=logger
+        )
+
+        runner._apply_ipam_ipaddress(
+            {
+                "device": "device-1",
+                "interface": "VLAN897",
+                "host_ip": "192.0.2.3",
+                "address": "192.0.2.3/24",
+                "vrf": None,
+                "status": "active",
+            }
+        )
+
+        self.assertEqual(IPAddress.objects.count(), 1)
+        self.assertEqual(str(IPAddress.objects.get().address), "192.0.2.3/24")
+        logger.log_warning.assert_not_called()
+
     def test_validate_row_shape_allows_cable_endpoint_identity(self):
         validate_row_shape_for_model(
             "dcim.cable",
@@ -1897,22 +1932,57 @@ class ForwardSyncRunnerTest(TestCase):
                 msg=f"Missing adapter handler for {model_string}",
             )
 
-    def test_apply_model_rows_fails_fast_on_forward_query_error(self):
+    def test_apply_model_rows_records_forward_query_error_and_continues(self):
         runner = ForwardSyncRunner(
             sync=self.sync, ingestion=None, client=None, logger_=Mock()
         )
 
-        def _raise(_):
-            raise ForwardQueryError("boom")
-
-        runner._apply_dcim_site = _raise
+        runner._apply_dcim_site = Mock(
+            side_effect=[
+                ForwardQueryError("boom"),
+                True,
+            ]
+        )
         runner._record_issue = Mock()
 
-        with self.assertRaises(ForwardSyncDataError):
-            runner._apply_model_rows(
-                "dcim.site", [{"name": "site-1", "slug": "site-1"}]
-            )
+        runner._apply_model_rows(
+            "dcim.site",
+            [
+                {"name": "site-1", "slug": "site-1"},
+                {"name": "site-2", "slug": "site-2"},
+            ],
+        )
 
+        self.assertEqual(runner._apply_dcim_site.call_count, 2)
+        runner._record_issue.assert_called_once()
+        runner.logger.increment_statistics.assert_any_call(
+            "dcim.site", outcome="failed"
+        )
+        runner.logger.increment_statistics.assert_any_call(
+            "dcim.site", outcome="applied"
+        )
+
+    def test_apply_model_rows_records_validation_error_and_continues(self):
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        runner._apply_dcim_site = Mock(
+            side_effect=[
+                ValidationError("bad row"),
+                True,
+            ]
+        )
+        runner._record_issue = Mock()
+
+        runner._apply_model_rows(
+            "dcim.site",
+            [
+                {"name": "site-1", "slug": "site-1"},
+                {"name": "site-2", "slug": "site-2"},
+            ],
+        )
+
+        self.assertEqual(runner._apply_dcim_site.call_count, 2)
         runner._record_issue.assert_called_once()
 
     def test_apply_model_rows_records_structured_dependency_skip_issue(self):
@@ -1931,14 +2001,40 @@ class ForwardSyncRunnerTest(TestCase):
         runner._apply_dcim_site = _raise
         runner._record_issue = Mock()
 
-        with self.assertRaises(ForwardSyncDataError):
-            runner._apply_model_rows(
-                "dcim.site", [{"name": "site-1", "slug": "site-1"}]
-            )
+        runner._apply_model_rows("dcim.site", [{"name": "site-1", "slug": "site-1"}])
 
         _, _, kwargs = runner._record_issue.mock_calls[0]
         self.assertEqual(kwargs["context"], {"slug": "site-1"})
         self.assertEqual(kwargs["defaults"], {"name": "site-1"})
+
+    def test_delete_model_rows_records_row_failure_and_continues(self):
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        runner._delete_dcim_site = Mock(
+            side_effect=[
+                ForwardSearchError("missing row"),
+                True,
+            ]
+        )
+        runner._record_issue = Mock()
+
+        runner._delete_model_rows(
+            "dcim.site",
+            [
+                {"name": "site-1", "slug": "site-1"},
+                {"name": "site-2", "slug": "site-2"},
+            ],
+        )
+
+        self.assertEqual(runner._delete_dcim_site.call_count, 2)
+        runner._record_issue.assert_called_once()
+        runner.logger.increment_statistics.assert_any_call(
+            "dcim.site", outcome="failed"
+        )
+        runner.logger.increment_statistics.assert_any_call(
+            "dcim.site", outcome="applied"
+        )
 
     def test_apply_model_rows_marks_handler_false_as_skipped(self):
         logger = Mock()

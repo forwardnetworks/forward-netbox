@@ -23,7 +23,7 @@ This matrix summarizes how the shipped Forward NQE maps populate each NetBox mod
 | `ipam.vrf` | `Forward VRFs` | non-default `device.networkInstances` | Best-fit | Route distinguisher is not supplied by Forward and remains null. |
 | `ipam.prefix` | `Forward IPv4 Prefixes` | `networkInstances[].afts.ipv4Unicast.ipEntries` | Best-fit | Host-route receive/drop entries are filtered in NQE. |
 | `ipam.prefix` | `Forward IPv6 Prefixes` | `networkInstances[].afts.ipv6Unicast.ipEntries` | Best-fit | Host-route receive/drop entries are filtered in NQE. |
-| `ipam.ipaddress` | `Forward IP Addresses` | interface, subinterface, bridge, tunnel, and routed VLAN L3 addresses | Best-fit | Subinterface addresses are anchored to the parent interface name so NetBox interface lookups stay deterministic. Subnet network IDs and IPv4 broadcast addresses that NetBox cannot assign to interfaces are skipped rather than rewritten; a read-only diagnostic query reports filtered counts and capped examples. |
+| `ipam.ipaddress` | `Forward IP Addresses` | interface, subinterface, bridge, tunnel, and routed VLAN L3 addresses | Best-fit | Subinterface addresses are anchored to the parent interface name so NetBox interface lookups stay deterministic. Subnet network IDs and IPv4 broadcast addresses that NetBox cannot assign to interfaces are skipped rather than rewritten; global-table host IP collisions are canonicalized in NQE so the most specific surviving mask imports once; a read-only diagnostic query reports filtered counts and capped examples. |
 
 ## Important Caveats
 
