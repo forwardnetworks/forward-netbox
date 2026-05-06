@@ -550,7 +550,7 @@ The rules-aware query keeps matching on Forward structured protocol state while 
 ## Forward Interfaces
 
 - `NetBox Model`: `dcim.interface`
-- Expected fields: `device`, `name`, `type`, `enabled`, `mtu`, `description`, `speed`
+- Expected fields: `device`, `name`, `type`, `lag`, `enabled`, `mtu`, `description`, `speed`
 - Query file: [`forward_interfaces.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_interfaces.nqe)
 
 ```nqe
@@ -579,6 +579,7 @@ where device.platform.vendor != Vendor.FORWARD_CUSTOM
     device: device.name,
     name: interface.name,
     type: if isPresent(interface_type) then interface_type else "other",
+    lag: if isPresent(interface.ethernet.aggregateId) then interface.ethernet.aggregateId else null : String,
     enabled: interface.operStatus == OperStatus.UP,
     mtu: interface.mtu,
     description: if isPresent(interface.description) then interface.description else "",
@@ -586,7 +587,7 @@ where device.platform.vendor != Vendor.FORWARD_CUSTOM
   }
 ```
 
-The shipped query uses `speedMbps` as the authoritative interface speed and only maps well-known Ethernet rates to NetBox interface types. Unknown or aggregated rates still preserve the actual speed while falling back to interface type `other`. A final `select distinct` over the combined ethernet and loopback interface rows suppresses exact duplicates before NetBox ingestion.
+The shipped query uses `speedMbps` as the authoritative interface speed and only maps well-known Ethernet rates to NetBox interface types. Unknown physical rates still preserve the actual speed while falling back to interface type `other`. Forward `IF_AGGREGATE` interfaces are emitted as native NetBox LAG interfaces, and physical members attach through the native NetBox `lag` relationship when Forward reports `ethernet.aggregateId`. During sharded imports, a member row can create a minimal native LAG placeholder if its aggregate row is applied by a later branch; the aggregate row updates that placeholder when it is processed. MTU is preserved from Forward `interface.mtu`, which is the normalized L2 MTU value exposed by the NQE data model. A final `select distinct` over the combined interface rows suppresses exact duplicates before NetBox ingestion.
 
 ## Forward Inferred Interface Cables
 
