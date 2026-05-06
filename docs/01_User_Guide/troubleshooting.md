@@ -52,6 +52,9 @@ Checks:
 - Confirm each row satisfies at least one configured coalesce field set.
 - If multiple NetBox rows can match the same coalesce keys, fix the duplicate data in NetBox or tighten coalesce fields.
 - Prefer keeping NetBox-ready shaping in NQE rather than adding Python-side normalization.
+- If `ipam.ipaddress` fails with a global-table duplicate IP error, inspect the selected Forward snapshot for the same host IP reported on multiple interfaces with different masks. The built-in query now collapses global-table host collisions to one deterministic row, so a failure here usually means the snapshot or a custom query is still emitting an exact duplicate global IP.
+
+Expected row-scoped apply/delete failures are recorded as `Forward Ingestion Issues` and counted as failed or skipped rows without stopping the rest of the shard. Preflight, query execution, branch, and merge failures can still stop the current phase because they are not tied to a single row.
 
 ## Sync Fails Before Staging
 
