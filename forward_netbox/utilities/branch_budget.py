@@ -13,9 +13,18 @@ DEFAULT_DENSITY_SAFETY_FACTOR = 0.7
 DEFAULT_MODEL_CHANGE_DENSITY = {
     "dcim.cable": 3.0,
     "dcim.module": 2.0,
+    "netbox_routing.bgppeer": 5.0,
+    "netbox_routing.bgpaddressfamily": 2.0,
+    "netbox_routing.bgppeeraddressfamily": 2.0,
+    "netbox_routing.ospfinstance": 2.0,
+    "netbox_routing.ospfarea": 1.0,
+    "netbox_routing.ospfinterface": 3.0,
+    "netbox_peering_manager.peeringsession": 2.0,
 }
 MODEL_DENSITY_SAFETY_FACTORS = {
     "dcim.cable": 0.5,
+    "netbox_routing.bgppeer": 0.5,
+    "netbox_routing.ospfinterface": 0.5,
 }
 
 DEVICE_SHARD_MODELS = {
@@ -26,6 +35,12 @@ DEVICE_SHARD_MODELS = {
     "dcim.module",
     "extras.taggeditem",
     "ipam.ipaddress",
+    "netbox_routing.bgppeer",
+    "netbox_routing.bgpaddressfamily",
+    "netbox_routing.bgppeeraddressfamily",
+    "netbox_routing.ospfinstance",
+    "netbox_routing.ospfinterface",
+    "netbox_peering_manager.peeringsession",
 }
 
 

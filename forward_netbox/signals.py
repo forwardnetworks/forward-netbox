@@ -9,7 +9,11 @@ from .utilities.query_registry import builtin_nqe_map_rows
 
 @receiver(post_migrate)
 def seed_builtin_nqe_maps(sender, **kwargs):
-    if sender.label != "forward_netbox":
+    if sender.label not in {
+        "forward_netbox",
+        "netbox_routing",
+        "netbox_peering_manager",
+    }:
         return
     if ForwardNQEMap._meta.db_table not in connection.introspection.table_names():
         return
@@ -21,7 +25,7 @@ def seed_builtin_nqe_maps(sender, **kwargs):
         except ContentType.DoesNotExist:
             continue
 
-        query_map, created = ForwardNQEMap.objects.update_or_create(
+        query_map, created = ForwardNQEMap.objects.get_or_create(
             netbox_model=netbox_model,
             name=row["name"],
             built_in=True,
@@ -34,6 +38,23 @@ def seed_builtin_nqe_maps(sender, **kwargs):
                 "weight": row["weight"],
             },
         )
-        if created and query_map.enabled != row.get("enabled", True):
-            query_map.enabled = row.get("enabled", True)
-            query_map.save(update_fields=["enabled"])
+        if created:
+            if query_map.enabled != row.get("enabled", True):
+                query_map.enabled = row.get("enabled", True)
+                query_map.save(update_fields=["enabled"])
+            continue
+
+        update_fields = []
+        if not query_map.query_id:
+            for field_name in ("query", "commit_id"):
+                value = row[field_name]
+                if getattr(query_map, field_name) != value:
+                    setattr(query_map, field_name, value)
+                    update_fields.append(field_name)
+        for field_name in ("parameters", "coalesce_fields", "weight"):
+            value = row[field_name]
+            if getattr(query_map, field_name) != value:
+                setattr(query_map, field_name, value)
+                update_fields.append(field_name)
+        if update_fields:
+            query_map.save(update_fields=update_fields)

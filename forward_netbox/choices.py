@@ -1,6 +1,17 @@
+from django.conf import settings
 from django.utils.translation import gettext_lazy as _
 from utilities.choices import ChoiceSet
 
+
+FORWARD_BGP_MODELS = (
+    "netbox_routing.bgppeer",
+    "netbox_routing.bgpaddressfamily",
+    "netbox_routing.bgppeeraddressfamily",
+    "netbox_routing.ospfinstance",
+    "netbox_routing.ospfarea",
+    "netbox_routing.ospfinterface",
+    "netbox_peering_manager.peeringsession",
+)
 
 FORWARD_SUPPORTED_MODELS = (
     "dcim.site",
@@ -20,11 +31,31 @@ FORWARD_SUPPORTED_MODELS = (
     "ipam.ipaddress",
     "dcim.inventoryitem",
     "dcim.module",
+    *FORWARD_BGP_MODELS,
 )
 
 FORWARD_OPTIONAL_MODELS = {
     "dcim.module",
+    *FORWARD_BGP_MODELS,
 }
+
+
+def forward_plugin_settings():
+    return (getattr(settings, "PLUGINS_CONFIG", {}) or {}).get("forward_netbox", {})
+
+
+def forward_bgp_sync_enabled():
+    return bool(forward_plugin_settings().get("enable_bgp_sync", False))
+
+
+def forward_configured_models():
+    if forward_bgp_sync_enabled():
+        return FORWARD_SUPPORTED_MODELS
+    return tuple(
+        model_string
+        for model_string in FORWARD_SUPPORTED_MODELS
+        if model_string not in FORWARD_BGP_MODELS
+    )
 
 
 class ForwardSourceStatusChoices(ChoiceSet):
