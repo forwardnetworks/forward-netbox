@@ -6,6 +6,18 @@ The plugin is configured through three primary objects:
 - `Forward NQE Map`
 - `Forward Sync`
 
+Optional plugin-wide flags live in NetBox `configuration.py`:
+
+```python
+PLUGINS_CONFIG = {
+    "forward_netbox": {
+        "enable_bgp_sync": False,
+    }
+}
+```
+
+`enable_bgp_sync` defaults to `False`. Set it to `True` only when testing the beta BGP path with the optional `netbox-routing` and, if desired, `netbox-peering-manager` plugins installed and migrated.
+
 ## Forward Sources
 
 Create a `Forward Source` for each Forward deployment or tenant you want to sync from.
@@ -112,6 +124,10 @@ The alias-aware variants require a Forward JSON data file named `netbox_device_t
 
 The plugin also seeds a default `Forward Device Feature Tags` map and a disabled `Forward Device Feature Tags with Rules` variant. The default map requires no data file and tags BGP-enabled devices as `Prot_BGP` from Forward's structured protocol state. The rules-aware variant requires a Forward JSON data file named `netbox_feature_tag_rules.json` with NQE name `netbox_feature_tag_rules`; use it when operators need to rename tags, change colors, or apply multiple tags from the same structured feature. See [Feature Tag Rules Data File](../02_Reference/feature-tag-rules-data-file.md).
 
+Optional routing sync is behind `PLUGINS_CONFIG["forward_netbox"]["enable_bgp_sync"] = True`. When enabled and the optional NetBox plugins are installed, the sync form exposes disabled-by-default maps for `netbox_routing.bgppeer`, `netbox_routing.bgpaddressfamily`, `netbox_routing.bgppeeraddressfamily`, `netbox_routing.ospfinstance`, `netbox_routing.ospfarea`, `netbox_routing.ospfinterface`, and `netbox_peering_manager.peeringsession`. The `netbox-routing` maps are the primary native BGP/OSPF targets; the `netbox-peering-manager` map creates an overlay session linked to the BGP peer. Leave this flag off unless those optional plugins are installed and the routing beta path is intentionally being tested.
+
+For large routing datasets, publish the routing NQE into the Forward NQE library and set each enabled NetBox map to the saved `query_id`. The first run still performs a full baseline. Later `latestProcessed` runs can use Forward NQE diffs only when all enabled maps for that model are query-ID backed; inline query text falls back to full execution.
+
 Large datasets should prefer saved queries plus `latestProcessed`. That keeps the first run as a full baseline, then lets later runs use Forward `nqe-diffs` directly. The current built-ins also collapse NetBox identities in NQE where the source emits many raw rows for one object, such as prefix, IP, MAC, and VLAN records.
 
 The current built-in map set is:
@@ -133,6 +149,8 @@ The current built-in map set is:
 - `Forward IPv6 Prefixes`
 - `Forward IP Addresses`
 - `Forward Inventory Items`
+
+The disabled optional map set also includes `Forward Modules`, `Forward BGP Peers`, `Forward BGP Address Families`, `Forward BGP Peer Address Families`, `Forward OSPF Instances`, `Forward OSPF Areas`, `Forward OSPF Interfaces`, and `Forward Peering Sessions` when their target ContentTypes exist.
 
 See the [Built-In NQE Reference](../02_Reference/built-in-nqe-maps.md) for the exact shipped query text and expected output fields.
 See the [Model Mapping Matrix](../02_Reference/model-mapping-matrix.md) for the current exact vs best-fit mapping semantics per NetBox model.
