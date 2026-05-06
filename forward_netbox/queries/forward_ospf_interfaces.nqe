@@ -1,0 +1,38 @@
+/**
+ * @intent Forward OSPF Interfaces
+ * @description Optional raw NQE for netbox-routing OSPF interface rows derived from Forward structured OSPF neighbor state.
+ */
+
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+foreach network_instance in device.networkInstances
+foreach protocol in network_instance.protocols
+where isPresent(protocol.ospf)
+foreach area in protocol.ospf.areas
+foreach neighbor in area.neighbors
+where isPresent(neighbor.remotePeer)
+foreach peer_device in network.devices
+where peer_device.name == neighbor.remotePeer.deviceName
+foreach peer_network_instance in peer_device.networkInstances
+foreach peer_protocol in peer_network_instance.protocols
+where isPresent(peer_protocol.ospf)
+foreach peer_area in peer_protocol.ospf.areas
+foreach peer_neighbor in peer_area.neighbors
+where isPresent(peer_neighbor.remotePeer) && peer_neighbor.remotePeer.deviceName == device.name
+select distinct {
+  device: device.name,
+  vrf: if network_instance.name != "default" then network_instance.name else null : String,
+  process_id: area.processId,
+  domain: area.domain,
+  router_id: peer_neighbor.remoteRouterId,
+  area_id: toString(area.id),
+  area_type: toString(area.areaType),
+  local_interface: neighbor.localInterface,
+  remote_router_id: neighbor.remoteRouterId,
+  remote_interface_ip: neighbor.remoteInterfaceIp,
+  cost: neighbor.cost,
+  role: if isPresent(neighbor.role) then toString(neighbor.role) else "",
+  remote_device: if isPresent(neighbor.remotePeer) then neighbor.remotePeer.deviceName else "",
+  remote_interface: if isPresent(neighbor.remotePeer) then neighbor.remotePeer.interface else ""
+}

@@ -1,8 +1,11 @@
 from unittest.mock import patch
 
+from django.conf import settings
 from django.contrib.contenttypes.models import ContentType
+from django.test import override_settings
 from django.test import TestCase
 
+from forward_netbox.choices import FORWARD_BGP_MODELS
 from forward_netbox.choices import ForwardSourceDeploymentChoices
 from forward_netbox.exceptions import ForwardConnectivityError
 from forward_netbox.exceptions import ForwardSyncError
@@ -11,6 +14,23 @@ from forward_netbox.forms import ForwardSourceForm
 from forward_netbox.forms import ForwardSyncForm
 from forward_netbox.models import ForwardSource
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
+
+
+BGP_PLUGIN_CONFIG = {
+    **settings.PLUGINS_CONFIG,
+    "forward_netbox": {
+        **settings.PLUGINS_CONFIG.get("forward_netbox", {}),
+        "enable_bgp_sync": True,
+    },
+}
+BGP_DISABLED_PLUGIN_CONFIG = {
+    **settings.PLUGINS_CONFIG,
+    "forward_netbox": {
+        key: value
+        for key, value in settings.PLUGINS_CONFIG.get("forward_netbox", {}).items()
+        if key != "enable_bgp_sync"
+    },
+}
 
 
 class ForwardSourceFormTest(TestCase):
@@ -86,6 +106,21 @@ class ForwardSyncFormTest(TestCase):
         form = ForwardSyncForm()
 
         self.assertFalse(form.fields["dcim.module"].initial)
+
+    @override_settings(PLUGINS_CONFIG=BGP_DISABLED_PLUGIN_CONFIG)
+    def test_bgp_models_are_hidden_without_feature_flag(self):
+        form = ForwardSyncForm()
+
+        for model_string in FORWARD_BGP_MODELS:
+            self.assertNotIn(model_string, form.fields)
+
+    @override_settings(PLUGINS_CONFIG=BGP_PLUGIN_CONFIG)
+    def test_bgp_models_are_optional_when_feature_flag_is_enabled(self):
+        form = ForwardSyncForm()
+
+        for model_string in FORWARD_BGP_MODELS:
+            self.assertIn(model_string, form.fields)
+            self.assertFalse(form.fields[model_string].initial)
 
     def test_form_preserves_auto_merge_and_forces_native_branching(self):
         form = ForwardSyncForm(

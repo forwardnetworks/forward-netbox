@@ -13,8 +13,8 @@ from utilities.forms.widgets import DateTimePicker
 from utilities.forms.widgets import HTMXSelect
 from utilities.forms.widgets import NumberWithOptions
 
+from .choices import forward_configured_models
 from .choices import FORWARD_OPTIONAL_MODELS
-from .choices import FORWARD_SUPPORTED_MODELS
 from .choices import ForwardSourceDeploymentChoices
 from .choices import ForwardSourceStatusChoices
 from .choices import ForwardSyncStatusChoices
@@ -406,7 +406,8 @@ class ForwardSyncForm(NetBoxModelForm):
         self.fields["snapshot_id"].choices = _snapshot_selected_choice(
             selected_snapshot_id
         )
-        for model_string in FORWARD_SUPPORTED_MODELS:
+        configured_models = forward_configured_models()
+        for model_string in configured_models:
             self.fields[model_string] = forms.BooleanField(
                 required=False,
                 initial=parameters.get(
@@ -419,7 +420,7 @@ class ForwardSyncForm(NetBoxModelForm):
         self.fieldsets = [
             FieldSet("name", "source", "drift_policy", name="Forward Sync"),
             FieldSet("snapshot_id", name="Snapshot"),
-            FieldSet(*FORWARD_SUPPORTED_MODELS, name="Model Selection"),
+            FieldSet(*configured_models, name="Model Selection"),
             FieldSet(
                 "max_changes_per_branch",
                 "auto_merge",
@@ -456,7 +457,7 @@ class ForwardSyncForm(NetBoxModelForm):
                 )
         if not any(
             cleaned.get(model_string, False)
-            for model_string in FORWARD_SUPPORTED_MODELS
+            for model_string in forward_configured_models()
         ):
             raise forms.ValidationError("Select at least one NetBox model to sync.")
         parameters = {
@@ -466,7 +467,7 @@ class ForwardSyncForm(NetBoxModelForm):
             or DEFAULT_MAX_CHANGES_PER_BRANCH,
             "snapshot_id": snapshot_id,
         }
-        for model_string in FORWARD_SUPPORTED_MODELS:
+        for model_string in forward_configured_models():
             parameters[model_string] = cleaned.get(model_string, False)
         self.instance.parameters = parameters
         self.instance.auto_merge = cleaned.get("auto_merge", False)
@@ -481,7 +482,7 @@ class ForwardSyncForm(NetBoxModelForm):
             "snapshot_id": self.cleaned_data.get("snapshot_id")
             or LATEST_PROCESSED_SNAPSHOT,
         }
-        for model_string in FORWARD_SUPPORTED_MODELS:
+        for model_string in forward_configured_models():
             parameters[model_string] = self.cleaned_data.get(model_string, False)
         self.instance.parameters = parameters
         self.instance.auto_merge = self.cleaned_data.get("auto_merge", False)

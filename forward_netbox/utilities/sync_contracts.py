@@ -143,6 +143,81 @@ MODEL_SYNC_CONTRACTS: dict[str, ModelSyncContract] = {
         allowed_coalesce_fields=("device", "module_bay"),
         default_coalesce_fields=(("device", "module_bay"),),
     ),
+    "netbox_routing.bgppeer": ModelSyncContract(
+        required_fields=(
+            "device",
+            "local_asn",
+            "neighbor_address",
+            "peer_asn",
+            "enabled",
+            "status",
+        ),
+        allowed_coalesce_fields=("device", "vrf", "neighbor_address"),
+        default_coalesce_fields=(
+            ("device", "vrf", "neighbor_address"),
+            ("device", "neighbor_address"),
+        ),
+    ),
+    "netbox_routing.bgpaddressfamily": ModelSyncContract(
+        required_fields=("device", "local_asn", "afi_safi"),
+        allowed_coalesce_fields=("device", "vrf", "local_asn", "afi_safi"),
+        default_coalesce_fields=(
+            ("device", "vrf", "local_asn", "afi_safi"),
+            ("device", "local_asn", "afi_safi"),
+        ),
+    ),
+    "netbox_routing.bgppeeraddressfamily": ModelSyncContract(
+        required_fields=(
+            "device",
+            "local_asn",
+            "neighbor_address",
+            "peer_asn",
+            "afi_safi",
+            "enabled",
+        ),
+        allowed_coalesce_fields=("device", "vrf", "neighbor_address", "afi_safi"),
+        default_coalesce_fields=(
+            ("device", "vrf", "neighbor_address", "afi_safi"),
+            ("device", "neighbor_address", "afi_safi"),
+        ),
+    ),
+    "netbox_routing.ospfinstance": ModelSyncContract(
+        required_fields=("device", "process_id", "router_id"),
+        allowed_coalesce_fields=("device", "vrf", "process_id"),
+        default_coalesce_fields=(("device", "vrf", "process_id"),),
+    ),
+    "netbox_routing.ospfarea": ModelSyncContract(
+        required_fields=("area_id", "area_type"),
+        allowed_coalesce_fields=("area_id",),
+        default_coalesce_fields=(("area_id",),),
+    ),
+    "netbox_routing.ospfinterface": ModelSyncContract(
+        required_fields=(
+            "device",
+            "process_id",
+            "router_id",
+            "area_id",
+            "area_type",
+            "local_interface",
+        ),
+        allowed_coalesce_fields=("device", "process_id", "local_interface"),
+        default_coalesce_fields=(("device", "process_id", "local_interface"),),
+    ),
+    "netbox_peering_manager.peeringsession": ModelSyncContract(
+        required_fields=(
+            "device",
+            "local_asn",
+            "neighbor_address",
+            "peer_asn",
+            "enabled",
+            "status",
+        ),
+        allowed_coalesce_fields=("device", "vrf", "neighbor_address"),
+        default_coalesce_fields=(
+            ("device", "vrf", "neighbor_address"),
+            ("device", "neighbor_address"),
+        ),
+    ),
 }
 
 

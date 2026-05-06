@@ -1,0 +1,34 @@
+/**
+ * @intent Forward Peering Sessions
+ * @description Optional raw NQE for netbox-peering-manager session rows backed by netbox-routing BGP peers.
+ */
+
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+foreach network_instance in device.networkInstances
+foreach protocol in network_instance.protocols
+where isPresent(protocol.bgp)
+foreach neighbor in protocol.bgp.neighbors
+where isPresent(neighbor.localAS) || isPresent(protocol.bgp.asNumber)
+select distinct {
+  device: device.name,
+  vrf: if network_instance.name != "default" then network_instance.name else null : String,
+  local_asn: if isPresent(neighbor.localAS) then neighbor.localAS else protocol.bgp.asNumber,
+  router_id: protocol.bgp.routerId,
+  neighbor_address: neighbor.neighborAddress,
+  peer_asn: neighbor.peerAS,
+  peer_type: if isPresent(neighbor.peerType) then toString(neighbor.peerType) else null : String,
+  enabled: neighbor.enabled,
+  status: if neighbor.enabled then "active" else "offline",
+  session_state: if isPresent(neighbor.sessionState) then toString(neighbor.sessionState) else null : String,
+  peer_device: neighbor.peerDeviceName,
+  peer_vrf: neighbor.peerVrf,
+  peer_router_id: neighbor.peerRouterId,
+  description: if isPresent(neighbor.description) then neighbor.description else "",
+  advertised_prefixes: if isPresent(neighbor.statistics) then neighbor.statistics.advertisedPrefixes else null : Integer,
+  received_prefixes: if isPresent(neighbor.statistics) then neighbor.statistics.receivedPrefixes else null : Integer,
+  relationship: "",
+  relationship_slug: "",
+  service_reference: ""
+}

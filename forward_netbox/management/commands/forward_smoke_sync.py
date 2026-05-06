@@ -4,8 +4,8 @@ from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand
 from django.core.management.base import CommandError
 
+from forward_netbox.choices import forward_configured_models
 from forward_netbox.choices import FORWARD_OPTIONAL_MODELS
-from forward_netbox.choices import FORWARD_SUPPORTED_MODELS
 from forward_netbox.choices import ForwardSourceDeploymentChoices
 from forward_netbox.choices import ForwardSyncStatusChoices
 from forward_netbox.models import ForwardSource
@@ -250,7 +250,7 @@ class Command(BaseCommand):
         auto_merge,
     ):
         sync_parameters = {"snapshot_id": snapshot_id, "auto_merge": auto_merge}
-        for model_string in FORWARD_SUPPORTED_MODELS:
+        for model_string in forward_configured_models():
             sync_parameters[model_string] = model_string in selected_models
 
         sync, _ = ForwardSync.objects.update_or_create(
@@ -291,12 +291,12 @@ class Command(BaseCommand):
 
     def _selected_models(self, raw_models):
         if not raw_models.strip():
-            return set(FORWARD_SUPPORTED_MODELS) - set(FORWARD_OPTIONAL_MODELS)
+            return set(forward_configured_models()) - set(FORWARD_OPTIONAL_MODELS)
 
         selected_models = {
             model.strip() for model in raw_models.split(",") if model.strip()
         }
-        invalid_models = sorted(selected_models - set(FORWARD_SUPPORTED_MODELS))
+        invalid_models = sorted(selected_models - set(forward_configured_models()))
         if invalid_models:
             raise CommandError(
                 f"Unsupported smoke-sync models: {', '.join(invalid_models)}"

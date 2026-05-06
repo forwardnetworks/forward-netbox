@@ -1,7 +1,10 @@
+import hashlib
 import logging
+from ipaddress import ip_address
 from ipaddress import ip_interface
 
 from core.signals import clear_events
+from django.apps import apps
 from django.core.exceptions import ObjectDoesNotExist
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
@@ -50,6 +53,19 @@ class ForwardSyncRunner:
         "LINE CARD",
         "ROUTING ENGINE",
         "SUPERVISOR",
+    }
+    FORWARD_BGP_ADDRESS_FAMILY_ALIASES = {
+        "ipv4-any": "ipv4-unicast",
+        "ipv6-any": "ipv6-unicast",
+        "l2vpn-evpn": "l2vpn-evpn",
+        "l2vpn-vpls": "l2vpn-vpls",
+        "l3vpn-ipv4-any": "vpnv4-unicast",
+        "l3vpn-ipv4-unicast": "vpnv4-unicast",
+        "l3vpn-ipv6-any": "vpnv6-unicast",
+        "l3vpn-ipv6-unicast": "vpnv6-unicast",
+        "l3vpn-ipv6-multicast": "vpnv6-multicast",
+        "link-state": "link-state",
+        "nsap-unicast": "nsap",
     }
     MODEL_CONFLICT_POLICIES = {
         "dcim.site": "reuse_on_unique_conflict",
@@ -976,6 +992,478 @@ class ForwardSyncRunner:
         )
         return vrf
 
+    def _optional_model(self, app_label, model_name, model_string):
+        try:
+            return apps.get_model(app_label, model_name)
+        except LookupError as exc:
+            raise ForwardQueryError(
+                f"`{model_string}` sync requires the optional `{app_label}` NetBox "
+                "plugin to be installed and migrated."
+            ) from exc
+
+    def _model_field_values(self, model, values):
+        model_fields = {
+            field.name
+            for field in model._meta.fields
+            if not getattr(field, "auto_created", False)
+        }
+        return {key: value for key, value in values.items() if key in model_fields}
+
+    def _ensure_forward_observed_rir(self):
+        from ipam.models import RIR
+
+        values = {"name": "Forward Observed", "slug": "forward-observed"}
+        if any(field.name == "is_private" for field in RIR._meta.fields):
+            values["is_private"] = True
+        rir, _ = self._upsert_values_from_defaults(
+            "netbox_routing.bgppeer",
+            RIR,
+            values=values,
+            coalesce_sets=[("slug",), ("name",)],
+        )
+        return rir
+
+    def _ensure_asn(self, asn_value):
+        from ipam.models import ASN
+
+        try:
+            asn_number = int(asn_value)
+        except (TypeError, ValueError) as exc:
+            raise ForwardQueryError(f"Invalid BGP ASN value `{asn_value}`.") from exc
+        existing = self._get_unique_or_raise(ASN, {"asn": asn_number})
+        if existing is not None:
+            return existing
+        rir = self._ensure_forward_observed_rir()
+        asn = ASN(asn=asn_number, rir=rir)
+        asn.full_clean()
+        asn.save()
+        return asn
+
+    def _bgp_vrf(self, row):
+        return self._routing_vrf(row)
+
+    def _routing_vrf(self, row):
+        if not row.get("vrf"):
+            return None
+        return self._ensure_vrf(
+            {
+                "name": row["vrf"],
+                "rd": None,
+                "description": "",
+                "enforce_unique": False,
+            }
+        )
+
+    def _lookup_device_for_routing(self, row, model_string, object_label):
+        from dcim.models import Device
+
+        try:
+            return Device.objects.get(name=row["device"])
+        except ObjectDoesNotExist as exc:
+            key = (row["device"],)
+            if self._dependency_failed("dcim.device", key):
+                raise ForwardDependencySkipError(
+                    f"Skipping {object_label} because dependency `dcim.device` failed for {key}.",
+                    model_string=model_string,
+                    context={"device": row["device"]},
+                    data=row,
+                ) from exc
+            raise ForwardSearchError(
+                f"Unable to find device `{row['device']}` for {object_label}.",
+                model_string=model_string,
+                context={"device": row["device"]},
+                data=row,
+            ) from exc
+
+    def _host_address(self, address):
+        parsed = ip_address(str(address))
+        prefix_length = 32 if parsed.version == 4 else 128
+        return f"{parsed}/{prefix_length}"
+
+    def _lookup_ipaddress_by_host(self, *, address, vrf):
+        from ipam.models import IPAddress
+
+        host = str(ip_address(str(address)))
+        lookup = {"address__net_host": host}
+        if vrf is None:
+            lookup["vrf__isnull"] = True
+        else:
+            lookup["vrf"] = vrf
+        return self._get_unique_or_raise(IPAddress, lookup)
+
+    def _ensure_bgp_peer_ip(self, row, vrf):
+        from ipam.models import IPAddress
+
+        neighbor_address = row["neighbor_address"]
+        existing = self._lookup_ipaddress_by_host(address=neighbor_address, vrf=vrf)
+        if existing is not None:
+            return existing
+        ip_obj = IPAddress(
+            address=self._host_address(neighbor_address),
+            vrf=vrf,
+            status="active",
+        )
+        ip_obj.full_clean()
+        ip_obj.save()
+        return ip_obj
+
+    def _ensure_bgp_router(self, row, device, local_asn):
+        BGPRouter = self._optional_model(
+            "netbox_routing", "BGPRouter", "netbox_routing.bgppeer"
+        )
+        values = self._model_field_values(
+            BGPRouter,
+            {
+                "name": f"{device.name} AS{local_asn.asn}"[:100],
+                "assigned_object_type": self._content_type_for(device.__class__),
+                "assigned_object_id": device.pk,
+                "asn": local_asn,
+            },
+        )
+        router, _ = self._upsert_values_from_defaults(
+            "netbox_routing.bgppeer",
+            BGPRouter,
+            values=values,
+            coalesce_sets=[("assigned_object_type", "assigned_object_id", "asn")],
+        )
+        return router
+
+    def _ensure_bgp_scope(self, row, router, vrf):
+        BGPScope = self._optional_model(
+            "netbox_routing", "BGPScope", "netbox_routing.bgppeer"
+        )
+        scope, _ = self._upsert_values_from_defaults(
+            "netbox_routing.bgppeer",
+            BGPScope,
+            values={"router": router, "vrf": vrf},
+            coalesce_sets=[("router", "vrf")],
+        )
+        return scope
+
+    def _bgp_peer_name(self, row):
+        name = row.get("name") or f"AS{row['peer_asn']} {row['neighbor_address']}"
+        return str(name)[:100]
+
+    def _bgp_peer_comments(self, row):
+        lines = ["Observed by Forward from structured BGP neighbor state."]
+        for label, key in (
+            ("Router ID", "router_id"),
+            ("Peer device", "peer_device"),
+            ("Peer VRF", "peer_vrf"),
+            ("Peer router ID", "peer_router_id"),
+            ("Session state", "session_state"),
+            ("Advertised prefixes", "advertised_prefixes"),
+            ("Received prefixes", "received_prefixes"),
+        ):
+            value = row.get(key)
+            if value not in ("", None):
+                lines.append(f"{label}: {value}")
+        return "\n".join(lines)
+
+    def _bgp_peer_values(self, row):
+        device = self._lookup_device_for_routing(
+            row, "netbox_routing.bgppeer", "BGP peer"
+        )
+
+        vrf = self._bgp_vrf(row)
+        local_asn = self._ensure_asn(row["local_asn"])
+        remote_asn = self._ensure_asn(row["peer_asn"])
+        peer_ip = self._ensure_bgp_peer_ip(row, vrf)
+        router = self._ensure_bgp_router(row, device, local_asn)
+        scope = self._ensure_bgp_scope(row, router, vrf)
+        status = row.get("status") or ("active" if row.get("enabled") else "offline")
+        if status not in {"active", "planned", "offline", "failed"}:
+            status = "active" if row.get("enabled") else "offline"
+        return {
+            "scope": scope,
+            "peer": peer_ip,
+            "name": self._bgp_peer_name(row),
+            "remote_as": remote_asn,
+            "local_as": local_asn,
+            "enabled": bool(row.get("enabled")),
+            "status": status,
+            "description": str(row.get("description") or "")[:200],
+            "comments": self._bgp_peer_comments(row),
+        }
+
+    def _ensure_netbox_routing_bgppeer(self, row):
+        BGPPeer = self._optional_model(
+            "netbox_routing", "BGPPeer", "netbox_routing.bgppeer"
+        )
+        values = self._model_field_values(BGPPeer, self._bgp_peer_values(row))
+        peer, _ = self._upsert_values_from_defaults(
+            "netbox_routing.bgppeer",
+            BGPPeer,
+            values=values,
+            coalesce_sets=[("scope", "peer"), ("scope", "peer", "name")],
+        )
+        return peer
+
+    def _normalize_bgp_address_family(self, afi_safi):
+        value = str(afi_safi or "").strip()
+        if "." in value:
+            value = value.rsplit(".", 1)[-1]
+        value = value.lower().replace("_", "-")
+        if not value:
+            raise ForwardQueryError(
+                "BGP address-family row did not include `afi_safi`."
+            )
+        return self.FORWARD_BGP_ADDRESS_FAMILY_ALIASES.get(value, value)
+
+    def _ensure_bgp_scope_for_row(self, row, model_string):
+        device = self._lookup_device_for_routing(row, model_string, "BGP scope")
+        vrf = self._bgp_vrf(row)
+        local_asn = self._ensure_asn(row["local_asn"])
+        router = self._ensure_bgp_router(row, device, local_asn)
+        return self._ensure_bgp_scope(row, router, vrf)
+
+    def _ensure_bgp_address_family(self, row):
+        BGPAddressFamily = self._optional_model(
+            "netbox_routing",
+            "BGPAddressFamily",
+            "netbox_routing.bgpaddressfamily",
+        )
+        scope = self._ensure_bgp_scope_for_row(row, "netbox_routing.bgpaddressfamily")
+        address_family = self._normalize_bgp_address_family(row.get("afi_safi"))
+        choices = {
+            str(choice[0])
+            for choice in BGPAddressFamily._meta.get_field("address_family").choices
+        }
+        if choices and address_family not in choices:
+            raise ForwardQueryError(
+                f"Unsupported BGP address family `{row.get('afi_safi')}`.",
+                model_string="netbox_routing.bgpaddressfamily",
+                context={"afi_safi": row.get("afi_safi")},
+                data=row,
+            )
+        values = self._model_field_values(
+            BGPAddressFamily,
+            {
+                "scope": scope,
+                "address_family": address_family,
+                "description": "Observed by Forward from BGP RIB AFI/SAFI state.",
+            },
+        )
+        address_family_obj, _ = self._upsert_values_from_defaults(
+            "netbox_routing.bgpaddressfamily",
+            BGPAddressFamily,
+            values=values,
+            coalesce_sets=[("scope", "address_family")],
+        )
+        return address_family_obj
+
+    def _resolve_bgp_address_family_for_delete(self, row):
+        BGPAddressFamily = self._optional_model(
+            "netbox_routing",
+            "BGPAddressFamily",
+            "netbox_routing.bgpaddressfamily",
+        )
+        scope = self._resolve_bgp_scope_for_delete(row)
+        if scope is None:
+            return None
+        return self._get_unique_or_raise(
+            BGPAddressFamily,
+            {
+                "scope": scope,
+                "address_family": self._normalize_bgp_address_family(
+                    row.get("afi_safi")
+                ),
+            },
+        )
+
+    def _ensure_bgp_peer_address_family(self, row):
+        BGPPeerAddressFamily = self._optional_model(
+            "netbox_routing",
+            "BGPPeerAddressFamily",
+            "netbox_routing.bgppeeraddressfamily",
+        )
+        bgp_peer = self._ensure_netbox_routing_bgppeer(row)
+        address_family = self._ensure_bgp_address_family(row)
+        values = self._model_field_values(
+            BGPPeerAddressFamily,
+            {
+                "assigned_object_type": self._content_type_for(bgp_peer.__class__),
+                "assigned_object_id": bgp_peer.pk,
+                "address_family": address_family,
+                "enabled": bool(row.get("enabled")),
+                "description": "Observed by Forward from BGP RIB AFI/SAFI state.",
+            },
+        )
+        peer_af, _ = self._upsert_values_from_defaults(
+            "netbox_routing.bgppeeraddressfamily",
+            BGPPeerAddressFamily,
+            values=values,
+            coalesce_sets=[
+                ("assigned_object_type", "assigned_object_id", "address_family")
+            ],
+        )
+        return peer_af
+
+    def _ospf_area_type(self, value):
+        area_type = str(value or "").strip()
+        if "." in area_type:
+            area_type = area_type.rsplit(".", 1)[-1]
+        area_type = area_type.lower().replace("_", "-")
+        return {
+            "backbone": "backbone",
+            "stub": "stub",
+            "nssa": "nssa",
+            "standard": "standard",
+        }.get(area_type, "standard")
+
+    def _ospf_process_values(self, row):
+        raw_process_id = str(row.get("process_id") or "0").strip() or "0"
+        try:
+            process_id = int(raw_process_id)
+        except ValueError:
+            digest_input = "|".join(
+                str(value or "")
+                for value in (
+                    row.get("device"),
+                    row.get("vrf"),
+                    raw_process_id,
+                    row.get("domain"),
+                )
+            )
+            digest = hashlib.sha1(digest_input.encode("utf-8")).hexdigest()
+            process_id = 1_000_000 + (int(digest[:8], 16) % 1_000_000_000)
+        return process_id, raw_process_id
+
+    def _ospf_instance_comments(self, row, process_label):
+        lines = ["Observed by Forward from structured OSPF state."]
+        for label, value in (
+            ("Forward process ID", process_label),
+            ("Forward domain", row.get("domain")),
+        ):
+            if value not in ("", None):
+                lines.append(f"{label}: {value}")
+        return "\n".join(lines)
+
+    def _ensure_ospf_instance(self, row):
+        OSPFInstance = self._optional_model(
+            "netbox_routing", "OSPFInstance", "netbox_routing.ospfinstance"
+        )
+        device = self._lookup_device_for_routing(
+            row, "netbox_routing.ospfinstance", "OSPF instance"
+        )
+        vrf = self._routing_vrf(row)
+        process_id, process_label = self._ospf_process_values(row)
+        router_id = str(row.get("router_id") or "").strip()
+        if not router_id:
+            raise ForwardQueryError(
+                "OSPF instance row did not include `router_id`.",
+                model_string="netbox_routing.ospfinstance",
+                context={"device": row.get("device"), "process_id": process_label},
+                data=row,
+            )
+        values = self._model_field_values(
+            OSPFInstance,
+            {
+                "name": (row.get("name") or f"{device.name} OSPF {process_label}")[
+                    :100
+                ],
+                "router_id": router_id,
+                "process_id": process_id,
+                "device": device,
+                "vrf": vrf,
+                "comments": row.get("comments")
+                or self._ospf_instance_comments(row, process_label),
+            },
+        )
+        instance, _ = self._upsert_values_from_defaults(
+            "netbox_routing.ospfinstance",
+            OSPFInstance,
+            values=values,
+            coalesce_sets=[("device", "vrf", "process_id")],
+        )
+        return instance
+
+    def _ensure_ospf_area(self, row):
+        OSPFArea = self._optional_model(
+            "netbox_routing", "OSPFArea", "netbox_routing.ospfarea"
+        )
+        values = self._model_field_values(
+            OSPFArea,
+            {
+                "area_id": str(row.get("area_id")),
+                "area_type": self._ospf_area_type(row.get("area_type")),
+                "description": "Observed by Forward from structured OSPF state.",
+            },
+        )
+        area, _ = self._upsert_values_from_defaults(
+            "netbox_routing.ospfarea",
+            OSPFArea,
+            values=values,
+            coalesce_sets=[("area_id",)],
+        )
+        return area
+
+    def _ensure_ospf_interface(self, row):
+        OSPFInterface = self._optional_model(
+            "netbox_routing", "OSPFInterface", "netbox_routing.ospfinterface"
+        )
+        device = self._lookup_device_for_routing(
+            row, "netbox_routing.ospfinterface", "OSPF interface"
+        )
+        interface = self._lookup_interface(device, row.get("local_interface"))
+        if interface is None:
+            raise ForwardSearchError(
+                f"Unable to find interface `{row.get('local_interface')}` on `{device.name}` for OSPF interface.",
+                model_string="netbox_routing.ospfinterface",
+                context={
+                    "device": device.name,
+                    "local_interface": row.get("local_interface"),
+                },
+                data=row,
+            )
+        instance = self._ensure_ospf_instance(row)
+        area = self._ensure_ospf_area(row)
+        values = self._model_field_values(
+            OSPFInterface,
+            {
+                "instance": instance,
+                "area": area,
+                "interface": interface,
+                "priority": None,
+            },
+        )
+        ospf_interface, _ = self._upsert_values_from_defaults(
+            "netbox_routing.ospfinterface",
+            OSPFInterface,
+            values=values,
+            coalesce_sets=[("interface",)],
+        )
+        return ospf_interface
+
+    def _ensure_peering_relationship(self, row):
+        relationship_slug = row.get("relationship_slug") or ""
+        relationship_name = row.get("relationship") or ""
+        if not relationship_slug or not relationship_name:
+            peer_type = str(row.get("peer_type") or "").upper()
+            if "EXTERNAL" in peer_type:
+                relationship_name = "External BGP"
+                relationship_slug = "external-bgp"
+            elif "INTERNAL" in peer_type:
+                relationship_name = "Internal BGP"
+                relationship_slug = "internal-bgp"
+        if not relationship_slug or not relationship_name:
+            return None
+        Relationship = self._optional_model(
+            "netbox_peering_manager",
+            "Relationship",
+            "netbox_peering_manager.peeringsession",
+        )
+        relationship, _ = self._upsert_values_from_defaults(
+            "netbox_peering_manager.peeringsession",
+            Relationship,
+            values={
+                "name": relationship_name,
+                "slug": relationship_slug,
+            },
+            coalesce_sets=[("slug",), ("name",)],
+        )
+        return relationship
+
     def _ensure_vlan(self, *, vid, name, status, site=None):
         from ipam.models import VLAN
 
@@ -1329,6 +1817,178 @@ class ForwardSyncRunner:
             Module,
             [{"device": device, "module_bay": module_bay}],
         )
+
+    def _resolve_bgp_peer_for_delete(self, row):
+        from dcim.models import Device
+        from ipam.models import ASN
+        from ipam.models import VRF
+
+        BGPRouter = self._optional_model(
+            "netbox_routing", "BGPRouter", "netbox_routing.bgppeer"
+        )
+        BGPScope = self._optional_model(
+            "netbox_routing", "BGPScope", "netbox_routing.bgppeer"
+        )
+        BGPPeer = self._optional_model(
+            "netbox_routing", "BGPPeer", "netbox_routing.bgppeer"
+        )
+
+        device = Device.objects.filter(name=row.get("device")).order_by("pk").first()
+        if device is None:
+            return None
+        local_asn = ASN.objects.filter(asn=row.get("local_asn")).order_by("pk").first()
+        if local_asn is None:
+            return None
+        vrf = None
+        if row.get("vrf"):
+            vrf = VRF.objects.filter(name=row["vrf"]).order_by("pk").first()
+            if vrf is None:
+                return None
+        router = BGPRouter.objects.filter(
+            assigned_object_type=self._content_type_for(Device),
+            assigned_object_id=device.pk,
+            asn=local_asn,
+        ).first()
+        if router is None:
+            return None
+        scope = BGPScope.objects.filter(router=router, vrf=vrf).first()
+        if scope is None:
+            return None
+        peer_ip = self._lookup_ipaddress_by_host(
+            address=row.get("neighbor_address"), vrf=vrf
+        )
+        if peer_ip is None:
+            return None
+        return self._get_unique_or_raise(
+            BGPPeer,
+            {
+                "scope": scope,
+                "peer": peer_ip,
+            },
+        )
+
+    def _resolve_bgp_scope_for_delete(self, row):
+        from dcim.models import Device
+        from ipam.models import ASN
+        from ipam.models import VRF
+
+        BGPRouter = self._optional_model(
+            "netbox_routing", "BGPRouter", "netbox_routing.bgppeer"
+        )
+        BGPScope = self._optional_model(
+            "netbox_routing", "BGPScope", "netbox_routing.bgppeer"
+        )
+        device = Device.objects.filter(name=row.get("device")).order_by("pk").first()
+        if device is None:
+            return None
+        local_asn = ASN.objects.filter(asn=row.get("local_asn")).order_by("pk").first()
+        if local_asn is None:
+            return None
+        vrf = None
+        if row.get("vrf"):
+            vrf = VRF.objects.filter(name=row["vrf"]).order_by("pk").first()
+            if vrf is None:
+                return None
+        router = BGPRouter.objects.filter(
+            assigned_object_type=self._content_type_for(Device),
+            assigned_object_id=device.pk,
+            asn=local_asn,
+        ).first()
+        if router is None:
+            return None
+        return BGPScope.objects.filter(router=router, vrf=vrf).first()
+
+    def _delete_netbox_peering_manager_peeringsession(self, row):
+        PeeringSession = self._optional_model(
+            "netbox_peering_manager",
+            "PeeringSession",
+            "netbox_peering_manager.peeringsession",
+        )
+        peer = self._resolve_bgp_peer_for_delete(row)
+        if peer is None:
+            return False
+        return self._delete_by_coalesce(PeeringSession, [{"bgp_peer": peer}])
+
+    def _delete_netbox_routing_bgppeer(self, row):
+        peer = self._resolve_bgp_peer_for_delete(row)
+        if peer is None:
+            return False
+        peer.delete()
+        return True
+
+    def _delete_netbox_routing_bgpaddressfamily(self, row):
+        address_family = self._resolve_bgp_address_family_for_delete(row)
+        if address_family is None:
+            return False
+        address_family.delete()
+        return True
+
+    def _delete_netbox_routing_bgppeeraddressfamily(self, row):
+        BGPPeerAddressFamily = self._optional_model(
+            "netbox_routing",
+            "BGPPeerAddressFamily",
+            "netbox_routing.bgppeeraddressfamily",
+        )
+        peer = self._resolve_bgp_peer_for_delete(row)
+        if peer is None:
+            return False
+        address_family = self._resolve_bgp_address_family_for_delete(row)
+        if address_family is None:
+            return False
+        return self._delete_by_coalesce(
+            BGPPeerAddressFamily,
+            [
+                {
+                    "assigned_object_type": self._content_type_for(peer.__class__),
+                    "assigned_object_id": peer.pk,
+                    "address_family": address_family,
+                }
+            ],
+        )
+
+    def _delete_netbox_routing_ospfinstance(self, row):
+        from dcim.models import Device
+        from ipam.models import VRF
+
+        OSPFInstance = self._optional_model(
+            "netbox_routing", "OSPFInstance", "netbox_routing.ospfinstance"
+        )
+        device = Device.objects.filter(name=row.get("device")).order_by("pk").first()
+        if device is None:
+            return False
+        vrf = None
+        if row.get("vrf"):
+            vrf = VRF.objects.filter(name=row["vrf"]).order_by("pk").first()
+            if vrf is None:
+                return False
+        process_id, _ = self._ospf_process_values(row)
+        return self._delete_by_coalesce(
+            OSPFInstance,
+            [{"device": device, "vrf": vrf, "process_id": process_id}],
+        )
+
+    def _delete_netbox_routing_ospfarea(self, row):
+        OSPFArea = self._optional_model(
+            "netbox_routing", "OSPFArea", "netbox_routing.ospfarea"
+        )
+        return self._delete_by_coalesce(
+            OSPFArea,
+            [{"area_id": str(row.get("area_id"))}],
+        )
+
+    def _delete_netbox_routing_ospfinterface(self, row):
+        from dcim.models import Device
+
+        OSPFInterface = self._optional_model(
+            "netbox_routing", "OSPFInterface", "netbox_routing.ospfinterface"
+        )
+        device = Device.objects.filter(name=row.get("device")).order_by("pk").first()
+        if device is None:
+            return False
+        interface = self._lookup_interface(device, row.get("local_interface"))
+        if interface is None:
+            return False
+        return self._delete_by_coalesce(OSPFInterface, [{"interface": interface}])
 
     def _apply_dcim_site(self, row):
         self._ensure_site(row)
@@ -2003,4 +2663,44 @@ class ForwardSyncRunner:
                 "dcim.module",
                 [("device", "module_bay")],
             ),
+        )
+
+    def _apply_netbox_routing_bgppeer(self, row):
+        return self._ensure_netbox_routing_bgppeer(row)
+
+    def _apply_netbox_routing_bgpaddressfamily(self, row):
+        return self._ensure_bgp_address_family(row)
+
+    def _apply_netbox_routing_bgppeeraddressfamily(self, row):
+        return self._ensure_bgp_peer_address_family(row)
+
+    def _apply_netbox_routing_ospfinstance(self, row):
+        return self._ensure_ospf_instance(row)
+
+    def _apply_netbox_routing_ospfarea(self, row):
+        return self._ensure_ospf_area(row)
+
+    def _apply_netbox_routing_ospfinterface(self, row):
+        return self._ensure_ospf_interface(row)
+
+    def _apply_netbox_peering_manager_peeringsession(self, row):
+        PeeringSession = self._optional_model(
+            "netbox_peering_manager",
+            "PeeringSession",
+            "netbox_peering_manager.peeringsession",
+        )
+        bgp_peer = self._ensure_netbox_routing_bgppeer(row)
+        values = self._model_field_values(
+            PeeringSession,
+            {
+                "bgp_peer": bgp_peer,
+                "relationship": self._ensure_peering_relationship(row),
+                "service_reference": row.get("service_reference") or "",
+            },
+        )
+        self._upsert_values_from_defaults(
+            "netbox_peering_manager.peeringsession",
+            PeeringSession,
+            values=values,
+            coalesce_sets=[("bgp_peer",)],
         )

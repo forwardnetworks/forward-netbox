@@ -1,0 +1,47 @@
+/**
+ * @intent Forward BGP Address Families
+ * @description Optional raw NQE for netbox-routing BGP address-family rows derived from Forward BGP RIB AFI/SAFI state.
+ */
+
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+where isPresent(device.bgpRib)
+foreach afi in device.bgpRib.afiSafis
+let afi_safi = toString(afi.afiSafiName)
+where afi_safi == "AfiSafiType.IPV4_ANY"
+  || afi_safi == "AfiSafiType.IPV4_UNICAST"
+  || afi_safi == "AfiSafiType.IPV6_ANY"
+  || afi_safi == "AfiSafiType.IPV6_UNICAST"
+  || afi_safi == "AfiSafiType.IPV4_MULTICAST"
+  || afi_safi == "AfiSafiType.IPV6_MULTICAST"
+  || afi_safi == "AfiSafiType.L2VPN_EVPN"
+  || afi_safi == "AfiSafiType.L2VPN_VPLS"
+  || afi_safi == "AfiSafiType.L3VPN_IPV4_ANY"
+  || afi_safi == "AfiSafiType.L3VPN_IPV4_UNICAST"
+  || afi_safi == "AfiSafiType.L3VPN_IPV6_ANY"
+  || afi_safi == "AfiSafiType.L3VPN_IPV6_UNICAST"
+  || afi_safi == "AfiSafiType.L3VPN_IPV6_MULTICAST"
+  || afi_safi == "AfiSafiType.LINK_STATE"
+  || afi_safi == "AfiSafiType.RTFILTER_UNICAST"
+  || afi_safi == "AfiSafiType.NSAP_UNICAST"
+foreach rib_neighbor in afi.neighbors
+foreach network_instance in device.networkInstances
+foreach protocol in network_instance.protocols
+where isPresent(protocol.bgp)
+foreach neighbor in protocol.bgp.neighbors
+where neighbor.neighborAddress == rib_neighbor.neighborAddress
+where isPresent(neighbor.localAS) || isPresent(protocol.bgp.asNumber)
+select distinct {
+  device: device.name,
+  vrf: if network_instance.name != "default" then network_instance.name else null : String,
+  local_asn: if isPresent(neighbor.localAS) then neighbor.localAS else protocol.bgp.asNumber,
+  router_id: protocol.bgp.routerId,
+  neighbor_address: neighbor.neighborAddress,
+  peer_asn: neighbor.peerAS,
+  afi_safi: afi_safi,
+  enabled: neighbor.enabled,
+  status: if neighbor.enabled then "active" else "offline",
+  has_adj_rib_in: isPresent(rib_neighbor.adjRibInPost),
+  has_adj_rib_out: isPresent(rib_neighbor.adjRibOutPost)
+}

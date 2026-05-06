@@ -3,12 +3,15 @@ from unittest.mock import patch
 from uuid import uuid4
 
 from core.exceptions import SyncError
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
+from django.test import override_settings
 from django.test import TestCase
 from django.utils import timezone
 
+from forward_netbox.choices import FORWARD_BGP_MODELS
 from forward_netbox.choices import ForwardDriftPolicyBaselineChoices
 from forward_netbox.choices import ForwardSourceStatusChoices
 from forward_netbox.choices import ForwardSyncStatusChoices
@@ -34,6 +37,23 @@ from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from forward_netbox.utilities.query_registry import builtin_nqe_map_rows
 from forward_netbox.utilities.query_registry import QuerySpec
 from forward_netbox.views import annotate_statistics
+
+
+BGP_PLUGIN_CONFIG = {
+    **settings.PLUGINS_CONFIG,
+    "forward_netbox": {
+        **settings.PLUGINS_CONFIG.get("forward_netbox", {}),
+        "enable_bgp_sync": True,
+    },
+}
+BGP_DISABLED_PLUGIN_CONFIG = {
+    **settings.PLUGINS_CONFIG,
+    "forward_netbox": {
+        key: value
+        for key, value in settings.PLUGINS_CONFIG.get("forward_netbox", {}).items()
+        if key != "enable_bgp_sync"
+    },
+}
 
 
 class ForwardSyncModelTest(TestCase):
@@ -189,6 +209,45 @@ class ForwardSyncModelTest(TestCase):
 
         self.assertFalse(sync.is_model_enabled("dcim.module"))
         self.assertNotIn("dcim.module", sync.enabled_models())
+
+    @override_settings(PLUGINS_CONFIG=BGP_DISABLED_PLUGIN_CONFIG)
+    def test_bgp_models_are_disabled_without_feature_flag_even_when_parameter_is_true(
+        self,
+    ):
+        sync = ForwardSync.objects.create(
+            name="sync-bgp-flag-disabled",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+                **{model_string: True for model_string in FORWARD_BGP_MODELS},
+            },
+        )
+
+        for model_string in FORWARD_BGP_MODELS:
+            self.assertFalse(sync.is_model_enabled(model_string))
+            self.assertNotIn(model_string, sync.enabled_models())
+
+    @override_settings(PLUGINS_CONFIG=BGP_PLUGIN_CONFIG)
+    def test_bgp_models_follow_parameters_when_feature_flag_is_enabled(self):
+        sync = ForwardSync.objects.create(
+            name="sync-bgp-flag-enabled",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+                **{model_string: True for model_string in FORWARD_BGP_MODELS},
+                "netbox_peering_manager.peeringsession": False,
+            },
+        )
+
+        for model_string in FORWARD_BGP_MODELS:
+            if model_string == "netbox_peering_manager.peeringsession":
+                continue
+            self.assertTrue(sync.is_model_enabled(model_string))
+            self.assertIn(model_string, sync.enabled_models())
+        self.assertFalse(sync.is_model_enabled("netbox_peering_manager.peeringsession"))
+        self.assertNotIn("netbox_peering_manager.peeringsession", sync.enabled_models())
 
     def test_get_sync_activity_prefers_phase_message(self):
         sync = ForwardSync.objects.create(
@@ -1153,6 +1212,25 @@ class ForwardNQEMapModelTest(TestCase):
 
         query_map.refresh_from_db()
         self.assertFalse(query_map.enabled)
+
+    def test_seed_builtin_maps_preserves_query_id_execution_mode(self):
+        netbox_model = ContentType.objects.get(app_label="dcim", model="site")
+        query_map = ForwardNQEMap.objects.get(
+            name="Forward Locations",
+            netbox_model=netbox_model,
+            built_in=True,
+        )
+        query_map.query_id = "FQ_locations"
+        query_map.query = ""
+        query_map.commit_id = "commit-1"
+        query_map.save(update_fields=["query_id", "query", "commit_id"])
+
+        seed_builtin_nqe_maps(type("Sender", (), {"label": "forward_netbox"}))
+
+        query_map.refresh_from_db()
+        self.assertEqual(query_map.query_id, "FQ_locations")
+        self.assertEqual(query_map.query, "")
+        self.assertEqual(query_map.commit_id, "commit-1")
 
     def test_seed_builtin_maps_creates_optional_alias_maps_disabled(self):
         netbox_model = ContentType.objects.get(app_label="dcim", model="device")

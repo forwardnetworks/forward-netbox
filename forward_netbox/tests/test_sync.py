@@ -13,12 +13,15 @@ from dcim.models import Site
 from dcim.models import VirtualChassis
 from dcim.models.device_components import ModuleBay
 from dcim.models.modules import ModuleType
+from django.apps import apps
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 from django.test import TestCase
 from extras.models import Tag
+from ipam.models import ASN
 from ipam.models import IPAddress
+from ipam.models import RIR
 
 from forward_netbox.choices import FORWARD_SUPPORTED_MODELS
 from forward_netbox.exceptions import ForwardClientError
@@ -152,6 +155,31 @@ class ForwardBranchBudgetPlanTest(TestCase):
         )
 
         self.assertEqual(budget, 3500)
+
+    def test_effective_row_budget_uses_bgp_peer_default_density(self):
+        budget = effective_row_budget_for_model(
+            "netbox_routing.bgppeer",
+            max_changes_per_branch=10000,
+            model_change_density={},
+        )
+
+        self.assertEqual(budget, 1000)
+
+    def test_bgp_peer_shard_key_uses_device(self):
+        row = {
+            "device": "device-1",
+            "vrf": "VRF-A",
+            "neighbor_address": "192.0.2.1",
+        }
+
+        self.assertEqual(
+            row_shard_key(
+                "netbox_routing.bgppeer",
+                row,
+                [["device", "vrf", "neighbor_address"]],
+            ),
+            "device:device-1",
+        )
 
     def test_effective_row_budget_uses_cable_safety_override_with_observed_density(
         self,
@@ -474,6 +502,92 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
         self.assertIn("11.138.0.16/28", warning_messages[1])
         self.assertIn("11.138.0.31/28", warning_messages[2])
 
+    @patch("forward_netbox.utilities.query_fetch.get_query_specs")
+    def test_build_plan_records_routing_import_diagnostics(self, mock_specs):
+        client = Mock()
+        client.get_snapshots.return_value = [
+            {
+                "id": "snapshot-after",
+                "state": "PROCESSED",
+                "created_at": "",
+                "processed_at": "2026-05-06T12:15:00Z",
+            }
+        ]
+        client.get_snapshot_metrics.return_value = {}
+        client.run_nqe_query.side_effect = [
+            [
+                {
+                    "device": "device-1",
+                    "vrf": None,
+                    "local_asn": 64512,
+                    "router_id": "192.0.2.254",
+                    "neighbor_address": "192.0.2.1",
+                    "peer_asn": 64513,
+                    "afi_safi": "AfiSafiType.IPV4_UNICAST",
+                }
+            ],
+            [
+                {
+                    "reason": "bgp-unsupported-address-family",
+                    "model_target": "netbox_routing.bgpaddressfamily",
+                    "protocol": "bgp",
+                    "device": "device-1",
+                    "interface": "",
+                    "detail": "AfiSafiType.IPV4_MDT",
+                    "count": 7,
+                },
+                {
+                    "reason": "ospf-neighbor-without-reverse-peer",
+                    "model_target": "netbox_routing.ospfinstance",
+                    "protocol": "ospf",
+                    "device": "device-2",
+                    "interface": "Ethernet1/1",
+                    "detail": "Forward did not expose the reverse OSPF neighbor.",
+                },
+            ],
+        ]
+        self.sync.resolve_snapshot_id = lambda client=None: "snapshot-after"
+        self.sync.get_model_strings = lambda: ["netbox_routing.bgpaddressfamily"]
+        self.sync.incremental_diff_baseline = Mock(return_value=None)
+        mock_specs.return_value = [
+            QuerySpec(
+                model_string="netbox_routing.bgpaddressfamily",
+                query_name="Forward BGP Address Families",
+                query=(
+                    'select {device: "device-1", vrf: null:String, '
+                    'local_asn: 64512, router_id: ipAddress("192.0.2.254"), '
+                    'neighbor_address: ipAddress("192.0.2.1"), '
+                    'peer_asn: 64513, afi_safi: "AfiSafiType.IPV4_UNICAST"}'
+                ),
+            )
+        ]
+        logger = Mock()
+        planner = ForwardMultiBranchPlanner(
+            sync=self.sync,
+            client=client,
+            logger_=logger,
+        )
+
+        planner.build_plan(max_changes_per_branch=10, run_preflight=False)
+
+        diagnostic = planner.model_results[0]["diagnostics"][0]
+        self.assertEqual(diagnostic["name"], "routing_import_skipped_rows")
+        self.assertEqual(diagnostic["total"], 8)
+        self.assertEqual(
+            diagnostic["counts"],
+            {
+                "bgp-unsupported-address-family": 7,
+                "ospf-neighbor-without-reverse-peer": 1,
+            },
+        )
+        self.assertEqual(len(diagnostic["examples"]), 2)
+        warning_messages = [call.args[0] for call in logger.log_warning.call_args_list]
+        self.assertIn("beta routing maps cannot import", warning_messages[0])
+        self.assertIn("BGP unsupported address families", warning_messages[0])
+        self.assertIn(
+            "OSPF neighbors without reverse peer inference", warning_messages[0]
+        )
+
 
 class ForwardMultiBranchExecutorAdaptiveSplitTest(TestCase):
     NETWORK_ID = "test-network"
@@ -706,6 +820,142 @@ class ForwardSyncRunnerTest(TestCase):
 
         self.assertEqual(runner._lookup_interface(device, "Ethernet1/1"), interface)
         self.assertIsNone(runner._lookup_interface(device, "ethernet1/1"))
+
+    def test_bgp_peer_contract_accepts_minimal_query_row(self):
+        validate_row_shape_for_model(
+            "netbox_routing.bgppeer",
+            {
+                "device": "device-1",
+                "vrf": None,
+                "local_asn": 64512,
+                "neighbor_address": "192.0.2.1",
+                "peer_asn": 64513,
+                "enabled": True,
+                "status": "active",
+            },
+            [["device", "vrf", "neighbor_address"], ["device", "neighbor_address"]],
+        )
+
+    def test_bgp_peer_adapter_records_failure_when_optional_plugin_is_missing(self):
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        runner._record_issue = Mock()
+
+        runner._apply_model_rows(
+            "netbox_routing.bgppeer",
+            [
+                {
+                    "device": "device-1",
+                    "vrf": None,
+                    "local_asn": 64512,
+                    "neighbor_address": "192.0.2.1",
+                    "peer_asn": 64513,
+                    "enabled": True,
+                    "status": "active",
+                }
+            ],
+        )
+
+        runner.logger.increment_statistics.assert_any_call(
+            "netbox_routing.bgppeer", outcome="failed"
+        )
+        runner._record_issue.assert_called_once()
+
+    def test_bgp_asn_reuses_existing_asn_without_changing_rir(self):
+        rir = RIR.objects.create(name="ARIN")
+        asn = ASN.objects.create(rir=rir, asn=64512)
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        self.assertEqual(runner._ensure_asn(64512), asn)
+        asn.refresh_from_db()
+        self.assertEqual(asn.rir, rir)
+        self.assertFalse(RIR.objects.filter(slug="forward-observed").exists())
+
+    def test_bgp_peer_address_family_adapter_creates_native_address_family(self):
+        if not apps.is_installed("netbox_routing"):
+            self.skipTest("netbox-routing optional plugin is not installed")
+        BGPPeer = apps.get_model("netbox_routing", "BGPPeer")
+        BGPAddressFamily = apps.get_model("netbox_routing", "BGPAddressFamily")
+        BGPPeerAddressFamily = apps.get_model("netbox_routing", "BGPPeerAddressFamily")
+        self._create_device("device-1")
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        runner._apply_model_rows(
+            "netbox_routing.bgppeeraddressfamily",
+            [
+                {
+                    "device": "device-1",
+                    "vrf": None,
+                    "local_asn": 64512,
+                    "router_id": "192.0.2.254",
+                    "neighbor_address": "192.0.2.1",
+                    "peer_asn": 64513,
+                    "afi_safi": "AfiSafiType.IPV4_UNICAST",
+                    "enabled": True,
+                    "status": "active",
+                },
+                {
+                    "device": "device-1",
+                    "vrf": None,
+                    "local_asn": 64512,
+                    "router_id": "192.0.2.254",
+                    "neighbor_address": "192.0.2.1",
+                    "peer_asn": 64513,
+                    "afi_safi": "AfiSafiType.L3VPN_IPV4_UNICAST",
+                    "enabled": True,
+                    "status": "active",
+                },
+            ],
+        )
+
+        self.assertEqual(BGPPeer.objects.count(), 1)
+        self.assertCountEqual(
+            BGPAddressFamily.objects.values_list("address_family", flat=True),
+            ["ipv4-unicast", "vpnv4-unicast"],
+        )
+        self.assertEqual(BGPPeerAddressFamily.objects.count(), 2)
+
+    def test_ospf_interface_adapter_preserves_named_process_label(self):
+        if not apps.is_installed("netbox_routing"):
+            self.skipTest("netbox-routing optional plugin is not installed")
+        OSPFInstance = apps.get_model("netbox_routing", "OSPFInstance")
+        OSPFArea = apps.get_model("netbox_routing", "OSPFArea")
+        OSPFInterface = apps.get_model("netbox_routing", "OSPFInterface")
+        device = self._create_device("device-1")
+        Interface.objects.create(device=device, name="Ethernet1/1", type="1000base-t")
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        runner._apply_model_rows(
+            "netbox_routing.ospfinterface",
+            [
+                {
+                    "device": "device-1",
+                    "vrf": None,
+                    "process_id": "UNDERLAY",
+                    "domain": "fabric",
+                    "router_id": "192.0.2.254",
+                    "area_id": "0",
+                    "area_type": "OspfAreaType.BACKBONE",
+                    "local_interface": "Ethernet1/1",
+                    "remote_router_id": "192.0.2.253",
+                    "remote_interface_ip": "192.0.2.253/31",
+                    "cost": 1,
+                }
+            ],
+        )
+
+        instance = OSPFInstance.objects.get()
+        self.assertGreaterEqual(instance.process_id, 1_000_000)
+        self.assertIn("UNDERLAY", instance.comments)
+        self.assertEqual(OSPFArea.objects.get().area_type, "backbone")
+        self.assertEqual(OSPFInterface.objects.get().interface.name, "Ethernet1/1")
 
     def test_apply_dcim_interface_sets_lag_membership_after_parent(self):
         self._create_device("device-1")

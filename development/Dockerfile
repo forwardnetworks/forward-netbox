@@ -10,6 +10,7 @@ COPY development/launch-netbox.sh /opt/netbox/launch-netbox.sh
 RUN chmod +x /opt/netbox/launch-netbox.sh
 
 RUN uv pip install ${PACKAGE}
+RUN uv pip install netbox-routing==0.4.2 netbox-peering-manager==0.2.2
 RUN uv pip install "watchdog[watchmedo]"
 
 WORKDIR /opt/netbox/netbox

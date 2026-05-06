@@ -49,6 +49,8 @@ IPADDRESS_UNASSIGNABLE_DIAGNOSTIC_QUERY_NAME = (
 IPADDRESS_UNASSIGNABLE_DIAGNOSTIC_QUERY_FILE = (
     "forward_ip_addresses_unassignable_diagnostics.nqe"
 )
+ROUTING_IMPORT_DIAGNOSTIC_QUERY_NAME = "Forward Routing Import Diagnostics"
+ROUTING_IMPORT_DIAGNOSTIC_QUERY_FILE = "forward_routing_import_diagnostics.nqe"
 
 
 def _read_query_source(filename: str) -> str:
@@ -129,6 +131,10 @@ def _read_query(filename: str) -> str:
 
 def ipaddress_unassignable_diagnostic_query() -> str:
     return _read_query(IPADDRESS_UNASSIGNABLE_DIAGNOSTIC_QUERY_FILE)
+
+
+def routing_import_diagnostic_query() -> str:
+    return _read_query(ROUTING_IMPORT_DIAGNOSTIC_QUERY_FILE)
 
 
 BUILTIN_QUERY_MAPS = [
@@ -244,6 +250,48 @@ BUILTIN_OPTIONAL_QUERY_MAPS = [
         "filename": "forward_modules.nqe",
         "enabled": False,
     },
+    {
+        "model_string": "netbox_routing.bgppeer",
+        "name": "Forward BGP Peers",
+        "filename": "forward_bgp_peers.nqe",
+        "enabled": False,
+    },
+    {
+        "model_string": "netbox_routing.bgpaddressfamily",
+        "name": "Forward BGP Address Families",
+        "filename": "forward_bgp_address_families.nqe",
+        "enabled": False,
+    },
+    {
+        "model_string": "netbox_routing.bgppeeraddressfamily",
+        "name": "Forward BGP Peer Address Families",
+        "filename": "forward_bgp_peer_address_families.nqe",
+        "enabled": False,
+    },
+    {
+        "model_string": "netbox_routing.ospfinstance",
+        "name": "Forward OSPF Instances",
+        "filename": "forward_ospf_instances.nqe",
+        "enabled": False,
+    },
+    {
+        "model_string": "netbox_routing.ospfarea",
+        "name": "Forward OSPF Areas",
+        "filename": "forward_ospf_areas.nqe",
+        "enabled": False,
+    },
+    {
+        "model_string": "netbox_routing.ospfinterface",
+        "name": "Forward OSPF Interfaces",
+        "filename": "forward_ospf_interfaces.nqe",
+        "enabled": False,
+    },
+    {
+        "model_string": "netbox_peering_manager.peeringsession",
+        "name": "Forward Peering Sessions",
+        "filename": "forward_peering_sessions.nqe",
+        "enabled": False,
+    },
 ]
 
 BUILTIN_SEEDED_QUERY_MAPS = [
@@ -303,6 +351,18 @@ def _build_query_spec_from_map(query_map) -> QuerySpec:
             (query_map.model_string, query_map.name)
         )
         if query_default is not None:
+            if query_map.query_id:
+                return QuerySpec(
+                    model_string=query_map.model_string,
+                    query_name=query_map.name,
+                    query_id=query_map.query_id,
+                    commit_id=query_map.commit_id or None,
+                    parameters=query_map.parameters or {},
+                    coalesce_fields=tuple(
+                        tuple(field_set) for field_set in normalized_coalesce
+                    ),
+                    placeholder=False,
+                )
             return QuerySpec(
                 model_string=query_map.model_string,
                 query_name=query_map.name,

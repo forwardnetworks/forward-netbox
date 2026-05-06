@@ -6,7 +6,8 @@
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v0.6.3` | `4.5.9` validated; `4.5.x` only | Current release; native `dcim.module` import is beta |
+| `v0.6.4` | `4.5.9` validated; `4.5.x` only | Current release; optional routing/peering import is beta; native `dcim.module` import is beta |
+| `v0.6.3` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.6.4`; native `dcim.module` import is beta |
 | `v0.6.2` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.6.3`; native `dcim.module` import is beta |
 | `v0.6.1` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.6.2`; native `dcim.module` import is beta |
 | `v0.6.0` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.6.1`; native `dcim.module` import is beta |
@@ -24,6 +25,7 @@
 
 | Release | Summary |
 | --- | --- |
+| `v0.6.4` | Adds beta optional routing and peering imports for `netbox-routing` and `netbox-peering-manager`, including BGP peers, BGP address families, OSPF objects, peering sessions, routing diagnostics, and query-ID-aware built-in map handling. |
 | `v0.6.3` | Models Forward aggregate interfaces as native NetBox LAGs, attaches member interfaces through `Interface.lag`, and keeps the MTU value sourced from Forward's normalized interface field. |
 | `v0.6.2` | Canonicalizes duplicate global-table IP address rows by host IP before import and records row-scoped apply/delete failures as ingestion issues without aborting the rest of the shard. |
 | `v0.6.1` | Filters interface IP rows that NetBox cannot assign, such as subnet network IDs and IPv4 broadcasts, while reporting aggregate diagnostics for filtered addresses. |
@@ -116,6 +118,8 @@ The shipped built-in NQE maps currently cover:
 - Cables from exact Forward inferred interface matches
 - MAC addresses
 - Inventory items
+- Optional beta modules
+- Optional beta BGP peers, BGP address families, OSPF objects, and peering sessions through external NetBox plugins
 - VLANs
 - VRFs
 - IPv4 and IPv6 prefixes

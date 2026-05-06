@@ -6,9 +6,12 @@
 PLUGINS = [
     "forward_netbox",
     "netbox_branching",
+    "netbox_routing",
+    "netbox_peering_manager",
 ]
 
-# PLUGINS_CONFIG = {  # type: ignore
-#     "netbox_initializers": {},
-#     "netbox_acls": {},
-# }
+PLUGINS_CONFIG = {  # type: ignore
+    "forward_netbox": {
+        "enable_bgp_sync": True,
+    },
+}

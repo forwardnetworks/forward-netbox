@@ -28,6 +28,7 @@ from netbox.models.features import TagsMixin
 from netbox_branching.models import Branch
 from utilities.querysets import RestrictedQuerySet
 
+from .choices import forward_configured_models
 from .choices import FORWARD_OPTIONAL_MODELS
 from .choices import FORWARD_SUPPORTED_MODELS
 from .choices import ForwardDriftPolicyBaselineChoices
@@ -431,8 +432,8 @@ class ForwardSync(ForwardPluginModelDocsMixin, JobsMixin, TagsMixin, ChangeLogge
                 {"scheduled": _("Scheduled time must be in the future.")}
             )
         if not any(
-            parameters.get(model_string, True)
-            for model_string in FORWARD_SUPPORTED_MODELS
+            self.is_model_enabled(model_string)
+            for model_string in forward_configured_models()
         ):
             raise ValidationError(_("Select at least one NetBox model to sync."))
         self.auto_merge = parameters["auto_merge"]
@@ -632,6 +633,8 @@ class ForwardSync(ForwardPluginModelDocsMixin, JobsMixin, TagsMixin, ChangeLogge
         return f"{seconds}s"
 
     def is_model_enabled(self, model_string):
+        if model_string not in forward_configured_models():
+            return False
         parameters = self.parameters or {}
         return parameters.get(
             model_string,
@@ -641,7 +644,7 @@ class ForwardSync(ForwardPluginModelDocsMixin, JobsMixin, TagsMixin, ChangeLogge
     def enabled_models(self):
         return [
             model_string
-            for model_string in FORWARD_SUPPORTED_MODELS
+            for model_string in forward_configured_models()
             if self.is_model_enabled(model_string)
         ]
 

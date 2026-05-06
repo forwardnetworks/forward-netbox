@@ -6,7 +6,8 @@
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v0.6.3` | `4.5.9` validated; `4.5.x` only | Current release; native `dcim.module` import is beta |
+| `v0.6.4` | `4.5.9` validated; `4.5.x` only | Current release; optional routing/peering import is beta; native `dcim.module` import is beta |
+| `v0.6.3` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.6.4`; native `dcim.module` import is beta |
 | `v0.6.2` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.6.3`; native `dcim.module` import is beta |
 | `v0.6.1` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.6.2`; native `dcim.module` import is beta |
 | `v0.6.0` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.6.1`; native `dcim.module` import is beta |
@@ -24,6 +25,7 @@
 
 | Release | Summary |
 | --- | --- |
+| `v0.6.4` | Adds beta optional routing and peering imports for `netbox-routing` and `netbox-peering-manager`, including BGP peers, BGP address families, OSPF objects, peering sessions, routing diagnostics, and query-ID-aware built-in map handling. |
 | `v0.6.3` | Models Forward aggregate interfaces as native NetBox LAGs, attaches member interfaces through `Interface.lag`, and keeps the MTU value sourced from Forward's normalized interface field. |
 | `v0.6.2` | Canonicalizes duplicate global-table IP address rows by host IP before import and records row-scoped apply/delete failures as ingestion issues without aborting the rest of the shard. |
 | `v0.6.1` | Filters interface IP rows that NetBox cannot assign, such as subnet network IDs and IPv4 broadcasts, while reporting aggregate diagnostics for filtered addresses. |
@@ -70,6 +72,7 @@ This repository is provided for use at your own risk. It is an unsupported relea
 - Automatic paging across multi-page Forward NQE result sets during sync execution
 - Optional disabled NQE maps for NetBox Device Type Library alias matching through a Forward JSON data file
 - Optional disabled NQE map for data-file-driven device feature tag rules
+- Feature-flagged beta BGP and OSPF maps for optional `netbox-routing` and `netbox-peering-manager` deployments
 - Snapshot-aware execution with `latestProcessed` or an explicit Forward snapshot per sync
 - Ingestion records that preserve the selected snapshot mode, resolved snapshot ID, and Forward snapshot metrics
 - Built-in coverage for:
@@ -85,6 +88,8 @@ This repository is provided for use at your own risk. It is an unsupported relea
   - `dcim.cable` from exact Forward inferred interface matches
   - `dcim.macaddress`
   - `dcim.inventoryitem`
+  - optional beta `dcim.module`
+  - optional beta BGP peers, BGP address families, OSPF objects, and peering sessions through external NetBox plugins
   - `ipam.vlan`
   - `ipam.vrf`
   - `ipam.prefix` for IPv4 and IPv6
@@ -97,7 +102,7 @@ This repository is provided for use at your own risk. It is an unsupported relea
 Install the wheel or source archive from GitHub Releases:
 
 ```bash
-pip install /path/to/forward_netbox-0.6.3-py3-none-any.whl
+pip install /path/to/forward_netbox-0.6.4-py3-none-any.whl
 ```
 
 2. Enable both plugins in the NetBox configuration:

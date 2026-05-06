@@ -16,6 +16,8 @@ from forward_netbox.utilities.query_registry import (
 from forward_netbox.utilities.query_registry import (
     IPADDRESS_UNASSIGNABLE_DIAGNOSTIC_QUERY_NAME,
 )
+from forward_netbox.utilities.query_registry import routing_import_diagnostic_query
+from forward_netbox.utilities.query_registry import ROUTING_IMPORT_DIAGNOSTIC_QUERY_NAME
 
 
 REQUIRED_FIELDS_BY_QUERY_NAME = {
@@ -432,6 +434,110 @@ class QueryRegistryTest(TestCase):
         self.assertEqual(spec.query_name, "Forward Modules")
         self.assertIn("isNetBoxModuleComponent", spec.query)
 
+    def test_optional_bgp_maps_are_seeded_disabled(self):
+        rows = {
+            (row["model_string"], row["name"]): row for row in builtin_nqe_map_rows()
+        }
+
+        bgp_row = rows[("netbox_routing.bgppeer", "Forward BGP Peers")]
+        self.assertFalse(bgp_row["enabled"])
+        self.assertIn("protocol.bgp.neighbors", bgp_row["query"])
+        self.assertIn("neighbor.neighborAddress", bgp_row["query"])
+        self.assertIn("neighbor.peerAS", bgp_row["query"])
+        self.assertIn("local_asn:", bgp_row["query"])
+        self.assertEqual(
+            bgp_row["coalesce_fields"],
+            [["device", "vrf", "neighbor_address"], ["device", "neighbor_address"]],
+        )
+        self.assertNotRegex(bgp_row["query"], r" : Int(?!eger)")
+
+        bgp_af_row = rows[
+            ("netbox_routing.bgpaddressfamily", "Forward BGP Address Families")
+        ]
+        self.assertFalse(bgp_af_row["enabled"])
+        self.assertIn("device.bgpRib.afiSafis", bgp_af_row["query"])
+        self.assertIn(
+            'afi_safi == "AfiSafiType.L3VPN_IPV4_UNICAST"', bgp_af_row["query"]
+        )
+        self.assertNotIn('afi_safi == "AfiSafiType.IPV4_MDT"', bgp_af_row["query"])
+        self.assertEqual(
+            bgp_af_row["coalesce_fields"],
+            [
+                ["device", "vrf", "local_asn", "afi_safi"],
+                ["device", "local_asn", "afi_safi"],
+            ],
+        )
+
+        bgp_peer_af_row = rows[
+            (
+                "netbox_routing.bgppeeraddressfamily",
+                "Forward BGP Peer Address Families",
+            )
+        ]
+        self.assertFalse(bgp_peer_af_row["enabled"])
+        self.assertIn("device.bgpRib.afiSafis", bgp_peer_af_row["query"])
+        self.assertIn(
+            'afi_safi == "AfiSafiType.L3VPN_IPV4_UNICAST"',
+            bgp_peer_af_row["query"],
+        )
+        self.assertNotIn(
+            'afi_safi == "AfiSafiType.IPV4_MDT"',
+            bgp_peer_af_row["query"],
+        )
+        self.assertEqual(
+            bgp_peer_af_row["coalesce_fields"],
+            [
+                ["device", "vrf", "neighbor_address", "afi_safi"],
+                ["device", "neighbor_address", "afi_safi"],
+            ],
+        )
+
+        ospf_instance_row = rows[
+            ("netbox_routing.ospfinstance", "Forward OSPF Instances")
+        ]
+        self.assertFalse(ospf_instance_row["enabled"])
+        self.assertIn("protocol.ospf", ospf_instance_row["query"])
+        self.assertIn("router_id:", ospf_instance_row["query"])
+
+        ospf_interface_row = rows[
+            ("netbox_routing.ospfinterface", "Forward OSPF Interfaces")
+        ]
+        self.assertFalse(ospf_interface_row["enabled"])
+        self.assertIn("local_interface:", ospf_interface_row["query"])
+
+        peering_row = rows[
+            ("netbox_peering_manager.peeringsession", "Forward Peering Sessions")
+        ]
+        self.assertFalse(peering_row["enabled"])
+        self.assertIn("relationship_slug:", peering_row["query"])
+        self.assertIn("service_reference:", peering_row["query"])
+        self.assertEqual(
+            peering_row["coalesce_fields"],
+            [["device", "vrf", "neighbor_address"], ["device", "neighbor_address"]],
+        )
+        self.assertNotIn(
+            "Forward BGP Peers",
+            {query_default["name"] for query_default in BUILTIN_QUERY_MAPS},
+        )
+        self.assertIn(
+            "Forward BGP Peers",
+            {query_default["name"] for query_default in BUILTIN_OPTIONAL_QUERY_MAPS},
+        )
+
+    def test_builtin_map_query_id_overrides_bundled_query_for_diff_support(self):
+        content_type = ContentType.objects.get(app_label="dcim", model="site")
+        query_map = ForwardNQEMap.objects.create(
+            name="Forward Locations",
+            netbox_model=content_type,
+            query_id="FQ_locations",
+            built_in=True,
+        )
+
+        specs = get_query_specs("dcim.site", maps=[query_map])
+
+        self.assertEqual(specs[0].query_id, "FQ_locations")
+        self.assertIsNone(specs[0].query)
+
     def test_data_file_queries_keep_device_first_parallel_shape(self):
         rows = {row["name"]: row for row in builtin_nqe_map_rows()}
 
@@ -643,4 +749,14 @@ class QueryRegistryTest(TestCase):
         self.assertIn('reason: "ipv4-subnet-network-id"', diagnostic_query)
         self.assertIn('reason: "ipv4-broadcast-address"', diagnostic_query)
         self.assertIn('reason: "ipv6-subnet-network-id"', diagnostic_query)
+        self.assertIn("select distinct row", diagnostic_query)
+
+    def test_routing_import_diagnostic_query_is_not_seeded_as_import_map(self):
+        seeded_names = {row["name"] for row in builtin_nqe_map_rows()}
+        diagnostic_query = routing_import_diagnostic_query()
+
+        self.assertNotIn(ROUTING_IMPORT_DIAGNOSTIC_QUERY_NAME, seeded_names)
+        self.assertIn('reason: "bgp-unsupported-address-family"', diagnostic_query)
+        self.assertIn('reason: "ospf-neighbor-without-remote-peer"', diagnostic_query)
+        self.assertIn('reason: "ospf-neighbor-without-reverse-peer"', diagnostic_query)
         self.assertIn("select distinct row", diagnostic_query)

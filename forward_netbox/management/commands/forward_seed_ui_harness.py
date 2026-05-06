@@ -10,7 +10,7 @@ from django.core.management.base import BaseCommand
 from django.db import connection
 from django.utils import timezone
 
-from forward_netbox.choices import FORWARD_SUPPORTED_MODELS
+from forward_netbox.choices import forward_configured_models
 from forward_netbox.choices import ForwardSourceDeploymentChoices
 from forward_netbox.choices import ForwardSourceStatusChoices
 from forward_netbox.choices import ForwardSyncStatusChoices
@@ -144,7 +144,7 @@ class Command(BaseCommand):
             "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
         }
         enabled_models = {"dcim.site", "dcim.device", "dcim.interface"}
-        for model_string in FORWARD_SUPPORTED_MODELS:
+        for model_string in forward_configured_models():
             parameters[model_string] = model_string in enabled_models
 
         sync, _ = ForwardSync.objects.update_or_create(

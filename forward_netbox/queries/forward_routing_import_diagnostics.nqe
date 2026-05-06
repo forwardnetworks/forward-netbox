@@ -1,0 +1,108 @@
+/**
+ * @intent Forward Routing Import Diagnostics
+ * @description Rows that optional routing maps skip because they cannot be safely represented in native NetBox routing models.
+ */
+
+ospf_neighbors_without_remote_peer =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  foreach network_instance in device.networkInstances
+  foreach protocol in network_instance.protocols
+  where isPresent(protocol.ospf)
+  foreach area in protocol.ospf.areas
+  foreach neighbor in area.neighbors
+  where !isPresent(neighbor.remotePeer)
+  select {
+    reason: "ospf-neighbor-without-remote-peer",
+    model_target: "netbox_routing.ospfinterface",
+    protocol: "ospf",
+    device: device.name,
+    interface: neighbor.localInterface,
+    detail: "Forward did not infer a remote OSPF peer for this neighbor."
+  };
+
+ospf_neighbors_without_reverse_peer =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  foreach network_instance in device.networkInstances
+  foreach protocol in network_instance.protocols
+  where isPresent(protocol.ospf)
+  foreach area in protocol.ospf.areas
+  foreach neighbor in area.neighbors
+  where isPresent(neighbor.remotePeer)
+  let reverse_router_ids = (
+    foreach peer_device in network.devices
+    where peer_device.name == neighbor.remotePeer.deviceName
+    foreach peer_network_instance in peer_device.networkInstances
+    foreach peer_protocol in peer_network_instance.protocols
+    where isPresent(peer_protocol.ospf)
+    foreach peer_area in peer_protocol.ospf.areas
+    foreach peer_neighbor in peer_area.neighbors
+    where isPresent(peer_neighbor.remotePeer) && peer_neighbor.remotePeer.deviceName == device.name
+    select peer_neighbor.remoteRouterId
+  )
+  where length(reverse_router_ids) == 0
+  select {
+    reason: "ospf-neighbor-without-reverse-peer",
+    model_target: "netbox_routing.ospfinstance",
+    protocol: "ospf",
+    device: device.name,
+    interface: neighbor.localInterface,
+    detail: "Forward did not expose the reverse OSPF neighbor needed to infer the local router ID."
+  };
+
+unsupported_bgp_address_family_rows =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where isPresent(device.bgpRib)
+  foreach afi in device.bgpRib.afiSafis
+  let afi_safi = toString(afi.afiSafiName)
+  foreach rib_neighbor in afi.neighbors
+  foreach network_instance in device.networkInstances
+  foreach protocol in network_instance.protocols
+  where isPresent(protocol.bgp)
+  foreach neighbor in protocol.bgp.neighbors
+  where neighbor.neighborAddress == rib_neighbor.neighborAddress
+  where isPresent(neighbor.localAS) || isPresent(protocol.bgp.asNumber)
+  where afi_safi != "AfiSafiType.IPV4_UNICAST"
+    && afi_safi != "AfiSafiType.IPV4_ANY"
+    && afi_safi != "AfiSafiType.IPV6_UNICAST"
+    && afi_safi != "AfiSafiType.IPV6_ANY"
+    && afi_safi != "AfiSafiType.IPV4_MULTICAST"
+    && afi_safi != "AfiSafiType.IPV6_MULTICAST"
+    && afi_safi != "AfiSafiType.L2VPN_EVPN"
+    && afi_safi != "AfiSafiType.L2VPN_VPLS"
+    && afi_safi != "AfiSafiType.L3VPN_IPV4_ANY"
+    && afi_safi != "AfiSafiType.L3VPN_IPV4_UNICAST"
+    && afi_safi != "AfiSafiType.L3VPN_IPV6_ANY"
+    && afi_safi != "AfiSafiType.L3VPN_IPV6_UNICAST"
+    && afi_safi != "AfiSafiType.L3VPN_IPV6_MULTICAST"
+    && afi_safi != "AfiSafiType.LINK_STATE"
+    && afi_safi != "AfiSafiType.RTFILTER_UNICAST"
+    && afi_safi != "AfiSafiType.NSAP_UNICAST"
+  select {
+    afi_safi: afi_safi
+  };
+
+unsupported_bgp_address_families =
+  foreach row in unsupported_bgp_address_family_rows
+  group row as grouped_rows by row.afi_safi as afi_safi
+  select {
+    reason: "bgp-unsupported-address-family",
+    model_target: "netbox_routing.bgpaddressfamily",
+    protocol: "bgp",
+    device: "",
+    interface: "",
+    detail: afi_safi,
+    count: length(grouped_rows)
+  };
+
+foreach row in (
+  ospf_neighbors_without_remote_peer
+    + ospf_neighbors_without_reverse_peer
+    + unsupported_bgp_address_families
+)
+select distinct row
