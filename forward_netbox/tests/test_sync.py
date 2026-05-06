@@ -707,6 +707,92 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertEqual(runner._lookup_interface(device, "Ethernet1/1"), interface)
         self.assertIsNone(runner._lookup_interface(device, "ethernet1/1"))
 
+    def test_apply_dcim_interface_sets_lag_membership_after_parent(self):
+        self._create_device("device-1")
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        runner._apply_model_rows(
+            "dcim.interface",
+            [
+                {
+                    "device": "device-1",
+                    "name": "eth1-1",
+                    "type": "1000base-t",
+                    "lag": "bond0",
+                    "enabled": True,
+                    "mtu": 9000,
+                    "description": "",
+                    "speed": 1000000,
+                },
+                {
+                    "device": "device-1",
+                    "name": "bond0",
+                    "type": "lag",
+                    "lag": None,
+                    "enabled": True,
+                    "mtu": 9000,
+                    "description": "",
+                    "speed": None,
+                },
+            ],
+        )
+
+        lag = Interface.objects.get(device__name="device-1", name="bond0")
+        member = Interface.objects.get(device__name="device-1", name="eth1-1")
+        self.assertEqual(lag.type, "lag")
+        self.assertEqual(member.lag, lag)
+        self.assertEqual(member.mtu, 9000)
+
+    def test_apply_dcim_interface_creates_lag_placeholder_across_shards(self):
+        self._create_device("device-1")
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        runner._apply_model_rows(
+            "dcim.interface",
+            [
+                {
+                    "device": "device-1",
+                    "name": "eth1-1",
+                    "type": "1000base-t",
+                    "lag": "bond0",
+                    "enabled": True,
+                    "mtu": 9000,
+                    "description": "",
+                    "speed": 1000000,
+                },
+            ],
+        )
+
+        lag = Interface.objects.get(device__name="device-1", name="bond0")
+        member = Interface.objects.get(device__name="device-1", name="eth1-1")
+        self.assertEqual(lag.type, "lag")
+        self.assertIsNone(lag.mtu)
+        self.assertEqual(member.lag, lag)
+
+        runner._apply_model_rows(
+            "dcim.interface",
+            [
+                {
+                    "device": "device-1",
+                    "name": "bond0",
+                    "type": "lag",
+                    "lag": None,
+                    "enabled": True,
+                    "mtu": 9000,
+                    "description": "aggregate",
+                    "speed": None,
+                },
+            ],
+        )
+
+        lag.refresh_from_db()
+        self.assertEqual(lag.mtu, 9000)
+        self.assertEqual(lag.description, "aggregate")
+
     def test_apply_extras_taggeditem_adds_feature_tag_to_device(self):
         device = self._create_device("device-1")
         runner = ForwardSyncRunner(

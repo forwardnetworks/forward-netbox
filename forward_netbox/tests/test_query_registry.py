@@ -229,6 +229,9 @@ class QueryRegistryTest(TestCase):
             'type: if isPresent(interface_type) then interface_type else "other"',
             spec.query,
         )
+        self.assertIn("interface.ethernet.aggregateId", spec.query)
+        self.assertIn("IfaceType.IF_AGGREGATE", spec.query)
+        self.assertIn('then "lag" else "other"', spec.query)
         self.assertIn(
             "speed: if isPresent(speed_mbps) then speed_mbps * 1000 else null : Integer",
             spec.query,

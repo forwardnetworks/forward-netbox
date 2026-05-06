@@ -12,26 +12,27 @@ Install the plugin package, enable the required plugins, run the migrations, and
 Install the wheel from GitHub Releases into the same Python environment as NetBox:
 
 ```bash
-pip install /path/to/forward_netbox-0.6.2-py3-none-any.whl
+pip install /path/to/forward_netbox-0.6.3-py3-none-any.whl
 ```
 
 Alternatively, install directly from the GitHub source archive:
 
 ```bash
-pip install /path/to/forward_netbox-0.6.2.tar.gz
+pip install /path/to/forward_netbox-0.6.3.tar.gz
 ```
 
 If you mirror the package into a private Python index, pin the same release version:
 
 ```bash
-pip install --pre forward-netbox==0.6.2
+pip install --pre forward-netbox==0.6.3
 ```
 
 ## Release Compatibility
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v0.6.2` | `4.5.9` validated; `4.5.x` only | Current release; native `dcim.module` import is beta |
+| `v0.6.3` | `4.5.9` validated; `4.5.x` only | Current release; native `dcim.module` import is beta |
+| `v0.6.2` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.6.3`; native `dcim.module` import is beta |
 | `v0.6.1` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.6.2`; native `dcim.module` import is beta |
 | `v0.6.0` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.6.1`; native `dcim.module` import is beta |
 | `v0.5.9.1` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.6.0` |
@@ -48,6 +49,7 @@ pip install --pre forward-netbox==0.6.2
 
 | Release | Summary |
 | --- | --- |
+| `v0.6.3` | Models Forward aggregate interfaces as native NetBox LAGs, attaches member interfaces through `Interface.lag`, and keeps the MTU value sourced from Forward's normalized interface field. |
 | `v0.6.2` | Canonicalizes duplicate global-table IP address rows by host IP before import and records row-scoped apply/delete failures as ingestion issues without aborting the rest of the shard. |
 | `v0.6.1` | Filters interface IP rows that NetBox cannot assign, such as subnet network IDs and IPv4 broadcasts, while reporting aggregate diagnostics for filtered addresses. |
 | `v0.6.0` | Adds beta native `dcim.module` import for chassis modules and similar bay-aware hardware, improves inventory item normalization, and avoids duplicate generic inventory rows when beta module sync is enabled. |

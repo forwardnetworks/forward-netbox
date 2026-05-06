@@ -683,6 +683,8 @@ class ForwardSyncRunner:
         )
 
     def _apply_model_rows(self, model_string, rows):
+        if model_string == "dcim.interface":
+            rows = sorted(rows, key=lambda row: bool(row.get("lag")))
         handler_name = f"_apply_{model_string.replace('.', '_')}"
         handler = getattr(self, handler_name, None)
         if handler is None:
@@ -1468,6 +1470,36 @@ class ForwardSyncRunner:
             "description": row.get("description") or "",
             "speed": row.get("speed") or None,
         }
+        if row.get("lag"):
+            if row["lag"] == row["name"]:
+                raise ForwardQueryError(
+                    f"Interface `{row['name']}` on device `{device.name}` cannot be its own LAG parent.",
+                    model_string="dcim.interface",
+                    context={
+                        "device": device.name,
+                        "name": row["name"],
+                        "lag": row["lag"],
+                    },
+                    data=row,
+                )
+            lag, _ = self._upsert_values_from_defaults(
+                "dcim.interface",
+                Interface,
+                values={
+                    "device": device,
+                    "name": row["lag"],
+                    "type": "lag",
+                    "enabled": True,
+                    "mtu": None,
+                    "description": "",
+                    "speed": None,
+                },
+                coalesce_sets=self._coalesce_sets_for(
+                    "dcim.interface",
+                    [("device", "name")],
+                ),
+            )
+            defaults["lag"] = lag
         self._upsert_values_from_defaults(
             "dcim.interface",
             Interface,
