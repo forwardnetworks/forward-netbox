@@ -3,6 +3,7 @@ from ipaddress import ip_interface
 
 from core.signals import clear_events
 from django.core.exceptions import ObjectDoesNotExist
+from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 from django.db import transaction
 from extras.events import flush_events
@@ -696,7 +697,8 @@ class ForwardSyncRunner:
         )
         for row in rows:
             try:
-                result = handler(row)
+                with transaction.atomic():
+                    result = handler(row)
                 self.events_clearer.increment()
                 if result is False:
                     self.logger.increment_statistics(model_string, outcome="skipped")
@@ -713,13 +715,6 @@ class ForwardSyncRunner:
                     context=exc.context,
                     defaults=exc.defaults,
                 )
-                raise ForwardSyncDataError(
-                    str(exc),
-                    model_string=model_string,
-                    context=exc.context,
-                    defaults=exc.defaults,
-                    data=row,
-                ) from exc
             except (ForwardSearchError, ForwardQueryError) as exc:
                 logger.exception("Failed applying %s row", model_string)
                 self._mark_dependency_failed(model_string, row)
@@ -732,13 +727,16 @@ class ForwardSyncRunner:
                     context=getattr(exc, "context", {}),
                     defaults=getattr(exc, "defaults", {}),
                 )
-                raise ForwardSyncDataError(
+            except (ValidationError, IntegrityError) as exc:
+                logger.exception("Failed applying %s row", model_string)
+                self._mark_dependency_failed(model_string, row)
+                self.logger.increment_statistics(model_string, outcome="failed")
+                self._record_issue(
+                    model_string,
                     str(exc),
-                    model_string=model_string,
-                    context=getattr(exc, "context", {}),
-                    defaults=getattr(exc, "defaults", {}),
-                    data=row,
-                ) from exc
+                    row,
+                    exception=exc,
+                )
             except Exception as exc:
                 logger.exception("Failed applying %s row", model_string)
                 self._mark_dependency_failed(model_string, row)
@@ -749,11 +747,6 @@ class ForwardSyncRunner:
                     row,
                     exception=exc,
                 )
-                raise ForwardSyncDataError(
-                    str(exc),
-                    model_string=model_string,
-                    data=row,
-                ) from exc
         self.logger.log_info(
             f"Finished applying rows for {model_string}.",
             obj=self.sync,
@@ -777,7 +770,8 @@ class ForwardSyncRunner:
         )
         for row in rows:
             try:
-                deleted = handler(row)
+                with transaction.atomic():
+                    deleted = handler(row)
                 self.events_clearer.increment()
                 if deleted:
                     self.logger.increment_statistics(model_string, outcome="applied")
@@ -794,13 +788,15 @@ class ForwardSyncRunner:
                     context=getattr(exc, "context", {}),
                     defaults=getattr(exc, "defaults", {}),
                 )
-                raise ForwardSyncDataError(
+            except (ValidationError, IntegrityError) as exc:
+                logger.exception("Failed deleting %s row", model_string)
+                self.logger.increment_statistics(model_string, outcome="failed")
+                self._record_issue(
+                    model_string,
                     str(exc),
-                    model_string=model_string,
-                    context=getattr(exc, "context", {}),
-                    defaults=getattr(exc, "defaults", {}),
-                    data=row,
-                ) from exc
+                    row,
+                    exception=exc,
+                )
             except Exception as exc:
                 logger.exception("Failed deleting %s row", model_string)
                 self.logger.increment_statistics(model_string, outcome="failed")
@@ -810,11 +806,6 @@ class ForwardSyncRunner:
                     row,
                     exception=exc,
                 )
-                raise ForwardSyncDataError(
-                    str(exc),
-                    model_string=model_string,
-                    data=row,
-                ) from exc
         self.logger.log_info(
             f"Finished deleting rows for {model_string}.",
             obj=self.sync,
@@ -1817,6 +1808,39 @@ class ForwardSyncRunner:
             if row.get("vrf")
             else None
         )
+        if vrf is None:
+            host_ip = row.get("host_ip") or str(ip_interface(row["address"]).ip)
+            lookup = {
+                "address__net_host": host_ip,
+                "vrf__isnull": True,
+            }
+            existing = self._get_unique_or_raise(IPAddress, lookup)
+            if existing is None:
+                existing = IPAddress(
+                    address=row["address"],
+                    vrf=None,
+                    status=row["status"],
+                    assigned_object_type=self._content_type_for(Interface),
+                    assigned_object_id=interface.pk,
+                )
+                existing.full_clean()
+                existing.save()
+                return True
+            existing.address = row["address"]
+            existing.vrf = None
+            existing.status = row["status"]
+            existing.assigned_object_type = self._content_type_for(Interface)
+            existing.assigned_object_id = interface.pk
+            existing.save(
+                update_fields=[
+                    "address",
+                    "vrf",
+                    "status",
+                    "assigned_object_type",
+                    "assigned_object_id",
+                ]
+            )
+            return True
         self._upsert_values_from_defaults(
             "ipam.ipaddress",
             IPAddress,
