@@ -59,7 +59,10 @@ def _record_forward_sync_failure(sync, job, executor, ingestion, exc):
         ingestion = _build_forward_ingestion(sync, job, executor)
     else:
         validation_run = getattr(executor, "last_validation_run", None)
-        if isinstance(validation_run, ForwardValidationRun) and not ingestion.validation_run:
+        if (
+            isinstance(validation_run, ForwardValidationRun)
+            and not ingestion.validation_run
+        ):
             ingestion.validation_run = validation_run
             ingestion.save(update_fields=["validation_run"])
     sync.logger.log_failure(f"Forward ingestion failed: {exc}", obj=ingestion)

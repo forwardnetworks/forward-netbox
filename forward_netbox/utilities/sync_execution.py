@@ -1,4 +1,3 @@
-from ..choices import ForwardIngestionPhaseChoices
 from ..exceptions import ForwardClientError
 from ..exceptions import ForwardConnectivityError
 from ..exceptions import ForwardQueryError

@@ -49,7 +49,9 @@ def sync_merge_ingestion(ingestion, *, mark_baseline_ready=None, remove_branch=T
     pre_sync.send(sender=ingestion.__class__, instance=ingestion)
 
     branch_run_state = forwardsync.get_branch_run_state()
-    is_pending_branch_run = branch_run_state.get("pending_ingestion_id") == ingestion.pk and branch_run_state.get("awaiting_merge")
+    is_pending_branch_run = branch_run_state.get(
+        "pending_ingestion_id"
+    ) == ingestion.pk and branch_run_state.get("awaiting_merge")
     if mark_baseline_ready is None:
         mark_baseline_ready = not is_pending_branch_run or bool(
             branch_run_state.get("pending_is_final")

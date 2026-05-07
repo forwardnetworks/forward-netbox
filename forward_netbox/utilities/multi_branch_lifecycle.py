@@ -14,7 +14,6 @@ from .branch_budget import effective_row_budget_for_model
 from .branch_budget import split_workload
 from .branching import build_branch_name
 from .branching import build_branch_request
-from .execution_telemetry import build_plan_preview
 from .query_fetch import plan_item_model_result
 from .sync import ForwardSyncRunner
 from .sync_state import touch_branch_run_progress
@@ -22,7 +21,9 @@ from .sync_state import touch_branch_run_progress
 AUTO_SPLIT_MIN_ROWS_PER_BRANCH = 1
 
 
-def set_runtime_phase(executor, phase, message, *, next_plan_index=None, total_plan_items=None):
+def set_runtime_phase(
+    executor, phase, message, *, next_plan_index=None, total_plan_items=None
+):
     state = executor.sync.get_branch_run_state()
     if next_plan_index is not None:
         state["next_plan_index"] = int(next_plan_index)
@@ -112,8 +113,7 @@ def run_plan_item(
     if ingestion.issues.exists():
         messages = list(ingestion.issues.values_list("message", flat=True)[:5])
         raise SyncError(
-            "Forward multi-branch shard completed with issues: "
-            + "; ".join(messages)
+            "Forward multi-branch shard completed with issues: " + "; ".join(messages)
         )
 
     actual_changes = branch.get_unmerged_changes().count()

@@ -2,9 +2,9 @@ from core.exceptions import SyncError
 from core.models import Job
 from django.utils.module_loading import import_string
 
+from ..choices import forward_configured_models
 from ..choices import FORWARD_OPTIONAL_MODELS
 from ..choices import ForwardSyncStatusChoices
-from ..choices import forward_configured_models
 from ..exceptions import ForwardSyncError
 from .branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
 from .forward_api import LATEST_PROCESSED_SNAPSHOT

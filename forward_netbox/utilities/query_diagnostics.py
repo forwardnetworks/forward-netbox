@@ -1,10 +1,9 @@
 from dataclasses import replace
-from typing import Any
 
-from .query_registry import IPADDRESS_UNASSIGNABLE_DIAGNOSTIC_QUERY_NAME
-from .query_registry import ROUTING_IMPORT_DIAGNOSTIC_QUERY_NAME
 from .query_registry import ipaddress_unassignable_diagnostic_query
+from .query_registry import IPADDRESS_UNASSIGNABLE_DIAGNOSTIC_QUERY_NAME
 from .query_registry import routing_import_diagnostic_query
+from .query_registry import ROUTING_IMPORT_DIAGNOSTIC_QUERY_NAME
 
 IPADDRESS_DIAGNOSTIC_DETAIL_LIMIT = 20
 IPADDRESS_DIAGNOSTIC_LABELS = {

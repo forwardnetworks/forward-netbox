@@ -42,4 +42,3 @@ Move the `EventsClearer` utility out of `forward_netbox/utilities/sync.py` into 
 - `invoke test`
 - `invoke docs`
 - `invoke ci`
-

@@ -58,6 +58,4 @@ class ForwardSyncFacadeHelperTest(TestCase):
         snapshot_id = resolve_snapshot_id(sync, client=client)
 
         self.assertEqual(snapshot_id, "snapshot-123")
-        client.get_latest_processed_snapshot_id.assert_called_once_with(
-            "test-network"
-        )
+        client.get_latest_processed_snapshot_id.assert_called_once_with("test-network")

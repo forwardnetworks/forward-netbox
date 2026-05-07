@@ -42,4 +42,3 @@ Move the audited validation force-allow logic out of `forward_netbox/models.py` 
 - `invoke test`
 - `invoke docs`
 - `invoke ci`
-
