@@ -1148,6 +1148,7 @@ class ForwardSyncRunner:
         lines = ["Observed by Forward from structured BGP neighbor state."]
         for label, key in (
             ("Router ID", "router_id"),
+            ("Peer type", "peer_type"),
             ("Peer device", "peer_device"),
             ("Peer VRF", "peer_vrf"),
             ("Peer router ID", "peer_router_id"),
@@ -1158,6 +1159,30 @@ class ForwardSyncRunner:
             value = row.get(key)
             if value not in ("", None):
                 lines.append(f"{label}: {value}")
+        return "\n".join(lines)
+
+    def _rib_presence_label(self, value):
+        if value in ("", None):
+            return None
+        if isinstance(value, str):
+            return "present" if value.strip().lower() == "true" else "absent"
+        return "present" if bool(value) else "absent"
+
+    def _bgp_address_family_comments(self, row):
+        lines = ["Observed by Forward from BGP RIB AFI/SAFI state."]
+        if row.get("afi_safi") not in ("", None):
+            lines.append(f"Forward AFI/SAFI: {row.get('afi_safi')}")
+        return "\n".join(lines)
+
+    def _bgp_peer_address_family_comments(self, row):
+        lines = [self._bgp_address_family_comments(row)]
+        for label, key in (
+            ("Adj-RIB-In post-policy", "has_adj_rib_in"),
+            ("Adj-RIB-Out post-policy", "has_adj_rib_out"),
+        ):
+            state = self._rib_presence_label(row.get(key))
+            if state:
+                lines.append(f"{label}: {state}")
         return "\n".join(lines)
 
     def _bgp_peer_values(self, row):
@@ -1242,6 +1267,7 @@ class ForwardSyncRunner:
                 "scope": scope,
                 "address_family": address_family,
                 "description": "Observed by Forward from BGP RIB AFI/SAFI state.",
+                "comments": self._bgp_address_family_comments(row),
             },
         )
         address_family_obj, _ = self._upsert_values_from_defaults(
@@ -1287,6 +1313,7 @@ class ForwardSyncRunner:
                 "address_family": address_family,
                 "enabled": bool(row.get("enabled")),
                 "description": "Observed by Forward from BGP RIB AFI/SAFI state.",
+                "comments": self._bgp_peer_address_family_comments(row),
             },
         )
         peer_af, _ = self._upsert_values_from_defaults(
@@ -1335,6 +1362,21 @@ class ForwardSyncRunner:
             ("Forward process ID", process_label),
             ("Forward domain", row.get("domain")),
         ):
+            if value not in ("", None):
+                lines.append(f"{label}: {value}")
+        return "\n".join(lines)
+
+    def _ospf_interface_comments(self, row):
+        lines = ["Observed by Forward from structured OSPF neighbor state."]
+        for label, key in (
+            ("Cost", "cost"),
+            ("Role", "role"),
+            ("Remote device", "remote_device"),
+            ("Remote interface", "remote_interface"),
+            ("Remote interface IP", "remote_interface_ip"),
+            ("Remote router ID", "remote_router_id"),
+        ):
+            value = row.get(key)
             if value not in ("", None):
                 lines.append(f"{label}: {value}")
         return "\n".join(lines)
@@ -1425,6 +1467,7 @@ class ForwardSyncRunner:
                 "area": area,
                 "interface": interface,
                 "priority": None,
+                "comments": self._ospf_interface_comments(row),
             },
         )
         ospf_interface, _ = self._upsert_values_from_defaults(

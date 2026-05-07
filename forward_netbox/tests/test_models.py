@@ -1,4 +1,5 @@
 from datetime import timedelta
+from unittest.mock import Mock
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -15,6 +16,7 @@ from forward_netbox.choices import FORWARD_BGP_MODELS
 from forward_netbox.choices import ForwardDriftPolicyBaselineChoices
 from forward_netbox.choices import ForwardSourceStatusChoices
 from forward_netbox.choices import ForwardSyncStatusChoices
+from forward_netbox.choices import ForwardValidationStatusChoices
 from forward_netbox.jobs import sync_forwardsync
 from forward_netbox.models import ForwardDriftPolicy
 from forward_netbox.models import ForwardIngestion
@@ -36,6 +38,7 @@ from forward_netbox.utilities.execution_telemetry import build_sync_execution_su
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from forward_netbox.utilities.query_registry import builtin_nqe_map_rows
 from forward_netbox.utilities.query_registry import QuerySpec
+from forward_netbox.utilities.validation import ForwardValidationRunner
 from forward_netbox.views import annotate_statistics
 
 
@@ -633,6 +636,87 @@ class ForwardSyncModelTest(TestCase):
 
         with self.assertRaises(ValidationError):
             policy.full_clean()
+
+    def test_validation_run_force_allow_records_override_audit(self):
+        user = get_user_model().objects.create_user(username="override-user")
+        policy = ForwardDriftPolicy.objects.create(name="policy-override")
+        sync = ForwardSync.objects.create(
+            name="sync-override",
+            source=self.source,
+            drift_policy=policy,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+            },
+        )
+        validation_run = ForwardValidationRun.objects.create(
+            sync=sync,
+            policy=policy,
+            status=ForwardValidationStatusChoices.BLOCKED,
+            allowed=False,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-override",
+            blocking_reasons=["Target snapshot is not processed."],
+            started=timezone.now(),
+            completed=timezone.now(),
+        )
+
+        validation_run.force_allow(user=user, reason="Accepted for lab validation.")
+
+        validation_run.refresh_from_db()
+        self.assertTrue(validation_run.override_applied)
+        self.assertTrue(validation_run.allowed)
+        self.assertEqual(validation_run.status, ForwardValidationStatusChoices.PASSED)
+        self.assertEqual(validation_run.override_user, user)
+        self.assertEqual(validation_run.override_reason, "Accepted for lab validation.")
+        self.assertEqual(
+            validation_run.override_blocking_reasons,
+            ["Target snapshot is not processed."],
+        )
+
+    def test_validation_runner_skips_blocking_for_matching_force_allowed_run(self):
+        policy = ForwardDriftPolicy.objects.create(name="policy-force-allow")
+        sync = ForwardSync.objects.create(
+            name="sync-force-allow",
+            source=self.source,
+            drift_policy=policy,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+            },
+        )
+        ForwardValidationRun.objects.create(
+            sync=sync,
+            policy=policy,
+            status=ForwardValidationStatusChoices.PASSED,
+            allowed=True,
+            override_applied=True,
+            override_reason="Accepted for test coverage.",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-force-allow",
+            blocking_reasons=["Would otherwise block."],
+            override_blocking_reasons=["Would otherwise block."],
+            started=timezone.now(),
+            completed=timezone.now(),
+        )
+
+        runner = ForwardValidationRunner(
+            sync=sync,
+            client=None,
+            logger_=Mock(),
+        )
+
+        reasons = runner._blocking_reasons(
+            {
+                "snapshot_selector": LATEST_PROCESSED_SNAPSHOT,
+                "snapshot_id": "snapshot-force-allow",
+            },
+            plan=[],
+            model_results=[],
+            policy=policy,
+        )
+
+        self.assertEqual(reasons, [])
 
     @patch("forward_netbox.models.Job.enqueue")
     @patch.object(ForwardSync, "sync", autospec=True)

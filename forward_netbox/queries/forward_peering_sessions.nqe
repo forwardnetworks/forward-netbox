@@ -10,11 +10,24 @@ foreach network_instance in device.networkInstances
 foreach protocol in network_instance.protocols
 where isPresent(protocol.bgp)
 foreach neighbor in protocol.bgp.neighbors
-where isPresent(neighbor.localAS) || isPresent(protocol.bgp.asNumber)
+let reciprocal_local_asn = the(
+  foreach peer_device in network.devices
+  where isPresent(neighbor.peerDeviceName) && peer_device.name == neighbor.peerDeviceName
+  foreach peer_network_instance in peer_device.networkInstances
+  where !isPresent(neighbor.peerVrf) || peer_network_instance.name == neighbor.peerVrf
+  foreach peer_protocol in peer_network_instance.protocols
+  where isPresent(peer_protocol.bgp)
+  foreach peer_neighbor in peer_protocol.bgp.neighbors
+  where isPresent(peer_neighbor.peerDeviceName) && peer_neighbor.peerDeviceName == device.name
+  select distinct peer_neighbor.peerAS
+)
+let internal_peer_asn = if isPresent(neighbor.peerType) && toString(neighbor.peerType) == "PeerType.INTERNAL" then neighbor.peerAS else null : Integer
+let local_asn = if isPresent(neighbor.localAS) then neighbor.localAS else if isPresent(protocol.bgp.asNumber) then protocol.bgp.asNumber else if isPresent(reciprocal_local_asn) then reciprocal_local_asn else internal_peer_asn
+where isPresent(local_asn)
 select distinct {
   device: device.name,
   vrf: if network_instance.name != "default" then network_instance.name else null : String,
-  local_asn: if isPresent(neighbor.localAS) then neighbor.localAS else protocol.bgp.asNumber,
+  local_asn: local_asn,
   router_id: protocol.bgp.routerId,
   neighbor_address: neighbor.neighborAddress,
   peer_asn: neighbor.peerAS,

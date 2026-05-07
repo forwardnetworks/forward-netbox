@@ -929,7 +929,7 @@ select distinct {
 - Optional dependency: requires the `netbox-routing` NetBox plugin
 - Stability: beta
 
-The BGP peer map uses Forward structured BGP neighbor state, not raw configuration parsing and not BGP RIB data. The adapter creates or reuses native NetBox `RIR`, `ASN`, `VRF`, and peer `IPAddress` records, then creates `netbox-routing` routers, scopes, and peers. Missing optional plugin models are recorded as row failures so the rest of the shard can continue.
+The BGP peer map uses Forward structured BGP neighbor state, not raw configuration parsing and not BGP RIB data. The query prefers explicit `localAS`, falls back to the BGP process `asNumber`, then uses reciprocal Forward peer evidence or explicit internal-BGP peer AS when those are uniquely available. The adapter creates or reuses native NetBox `RIR`, `ASN`, `VRF`, and peer `IPAddress` records, then creates `netbox-routing` routers, scopes, and peers. Missing optional plugin models are recorded as row failures so the rest of the shard can continue.
 
 ## Forward BGP Address Families
 
@@ -965,7 +965,7 @@ The BGP peer address-family map links each native BGP peer to the AFI/SAFI rows 
 - Optional dependency: requires the `netbox-routing` NetBox plugin
 - Stability: beta
 
-The OSPF instance map uses Forward structured OSPF neighbor state and inferred reverse-neighbor relationships to source the local router ID. Forward named process IDs are converted to deterministic numeric NetBox process IDs, with the original Forward process label preserved in comments.
+The OSPF instance map uses Forward structured OSPF neighbor state and inferred reverse-neighbor relationships to source a unique process-level local router ID. Forward named process IDs are converted to deterministic numeric NetBox process IDs, with the original Forward process label preserved in comments.
 
 ## Forward OSPF Areas
 
@@ -989,7 +989,7 @@ The OSPF area map creates native NetBox routing areas from Forward structured OS
 - Optional dependency: requires the `netbox-routing` NetBox plugin
 - Stability: beta
 
-The OSPF interface map binds native OSPF instances and areas to exact NetBox interfaces. Missing interfaces are recorded as row failures so the rest of the shard can continue.
+The OSPF interface map binds native OSPF instances and areas to exact NetBox interfaces. It can import local OSPF interface rows even when a specific neighbor lacks remote-peer inference, provided Forward exposes enough reciprocal evidence elsewhere in the same process to infer a unique local router ID. Missing interfaces are recorded as row failures so the rest of the shard can continue.
 
 ## Forward Peering Sessions
 
@@ -1003,7 +1003,7 @@ The OSPF interface map binds native OSPF instances and areas to exact NetBox int
 
 The peering session map is an overlay on top of `netbox-routing`. Applying a peering-session row first ensures the matching BGP peer exists, then links a `netbox-peering-manager` session to it. The shipped query uses Forward peer type only as a simple relationship hint; richer peering policy, prefix-list, and IRR modeling should remain a separate feature.
 
-When any optional routing map is enabled, the sync also runs an internal read-only diagnostic query that reports routing rows the beta maps cannot import safely, including unsupported BGP address families and OSPF neighbor rows that lack Forward peer inference needed for native OSPF objects. This diagnostic query is not seeded as a NetBox import map and does not create, update, or delete NetBox objects. See the query file for the complete diagnostic text:
+When any optional routing map is enabled, the sync also runs an internal read-only diagnostic query that reports routing rows the beta maps cannot import safely, including BGP neighbors without explicit or inferred local AS, unsupported BGP address families, and OSPF neighbor rows that lack unique process-level router ID inference needed for native OSPF objects. This diagnostic query is not seeded as a NetBox import map and does not create, update, or delete NetBox objects. See the query file for the complete diagnostic text:
 
 ```text
 forward_netbox/queries/forward_routing_import_diagnostics.nqe

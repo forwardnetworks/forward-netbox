@@ -1,0 +1,13 @@
+{% load i18n %}
+{% if object.blocking_reasons and not object.override_applied %}
+  <button type="button"
+          class="btn btn-danger"
+          title="{% trans 'Record a break-glass override for this blocked validation run.' %}"
+          hx-get="{% url 'plugins:forward_netbox:forwardvalidationrun_force_allow' pk=object.pk %}"
+          hx-target="#htmx-modal-content"
+          hx-trigger="click"
+          data-bs-toggle="modal"
+          data-bs-target="#htmx-modal">
+    {% trans "Force allow" %}
+  </button>
+{% endif %}
