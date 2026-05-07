@@ -23,7 +23,7 @@
 - Query fetch, snapshot resolution, NQE execution, and model-result reporting: `forward_netbox/utilities/query_fetch.py`
 - Branch planning and branch-budget behavior: `forward_netbox/utilities/branch_budget.py`
 - Multi-branch planning: `forward_netbox/utilities/multi_branch_planner.py`
-- Multi-branch execution and retry behavior: `forward_netbox/utilities/multi_branch.py`
+- Multi-branch execution and retry behavior: `forward_netbox/utilities/multi_branch_executor.py`
 - Validation and drift-policy evaluation: `forward_netbox/utilities/validation.py`
 - NetBox row application and model adapters: `forward_netbox/utilities/sync.py`
 - Logging/statistics: `forward_netbox/utilities/logging.py`
@@ -39,7 +39,8 @@ The following modules are intentionally treated as stable boundaries until a ded
 - `forward_netbox/utilities/sync_routing.py`: routing and peering helper logic plus apply/delete entrypoints extracted from the main sync module.
 - `forward_netbox/models.py`: persisted model behavior, job state transitions, validation state, and branch-run state.
 - `forward_netbox/utilities/multi_branch_planner.py`: query fetch, preflight, plan assembly, and model-result capture.
-- `forward_netbox/utilities/multi_branch.py`: branch execution, auto-merge, resume state, and overflow retry.
+- `forward_netbox/utilities/multi_branch_executor.py`: branch execution, auto-merge, resume state, and overflow retry.
+- `forward_netbox/utilities/multi_branch.py`: compatibility shim that re-exports the planner and executor surfaces.
 
 Do not move code out of these modules as drive-by cleanup. Refactors should first add or update tests that pin the existing behavior.
 
