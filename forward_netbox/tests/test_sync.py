@@ -2062,6 +2062,37 @@ class ForwardSyncRunnerTest(TestCase):
         client.get_latest_processed_snapshot.assert_called_once_with("test-network")
         client.get_snapshot_metrics.assert_called_once_with("snapshot-before")
 
+    def test_run_warns_and_continues_when_snapshot_metrics_fail(self):
+        ingestion = ForwardIngestion.objects.create(sync=self.sync)
+        client = Mock()
+        client.get_latest_processed_snapshot.return_value = {
+            "id": "snapshot-before",
+            "processedAt": "2026-03-31T12:15:00Z",
+        }
+        client.get_snapshot_metrics.side_effect = RuntimeError("metrics unavailable")
+        client.run_nqe_query.return_value = []
+        logger = Mock()
+        runner = ForwardSyncRunner(
+            sync=self.sync,
+            ingestion=ingestion,
+            client=client,
+            logger_=logger,
+        )
+
+        self.sync.get_model_strings = lambda: []
+        self.sync.resolve_snapshot_id = lambda client=None: "snapshot-before"
+
+        runner.run()
+        ingestion.refresh_from_db()
+
+        self.assertEqual(ingestion.snapshot_id, "snapshot-before")
+        self.assertEqual(ingestion.snapshot_metrics, {})
+        logger.log_warning.assert_any_call(
+            "Unable to fetch Forward snapshot metrics for `snapshot-before`: metrics unavailable",
+            obj=self.sync,
+        )
+        client.get_snapshot_metrics.assert_called_once_with("snapshot-before")
+
     def test_run_fetches_all_pages_for_sync_queries(self):
         ingestion = ForwardIngestion.objects.create(sync=self.sync)
         client = Mock()

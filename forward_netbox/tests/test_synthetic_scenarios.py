@@ -3,10 +3,12 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
+from forward_netbox.choices import ForwardValidationStatusChoices
 from forward_netbox.exceptions import ForwardQueryError
 from forward_netbox.models import ForwardIngestion
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
+from forward_netbox.models import ForwardValidationRun
 from forward_netbox.tests import scenarios
 from forward_netbox.utilities.branch_budget import build_branch_plan
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
@@ -180,3 +182,57 @@ class SyntheticSyncScenarioHarnessTest(TestCase):
         self.assertEqual(len(ingestions), 2)
         self.assertEqual(executor._run_plan_item.call_count, 3)
         executor._split_overflow_item.assert_called_once_with(oversized_item)
+
+    def test_resume_skips_preflight_and_reuses_validation_run(self):
+        workload = scenarios.branch_workload(
+            "dcim.device",
+            [{"name": f"device-{index}"} for index in range(8)],
+            coalesce_fields=[["name"]],
+        )
+        plan = build_branch_plan([workload], max_changes_per_branch=4)
+        validation_run = ForwardValidationRun.objects.create(
+            sync=self.sync,
+            status=ForwardValidationStatusChoices.PASSED,
+            allowed=True,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id=scenarios.SNAPSHOT_AFTER,
+        )
+        executor = ForwardMultiBranchExecutor(
+            sync=self.sync,
+            client=Mock(),
+            logger_=Mock(),
+        )
+        executor.plan = Mock(
+            return_value=(
+                {
+                    "snapshot_selector": LATEST_PROCESSED_SNAPSHOT,
+                    "snapshot_id": scenarios.SNAPSHOT_AFTER,
+                    "snapshot_info": {},
+                    "snapshot_metrics": {},
+                },
+                plan,
+            )
+        )
+        executor._run_plan_item = Mock(return_value=Mock(name="ingestion"))
+        self.sync.set_branch_run_state(
+            {
+                "snapshot_selector": LATEST_PROCESSED_SNAPSHOT,
+                "snapshot_id": scenarios.SNAPSHOT_AFTER,
+                "next_plan_index": 2,
+                "total_plan_items": len(plan),
+                "awaiting_merge": False,
+                "validation_run_id": validation_run.pk,
+            }
+        )
+
+        ingestions = executor.run(max_changes_per_branch=10)
+
+        self.assertEqual(len(ingestions), 1)
+        executor.plan.assert_called_once_with(
+            max_changes_per_branch=10,
+            run_preflight=False,
+            model_change_density={},
+        )
+        self.assertEqual(executor.last_validation_run, validation_run)
+        executor._run_plan_item.assert_called_once()
+        self.assertEqual(executor._run_plan_item.call_args.args[0].index, 2)
