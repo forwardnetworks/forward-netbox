@@ -21,6 +21,9 @@ from ..exceptions import ForwardSearchError
 from ..exceptions import ForwardSyncDataError
 from .module_readiness import module_bay_import_row
 from .query_registry import get_query_specs
+from .sync_cable import apply_dcim_cable
+from .sync_cable import delete_dcim_cable
+from .sync_cable import lookup_cable_between
 from .sync_contracts import canonical_cable_endpoint_identity
 from .sync_contracts import default_coalesce_fields_for_model
 from .sync_contracts import validate_row_shape_for_model
@@ -1736,25 +1739,7 @@ class ForwardSyncRunner:
         )
 
     def _delete_dcim_cable(self, row):
-        from dcim.models import Device
-
-        device = Device.objects.filter(name=row.get("device")).order_by("pk").first()
-        remote_device = (
-            Device.objects.filter(name=row.get("remote_device")).order_by("pk").first()
-        )
-        if device is None or remote_device is None:
-            return False
-        interface = self._lookup_interface(device, row.get("interface"))
-        remote_interface = self._lookup_interface(
-            remote_device, row.get("remote_interface")
-        )
-        if interface is None or remote_interface is None:
-            return False
-        cable = self._lookup_cable_between(interface, remote_interface)
-        if cable is None:
-            return False
-        cable.delete()
-        return True
+        return delete_dcim_cable(self, row)
 
     def _delete_dcim_macaddress(self, row):
         from dcim.models import MACAddress
@@ -2248,131 +2233,10 @@ class ForwardSyncRunner:
         device.tags.add(tag)
 
     def _lookup_cable_between(self, interface, remote_interface):
-        interface.refresh_from_db(fields=["cable"])
-        remote_interface.refresh_from_db(fields=["cable"])
-        if interface.cable_id and interface.cable_id == remote_interface.cable_id:
-            return interface.cable
-        return None
+        return lookup_cable_between(self, interface, remote_interface)
 
     def _apply_dcim_cable(self, row):
-        from dcim.models import Cable
-        from dcim.models import Device
-
-        try:
-            device = Device.objects.get(name=row["device"])
-        except ObjectDoesNotExist as exc:
-            key = (row["device"],)
-            if self._dependency_failed("dcim.device", key):
-                raise ForwardDependencySkipError(
-                    f"Skipping cable because dependency `dcim.device` failed for {key}.",
-                    model_string="dcim.cable",
-                    context={
-                        "device": row["device"],
-                        "interface": row.get("interface"),
-                    },
-                    data=row,
-                ) from exc
-            self.logger.log_warning(
-                f"Skipping cable row because device `{row['device']}` was not found.",
-                obj=self.sync,
-            )
-            return False
-
-        try:
-            remote_device = Device.objects.get(name=row["remote_device"])
-        except ObjectDoesNotExist as exc:
-            key = (row["remote_device"],)
-            if self._dependency_failed("dcim.device", key):
-                raise ForwardDependencySkipError(
-                    f"Skipping cable because dependency `dcim.device` failed for {key}.",
-                    model_string="dcim.cable",
-                    context={
-                        "device": row["remote_device"],
-                        "interface": row.get("remote_interface"),
-                    },
-                    data=row,
-                ) from exc
-            self.logger.log_warning(
-                f"Skipping cable row because remote device `{row['remote_device']}` was not found.",
-                obj=self.sync,
-            )
-            return False
-
-        interface = self._lookup_interface(device, row["interface"])
-        if interface is None:
-            key = (device.name, row["interface"])
-            if self._dependency_failed("dcim.interface", key):
-                raise ForwardDependencySkipError(
-                    f"Skipping cable because dependency `dcim.interface` failed for {key}.",
-                    model_string="dcim.cable",
-                    context={"device": device.name, "interface": row["interface"]},
-                    data=row,
-                )
-            self.logger.log_warning(
-                f"Skipping cable row because interface `{row['interface']}` was not found on `{device.name}`.",
-                obj=self.sync,
-            )
-            return False
-
-        remote_interface = self._lookup_interface(
-            remote_device, row["remote_interface"]
-        )
-        if remote_interface is None:
-            key = (remote_device.name, row["remote_interface"])
-            if self._dependency_failed("dcim.interface", key):
-                raise ForwardDependencySkipError(
-                    f"Skipping cable because dependency `dcim.interface` failed for {key}.",
-                    model_string="dcim.cable",
-                    context={
-                        "device": remote_device.name,
-                        "interface": row["remote_interface"],
-                    },
-                    data=row,
-                )
-            self.logger.log_warning(
-                f"Skipping cable row because interface `{row['remote_interface']}` was not found on `{remote_device.name}`.",
-                obj=self.sync,
-            )
-            return False
-
-        cable = self._lookup_cable_between(interface, remote_interface)
-        if cable is not None:
-            cable.status = row["status"]
-            cable.full_clean()
-            cable.save()
-            return
-
-        interface.refresh_from_db(fields=["cable"])
-        remote_interface.refresh_from_db(fields=["cable"])
-        if interface.cable_id or remote_interface.cable_id:
-            if self._conflict_policy("dcim.cable") == "skip_warn_aggregate":
-                self._record_aggregated_conflict_warning(
-                    model_string="dcim.cable",
-                    reason="interface-already-cabled",
-                    warning_message=(
-                        "Skipping cable row because one or both interfaces are already connected to a different cable."
-                    ),
-                )
-                return False
-            raise ForwardSyncDataError(
-                "Unable to create cable because one or both interfaces are already connected to a different cable.",
-                model_string="dcim.cable",
-                context={
-                    "device": row.get("device"),
-                    "interface": row.get("interface"),
-                    "remote_device": row.get("remote_device"),
-                    "remote_interface": row.get("remote_interface"),
-                },
-                data=row,
-            )
-
-        cable = Cable(
-            a_terminations=[interface],
-            b_terminations=[remote_interface],
-            status=row["status"],
-        )
-        cable.full_clean()
-        cable.save()
+        return apply_dcim_cable(self, row)
 
     def _apply_dcim_macaddress(self, row):
         from dcim.models import Device
