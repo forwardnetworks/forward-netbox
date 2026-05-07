@@ -9,7 +9,6 @@ from netbox_branching.models import Branch
 from ..choices import ForwardIngestionPhaseChoices
 from ..choices import ForwardSyncStatusChoices
 from .branch_budget import BranchWorkload
-from .branch_budget import build_branch_plan_with_density
 from .branch_budget import DEFAULT_DENSITY_SAFETY_FACTOR
 from .branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
 from .branch_budget import effective_row_budget_for_model
@@ -17,8 +16,8 @@ from .branch_budget import split_workload
 from .branching import build_branch_name
 from .branching import build_branch_request
 from .execution_telemetry import build_plan_preview
+from .multi_branch_planner import ForwardMultiBranchPlanner
 from .query_fetch import DEFAULT_PREFLIGHT_ROW_LIMIT  # noqa: F401
-from .query_fetch import ForwardQueryFetcher
 from .query_fetch import plan_item_model_result
 from .sync import ForwardSyncRunner
 from .validation import ForwardValidationRunner
@@ -37,36 +36,6 @@ class BranchBudgetExceeded(SyncError):
         self.ingestion = ingestion
         self.actual_changes = actual_changes
         self.budget = budget
-
-
-class ForwardMultiBranchPlanner:
-    def __init__(self, sync, client, logger_, *, branch_run_state=None):
-        self.sync = sync
-        self.client = client
-        self.logger = logger_
-        self.branch_run_state = branch_run_state or {}
-        self.model_results = []
-
-    def build_plan(
-        self,
-        *,
-        max_changes_per_branch=DEFAULT_MAX_CHANGES_PER_BRANCH,
-        run_preflight=True,
-        model_change_density=None,
-    ):
-        fetcher = ForwardQueryFetcher(self.sync, self.client, self.logger)
-        context = fetcher.resolve_context(branch_run_state=self.branch_run_state)
-        if run_preflight:
-            fetcher.run_preflight(context)
-        workloads = fetcher.fetch_workloads(context)
-        self.model_results = [result.as_dict() for result in fetcher.model_results]
-        plan = build_branch_plan_with_density(
-            workloads,
-            max_changes_per_branch=max_changes_per_branch,
-            model_change_density=model_change_density,
-            safety_factor=DEFAULT_DENSITY_SAFETY_FACTOR,
-        )
-        return context.as_dict(), plan
 
 
 class ForwardMultiBranchExecutor:
