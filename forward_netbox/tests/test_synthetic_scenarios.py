@@ -1,6 +1,7 @@
 from unittest.mock import Mock
 from unittest.mock import patch
 
+from core.exceptions import SyncError
 from django.test import TestCase
 
 from forward_netbox.choices import ForwardValidationStatusChoices
@@ -50,6 +51,28 @@ class SyntheticSyncScenarioHarnessTest(TestCase):
         self.assertEqual(sum(item.estimated_changes for item in plan), 12)
         self.assertGreater(len(plan), 1)
         self.assertTrue(all(item.estimated_changes <= 5 for item in plan))
+
+    def test_run_rejects_when_waiting_for_merge(self):
+        executor = ForwardMultiBranchExecutor(
+            sync=self.sync,
+            client=Mock(),
+            logger_=Mock(),
+        )
+        executor.plan = Mock()
+        self.sync.set_branch_run_state(
+            {
+                "awaiting_merge": True,
+                "next_plan_index": 2,
+            }
+        )
+
+        with self.assertRaisesRegex(
+            SyncError,
+            "waiting for the current shard branch to be merged",
+        ):
+            executor.run(max_changes_per_branch=10)
+
+        executor.plan.assert_not_called()
 
     @patch("forward_netbox.utilities.query_fetch.get_query_specs")
     def test_bad_model_rows_fail_during_preflight(self, mock_specs):
@@ -182,6 +205,31 @@ class SyntheticSyncScenarioHarnessTest(TestCase):
         self.assertEqual(len(ingestions), 2)
         self.assertEqual(executor._run_plan_item.call_count, 3)
         executor._split_overflow_item.assert_called_once_with(oversized_item)
+
+    def test_cleanup_overflow_branch_detaches_ingestion_and_deletes_branch(self):
+        executor = ForwardMultiBranchExecutor(
+            sync=self.sync,
+            client=Mock(),
+            logger_=Mock(),
+        )
+        ingestion = Mock()
+        ingestion.branch = Mock(name="branch")
+        ingestion.issues = Mock()
+        branch = Mock()
+        exc = BranchBudgetExceeded(
+            item=Mock(),
+            actual_changes=25,
+            budget=10,
+            branch=branch,
+            ingestion=ingestion,
+        )
+
+        executor._cleanup_overflow_branch(exc)
+
+        ingestion.issues.create.assert_called_once()
+        self.assertIsNone(ingestion.branch)
+        ingestion.save.assert_called_once_with(update_fields=["branch"])
+        branch.delete.assert_called_once()
 
     def test_resume_skips_preflight_and_reuses_validation_run(self):
         workload = scenarios.branch_workload(
