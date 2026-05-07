@@ -13,6 +13,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from forward_netbox.choices import FORWARD_BGP_MODELS
+from forward_netbox.choices import forward_configured_models
 from forward_netbox.choices import ForwardDriftPolicyBaselineChoices
 from forward_netbox.choices import ForwardSourceStatusChoices
 from forward_netbox.choices import ForwardSyncStatusChoices
@@ -38,6 +39,7 @@ from forward_netbox.utilities.execution_telemetry import build_sync_execution_su
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from forward_netbox.utilities.query_registry import builtin_nqe_map_rows
 from forward_netbox.utilities.query_registry import QuerySpec
+from forward_netbox.utilities.validation import force_allow_validation_run
 from forward_netbox.utilities.validation import ForwardValidationRunner
 from forward_netbox.views import annotate_statistics
 
@@ -117,6 +119,22 @@ class ForwardSyncModelTest(TestCase):
 
         self.assertIn("Unsupported Forward sync keys", str(ctx.exception))
         self.assertIn("query_overrides", str(ctx.exception))
+
+    def test_sync_rejects_past_scheduled_time(self):
+        sync = ForwardSync(
+            name="sync-past-scheduled",
+            source=self.source,
+            scheduled=timezone.now() - timedelta(minutes=5),
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+            },
+        )
+
+        with self.assertRaises(ValidationError) as ctx:
+            sync.clean()
+
+        self.assertIn("Scheduled time must be in the future.", str(ctx.exception))
 
     def test_sync_forces_native_branching_budget(self):
         sync = ForwardSync(
@@ -212,6 +230,21 @@ class ForwardSyncModelTest(TestCase):
 
         self.assertFalse(sync.is_model_enabled("dcim.module"))
         self.assertNotIn("dcim.module", sync.enabled_models())
+
+    def test_sync_rejects_when_no_models_are_enabled(self):
+        sync = ForwardSync(
+            name="sync-no-enabled-models",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                **{model_string: False for model_string in forward_configured_models()},
+            },
+        )
+
+        with self.assertRaises(ValidationError) as ctx:
+            sync.clean()
+
+        self.assertIn("Select at least one NetBox model to sync.", str(ctx.exception))
 
     @override_settings(PLUGINS_CONFIG=BGP_DISABLED_PLUGIN_CONFIG)
     def test_bgp_models_are_disabled_without_feature_flag_even_when_parameter_is_true(
@@ -674,6 +707,45 @@ class ForwardSyncModelTest(TestCase):
             ["Target snapshot is not processed."],
         )
 
+    def test_force_allow_validation_run_helper_records_override_audit(self):
+        user = get_user_model().objects.create_user(username="override-helper")
+        policy = ForwardDriftPolicy.objects.create(name="policy-override-helper")
+        sync = ForwardSync.objects.create(
+            name="sync-override-helper",
+            source=self.source,
+            drift_policy=policy,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+            },
+        )
+        validation_run = ForwardValidationRun.objects.create(
+            sync=sync,
+            policy=policy,
+            status=ForwardValidationStatusChoices.BLOCKED,
+            allowed=False,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-override-helper",
+            blocking_reasons=["Target snapshot is not processed."],
+            started=timezone.now(),
+            completed=timezone.now(),
+        )
+
+        force_allow_validation_run(
+            validation_run,
+            user=user,
+            reason="Accepted for helper coverage.",
+        )
+
+        validation_run.refresh_from_db()
+        self.assertTrue(validation_run.override_applied)
+        self.assertTrue(validation_run.allowed)
+        self.assertEqual(validation_run.status, ForwardValidationStatusChoices.PASSED)
+        self.assertEqual(validation_run.override_user, user)
+        self.assertEqual(
+            validation_run.override_reason, "Accepted for helper coverage."
+        )
+
     def test_validation_runner_skips_blocking_for_matching_force_allowed_run(self):
         policy = ForwardDriftPolicy.objects.create(name="policy-force-allow")
         sync = ForwardSync.objects.create(
@@ -1027,7 +1099,7 @@ class ForwardIngestionSnapshotSummaryTest(TestCase):
 
         with (
             patch(
-                "forward_netbox.models.suppress_branch_merge_side_effect_signals"
+                "forward_netbox.utilities.ingestion_merge.suppress_branch_merge_side_effect_signals"
             ) as mock_suppress,
             patch("forward_netbox.utilities.merge.merge_branch"),
         ):

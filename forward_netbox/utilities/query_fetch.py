@@ -2,7 +2,6 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from dataclasses import field
-from dataclasses import replace
 from typing import Any
 
 from ..choices import FORWARD_OPTIONAL_MODELS
@@ -12,40 +11,27 @@ from ..exceptions import ForwardQueryError
 from .branch_budget import BranchPlanItem
 from .branch_budget import BranchWorkload
 from .forward_api import LATEST_PROCESSED_SNAPSHOT
+from .query_diagnostics import (
+    append_ipaddress_diagnostics as sync_append_ipaddress_diagnostics,
+)
+from .query_diagnostics import (
+    append_routing_diagnostics as sync_append_routing_diagnostics,
+)
+from .query_diagnostics import diagnostic_row_count as sync_diagnostic_row_count
+from .query_diagnostics import (
+    summarize_routing_import_diagnostic_rows as sync_summarize_routing_import_diagnostic_rows,
+)
+from .query_diagnostics import (
+    summarize_unassignable_ipaddress_rows as sync_summarize_unassignable_ipaddress_rows,
+)
 from .query_registry import get_query_specs
-from .query_registry import ipaddress_unassignable_diagnostic_query
-from .query_registry import IPADDRESS_UNASSIGNABLE_DIAGNOSTIC_QUERY_NAME
 from .query_registry import optional_builtin_query_names_for_model
-from .query_registry import routing_import_diagnostic_query
-from .query_registry import ROUTING_IMPORT_DIAGNOSTIC_QUERY_NAME
 from .sync import ForwardSyncRunner
 from .sync_contracts import default_coalesce_fields_for_model
 from .sync_contracts import validate_row_shape_for_model
 
 DEFAULT_PREFLIGHT_ROW_LIMIT = 50
 DEFAULT_QUERY_FETCH_CONCURRENCY = 4
-IPADDRESS_DIAGNOSTIC_DETAIL_LIMIT = 20
-IPADDRESS_DIAGNOSTIC_LABELS = {
-    "ipv4-subnet-network-id": "IPv4 subnet network IDs",
-    "ipv4-broadcast-address": "IPv4 broadcast addresses",
-    "ipv6-subnet-network-id": "IPv6 subnet network IDs",
-}
-ROUTING_DIAGNOSTIC_DETAIL_LIMIT = 20
-ROUTING_DIAGNOSTIC_LABELS = {
-    "bgp-neighbor-without-local-as": "BGP neighbors without local AS",
-    "bgp-unsupported-address-family": "BGP unsupported address families",
-    "ospf-neighbor-without-remote-peer": "OSPF neighbors without inferred remote peers",
-    "ospf-neighbor-without-reverse-peer": "OSPF neighbors without reverse peer inference",
-}
-ROUTING_DIAGNOSTIC_MODELS = {
-    "netbox_routing.bgppeer",
-    "netbox_routing.bgpaddressfamily",
-    "netbox_routing.bgppeeraddressfamily",
-    "netbox_routing.ospfinstance",
-    "netbox_routing.ospfarea",
-    "netbox_routing.ospfinterface",
-    "netbox_peering_manager.peeringsession",
-}
 
 
 @dataclass(frozen=True)
@@ -315,197 +301,31 @@ class ForwardQueryFetcher:
         return model_result, workload
 
     def _append_ipaddress_diagnostics(self, context: ForwardQueryContext) -> None:
-        if "ipam.ipaddress" not in self.sync.get_model_strings():
-            return
-        diagnostic = self._run_ipaddress_unassignable_diagnostic(context)
-        if not diagnostic:
-            return
-        self.model_results = [
-            (
-                replace(result, diagnostics=[*result.diagnostics, diagnostic])
-                if result.model_string == "ipam.ipaddress"
-                else result
-            )
-            for result in self.model_results
-        ]
+        return sync_append_ipaddress_diagnostics(self, context)
 
     def _run_ipaddress_unassignable_diagnostic(
         self,
         context: ForwardQueryContext,
     ) -> dict[str, Any] | None:
-        try:
-            rows = self.client.run_nqe_query(
-                query=ipaddress_unassignable_diagnostic_query(),
-                network_id=context.network_id,
-                snapshot_id=context.snapshot_id,
-                parameters=context.query_parameters,
-                fetch_all=True,
-            )
-        except Exception as exc:
-            self.logger.log_warning(
-                "Unable to run Forward IP address assignment diagnostics; "
-                f"filtered address counts will not be reported: {exc}",
-                obj=self.sync,
-            )
-            return None
-
-        diagnostic = self._summarize_unassignable_ipaddress_rows(rows)
-        if diagnostic["total"] <= 0:
-            return None
-
-        count_summary = ", ".join(
-            f"{IPADDRESS_DIAGNOSTIC_LABELS.get(reason, reason)}={count}"
-            for reason, count in sorted(diagnostic["counts"].items())
-        )
-        self.logger.log_warning(
-            "Forward IP Addresses filtered "
-            f"{diagnostic['total']} interface addresses that NetBox cannot assign: "
-            f"{count_summary}.",
-            obj=self.sync,
-        )
-        for example in diagnostic["examples"]:
-            self.logger.log_warning(
-                "Filtered unassignable IP address "
-                f"`{example['address']}` on `{example['device']}` "
-                f"`{example['interface']}` ({example['reason']}).",
-                obj=self.sync,
-            )
-        suppressed = diagnostic["total"] - len(diagnostic["examples"])
-        if suppressed > 0:
-            self.logger.log_warning(
-                "Suppressed "
-                f"{suppressed} additional filtered IP address diagnostic examples "
-                f"after the first {IPADDRESS_DIAGNOSTIC_DETAIL_LIMIT}.",
-                obj=self.sync,
-            )
-        return diagnostic
+        return sync_append_ipaddress_diagnostics(self, context)
 
     def _summarize_unassignable_ipaddress_rows(self, rows: list[dict]) -> dict:
-        counts: dict[str, int] = {}
-        examples: list[dict[str, str]] = []
-        for row in rows:
-            reason = str(row.get("reason") or "unknown")
-            counts[reason] = counts.get(reason, 0) + 1
-            if len(examples) >= IPADDRESS_DIAGNOSTIC_DETAIL_LIMIT:
-                continue
-            examples.append(
-                {
-                    "reason": IPADDRESS_DIAGNOSTIC_LABELS.get(reason, reason),
-                    "device": str(row.get("device") or ""),
-                    "interface": str(row.get("interface") or ""),
-                    "address": str(row.get("address") or ""),
-                }
-            )
-        return {
-            "name": "unassignable_interface_addresses",
-            "query_name": IPADDRESS_UNASSIGNABLE_DIAGNOSTIC_QUERY_NAME,
-            "total": sum(counts.values()),
-            "counts": counts,
-            "examples": examples,
-        }
+        return sync_summarize_unassignable_ipaddress_rows(rows)
 
     def _append_routing_diagnostics(self, context: ForwardQueryContext) -> None:
-        enabled_models = set(self.sync.get_model_strings())
-        target_models = enabled_models & ROUTING_DIAGNOSTIC_MODELS
-        if not target_models:
-            return
-        diagnostic = self._run_routing_import_diagnostic(context)
-        if not diagnostic:
-            return
-        self.model_results = [
-            (
-                replace(result, diagnostics=[*result.diagnostics, diagnostic])
-                if result.model_string in target_models
-                else result
-            )
-            for result in self.model_results
-        ]
+        return sync_append_routing_diagnostics(self, context)
 
     def _run_routing_import_diagnostic(
         self,
         context: ForwardQueryContext,
     ) -> dict[str, Any] | None:
-        try:
-            rows = self.client.run_nqe_query(
-                query=routing_import_diagnostic_query(),
-                network_id=context.network_id,
-                snapshot_id=context.snapshot_id,
-                parameters=context.query_parameters,
-                fetch_all=True,
-            )
-        except Exception as exc:
-            self.logger.log_warning(
-                "Unable to run Forward routing import diagnostics; skipped routing "
-                f"row counts will not be reported: {exc}",
-                obj=self.sync,
-            )
-            return None
-
-        diagnostic = self._summarize_routing_import_diagnostic_rows(rows)
-        if diagnostic["total"] <= 0:
-            return None
-
-        count_summary = ", ".join(
-            f"{ROUTING_DIAGNOSTIC_LABELS.get(reason, reason)}={count}"
-            for reason, count in sorted(diagnostic["counts"].items())
-        )
-        self.logger.log_warning(
-            "Forward routing diagnostics found "
-            f"{diagnostic['total']} rows that the beta routing maps cannot import: "
-            f"{count_summary}.",
-            obj=self.sync,
-        )
-        for example in diagnostic["examples"]:
-            self.logger.log_warning(
-                "Routing diagnostic "
-                f"`{example['reason']}` for `{example['device']}` "
-                f"`{example['interface']}` ({example['detail']}).",
-                obj=self.sync,
-            )
-        suppressed = diagnostic.get("suppressed_examples", 0)
-        if suppressed > 0:
-            self.logger.log_warning(
-                "Suppressed "
-                f"{suppressed} additional routing diagnostic examples after the "
-                f"first {ROUTING_DIAGNOSTIC_DETAIL_LIMIT}.",
-                obj=self.sync,
-            )
-        return diagnostic
+        return sync_append_routing_diagnostics(self, context)
 
     def _summarize_routing_import_diagnostic_rows(self, rows: list[dict]) -> dict:
-        counts: dict[str, int] = {}
-        examples: list[dict[str, str]] = []
-        for row in rows:
-            reason = str(row.get("reason") or "unknown")
-            count = self._diagnostic_row_count(row)
-            counts[reason] = counts.get(reason, 0) + count
-            if len(examples) >= ROUTING_DIAGNOSTIC_DETAIL_LIMIT:
-                continue
-            examples.append(
-                {
-                    "reason": ROUTING_DIAGNOSTIC_LABELS.get(reason, reason),
-                    "model_target": str(row.get("model_target") or ""),
-                    "protocol": str(row.get("protocol") or ""),
-                    "device": str(row.get("device") or ""),
-                    "interface": str(row.get("interface") or ""),
-                    "detail": str(row.get("detail") or ""),
-                }
-            )
-        return {
-            "name": "routing_import_skipped_rows",
-            "query_name": ROUTING_IMPORT_DIAGNOSTIC_QUERY_NAME,
-            "total": sum(counts.values()),
-            "counts": counts,
-            "examples": examples,
-            "suppressed_examples": max(len(rows) - len(examples), 0),
-        }
+        return sync_summarize_routing_import_diagnostic_rows(rows)
 
     def _diagnostic_row_count(self, row: dict) -> int:
-        try:
-            count = int(row.get("count") or 1)
-        except (TypeError, ValueError):
-            return 1
-        return max(count, 1)
+        return sync_diagnostic_row_count(row)
 
     def fetch_sample_results(
         self,

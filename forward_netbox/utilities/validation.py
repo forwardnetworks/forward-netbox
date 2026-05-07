@@ -1,3 +1,4 @@
+from core.exceptions import SyncError
 from django.utils import timezone
 
 from ..choices import ForwardDriftPolicyBaselineChoices
@@ -232,3 +233,32 @@ class ForwardValidationRunner:
             "total_failures": sum(item["failure_count"] for item in by_model.values()),
             "models": by_model,
         }
+
+
+def force_allow_validation_run(validation_run, *, user, reason):
+    reason = str(reason or "").strip()
+    if not reason:
+        raise SyncError("Provide a force-allow reason before overriding validation.")
+    if not validation_run.blocking_reasons:
+        raise SyncError("Only blocked validation runs can be force-allowed.")
+    validation_run.override_applied = True
+    validation_run.allowed = True
+    validation_run.status = ForwardValidationStatusChoices.PASSED
+    validation_run.override_user = user
+    validation_run.override_reason = reason
+    validation_run.override_blocking_reasons = list(
+        validation_run.blocking_reasons or []
+    )
+    validation_run.override_at = timezone.now()
+    validation_run.save(
+        update_fields=[
+            "override_applied",
+            "allowed",
+            "status",
+            "override_user",
+            "override_reason",
+            "override_blocking_reasons",
+            "override_at",
+        ]
+    )
+    return validation_run
