@@ -1,6 +1,6 @@
+from .branch_budget import build_branch_plan_with_density
 from .branch_budget import DEFAULT_DENSITY_SAFETY_FACTOR
 from .branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
-from .branch_budget import build_branch_plan_with_density
 from .query_fetch import DEFAULT_PREFLIGHT_ROW_LIMIT  # noqa: F401
 from .query_fetch import ForwardQueryFetcher
 
