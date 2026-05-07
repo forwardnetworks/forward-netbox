@@ -1,7 +1,6 @@
 from django.core.exceptions import ObjectDoesNotExist
 
 from ..exceptions import ForwardDependencySkipError
-from ..exceptions import ForwardSearchError
 from ..exceptions import ForwardSyncDataError
 
 
@@ -23,7 +22,9 @@ def delete_dcim_cable(runner, row):
     if device is None or remote_device is None:
         return False
     interface = runner._lookup_interface(device, row.get("interface"))
-    remote_interface = runner._lookup_interface(remote_device, row.get("remote_interface"))
+    remote_interface = runner._lookup_interface(
+        remote_device, row.get("remote_interface")
+    )
     if interface is None or remote_interface is None:
         return False
     cable = lookup_cable_between(runner, interface, remote_interface)
@@ -93,9 +94,7 @@ def apply_dcim_cable(runner, row):
         )
         return False
 
-    remote_interface = runner._lookup_interface(
-        remote_device, row["remote_interface"]
-    )
+    remote_interface = runner._lookup_interface(remote_device, row["remote_interface"])
     if remote_interface is None:
         key = (remote_device.name, row["remote_interface"])
         if runner._dependency_failed("dcim.interface", key):
