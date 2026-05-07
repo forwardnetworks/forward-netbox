@@ -14,6 +14,7 @@ from .branch_budget import DEFAULT_DENSITY_SAFETY_FACTOR
 from .branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
 from .branch_budget import effective_row_budget_for_model
 from .branch_budget import split_workload
+from .branching import build_branch_name
 from .branching import build_branch_request
 from .execution_telemetry import build_plan_preview
 from .query_fetch import DEFAULT_PREFLIGHT_ROW_LIMIT  # noqa: F401
@@ -316,7 +317,7 @@ class ForwardMultiBranchExecutor:
         )
         self.current_ingestion = ingestion
         branch = Branch(
-            name=f"Forward Sync {self.sync.name} - part {item.index} {item.model_string}"
+            name=build_branch_name(sync=self.sync, ingestion=ingestion, item=item)
         )
         branch.save(provision=False)
         ingestion.branch = branch
