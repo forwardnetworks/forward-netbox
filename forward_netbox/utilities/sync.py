@@ -45,6 +45,28 @@ from .sync_inventory_module import apply_dcim_inventoryitem
 from .sync_inventory_module import apply_dcim_module
 from .sync_inventory_module import delete_dcim_inventoryitem
 from .sync_inventory_module import delete_dcim_module
+from .sync_ipam import apply_ipam_ipaddress
+from .sync_ipam import apply_ipam_prefix
+from .sync_ipam import apply_ipam_vlan
+from .sync_ipam import apply_ipam_vrf
+from .sync_ipam import delete_ipam_ipaddress
+from .sync_ipam import delete_ipam_prefix
+from .sync_ipam import delete_ipam_vlan
+from .sync_ipam import delete_ipam_vrf
+from .sync_routing import apply_netbox_peering_manager_peeringsession
+from .sync_routing import apply_netbox_routing_bgpaddressfamily
+from .sync_routing import apply_netbox_routing_bgppeer
+from .sync_routing import apply_netbox_routing_bgppeeraddressfamily
+from .sync_routing import apply_netbox_routing_ospfarea
+from .sync_routing import apply_netbox_routing_ospfinstance
+from .sync_routing import apply_netbox_routing_ospfinterface
+from .sync_routing import delete_netbox_peering_manager_peeringsession
+from .sync_routing import delete_netbox_routing_bgpaddressfamily
+from .sync_routing import delete_netbox_routing_bgppeer
+from .sync_routing import delete_netbox_routing_bgppeeraddressfamily
+from .sync_routing import delete_netbox_routing_ospfarea
+from .sync_routing import delete_netbox_routing_ospfinstance
+from .sync_routing import delete_netbox_routing_ospfinterface
 
 logger = logging.getLogger("forward_netbox.sync")
 
@@ -1696,58 +1718,16 @@ class ForwardSyncRunner:
         )
 
     def _delete_ipam_vlan(self, row):
-        from dcim.models import Site
-        from ipam.models import VLAN
-
-        site = None
-        if row.get("site_slug"):
-            site = Site.objects.filter(slug=row["site_slug"]).order_by("pk").first()
-        if site is None and row.get("site"):
-            site = Site.objects.filter(name=row["site"]).order_by("pk").first()
-        if site is None or row.get("vid") in (None, ""):
-            return False
-        return self._delete_by_coalesce(
-            VLAN,
-            [{"site": site, "vid": int(row["vid"])}],
-        )
+        return delete_ipam_vlan(self, row)
 
     def _delete_ipam_vrf(self, row):
-        from ipam.models import VRF
-
-        lookups = []
-        if row.get("rd"):
-            lookups.append({"rd": row["rd"]})
-        if row.get("name"):
-            lookups.append({"name": row["name"]})
-        return self._delete_by_coalesce(VRF, lookups)
+        return delete_ipam_vrf(self, row)
 
     def _delete_ipam_prefix(self, row):
-        from ipam.models import Prefix
-        from ipam.models import VRF
-
-        vrf = None
-        if row.get("vrf"):
-            vrf = VRF.objects.filter(name=row["vrf"]).order_by("pk").first()
-        lookups = []
-        if row.get("prefix") and vrf is not None:
-            lookups.append({"prefix": row["prefix"], "vrf": vrf})
-        if row.get("prefix"):
-            lookups.append({"prefix": row["prefix"]})
-        return self._delete_by_coalesce(Prefix, lookups)
+        return delete_ipam_prefix(self, row)
 
     def _delete_ipam_ipaddress(self, row):
-        from ipam.models import IPAddress
-        from ipam.models import VRF
-
-        vrf = None
-        if row.get("vrf"):
-            vrf = VRF.objects.filter(name=row["vrf"]).order_by("pk").first()
-        lookups = []
-        if row.get("address") and vrf is not None:
-            lookups.append({"address": row["address"], "vrf": vrf})
-        if row.get("address"):
-            lookups.append({"address": row["address"]})
-        return self._delete_by_coalesce(IPAddress, lookups)
+        return delete_ipam_ipaddress(self, row)
 
     def _delete_dcim_inventoryitem(self, row):
         return delete_dcim_inventoryitem(self, row)
@@ -1836,96 +1816,25 @@ class ForwardSyncRunner:
         return BGPScope.objects.filter(router=router, vrf=vrf).first()
 
     def _delete_netbox_peering_manager_peeringsession(self, row):
-        PeeringSession = self._optional_model(
-            "netbox_peering_manager",
-            "PeeringSession",
-            "netbox_peering_manager.peeringsession",
-        )
-        peer = self._resolve_bgp_peer_for_delete(row)
-        if peer is None:
-            return False
-        return self._delete_by_coalesce(PeeringSession, [{"bgp_peer": peer}])
+        return delete_netbox_peering_manager_peeringsession(self, row)
 
     def _delete_netbox_routing_bgppeer(self, row):
-        peer = self._resolve_bgp_peer_for_delete(row)
-        if peer is None:
-            return False
-        peer.delete()
-        return True
+        return delete_netbox_routing_bgppeer(self, row)
 
     def _delete_netbox_routing_bgpaddressfamily(self, row):
-        address_family = self._resolve_bgp_address_family_for_delete(row)
-        if address_family is None:
-            return False
-        address_family.delete()
-        return True
+        return delete_netbox_routing_bgpaddressfamily(self, row)
 
     def _delete_netbox_routing_bgppeeraddressfamily(self, row):
-        BGPPeerAddressFamily = self._optional_model(
-            "netbox_routing",
-            "BGPPeerAddressFamily",
-            "netbox_routing.bgppeeraddressfamily",
-        )
-        peer = self._resolve_bgp_peer_for_delete(row)
-        if peer is None:
-            return False
-        address_family = self._resolve_bgp_address_family_for_delete(row)
-        if address_family is None:
-            return False
-        return self._delete_by_coalesce(
-            BGPPeerAddressFamily,
-            [
-                {
-                    "assigned_object_type": self._content_type_for(peer.__class__),
-                    "assigned_object_id": peer.pk,
-                    "address_family": address_family,
-                }
-            ],
-        )
+        return delete_netbox_routing_bgppeeraddressfamily(self, row)
 
     def _delete_netbox_routing_ospfinstance(self, row):
-        from dcim.models import Device
-        from ipam.models import VRF
-
-        OSPFInstance = self._optional_model(
-            "netbox_routing", "OSPFInstance", "netbox_routing.ospfinstance"
-        )
-        device = Device.objects.filter(name=row.get("device")).order_by("pk").first()
-        if device is None:
-            return False
-        vrf = None
-        if row.get("vrf"):
-            vrf = VRF.objects.filter(name=row["vrf"]).order_by("pk").first()
-            if vrf is None:
-                return False
-        process_id, _ = self._ospf_process_values(row)
-        return self._delete_by_coalesce(
-            OSPFInstance,
-            [{"device": device, "vrf": vrf, "process_id": process_id}],
-        )
+        return delete_netbox_routing_ospfinstance(self, row)
 
     def _delete_netbox_routing_ospfarea(self, row):
-        OSPFArea = self._optional_model(
-            "netbox_routing", "OSPFArea", "netbox_routing.ospfarea"
-        )
-        return self._delete_by_coalesce(
-            OSPFArea,
-            [{"area_id": str(row.get("area_id"))}],
-        )
+        return delete_netbox_routing_ospfarea(self, row)
 
     def _delete_netbox_routing_ospfinterface(self, row):
-        from dcim.models import Device
-
-        OSPFInterface = self._optional_model(
-            "netbox_routing", "OSPFInterface", "netbox_routing.ospfinterface"
-        )
-        device = Device.objects.filter(name=row.get("device")).order_by("pk").first()
-        if device is None:
-            return False
-        interface = self._lookup_interface(device, row.get("local_interface"))
-        if interface is None:
-            return False
-        return self._delete_by_coalesce(OSPFInterface, [{"interface": interface}])
+        return delete_netbox_routing_ospfinterface(self, row)
 
     def _apply_dcim_site(self, row):
         return apply_dcim_site(self, row)
@@ -2114,167 +2023,16 @@ class ForwardSyncRunner:
         )
 
     def _apply_ipam_vlan(self, row):
-        site = (
-            self._ensure_site({"name": row["site"], "slug": row["site_slug"]})
-            if row.get("site")
-            else None
-        )
-        self._ensure_vlan(
-            vid=int(row["vid"]),
-            name=row["name"],
-            status=row["status"],
-            site=site,
-        )
+        return apply_ipam_vlan(self, row)
 
     def _apply_ipam_vrf(self, row):
-        self._ensure_vrf(row)
+        return apply_ipam_vrf(self, row)
 
     def _apply_ipam_prefix(self, row):
-        from ipam.models import Prefix
-
-        vrf = (
-            self._ensure_vrf(
-                {
-                    "name": row["vrf"],
-                    "rd": None,
-                    "description": "",
-                    "enforce_unique": False,
-                }
-            )
-            if row.get("vrf")
-            else None
-        )
-        self._upsert_values_from_defaults(
-            "ipam.prefix",
-            Prefix,
-            values={
-                "prefix": row["prefix"],
-                "vrf": vrf,
-                "status": row["status"],
-            },
-            coalesce_sets=self._coalesce_sets_for(
-                "ipam.prefix",
-                [("prefix", "vrf")],
-            ),
-        )
+        return apply_ipam_prefix(self, row)
 
     def _apply_ipam_ipaddress(self, row):
-        from dcim.models import Device
-        from dcim.models import Interface
-        from ipam.models import IPAddress
-
-        try:
-            device = Device.objects.get(name=row["device"])
-        except ObjectDoesNotExist as exc:
-            key = (row["device"],)
-            if self._dependency_failed("dcim.device", key):
-                raise ForwardDependencySkipError(
-                    f"Skipping IP assignment because dependency `dcim.device` failed for {key}.",
-                    model_string="ipam.ipaddress",
-                    context={
-                        "device": row["device"],
-                        "interface": row.get("interface"),
-                    },
-                    data=row,
-                ) from exc
-            raise ForwardSearchError(
-                f"Unable to find device `{row['device']}` for IP assignment.",
-                model_string="ipam.ipaddress",
-                context={"device": row["device"], "interface": row.get("interface")},
-                data=row,
-            ) from exc
-        interface = self._lookup_interface(device, row["interface"])
-        if interface is None:
-            key = (device.name, row["interface"])
-            if self._dependency_failed("dcim.interface", key):
-                raise ForwardDependencySkipError(
-                    f"Skipping IP assignment because dependency `dcim.interface` failed for {key}.",
-                    model_string="ipam.ipaddress",
-                    context={"device": device.name, "interface": row["interface"]},
-                    data=row,
-                )
-            raise ForwardSearchError(
-                f"Unable to find interface {row['interface']} on device {device.name} for IP assignment.",
-                model_string="ipam.ipaddress",
-                context={"device": device.name, "interface": row["interface"]},
-                data=row,
-            )
-        skip_reason = self._ipaddress_assignment_skip_reason(row["address"])
-        if skip_reason:
-            reason_label = {
-                "network-id": "subnet network IDs",
-                "broadcast-address": "broadcast addresses",
-            }[skip_reason]
-            self._record_aggregated_skip_warning(
-                model_string="ipam.ipaddress",
-                reason=skip_reason,
-                warning_message=(
-                    f"Skipping IP address `{row['address']}` on `{device.name}` "
-                    f"`{row['interface']}` because NetBox cannot assign {reason_label} "
-                    "to interfaces."
-                ),
-            )
-            return False
-        vrf = (
-            self._ensure_vrf(
-                {
-                    "name": row["vrf"],
-                    "rd": None,
-                    "description": "",
-                    "enforce_unique": False,
-                }
-            )
-            if row.get("vrf")
-            else None
-        )
-        if vrf is None:
-            host_ip = row.get("host_ip") or str(ip_interface(row["address"]).ip)
-            lookup = {
-                "address__net_host": host_ip,
-                "vrf__isnull": True,
-            }
-            existing = self._get_unique_or_raise(IPAddress, lookup)
-            if existing is None:
-                existing = IPAddress(
-                    address=row["address"],
-                    vrf=None,
-                    status=row["status"],
-                    assigned_object_type=self._content_type_for(Interface),
-                    assigned_object_id=interface.pk,
-                )
-                existing.full_clean()
-                existing.save()
-                return True
-            existing.address = row["address"]
-            existing.vrf = None
-            existing.status = row["status"]
-            existing.assigned_object_type = self._content_type_for(Interface)
-            existing.assigned_object_id = interface.pk
-            existing.save(
-                update_fields=[
-                    "address",
-                    "vrf",
-                    "status",
-                    "assigned_object_type",
-                    "assigned_object_id",
-                ]
-            )
-            return True
-        self._upsert_values_from_defaults(
-            "ipam.ipaddress",
-            IPAddress,
-            values={
-                "address": row["address"],
-                "vrf": vrf,
-                "status": row["status"],
-                "assigned_object_type": self._content_type_for(Interface),
-                "assigned_object_id": interface.pk,
-            },
-            coalesce_sets=self._coalesce_sets_for(
-                "ipam.ipaddress",
-                [("address", "vrf")],
-            ),
-        )
+        return apply_ipam_ipaddress(self, row)
 
     def _apply_dcim_inventoryitem(self, row):
         return apply_dcim_inventoryitem(self, row)
@@ -2283,41 +2041,22 @@ class ForwardSyncRunner:
         return apply_dcim_module(self, row)
 
     def _apply_netbox_routing_bgppeer(self, row):
-        return self._ensure_netbox_routing_bgppeer(row)
+        return apply_netbox_routing_bgppeer(self, row)
 
     def _apply_netbox_routing_bgpaddressfamily(self, row):
-        return self._ensure_bgp_address_family(row)
+        return apply_netbox_routing_bgpaddressfamily(self, row)
 
     def _apply_netbox_routing_bgppeeraddressfamily(self, row):
-        return self._ensure_bgp_peer_address_family(row)
+        return apply_netbox_routing_bgppeeraddressfamily(self, row)
 
     def _apply_netbox_routing_ospfinstance(self, row):
-        return self._ensure_ospf_instance(row)
+        return apply_netbox_routing_ospfinstance(self, row)
 
     def _apply_netbox_routing_ospfarea(self, row):
-        return self._ensure_ospf_area(row)
+        return apply_netbox_routing_ospfarea(self, row)
 
     def _apply_netbox_routing_ospfinterface(self, row):
-        return self._ensure_ospf_interface(row)
+        return apply_netbox_routing_ospfinterface(self, row)
 
     def _apply_netbox_peering_manager_peeringsession(self, row):
-        PeeringSession = self._optional_model(
-            "netbox_peering_manager",
-            "PeeringSession",
-            "netbox_peering_manager.peeringsession",
-        )
-        bgp_peer = self._ensure_netbox_routing_bgppeer(row)
-        values = self._model_field_values(
-            PeeringSession,
-            {
-                "bgp_peer": bgp_peer,
-                "relationship": self._ensure_peering_relationship(row),
-                "service_reference": row.get("service_reference") or "",
-            },
-        )
-        self._upsert_values_from_defaults(
-            "netbox_peering_manager.peeringsession",
-            PeeringSession,
-            values=values,
-            coalesce_sets=[("bgp_peer",)],
-        )
+        return apply_netbox_peering_manager_peeringsession(self, row)
