@@ -4,8 +4,8 @@ from django.utils.dateparse import parse_datetime
 
 from ..choices import ForwardSyncStatusChoices
 from .branch_budget import BRANCH_RUN_STATE_PARAMETER
-from .branch_budget import MODEL_CHANGE_DENSITY_PARAMETER
 from .branch_budget import build_branch_budget_hints
+from .branch_budget import MODEL_CHANGE_DENSITY_PARAMETER
 from .execution_telemetry import build_branch_run_summary
 from .execution_telemetry import build_sync_execution_summary
 
