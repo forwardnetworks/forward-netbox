@@ -218,6 +218,44 @@ class ForwardClientTest(TestCase):
                 fetch_all=True,
             )
 
+    def test_run_nqe_query_fetch_all_preserves_column_filters(self):
+        self.client._request = Mock(
+            side_effect=[
+                self._response(
+                    {
+                        "items": [
+                            {"fields": {"n": 1}},
+                        ],
+                        "totalNumItems": 2,
+                    }
+                ),
+                self._response(
+                    {
+                        "items": [
+                            {"fields": {"n": 2}},
+                        ],
+                        "totalNumItems": 2,
+                    }
+                ),
+            ]
+        )
+
+        rows = self.client.run_nqe_query(
+            query_id="Q_devices",
+            column_filters=[{"column": "name", "operator": "contains", "value": "sw"}],
+            limit=1,
+            fetch_all=True,
+        )
+
+        self.assertEqual(rows, [{"n": 1}, {"n": 2}])
+        self.assertEqual(self.client._request.call_count, 2)
+        for call in self.client._request.call_args_list:
+            self.assertEqual(call.kwargs["json_body"]["queryId"], "Q_devices")
+            self.assertEqual(
+                call.kwargs["json_body"]["queryOptions"]["columnFilters"],
+                [{"column": "name", "operator": "contains", "value": "sw"}],
+            )
+
     def test_run_nqe_diff_returns_single_page_by_default(self):
         self.client._request = Mock(
             return_value=self._response(
@@ -322,4 +360,50 @@ class ForwardClientTest(TestCase):
                 after_snapshot_id="snapshot-after",
                 limit=2,
                 fetch_all=True,
+            )
+
+    def test_run_nqe_diff_fetch_all_preserves_column_filters(self):
+        self.client._request = Mock(
+            side_effect=[
+                self._response(
+                    {
+                        "rows": [
+                            {"type": "ADDED", "before": None, "after": {"n": 1}},
+                        ],
+                        "totalNumRows": 2,
+                    }
+                ),
+                self._response(
+                    {
+                        "rows": [
+                            {"type": "DELETED", "before": {"n": 2}, "after": None},
+                        ],
+                        "totalNumRows": 2,
+                    }
+                ),
+            ]
+        )
+
+        rows = self.client.run_nqe_diff(
+            query_id="Q_sites",
+            before_snapshot_id="snapshot-before",
+            after_snapshot_id="snapshot-after",
+            column_filters=[{"column": "site", "operator": "eq", "value": "core"}],
+            limit=1,
+            fetch_all=True,
+        )
+
+        self.assertEqual(
+            rows,
+            [
+                {"type": "ADDED", "before": None, "after": {"n": 1}},
+                {"type": "DELETED", "before": {"n": 2}, "after": None},
+            ],
+        )
+        self.assertEqual(self.client._request.call_count, 2)
+        for call in self.client._request.call_args_list:
+            self.assertEqual(call.kwargs["json_body"]["queryId"], "Q_sites")
+            self.assertEqual(
+                call.kwargs["json_body"]["options"]["columnFilters"],
+                [{"column": "site", "operator": "eq", "value": "core"}],
             )
