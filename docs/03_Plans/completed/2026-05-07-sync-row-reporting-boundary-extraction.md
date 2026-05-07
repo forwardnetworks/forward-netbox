@@ -23,6 +23,12 @@ Split the row application, deletion, issue recording, and aggregated warning beh
 - `invoke docs`
 - `invoke ci`
 
+## Approach
+Move the row application and deletion outcome logging into `forward_netbox/utilities/sync_reporting.py` so the reporting contract is isolated from adapter logic.
+
 ## Decision Log
 - `sync.py` still mixes adapter code with row outcome reporting, and that is the remaining structural hotspot after the model-specific boundary splits.
 - This boundary is the right place to keep `ipam.ipaddress` row failures visible while the broader 0.7.0 refactor continues.
+
+## Rollback
+Restore the row-reporting helpers to `sync.py` if the split hides failures or changes the continue-on-error contract.

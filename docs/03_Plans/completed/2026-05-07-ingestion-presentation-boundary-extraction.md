@@ -22,6 +22,12 @@ Move `ForwardIngestion` snapshot, metrics, model-result, statistics, and executi
 - `invoke docs`
 - `invoke ci`
 
+## Approach
+Move the snapshot and execution-summary formatting helpers into `forward_netbox/utilities/ingestion_presentation.py` so presentation stays separate from persisted state and merge logic.
+
 ## Decision Log
 - Rejected moving merge or status-transition logic in the same tranche because this pass is only about presentation helpers.
 - Rejected changing the summary schemas because the API/UI already depend on them.
+
+## Rollback
+Inline the presentation helpers back into `ForwardIngestion` if the output shape changes or the boundary adds unnecessary indirection.

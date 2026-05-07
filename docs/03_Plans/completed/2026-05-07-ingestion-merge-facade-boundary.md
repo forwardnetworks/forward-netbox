@@ -23,7 +23,13 @@ Move the remaining `ForwardIngestion` merge bookkeeping out of `forward_netbox/m
 - `invoke docs`
 - `invoke ci`
 
+## Approach
+Extract the merge-specific helper logic into `forward_netbox/utilities/ingestion_merge.py` and keep the model methods as wrappers so the existing public flow remains stable.
+
 ## Decision Log
 - Chosen: reuse the existing ingestion merge module instead of creating another utility file.
 - Chosen: keep the cleanup helper inside the merge utility because branch deletion is part of merge completion, not a generic model concern.
 - Rejected: leaving merge bookkeeping inline in `models.py` because the model is still carrying more orchestration than it should.
+
+## Rollback
+Restore the merge helper calls into `ForwardIngestion` if the split changes merge timing, branch cleanup, or change-count persistence.

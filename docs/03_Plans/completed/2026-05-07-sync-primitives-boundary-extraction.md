@@ -22,6 +22,12 @@ Move the reusable coalesce, upsert, delete-by-coalesce, optional-model, and look
 - `invoke docs`
 - `invoke ci`
 
+## Approach
+Move the reusable coalesce, upsert, delete, optional-model, and lookup helpers into `forward_netbox/utilities/sync_primitives.py` while leaving the runner API intact.
+
 ## Decision Log
 - This is the remaining reusable helper hotspot after the adapter and row-reporting splits.
 - A separate boundary for primitives makes later adapter and reporting cleanup simpler without changing the import workflow.
+
+## Rollback
+Move the primitives back into `sync.py` if the helper boundary creates import churn or obscures the row behavior it is meant to simplify.
