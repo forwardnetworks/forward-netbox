@@ -142,3 +142,6 @@ node_modules/
 playwright-report/
 test-results/
 .playwright-artifacts/
+
+# Local generated operator reports
+.forward-netbox-reports/

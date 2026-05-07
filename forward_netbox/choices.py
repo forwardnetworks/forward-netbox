@@ -20,16 +20,24 @@ FORWARD_SUPPORTED_MODELS = (
     "ipam.prefix",
     "ipam.ipaddress",
     "dcim.inventoryitem",
+    "dcim.module",
 )
+
+FORWARD_OPTIONAL_MODELS = {
+    "dcim.cablebundle",
+    "dcim.module",
+}
 
 
 class ForwardSourceStatusChoices(ChoiceSet):
     NEW = "new"
+    SYNCING = "syncing"
     READY = "ready"
     FAILED = "failed"
 
     CHOICES = (
         (NEW, _("New"), "gray"),
+        (SYNCING, _("Syncing"), "cyan"),
         (READY, _("Ready"), "green"),
         (FAILED, _("Failed"), "red"),
     )

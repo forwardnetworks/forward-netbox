@@ -22,7 +22,7 @@ class ForwardSourceFormTest(TestCase):
             "password": "secret",
             "network_id": "test-network",
             "timeout": 1200,
-            "nqe_page_size": 1000,
+            "nqe_page_size": 10000,
             "verify": True,
         }
 
@@ -82,6 +82,11 @@ class ForwardSyncFormTest(TestCase):
             },
         )
 
+    def test_optional_module_model_defaults_unchecked(self):
+        form = ForwardSyncForm()
+
+        self.assertFalse(form.fields["dcim.module"].initial)
+
     def test_form_preserves_auto_merge_and_forces_native_branching(self):
         form = ForwardSyncForm(
             data={
@@ -110,14 +115,14 @@ class ForwardSyncFormTest(TestCase):
                 "password": "secret",
                 "network_id": "test-network",
                 "timeout": 1200,
-                "nqe_page_size": 1000,
+                "nqe_page_size": 10000,
                 "verify": True,
             }
         )
 
         self.assertTrue(form.is_valid(), form.errors)
         source = form.save()
-        self.assertEqual(source.parameters["nqe_page_size"], 1000)
+        self.assertEqual(source.parameters["nqe_page_size"], 10000)
 
 
 class ForwardNQEMapFormTest(TestCase):

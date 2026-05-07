@@ -1,0 +1,216 @@
+/**
+ * @intent Forward IP Address Assignment Diagnostics
+ * @description Rows that Forward reports on interfaces but NetBox cannot assign as interface IP addresses.
+ */
+
+subinterface_ipv4_network_ids =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  foreach interface in device.interfaces
+  foreach subinterface in interface.subinterfaces
+  foreach address in subinterface.ipv4.addresses
+  let assigned_address = ipSubnet(address.ip, address.prefixLength)
+  where address.prefixLength < 31
+  where address.ip == networkAddress(assigned_address)
+  select {
+    reason: "ipv4-subnet-network-id",
+    device: device.name,
+    interface: interface.name,
+    address: assigned_address
+  };
+
+subinterface_ipv4_broadcasts =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  foreach interface in device.interfaces
+  foreach subinterface in interface.subinterfaces
+  foreach address in subinterface.ipv4.addresses
+  let assigned_address = ipSubnet(address.ip, address.prefixLength)
+  where address.prefixLength < 31
+  where address.ip == broadcastAddress(assigned_address)
+  select {
+    reason: "ipv4-broadcast-address",
+    device: device.name,
+    interface: interface.name,
+    address: assigned_address
+  };
+
+subinterface_ipv6_network_ids =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  foreach interface in device.interfaces
+  foreach subinterface in interface.subinterfaces
+  foreach address in subinterface.ipv6.addresses
+  let assigned_address = ipSubnet(address.ip, address.prefixLength)
+  where address.prefixLength < 127
+  where address.ip == networkAddress(assigned_address)
+  select {
+    reason: "ipv6-subnet-network-id",
+    device: device.name,
+    interface: interface.name,
+    address: assigned_address
+  };
+
+bridge_ipv4_network_ids =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  foreach interface in device.interfaces
+  where isPresent(interface.bridge?.ipv4?.addresses)
+  foreach address in interface.bridge.ipv4.addresses
+  let assigned_address = ipSubnet(address.ip, address.prefixLength)
+  where address.prefixLength < 31
+  where address.ip == networkAddress(assigned_address)
+  select {
+    reason: "ipv4-subnet-network-id",
+    device: device.name,
+    interface: interface.name,
+    address: assigned_address
+  };
+
+bridge_ipv4_broadcasts =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  foreach interface in device.interfaces
+  where isPresent(interface.bridge?.ipv4?.addresses)
+  foreach address in interface.bridge.ipv4.addresses
+  let assigned_address = ipSubnet(address.ip, address.prefixLength)
+  where address.prefixLength < 31
+  where address.ip == broadcastAddress(assigned_address)
+  select {
+    reason: "ipv4-broadcast-address",
+    device: device.name,
+    interface: interface.name,
+    address: assigned_address
+  };
+
+bridge_ipv6_network_ids =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  foreach interface in device.interfaces
+  where isPresent(interface.bridge?.ipv6?.addresses)
+  foreach address in interface.bridge.ipv6.addresses
+  let assigned_address = ipSubnet(address.ip, address.prefixLength)
+  where address.prefixLength < 127
+  where address.ip == networkAddress(assigned_address)
+  select {
+    reason: "ipv6-subnet-network-id",
+    device: device.name,
+    interface: interface.name,
+    address: assigned_address
+  };
+
+tunnel_ipv4_network_ids =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  foreach interface in device.interfaces
+  where isPresent(interface.tunnel?.ipv4?.addresses)
+  foreach address in interface.tunnel.ipv4.addresses
+  let assigned_address = ipSubnet(address.ip, address.prefixLength)
+  where address.prefixLength < 31
+  where address.ip == networkAddress(assigned_address)
+  select {
+    reason: "ipv4-subnet-network-id",
+    device: device.name,
+    interface: interface.name,
+    address: assigned_address
+  };
+
+tunnel_ipv4_broadcasts =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  foreach interface in device.interfaces
+  where isPresent(interface.tunnel?.ipv4?.addresses)
+  foreach address in interface.tunnel.ipv4.addresses
+  let assigned_address = ipSubnet(address.ip, address.prefixLength)
+  where address.prefixLength < 31
+  where address.ip == broadcastAddress(assigned_address)
+  select {
+    reason: "ipv4-broadcast-address",
+    device: device.name,
+    interface: interface.name,
+    address: assigned_address
+  };
+
+tunnel_ipv6_network_ids =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  foreach interface in device.interfaces
+  where isPresent(interface.tunnel?.ipv6?.addresses)
+  foreach address in interface.tunnel.ipv6.addresses
+  let assigned_address = ipSubnet(address.ip, address.prefixLength)
+  where address.prefixLength < 127
+  where address.ip == networkAddress(assigned_address)
+  select {
+    reason: "ipv6-subnet-network-id",
+    device: device.name,
+    interface: interface.name,
+    address: assigned_address
+  };
+
+routed_vlan_ipv4_network_ids =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  foreach interface in device.interfaces
+  where isPresent(interface.routedVlan?.ipv4?.addresses)
+  foreach address in interface.routedVlan.ipv4.addresses
+  let assigned_address = ipSubnet(address.ip, address.prefixLength)
+  where address.prefixLength < 31
+  where address.ip == networkAddress(assigned_address)
+  select {
+    reason: "ipv4-subnet-network-id",
+    device: device.name,
+    interface: interface.name,
+    address: assigned_address
+  };
+
+routed_vlan_ipv4_broadcasts =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  foreach interface in device.interfaces
+  where isPresent(interface.routedVlan?.ipv4?.addresses)
+  foreach address in interface.routedVlan.ipv4.addresses
+  let assigned_address = ipSubnet(address.ip, address.prefixLength)
+  where address.prefixLength < 31
+  where address.ip == broadcastAddress(assigned_address)
+  select {
+    reason: "ipv4-broadcast-address",
+    device: device.name,
+    interface: interface.name,
+    address: assigned_address
+  };
+
+routed_vlan_ipv6_network_ids =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  foreach interface in device.interfaces
+  where isPresent(interface.routedVlan?.ipv6?.addresses)
+  foreach address in interface.routedVlan.ipv6.addresses
+  let assigned_address = ipSubnet(address.ip, address.prefixLength)
+  where address.prefixLength < 127
+  where address.ip == networkAddress(assigned_address)
+  select {
+    reason: "ipv6-subnet-network-id",
+    device: device.name,
+    interface: interface.name,
+    address: assigned_address
+  };
+
+foreach row in (
+  subinterface_ipv4_network_ids + subinterface_ipv4_broadcasts + subinterface_ipv6_network_ids
+    + bridge_ipv4_network_ids + bridge_ipv4_broadcasts + bridge_ipv6_network_ids
+    + tunnel_ipv4_network_ids + tunnel_ipv4_broadcasts + tunnel_ipv6_network_ids
+    + routed_vlan_ipv4_network_ids + routed_vlan_ipv4_broadcasts + routed_vlan_ipv6_network_ids
+)
+select distinct row

@@ -8,6 +8,26 @@ import "netbox_utilities";
 truncate(value: String, max_len: Integer) =
   if length(value) <= max_len then value else substring(value, 0, max_len);
 
+isInventoryHardwareRole(role_name: String) =
+  role_name != "APPLICATION" &&
+  role_name != "UNMODELED BACKUP DEVICE";
+
+isNetBoxModuleRole(role_name: String) =
+  role_name == "LINE CARD" ||
+  role_name == "SUPERVISOR" ||
+  role_name == "FABRIC MODULE" ||
+  role_name == "ROUTING ENGINE";
+
+inventoryRoleColor(role_name: String) =
+  if role_name == "TRANSCEIVER" then "2196f3"
+  else if role_name == "POWER SUPPLY" then "ff9800"
+  else if role_name == "FAN MODULE" then "00bcd4"
+  else if role_name == "CHASSIS" then "607d8b"
+  else if role_name == "MOTHERBOARD" then "673ab7"
+  else if role_name == "STACK" || role_name == "STACK SWITCH" || role_name == "STACK PORT" || role_name == "STACK MODULE" then "4caf50"
+  else if isNetBoxModuleRole(role_name) then "3f51b5"
+  else "9e9e9e";
+
 foreach device in network.devices
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
@@ -15,22 +35,30 @@ foreach component in device.platform.components
 let manufacturer_name = canonicalManufacturerName(device.platform.vendor)
 let manufacturer_slug = slugify(manufacturer_name)
 let role_name = replace(replace(toString(component.partType), "DevicePartType.", ""), "_", " ")
+where isInventoryHardwareRole(role_name)
 let role_slug = slugify(role_name)
 let component_name = if isPresent(component.name) && component.name != "" then component.name else null : String
 let component_part_id = if isPresent(component.partId) && component.partId != "" then component.partId else null : String
 let component_serial = if isPresent(component.serialNumber) && component.serialNumber != "" then component.serialNumber else null : String
 let component_description = if isPresent(component.description) && component.description != "" then component.description else null : String
+let component_version = if isPresent(component.versionId) && component.versionId != "" then component.versionId else null : String
+let inventory_name = if isPresent(component_name) then component_name else if isPresent(component_part_id) then component_part_id else if isPresent(component_description) then component_description else role_name
+let inventory_description = if isPresent(component_description) && isPresent(component_version) then truncate(join(" | ", [component_description, join(": ", ["Version", component_version])]), 200) else if isPresent(component_description) then truncate(component_description, 200) else if isPresent(component_version) then truncate(join(": ", ["Version", component_version]), 200) else ""
 select distinct {
   device: device.name,
   manufacturer: manufacturer_name,
   manufacturer_slug: manufacturer_slug,
-  name: if isPresent(component_name) then component_name else if isPresent(component_part_id) then component_part_id else if isPresent(component_description) then component_description else role_name,
-  part_id: if isPresent(component_part_id) then truncate(component_part_id, 50) else if isPresent(component_name) then truncate(component_name, 50) else truncate(role_name, 50),
-  serial: if isPresent(component_serial) then truncate(component_serial, 50) else if isPresent(component_part_id) then truncate(component_part_id, 50) else if isPresent(component_name) then truncate(component_name, 50) else truncate(role_name, 50),
+  name: truncate(inventory_name, 64),
+  label: if isPresent(component_name) then truncate(component_name, 64) else "",
+  part_id: if isPresent(component_part_id) then truncate(component_part_id, 50) else "",
+  serial: if isPresent(component_serial) then truncate(component_serial, 50) else "",
+  asset_tag: null : String,
   role: role_name,
   role_slug: role_slug,
-  role_color: "9e9e9e",
+  role_color: inventoryRoleColor(role_name),
+  part_type: role_name,
+  module_component: isNetBoxModuleRole(role_name),
   status: "active",
   discovered: true,
-  description: if isPresent(component_description) then component_description else ""
+  description: inventory_description
 }

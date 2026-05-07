@@ -80,7 +80,7 @@ class SyntheticSyncScenarioHarnessTest(TestCase):
             DEFAULT_PREFLIGHT_ROW_LIMIT,
         )
 
-    @patch("forward_netbox.utilities.sync.get_query_specs")
+    @patch("forward_netbox.utilities.sync_execution.get_query_specs")
     def test_diff_scenario_routes_upserts_and_deletes(self, mock_specs):
         baseline = ForwardIngestion.objects.create(
             sync=self.sync,

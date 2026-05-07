@@ -43,6 +43,12 @@ class QuerySpec:
 
 QUERY_DIR = Path(__file__).resolve().parents[1] / "queries"
 LOCAL_IMPORT_RE = re.compile(r'^\s*import\s+"([^"]+)"\s*;\s*$')
+IPADDRESS_UNASSIGNABLE_DIAGNOSTIC_QUERY_NAME = (
+    "Forward IP Address Assignment Diagnostics"
+)
+IPADDRESS_UNASSIGNABLE_DIAGNOSTIC_QUERY_FILE = (
+    "forward_ip_addresses_unassignable_diagnostics.nqe"
+)
 
 
 def _read_query_source(filename: str) -> str:
@@ -119,6 +125,10 @@ def _compile_query_file(
 
 def _read_query(filename: str) -> str:
     return _compile_query_file(QUERY_DIR / filename)
+
+
+def ipaddress_unassignable_diagnostic_query() -> str:
+    return _read_query(IPADDRESS_UNASSIGNABLE_DIAGNOSTIC_QUERY_FILE)
 
 
 BUILTIN_QUERY_MAPS = [
@@ -234,6 +244,12 @@ BUILTIN_OPTIONAL_QUERY_MAPS = [
         "filename": "forward_device_feature_tags_with_rules.nqe",
         "enabled": False,
     },
+    {
+        "model_string": "dcim.module",
+        "name": "Forward Modules",
+        "filename": "forward_modules.nqe",
+        "enabled": False,
+    },
 ]
 
 BUILTIN_SEEDED_QUERY_MAPS = [
@@ -327,6 +343,14 @@ def _resolve_map_query_specs(model_string: str, maps) -> list[QuerySpec]:
     return [_build_query_spec_from_map(query_map) for query_map in chosen_maps]
 
 
+def optional_builtin_query_names_for_model(model_string: str) -> list[str]:
+    return [
+        query_default["name"]
+        for query_default in BUILTIN_OPTIONAL_QUERY_MAPS
+        if query_default["model_string"] == model_string
+    ]
+
+
 def get_query_specs(
     model_string: str,
     maps=None,
@@ -337,6 +361,15 @@ def get_query_specs(
     if maps:
         return []
     return BUILTIN_QUERY_SPECS[model_string]
+
+
+def get_seeded_builtin_query_spec(model_string: str, query_name: str) -> QuerySpec:
+    query_default = BUILTIN_QUERY_DEFAULTS.get((model_string, query_name))
+    if query_default is None:
+        raise KeyError(
+            f"No seeded built-in query named `{query_name}` for {model_string}."
+        )
+    return _build_builtin_query_spec(query_default)
 
 
 BUILTIN_QUERY_SPECS = {model_string: [] for model_string in FORWARD_SUPPORTED_MODELS}

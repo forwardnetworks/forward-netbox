@@ -12,26 +12,32 @@ Install the plugin package, enable the required plugins, run the migrations, and
 Install the wheel from GitHub Releases into the same Python environment as NetBox:
 
 ```bash
-pip install /path/to/forward_netbox-0.5.1-py3-none-any.whl
+pip install /path/to/forward_netbox-0.6.1-py3-none-any.whl
 ```
 
 Alternatively, install directly from the GitHub source archive:
 
 ```bash
-pip install /path/to/forward_netbox-0.5.1.tar.gz
+pip install /path/to/forward_netbox-0.6.1.tar.gz
 ```
 
 If you mirror the package into a private Python index, pin the same release version:
 
 ```bash
-pip install --pre forward-netbox==0.5.1
+pip install --pre forward-netbox==0.6.1
 ```
 
 ## Release Compatibility
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v0.5.1` | `4.5.9` validated; `4.5.x` only | Current release |
+| `v0.6.1` | `4.5.9` validated; `4.5.x` only | Current release; native `dcim.module` import is beta |
+| `v0.6.0` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.6.1`; native `dcim.module` import is beta |
+| `v0.5.9.1` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.6.0` |
+| `v0.5.9` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.5.9.1` |
+| `v0.5.8` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.5.9` |
+| `v0.5.7` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.5.8` |
+| `v0.5.1` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.5.3` |
 | `v0.4.0` | `4.5.9` validated; `4.5.x` only | Current unsupported release |
 | `v0.3.1` | `4.5.8` validated; `4.5.x` only | Superseded by `v0.4.0` |
 | `v0.3.0.1` | `4.5.8` validated; `4.5.x` only | Superseded by `v0.3.1` |
@@ -41,6 +47,14 @@ pip install --pre forward-netbox==0.5.1
 
 | Release | Summary |
 | --- | --- |
+| `v0.6.1` | Filters interface IP rows that NetBox cannot assign, such as subnet network IDs and IPv4 broadcasts, while reporting aggregate diagnostics for filtered addresses. |
+| `v0.6.0` | Adds beta native `dcim.module` import for chassis modules and similar bay-aware hardware, improves inventory item normalization, and avoids duplicate generic inventory rows when beta module sync is enabled. |
+| `v0.5.9.1` | Keeps job logs visible during execution by persisting plugin log entries into the native NetBox job log tab while preserving the full plugin ingestion log view. |
+| `v0.5.9` | Balances query preflight and workload fetch with bounded parallelism, reducing long planning pauses on large datasets. |
+| `v0.5.8` | Defers event flushing until commit so large prefix ingestions do not trip transaction state changes mid-run. |
+| `v0.5.5` | Applies a consistent model conflict policy for cable sync rows: skip occupied-interface conflicts, aggregate warning spam, and keep non-conflict updates/creates unchanged. |
+| `v0.5.4` | Persists ingestion change counters so list/detail values stay consistent after branch merge cleanup, matching merge summaries. |
+| `v0.5.3` | Surfaces preflight activity and elapsed phase timing on sync detail, emits early phase logs before ingestion rows, and sets source status to `Syncing` while runs are active. |
 | `v0.5.1` | Adds default merged-branch cleanup to deprovision temporary branch schemas after successful merges, plus inferred interface cable import, device feature tag rules, and data-file-aware alias query workflows. |
 | `v0.4.0` | Corrects built-in IPv4/IPv6 prefix NQE filters to exclude host routes (`/32` and `/128`) from prefix import and validates the behavior against a live smoke dataset. |
 | `v0.3.1` | Adds optional data-file-aware device type alias maps, a Device Type Library alias data-file builder, and documentation for the snapshot requirement while keeping the default no-data-file maps available. |

@@ -55,6 +55,10 @@
             <td>{{ object.get_status_display }}</td>
           </tr>
           <tr>
+            <th scope="row">{% trans "Current activity" %}</th>
+            <td>{{ object.get_sync_activity|placeholder }}</td>
+          </tr>
+          <tr>
             <th scope="row">{% trans "Last synced" %}</th>
             <td>{{ object.last_synced|placeholder }}</td>
           </tr>
@@ -135,6 +139,9 @@
     </div>
     <div class="card">
       {% include 'extras/inc/configcontext_data.html' with title="Parameters" data=object.get_display_parameters format="json" copyid="forward-sync-parameters" %}
+    </div>
+    <div class="card">
+      {% include 'extras/inc/configcontext_data.html' with title="Execution Summary" data=object.get_execution_summary format="json" copyid="forward-sync-execution-summary" %}
     </div>
     {% include 'inc/panels/custom_fields.html' %}
     {% plugin_right_page object %}

@@ -54,6 +54,7 @@ def merge_branch(
 
     changes = branch.get_unmerged_changes().order_by("time")
     total_changes = changes.count()
+    action_counts = Counter(changes.values_list("action", flat=True))
     if not total_changes:
         if sync_logger:
             sync_logger.log_info("No changes to merge.")
@@ -137,6 +138,13 @@ def merge_branch(
     if failed:
         failed_message = f"{failed} skipped (recorded as ingestion issues)."
     summary = f"Merge completed: {total_changes - failed} applied, {failed_message}"
+    ingestion.record_change_totals(
+        applied=total_changes - failed,
+        failed=failed,
+        created=action_counts.get("create", 0),
+        updated=action_counts.get("update", 0),
+        deleted=action_counts.get("delete", 0),
+    )
     logger.info(summary)
     if sync_logger:
         sync_logger.log_info(summary)

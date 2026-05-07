@@ -144,6 +144,9 @@
         {% include 'extras/inc/configcontext_data.html' with title="Model Results" data=object.get_model_results_summary format="json" copyid="forward-ingestion-model-results" %}
       </div>
     {% endif %}
+    <div class="card">
+      {% include 'extras/inc/configcontext_data.html' with title="Execution Summary" data=object.get_execution_summary format="json" copyid="forward-ingestion-execution-summary" %}
+    </div>
     {% include 'inc/panels/custom_fields.html' %}
     {% plugin_right_page object %}
   </div>
