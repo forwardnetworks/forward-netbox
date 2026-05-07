@@ -27,6 +27,16 @@ from .sync_cable import lookup_cable_between
 from .sync_contracts import canonical_cable_endpoint_identity
 from .sync_contracts import default_coalesce_fields_for_model
 from .sync_contracts import validate_row_shape_for_model
+from .sync_core_models import apply_dcim_devicerole
+from .sync_core_models import apply_dcim_devicetype
+from .sync_core_models import apply_dcim_manufacturer
+from .sync_core_models import apply_dcim_platform
+from .sync_core_models import apply_dcim_site
+from .sync_core_models import delete_dcim_devicerole
+from .sync_core_models import delete_dcim_devicetype
+from .sync_core_models import delete_dcim_manufacturer
+from .sync_core_models import delete_dcim_platform
+from .sync_core_models import delete_dcim_site
 from .sync_inventory_module import apply_dcim_inventoryitem
 from .sync_inventory_module import apply_dcim_module
 from .sync_inventory_module import delete_dcim_inventoryitem
@@ -1622,84 +1632,19 @@ class ForwardSyncRunner:
         return True
 
     def _delete_dcim_site(self, row):
-        from dcim.models import Site
-
-        return self._delete_by_coalesce(
-            Site,
-            [
-                self._coalesce_lookup(row, "slug"),
-                self._coalesce_lookup(row, "name"),
-            ],
-        )
+        return delete_dcim_site(self, row)
 
     def _delete_dcim_manufacturer(self, row):
-        from dcim.models import Manufacturer
-
-        return self._delete_by_coalesce(
-            Manufacturer,
-            [
-                self._coalesce_lookup(row, "slug"),
-                self._coalesce_lookup(row, "name"),
-            ],
-        )
+        return delete_dcim_manufacturer(self, row)
 
     def _delete_dcim_devicerole(self, row):
-        from dcim.models import DeviceRole
-
-        return self._delete_by_coalesce(
-            DeviceRole,
-            [
-                self._coalesce_lookup(row, "slug"),
-                self._coalesce_lookup(row, "name"),
-            ],
-        )
+        return delete_dcim_devicerole(self, row)
 
     def _delete_dcim_platform(self, row):
-        from dcim.models import Platform
-
-        return self._delete_by_coalesce(
-            Platform,
-            [
-                self._coalesce_lookup(row, "slug"),
-                self._coalesce_lookup(row, "name"),
-            ],
-        )
+        return delete_dcim_platform(self, row)
 
     def _delete_dcim_devicetype(self, row):
-        from dcim.models import DeviceType
-        from dcim.models import Manufacturer
-
-        manufacturer = None
-        if row.get("manufacturer_slug"):
-            manufacturer = (
-                Manufacturer.objects.filter(slug=row["manufacturer_slug"])
-                .order_by("pk")
-                .first()
-            )
-        if manufacturer is None and row.get("manufacturer"):
-            manufacturer = (
-                Manufacturer.objects.filter(name=row["manufacturer"])
-                .order_by("pk")
-                .first()
-            )
-        if manufacturer is None:
-            return False
-
-        return self._delete_by_coalesce(
-            DeviceType,
-            [
-                (
-                    {"manufacturer": manufacturer, "slug": row["slug"]}
-                    if row.get("slug")
-                    else {}
-                ),
-                (
-                    {"manufacturer": manufacturer, "model": row["model"]}
-                    if row.get("model")
-                    else {}
-                ),
-            ],
-        )
+        return delete_dcim_devicetype(self, row)
 
     def _delete_dcim_device(self, row):
         from dcim.models import Device
@@ -1989,19 +1934,19 @@ class ForwardSyncRunner:
         return self._delete_by_coalesce(OSPFInterface, [{"interface": interface}])
 
     def _apply_dcim_site(self, row):
-        self._ensure_site(row)
+        return apply_dcim_site(self, row)
 
     def _apply_dcim_manufacturer(self, row):
-        self._ensure_manufacturer(row)
+        return apply_dcim_manufacturer(self, row)
 
     def _apply_dcim_platform(self, row):
-        self._ensure_platform(row)
+        return apply_dcim_platform(self, row)
 
     def _apply_dcim_devicerole(self, row):
-        self._ensure_role(row)
+        return apply_dcim_devicerole(self, row)
 
     def _apply_dcim_devicetype(self, row):
-        self._ensure_device_type(row)
+        return apply_dcim_devicetype(self, row)
 
     def _apply_dcim_virtualchassis(self, row):
         from dcim.models import Device

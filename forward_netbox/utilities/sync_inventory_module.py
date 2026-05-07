@@ -1,7 +1,6 @@
 from django.core.exceptions import ObjectDoesNotExist
 
 from ..exceptions import ForwardDependencySkipError
-from ..exceptions import ForwardQueryError
 from ..exceptions import ForwardSearchError
 
 
@@ -68,7 +67,9 @@ def apply_dcim_inventoryitem(runner, row):
             context={"device": row["device"], "name": row.get("name")},
             data=row,
         ) from exc
-    if runner.sync.is_model_enabled("dcim.module") and runner._is_module_native_inventory_row(row):
+    if runner.sync.is_model_enabled(
+        "dcim.module"
+    ) and runner._is_module_native_inventory_row(row):
         return None if delete_dcim_inventoryitem(runner, row) else False
     manufacturer = None
     if row.get("manufacturer"):
