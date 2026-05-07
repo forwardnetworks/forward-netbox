@@ -143,6 +143,12 @@ def build_branch_run_summary(branch_run_state):
         "phase": state.get("phase") or "",
         "phase_message": state.get("phase_message") or "",
         "phase_started": state.get("phase_started") or "",
+        "last_progress_message": state.get("last_progress_message") or "",
+        "last_progress_at": state.get("last_progress_at") or "",
+        "current_model_string": state.get("current_model_string") or "",
+        "current_shard_index": state.get("current_shard_index"),
+        "current_row_count": state.get("current_row_count"),
+        "current_row_total": state.get("current_row_total"),
         "plan_preview": state.get("plan_preview") or {},
         "model_change_density": state.get("model_change_density") or {},
     }

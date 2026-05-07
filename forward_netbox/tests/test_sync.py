@@ -48,9 +48,9 @@ from forward_netbox.utilities.multi_branch import DEFAULT_PREFLIGHT_ROW_LIMIT
 from forward_netbox.utilities.multi_branch import ForwardMultiBranchExecutor
 from forward_netbox.utilities.multi_branch import ForwardMultiBranchPlanner
 from forward_netbox.utilities.query_registry import QuerySpec
-from forward_netbox.utilities.sync import EventsClearer
 from forward_netbox.utilities.sync import ForwardSyncRunner
 from forward_netbox.utilities.sync_contracts import validate_row_shape_for_model
+from forward_netbox.utilities.sync_events import EventsClearer
 
 
 class ForwardBranchBudgetPlanTest(TestCase):
@@ -914,27 +914,29 @@ class ForwardSyncRunnerTest(TestCase):
         runner = ForwardSyncRunner(
             sync=self.sync, ingestion=None, client=None, logger_=Mock()
         )
-        runner._record_issue = Mock()
 
-        runner._apply_model_rows(
-            "netbox_routing.bgppeer",
-            [
-                {
-                    "device": "device-1",
-                    "vrf": None,
-                    "local_asn": 64512,
-                    "neighbor_address": "192.0.2.1",
-                    "peer_asn": 64513,
-                    "enabled": True,
-                    "status": "active",
-                }
-            ],
-        )
+        with patch(
+            "forward_netbox.utilities.sync_reporting.record_issue"
+        ) as record_issue:
+            runner._apply_model_rows(
+                "netbox_routing.bgppeer",
+                [
+                    {
+                        "device": "device-1",
+                        "vrf": None,
+                        "local_asn": 64512,
+                        "neighbor_address": "192.0.2.1",
+                        "peer_asn": 64513,
+                        "enabled": True,
+                        "status": "active",
+                    }
+                ],
+            )
 
         runner.logger.increment_statistics.assert_any_call(
             "netbox_routing.bgppeer", outcome="failed"
         )
-        runner._record_issue.assert_called_once()
+        record_issue.assert_called_once()
 
     def test_bgp_asn_reuses_existing_asn_without_changing_rir(self):
         rir = RIR.objects.create(name="ARIN")
@@ -1770,6 +1772,56 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertIn("broadcast addresses", warning_messages[1])
         logger.increment_statistics.assert_any_call("ipam.ipaddress", outcome="skipped")
 
+    def test_apply_ipam_ipaddress_records_missing_interface_issue_and_continues(
+        self,
+    ):
+        ingestion = ForwardIngestion.objects.create(sync=self.sync)
+        device = self._create_device("device-1")
+        Interface.objects.create(
+            device=device,
+            name="Ethernet1/1",
+            type="1000base-t",
+        )
+        logger = Mock()
+        runner = ForwardSyncRunner(
+            sync=self.sync,
+            ingestion=ingestion,
+            client=None,
+            logger_=logger,
+        )
+
+        runner._apply_model_rows(
+            "ipam.ipaddress",
+            [
+                {
+                    "device": "device-1",
+                    "interface": "Ethernet9/9",
+                    "address": "10.0.0.1/24",
+                    "vrf": None,
+                    "status": "active",
+                },
+                {
+                    "device": "device-1",
+                    "interface": "Ethernet1/1",
+                    "address": "10.0.0.2/24",
+                    "vrf": None,
+                    "status": "active",
+                },
+            ],
+        )
+
+        self.assertEqual(
+            ForwardIngestionIssue.objects.filter(
+                ingestion=ingestion,
+                model="ipam.ipaddress",
+            ).count(),
+            1,
+        )
+        self.assertEqual(IPAddress.objects.count(), 1)
+        self.assertEqual(str(IPAddress.objects.get().address), "10.0.0.2/24")
+        logger.increment_statistics.assert_any_call("ipam.ipaddress", outcome="failed")
+        logger.increment_statistics.assert_any_call("ipam.ipaddress", outcome="applied")
+
     def test_apply_ipam_ipaddress_allows_point_to_point_endpoint_addresses(self):
         device = self._create_device("device-1")
         Interface.objects.create(device=device, name="Ethernet1/1", type="1000base-t")
@@ -2114,7 +2166,7 @@ class ForwardSyncRunnerTest(TestCase):
         self.sync.resolve_snapshot_id = lambda client=None: "snapshot-before"
 
         with patch(
-            "forward_netbox.utilities.sync.get_query_specs",
+            "forward_netbox.utilities.sync_execution.get_query_specs",
             return_value=[
                 QuerySpec(
                     model_string="dcim.device",
@@ -2161,7 +2213,7 @@ class ForwardSyncRunnerTest(TestCase):
         self.sync.resolve_snapshot_id = lambda client=None: "snapshot-before"
 
         with patch(
-            "forward_netbox.utilities.sync.get_query_specs",
+            "forward_netbox.utilities.sync_execution.get_query_specs",
             return_value=[
                 QuerySpec(
                     model_string="dcim.site",
@@ -2223,7 +2275,7 @@ class ForwardSyncRunnerTest(TestCase):
         self.sync.resolve_snapshot_id = lambda client=None: "snapshot-after"
 
         with patch(
-            "forward_netbox.utilities.sync.get_query_specs",
+            "forward_netbox.utilities.sync_execution.get_query_specs",
             return_value=[
                 QuerySpec(
                     model_string="dcim.site",
@@ -2287,7 +2339,7 @@ class ForwardSyncRunnerTest(TestCase):
         self.sync.resolve_snapshot_id = lambda client=None: "snapshot-after"
 
         with patch(
-            "forward_netbox.utilities.sync.get_query_specs",
+            "forward_netbox.utilities.sync_execution.get_query_specs",
             return_value=[
                 QuerySpec(
                     model_string="dcim.site",
@@ -2324,7 +2376,7 @@ class ForwardSyncRunnerTest(TestCase):
         self.sync.resolve_snapshot_id = lambda client=None: "snapshot-before"
 
         with patch(
-            "forward_netbox.utilities.sync.get_query_specs",
+            "forward_netbox.utilities.sync_execution.get_query_specs",
             return_value=[
                 QuerySpec(
                     model_string="dcim.device",
@@ -2371,7 +2423,7 @@ class ForwardSyncRunnerTest(TestCase):
         self.sync.resolve_snapshot_id = lambda client=None: "snapshot-before"
 
         with patch(
-            "forward_netbox.utilities.sync.get_query_specs",
+            "forward_netbox.utilities.sync_execution.get_query_specs",
             side_effect=[
                 [
                     QuerySpec(
@@ -2416,18 +2468,19 @@ class ForwardSyncRunnerTest(TestCase):
                 True,
             ]
         )
-        runner._record_issue = Mock()
-
-        runner._apply_model_rows(
-            "dcim.site",
-            [
-                {"name": "site-1", "slug": "site-1"},
-                {"name": "site-2", "slug": "site-2"},
-            ],
-        )
+        with patch(
+            "forward_netbox.utilities.sync_reporting.record_issue"
+        ) as record_issue:
+            runner._apply_model_rows(
+                "dcim.site",
+                [
+                    {"name": "site-1", "slug": "site-1"},
+                    {"name": "site-2", "slug": "site-2"},
+                ],
+            )
 
         self.assertEqual(runner._apply_dcim_site.call_count, 2)
-        runner._record_issue.assert_called_once()
+        record_issue.assert_called_once()
         runner.logger.increment_statistics.assert_any_call(
             "dcim.site", outcome="failed"
         )
@@ -2445,18 +2498,19 @@ class ForwardSyncRunnerTest(TestCase):
                 True,
             ]
         )
-        runner._record_issue = Mock()
-
-        runner._apply_model_rows(
-            "dcim.site",
-            [
-                {"name": "site-1", "slug": "site-1"},
-                {"name": "site-2", "slug": "site-2"},
-            ],
-        )
+        with patch(
+            "forward_netbox.utilities.sync_reporting.record_issue"
+        ) as record_issue:
+            runner._apply_model_rows(
+                "dcim.site",
+                [
+                    {"name": "site-1", "slug": "site-1"},
+                    {"name": "site-2", "slug": "site-2"},
+                ],
+            )
 
         self.assertEqual(runner._apply_dcim_site.call_count, 2)
-        runner._record_issue.assert_called_once()
+        record_issue.assert_called_once()
 
     def test_apply_model_rows_records_structured_dependency_skip_issue(self):
         runner = ForwardSyncRunner(
@@ -2472,11 +2526,14 @@ class ForwardSyncRunnerTest(TestCase):
             )
 
         runner._apply_dcim_site = _raise
-        runner._record_issue = Mock()
+        with patch(
+            "forward_netbox.utilities.sync_reporting.record_issue"
+        ) as record_issue:
+            runner._apply_model_rows(
+                "dcim.site", [{"name": "site-1", "slug": "site-1"}]
+            )
 
-        runner._apply_model_rows("dcim.site", [{"name": "site-1", "slug": "site-1"}])
-
-        _, _, kwargs = runner._record_issue.mock_calls[0]
+        _, _, kwargs = record_issue.mock_calls[0]
         self.assertEqual(kwargs["context"], {"slug": "site-1"})
         self.assertEqual(kwargs["defaults"], {"name": "site-1"})
 
@@ -2490,18 +2547,19 @@ class ForwardSyncRunnerTest(TestCase):
                 True,
             ]
         )
-        runner._record_issue = Mock()
-
-        runner._delete_model_rows(
-            "dcim.site",
-            [
-                {"name": "site-1", "slug": "site-1"},
-                {"name": "site-2", "slug": "site-2"},
-            ],
-        )
+        with patch(
+            "forward_netbox.utilities.sync_reporting.record_issue"
+        ) as record_issue:
+            runner._delete_model_rows(
+                "dcim.site",
+                [
+                    {"name": "site-1", "slug": "site-1"},
+                    {"name": "site-2", "slug": "site-2"},
+                ],
+            )
 
         self.assertEqual(runner._delete_dcim_site.call_count, 2)
-        runner._record_issue.assert_called_once()
+        record_issue.assert_called_once()
         runner.logger.increment_statistics.assert_any_call(
             "dcim.site", outcome="failed"
         )
@@ -2520,6 +2578,46 @@ class ForwardSyncRunnerTest(TestCase):
         runner._apply_model_rows("dcim.site", [{"name": "site-1", "slug": "site-1"}])
 
         logger.increment_statistics.assert_called_with("dcim.site", outcome="skipped")
+
+    def test_apply_model_rows_emits_progress_heartbeat_for_branch_runs(self):
+        self.sync.set_branch_run_state(
+            {
+                "phase": "executing",
+                "phase_message": "Applying planned shard changes.",
+                "current_model_string": "dcim.site",
+                "current_shard_index": 131,
+                "total_plan_items": 146,
+                "current_row_total": 2,
+            }
+        )
+        logger = Mock()
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=logger
+        )
+        runner._apply_dcim_site = Mock(side_effect=[True, True])
+
+        with patch(
+            "forward_netbox.utilities.sync_reporting.touch_branch_run_progress"
+        ) as touch_progress, patch(
+            "forward_netbox.utilities.sync_reporting.time.monotonic",
+            side_effect=[0.0, 120.0],
+        ):
+            runner._apply_model_rows(
+                "dcim.site",
+                [
+                    {"name": "site-1", "slug": "site-1"},
+                    {"name": "site-2", "slug": "site-2"},
+                ],
+            )
+
+        self.assertGreaterEqual(touch_progress.call_count, 2)
+        first_call = touch_progress.call_args_list[0]
+        _, kwargs = first_call
+        self.assertEqual(
+            kwargs["phase_message"],
+            "Applying shard 131/146 for dcim.site: 1/2 rows.",
+        )
+        self.assertEqual(kwargs["model_string"], "dcim.site")
 
     def test_record_issue_reuses_issue_id_and_does_not_duplicate(self):
         ingestion = ForwardIngestion.objects.create(sync=self.sync)
@@ -2621,12 +2719,12 @@ class ForwardSyncRunnerTest(TestCase):
 
 class EventsClearerTest(TestCase):
     @patch(
-        "forward_netbox.utilities.sync.transaction.on_commit",
+        "forward_netbox.utilities.sync_events.transaction.on_commit",
         side_effect=lambda callback: callback(),
     )
-    @patch("forward_netbox.utilities.sync.clear_events.send")
-    @patch("forward_netbox.utilities.sync.flush_events")
-    @patch("forward_netbox.utilities.sync.events_queue")
+    @patch("forward_netbox.utilities.sync_events.clear_events.send")
+    @patch("forward_netbox.utilities.sync_events.flush_events")
+    @patch("forward_netbox.utilities.sync_events.events_queue")
     def test_events_clearer_flushes_on_commit(
         self,
         mock_events_queue,
