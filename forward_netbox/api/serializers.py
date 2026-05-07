@@ -173,6 +173,7 @@ class ForwardValidationRunSerializer(NestedGroupModelSerializer):
     status = ChoiceField(choices=ForwardValidationStatusChoices, read_only=True)
     sync = ForwardSyncSerializer(nested=True)
     policy = ForwardDriftPolicySerializer(nested=True, required=False, allow_null=True)
+    override_user = serializers.CharField(read_only=True)
 
     class Meta:
         model = ForwardValidationRun
@@ -192,11 +193,20 @@ class ForwardValidationRunSerializer(NestedGroupModelSerializer):
             "model_results",
             "drift_summary",
             "blocking_reasons",
+            "override_applied",
+            "override_user",
+            "override_reason",
+            "override_blocking_reasons",
+            "override_at",
             "created",
             "started",
             "completed",
         )
         brief_fields = ("id", "display", "sync", "status", "allowed", "snapshot_id")
+
+
+class ForwardValidationRunOverrideSerializer(serializers.Serializer):
+    reason = serializers.CharField()
 
 
 class ForwardIngestionSerializer(NestedGroupModelSerializer):

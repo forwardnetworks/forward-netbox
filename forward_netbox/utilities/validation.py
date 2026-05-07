@@ -109,6 +109,8 @@ class ForwardValidationRunner:
     def _blocking_reasons(self, context, plan, model_results, policy):
         if policy is None or not policy.enabled:
             return []
+        if self._forced_validation_override_applies(context, policy):
+            return []
 
         reasons = []
         if policy.require_processed_snapshot and not self._snapshot_is_processed(
@@ -165,6 +167,20 @@ class ForwardValidationRunner:
                 f"Delete percentage exceeds policy limit {policy.max_deleted_percent}%."
             )
         return reasons
+
+    def _forced_validation_override_applies(self, context, policy):
+        latest_validation_run = getattr(self.sync, "latest_validation_run", None)
+        if latest_validation_run is None or not getattr(
+            latest_validation_run, "override_applied", False
+        ):
+            return False
+        if policy is None or latest_validation_run.policy_id != getattr(
+            policy, "pk", None
+        ):
+            return False
+        return latest_validation_run.snapshot_selector == context.get(
+            "snapshot_selector"
+        ) and latest_validation_run.snapshot_id == context.get("snapshot_id")
 
     def _snapshot_is_processed(self, context):
         info = context.get("snapshot_info") or {}

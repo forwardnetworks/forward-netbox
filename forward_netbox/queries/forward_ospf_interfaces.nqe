@@ -10,22 +10,30 @@ foreach network_instance in device.networkInstances
 foreach protocol in network_instance.protocols
 where isPresent(protocol.ospf)
 foreach area in protocol.ospf.areas
+let inferred_router_id = the(
+  foreach router_area in protocol.ospf.areas
+  where router_area.processId == area.processId
+  where router_area.domain == area.domain
+  foreach router_neighbor in router_area.neighbors
+  where isPresent(router_neighbor.remotePeer)
+  foreach peer_device in network.devices
+  where peer_device.name == router_neighbor.remotePeer.deviceName
+  foreach peer_network_instance in peer_device.networkInstances
+  foreach peer_protocol in peer_network_instance.protocols
+  where isPresent(peer_protocol.ospf)
+  foreach peer_area in peer_protocol.ospf.areas
+  foreach peer_neighbor in peer_area.neighbors
+  where isPresent(peer_neighbor.remotePeer) && peer_neighbor.remotePeer.deviceName == device.name
+  select distinct peer_neighbor.remoteRouterId
+)
+where isPresent(inferred_router_id)
 foreach neighbor in area.neighbors
-where isPresent(neighbor.remotePeer)
-foreach peer_device in network.devices
-where peer_device.name == neighbor.remotePeer.deviceName
-foreach peer_network_instance in peer_device.networkInstances
-foreach peer_protocol in peer_network_instance.protocols
-where isPresent(peer_protocol.ospf)
-foreach peer_area in peer_protocol.ospf.areas
-foreach peer_neighbor in peer_area.neighbors
-where isPresent(peer_neighbor.remotePeer) && peer_neighbor.remotePeer.deviceName == device.name
 select distinct {
   device: device.name,
   vrf: if network_instance.name != "default" then network_instance.name else null : String,
   process_id: area.processId,
   domain: area.domain,
-  router_id: peer_neighbor.remoteRouterId,
+  router_id: inferred_router_id,
   area_id: toString(area.id),
   area_type: toString(area.areaType),
   local_interface: neighbor.localInterface,

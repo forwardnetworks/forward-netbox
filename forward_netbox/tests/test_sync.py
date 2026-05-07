@@ -528,6 +528,15 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
             ],
             [
                 {
+                    "reason": "bgp-neighbor-without-local-as",
+                    "model_target": "netbox_routing.bgppeer",
+                    "protocol": "bgp",
+                    "device": "device-3",
+                    "interface": "",
+                    "detail": "Forward did not expose localAS on the neighbor or asNumber on the BGP process.",
+                    "count": 3,
+                },
+                {
                     "reason": "bgp-unsupported-address-family",
                     "model_target": "netbox_routing.bgpaddressfamily",
                     "protocol": "bgp",
@@ -572,21 +581,86 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
 
         diagnostic = planner.model_results[0]["diagnostics"][0]
         self.assertEqual(diagnostic["name"], "routing_import_skipped_rows")
-        self.assertEqual(diagnostic["total"], 8)
+        self.assertEqual(diagnostic["total"], 11)
         self.assertEqual(
             diagnostic["counts"],
             {
+                "bgp-neighbor-without-local-as": 3,
                 "bgp-unsupported-address-family": 7,
                 "ospf-neighbor-without-reverse-peer": 1,
             },
         )
-        self.assertEqual(len(diagnostic["examples"]), 2)
+        self.assertEqual(len(diagnostic["examples"]), 3)
         warning_messages = [call.args[0] for call in logger.log_warning.call_args_list]
         self.assertIn("beta routing maps cannot import", warning_messages[0])
+        self.assertIn("BGP neighbors without local AS", warning_messages[0])
         self.assertIn("BGP unsupported address families", warning_messages[0])
         self.assertIn(
             "OSPF neighbors without reverse peer inference", warning_messages[0]
         )
+
+    @patch("forward_netbox.utilities.query_fetch.get_query_specs")
+    def test_build_plan_attaches_routing_diagnostics_to_bgp_peer_results(
+        self, mock_specs
+    ):
+        client = Mock()
+        client.get_snapshots.return_value = [
+            {
+                "id": "snapshot-after",
+                "state": "PROCESSED",
+                "created_at": "",
+                "processed_at": "2026-05-06T12:15:00Z",
+            }
+        ]
+        client.get_snapshot_metrics.return_value = {}
+        client.run_nqe_query.side_effect = [
+            [
+                {
+                    "device": "device-1",
+                    "vrf": None,
+                    "local_asn": 64512,
+                    "neighbor_address": "192.0.2.1",
+                    "peer_asn": 64513,
+                    "enabled": True,
+                    "status": "active",
+                }
+            ],
+            [
+                {
+                    "reason": "bgp-neighbor-without-local-as",
+                    "model_target": "netbox_routing.bgppeer",
+                    "protocol": "bgp",
+                    "device": "device-2",
+                    "interface": "",
+                    "detail": "Forward did not expose localAS on the neighbor or asNumber on the BGP process.",
+                    "count": 2,
+                }
+            ],
+        ]
+        self.sync.resolve_snapshot_id = lambda client=None: "snapshot-after"
+        self.sync.get_model_strings = lambda: ["netbox_routing.bgppeer"]
+        self.sync.incremental_diff_baseline = Mock(return_value=None)
+        mock_specs.return_value = [
+            QuerySpec(
+                model_string="netbox_routing.bgppeer",
+                query_name="Forward BGP Peers",
+                query=(
+                    'select {device: "device-1", vrf: null:String, '
+                    'local_asn: 64512, neighbor_address: ipAddress("192.0.2.1"), '
+                    'peer_asn: 64513, enabled: true, status: "active"}'
+                ),
+            )
+        ]
+        planner = ForwardMultiBranchPlanner(
+            sync=self.sync,
+            client=client,
+            logger_=Mock(),
+        )
+
+        planner.build_plan(max_changes_per_branch=10, run_preflight=False)
+
+        diagnostic = planner.model_results[0]["diagnostics"][0]
+        self.assertEqual(diagnostic["counts"], {"bgp-neighbor-without-local-as": 2})
 
 
 class ForwardMultiBranchExecutorAdaptiveSplitTest(TestCase):
@@ -895,9 +969,12 @@ class ForwardSyncRunnerTest(TestCase):
                     "router_id": "192.0.2.254",
                     "neighbor_address": "192.0.2.1",
                     "peer_asn": 64513,
+                    "peer_type": "PeerType.EXTERNAL",
                     "afi_safi": "AfiSafiType.IPV4_UNICAST",
                     "enabled": True,
                     "status": "active",
+                    "has_adj_rib_in": False,
+                    "has_adj_rib_out": True,
                 },
                 {
                     "device": "device-1",
@@ -906,19 +983,38 @@ class ForwardSyncRunnerTest(TestCase):
                     "router_id": "192.0.2.254",
                     "neighbor_address": "192.0.2.1",
                     "peer_asn": 64513,
+                    "peer_type": "PeerType.EXTERNAL",
                     "afi_safi": "AfiSafiType.L3VPN_IPV4_UNICAST",
                     "enabled": True,
                     "status": "active",
+                    "has_adj_rib_in": True,
+                    "has_adj_rib_out": False,
                 },
             ],
         )
 
         self.assertEqual(BGPPeer.objects.count(), 1)
+        self.assertIn("Peer type: PeerType.EXTERNAL", BGPPeer.objects.get().comments)
         self.assertCountEqual(
             BGPAddressFamily.objects.values_list("address_family", flat=True),
             ["ipv4-unicast", "vpnv4-unicast"],
         )
+        self.assertTrue(
+            all(
+                "Forward AFI/SAFI:" in comments
+                for comments in BGPAddressFamily.objects.values_list(
+                    "comments", flat=True
+                )
+            )
+        )
         self.assertEqual(BGPPeerAddressFamily.objects.count(), 2)
+        peer_af_comments = "\n".join(
+            BGPPeerAddressFamily.objects.values_list("comments", flat=True)
+        )
+        self.assertIn("Adj-RIB-In post-policy: present", peer_af_comments)
+        self.assertIn("Adj-RIB-In post-policy: absent", peer_af_comments)
+        self.assertIn("Adj-RIB-Out post-policy: present", peer_af_comments)
+        self.assertIn("Adj-RIB-Out post-policy: absent", peer_af_comments)
 
     def test_ospf_interface_adapter_preserves_named_process_label(self):
         if not apps.is_installed("netbox_routing"):
@@ -947,6 +1043,9 @@ class ForwardSyncRunnerTest(TestCase):
                     "remote_router_id": "192.0.2.253",
                     "remote_interface_ip": "192.0.2.253/31",
                     "cost": 1,
+                    "role": "OspfRole.DESIGNATED_ROUTER",
+                    "remote_device": "device-2",
+                    "remote_interface": "Ethernet1/2",
                 }
             ],
         )
@@ -955,7 +1054,14 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertGreaterEqual(instance.process_id, 1_000_000)
         self.assertIn("UNDERLAY", instance.comments)
         self.assertEqual(OSPFArea.objects.get().area_type, "backbone")
-        self.assertEqual(OSPFInterface.objects.get().interface.name, "Ethernet1/1")
+        ospf_interface = OSPFInterface.objects.get()
+        self.assertEqual(ospf_interface.interface.name, "Ethernet1/1")
+        self.assertIn("Cost: 1", ospf_interface.comments)
+        self.assertIn("Role: OspfRole.DESIGNATED_ROUTER", ospf_interface.comments)
+        self.assertIn("Remote device: device-2", ospf_interface.comments)
+        self.assertIn("Remote interface: Ethernet1/2", ospf_interface.comments)
+        self.assertIn("Remote interface IP: 192.0.2.253/31", ospf_interface.comments)
+        self.assertIn("Remote router ID: 192.0.2.253", ospf_interface.comments)
 
     def test_apply_dcim_interface_sets_lag_membership_after_parent(self):
         self._create_device("device-1")

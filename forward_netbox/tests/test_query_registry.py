@@ -445,6 +445,8 @@ class QueryRegistryTest(TestCase):
         self.assertIn("neighbor.neighborAddress", bgp_row["query"])
         self.assertIn("neighbor.peerAS", bgp_row["query"])
         self.assertIn("local_asn:", bgp_row["query"])
+        self.assertIn("reciprocal_local_asn", bgp_row["query"])
+        self.assertIn("internal_peer_asn", bgp_row["query"])
         self.assertEqual(
             bgp_row["coalesce_fields"],
             [["device", "vrf", "neighbor_address"], ["device", "neighbor_address"]],
@@ -459,6 +461,8 @@ class QueryRegistryTest(TestCase):
         self.assertIn(
             'afi_safi == "AfiSafiType.L3VPN_IPV4_UNICAST"', bgp_af_row["query"]
         )
+        self.assertIn("reciprocal_local_asn", bgp_af_row["query"])
+        self.assertIn("internal_peer_asn", bgp_af_row["query"])
         self.assertNotIn('afi_safi == "AfiSafiType.IPV4_MDT"', bgp_af_row["query"])
         self.assertEqual(
             bgp_af_row["coalesce_fields"],
@@ -480,6 +484,8 @@ class QueryRegistryTest(TestCase):
             'afi_safi == "AfiSafiType.L3VPN_IPV4_UNICAST"',
             bgp_peer_af_row["query"],
         )
+        self.assertIn("reciprocal_local_asn", bgp_peer_af_row["query"])
+        self.assertIn("internal_peer_asn", bgp_peer_af_row["query"])
         self.assertNotIn(
             'afi_safi == "AfiSafiType.IPV4_MDT"',
             bgp_peer_af_row["query"],
@@ -497,18 +503,22 @@ class QueryRegistryTest(TestCase):
         ]
         self.assertFalse(ospf_instance_row["enabled"])
         self.assertIn("protocol.ospf", ospf_instance_row["query"])
+        self.assertIn("inferred_router_id", ospf_instance_row["query"])
         self.assertIn("router_id:", ospf_instance_row["query"])
 
         ospf_interface_row = rows[
             ("netbox_routing.ospfinterface", "Forward OSPF Interfaces")
         ]
         self.assertFalse(ospf_interface_row["enabled"])
+        self.assertIn("inferred_router_id", ospf_interface_row["query"])
         self.assertIn("local_interface:", ospf_interface_row["query"])
 
         peering_row = rows[
             ("netbox_peering_manager.peeringsession", "Forward Peering Sessions")
         ]
         self.assertFalse(peering_row["enabled"])
+        self.assertIn("reciprocal_local_asn", peering_row["query"])
+        self.assertIn("internal_peer_asn", peering_row["query"])
         self.assertIn("relationship_slug:", peering_row["query"])
         self.assertIn("service_reference:", peering_row["query"])
         self.assertEqual(
@@ -756,6 +766,7 @@ class QueryRegistryTest(TestCase):
         diagnostic_query = routing_import_diagnostic_query()
 
         self.assertNotIn(ROUTING_IMPORT_DIAGNOSTIC_QUERY_NAME, seeded_names)
+        self.assertIn('reason: "bgp-neighbor-without-local-as"', diagnostic_query)
         self.assertIn('reason: "bgp-unsupported-address-family"', diagnostic_query)
         self.assertIn('reason: "ospf-neighbor-without-remote-peer"', diagnostic_query)
         self.assertIn('reason: "ospf-neighbor-without-reverse-peer"', diagnostic_query)
