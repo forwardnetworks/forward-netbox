@@ -1,6 +1,21 @@
 {% extends 'generic/object.html' %}
+{% load custom_links %}
 {% load helpers %}
+{% load plugins %}
 {% load i18n %}
+
+{% block control-buttons %}
+<div class="controls">
+  <div class="control-group">
+    {% custom_links object %}
+  </div>
+  {% if not object.override_applied and object.blocking_reasons %}
+    <div id="validation_force_allow_button">
+      {% include 'forward_netbox/partials/validation_force_allow_button.html' with object=object %}
+    </div>
+  {% endif %}
+</div>
+{% endblock control-buttons %}
 
 {% block content %}
 <div class="row mb-3">
@@ -32,6 +47,10 @@
             <td>{{ object.allowed|yesno:"Yes,No" }}</td>
           </tr>
           <tr>
+            <th scope="row">{% trans "Force Allowed" %}</th>
+            <td>{{ object.override_applied|yesno:"Yes,No" }}</td>
+          </tr>
+          <tr>
             <th scope="row">{% trans "Snapshot Selection" %}</th>
             <td>{{ object.snapshot_selector|placeholder }}</td>
           </tr>
@@ -54,6 +73,27 @@
         </table>
       </div>
     </div>
+    {% if object.override_applied %}
+      <div class="card">
+        {% include 'extras/inc/configcontext_data.html' with title="Force-Allow Details" data=object.override_blocking_reasons format="json" copyid="forward-validation-force-allow-blocking-reasons" %}
+        <div class="card-body">
+          <table class="table table-hover attr-table">
+            <tr>
+              <th scope="row">{% trans "Override Reason" %}</th>
+              <td>{{ object.override_reason|placeholder }}</td>
+            </tr>
+            <tr>
+              <th scope="row">{% trans "Override By" %}</th>
+              <td>{{ object.override_user|placeholder }}</td>
+            </tr>
+            <tr>
+              <th scope="row">{% trans "Override At" %}</th>
+              <td>{{ object.override_at|placeholder }}</td>
+            </tr>
+          </table>
+        </div>
+      </div>
+    {% endif %}
   </div>
   <div class="col col-md-6">
     {% if object.blocking_reasons %}

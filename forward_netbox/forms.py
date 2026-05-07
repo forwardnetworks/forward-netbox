@@ -325,6 +325,14 @@ class ForwardIngestionMergeForm(ConfirmationForm):
     )
 
 
+class ForwardValidationRunForceAllowForm(ConfirmationForm):
+    reason = forms.CharField(
+        label="Reason",
+        widget=forms.Textarea(attrs={"rows": 4}),
+        help_text="Record why the blocked validation run is being accepted.",
+    )
+
+
 class ForwardSyncForm(NetBoxModelForm):
     source = forms.ModelChoiceField(
         queryset=ForwardSource.objects.all(),

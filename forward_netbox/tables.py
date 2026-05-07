@@ -162,6 +162,7 @@ class ForwardValidationRunTable(NetBoxTable):
     sync = tables.Column(linkify=True)
     policy = tables.Column(linkify=True)
     status = columns.ChoiceFieldColumn()
+    override_applied = columns.BooleanColumn(verbose_name=_("Force Allowed"))
     actions = columns.ActionsColumn(actions=("delete",))
 
     class Meta(NetBoxTable.Meta):
@@ -172,6 +173,7 @@ class ForwardValidationRunTable(NetBoxTable):
             "policy",
             "status",
             "allowed",
+            "override_applied",
             "snapshot_id",
             "baseline_snapshot_id",
             "created",
@@ -182,6 +184,7 @@ class ForwardValidationRunTable(NetBoxTable):
             "sync",
             "status",
             "allowed",
+            "override_applied",
             "snapshot_id",
             "baseline_snapshot_id",
             "completed",

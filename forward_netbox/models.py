@@ -879,6 +879,17 @@ class ForwardValidationRun(ForwardPluginModelDocsMixin, models.Model):
     model_results = models.JSONField(blank=True, default=list)
     drift_summary = models.JSONField(blank=True, default=dict)
     blocking_reasons = models.JSONField(blank=True, default=list)
+    override_applied = models.BooleanField(default=False)
+    override_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    override_reason = models.TextField(blank=True, default="")
+    override_blocking_reasons = models.JSONField(blank=True, default=list)
+    override_at = models.DateTimeField(blank=True, null=True)
     created = models.DateTimeField(default=timezone.now, editable=False)
     started = models.DateTimeField(blank=True, null=True)
     completed = models.DateTimeField(blank=True, null=True)
@@ -894,6 +905,34 @@ class ForwardValidationRun(ForwardPluginModelDocsMixin, models.Model):
 
     def get_absolute_url(self):
         return reverse("plugins:forward_netbox:forwardvalidationrun", args=[self.pk])
+
+    def force_allow(self, *, user, reason):
+        reason = str(reason or "").strip()
+        if not reason:
+            raise SyncError(
+                "Provide a force-allow reason before overriding validation."
+            )
+        if not self.blocking_reasons:
+            raise SyncError("Only blocked validation runs can be force-allowed.")
+        self.override_applied = True
+        self.allowed = True
+        self.status = ForwardValidationStatusChoices.PASSED
+        self.override_user = user
+        self.override_reason = reason
+        self.override_blocking_reasons = list(self.blocking_reasons or [])
+        self.override_at = timezone.now()
+        self.save(
+            update_fields=[
+                "override_applied",
+                "allowed",
+                "status",
+                "override_user",
+                "override_reason",
+                "override_blocking_reasons",
+                "override_at",
+            ]
+        )
+        return self
 
 
 class ForwardIngestion(ForwardPluginModelDocsMixin, JobsMixin, models.Model):

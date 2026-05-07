@@ -32,11 +32,13 @@ IPADDRESS_DIAGNOSTIC_LABELS = {
 }
 ROUTING_DIAGNOSTIC_DETAIL_LIMIT = 20
 ROUTING_DIAGNOSTIC_LABELS = {
+    "bgp-neighbor-without-local-as": "BGP neighbors without local AS",
     "bgp-unsupported-address-family": "BGP unsupported address families",
     "ospf-neighbor-without-remote-peer": "OSPF neighbors without inferred remote peers",
     "ospf-neighbor-without-reverse-peer": "OSPF neighbors without reverse peer inference",
 }
 ROUTING_DIAGNOSTIC_MODELS = {
+    "netbox_routing.bgppeer",
     "netbox_routing.bgpaddressfamily",
     "netbox_routing.bgppeeraddressfamily",
     "netbox_routing.ospfinstance",

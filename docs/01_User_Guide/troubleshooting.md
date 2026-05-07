@@ -74,6 +74,7 @@ Checks:
   and its built-in map is intentionally disabled by default.
 - Open the latest `Forward Validation Run` from the sync detail page and review `Blocking Reasons`, `Drift Summary`, and `Model Results`.
 - If a drift policy blocked the run, adjust the policy or fix the query/source data before rerunning the sync.
+- If the block is intentionally accepted, use `Force allow` on the validation run to record the override reason and reviewer, then rerun the sync.
 - Check `Forward Ingestion Issues` for the failing model and error text.
 
 ## Validation Blocks The Sync
@@ -89,6 +90,7 @@ Checks:
 - For snapshot checks, confirm the selected snapshot is processed.
 - For zero-row checks, confirm the enabled model should return rows and that the active NQE map targets the selected snapshot.
 - For deletion thresholds, review whether the run used a diff baseline and whether the destructive-change count is expected.
+- If the run was force-allowed, verify the validation run shows the override reason and actor before rerunning.
 - Use `Validate` on the sync page to rerun policy checks before staging changes.
 
 ## Sync Or Merge Times Out

@@ -11,15 +11,32 @@ ospf_neighbors_without_remote_peer =
   foreach protocol in network_instance.protocols
   where isPresent(protocol.ospf)
   foreach area in protocol.ospf.areas
+  let inferred_router_id = the(
+    foreach router_area in protocol.ospf.areas
+    where router_area.processId == area.processId
+    where router_area.domain == area.domain
+    foreach router_neighbor in router_area.neighbors
+    where isPresent(router_neighbor.remotePeer)
+    foreach peer_device in network.devices
+    where peer_device.name == router_neighbor.remotePeer.deviceName
+    foreach peer_network_instance in peer_device.networkInstances
+    foreach peer_protocol in peer_network_instance.protocols
+    where isPresent(peer_protocol.ospf)
+    foreach peer_area in peer_protocol.ospf.areas
+    foreach peer_neighbor in peer_area.neighbors
+    where isPresent(peer_neighbor.remotePeer) && peer_neighbor.remotePeer.deviceName == device.name
+    select distinct peer_neighbor.remoteRouterId
+  )
   foreach neighbor in area.neighbors
   where !isPresent(neighbor.remotePeer)
+  where !isPresent(inferred_router_id)
   select {
     reason: "ospf-neighbor-without-remote-peer",
     model_target: "netbox_routing.ospfinterface",
     protocol: "ospf",
     device: device.name,
     interface: neighbor.localInterface,
-    detail: "Forward did not infer a remote OSPF peer for this neighbor."
+    detail: "Forward did not infer a remote OSPF peer or unique process-level local router ID for this neighbor."
   };
 
 ospf_neighbors_without_reverse_peer =
@@ -30,27 +47,32 @@ ospf_neighbors_without_reverse_peer =
   foreach protocol in network_instance.protocols
   where isPresent(protocol.ospf)
   foreach area in protocol.ospf.areas
-  foreach neighbor in area.neighbors
-  where isPresent(neighbor.remotePeer)
-  let reverse_router_ids = (
+  let inferred_router_id = the(
+    foreach router_area in protocol.ospf.areas
+    where router_area.processId == area.processId
+    where router_area.domain == area.domain
+    foreach router_neighbor in router_area.neighbors
+    where isPresent(router_neighbor.remotePeer)
     foreach peer_device in network.devices
-    where peer_device.name == neighbor.remotePeer.deviceName
+    where peer_device.name == router_neighbor.remotePeer.deviceName
     foreach peer_network_instance in peer_device.networkInstances
     foreach peer_protocol in peer_network_instance.protocols
     where isPresent(peer_protocol.ospf)
     foreach peer_area in peer_protocol.ospf.areas
     foreach peer_neighbor in peer_area.neighbors
     where isPresent(peer_neighbor.remotePeer) && peer_neighbor.remotePeer.deviceName == device.name
-    select peer_neighbor.remoteRouterId
+    select distinct peer_neighbor.remoteRouterId
   )
-  where length(reverse_router_ids) == 0
+  foreach neighbor in area.neighbors
+  where isPresent(neighbor.remotePeer)
+  where !isPresent(inferred_router_id)
   select {
     reason: "ospf-neighbor-without-reverse-peer",
     model_target: "netbox_routing.ospfinstance",
     protocol: "ospf",
     device: device.name,
     interface: neighbor.localInterface,
-    detail: "Forward did not expose the reverse OSPF neighbor needed to infer the local router ID."
+    detail: "Forward did not expose unique process-level reverse OSPF evidence needed to infer the local router ID."
   };
 
 unsupported_bgp_address_family_rows =
@@ -66,7 +88,20 @@ unsupported_bgp_address_family_rows =
   where isPresent(protocol.bgp)
   foreach neighbor in protocol.bgp.neighbors
   where neighbor.neighborAddress == rib_neighbor.neighborAddress
-  where isPresent(neighbor.localAS) || isPresent(protocol.bgp.asNumber)
+  let reciprocal_local_asn = the(
+    foreach peer_device in network.devices
+    where isPresent(neighbor.peerDeviceName) && peer_device.name == neighbor.peerDeviceName
+    foreach peer_network_instance in peer_device.networkInstances
+    where !isPresent(neighbor.peerVrf) || peer_network_instance.name == neighbor.peerVrf
+    foreach peer_protocol in peer_network_instance.protocols
+    where isPresent(peer_protocol.bgp)
+    foreach peer_neighbor in peer_protocol.bgp.neighbors
+    where isPresent(peer_neighbor.peerDeviceName) && peer_neighbor.peerDeviceName == device.name
+    select distinct peer_neighbor.peerAS
+  )
+  let internal_peer_asn = if isPresent(neighbor.peerType) && toString(neighbor.peerType) == "PeerType.INTERNAL" then neighbor.peerAS else null : Integer
+  let local_asn = if isPresent(neighbor.localAS) then neighbor.localAS else if isPresent(protocol.bgp.asNumber) then protocol.bgp.asNumber else if isPresent(reciprocal_local_asn) then reciprocal_local_asn else internal_peer_asn
+  where isPresent(local_asn)
   where afi_safi != "AfiSafiType.IPV4_UNICAST"
     && afi_safi != "AfiSafiType.IPV4_ANY"
     && afi_safi != "AfiSafiType.IPV6_UNICAST"
@@ -100,9 +135,49 @@ unsupported_bgp_address_families =
     count: length(grouped_rows)
   };
 
+bgp_neighbors_without_local_as_rows =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  foreach network_instance in device.networkInstances
+  foreach protocol in network_instance.protocols
+  where isPresent(protocol.bgp)
+  foreach neighbor in protocol.bgp.neighbors
+  let reciprocal_local_asn = the(
+    foreach peer_device in network.devices
+    where isPresent(neighbor.peerDeviceName) && peer_device.name == neighbor.peerDeviceName
+    foreach peer_network_instance in peer_device.networkInstances
+    where !isPresent(neighbor.peerVrf) || peer_network_instance.name == neighbor.peerVrf
+    foreach peer_protocol in peer_network_instance.protocols
+    where isPresent(peer_protocol.bgp)
+    foreach peer_neighbor in peer_protocol.bgp.neighbors
+    where isPresent(peer_neighbor.peerDeviceName) && peer_neighbor.peerDeviceName == device.name
+    select distinct peer_neighbor.peerAS
+  )
+  let internal_peer_asn = if isPresent(neighbor.peerType) && toString(neighbor.peerType) == "PeerType.INTERNAL" then neighbor.peerAS else null : Integer
+  let local_asn = if isPresent(neighbor.localAS) then neighbor.localAS else if isPresent(protocol.bgp.asNumber) then protocol.bgp.asNumber else if isPresent(reciprocal_local_asn) then reciprocal_local_asn else internal_peer_asn
+  where !isPresent(local_asn)
+  select {
+    device: device.name
+  };
+
+bgp_neighbors_without_local_as =
+  foreach row in bgp_neighbors_without_local_as_rows
+  group row as grouped_rows by row.device as device
+  select {
+    reason: "bgp-neighbor-without-local-as",
+    model_target: "netbox_routing.bgppeer",
+    protocol: "bgp",
+    device: device,
+    interface: "",
+    detail: "Forward did not expose localAS, process asNumber, reciprocal peer AS, or explicit internal peer AS.",
+    count: length(grouped_rows)
+  };
+
 foreach row in (
   ospf_neighbors_without_remote_peer
     + ospf_neighbors_without_reverse_peer
     + unsupported_bgp_address_families
+    + bgp_neighbors_without_local_as
 )
 select distinct row

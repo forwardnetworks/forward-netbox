@@ -40,6 +40,7 @@ from .forms import ForwardSourceBulkEditForm
 from .forms import ForwardSourceForm
 from .forms import ForwardSyncBulkEditForm
 from .forms import ForwardSyncForm
+from .forms import ForwardValidationRunForceAllowForm
 from .models import ForwardDriftPolicy
 from .models import ForwardIngestion
 from .models import ForwardIngestionIssue
@@ -592,6 +593,57 @@ class ForwardValidationRunListView(generic.ObjectListView):
 class ForwardValidationRunView(generic.ObjectView):
     queryset = ForwardValidationRun.objects.select_related("sync", "policy", "job")
     template_name = "forward_netbox/forwardvalidationrun.html"
+
+
+@register_model_view(ForwardValidationRun, "force_allow")
+class ForwardValidationRunForceAllowView(BaseObjectView):
+    queryset = ForwardValidationRun.objects.select_related("sync", "policy", "job")
+    template_name = "forward_netbox/inc/validation_force_allow_form.html"
+    form = ForwardValidationRunForceAllowForm
+
+    def get_required_permission(self):
+        return "forward_netbox.change_forwardvalidationrun"
+
+    def get(self, request, pk):
+        obj = get_object_or_404(self.queryset, pk=pk)
+        if request.htmx:
+            viewname = get_viewname(self.queryset.model, action="force_allow")
+            form_url = reverse(viewname, kwargs={"pk": obj.pk})
+            form = self.form(initial=request.GET)
+            restrict_form_fields(form, request.user)
+            return render(
+                request,
+                self.template_name,
+                {
+                    "object": obj,
+                    "object_type": self.queryset.model._meta.verbose_name,
+                    "form": form,
+                    "form_url": form_url,
+                },
+            )
+        return redirect(obj.get_absolute_url())
+
+    def post(self, request, pk):
+        validation_run = get_object_or_404(self.queryset, pk=pk)
+        form = self.form(request.POST)
+        restrict_form_fields(form, request.user)
+        if form.is_valid():
+            validation_run.force_allow(
+                user=request.user,
+                reason=form.cleaned_data["reason"],
+            )
+            messages.success(
+                request,
+                f"Marked {validation_run} as force-allowed for the blocked validation reasons.",
+            )
+            return redirect(validation_run.get_absolute_url())
+
+        for field, errors in form.errors.items():
+            for error in errors:
+                messages.error(request, f"{field}: {error}")
+        for error in form.non_field_errors():
+            messages.error(request, error)
+        return redirect(validation_run.get_absolute_url())
 
 
 @register_model_view(ForwardValidationRun, "delete")
