@@ -17,6 +17,7 @@ from .serializers import ForwardIngestionSerializer
 from .serializers import ForwardNQEMapSerializer
 from .serializers import ForwardSourceSerializer
 from .serializers import ForwardSyncSerializer
+from .serializers import ForwardValidationRunOverrideSerializer
 from .serializers import ForwardValidationRunSerializer
 from forward_netbox.filtersets import ForwardDriftPolicyFilterSet
 from forward_netbox.filtersets import ForwardNQEMapFilterSet
@@ -257,3 +258,27 @@ class ForwardValidationRunViewSet(NetBoxReadOnlyModelViewSet):
     queryset = ForwardValidationRun.objects.all()
     serializer_class = ForwardValidationRunSerializer
     filterset_class = ForwardValidationRunFilterSet
+
+    @extend_schema(
+        methods=["post"],
+        request=ForwardValidationRunOverrideSerializer,
+        responses={200: ForwardValidationRunSerializer},
+    )
+    @action(detail=True, methods=["post"])
+    def force_allow(self, request, pk):
+        if not request.user.has_perm("forward_netbox.change_forwardvalidationrun"):
+            raise PermissionDenied(
+                "This user does not have permission to update a Forward validation run."
+            )
+        validation_run = self.get_object()
+        serializer = ForwardValidationRunOverrideSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        validation_run.force_allow(
+            user=request.user,
+            reason=serializer.validated_data["reason"],
+        )
+        return Response(
+            ForwardValidationRunSerializer(
+                validation_run, context={"request": request}
+            ).data
+        )
