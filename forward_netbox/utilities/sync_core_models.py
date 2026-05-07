@@ -55,9 +55,7 @@ def delete_dcim_devicetype(runner, row):
         )
     if manufacturer is None and row.get("manufacturer"):
         manufacturer = (
-            Manufacturer.objects.filter(name=row["manufacturer"])
-            .order_by("pk")
-            .first()
+            Manufacturer.objects.filter(name=row["manufacturer"]).order_by("pk").first()
         )
     if manufacturer is None:
         return False

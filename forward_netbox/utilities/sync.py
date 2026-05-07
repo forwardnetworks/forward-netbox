@@ -37,6 +37,10 @@ from .sync_core_models import delete_dcim_devicetype
 from .sync_core_models import delete_dcim_manufacturer
 from .sync_core_models import delete_dcim_platform
 from .sync_core_models import delete_dcim_site
+from .sync_device import apply_dcim_device
+from .sync_device import apply_dcim_virtualchassis
+from .sync_device import delete_dcim_device
+from .sync_device import delete_dcim_virtualchassis
 from .sync_inventory_module import apply_dcim_inventoryitem
 from .sync_inventory_module import apply_dcim_module
 from .sync_inventory_module import delete_dcim_inventoryitem
@@ -1647,20 +1651,10 @@ class ForwardSyncRunner:
         return delete_dcim_devicetype(self, row)
 
     def _delete_dcim_device(self, row):
-        from dcim.models import Device
-
-        return self._delete_by_coalesce(
-            Device,
-            [self._coalesce_lookup(row, "name")],
-        )
+        return delete_dcim_device(self, row)
 
     def _delete_dcim_virtualchassis(self, row):
-        from dcim.models import VirtualChassis
-
-        name = row.get("vc_name") or row.get("name")
-        if not name:
-            return False
-        return self._delete_by_coalesce(VirtualChassis, [{"name": name}])
+        return delete_dcim_virtualchassis(self, row)
 
     def _delete_extras_taggeditem(self, row):
         from dcim.models import Device
@@ -1949,99 +1943,10 @@ class ForwardSyncRunner:
         return apply_dcim_devicetype(self, row)
 
     def _apply_dcim_virtualchassis(self, row):
-        from dcim.models import Device
-        from dcim.models import VirtualChassis
-
-        vc_name = row.get("vc_name") or row.get("name")
-        vc_values = {
-            "name": vc_name,
-            "domain": row.get("vc_domain", row.get("domain", "")),
-        }
-        vc, _ = self._upsert_values_from_defaults(
-            "dcim.virtualchassis",
-            VirtualChassis,
-            values=vc_values,
-            coalesce_sets=self._coalesce_sets_for(
-                "dcim.virtualchassis",
-                [("name",)],
-            ),
-        )
-        if row.get("device"):
-            try:
-                device = Device.objects.get(name=row["device"])
-            except ObjectDoesNotExist as exc:
-                key = (row["device"],)
-                if self._dependency_failed("dcim.device", key):
-                    raise ForwardDependencySkipError(
-                        f"Skipping virtual chassis assignment because dependency `dcim.device` failed for {key}.",
-                        model_string="dcim.virtualchassis",
-                        context={"device": row["device"]},
-                        data=row,
-                    ) from exc
-                raise ForwardSearchError(
-                    f"Unable to find device `{row['device']}` for virtual chassis assignment.",
-                    model_string="dcim.virtualchassis",
-                    context={"device": row["device"]},
-                    data=row,
-                ) from exc
-            defaults = {"virtual_chassis": vc}
-            if row.get("vc_position"):
-                defaults["vc_position"] = row["vc_position"]
-            Device.objects.filter(pk=device.pk).update(**defaults)
-        return vc
+        return apply_dcim_virtualchassis(self, row)
 
     def _apply_dcim_device(self, row):
-        from dcim.models import Device
-
-        site = self._ensure_site({"name": row["site"], "slug": row["site_slug"]})
-        role = self._ensure_role(
-            {"name": row["role"], "slug": row["role_slug"], "color": row["role_color"]}
-        )
-        device_type = self._ensure_device_type(
-            {
-                "manufacturer": row["manufacturer"],
-                "manufacturer_slug": row["manufacturer_slug"],
-                "slug": row["device_type_slug"],
-                "model": row["device_type"],
-                **({"part_number": row["part_number"]} if "part_number" in row else {}),
-            }
-        )
-        platform = None
-        if row.get("platform"):
-            platform = self._ensure_platform(
-                {
-                    "name": row["platform"],
-                    "manufacturer": row["manufacturer"],
-                    "manufacturer_slug": row["manufacturer_slug"],
-                    "slug": row["platform_slug"],
-                }
-            )
-
-        defaults = {
-            "name": row["name"],
-            "site": site,
-            "role": role,
-            "device_type": device_type,
-            "platform": platform,
-            "serial": row.get("serial", ""),
-            "status": row["status"],
-        }
-        if row.get("virtual_chassis"):
-            defaults["virtual_chassis"] = self._apply_dcim_virtualchassis(
-                {"name": row["virtual_chassis"]}
-            )
-            if row.get("vc_position"):
-                defaults["vc_position"] = row["vc_position"]
-
-        self._upsert_values_from_defaults(
-            "dcim.device",
-            Device,
-            values=defaults,
-            coalesce_sets=self._coalesce_sets_for(
-                "dcim.device",
-                [("name",)],
-            ),
-        )
+        return apply_dcim_device(self, row)
 
     def _apply_dcim_interface(self, row):
         from dcim.models import Device
