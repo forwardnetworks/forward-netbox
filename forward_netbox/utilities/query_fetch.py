@@ -1,20 +1,37 @@
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from dataclasses import field
 from typing import Any
 
+from ..choices import FORWARD_OPTIONAL_MODELS
 from ..exceptions import ForwardClientError
 from ..exceptions import ForwardConnectivityError
 from ..exceptions import ForwardQueryError
 from .branch_budget import BranchPlanItem
 from .branch_budget import BranchWorkload
 from .forward_api import LATEST_PROCESSED_SNAPSHOT
+from .query_diagnostics import (
+    append_ipaddress_diagnostics as sync_append_ipaddress_diagnostics,
+)
+from .query_diagnostics import (
+    append_routing_diagnostics as sync_append_routing_diagnostics,
+)
+from .query_diagnostics import diagnostic_row_count as sync_diagnostic_row_count
+from .query_diagnostics import (
+    summarize_routing_import_diagnostic_rows as sync_summarize_routing_import_diagnostic_rows,
+)
+from .query_diagnostics import (
+    summarize_unassignable_ipaddress_rows as sync_summarize_unassignable_ipaddress_rows,
+)
 from .query_registry import get_query_specs
+from .query_registry import optional_builtin_query_names_for_model
 from .sync import ForwardSyncRunner
 from .sync_contracts import default_coalesce_fields_for_model
 from .sync_contracts import validate_row_shape_for_model
 
 DEFAULT_PREFLIGHT_ROW_LIMIT = 50
+DEFAULT_QUERY_FETCH_CONCURRENCY = 4
 
 
 @dataclass(frozen=True)
@@ -52,6 +69,7 @@ class ForwardModelResult:
     runtime_ms: float | None = None
     snapshot_id: str = ""
     baseline_snapshot_id: str = ""
+    diagnostics: list[dict[str, Any]] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -66,6 +84,7 @@ class ForwardModelResult:
             "runtime_ms": self.runtime_ms,
             "snapshot_id": self.snapshot_id,
             "baseline_snapshot_id": self.baseline_snapshot_id,
+            "diagnostics": self.diagnostics,
         }
 
 
@@ -129,31 +148,67 @@ class ForwardQueryFetcher:
             "Running Forward query preflight before full multi-branch planning.",
             obj=self.sync,
         )
-        for model_string in self.sync.get_model_strings():
-            specs = get_query_specs(model_string, maps=context.maps)
-            if not specs:
-                raise ForwardQueryError(
-                    f"No enabled built-in or custom query maps were resolved for {model_string}."
-                )
-            coalesce_fields = self._coalesce_fields(model_string, specs)
-
-            for spec in specs:
-                preflight_rows = self.client.run_nqe_query(
-                    query=spec.query,
-                    query_id=spec.query_id,
-                    commit_id=spec.commit_id,
-                    network_id=context.network_id,
-                    snapshot_id=context.snapshot_id,
-                    parameters=spec.merged_parameters(context.query_parameters),
-                    limit=row_limit,
-                    fetch_all=False,
-                )
-                for row in preflight_rows:
-                    validate_row_shape_for_model(model_string, row, coalesce_fields)
+        jobs = self._query_jobs(context)
+        if not jobs:
+            return
+        max_workers = self._query_fetch_worker_count(len(jobs))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for model_string, spec, preflight_rows in executor.map(
+                self._run_preflight_job,
+                ((context, row_limit, job) for job in jobs),
+            ):
                 self.logger.log_info(
                     f"Preflight validated {len(preflight_rows)} rows for {model_string} from {spec.execution_mode} `{spec.execution_value}`.",
                     obj=self.sync,
                 )
+
+    def _run_preflight_job(self, payload):
+        context, row_limit, job = payload
+        model_string, spec, coalesce_fields = job
+        preflight_rows = self.client.run_nqe_query(
+            query=spec.query,
+            query_id=spec.query_id,
+            commit_id=spec.commit_id,
+            network_id=context.network_id,
+            snapshot_id=context.snapshot_id,
+            parameters=spec.merged_parameters(context.query_parameters),
+            limit=row_limit,
+            fetch_all=False,
+        )
+        for row in preflight_rows:
+            validate_row_shape_for_model(model_string, row, coalesce_fields)
+        return model_string, spec, preflight_rows
+
+    def _query_jobs(self, context: ForwardQueryContext):
+        jobs = []
+        for model_string in self.sync.get_model_strings():
+            specs = get_query_specs(model_string, maps=context.maps)
+            if not specs:
+                raise ForwardQueryError(self._missing_query_specs_message(model_string))
+            coalesce_fields = self._coalesce_fields(model_string, specs)
+            for spec in specs:
+                jobs.append((model_string, spec, coalesce_fields))
+        return jobs
+
+    def _missing_query_specs_message(self, model_string: str) -> str:
+        optional_map_names = optional_builtin_query_names_for_model(model_string)
+        if optional_map_names:
+            quoted_names = ", ".join(f"`{name}`" for name in optional_map_names)
+            return (
+                f"No enabled NQE maps were resolved for {model_string}. "
+                f"Enable the {quoted_names} NQE Map or disable the `{model_string}` "
+                "model on the sync."
+            )
+        if model_string in FORWARD_OPTIONAL_MODELS:
+            return (
+                f"No enabled NQE maps were resolved for {model_string}. "
+                f"Enable at least one NQE Map for `{model_string}` or disable the "
+                f"`{model_string}` model on the sync."
+            )
+        return (
+            f"No enabled built-in or custom query maps were resolved for {model_string}. "
+            "Enable at least one NQE Map for this model before running the sync."
+        )
 
     def fetch_workloads(
         self,
@@ -163,68 +218,114 @@ class ForwardQueryFetcher:
     ) -> list[BranchWorkload]:
         workloads = []
         self.model_results = []
+        jobs = self._build_workload_jobs(context)
+        if not jobs:
+            return workloads
+        max_workers = self._query_fetch_worker_count(len(jobs))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for model_result, workload in executor.map(
+                self._run_workload_job,
+                ((context, validate_rows, job) for job in jobs),
+            ):
+                self.model_results.append(model_result)
+                if workload is not None:
+                    workloads.append(workload)
+        self._append_ipaddress_diagnostics(context)
+        self._append_routing_diagnostics(context)
+        return workloads
+
+    def _build_workload_jobs(self, context: ForwardQueryContext):
+        jobs = []
         for model_string in self.sync.get_model_strings():
             specs = get_query_specs(model_string, maps=context.maps)
+            if not specs:
+                raise ForwardQueryError(self._missing_query_specs_message(model_string))
             coalesce_fields = self._coalesce_fields(model_string, specs)
             baseline = self.sync.incremental_diff_baseline(
                 specs=specs,
                 current_snapshot_id=context.snapshot_id,
             )
-            baseline_snapshot_id = getattr(baseline, "snapshot_id", "") or ""
-
             for spec in specs:
-                started = time.perf_counter()
-                rows, delete_rows, sync_mode = self._fetch_spec_rows(
-                    model_string,
-                    spec,
-                    baseline,
-                    context,
-                    coalesce_fields,
-                )
-                runtime_ms = round((time.perf_counter() - started) * 1000, 1)
-                if validate_rows:
-                    self.validate_rows(
-                        model_string,
-                        rows,
-                        delete_rows,
-                        coalesce_fields,
-                    )
-                self.model_results.append(
-                    ForwardModelResult(
-                        model_string=model_string,
-                        query_name=spec.query_name,
-                        execution_mode=spec.execution_mode,
-                        execution_value=spec.execution_value,
-                        sync_mode=sync_mode,
-                        row_count=len(rows),
-                        delete_count=len(delete_rows),
-                        runtime_ms=runtime_ms,
-                        snapshot_id=context.snapshot_id,
-                        baseline_snapshot_id=(
-                            baseline_snapshot_id if sync_mode == "diff" else ""
-                        ),
-                    )
-                )
-                if not rows and not delete_rows:
-                    continue
-                workloads.append(
-                    BranchWorkload(
-                        model_string=model_string,
-                        label=f"{model_string} | {spec.query_name}",
-                        upsert_rows=rows,
-                        delete_rows=delete_rows,
-                        sync_mode=sync_mode,
-                        coalesce_fields=coalesce_fields,
-                        query_name=spec.query_name,
-                        execution_mode=spec.execution_mode,
-                        execution_value=spec.execution_value,
-                        query_runtime_ms=runtime_ms,
-                        baseline_snapshot_id=(
-                            baseline_snapshot_id if sync_mode == "diff" else ""
-                        ),
-                    )
-                )
-        return workloads
+                jobs.append((model_string, spec, baseline, coalesce_fields))
+        return jobs
+
+    def _run_workload_job(self, payload):
+        context, validate_rows, job = payload
+        model_string, spec, baseline, coalesce_fields = job
+        baseline_snapshot_id = getattr(baseline, "snapshot_id", "") or ""
+        started = time.perf_counter()
+        rows, delete_rows, sync_mode = self._fetch_spec_rows(
+            model_string,
+            spec,
+            baseline,
+            context,
+            coalesce_fields,
+        )
+        runtime_ms = round((time.perf_counter() - started) * 1000, 1)
+        if validate_rows:
+            self.validate_rows(
+                model_string,
+                rows,
+                delete_rows,
+                coalesce_fields,
+            )
+        model_result = ForwardModelResult(
+            model_string=model_string,
+            query_name=spec.query_name,
+            execution_mode=spec.execution_mode,
+            execution_value=spec.execution_value,
+            sync_mode=sync_mode,
+            row_count=len(rows),
+            delete_count=len(delete_rows),
+            runtime_ms=runtime_ms,
+            snapshot_id=context.snapshot_id,
+            baseline_snapshot_id=baseline_snapshot_id if sync_mode == "diff" else "",
+        )
+        workload = None
+        if rows or delete_rows:
+            workload = BranchWorkload(
+                model_string=model_string,
+                label=f"{model_string} | {spec.query_name}",
+                upsert_rows=rows,
+                delete_rows=delete_rows,
+                sync_mode=sync_mode,
+                coalesce_fields=coalesce_fields,
+                query_name=spec.query_name,
+                execution_mode=spec.execution_mode,
+                execution_value=spec.execution_value,
+                query_runtime_ms=runtime_ms,
+                baseline_snapshot_id=(
+                    baseline_snapshot_id if sync_mode == "diff" else ""
+                ),
+            )
+        return model_result, workload
+
+    def _append_ipaddress_diagnostics(self, context: ForwardQueryContext) -> None:
+        return sync_append_ipaddress_diagnostics(self, context)
+
+    def _run_ipaddress_unassignable_diagnostic(
+        self,
+        context: ForwardQueryContext,
+    ) -> dict[str, Any] | None:
+        return sync_append_ipaddress_diagnostics(self, context)
+
+    def _summarize_unassignable_ipaddress_rows(self, rows: list[dict]) -> dict:
+        return sync_summarize_unassignable_ipaddress_rows(rows)
+
+    def _append_routing_diagnostics(self, context: ForwardQueryContext) -> None:
+        return sync_append_routing_diagnostics(self, context)
+
+    def _run_routing_import_diagnostic(
+        self,
+        context: ForwardQueryContext,
+    ) -> dict[str, Any] | None:
+        return sync_append_routing_diagnostics(self, context)
+
+    def _summarize_routing_import_diagnostic_rows(self, rows: list[dict]) -> dict:
+        return sync_summarize_routing_import_diagnostic_rows(rows)
+
+    def _diagnostic_row_count(self, row: dict) -> int:
+        return sync_diagnostic_row_count(row)
 
     def fetch_sample_results(
         self,
@@ -233,36 +334,46 @@ class ForwardQueryFetcher:
         row_limit=DEFAULT_PREFLIGHT_ROW_LIMIT,
     ) -> list[ForwardModelResult]:
         self.model_results = []
-        for model_string in self.sync.get_model_strings():
-            specs = get_query_specs(model_string, maps=context.maps)
-            coalesce_fields = self._coalesce_fields(model_string, specs)
-            for spec in specs:
-                started = time.perf_counter()
-                rows = self.client.run_nqe_query(
-                    query=spec.query,
-                    query_id=spec.query_id,
-                    commit_id=spec.commit_id,
-                    network_id=context.network_id,
-                    snapshot_id=context.snapshot_id,
-                    parameters=spec.merged_parameters(context.query_parameters),
-                    limit=row_limit,
-                    fetch_all=False,
-                )
-                self.validate_rows(model_string, rows, [], coalesce_fields)
-                runtime_ms = round((time.perf_counter() - started) * 1000, 1)
-                self.model_results.append(
-                    ForwardModelResult(
-                        model_string=model_string,
-                        query_name=spec.query_name,
-                        execution_mode=spec.execution_mode,
-                        execution_value=spec.execution_value,
-                        sync_mode="sample",
-                        row_count=len(rows),
-                        runtime_ms=runtime_ms,
-                        snapshot_id=context.snapshot_id,
-                    )
-                )
+        jobs = self._query_jobs(context)
+        if not jobs:
+            return self.model_results
+        max_workers = self._query_fetch_worker_count(len(jobs))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for result in executor.map(
+                self._run_sample_job,
+                ((context, row_limit, job) for job in jobs),
+            ):
+                self.model_results.append(result)
+        self._append_ipaddress_diagnostics(context)
+        self._append_routing_diagnostics(context)
         return self.model_results
+
+    def _run_sample_job(self, payload):
+        context, row_limit, job = payload
+        model_string, spec, coalesce_fields = job
+        started = time.perf_counter()
+        rows = self.client.run_nqe_query(
+            query=spec.query,
+            query_id=spec.query_id,
+            commit_id=spec.commit_id,
+            network_id=context.network_id,
+            snapshot_id=context.snapshot_id,
+            parameters=spec.merged_parameters(context.query_parameters),
+            limit=row_limit,
+            fetch_all=False,
+        )
+        self.validate_rows(model_string, rows, [], coalesce_fields)
+        runtime_ms = round((time.perf_counter() - started) * 1000, 1)
+        return ForwardModelResult(
+            model_string=model_string,
+            query_name=spec.query_name,
+            execution_mode=spec.execution_mode,
+            execution_value=spec.execution_value,
+            sync_mode="sample",
+            row_count=len(rows),
+            runtime_ms=runtime_ms,
+            snapshot_id=context.snapshot_id,
+        )
 
     def validate_rows(
         self,
@@ -349,6 +460,9 @@ class ForwardQueryFetcher:
                 default_coalesce_fields_for_model(model_string)
             )
         return default_coalesce_fields_for_model(model_string)
+
+    def _query_fetch_worker_count(self, job_count: int) -> int:
+        return max(1, min(DEFAULT_QUERY_FETCH_CONCURRENCY, int(job_count)))
 
 
 def plan_item_model_result(
