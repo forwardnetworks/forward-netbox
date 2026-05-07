@@ -5,7 +5,7 @@ This tracker records known follow-up work that should be handled through explici
 ## Sync Module Boundaries
 
 - `forward_netbox/utilities/sync.py` should eventually be split into contracts, adapter helpers, and per-model adapter modules.
-- Cable adapter helpers now live in `forward_netbox/utilities/sync_cable.py`; interface, MAC, and feature-tag adapter helpers now live in `forward_netbox/utilities/sync_interface.py`; the remaining `sync.py` split still needs behavior-preserving extraction.
+- Cable adapter helpers now live in `forward_netbox/utilities/sync_cable.py`; interface, MAC, and feature-tag adapter helpers now live in `forward_netbox/utilities/sync_interface.py`; routing helper logic now lives in `forward_netbox/utilities/sync_routing.py`; the remaining `sync.py` split still needs behavior-preserving extraction.
 - Required first step: add behavior-preserving tests around each adapter family.
 
 ## Intended Harness Layers
