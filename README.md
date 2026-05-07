@@ -6,6 +6,7 @@
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
+| `v0.7.0` | `4.5.9` validated; `4.5.x` only | Current release; extracts the 0.7 sync boundaries, adds shard heartbeat visibility, and keeps the same NetBox-native multi-branch workflow |
 | `v0.6.5` | `4.5.9` validated; `4.5.x` only | Current release; adds audited validation force-allow overrides and routing evidence enrichment; optional routing/peering import remains beta; native `dcim.module` import is beta |
 | `v0.6.4` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.6.5`; optional routing/peering import is beta; native `dcim.module` import is beta |
 | `v0.6.3` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.6.4`; native `dcim.module` import is beta |
@@ -26,6 +27,7 @@
 
 | Release | Summary |
 | --- | --- |
+| `v0.7.0` | Splits the remaining sync orchestration, reporting, and validation helpers into dedicated boundaries, adds shard heartbeat visibility, and preserves the NetBox-native branch workflow. |
 | `v0.6.5` | Adds audited validation force-allow overrides and routing evidence enrichment while reducing skipped routing rows through conservative NQE-side identity inference. |
 | `v0.6.4` | Adds beta optional routing and peering imports for `netbox-routing` and `netbox-peering-manager`, including BGP peers, BGP address families, OSPF objects, peering sessions, routing diagnostics, and query-ID-aware built-in map handling. |
 | `v0.6.3` | Models Forward aggregate interfaces as native NetBox LAGs, attaches member interfaces through `Interface.lag`, and keeps the MTU value sourced from Forward's normalized interface field. |
@@ -104,7 +106,7 @@ This repository is provided for use at your own risk. It is an unsupported relea
 Install the wheel or source archive from GitHub Releases:
 
 ```bash
-pip install /path/to/forward_netbox-0.6.5-py3-none-any.whl
+pip install /path/to/forward_netbox-0.7.0-py3-none-any.whl
 ```
 
 2. Enable both plugins in the NetBox configuration:
