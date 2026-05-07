@@ -30,8 +30,9 @@ Required first step: add behavior-preserving tests around the current module bou
 
 ## Branch Execution Boundaries
 
-- `forward_netbox/utilities/multi_branch.py` combines context build, preflight, planning, branch lifecycle, resume state, and merge orchestration.
-- Required first step: keep adding focused tests around resume, stale branches, overflow retry, and auto-merge interaction.
+- `forward_netbox/utilities/multi_branch_planner.py` now owns the planning boundary.
+- `forward_netbox/utilities/multi_branch.py` still combines branch lifecycle, resume state, overflow retry, and merge orchestration.
+- Required first step: keep adding focused tests around resume, stale branches, overflow retry, and auto-merge interaction before any further execution split.
 
 ## Local Test Repeatability
 
