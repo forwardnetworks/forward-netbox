@@ -10,9 +10,9 @@ from forward_netbox.utilities.sync_state import clear_branch_run_state
 from forward_netbox.utilities.sync_state import get_branch_run_state
 from forward_netbox.utilities.sync_state import get_display_parameters
 from forward_netbox.utilities.sync_state import get_sync_activity
-from forward_netbox.utilities.sync_state import touch_branch_run_progress
 from forward_netbox.utilities.sync_state import set_branch_run_state
 from forward_netbox.utilities.sync_state import set_model_change_density
+from forward_netbox.utilities.sync_state import touch_branch_run_progress
 
 
 class ForwardSyncStateHelperTest(TestCase):
@@ -125,7 +125,9 @@ class ForwardSyncStateHelperTest(TestCase):
 
         state = get_branch_run_state(self.sync)
         self.assertTrue(touched)
-        self.assertEqual(state["last_progress_message"], "Applying shard 131/146 for ipam.ipaddress.")
+        self.assertEqual(
+            state["last_progress_message"], "Applying shard 131/146 for ipam.ipaddress."
+        )
         self.assertEqual(state["current_model_string"], "ipam.ipaddress")
         self.assertEqual(state["current_shard_index"], 131)
         self.assertEqual(state["current_row_count"], 10)

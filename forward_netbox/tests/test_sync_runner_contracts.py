@@ -8,7 +8,9 @@ class ForwardSyncRunnerContractTest(TestCase):
         self.runner = object.__new__(ForwardSyncRunner)
         self.runner._model_coalesce_fields = {
             "dcim.site": [("slug",), ("name",)],
-            "dcim.cable": [("device", "interface", "remote_device", "remote_interface")],
+            "dcim.cable": [
+                ("device", "interface", "remote_device", "remote_interface")
+            ],
         }
 
     def test_conflict_policy_defaults_to_strict_and_uses_cable_override(self):
@@ -19,7 +21,9 @@ class ForwardSyncRunnerContractTest(TestCase):
         )
 
     def test_module_native_inventory_row_detects_component_and_part_type(self):
-        self.assertTrue(self.runner._is_module_native_inventory_row({"module_component": True}))
+        self.assertTrue(
+            self.runner._is_module_native_inventory_row({"module_component": True})
+        )
         self.assertTrue(
             self.runner._is_module_native_inventory_row({"part_type": "ROUTING ENGINE"})
         )

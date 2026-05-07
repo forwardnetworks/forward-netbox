@@ -3,8 +3,8 @@ import time
 from ipaddress import ip_interface
 
 from django.core.exceptions import ValidationError
-from django.db import transaction
 from django.db import IntegrityError
+from django.db import transaction
 
 from ..choices import ForwardIngestionPhaseChoices
 from ..exceptions import ForwardDependencySkipError
@@ -18,7 +18,9 @@ PROGRESS_HEARTBEAT_SECONDS = 60
 logger = logging.getLogger("forward_netbox.sync")
 
 
-def record_aggregated_conflict_warning(runner, *, model_string, reason, warning_message):
+def record_aggregated_conflict_warning(
+    runner, *, model_string, reason, warning_message
+):
     key = (model_string, reason)
     count = runner._aggregated_conflict_warning_counts.get(key, 0)
     if count < runner.CONFLICT_WARNING_DETAIL_LIMIT:

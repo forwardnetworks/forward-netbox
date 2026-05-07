@@ -15,6 +15,8 @@ from .sync_reporting import (
 from .sync_reporting import (
     record_aggregated_skip_warning as sync_record_aggregated_skip_warning,
 )
+
+
 class ForwardSyncRunnerContractMixin:
     def _record_aggregated_conflict_warning(
         self, *, model_string, reason, warning_message
