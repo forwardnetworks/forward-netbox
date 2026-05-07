@@ -41,6 +41,12 @@ from .sync_device import apply_dcim_device
 from .sync_device import apply_dcim_virtualchassis
 from .sync_device import delete_dcim_device
 from .sync_device import delete_dcim_virtualchassis
+from .sync_interface import apply_dcim_interface
+from .sync_interface import apply_dcim_macaddress
+from .sync_interface import apply_extras_taggeditem
+from .sync_interface import delete_dcim_interface
+from .sync_interface import delete_dcim_macaddress
+from .sync_interface import delete_extras_taggeditem
 from .sync_inventory_module import apply_dcim_inventoryitem
 from .sync_inventory_module import apply_dcim_module
 from .sync_inventory_module import delete_dcim_inventoryitem
@@ -1679,43 +1685,16 @@ class ForwardSyncRunner:
         return delete_dcim_virtualchassis(self, row)
 
     def _delete_extras_taggeditem(self, row):
-        from dcim.models import Device
-        from extras.models import Tag
-
-        device = Device.objects.filter(name=row.get("device")).order_by("pk").first()
-        tag = Tag.objects.filter(slug=row.get("tag_slug")).order_by("pk").first()
-        if device is None or tag is None:
-            return False
-        if tag not in device.tags.all():
-            return False
-        device.tags.remove(tag)
-        return True
+        return delete_extras_taggeditem(self, row)
 
     def _delete_dcim_interface(self, row):
-        from dcim.models import Device
-        from dcim.models import Interface
-
-        device = Device.objects.filter(name=row.get("device")).order_by("pk").first()
-        if device is None or not row.get("name"):
-            return False
-        return self._delete_by_coalesce(
-            Interface,
-            [{"device": device, "name": row["name"]}],
-        )
+        return delete_dcim_interface(self, row)
 
     def _delete_dcim_cable(self, row):
         return delete_dcim_cable(self, row)
 
     def _delete_dcim_macaddress(self, row):
-        from dcim.models import MACAddress
-
-        mac_address = row.get("mac_address") or row.get("mac")
-        if not mac_address:
-            return False
-        return self._delete_by_coalesce(
-            MACAddress,
-            [{"mac_address": mac_address}],
-        )
+        return delete_dcim_macaddress(self, row)
 
     def _delete_ipam_vlan(self, row):
         return delete_ipam_vlan(self, row)
@@ -1858,108 +1837,10 @@ class ForwardSyncRunner:
         return apply_dcim_device(self, row)
 
     def _apply_dcim_interface(self, row):
-        from dcim.models import Device
-        from dcim.models import Interface
-
-        try:
-            device = Device.objects.get(name=row["device"])
-        except ObjectDoesNotExist as exc:
-            key = (row["device"],)
-            if self._dependency_failed("dcim.device", key):
-                raise ForwardDependencySkipError(
-                    f"Skipping interface `{row.get('name')}` because dependency `dcim.device` failed for {key}.",
-                    model_string="dcim.interface",
-                    context={"device": row["device"], "name": row.get("name")},
-                    data=row,
-                ) from exc
-            raise ForwardSearchError(
-                f"Unable to find device `{row['device']}` for interface `{row.get('name')}`.",
-                model_string="dcim.interface",
-                context={"device": row["device"], "name": row.get("name")},
-                data=row,
-            ) from exc
-        defaults = {
-            "device": device,
-            "name": row["name"],
-            "type": row["type"],
-            "enabled": row["enabled"],
-            "mtu": row.get("mtu") or None,
-            "description": row.get("description") or "",
-            "speed": row.get("speed") or None,
-        }
-        if row.get("lag"):
-            if row["lag"] == row["name"]:
-                raise ForwardQueryError(
-                    f"Interface `{row['name']}` on device `{device.name}` cannot be its own LAG parent.",
-                    model_string="dcim.interface",
-                    context={
-                        "device": device.name,
-                        "name": row["name"],
-                        "lag": row["lag"],
-                    },
-                    data=row,
-                )
-            lag, _ = self._upsert_values_from_defaults(
-                "dcim.interface",
-                Interface,
-                values={
-                    "device": device,
-                    "name": row["lag"],
-                    "type": "lag",
-                    "enabled": True,
-                    "mtu": None,
-                    "description": "",
-                    "speed": None,
-                },
-                coalesce_sets=self._coalesce_sets_for(
-                    "dcim.interface",
-                    [("device", "name")],
-                ),
-            )
-            defaults["lag"] = lag
-        self._upsert_values_from_defaults(
-            "dcim.interface",
-            Interface,
-            values=defaults,
-            coalesce_sets=self._coalesce_sets_for(
-                "dcim.interface",
-                [("device", "name")],
-            ),
-        )
+        return apply_dcim_interface(self, row)
 
     def _apply_extras_taggeditem(self, row):
-        from dcim.models import Device
-        from extras.models import Tag
-
-        try:
-            device = Device.objects.get(name=row["device"])
-        except ObjectDoesNotExist as exc:
-            key = (row["device"],)
-            if self._dependency_failed("dcim.device", key):
-                raise ForwardDependencySkipError(
-                    f"Skipping feature tag `{row.get('tag')}` because dependency `dcim.device` failed for {key}.",
-                    model_string="extras.taggeditem",
-                    context={"device": row["device"], "tag": row.get("tag")},
-                    data=row,
-                ) from exc
-            raise ForwardSearchError(
-                f"Unable to find device `{row['device']}` for feature tag `{row.get('tag')}`.",
-                model_string="extras.taggeditem",
-                context={"device": row["device"], "tag": row.get("tag")},
-                data=row,
-            ) from exc
-
-        tag, _ = self._upsert_values_from_defaults(
-            "extras.taggeditem",
-            Tag,
-            values={
-                "name": row["tag"],
-                "slug": row["tag_slug"],
-                "color": row["tag_color"],
-            },
-            coalesce_sets=[("slug",)],
-        )
-        device.tags.add(tag)
+        return apply_extras_taggeditem(self, row)
 
     def _lookup_cable_between(self, interface, remote_interface):
         return lookup_cable_between(self, interface, remote_interface)
@@ -1968,59 +1849,7 @@ class ForwardSyncRunner:
         return apply_dcim_cable(self, row)
 
     def _apply_dcim_macaddress(self, row):
-        from dcim.models import Device
-        from dcim.models import Interface
-        from dcim.models import MACAddress
-
-        try:
-            device = Device.objects.get(name=row["device"])
-        except ObjectDoesNotExist as exc:
-            key = (row["device"],)
-            if self._dependency_failed("dcim.device", key):
-                raise ForwardDependencySkipError(
-                    f"Skipping MAC assignment because dependency `dcim.device` failed for {key}.",
-                    model_string="dcim.macaddress",
-                    context={
-                        "device": row["device"],
-                        "interface": row.get("interface"),
-                    },
-                    data=row,
-                ) from exc
-            raise ForwardSearchError(
-                f"Unable to find device `{row['device']}` for MAC assignment.",
-                model_string="dcim.macaddress",
-                context={"device": row["device"], "interface": row.get("interface")},
-                data=row,
-            ) from exc
-        interface = self._lookup_interface(device, row["interface"])
-        if interface is None:
-            key = (device.name, row["interface"])
-            if self._dependency_failed("dcim.interface", key):
-                raise ForwardDependencySkipError(
-                    f"Skipping MAC assignment because dependency `dcim.interface` failed for {key}.",
-                    model_string="dcim.macaddress",
-                    context={"device": device.name, "interface": row["interface"]},
-                    data=row,
-                )
-            raise ForwardSearchError(
-                f"Unable to find interface {row['interface']} on device {device.name} for MAC assignment.",
-                model_string="dcim.macaddress",
-                context={"device": device.name, "interface": row["interface"]},
-                data=row,
-            )
-        self._upsert_values_from_defaults(
-            "dcim.macaddress",
-            MACAddress,
-            values={
-                "mac_address": row["mac"],
-                "assigned_object_type": self._content_type_for(Interface),
-                "assigned_object_id": interface.pk,
-            },
-            coalesce_sets=self._coalesce_sets_for(
-                "dcim.macaddress",
-                [("mac_address",)],
-            ),
-        )
+        return apply_dcim_macaddress(self, row)
 
     def _apply_ipam_vlan(self, row):
         return apply_ipam_vlan(self, row)
