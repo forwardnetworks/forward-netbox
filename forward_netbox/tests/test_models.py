@@ -815,7 +815,11 @@ class ForwardSyncModelTest(TestCase):
 
         sync.sync()
 
+        sync.refresh_from_db()
+        self.source.refresh_from_db()
         self.assertEqual(ForwardIngestion.objects.filter(sync=sync).count(), 1)
+        self.assertEqual(sync.status, ForwardSyncStatusChoices.FAILED)
+        self.assertEqual(self.source.status, ForwardSourceStatusChoices.FAILED)
         self.assertTrue(ingestion.issues.filter(message="boom").exists())
 
     def test_latest_baseline_ingestion_returns_latest_ready_snapshot(self):
@@ -1121,6 +1125,47 @@ class ForwardIngestionSnapshotSummaryTest(TestCase):
         ingestion.refresh_from_db()
         self.assertTrue(ingestion.baseline_ready)
         self.assertEqual(self.sync.get_branch_run_state(), {})
+
+    def test_sync_merge_sets_merging_then_completed(self):
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-before",
+        )
+        observed_statuses = []
+
+        def merge_side_effect(*args, **kwargs):
+            self.sync.refresh_from_db()
+            observed_statuses.append(self.sync.status)
+            self.assertEqual(self.sync.status, ForwardSyncStatusChoices.MERGING)
+
+        with patch(
+            "forward_netbox.utilities.merge.merge_branch", side_effect=merge_side_effect
+        ):
+            ingestion.sync_merge(mark_baseline_ready=False)
+
+        self.sync.refresh_from_db()
+        self.assertIn(ForwardSyncStatusChoices.MERGING, observed_statuses)
+        self.assertEqual(self.sync.status, ForwardSyncStatusChoices.COMPLETED)
+
+    def test_sync_merge_marks_failed_when_merge_raises(self):
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-before",
+        )
+
+        with patch(
+            "forward_netbox.utilities.merge.merge_branch",
+            side_effect=RuntimeError("merge boom"),
+        ):
+            with self.assertRaises(RuntimeError):
+                ingestion.sync_merge(mark_baseline_ready=False)
+
+        self.sync.refresh_from_db()
+        self.source.refresh_from_db()
+        self.assertEqual(self.sync.status, ForwardSyncStatusChoices.FAILED)
+        self.assertEqual(self.source.status, ForwardSourceStatusChoices.FAILED)
 
     def test_annotate_statistics_uses_persisted_counts_when_branch_missing(self):
         ingestion = ForwardIngestion.objects.create(
