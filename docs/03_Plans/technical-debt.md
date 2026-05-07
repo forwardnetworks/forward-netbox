@@ -33,8 +33,8 @@ Required first step: add behavior-preserving tests around the current module bou
 
 ## Local Test Repeatability
 
-- Repeated local UI sync tests can collide with stale Branching branch names.
-- Required first step: design an operator-safe cleanup or branch naming strategy that does not hide production failures.
+- Repeated local UI sync tests can still leave stale Branching branches behind, but branch names are now unique per ingestion so reruns do not collide on the same name.
+- Required first step: only add any further cleanup automation if it can prove it will not mask a failed or partially merged run.
 
 ## Roadmap Discipline
 
