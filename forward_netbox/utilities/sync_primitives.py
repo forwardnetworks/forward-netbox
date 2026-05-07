@@ -3,7 +3,9 @@ from django.db import IntegrityError
 from ..exceptions import ForwardSearchError
 
 
-def update_existing_or_create(runner, model, *, lookup, defaults, fallback_lookups=None, conflict_policy="strict"):
+def update_existing_or_create(
+    runner, model, *, lookup, defaults, fallback_lookups=None, conflict_policy="strict"
+):
     return coalesce_update_or_create(
         runner,
         model,
@@ -110,7 +112,16 @@ def coalesce_sets_for(runner, model_string, default_sets):
     return [list(field_set) for field_set in default_sets]
 
 
-def upsert_row(runner, model_string, model, *, row, coalesce_sets, create_values, update_values=None):
+def upsert_row(
+    runner,
+    model_string,
+    model,
+    *,
+    row,
+    coalesce_sets,
+    create_values,
+    update_values=None,
+):
     lookups = [coalesce_lookup(row, *coalesce_set) for coalesce_set in coalesce_sets]
     return coalesce_upsert(
         runner,
@@ -122,7 +133,9 @@ def upsert_row(runner, model_string, model, *, row, coalesce_sets, create_values
     )
 
 
-def upsert_row_from_defaults(runner, model_string, model, *, row, coalesce_sets, defaults):
+def upsert_row_from_defaults(
+    runner, model_string, model, *, row, coalesce_sets, defaults
+):
     return upsert_row(
         runner,
         model_string,

@@ -2,10 +2,9 @@ from django.core.exceptions import ValidationError
 from django.utils import timezone
 from django.utils.translation import gettext as _
 
-from ..choices import FORWARD_OPTIONAL_MODELS
+from ..choices import forward_configured_models
 from ..choices import FORWARD_SUPPORTED_MODELS
 from ..choices import ForwardSourceDeploymentChoices
-from ..choices import forward_configured_models
 from ..utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from ..utilities.forward_api import MAX_NQE_PAGE_SIZE
 from .sync_contracts import normalize_coalesce_fields
@@ -102,9 +101,7 @@ def clean_forward_sync(sync):
             parameters.get("max_changes_per_branch", sync.get_max_changes_per_branch())
         )
     except (TypeError, ValueError):
-        raise ValidationError(
-            _("`max_changes_per_branch` must be a positive integer.")
-        )
+        raise ValidationError(_("`max_changes_per_branch` must be a positive integer."))
     if max_changes_per_branch < 1:
         raise ValidationError(_("`max_changes_per_branch` must be a positive integer."))
     parameters["max_changes_per_branch"] = max_changes_per_branch
@@ -114,9 +111,7 @@ def clean_forward_sync(sync):
 
 def validate_forward_sync_runtime(sync):
     if sync.scheduled and sync.scheduled < timezone.now():
-        raise ValidationError(
-            {"scheduled": _("Scheduled time must be in the future.")}
-        )
+        raise ValidationError({"scheduled": _("Scheduled time must be in the future.")})
     if not any(
         sync.is_model_enabled(model_string)
         for model_string in forward_configured_models()

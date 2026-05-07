@@ -42,4 +42,3 @@ Move the remaining `ForwardSync.clean()` runtime validation checks out of `forwa
 - `invoke test`
 - `invoke docs`
 - `invoke ci`
-
