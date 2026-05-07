@@ -21,7 +21,13 @@ Move the start/failure/finalization phases of `run_forward_sync()` into helper f
 - `invoke docs`
 - `invoke ci`
 
+## Approach
+Extract the start, failure, and finalization steps from `run_forward_sync()` into helper functions so the orchestration wrapper stays readable without changing the public entrypoint.
+
 ## Decision Log
 - Chosen: split the phase logic rather than the executor because the orchestration wrapper is the stable public surface.
 - Chosen: keep failure capture and final state updates together so the error path stays auditable.
 - Rejected: moving this into `models.py` because sync job orchestration does not belong on the model object.
+
+## Rollback
+Collapse the helper functions back into `run_forward_sync()` if the split causes lifecycle drift or makes failure handling harder to verify.
