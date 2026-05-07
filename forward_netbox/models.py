@@ -1148,6 +1148,13 @@ class ForwardIngestion(ForwardPluginModelDocsMixin, JobsMixin, models.Model):
             forwardsync.status = ForwardSyncStatusChoices.COMPLETED
         except Exception:
             forwardsync.status = ForwardSyncStatusChoices.FAILED
+            ForwardSync.objects.filter(pk=self.sync.pk).update(
+                status=forwardsync.status,
+            )
+            forwardsync.source.status = ForwardSourceStatusChoices.FAILED
+            ForwardSource.objects.filter(pk=forwardsync.source.pk).update(
+                status=forwardsync.source.status,
+            )
             raise
 
         forwardsync.last_synced = timezone.now()
