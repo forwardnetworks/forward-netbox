@@ -35,6 +35,7 @@ The following modules are intentionally treated as stable boundaries until a ded
 - `forward_netbox/utilities/sync.py`: model adapters, coalesce behavior, dependency failure handling, and row application.
 - `forward_netbox/utilities/sync_cable.py`: cable adapter apply/delete lookup helpers extracted from the main sync module.
 - `forward_netbox/utilities/sync_interface.py`: interface, MAC address, and feature-tag adapter entrypoints extracted from the main sync module.
+- `forward_netbox/utilities/sync_routing.py`: routing and peering helper logic plus apply/delete entrypoints extracted from the main sync module.
 - `forward_netbox/models.py`: persisted model behavior, job state transitions, validation state, and branch-run state.
 - `forward_netbox/utilities/multi_branch.py`: branch execution, auto-merge, resume state, and overflow retry.
 
