@@ -104,6 +104,34 @@ class ForwardSyncStateHelperTest(TestCase):
         self.assertIn("Applying shard 131/146 for ipam.ipaddress.", activity)
         self.assertIn("4m", activity)
 
+    def test_sync_activity_marks_stale_progress_heartbeat(self):
+        self.sync.status = "syncing"
+        self.sync.save(update_fields=["status"])
+        started = (timezone.now() - timedelta(minutes=31)).isoformat()
+        set_branch_run_state(
+            self.sync,
+            {
+                "phase": "executing",
+                "phase_message": "Applying planned shard changes.",
+                "phase_started": started,
+                "last_progress_message": "Applying shard 16/144 for dcim.interface: 4828/4918 rows.",
+                "last_progress_at": started,
+                "current_model_string": "dcim.interface",
+                "current_shard_index": 16,
+                "total_plan_items": 144,
+                "current_row_count": 4828,
+                "current_row_total": 4918,
+            },
+        )
+
+        activity = get_sync_activity(self.sync)
+
+        self.assertIn("No shard progress reported for 31m", activity)
+        self.assertIn(
+            "last update: Applying shard 16/144 for dcim.interface: 4828/4918 rows.",
+            activity,
+        )
+
     def test_touch_branch_run_progress_updates_state(self):
         set_branch_run_state(
             self.sync,

@@ -35,7 +35,7 @@
 - NetBox row application and model adapters: `forward_netbox/utilities/sync.py`
 - Row reporting, issue capture, shard heartbeat logging, and per-row continue-on-error handling: `forward_netbox/utilities/sync_reporting.py`
 - Generic coalesce, upsert, delete-by-coalesce, and model lookup primitives: `forward_netbox/utilities/sync_primitives.py`
-- Sync state, progress heartbeat, and execution-summary helpers: `forward_netbox/utilities/sync_state.py`
+- Sync state, progress heartbeat, stale-progress activity, and execution-summary helpers: `forward_netbox/utilities/sync_state.py`
 - Sync event flushing and clear-events bridging: `forward_netbox/utilities/sync_events.py`
 - Sync facade helpers for snapshot resolution, NQE map access, query parameters, and job enqueueing: `forward_netbox/utilities/sync_facade.py`
 - Logging/statistics: `forward_netbox/utilities/logging.py`
@@ -54,7 +54,7 @@ The following modules are intentionally treated as stable boundaries until a ded
 - `forward_netbox/utilities/sync_reporting.py`: row-level issue recording, dependency tracking, shard heartbeat logging, and aggregated warning/reporting helpers extracted from the main sync module.
 - `forward_netbox/utilities/sync_primitives.py`: generic coalesce, upsert, delete-by-coalesce, optional-model, and lookup helpers extracted from the main sync module.
 - `forward_netbox/models.py`: persisted model behavior, job state transitions, validation state, and branch-run state; validation override writes now delegate to `forward_netbox/utilities/validation.py`.
-- `forward_netbox/utilities/sync_state.py`: branch-run state helpers, progress heartbeat, display parameters, and sync activity summaries.
+- `forward_netbox/utilities/sync_state.py`: branch-run state helpers, progress heartbeat, stale-progress display, display parameters, and sync activity summaries.
 - `forward_netbox/utilities/sync_events.py`: event queue flush helper extracted from the main sync module.
 - `forward_netbox/utilities/sync_facade.py`: remaining `ForwardSync` helper behavior, including snapshot resolution, enabled-model access, and enqueue wrappers.
 - `forward_netbox/utilities/ingestion_merge.py`: ingestion merge orchestration plus merge-job enqueueing, change-total persistence, and branch cleanup.
