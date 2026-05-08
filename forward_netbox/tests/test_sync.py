@@ -1151,6 +1151,46 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertEqual(lag.mtu, 9000)
         self.assertEqual(lag.description, "aggregate")
 
+    def test_apply_dcim_interface_removes_existing_cable_before_lag_conversion(self):
+        device = self._create_device("device-1")
+        remote_device = self._create_device("device-2")
+        lag = Interface.objects.create(
+            device=device,
+            name="bond0",
+            type="1000base-t",
+        )
+        remote = Interface.objects.create(
+            device=remote_device,
+            name="Ethernet1/1",
+            type="1000base-t",
+        )
+        Cable.objects.create(a_terminations=[lag], b_terminations=[remote])
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        runner._apply_model_rows(
+            "dcim.interface",
+            [
+                {
+                    "device": "device-1",
+                    "name": "bond0",
+                    "type": "lag",
+                    "lag": None,
+                    "enabled": True,
+                    "mtu": 9000,
+                    "description": "aggregate",
+                    "speed": None,
+                },
+            ],
+        )
+
+        lag.refresh_from_db()
+        self.assertEqual(lag.type, "lag")
+        self.assertIsNone(lag.cable)
+        self.assertEqual(Cable.objects.count(), 0)
+        runner.logger.log_warning.assert_called_once()
+
     def test_apply_extras_taggeditem_adds_feature_tag_to_device(self):
         device = self._create_device("device-1")
         runner = ForwardSyncRunner(
