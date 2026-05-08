@@ -1,4 +1,5 @@
 import json
+import time
 
 import httpx
 
@@ -12,6 +13,8 @@ except ImportError:  # pragma: no cover - NetBox always provides this at runtime
 
 LATEST_PROCESSED_SNAPSHOT = "latestProcessed"
 DEFAULT_FORWARD_API_TIMEOUT_SECONDS = 1200
+DEFAULT_FORWARD_API_RETRIES = 2
+DEFAULT_FORWARD_API_RETRY_BACKOFF_SECONDS = 2
 MAX_NQE_PAGE_SIZE = 10000
 DEFAULT_NQE_PAGE_SIZE = 10000
 
@@ -21,6 +24,7 @@ class ForwardClient:
         self.source = source
         params = source.parameters or {}
         self.timeout = params.get("timeout") or DEFAULT_FORWARD_API_TIMEOUT_SECONDS
+        self.retries = self._coerce_retry_count(params.get("retries"))
         self.verify = params.get("verify", True)
         self.nqe_page_size = self._coerce_nqe_page_size(params.get("nqe_page_size"))
         self.base_url = source.url.rstrip("/")
@@ -35,6 +39,15 @@ class ForwardClient:
         except (TypeError, ValueError):
             return DEFAULT_NQE_PAGE_SIZE
         return max(1, min(size, MAX_NQE_PAGE_SIZE))
+
+    def _coerce_retry_count(self, value):
+        if value is None:
+            return DEFAULT_FORWARD_API_RETRIES
+        try:
+            retries = int(value)
+        except (TypeError, ValueError):
+            return DEFAULT_FORWARD_API_RETRIES
+        return max(0, min(retries, 5))
 
     def _api_url(self, path):
         base_url = self.base_url
@@ -77,36 +90,43 @@ class ForwardClient:
 
     def _request(self, method, path, *, params=None, json_body=None):
         url = self._api_url(path)
-        try:
-            with httpx.Client(
-                timeout=self.timeout,
-                verify=self.verify,
-                mounts=self._proxy_mounts(url),
-            ) as client:
-                response = client.request(
-                    method,
-                    url,
-                    params=params,
-                    json=json_body,
-                    headers=self._headers(),
-                    auth=self._auth(),
+        last_connectivity_error = None
+        for attempt in range(self.retries + 1):
+            try:
+                with httpx.Client(
+                    timeout=self.timeout,
+                    verify=self.verify,
+                    mounts=self._proxy_mounts(url),
+                ) as client:
+                    response = client.request(
+                        method,
+                        url,
+                        params=params,
+                        json=json_body,
+                        headers=self._headers(),
+                        auth=self._auth(),
+                    )
+                response.raise_for_status()
+                return response
+            except httpx.TimeoutException as exc:
+                last_connectivity_error = ForwardConnectivityError(
+                    "Forward API request timed out while connecting to Forward."
                 )
-            response.raise_for_status()
-        except httpx.TimeoutException as exc:
-            raise ForwardConnectivityError(
-                "Forward API request timed out while connecting to Forward."
-            ) from exc
-        except httpx.RequestError as exc:
-            raise ForwardConnectivityError(
-                f"Could not connect to Forward API endpoint: {exc}"
-            ) from exc
-        except httpx.HTTPStatusError as exc:
-            raise ForwardClientError(
-                f"Forward API request failed with HTTP {exc.response.status_code}: {exc.response.text}"
-            ) from exc
-        except httpx.HTTPError as exc:
-            raise ForwardClientError(f"Forward API request failed: {exc}") from exc
-        return response
+                last_connectivity_error.__cause__ = exc
+            except httpx.RequestError as exc:
+                last_connectivity_error = ForwardConnectivityError(
+                    f"Could not connect to Forward API endpoint: {exc}"
+                )
+                last_connectivity_error.__cause__ = exc
+            except httpx.HTTPStatusError as exc:
+                raise ForwardClientError(
+                    f"Forward API request failed with HTTP {exc.response.status_code}: {exc.response.text}"
+                ) from exc
+            except httpx.HTTPError as exc:
+                raise ForwardClientError(f"Forward API request failed: {exc}") from exc
+            if attempt < self.retries:
+                time.sleep(DEFAULT_FORWARD_API_RETRY_BACKOFF_SECONDS * (attempt + 1))
+        raise last_connectivity_error
 
     def get_networks(self):
         response = self._request("GET", "/networks")

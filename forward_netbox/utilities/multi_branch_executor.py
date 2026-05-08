@@ -6,6 +6,7 @@ from .multi_branch_lifecycle import cleanup_overflow_branch
 from .multi_branch_lifecycle import create_noop_ingestion
 from .multi_branch_lifecycle import record_model_density
 from .multi_branch_lifecycle import reindex_plan
+from .multi_branch_lifecycle import resplit_future_items_for_model
 from .multi_branch_lifecycle import run_plan_item
 from .multi_branch_lifecycle import set_runtime_phase
 from .multi_branch_lifecycle import split_overflow_item
@@ -156,7 +157,19 @@ class ForwardMultiBranchExecutor:
         plan.pop(current_index)
         for split_item in reversed(split_items):
             plan.insert(current_index, split_item)
-        return self._reindex_plan(plan)
+        plan = self._reindex_plan(plan)
+        plan, added_items = self._resplit_future_items_for_model(
+            plan,
+            start_index=current_index + len(split_items),
+            model_string=exc.item.model_string,
+        )
+        if added_items:
+            self.logger.log_warning(
+                f"Re-split {added_items} remaining shard(s) for "
+                f"{exc.item.model_string} using observed branch change density.",
+                obj=self.sync,
+            )
+        return plan
 
     def _execute_planned_items(self, context, plan, plan_preview, *, next_plan_index):
         ingestions = []
@@ -298,3 +311,11 @@ class ForwardMultiBranchExecutor:
 
     def _reindex_plan(self, plan):
         return reindex_plan(plan)
+
+    def _resplit_future_items_for_model(self, plan, *, start_index, model_string):
+        return resplit_future_items_for_model(
+            self,
+            plan,
+            start_index=start_index,
+            model_string=model_string,
+        )

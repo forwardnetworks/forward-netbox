@@ -505,6 +505,10 @@ class QueryRegistryTest(TestCase):
         self.assertIn("protocol.ospf", ospf_instance_row["query"])
         self.assertIn("inferred_router_id", ospf_instance_row["query"])
         self.assertIn("router_id:", ospf_instance_row["query"])
+        self.assertEqual(
+            ospf_instance_row["coalesce_fields"],
+            [["device", "vrf", "process_id"], ["device", "process_id"]],
+        )
 
         ospf_interface_row = rows[
             ("netbox_routing.ospfinterface", "Forward OSPF Interfaces")
