@@ -603,6 +603,15 @@ class QueryRegistryTest(TestCase):
         self.assertIn("link.ifaceName", spec.query)
         self.assertIn("where link.deviceName in (", spec.query)
         self.assertIn("foreach snapshot_device in network.devices", spec.query)
+        self.assertIn(
+            "where interface.interfaceType != IfaceType.IF_AGGREGATE",
+            spec.query,
+        )
+        self.assertIn("let remote_interface_type = max(", spec.query)
+        self.assertIn(
+            "remote_interface_type != IfaceType.IF_AGGREGATE",
+            spec.query,
+        )
         self.assertIn("select distinct", spec.query)
         self.assertEqual(
             spec.coalesce_fields,

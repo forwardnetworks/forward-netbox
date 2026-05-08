@@ -164,6 +164,15 @@ def apply_dcim_interface(runner, row):
         "description": row.get("description") or "",
         "speed": row.get("speed") or None,
     }
+    existing_interface = runner._lookup_interface(device, row["name"])
+    if row["type"] == "lag" and existing_interface is not None:
+        existing_cable = getattr(existing_interface, "cable", None)
+        if existing_cable is not None:
+            runner.logger.log_warning(
+                f"Removing existing cable from LAG interface `{row['name']}` on device `{device.name}` before updating interface type.",
+                obj=runner.sync,
+            )
+            existing_cable.delete()
     if row.get("lag"):
         if row["lag"] == row["name"]:
             raise ForwardSearchError(
