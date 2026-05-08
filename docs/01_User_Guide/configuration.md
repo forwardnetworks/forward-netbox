@@ -39,6 +39,10 @@ Create a `Forward Source` for each Forward deployment or tenant you want to sync
 - `Timeout`
   - Forward API timeout in seconds.
   - Defaults to `1200` (20 minutes), aligned to the NQE timeout boundary.
+- `Retries`
+  - Forward API transport retry count for transient disconnects and timeouts.
+  - Defaults to `2`; valid source parameters are clamped to `0..5`.
+  - Retries do not mask NQE row validation failures or HTTP error responses.
 - `NQE Page Size`
   - Rows requested per `/api/nqe` page.
   - Defaults to `10000`; valid range is `1..10000`.

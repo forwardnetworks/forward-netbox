@@ -8,6 +8,7 @@ from netbox_branching.models import Branch
 
 from ..choices import ForwardIngestionPhaseChoices
 from ..choices import ForwardSyncStatusChoices
+from ..exceptions import ForwardQueryError
 from .branch_budget import BranchWorkload
 from .branch_budget import DEFAULT_DENSITY_SAFETY_FACTOR
 from .branch_budget import effective_row_budget_for_model
@@ -301,6 +302,41 @@ def split_overflow_item(executor, item):
         workload,
         max_changes_per_branch=row_budget,
     )
+
+
+def resplit_future_items_for_model(executor, plan, *, start_index, model_string):
+    row_budget = effective_row_budget_for_model(
+        model_string,
+        max_changes_per_branch=executor.max_changes_per_branch,
+        model_change_density=executor.model_change_density,
+        safety_factor=DEFAULT_DENSITY_SAFETY_FACTOR,
+    )
+    row_budget = max(AUTO_SPLIT_MIN_ROWS_PER_BRANCH, row_budget)
+    updated_plan = []
+    added_items = 0
+    for index, item in enumerate(plan):
+        if (
+            index < start_index
+            or item.model_string != model_string
+            or item.estimated_changes <= row_budget
+        ):
+            updated_plan.append(item)
+            continue
+
+        try:
+            split_items = split_overflow_item(executor, item)
+        except ForwardQueryError:
+            updated_plan.append(item)
+            continue
+        if len(split_items) <= 1:
+            updated_plan.append(item)
+            continue
+        updated_plan.extend(split_items)
+        added_items += len(split_items) - 1
+
+    if not added_items:
+        return plan, 0
+    return reindex_plan(updated_plan), added_items
 
 
 def cleanup_overflow_branch(exc):

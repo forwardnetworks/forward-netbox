@@ -21,6 +21,7 @@ def clean_forward_source(source):
             "password",
             "verify",
             "timeout",
+            "retries",
             "network_id",
             "nqe_page_size",
         }
