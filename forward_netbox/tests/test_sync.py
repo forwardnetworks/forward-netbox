@@ -756,6 +756,61 @@ class ForwardMultiBranchExecutorAdaptiveSplitTest(TestCase):
         self.assertEqual(executor._split_overflow_item.call_count, 1)
         self.assertEqual(self.sync.get_branch_run_state(), {})
 
+    def test_branch_budget_retry_resplits_future_same_model_items(self):
+        current_workload = BranchWorkload(
+            model_string="dcim.device",
+            label="dcim.device | Forward Devices",
+            upsert_rows=[{"name": f"current-device-{index}"} for index in range(20)],
+            coalesce_fields=[["name"]],
+        )
+        future_workload = BranchWorkload(
+            model_string="dcim.device",
+            label="dcim.device | Forward Devices",
+            upsert_rows=[{"name": f"future-device-{index}"} for index in range(20)],
+            coalesce_fields=[["name"]],
+        )
+        other_workload = BranchWorkload(
+            model_string="dcim.site",
+            label="dcim.site | Forward Sites",
+            upsert_rows=[{"name": "site-1"}],
+            coalesce_fields=[["name"]],
+        )
+        plan = build_branch_plan(
+            [current_workload, future_workload, other_workload],
+            max_changes_per_branch=20,
+        )
+        executor = ForwardMultiBranchExecutor(
+            sync=self.sync,
+            client=Mock(),
+            logger_=Mock(),
+        )
+        executor.max_changes_per_branch = 10
+        executor.model_change_density = {}
+        executor._cleanup_overflow_branch = Mock()
+
+        updated_plan = executor._handle_branch_budget_exceeded(
+            BranchBudgetExceeded(
+                item=plan[0],
+                actual_changes=30,
+                budget=10,
+                branch=None,
+                ingestion=None,
+            ),
+            plan,
+            current_index=0,
+        )
+
+        device_items = [
+            item for item in updated_plan if item.model_string == "dcim.device"
+        ]
+        self.assertGreater(len(device_items), 2)
+        self.assertTrue(all(item.estimated_changes <= 4 for item in device_items))
+        self.assertEqual(updated_plan[-1].model_string, "dcim.site")
+        executor.logger.log_warning.assert_any_call(
+            "Re-split 4 remaining shard(s) for dcim.device using observed branch change density.",
+            obj=self.sync,
+        )
+
     def test_run_records_validation_and_model_results_before_noop_ingestion(self):
         executor = ForwardMultiBranchExecutor(
             sync=self.sync,
