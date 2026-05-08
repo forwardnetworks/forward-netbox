@@ -9,6 +9,8 @@ from .branch_budget import MODEL_CHANGE_DENSITY_PARAMETER
 from .execution_telemetry import build_branch_run_summary
 from .execution_telemetry import build_sync_execution_summary
 
+STALE_BRANCH_PROGRESS_SECONDS = 15 * 60
+
 
 def get_branch_run_state(sync):
     state = (sync.parameters or {}).get(BRANCH_RUN_STATE_PARAMETER) or {}
@@ -141,6 +143,23 @@ def format_phase_elapsed(phase_started):
     return format_timestamp_elapsed(phase_started)
 
 
+def branch_progress_stale(sync, timestamp):
+    if sync.status not in (
+        ForwardSyncStatusChoices.SYNCING,
+        ForwardSyncStatusChoices.MERGING,
+    ):
+        return False
+    if not timestamp:
+        return False
+    started = parse_datetime(str(timestamp))
+    if started is None:
+        return False
+    if timezone.is_naive(started):
+        started = timezone.make_aware(started, timezone.get_current_timezone())
+    elapsed_seconds = max(0, int((timezone.now() - started).total_seconds()))
+    return elapsed_seconds >= STALE_BRANCH_PROGRESS_SECONDS
+
+
 def get_display_parameters(
     sync,
     *,
@@ -214,6 +233,11 @@ def get_sync_activity(sync):
     phase = state.get("phase") or ""
     elapsed = format_phase_elapsed(state.get("phase_started"))
     if progress_message:
+        if branch_progress_stale(sync, state.get("last_progress_at")):
+            return (
+                f"No shard progress reported for {progress_elapsed}; "
+                f"last update: {progress_message}"
+            )
         return (
             f"{progress_message} ({progress_elapsed})"
             if progress_elapsed

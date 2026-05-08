@@ -46,7 +46,7 @@ Required first step: add behavior-preserving tests around the current module bou
 
 ## Model State Boundaries
 
-- `forward_netbox/utilities/sync_state.py` now owns branch-run state helpers, density helpers, shard progress heartbeat state, and sync activity summaries.
+- `forward_netbox/utilities/sync_state.py` now owns branch-run state helpers, density helpers, shard progress heartbeat state, stale-progress display, and sync activity summaries.
 - `forward_netbox/utilities/sync_events.py` now owns the event flush thresholding and clear-events bridge that used to live inline in `sync.py`.
 - `forward_netbox/utilities/sync_facade.py` now owns the remaining `ForwardSync` helper behavior for snapshot resolution, enabled-model access, and enqueue wrappers.
 - `forward_netbox/utilities/ingestion_merge.py` now owns merge orchestration and branch signal suppression.
