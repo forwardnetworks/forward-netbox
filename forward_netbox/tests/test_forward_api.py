@@ -3,7 +3,10 @@ from unittest import TestCase
 from unittest.mock import Mock
 from unittest.mock import patch
 
+import httpx
+
 from forward_netbox.exceptions import ForwardClientError
+from forward_netbox.exceptions import ForwardConnectivityError
 from forward_netbox.utilities.forward_api import ForwardClient
 
 
@@ -77,6 +80,60 @@ class ForwardClientTest(TestCase):
             auth=("user@example.com", "secret"),
         )
         response.raise_for_status.assert_called_once()
+
+    def test_request_retries_transient_transport_errors(self):
+        response = Mock()
+        first_client = Mock()
+        first_client.request.side_effect = httpx.RemoteProtocolError(
+            "Server disconnected without sending a response."
+        )
+        second_client = Mock()
+        second_client.request.return_value = response
+        first_context = Mock()
+        first_context.__enter__ = Mock(return_value=first_client)
+        first_context.__exit__ = Mock(return_value=None)
+        second_context = Mock()
+        second_context.__enter__ = Mock(return_value=second_client)
+        second_context.__exit__ = Mock(return_value=None)
+
+        with (
+            patch(
+                "forward_netbox.utilities.forward_api.httpx.Client",
+                side_effect=[first_context, second_context],
+            ),
+            patch("forward_netbox.utilities.forward_api.time.sleep") as sleep,
+        ):
+            result = self.client._request("POST", "/nqe", json_body={"query": "q"})
+
+        self.assertEqual(result, response)
+        sleep.assert_called_once_with(2)
+        response.raise_for_status.assert_called_once()
+
+    def test_request_raises_after_retry_exhaustion(self):
+        self.client.retries = 1
+        api_error = httpx.RemoteProtocolError(
+            "Server disconnected without sending a response."
+        )
+        client = Mock()
+        client.request.side_effect = api_error
+        client_context = Mock()
+        client_context.__enter__ = Mock(return_value=client)
+        client_context.__exit__ = Mock(return_value=None)
+
+        with (
+            patch(
+                "forward_netbox.utilities.forward_api.httpx.Client",
+                side_effect=[client_context, client_context],
+            ),
+            patch("forward_netbox.utilities.forward_api.time.sleep"),
+            self.assertRaisesRegex(
+                ForwardConnectivityError,
+                "Could not connect to Forward API endpoint",
+            ),
+        ):
+            self.client._request("POST", "/nqe", json_body={"query": "q"})
+
+        self.assertEqual(client.request.call_count, 2)
 
     def test_run_nqe_query_returns_single_page_by_default(self):
         self.client._request = Mock(

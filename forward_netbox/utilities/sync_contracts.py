@@ -184,7 +184,10 @@ MODEL_SYNC_CONTRACTS: dict[str, ModelSyncContract] = {
     "netbox_routing.ospfinstance": ModelSyncContract(
         required_fields=("device", "process_id", "router_id"),
         allowed_coalesce_fields=("device", "vrf", "process_id"),
-        default_coalesce_fields=(("device", "vrf", "process_id"),),
+        default_coalesce_fields=(
+            ("device", "vrf", "process_id"),
+            ("device", "process_id"),
+        ),
     ),
     "netbox_routing.ospfarea": ModelSyncContract(
         required_fields=("area_id", "area_type"),
