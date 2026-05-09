@@ -47,7 +47,13 @@ REQUIRED_FIELDS_BY_QUERY_NAME = {
         "platform_slug",
         "status",
     },
-    "Forward Virtual Chassis": {"device", "vc_name", "name", "vc_domain"},
+    "Forward Virtual Chassis": {
+        "device",
+        "vc_name",
+        "name",
+        "vc_domain",
+        "vc_position",
+    },
     "Forward Device Feature Tags": {"device", "tag", "tag_slug", "tag_color"},
     "Forward Interfaces": {
         "device",
@@ -259,6 +265,10 @@ class QueryRegistryTest(TestCase):
         self.assertIn("where has_vpc || has_mlag_peer", spec.query)
         self.assertIn("device.ha.vpc.domainId > 0", spec.query)
         self.assertIn("device.ha.mlagPeer", spec.query)
+        self.assertIn("let vpc_role =", spec.query)
+        self.assertIn("let vpc_position =", spec.query)
+        self.assertIn("let vc_position = if has_mlag_peer", spec.query)
+        self.assertIn("where isPresent(vc_position)", spec.query)
         self.assertIn(
             'join("-", [truncate(site_name, 28), "mlag", vc_domain])', spec.query
         )

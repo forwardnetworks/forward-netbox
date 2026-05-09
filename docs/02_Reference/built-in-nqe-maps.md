@@ -438,7 +438,7 @@ select {
 ## Forward Virtual Chassis
 
 - `NetBox Model`: `dcim.virtualchassis`
-- Expected fields: `device`, `vc_name`, `name`, `vc_domain`
+- Expected fields: `device`, `vc_name`, `name`, `vc_domain`, `vc_position`
 - Query file: [`forward_virtual_chassis.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_virtual_chassis.nqe)
 - Current semantics: emits virtual chassis rows for Forward HA `vpc` domains and `mlagPeer` pairs, while bounding `name` and `domain` to NetBox field limits.
 The query intentionally starts with `foreach device in network.devices` so Forward can use its automatic per-device execution path where available.
@@ -476,11 +476,23 @@ let vc_domain = if has_vpc
 let vc_name = if has_vpc
   then join("-", [truncate(site_name, 48), "vpc", toString(device.ha.vpc.domainId)])
   else join("-", [truncate(site_name, 28), "mlag", vc_domain])
+let vpc_role = if has_vpc && isPresent(device.ha.vpc.vpcRole) then toString(device.ha.vpc.vpcRole) else ""
+let vpc_position =
+  if vpc_role == "PRIMARY" || vpc_role == "OPERATIONAL_PRIMARY" || vpc_role == "VpcRole.PRIMARY" || vpc_role == "VpcRole.OPERATIONAL_PRIMARY"
+  then 1
+  else if vpc_role == "SECONDARY" || vpc_role == "OPERATIONAL_SECONDARY" || vpc_role == "VpcRole.SECONDARY" || vpc_role == "VpcRole.OPERATIONAL_SECONDARY"
+  then 2
+  else null : Integer
+let vc_position = if has_mlag_peer
+  then if device.name == member_a then 1 else 2
+  else vpc_position
+where isPresent(vc_position)
 select distinct {
   device: device.name,
   vc_name: vc_name,
   name: vc_name,
-  vc_domain: vc_domain
+  vc_domain: vc_domain,
+  vc_position: vc_position
 }
 ```
 
