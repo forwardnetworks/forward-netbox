@@ -104,6 +104,16 @@ class ForwardSyncStatusChoices(ChoiceSet):
     )
 
 
+class ForwardExecutionBackendChoices(ChoiceSet):
+    BRANCHING = "branching"
+    FAST_BOOTSTRAP = "fast_bootstrap"
+
+    CHOICES = (
+        (BRANCHING, _("Branching"), "blue"),
+        (FAST_BOOTSTRAP, _("Fast bootstrap"), "cyan"),
+    )
+
+
 class ForwardIngestionPhaseChoices(ChoiceSet):
     SYNC = "sync"
     MERGE = "merge"

@@ -6,11 +6,16 @@
 
 1. A `ForwardSource` stores Forward connection settings and resolves available networks.
 2. A `ForwardSync` selects models, snapshot mode, branch budget, and auto-merge behavior.
-3. The sync job resolves the Forward snapshot, validates query shape, fetches NQE rows, and builds a branch plan.
+3. The sync job resolves the Forward snapshot, validates query shape, fetches NQE rows, and builds either a Branching plan or a fast bootstrap workload.
 4. A `ForwardValidationRun` records pre-branch drift/policy results. Blocking policies stop the sync before branch creation.
-5. Each branch shard applies rows through NetBox model adapters under an active Branching branch.
-6. The branch is reviewed or merged through native NetBox Branching behavior.
+5. The selected execution backend applies rows through the same NetBox model adapters.
+6. The Branching backend creates reviewable native Branching shards; the fast bootstrap backend writes directly after validation for large initial imports.
 7. `ForwardIngestion`, `ForwardValidationRun`, and `ForwardIngestionIssue` retain run metadata, logs, statistics, and issues.
+
+NQE remains the source of truth for normalization and model-shaped rows. Execution
+backends may decide how validated rows are applied to NetBox, but they must not
+introduce separate Python-side data mutation rules that diverge from the NQE map
+contracts.
 
 ## Production Boundaries
 
@@ -26,6 +31,7 @@
 - Branch planning and branch-budget behavior: `forward_netbox/utilities/branch_budget.py`
 - Multi-branch planning: `forward_netbox/utilities/multi_branch_planner.py`
 - Multi-branch execution and retry behavior: `forward_netbox/utilities/multi_branch_executor.py`
+- Fast bootstrap direct-write execution: `forward_netbox/utilities/fast_bootstrap_executor.py`
 - Direct sync-stage execution: `forward_netbox/utilities/sync_execution.py`
 - Multi-branch lifecycle helpers for branch creation, overflow retry, and resume state: `forward_netbox/utilities/multi_branch_lifecycle.py`
 - Ingestion merge orchestration and signal suppression: `forward_netbox/utilities/ingestion_merge.py`
@@ -86,8 +92,9 @@ Current and future refactors should stay inside these smaller layers without cha
 
 ## Non-Negotiable Constraints
 
-- Keep sync and merge behavior NetBox-native and Branching-native.
-- Preserve the UI/API sync workflow; do not add a separate import path for large datasets.
+- Keep the default sync and merge behavior NetBox-native and Branching-native.
+- Preserve the UI/API sync workflow; large-dataset behavior must be selected through the sync execution backend, not a separate tool.
+- Keep normalization and model shaping in NQE; Python execution paths should consume the same native NetBox-shaped row contracts.
 - Keep branch budgets configurable and bounded according to NetBox Branching guidance.
 - Never persist customer data, credentials, private network IDs, or snapshot IDs in committed tests/docs.
 - Keep shipped query changes paired with tests and reference documentation.

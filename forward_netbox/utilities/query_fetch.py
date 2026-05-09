@@ -145,7 +145,7 @@ class ForwardQueryFetcher:
         row_limit=DEFAULT_PREFLIGHT_ROW_LIMIT,
     ) -> None:
         self.logger.log_info(
-            "Running Forward query preflight before full multi-branch planning.",
+            "Running Forward query preflight before building the sync workload.",
             obj=self.sync,
         )
         jobs = self._query_jobs(context)

@@ -5,6 +5,7 @@ from core.exceptions import SyncError
 from core.signals import pre_sync
 from django.utils import timezone
 
+from ..choices import ForwardExecutionBackendChoices
 from ..choices import ForwardIngestionPhaseChoices
 from ..choices import ForwardSourceStatusChoices
 from ..choices import ForwardSyncStatusChoices
@@ -103,6 +104,7 @@ def _finalize_forward_sync(sync, job):
 
 
 def run_forward_sync(sync, job=None, *, max_changes_per_branch=None):
+    from .fast_bootstrap_executor import ForwardFastBootstrapExecutor
     from .multi_branch import ForwardMultiBranchExecutor
 
     if sync.is_waiting_for_branch_merge:
@@ -127,16 +129,28 @@ def run_forward_sync(sync, job=None, *, max_changes_per_branch=None):
     ingestion = None
     executor = None
     try:
-        executor = ForwardMultiBranchExecutor(
+        execution_backend = (sync.parameters or {}).get(
+            "execution_backend",
+            ForwardExecutionBackendChoices.BRANCHING,
+        )
+        executor_class = (
+            ForwardFastBootstrapExecutor
+            if execution_backend == ForwardExecutionBackendChoices.FAST_BOOTSTRAP
+            else ForwardMultiBranchExecutor
+        )
+        executor = executor_class(
             sync,
             sync.source.get_client(),
             sync.logger,
             user=user,
             job=job,
         )
-        ingestions = executor.run(
-            max_changes_per_branch=max_changes_per_branch,
-        )
+        if execution_backend == ForwardExecutionBackendChoices.FAST_BOOTSTRAP:
+            ingestions = executor.run()
+        else:
+            ingestions = executor.run(
+                max_changes_per_branch=max_changes_per_branch,
+            )
         if not ingestions:
             sync.status = ForwardSyncStatusChoices.COMPLETED
             sync.logger.log_success("Forward ingestion completed.", obj=sync)
@@ -149,10 +163,16 @@ def run_forward_sync(sync, job=None, *, max_changes_per_branch=None):
             )
             return
         sync.status = ForwardSyncStatusChoices.COMPLETED
-        sync.logger.log_success(
-            "Forward multi-branch ingestion completed.",
-            obj=sync,
-        )
+        if execution_backend == ForwardExecutionBackendChoices.FAST_BOOTSTRAP:
+            sync.logger.log_success(
+                "Forward fast bootstrap ingestion completed.",
+                obj=sync,
+            )
+        else:
+            sync.logger.log_success(
+                "Forward multi-branch ingestion completed.",
+                obj=sync,
+            )
         return
     except Exception as exc:
         ingestion = _record_forward_sync_failure(

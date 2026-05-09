@@ -15,6 +15,7 @@ from utilities.forms.widgets import NumberWithOptions
 
 from .choices import forward_configured_models
 from .choices import FORWARD_OPTIONAL_MODELS
+from .choices import ForwardExecutionBackendChoices
 from .choices import ForwardSourceDeploymentChoices
 from .choices import ForwardSourceStatusChoices
 from .choices import ForwardSyncStatusChoices
@@ -349,6 +350,18 @@ class ForwardSyncForm(NetBoxModelForm):
             "Leave unchecked to pause for review after each shard."
         ),
     )
+    execution_backend = forms.ChoiceField(
+        choices=tuple(
+            (value, label)
+            for value, label, _color in ForwardExecutionBackendChoices.CHOICES
+        ),
+        required=False,
+        label="Execution backend",
+        help_text=(
+            "Use Branching for reviewable changes. Use Fast bootstrap for large "
+            "initial ingests that should write directly after validation."
+        ),
+    )
     max_changes_per_branch = forms.IntegerField(
         required=False,
         min_value=1,
@@ -397,6 +410,10 @@ class ForwardSyncForm(NetBoxModelForm):
         kwargs["initial"] = initial
         super().__init__(*args, **kwargs)
         parameters = self.instance.parameters or {}
+        self.fields["execution_backend"].initial = parameters.get(
+            "execution_backend",
+            ForwardExecutionBackendChoices.BRANCHING,
+        )
         self.fields["auto_merge"].initial = parameters.get("auto_merge", True)
         self.fields["max_changes_per_branch"].initial = parameters.get(
             "max_changes_per_branch",
@@ -430,6 +447,7 @@ class ForwardSyncForm(NetBoxModelForm):
             FieldSet("snapshot_id", name="Snapshot"),
             FieldSet(*configured_models, name="Model Selection"),
             FieldSet(
+                "execution_backend",
                 "max_changes_per_branch",
                 "auto_merge",
                 "scheduled",
@@ -469,6 +487,8 @@ class ForwardSyncForm(NetBoxModelForm):
         ):
             raise forms.ValidationError("Select at least one NetBox model to sync.")
         parameters = {
+            "execution_backend": cleaned.get("execution_backend")
+            or ForwardExecutionBackendChoices.BRANCHING,
             "auto_merge": cleaned.get("auto_merge", False),
             "multi_branch": True,
             "max_changes_per_branch": cleaned.get("max_changes_per_branch")
@@ -483,6 +503,8 @@ class ForwardSyncForm(NetBoxModelForm):
 
     def save(self, *args, **kwargs):
         parameters = {
+            "execution_backend": self.cleaned_data.get("execution_backend")
+            or ForwardExecutionBackendChoices.BRANCHING,
             "auto_merge": self.cleaned_data.get("auto_merge", False),
             "multi_branch": True,
             "max_changes_per_branch": self.cleaned_data.get("max_changes_per_branch")

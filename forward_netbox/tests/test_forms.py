@@ -6,6 +6,7 @@ from django.test import override_settings
 from django.test import TestCase
 
 from forward_netbox.choices import FORWARD_BGP_MODELS
+from forward_netbox.choices import ForwardExecutionBackendChoices
 from forward_netbox.choices import ForwardSourceDeploymentChoices
 from forward_netbox.exceptions import ForwardConnectivityError
 from forward_netbox.exceptions import ForwardSyncError
@@ -128,6 +129,7 @@ class ForwardSyncFormTest(TestCase):
                 "name": "sync-1",
                 "source": self.source.pk,
                 "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "execution_backend": ForwardExecutionBackendChoices.BRANCHING,
                 "dcim.device": "on",
                 "auto_merge": "",
                 "max_changes_per_branch": "10000",
@@ -139,6 +141,29 @@ class ForwardSyncFormTest(TestCase):
         self.assertFalse(form.instance.parameters["auto_merge"])
         self.assertFalse(form.instance.auto_merge)
         self.assertEqual(form.instance.parameters["max_changes_per_branch"], 10000)
+        self.assertEqual(
+            form.instance.parameters["execution_backend"],
+            ForwardExecutionBackendChoices.BRANCHING,
+        )
+
+    def test_form_persists_fast_bootstrap_backend(self):
+        form = ForwardSyncForm(
+            data={
+                "name": "sync-fast-bootstrap",
+                "source": self.source.pk,
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "execution_backend": ForwardExecutionBackendChoices.FAST_BOOTSTRAP,
+                "dcim.device": "on",
+                "auto_merge": "on",
+                "max_changes_per_branch": "10000",
+            }
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(
+            form.instance.parameters["execution_backend"],
+            ForwardExecutionBackendChoices.FAST_BOOTSTRAP,
+        )
 
     @patch("forward_netbox.forms.ForwardSource.validate_connection")
     def test_source_form_persists_nqe_page_size(self, _mock_validate_connection):
