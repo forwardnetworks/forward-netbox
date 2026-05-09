@@ -170,15 +170,31 @@ If you want Forward to own the modular source instead of storing raw NQE inside 
 3. Use the resulting `query_id` and optional `commit_id` in a custom `Forward NQE Map`.
 4. Validate against a known snapshot before enabling the map in production syncs.
 
-### Large Dataset Recommendation
+### Initial Baseline Strategy
+
+Choose the initial sync path before the first production run. The choice is not
+about NQE shape: both paths use the same enabled NQE maps, preflight validation,
+drift policy, coalesce contracts, row adapters, ingestion issues, and model
+results. The choice is about whether the first NetBox writes must be reviewed in
+native Branching branches.
+
+| Situation | Execution backend | What happens | What to do after it succeeds |
+| --- | --- | --- | --- |
+| Small or reviewable baseline | `Branching` | Stages the baseline in native NetBox Branching shards using `Max changes per branch`. | Review or auto-merge the shards, then keep using `Branching` for steady-state diffs. |
+| Large but still reviewable baseline | `Branching` with `Auto merge` | Creates and merges one bounded Branching shard at a time. | Let the final successful shard become the diff baseline. |
+| Very large trusted baseline that is impractical to review shard-by-shard | `Fast bootstrap` | Runs validation first, then writes directly to NetBox without creating Branching branches. | Inspect validation, ingestion issues, model results, and NetBox state; then switch the sync back to `Branching` for reviewable steady-state diffs. |
+
+`Fast bootstrap` is intended only for trusted initial baseline loads. It does
+not provide a Branching diff for review, and `Auto merge` / `Max changes per
+branch` do not apply to that backend.
 
 For large datasets, prefer Org Repository-backed `query_id` maps over bundled raw `query` maps.
 
 - Keep the query source in Forward by committing the modular query set into the Org Repository.
 - Point custom `Forward NQE Maps` at the committed `query_id` values.
 - Leave the sync `Snapshot` at `latestProcessed`.
-- Run and merge one clean baseline ingestion first.
-- After that merged baseline exists, later `latestProcessed` runs can use Forward `nqe-diffs` for eligible `query_id` maps instead of rerunning every model as a full snapshot sync.
+- Run one clean baseline ingestion first, either by merging the Branching baseline or completing a trusted fast-bootstrap baseline.
+- After that baseline exists, switch or keep the sync on `Branching`; later `latestProcessed` runs can use Forward `nqe-diffs` for eligible `query_id` maps instead of rerunning every model as a full snapshot sync.
 
 This keeps NQE as the source of truth, lets Forward own the row-diff computation, and is the recommended operating mode for larger inventories.
 
@@ -208,7 +224,7 @@ This stages one shard and leaves the sync at `Ready to merge`. After you review 
 
 If the planner reports that one shard key exceeds the branch budget, reduce that source model with a narrower NQE map or split the source data so the largest device or coalesce-key group fits under the operational branch size.
 
-For initial imports that are too large to review shard-by-shard, select `Fast bootstrap` as the sync execution backend. This still runs the same NQE maps, preflight validation, drift policies, coalesce contracts, row adapters, and ingestion issue reporting, but writes directly to NetBox instead of creating Branching branches. NQE remains the source of truth for row normalization and NetBox-shaped model data. Use fast bootstrap for a trusted baseline load, then switch the sync back to `Branching` for reviewable steady-state diffs.
+For initial imports that are too large to review shard-by-shard, select `Fast bootstrap` as the sync execution backend. Use it for the baseline load, inspect the resulting validation and ingestion records, then edit the sync back to `Branching` before steady-state runs.
 
 ## Forward Syncs
 

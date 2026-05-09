@@ -133,7 +133,7 @@ python manage.py migrate
 6. Create a `Forward Sync`, choose the snapshot selector, and enable the NetBox models you want to sync.
 7. Run an adhoc ingestion, review the staged branch diff, review the recorded snapshot details and metrics, and merge when the changes look correct.
 
-For large datasets, prefer committed Forward Org Repository queries referenced by `query_id`, leave `Snapshot` at `latestProcessed`, and treat the first clean merge or fast-bootstrap run as the baseline. Later `latestProcessed` Branching runs can then use Forward `nqe-diffs` instead of replaying every model as a full snapshot sync. Use fast bootstrap only for trusted initial baselines where direct NetBox writes are acceptable; it keeps the same NQE, preflight, model validation, and ingestion issue reporting contracts but does not create review branches.
+For large datasets, prefer committed Forward Org Repository queries referenced by `query_id`, leave `Snapshot` at `latestProcessed`, and establish one clean baseline first. Use the default `Branching` backend when the initial changes should be reviewed in native NetBox Branching shards. Use `Fast bootstrap` only for trusted initial baselines where direct NetBox writes are acceptable; it keeps the same NQE, preflight, model validation, and ingestion issue reporting contracts but does not create review branches. After a fast-bootstrap baseline completes, switch the sync back to `Branching` so later `latestProcessed` runs can use Forward `nqe-diffs` and remain reviewable.
 
 The shipped query set includes both default maps and optional alias-aware maps. If your NetBox device types are pre-loaded from the NetBox Device Type Library, upload a Forward JSON data file named `netbox_device_type_aliases.json` with NQE name `netbox_device_type_aliases`, attach it to the Forward network, and run or reprocess a Forward snapshot before enabling the disabled alias-aware device maps or using committed query IDs for those variants. The NetBox plugin runs public `/api/nqe` against the selected snapshot, so latest uploaded data files do not affect plugin sync results until the selected snapshot exposes the data file value. The generated file carries both device type aliases and manufacturer override rows for the alias-aware maps. Without that data file in the selected snapshot, leave the default non-data-file maps enabled.
 
@@ -180,7 +180,7 @@ Optional smoke-sync variables:
 - `invoke forward_netbox.smoke-sync --no-auto-merge --max-changes-per-branch 10000` stages one shard and pauses for review
 - `invoke forward_netbox.smoke-sync --execution-backend fast_bootstrap` runs the trusted direct-write baseline backend after validation
 
-Normal UI/API sync jobs default to native multi-branch execution, with a default branch budget of `10000` changes. `Auto merge` controls whether Branching shards advance automatically or pause for review after each shard. For trusted large baselines, select the fast bootstrap execution backend and switch back to Branching for reviewable steady-state diffs.
+Normal UI/API sync jobs default to native multi-branch execution, with a default branch budget of `10000` changes. `Auto merge` controls whether Branching shards advance automatically or pause for review after each shard. For trusted large baselines, select the fast bootstrap execution backend and switch back to Branching for reviewable steady-state diffs. See the [Initial Baseline Strategy](docs/01_User_Guide/configuration.md#initial-baseline-strategy) for the decision table.
 
 ## Documentation
 
