@@ -90,6 +90,7 @@ Expected result:
 - With the `Branching` backend, the sync status progresses into the branch-backed staging flow.
 - With the `Branching` backend, the sync creates one ingestion per shard, and each shard links to its native NetBox Branching branch.
 - With the `Fast bootstrap` backend, one branchless ingestion is created and rows are written directly after validation.
+- Fast bootstrap statistics and the ingestion `Changes` tab are backed by NetBox `ObjectChange` records for that direct-write request, not by Branching `ChangeDiff` rows.
 - The ingestion records both the selected snapshot mode and the resolved snapshot ID used for NQE execution.
 - The ingestion links to the validation run and persists per-model query execution results.
 - If `Auto merge` is disabled, the sync pauses after the current shard reaches `Ready to merge`.

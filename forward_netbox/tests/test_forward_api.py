@@ -109,6 +109,69 @@ class ForwardClientTest(TestCase):
         sleep.assert_called_once_with(2)
         response.raise_for_status.assert_called_once()
 
+    def test_request_retries_transient_http_status_errors(self):
+        request = httpx.Request("POST", "https://fwd.app/api/nqe")
+        response_504 = httpx.Response(
+            504,
+            request=request,
+            text="gateway timeout",
+        )
+        response_ok = Mock()
+        first_client = Mock()
+        first_client.request.return_value = response_504
+        second_client = Mock()
+        second_client.request.return_value = response_ok
+        first_context = Mock()
+        first_context.__enter__ = Mock(return_value=first_client)
+        first_context.__exit__ = Mock(return_value=None)
+        second_context = Mock()
+        second_context.__enter__ = Mock(return_value=second_client)
+        second_context.__exit__ = Mock(return_value=None)
+
+        with (
+            patch(
+                "forward_netbox.utilities.forward_api.httpx.Client",
+                side_effect=[first_context, second_context],
+            ),
+            patch("forward_netbox.utilities.forward_api.time.sleep") as sleep,
+        ):
+            result = self.client._request("POST", "/nqe", json_body={"query": "q"})
+
+        self.assertEqual(result, response_ok)
+        sleep.assert_called_once_with(2)
+        response_ok.raise_for_status.assert_called_once()
+
+    def test_request_raises_connectivity_error_after_transient_http_status_retries(
+        self,
+    ):
+        self.client.retries = 1
+        request = httpx.Request("POST", "https://fwd.app/api/nqe")
+        response_504 = httpx.Response(
+            504,
+            request=request,
+            text="gateway timeout",
+        )
+        client = Mock()
+        client.request.return_value = response_504
+        client_context = Mock()
+        client_context.__enter__ = Mock(return_value=client)
+        client_context.__exit__ = Mock(return_value=None)
+
+        with (
+            patch(
+                "forward_netbox.utilities.forward_api.httpx.Client",
+                side_effect=[client_context, client_context],
+            ),
+            patch("forward_netbox.utilities.forward_api.time.sleep"),
+            self.assertRaisesRegex(
+                ForwardConnectivityError,
+                "transient HTTP 504",
+            ),
+        ):
+            self.client._request("POST", "/nqe", json_body={"query": "q"})
+
+        self.assertEqual(client.request.call_count, 2)
+
     def test_request_raises_after_retry_exhaustion(self):
         self.client.retries = 1
         api_error = httpx.RemoteProtocolError(

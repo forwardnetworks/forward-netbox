@@ -99,12 +99,56 @@ Symptoms:
 
 - Sync or merge ends with timeout status.
 - Ingestion issues include `JobTimeoutException`.
+- Job logs mention `RQ_DEFAULT_TIMEOUT`.
 
 Checks:
 
-- Increase the RQ worker timeout in your NetBox deployment.
+- Compare NetBox `RQ_DEFAULT_TIMEOUT` to the Forward source `Timeout`; the
+  worker timeout should be higher than the longest expected Forward API/NQE
+  request plus NetBox staging/merge time. The default Forward source timeout is
+  20 minutes because current Forward public NQE API execution uses a 20-minute
+  default query-compute timeout.
+- Increase the RQ worker timeout in your NetBox deployment before rerunning a
+  large baseline.
+- For a very large trusted first baseline, consider `Fast bootstrap`; switch
+  back to `Branching` for normal diff-based runs after the baseline succeeds.
+- If using Branching, keep `Max changes per branch` aligned to your Branching
+  guidance and let the plugin shard the run instead of raising the branch
+  budget to force everything into one branch.
 - Re-run the sync (and merge if needed) after increasing timeout.
 - Review `core/jobs` plus ingestion issues for the matching timestamp window.
+
+Example NetBox configuration:
+
+```python
+RQ_DEFAULT_TIMEOUT = 7200
+```
+
+Set the final value according to your environment, worker supervision policy,
+and how long a trusted large baseline is allowed to run.
+
+## Fast Bootstrap Looks Like A Dry Run
+
+Symptoms:
+
+- A fast-bootstrap ingestion is running or completed.
+- The ingestion counters stay empty.
+- The ingestion `Changes` tab says no changes were found.
+- The global NetBox change log does not show expected object changes.
+
+Checks:
+
+- Confirm the plugin version includes fast-bootstrap direct change tracking.
+  Fast bootstrap should store a request id on the branchless ingestion and use
+  native NetBox `ObjectChange` rows for created/updated/deleted counters.
+- Open the branchless ingestion `Changes` tab; for fast bootstrap it should list
+  direct NetBox object changes rather than Branching diffs.
+- If the counters remain empty after rows are applied, check `Forward Ingestion
+  Issues` for row-level failures and confirm the enabled maps are returning
+  non-empty rows for the selected snapshot.
+- If the global change log is empty but objects exist, verify NetBox change
+  logging is enabled and the sync is not running under a custom path that clears
+  the NetBox request context.
 
 ## Merge Records Skipped Changes
 
