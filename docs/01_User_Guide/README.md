@@ -12,26 +12,27 @@ Install the plugin package, enable the required plugins, run the migrations, and
 Install the wheel from GitHub Releases into the same Python environment as NetBox:
 
 ```bash
-pip install /path/to/forward_netbox-0.8.1-py3-none-any.whl
+pip install /path/to/forward_netbox-0.8.1.1-py3-none-any.whl
 ```
 
 Alternatively, install directly from the GitHub source archive:
 
 ```bash
-pip install /path/to/forward_netbox-0.8.1.tar.gz
+pip install /path/to/forward_netbox-0.8.1.1.tar.gz
 ```
 
 If you mirror the package into a private Python index, pin the same release version:
 
 ```bash
-pip install --pre forward-netbox==0.8.1
+pip install --pre forward-netbox==0.8.1.1
 ```
 
 ## Release Compatibility
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v0.8.1` | `4.5.9` validated; `4.5.x` only | Current release; fixes fast-bootstrap native change tracking/statistics and adds timeout guidance plus transient Forward API HTTP retries |
+| `v0.8.1.1` | `4.5.9` validated; `4.5.x` only | Current release; fixes virtual chassis NQE output so NetBox receives a member position with virtual chassis assignments |
+| `v0.8.1` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.8.1.1`; fixes fast-bootstrap native change tracking/statistics and adds timeout guidance plus transient Forward API HTTP retries |
 | `v0.8.0` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.8.1`; adds an opt-in fast bootstrap backend for trusted large baselines while keeping Branching as default, and skips NetBox-invalid LAG cable endpoints |
 | `v0.7.1` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.8.0`; keeps the NetBox-native multi-branch workflow, adds shard heartbeat visibility, and hardens large-shard retries and cable ingestion handling |
 | `v0.7.0` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.7.1`; extracts the 0.7 sync boundaries and adds shard heartbeat visibility |
@@ -55,6 +56,7 @@ pip install --pre forward-netbox==0.8.1
 
 | Release | Summary |
 | --- | --- |
+| `v0.8.1.1` | Emits `vc_position` in the built-in virtual chassis NQE map for vPC and MLAG memberships so NetBox does not reject virtual chassis device assignments without a member position. |
 | `v0.8.1` | Runs fast bootstrap inside native NetBox change tracking, shows branchless ingestion changes from `ObjectChange` rows, updates fast-bootstrap counters from real object changes, warns about undersized worker timeouts, and retries transient Forward API HTTP timeouts/gateway responses. |
 | `v0.8.0` | Adds an opt-in fast bootstrap direct-write backend for trusted large baselines, keeps NQE validation and row adapters shared with Branching, and skips LAG cable endpoints that NetBox cannot cable directly. |
 | `v0.7.1` | Keeps the NetBox-native multi-branch workflow stable while hardening cable ingestion, retry handling, and shard re-planning for large runs. |
