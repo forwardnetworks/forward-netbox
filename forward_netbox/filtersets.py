@@ -1,5 +1,6 @@
 import django_filters
 from core.choices import ObjectChangeActionChoices
+from core.models import ObjectChange
 from django.db.models import Q
 from netbox.filtersets import BaseFilterSet
 from netbox.filtersets import ChangeLoggedModelFilterSet
@@ -103,6 +104,26 @@ class ForwardIngestionChangeFilterSet(BaseFilterSet):
             | Q(original__icontains=value)
             | Q(action__icontains=value)
             | Q(object_type__model__icontains=value)
+        )
+
+
+class ForwardIngestionObjectChangeFilterSet(BaseFilterSet):
+    q = django_filters.CharFilter(method="search")
+    action = django_filters.MultipleChoiceFilter(choices=ObjectChangeActionChoices)
+
+    class Meta:
+        model = ObjectChange
+        fields = ("action", "changed_object_type")
+
+    def search(self, queryset, name, value):
+        if not value.strip():
+            return queryset
+        return queryset.filter(
+            Q(prechange_data__icontains=value)
+            | Q(postchange_data__icontains=value)
+            | Q(action__icontains=value)
+            | Q(changed_object_type__model__icontains=value)
+            | Q(object_repr__icontains=value)
         )
 
 
