@@ -1,5 +1,6 @@
 from core.choices import ObjectChangeActionChoices
 from core.exceptions import SyncError
+from core.models import ObjectChange
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.db import models
@@ -27,6 +28,7 @@ from .filtersets import ForwardDriftPolicyFilterSet
 from .filtersets import ForwardIngestionChangeFilterSet
 from .filtersets import ForwardIngestionFilterSet
 from .filtersets import ForwardIngestionIssueFilterSet
+from .filtersets import ForwardIngestionObjectChangeFilterSet
 from .filtersets import ForwardNQEMapFilterSet
 from .filtersets import ForwardSourceFilterSet
 from .filtersets import ForwardSyncFilterSet
@@ -51,11 +53,13 @@ from .models import ForwardValidationRun
 from .tables import ForwardDriftPolicyTable
 from .tables import ForwardIngestionChangesTable
 from .tables import ForwardIngestionIssueTable
+from .tables import ForwardIngestionObjectChangesTable
 from .tables import ForwardIngestionTable
 from .tables import ForwardNQEMapTable
 from .tables import ForwardSourceTable
 from .tables import ForwardSyncTable
 from .tables import ForwardValidationRunTable
+from .utilities.direct_changes import object_changes_for_ingestion
 
 
 def annotate_statistics(queryset):
@@ -498,15 +502,34 @@ class ForwardIngestionChangesView(generic.ObjectChildrenView):
     child_model = ChangeDiff
     table = ForwardIngestionChangesTable
     filterset = ForwardIngestionChangeFilterSet
+    actions = ()
     template_name = "generic/object_children.html"
     tab = ViewTab(
         label=_("Changes"),
-        badge=lambda obj: ChangeDiff.objects.filter(branch=obj.branch).count(),
+        badge=lambda obj: (
+            ChangeDiff.objects.filter(branch=obj.branch).count()
+            if obj.branch_id
+            else object_changes_for_ingestion(obj).count()
+        ),
         permission="forward_netbox.view_forwardingestion",
     )
 
+    def get(self, request, *args, **kwargs):
+        parent = self.get_object(**kwargs)
+        if parent.branch_id:
+            self.child_model = ChangeDiff
+            self.table = ForwardIngestionChangesTable
+            self.filterset = ForwardIngestionChangeFilterSet
+        else:
+            self.child_model = ObjectChange
+            self.table = ForwardIngestionObjectChangesTable
+            self.filterset = ForwardIngestionObjectChangeFilterSet
+        return super().get(request, *args, **kwargs)
+
     def get_children(self, request, parent):
-        return self.child_model.objects.filter(branch=parent.branch)
+        if parent.branch_id:
+            return ChangeDiff.objects.filter(branch=parent.branch)
+        return object_changes_for_ingestion(parent)
 
 
 @register_model_view(ForwardIngestion, "issues")

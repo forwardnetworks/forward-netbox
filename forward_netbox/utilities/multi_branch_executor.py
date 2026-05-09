@@ -12,6 +12,7 @@ from .multi_branch_lifecycle import set_runtime_phase
 from .multi_branch_lifecycle import split_overflow_item
 from .multi_branch_lifecycle import validation_run_from_state
 from .multi_branch_planner import ForwardMultiBranchPlanner
+from .runtime_guidance import log_branch_plan_timeout_guidance
 from .validation import ForwardValidationRunner
 
 
@@ -91,6 +92,7 @@ class ForwardMultiBranchExecutor:
             plan,
             max_changes_per_branch=self.max_changes_per_branch,
         )
+        log_branch_plan_timeout_guidance(self.sync, self.logger, plan)
         if next_plan_index <= 1:
             self._set_runtime_phase(
                 "validating",

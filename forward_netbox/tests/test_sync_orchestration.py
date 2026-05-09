@@ -3,6 +3,7 @@ from unittest.mock import patch
 from core.choices import JobStatusChoices
 from core.models import Job
 from django.contrib.contenttypes.models import ContentType
+from django.test import override_settings
 from django.test import TestCase
 from django.utils import timezone
 
@@ -12,6 +13,7 @@ from forward_netbox.choices import ForwardSyncStatusChoices
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
+from forward_netbox.utilities.logging import SyncLogging
 from forward_netbox.utilities.sync_orchestration import _finalize_forward_sync
 from forward_netbox.utilities.sync_orchestration import _prepare_forward_sync
 from forward_netbox.utilities.sync_orchestration import run_forward_sync
@@ -55,6 +57,23 @@ class ForwardSyncOrchestrationHelperTest(TestCase):
 
         self.assertEqual(self.sync.status, ForwardSyncStatusChoices.COMPLETED)
         self.assertEqual(self.source.status, ForwardSourceStatusChoices.READY)
+
+    @override_settings(RQ_DEFAULT_TIMEOUT=300)
+    @patch.object(SyncLogging, "log_warning")
+    @patch("forward_netbox.utilities.multi_branch.ForwardMultiBranchExecutor")
+    def test_run_forward_sync_warns_when_worker_timeout_is_lower_than_source_timeout(
+        self,
+        mock_executor_class,
+        mock_log_warning,
+    ):
+        mock_executor = mock_executor_class.return_value
+        mock_executor.run.return_value = []
+
+        run_forward_sync(self.sync)
+
+        warning_message = mock_log_warning.call_args.args[0]
+        self.assertIn("RQ_DEFAULT_TIMEOUT is 300s", warning_message)
+        self.assertIn("Forward source timeout (1200s)", warning_message)
 
     @patch(
         "forward_netbox.utilities.fast_bootstrap_executor.ForwardFastBootstrapExecutor"

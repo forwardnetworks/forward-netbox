@@ -6,7 +6,8 @@
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v0.8.0` | `4.5.9` validated; `4.5.x` only | Current release; adds an opt-in fast bootstrap backend for trusted large baselines while keeping Branching as default, and skips NetBox-invalid LAG cable endpoints |
+| `v0.8.1` | `4.5.9` validated; `4.5.x` only | Current release; fixes fast-bootstrap native change tracking/statistics and adds timeout guidance plus transient Forward API HTTP retries |
+| `v0.8.0` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.8.1`; adds an opt-in fast bootstrap backend for trusted large baselines while keeping Branching as default, and skips NetBox-invalid LAG cable endpoints |
 | `v0.7.1` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.8.0`; keeps the NetBox-native multi-branch workflow, adds shard heartbeat visibility, and hardens large-shard retries and cable ingestion handling |
 | `v0.7.0` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.7.1`; extracts the 0.7 sync boundaries and adds shard heartbeat visibility |
 | `v0.6.5` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.7.0`; adds audited validation force-allow overrides and routing evidence enrichment; optional routing/peering import remains beta; native `dcim.module` import is beta |
@@ -29,6 +30,7 @@
 
 | Release | Summary |
 | --- | --- |
+| `v0.8.1` | Runs fast bootstrap inside native NetBox change tracking, shows branchless ingestion changes from `ObjectChange` rows, updates fast-bootstrap counters from real object changes, warns about undersized worker timeouts, and retries transient Forward API HTTP timeouts/gateway responses. |
 | `v0.8.0` | Adds an opt-in fast bootstrap direct-write backend for trusted large baselines, keeps NQE validation and row adapters shared with Branching, and skips LAG cable endpoints that NetBox cannot cable directly. |
 | `v0.7.1` | Keeps the NetBox-native multi-branch workflow stable while hardening cable ingestion, retry handling, and shard re-planning for large runs. |
 | `v0.7.0` | Splits the remaining sync orchestration, reporting, and validation helpers into dedicated boundaries, adds shard heartbeat visibility, and preserves the NetBox-native branch workflow. |
@@ -110,7 +112,7 @@ This repository is provided for use at your own risk. It is an unsupported relea
 Install the wheel or source archive from GitHub Releases:
 
 ```bash
-pip install /path/to/forward_netbox-0.8.0-py3-none-any.whl
+pip install /path/to/forward_netbox-0.8.1-py3-none-any.whl
 ```
 
 2. Enable both plugins in the NetBox configuration:
@@ -133,7 +135,7 @@ python manage.py migrate
 6. Create a `Forward Sync`, choose the snapshot selector, and enable the NetBox models you want to sync.
 7. Run an adhoc ingestion, review the staged branch diff, review the recorded snapshot details and metrics, and merge when the changes look correct.
 
-For large datasets, prefer committed Forward Org Repository queries referenced by `query_id`, leave `Snapshot` at `latestProcessed`, and establish one clean baseline first. Use the default `Branching` backend when the initial changes should be reviewed in native NetBox Branching shards. Use `Fast bootstrap` only for trusted initial baselines where direct NetBox writes are acceptable; it keeps the same NQE, preflight, model validation, and ingestion issue reporting contracts but does not create review branches. After a fast-bootstrap baseline completes, switch the sync back to `Branching` so later `latestProcessed` runs can use Forward `nqe-diffs` and remain reviewable.
+For large datasets, prefer committed Forward Org Repository queries referenced by `query_id`, leave `Snapshot` at `latestProcessed`, and establish one clean baseline first. Use the default `Branching` backend when the initial changes should be reviewed in native NetBox Branching shards. Use `Fast bootstrap` only for trusted initial baselines where direct NetBox writes are acceptable; it keeps the same NQE, preflight, model validation, ingestion issue reporting, and native NetBox change tracking contracts but does not create review branches. After a fast-bootstrap baseline completes, switch the sync back to `Branching` so later `latestProcessed` runs can use Forward `nqe-diffs` and remain reviewable.
 
 The shipped query set includes both default maps and optional alias-aware maps. If your NetBox device types are pre-loaded from the NetBox Device Type Library, upload a Forward JSON data file named `netbox_device_type_aliases.json` with NQE name `netbox_device_type_aliases`, attach it to the Forward network, and run or reprocess a Forward snapshot before enabling the disabled alias-aware device maps or using committed query IDs for those variants. The NetBox plugin runs public `/api/nqe` against the selected snapshot, so latest uploaded data files do not affect plugin sync results until the selected snapshot exposes the data file value. The generated file carries both device type aliases and manufacturer override rows for the alias-aware maps. Without that data file in the selected snapshot, leave the default non-data-file maps enabled.
 

@@ -38,11 +38,14 @@ Create a `Forward Source` for each Forward deployment or tenant you want to sync
   - The field is populated dynamically from the authenticated tenant when valid credentials are supplied.
 - `Timeout`
   - Forward API timeout in seconds.
-  - Defaults to `1200` (20 minutes), aligned to the NQE timeout boundary.
+  - Defaults to `1200` (20 minutes), aligned to Forward's default NQE
+    compute timeout for the public API path.
 - `Retries`
-  - Forward API transport retry count for transient disconnects and timeouts.
+  - Forward API retry count for transient disconnects, timeouts, and transient
+    HTTP responses (`408`, `429`, `502`, `503`, `504`).
   - Defaults to `2`; valid source parameters are clamped to `0..5`.
-  - Retries do not mask NQE row validation failures or HTTP error responses.
+  - Retries do not mask NQE row validation failures or non-transient HTTP error
+    responses.
 - `NQE Page Size`
   - Rows requested per `/api/nqe` page.
   - Defaults to `10000`; valid range is `1..10000`.
@@ -186,7 +189,11 @@ native Branching branches.
 
 `Fast bootstrap` is intended only for trusted initial baseline loads. It does
 not provide a Branching diff for review, and `Auto merge` / `Max changes per
-branch` do not apply to that backend.
+branch` do not apply to that backend. The fast path still runs inside NetBox
+change tracking: the branchless ingestion stores the NetBox request id used for
+direct writes, its statistics are derived from native `ObjectChange` rows, and
+the ingestion `Changes` tab shows those direct NetBox changes instead of branch
+diffs.
 
 For large datasets, prefer Org Repository-backed `query_id` maps over bundled raw `query` maps.
 
@@ -201,6 +208,30 @@ This keeps NQE as the source of truth, lets Forward own the row-diff computation
 For very large inventories, expect the first full baseline to remain the slow path even after query optimization because NetBox must still materialize every staged object change. The largest steady-state win comes from switching later `latestProcessed` runs onto Forward `nqe-diffs`.
 
 NetBox Branching guidance favors smaller review branches. The default backend uses native multi-branch execution. If a full baseline would stage tens or hundreds of thousands of changes, the planner splits large model workloads into ordinary NetBox Branching branches using stable shard keys, with device-scoped models grouped by device.
+
+### Runtime Sizing For Large Syncs
+
+The Forward source `Timeout` controls individual Forward API/NQE calls. In
+current Forward builds, the public NQE API path has a default query-compute
+timeout of 20 minutes; the web response wrapper can wait longer, but it does not
+make a single query compute indefinitely. NetBox worker timeout controls how
+long the NetBox background job is allowed to run. For large baselines, size
+both:
+
+- Set NetBox `RQ_DEFAULT_TIMEOUT` higher than the Forward source `Timeout`.
+- Use a long enough `RQ_DEFAULT_TIMEOUT` for initial Branching baselines and
+  merge jobs; the default NetBox value can be too short for large imports.
+- Keep `Max changes per branch` at or below the operator's Branching guidance.
+- Prefer `Fast bootstrap` only for trusted first baselines that are impractical
+  to review as branches, then switch back to `Branching`.
+- Ensure NetBox workers and Postgres have enough capacity for the selected
+  concurrency and the number of simultaneous syncs.
+
+The plugin logs a non-blocking warning when it can see that
+`RQ_DEFAULT_TIMEOUT` is shorter than the Forward source timeout, or when a large
+Branching plan is being run with a short worker timeout. These warnings do not
+change sync behavior; they are intended to make timeout failures easier to
+avoid before the run has been waiting for a long time.
 
 For command-line validation, run the smoke sync with `--plan-only` first:
 

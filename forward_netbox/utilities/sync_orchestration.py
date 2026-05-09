@@ -15,6 +15,7 @@ from ..models import ForwardSource
 from ..models import ForwardSync
 from ..models import ForwardValidationRun
 from ..utilities.logging import SyncLogging
+from .runtime_guidance import log_worker_timeout_guidance
 
 logger = logging.getLogger("forward_netbox.models")
 
@@ -132,6 +133,11 @@ def run_forward_sync(sync, job=None, *, max_changes_per_branch=None):
         execution_backend = (sync.parameters or {}).get(
             "execution_backend",
             ForwardExecutionBackendChoices.BRANCHING,
+        )
+        log_worker_timeout_guidance(
+            sync,
+            sync.logger,
+            execution_backend=execution_backend,
         )
         executor_class = (
             ForwardFastBootstrapExecutor

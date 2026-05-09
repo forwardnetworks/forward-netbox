@@ -1,6 +1,7 @@
 import json
 
 import django_tables2 as tables
+from core.models import ObjectChange
 from django.utils.html import format_html
 from django.utils.translation import gettext_lazy as _
 from netbox.tables import columns
@@ -221,6 +222,41 @@ class ForwardIngestionChangesTable(NetBoxTable):
         model = ChangeDiff
         fields = ("object", "action", "object_type", "diffs")
         default_columns = ("object", "action", "object_type", "diffs")
+
+
+class ForwardIngestionObjectChangesTable(NetBoxTable):
+    id = tables.Column(verbose_name=_("ID"))
+    pk = None
+    object_type = tables.Column(
+        accessor="changed_object_type.model",
+        verbose_name=_("Object Type"),
+    )
+    object = tables.Column(
+        accessor="changed_object",
+        verbose_name=_("Object"),
+        order_by="object_repr",
+    )
+    actions = None
+
+    def render_object(self, value, record):
+        if value and hasattr(value, "get_absolute_url"):
+            label = (
+                getattr(value, "name", None)
+                or getattr(value, "model", None)
+                or getattr(value, "address", None)
+                or getattr(value, "prefix", None)
+                or getattr(value, "mac_address", None)
+            )
+            if label:
+                return format_html(
+                    "<a href='{}'>{}</a>", value.get_absolute_url(), label
+                )
+        return record.object_repr
+
+    class Meta(NetBoxTable.Meta):
+        model = ObjectChange
+        fields = ("object", "action", "object_type")
+        default_columns = ("object", "action", "object_type")
 
 
 class ForwardIngestionIssueTable(NetBoxTable):

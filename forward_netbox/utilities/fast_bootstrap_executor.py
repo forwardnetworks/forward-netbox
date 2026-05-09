@@ -1,6 +1,11 @@
 from core.exceptions import SyncError
 from core.models import ObjectType
+from netbox.context import current_request
+from netbox.context_managers import event_tracking
 
+from .branching import build_branch_request
+from .direct_changes import action_counts_for_request
+from .direct_changes import any_object_changes_for_request
 from .multi_branch_lifecycle import create_noop_ingestion
 from .multi_branch_lifecycle import set_runtime_phase
 from .query_fetch import ForwardQueryFetcher
@@ -32,7 +37,7 @@ class ForwardFastBootstrapExecutor:
             total_plan_items=total_plan_items,
         )
 
-    def _create_ingestion(self, context):
+    def _create_ingestion(self, context, *, change_request_id=None):
         from ..models import ForwardIngestion
 
         ingestion = ForwardIngestion.objects.create(
@@ -41,6 +46,7 @@ class ForwardFastBootstrapExecutor:
             validation_run=self.last_validation_run,
             snapshot_selector=context["snapshot_selector"],
             snapshot_id=context["snapshot_id"],
+            change_request_id=change_request_id,
             snapshot_info=context["snapshot_info"],
             snapshot_metrics=context["snapshot_metrics"],
             model_results=self.last_model_results,
@@ -64,16 +70,30 @@ class ForwardFastBootstrapExecutor:
             return "diff"
         return "full"
 
-    def _record_change_totals(self, ingestion):
+    def _record_change_totals(self, ingestion, *, request_id=None):
         statistics = self.logger.log_data.get("statistics", {})
-        applied = sum(int(stats.get("applied") or 0) for stats in statistics.values())
         failed = sum(int(stats.get("failed") or 0) for stats in statistics.values())
+        if request_id and any_object_changes_for_request(request_id):
+            action_counts = action_counts_for_request(self.sync, request_id)
+            created = action_counts.get("create", 0)
+            updated = action_counts.get("update", 0)
+            deleted = action_counts.get("delete", 0)
+            ingestion.record_change_totals(
+                applied=created + updated + deleted,
+                failed=failed,
+                created=created,
+                updated=updated,
+                deleted=deleted,
+            )
+            return
+
+        applied = sum(int(stats.get("applied") or 0) for stats in statistics.values())
         ingestion.record_change_totals(applied=applied, failed=failed)
 
-    def _raise_if_issues_exist(self, ingestion):
+    def _raise_if_issues_exist(self, ingestion, *, request_id=None):
         if not ingestion.issues.exists():
             return
-        self._record_change_totals(ingestion)
+        self._record_change_totals(ingestion, request_id=request_id)
         messages = list(ingestion.issues.values_list("message", flat=True)[:5])
         raise SyncError(
             "Forward fast bootstrap completed with issues: " + "; ".join(messages)
@@ -111,7 +131,11 @@ class ForwardFastBootstrapExecutor:
             self.logger.log_info("No Forward changes were returned for this run.")
             return [create_noop_ingestion(self, context.as_dict())]
 
-        ingestion = self._create_ingestion(context.as_dict())
+        request = build_branch_request(self.user)
+        ingestion = self._create_ingestion(
+            context.as_dict(),
+            change_request_id=request.id,
+        )
         runner = ForwardSyncRunner(
             sync=self.sync,
             ingestion=ingestion,
@@ -121,47 +145,60 @@ class ForwardFastBootstrapExecutor:
         pending_deletes = {}
         initialized_models = set()
         total_workloads = len(workloads)
-        for index, workload in enumerate(workloads, start=1):
-            runner._model_coalesce_fields[workload.model_string] = (
-                workload.coalesce_fields
-            )
-            pending_deletes.setdefault(workload.model_string, []).extend(
-                workload.delete_rows
-            )
-            self._set_runtime_phase(
-                "executing",
-                f"Fast bootstrap applying {workload.model_string} ({index}/{total_workloads}).",
-                next_plan_index=index,
-                total_plan_items=total_workloads,
-            )
-            if workload.model_string not in initialized_models:
-                self.logger.init_statistics(workload.model_string, 0)
-                initialized_models.add(workload.model_string)
-            self.logger.add_statistics_total(
-                workload.model_string,
-                workload.estimated_changes,
-            )
-            runner._apply_model_rows(workload.model_string, workload.upsert_rows)
+        request_token = None
+        if current_request.get() is None:
+            request_token = current_request.set(request)
+        try:
+            with event_tracking(request):
+                for index, workload in enumerate(workloads, start=1):
+                    runner._model_coalesce_fields[workload.model_string] = (
+                        workload.coalesce_fields
+                    )
+                    pending_deletes.setdefault(workload.model_string, []).extend(
+                        workload.delete_rows
+                    )
+                    self._set_runtime_phase(
+                        "executing",
+                        f"Fast bootstrap applying {workload.model_string} ({index}/{total_workloads}).",
+                        next_plan_index=index,
+                        total_plan_items=total_workloads,
+                    )
+                    if workload.model_string not in initialized_models:
+                        self.logger.init_statistics(workload.model_string, 0)
+                        initialized_models.add(workload.model_string)
+                    self.logger.add_statistics_total(
+                        workload.model_string,
+                        workload.estimated_changes,
+                    )
+                    runner._apply_model_rows(
+                        workload.model_string, workload.upsert_rows
+                    )
+                    self._record_change_totals(ingestion, request_id=request.id)
 
-        for model_string in reversed(self.sync.get_model_strings()):
-            delete_rows = pending_deletes.get(model_string, [])
-            if not delete_rows:
-                continue
-            self._set_runtime_phase(
-                "executing",
-                f"Fast bootstrap deleting {model_string}.",
-                total_plan_items=total_workloads,
-            )
-            runner._delete_model_rows(model_string, delete_rows)
+                for model_string in reversed(self.sync.get_model_strings()):
+                    delete_rows = pending_deletes.get(model_string, [])
+                    if not delete_rows:
+                        continue
+                    self._set_runtime_phase(
+                        "executing",
+                        f"Fast bootstrap deleting {model_string}.",
+                        total_plan_items=total_workloads,
+                    )
+                    runner._delete_model_rows(model_string, delete_rows)
+                    self._record_change_totals(ingestion, request_id=request.id)
 
-        self._raise_if_issues_exist(ingestion)
-        ingestion.sync_mode = self._sync_mode()
-        ingestion.baseline_ready = True
-        ingestion.model_results = self.last_model_results
-        ingestion.save(
-            update_fields=["sync_mode", "baseline_ready", "model_results"],
-        )
-        self._record_change_totals(ingestion)
+                self._raise_if_issues_exist(ingestion, request_id=request.id)
+                ingestion.sync_mode = self._sync_mode()
+                ingestion.baseline_ready = True
+                ingestion.model_results = self.last_model_results
+                ingestion.save(
+                    update_fields=["sync_mode", "baseline_ready", "model_results"],
+                )
+                self._record_change_totals(ingestion, request_id=request.id)
+        finally:
+            if request_token is not None:
+                current_request.reset(request_token)
+
         self.sync.clear_branch_run_state()
         self.logger.log_info(
             "Forward fast bootstrap ingestion completed.", obj=ingestion
