@@ -1,14 +1,15 @@
 # Forward NetBox Documentation
 
-`forward_netbox` connects NetBox directly to Forward Networks, executes NQE against a selected Forward snapshot, and stages the resulting changes in a NetBox branch for review and merge.
+`forward_netbox` connects NetBox directly to Forward Networks, executes NQE against a selected Forward snapshot, and stages the resulting changes in a NetBox branch for review and merge by default. Large trusted baselines can optionally use fast bootstrap direct writes before returning to the Branching workflow.
 
 ## Release Compatibility
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v0.7.1` | `4.5.9` validated; `4.5.x` only | Current release; keeps the NetBox-native multi-branch workflow, adds shard heartbeat visibility, and hardens large-shard retries and cable ingestion handling |
+| `v0.8.0` | `4.5.9` validated; `4.5.x` only | Current release; adds an opt-in fast bootstrap backend for trusted large baselines while keeping Branching as default, and skips NetBox-invalid LAG cable endpoints |
+| `v0.7.1` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.8.0`; keeps the NetBox-native multi-branch workflow, adds shard heartbeat visibility, and hardens large-shard retries and cable ingestion handling |
 | `v0.7.0` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.7.1`; extracts the 0.7 sync boundaries and adds shard heartbeat visibility |
-| `v0.6.5` | `4.5.9` validated; `4.5.x` only | Current release; adds audited validation force-allow overrides and routing evidence enrichment; optional routing/peering import remains beta; native `dcim.module` import is beta |
+| `v0.6.5` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.7.0`; adds audited validation force-allow overrides and routing evidence enrichment; optional routing/peering import remains beta; native `dcim.module` import is beta |
 | `v0.6.4` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.6.5`; optional routing/peering import is beta; native `dcim.module` import is beta |
 | `v0.6.3` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.6.4`; native `dcim.module` import is beta |
 | `v0.6.2` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.6.3`; native `dcim.module` import is beta |
@@ -19,7 +20,7 @@
 | `v0.5.8` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.5.9` |
 | `v0.5.7` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.5.8` |
 | `v0.5.2.1` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.5.3` |
-| `v0.4.0` | `4.5.9` validated; `4.5.x` only | Current unsupported release |
+| `v0.4.0` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.5.2.1` |
 | `v0.3.1` | `4.5.8` validated; `4.5.x` only | Superseded by `v0.4.0` |
 | `v0.3.0.1` | `4.5.8` validated; `4.5.x` only | Superseded by `v0.3.1` |
 | `v0.3.0` | `4.5.8` validated; `4.5.x` only | Superseded by `v0.3.0.1` |
@@ -28,6 +29,7 @@
 
 | Release | Summary |
 | --- | --- |
+| `v0.8.0` | Adds an opt-in fast bootstrap direct-write backend for trusted large baselines, keeps NQE validation and row adapters shared with Branching, and skips LAG cable endpoints that NetBox cannot cable directly. |
 | `v0.7.1` | Keeps the NetBox-native multi-branch workflow stable while hardening cable ingestion, retry handling, and shard re-planning for large runs. |
 | `v0.7.0` | Splits the remaining sync orchestration, reporting, and validation helpers into dedicated boundaries, adds shard heartbeat visibility, and preserves the NetBox-native branch workflow. |
 | `v0.6.5` | Adds audited validation force-allow overrides and routing evidence enrichment while reducing skipped routing rows through conservative NQE-side identity inference. |
@@ -73,6 +75,7 @@ This repository is provided for use at your own risk. It is an unsupported relea
 - Dynamic network selection from the authenticated Forward tenant
 - First-class `Sources`, `NQE Maps`, `Syncs`, and `Ingestions`
 - Branch-backed review and merge flow through `netbox_branching`
+- Optional fast bootstrap execution backend for trusted large baseline loads
 - Built-in shipped NQE maps that can be used as-is or copied into custom map definitions
 - Disabled alternate NQE maps for NetBox Device Type Library alias matching through a Forward JSON data file
 - Disabled alternate NQE map for data-file-driven device feature tag rules

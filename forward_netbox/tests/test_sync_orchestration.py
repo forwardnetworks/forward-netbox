@@ -6,6 +6,7 @@ from django.contrib.contenttypes.models import ContentType
 from django.test import TestCase
 from django.utils import timezone
 
+from forward_netbox.choices import ForwardExecutionBackendChoices
 from forward_netbox.choices import ForwardSourceStatusChoices
 from forward_netbox.choices import ForwardSyncStatusChoices
 from forward_netbox.models import ForwardSource
@@ -54,6 +55,27 @@ class ForwardSyncOrchestrationHelperTest(TestCase):
 
         self.assertEqual(self.sync.status, ForwardSyncStatusChoices.COMPLETED)
         self.assertEqual(self.source.status, ForwardSourceStatusChoices.READY)
+
+    @patch(
+        "forward_netbox.utilities.fast_bootstrap_executor.ForwardFastBootstrapExecutor"
+    )
+    def test_run_forward_sync_uses_fast_bootstrap_executor(
+        self,
+        mock_executor_class,
+    ):
+        self.sync.parameters = {
+            **self.sync.parameters,
+            "execution_backend": ForwardExecutionBackendChoices.FAST_BOOTSTRAP,
+        }
+        self.sync.save(update_fields=["parameters"])
+        mock_executor = mock_executor_class.return_value
+        mock_executor.run.return_value = []
+
+        run_forward_sync(self.sync)
+
+        mock_executor.run.assert_called_once_with()
+        self.sync.refresh_from_db()
+        self.assertEqual(self.sync.status, ForwardSyncStatusChoices.COMPLETED)
 
     def test_prepare_forward_sync_marks_sync_and_source_syncing(self):
         user = None

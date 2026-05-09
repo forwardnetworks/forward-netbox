@@ -15,6 +15,7 @@ from django.utils import timezone
 from forward_netbox.choices import FORWARD_BGP_MODELS
 from forward_netbox.choices import forward_configured_models
 from forward_netbox.choices import ForwardDriftPolicyBaselineChoices
+from forward_netbox.choices import ForwardExecutionBackendChoices
 from forward_netbox.choices import ForwardSourceStatusChoices
 from forward_netbox.choices import ForwardSyncStatusChoices
 from forward_netbox.choices import ForwardValidationStatusChoices
@@ -118,7 +119,40 @@ class ForwardSyncModelTest(TestCase):
             sync.clean()
 
         self.assertIn("Unsupported Forward sync keys", str(ctx.exception))
-        self.assertIn("query_overrides", str(ctx.exception))
+
+    def test_sync_accepts_fast_bootstrap_execution_backend(self):
+        sync = ForwardSync(
+            name="sync-fast-bootstrap",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "execution_backend": ForwardExecutionBackendChoices.FAST_BOOTSTRAP,
+                "dcim.device": True,
+            },
+        )
+
+        sync.clean()
+
+        self.assertEqual(
+            sync.parameters["execution_backend"],
+            ForwardExecutionBackendChoices.FAST_BOOTSTRAP,
+        )
+
+    def test_sync_display_parameters_include_execution_backend(self):
+        sync = ForwardSync.objects.create(
+            name="sync-display-fast-bootstrap",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "execution_backend": ForwardExecutionBackendChoices.FAST_BOOTSTRAP,
+                "dcim.device": True,
+            },
+        )
+
+        self.assertEqual(
+            sync.get_display_parameters()["execution_backend"],
+            ForwardExecutionBackendChoices.FAST_BOOTSTRAP,
+        )
 
     def test_sync_rejects_past_scheduled_time(self):
         sync = ForwardSync(

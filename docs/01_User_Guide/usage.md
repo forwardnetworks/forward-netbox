@@ -1,6 +1,6 @@
 # Usage and Validation
 
-Run a sync from the `Forward Sync` detail page. The plugin executes the enabled NetBox models through the configured NQE maps, stages the resulting NetBox changes in a branch, records failures as `Forward Ingestion Issues`, and then lets you merge the staged branch into main NetBox.
+Run a sync from the `Forward Sync` detail page. The plugin executes the enabled NetBox models through the configured NQE maps, records failures as `Forward Ingestion Issues`, and applies the selected execution backend. The default backend stages changes in native NetBox Branching shards for review and merge. The optional fast bootstrap backend writes directly after validation for trusted large baselines.
 
 ## Self-Test Workflow
 
@@ -50,10 +50,12 @@ Recommended first pass:
 - Select the source you just created.
 - Optionally select a `Drift policy` if you want validation to block unsafe changes before any branch is created.
 - Leave `Snapshot` at `latestProcessed`.
+- Leave `Execution backend` at `Branching` for reviewable syncs.
 - Leave `Max changes per branch` at `10000` unless local Branching guidance says otherwise.
 - Keep the default model selection enabled.
 - Leave `Auto merge` enabled to advance through all native Branching shards automatically.
 - Disable `Auto merge` when you want to review and manually merge each shard before clicking `Continue Ingestion`.
+- Select `Fast bootstrap` only for a trusted initial baseline that is too large to stage in Branching.
 
 Expected result:
 
@@ -83,8 +85,9 @@ Expected result:
 
 - A validation run is recorded before branch creation.
 - A new `Forward Ingestion` is created.
-- The sync status progresses into the branch-backed staging flow.
-- The sync creates one ingestion per shard, and each shard links to its native NetBox Branching branch.
+- With the `Branching` backend, the sync status progresses into the branch-backed staging flow.
+- With the `Branching` backend, the sync creates one ingestion per shard, and each shard links to its native NetBox Branching branch.
+- With the `Fast bootstrap` backend, one branchless ingestion is created and rows are written directly after validation.
 - The ingestion records both the selected snapshot mode and the resolved snapshot ID used for NQE execution.
 - The ingestion links to the validation run and persists per-model query execution results.
 - If `Auto merge` is disabled, the sync pauses after the current shard reaches `Ready to merge`.
@@ -99,8 +102,8 @@ Open the ingestion detail page and inspect:
 - Forward snapshot metrics
 - model results and validation status
 - ingestion issues
-- change diff
-- branch linkage
+- change diff when the ingestion used Branching
+- branch linkage when the ingestion used Branching
 
 Expected result:
 
@@ -117,11 +120,11 @@ Expected result:
 
 ### 7. Confirm The Merged Branches
 
-With `Auto merge` enabled, Forward syncs merge each native Branching shard before the next shard runs. With `Auto merge` disabled, review and merge the current shard, then click `Continue Ingestion` on the sync to stage the next shard.
+With `Auto merge` enabled, Branching syncs merge each native Branching shard before the next shard runs. With `Auto merge` disabled, review and merge the current shard, then click `Continue Ingestion` on the sync to stage the next shard. Fast bootstrap syncs do not create branches to merge.
 
 Expected result:
 
-- Each shard branch is marked merged.
+- Each Branching shard branch is marked merged.
 - The synced objects are visible in standard NetBox object views.
 
 ## What To Check After A Successful Test
@@ -160,8 +163,9 @@ Optional knobs:
 - `invoke forward_netbox.smoke-sync --plan-only --max-changes-per-branch 10000` prints the native NetBox Branching shard plan for large baselines
 - `invoke forward_netbox.smoke-sync --max-changes-per-branch 10000` stages and merges large baselines in multiple native branches
 - `invoke forward_netbox.smoke-sync --no-auto-merge --max-changes-per-branch 10000` stages one native Branching shard and pauses for review
+- `invoke forward_netbox.smoke-sync --execution-backend fast_bootstrap` runs the trusted direct-write baseline backend after validation
 
-The normal UI/API `Run Sync` path uses the same native multi-branch execution. Use the command-line smoke sync when you need explicit plan-only output or a targeted model subset.
+The normal UI/API `Run Sync` path uses the same execution backends exposed on the sync form. Use the command-line smoke sync when you need explicit plan-only output, a targeted model subset, or a timed local baseline run.
 
 ## Optional Module Import Readiness
 
