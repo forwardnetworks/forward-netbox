@@ -2,6 +2,8 @@ from unittest.mock import Mock
 from unittest.mock import patch
 
 from core.exceptions import SyncError
+from core.models import ObjectChange
+from core.models import ObjectType
 from dcim.models import Cable
 from dcim.models import Device
 from dcim.models import DeviceRole
@@ -15,9 +17,11 @@ from dcim.models import VirtualChassis
 from dcim.models.device_components import ModuleBay
 from dcim.models.modules import ModuleType
 from django.apps import apps
+from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
+from django.test import override_settings
 from django.test import TestCase
 from extras.models import Tag
 from ipam.models import ASN
@@ -43,6 +47,7 @@ from forward_netbox.utilities.branch_budget import build_branch_plan
 from forward_netbox.utilities.branch_budget import build_branch_plan_with_density
 from forward_netbox.utilities.branch_budget import effective_row_budget_for_model
 from forward_netbox.utilities.branch_budget import row_shard_key
+from forward_netbox.utilities.direct_changes import object_changes_for_ingestion
 from forward_netbox.utilities.fast_bootstrap_executor import (
     ForwardFastBootstrapExecutor,
 )
@@ -716,6 +721,54 @@ class ForwardMultiBranchExecutorAdaptiveSplitTest(TestCase):
         self.assertGreater(len(split_items), 1)
         self.assertTrue(all(part.estimated_changes <= 1 for part in split_items))
 
+    @override_settings(RQ_DEFAULT_TIMEOUT=300)
+    def test_load_execution_context_warns_for_large_plan_with_short_worker_timeout(
+        self,
+    ):
+        logger = Mock()
+        executor = ForwardMultiBranchExecutor(
+            sync=self.sync,
+            client=Mock(),
+            logger_=logger,
+        )
+        executor.max_changes_per_branch = 10
+        executor.plan = Mock(
+            return_value=(
+                {
+                    "snapshot_selector": LATEST_PROCESSED_SNAPSHOT,
+                    "snapshot_id": self.SNAPSHOT_ID,
+                },
+                build_branch_plan(
+                    [
+                        BranchWorkload(
+                            model_string="dcim.device",
+                            label="dcim.device | Forward Devices",
+                            upsert_rows=[
+                                {"name": f"device-{index}"} for index in range(20)
+                            ],
+                            coalesce_fields=[["name"]],
+                        )
+                    ],
+                    max_changes_per_branch=10,
+                ),
+            )
+        )
+
+        with patch(
+            "forward_netbox.utilities.multi_branch_executor.ForwardValidationRunner"
+        ) as mock_validation_runner:
+            mock_validation_runner.return_value.record_plan_validation.return_value = (
+                Mock(pk=1)
+            )
+            executor._load_execution_context(max_changes_per_branch=10)
+
+        warning_messages = [
+            call.args[0]
+            for call in logger.log_warning.call_args_list
+            if "RQ_DEFAULT_TIMEOUT is only 300s" in call.args[0]
+        ]
+        self.assertEqual(len(warning_messages), 1)
+
     def test_run_retries_when_branch_budget_exceeded(self):
         workload = BranchWorkload(
             model_string="dcim.device",
@@ -987,6 +1040,7 @@ class ForwardFastBootstrapExecutorTest(TestCase):
             ForwardValidationRun.objects.get(sync=self.sync),
             ingestion.validation_run,
         )
+        self.assertIsNotNone(ingestion.change_request_id)
         runner._apply_model_rows.assert_called_once_with(
             "dcim.site",
             workload.upsert_rows,
@@ -995,6 +1049,72 @@ class ForwardFastBootstrapExecutorTest(TestCase):
             "dcim.site",
             workload.delete_rows,
         )
+
+    @patch("forward_netbox.utilities.fast_bootstrap_executor.ForwardQueryFetcher")
+    def test_run_records_direct_netbox_changes_for_fast_bootstrap(
+        self,
+        mock_fetcher_class,
+    ):
+        logger = SyncLogging()
+        context = ForwardQueryContext(
+            network_id="test-network",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id=self.SNAPSHOT_ID,
+            snapshot_info={"state": "PROCESSED"},
+            snapshot_metrics={},
+            query_parameters={},
+            maps=[],
+        )
+        workload = BranchWorkload(
+            model_string="dcim.site",
+            label="sites",
+            upsert_rows=[{"name": "Site 2", "slug": "site-2"}],
+            delete_rows=[],
+            sync_mode="full",
+            coalesce_fields=[["slug"]],
+            query_name="Forward Sites",
+            execution_mode="query_id",
+            execution_value="FQ_sites",
+        )
+        model_result = ForwardModelResult(
+            model_string="dcim.site",
+            query_name="Forward Sites",
+            execution_mode="query_id",
+            execution_value="FQ_sites",
+            sync_mode="full",
+            row_count=1,
+            delete_count=0,
+            snapshot_id=self.SNAPSHOT_ID,
+        )
+        fetcher = mock_fetcher_class.return_value
+        fetcher.resolve_context.return_value = context
+        fetcher.fetch_workloads.return_value = [workload]
+        fetcher.model_results = [model_result]
+        user = get_user_model().objects.create_user(username="fast-bootstrap-user")
+
+        ingestions = ForwardFastBootstrapExecutor(
+            self.sync,
+            Mock(),
+            logger,
+            user=user,
+        ).run()
+
+        ingestion = ingestions[0]
+        ingestion.refresh_from_db()
+        site_type = ObjectType.objects.get_for_model(Site)
+        self.assertTrue(Site.objects.filter(slug="site-2").exists())
+        self.assertTrue(
+            ObjectChange.objects.filter(
+                request_id=ingestion.change_request_id,
+                changed_object_type=site_type,
+                action="create",
+            ).exists()
+        )
+        self.assertEqual(ingestion.applied_change_count, 1)
+        self.assertEqual(ingestion.created_change_count, 1)
+        self.assertEqual(ingestion.updated_change_count, 0)
+        self.assertEqual(ingestion.deleted_change_count, 0)
+        self.assertEqual(object_changes_for_ingestion(ingestion).count(), 1)
 
     @patch("forward_netbox.utilities.fast_bootstrap_executor.ForwardSyncRunner")
     @patch("forward_netbox.utilities.fast_bootstrap_executor.ForwardQueryFetcher")

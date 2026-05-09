@@ -579,6 +579,7 @@ class ForwardIngestion(ForwardPluginModelDocsMixin, JobsMixin, models.Model):
     branch = models.OneToOneField(
         Branch, on_delete=models.SET_NULL, null=True, blank=True
     )
+    change_request_id = models.UUIDField(blank=True, null=True, db_index=True)
     snapshot_selector = models.CharField(max_length=100, blank=True, default="")
     snapshot_id = models.CharField(max_length=100, blank=True, default="")
     sync_mode = models.CharField(

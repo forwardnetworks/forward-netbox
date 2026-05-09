@@ -17,6 +17,7 @@ DEFAULT_FORWARD_API_RETRIES = 2
 DEFAULT_FORWARD_API_RETRY_BACKOFF_SECONDS = 2
 MAX_NQE_PAGE_SIZE = 10000
 DEFAULT_NQE_PAGE_SIZE = 10000
+TRANSIENT_FORWARD_HTTP_STATUS_CODES = {408, 429, 502, 503, 504}
 
 
 class ForwardClient:
@@ -119,9 +120,18 @@ class ForwardClient:
                 )
                 last_connectivity_error.__cause__ = exc
             except httpx.HTTPStatusError as exc:
-                raise ForwardClientError(
-                    f"Forward API request failed with HTTP {exc.response.status_code}: {exc.response.text}"
-                ) from exc
+                status_code = exc.response.status_code
+                if status_code in TRANSIENT_FORWARD_HTTP_STATUS_CODES:
+                    last_connectivity_error = ForwardConnectivityError(
+                        "Forward API request returned transient HTTP "
+                        f"{status_code}; retry attempts were exhausted."
+                    )
+                    last_connectivity_error.__cause__ = exc
+                else:
+                    raise ForwardClientError(
+                        "Forward API request failed with HTTP "
+                        f"{status_code}: {exc.response.text}"
+                    ) from exc
             except httpx.HTTPError as exc:
                 raise ForwardClientError(f"Forward API request failed: {exc}") from exc
             if attempt < self.retries:
