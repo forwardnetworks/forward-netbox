@@ -55,7 +55,9 @@ Recommended first pass:
 - Keep the default model selection enabled.
 - Leave `Auto merge` enabled to advance through all native Branching shards automatically.
 - Disable `Auto merge` when you want to review and manually merge each shard before clicking `Continue Ingestion`.
-- Select `Fast bootstrap` only for a trusted initial baseline that is too large to stage in Branching.
+- Select `Fast bootstrap` only for a trusted initial baseline that is too large to stage in Branching. After it completes, edit the sync back to `Branching` for steady-state diff runs.
+
+See [Initial Baseline Strategy](configuration.md#initial-baseline-strategy) for the decision table.
 
 Expected result:
 
@@ -91,6 +93,7 @@ Expected result:
 - The ingestion records both the selected snapshot mode and the resolved snapshot ID used for NQE execution.
 - The ingestion links to the validation run and persists per-model query execution results.
 - If `Auto merge` is disabled, the sync pauses after the current shard reaches `Ready to merge`.
+- After a successful fast-bootstrap baseline, change `Execution backend` back to `Branching` so later `latestProcessed` runs can use reviewable diffs.
 
 ### 6. Review The Ingestion
 
