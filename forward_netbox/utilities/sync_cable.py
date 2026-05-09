@@ -12,6 +12,10 @@ def lookup_cable_between(runner, interface, remote_interface):
     return None
 
 
+def interface_is_lag(interface):
+    return str(getattr(interface, "type", "") or "").lower() == "lag"
+
+
 def delete_dcim_cable(runner, row):
     from dcim.models import Device
 
@@ -110,6 +114,16 @@ def apply_dcim_cable(runner, row):
         runner.logger.log_warning(
             f"Skipping cable row because interface `{row['remote_interface']}` was not found on `{remote_device.name}`.",
             obj=runner.sync,
+        )
+        return False
+
+    if interface_is_lag(interface) or interface_is_lag(remote_interface):
+        runner._record_aggregated_conflict_warning(
+            model_string="dcim.cable",
+            reason="lag-endpoint-not-cableable",
+            warning_message=(
+                "Skipping cable row because NetBox does not allow cables terminated directly to LAG interfaces."
+            ),
         )
         return False
 

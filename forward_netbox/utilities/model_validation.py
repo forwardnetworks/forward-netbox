@@ -4,6 +4,7 @@ from django.utils.translation import gettext as _
 
 from ..choices import forward_configured_models
 from ..choices import FORWARD_SUPPORTED_MODELS
+from ..choices import ForwardExecutionBackendChoices
 from ..choices import ForwardSourceDeploymentChoices
 from ..utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from ..utilities.forward_api import MAX_NQE_PAGE_SIZE
@@ -83,6 +84,7 @@ def clean_forward_sync(sync):
         set(parameters.keys())
         - {
             "auto_merge",
+            "execution_backend",
             "multi_branch",
             "max_changes_per_branch",
             "snapshot_id",
@@ -95,6 +97,14 @@ def clean_forward_sync(sync):
     if not isinstance(snapshot_id, str):
         raise ValidationError(_("`snapshot_id` must be a string."))
     parameters["snapshot_id"] = snapshot_id
+    execution_backend = parameters.get(
+        "execution_backend",
+        ForwardExecutionBackendChoices.BRANCHING,
+    )
+    valid_backends = {choice[0] for choice in ForwardExecutionBackendChoices.CHOICES}
+    if execution_backend not in valid_backends:
+        raise ValidationError(_("`execution_backend` is not supported."))
+    parameters["execution_backend"] = execution_backend
     parameters["auto_merge"] = bool(parameters.get("auto_merge", sync.auto_merge))
     parameters["multi_branch"] = True
     try:

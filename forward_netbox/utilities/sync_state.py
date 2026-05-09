@@ -2,6 +2,7 @@ from django.core.cache import cache
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
+from ..choices import ForwardExecutionBackendChoices
 from ..choices import ForwardSyncStatusChoices
 from .branch_budget import BRANCH_RUN_STATE_PARAMETER
 from .branch_budget import build_branch_budget_hints
@@ -166,6 +167,10 @@ def get_display_parameters(
     max_changes_per_branch_default,
 ):
     parameters = {}
+    parameters["execution_backend"] = (sync.parameters or {}).get(
+        "execution_backend",
+        ForwardExecutionBackendChoices.BRANCHING,
+    )
     network_id = sync.get_network_id() or ""
     if network_id:
         parameters["network_id"] = network_id

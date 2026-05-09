@@ -6,6 +6,7 @@ from django.core.management.base import CommandError
 
 from forward_netbox.choices import forward_configured_models
 from forward_netbox.choices import FORWARD_OPTIONAL_MODELS
+from forward_netbox.choices import ForwardExecutionBackendChoices
 from forward_netbox.choices import ForwardSourceDeploymentChoices
 from forward_netbox.choices import ForwardSyncStatusChoices
 from forward_netbox.models import ForwardSource
@@ -74,6 +75,18 @@ class Command(BaseCommand):
             help="Stage one native Branching shard and pause for manual review/merge.",
         )
         parser.add_argument(
+            "--execution-backend",
+            choices=[
+                ForwardExecutionBackendChoices.BRANCHING,
+                ForwardExecutionBackendChoices.FAST_BOOTSTRAP,
+            ],
+            default=os.getenv(
+                "FORWARD_SMOKE_EXECUTION_BACKEND",
+                ForwardExecutionBackendChoices.BRANCHING,
+            ),
+            help="Sync execution backend to use for the smoke run.",
+        )
+        parser.add_argument(
             "--max-changes-per-branch",
             type=int,
             default=int(
@@ -101,6 +114,14 @@ class Command(BaseCommand):
             raise CommandError("--max-changes-per-branch must be at least 1.")
         if options["validate_only"] and options["plan_only"]:
             raise CommandError("--validate-only and --plan-only cannot be combined.")
+        if (
+            options["plan_only"]
+            and options["execution_backend"]
+            == ForwardExecutionBackendChoices.FAST_BOOTSTRAP
+        ):
+            raise CommandError(
+                "--plan-only is only supported for the Branching backend."
+            )
         user_model = get_user_model()
         user = user_model.objects.filter(is_superuser=True).order_by("pk").first()
         if user is None:
@@ -134,6 +155,7 @@ class Command(BaseCommand):
             snapshot_id=options["snapshot_id"],
             selected_models=selected_models,
             auto_merge=not options["no_auto_merge"],
+            execution_backend=options["execution_backend"],
         )
 
         if options["validate_only"]:
@@ -248,8 +270,13 @@ class Command(BaseCommand):
         snapshot_id,
         selected_models,
         auto_merge,
+        execution_backend,
     ):
-        sync_parameters = {"snapshot_id": snapshot_id, "auto_merge": auto_merge}
+        sync_parameters = {
+            "snapshot_id": snapshot_id,
+            "auto_merge": auto_merge,
+            "execution_backend": execution_backend,
+        }
         for model_string in forward_configured_models():
             sync_parameters[model_string] = model_string in selected_models
 
