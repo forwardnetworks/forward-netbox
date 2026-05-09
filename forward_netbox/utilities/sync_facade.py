@@ -4,6 +4,7 @@ from django.utils.module_loading import import_string
 
 from ..choices import forward_configured_models
 from ..choices import FORWARD_OPTIONAL_MODELS
+from ..choices import ForwardExecutionBackendChoices
 from ..choices import ForwardSyncStatusChoices
 from ..exceptions import ForwardSyncError
 from .branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
@@ -13,6 +14,10 @@ from .sync_state import get_max_changes_per_branch as get_state_max_changes_per_
 
 def normalize_forward_sync(sync):
     parameters = dict(sync.parameters or {})
+    parameters["execution_backend"] = parameters.get(
+        "execution_backend",
+        ForwardExecutionBackendChoices.BRANCHING,
+    )
     parameters["multi_branch"] = True
     max_changes_per_branch = get_state_max_changes_per_branch(
         sync,
@@ -51,7 +56,10 @@ def get_query_parameters(sync):
 
 
 def uses_multi_branch(sync):
-    return True
+    return (sync.parameters or {}).get(
+        "execution_backend",
+        ForwardExecutionBackendChoices.BRANCHING,
+    ) == ForwardExecutionBackendChoices.BRANCHING
 
 
 def is_model_enabled(sync, model_string):

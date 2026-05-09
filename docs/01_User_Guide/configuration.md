@@ -184,7 +184,7 @@ This keeps NQE as the source of truth, lets Forward own the row-diff computation
 
 For very large inventories, expect the first full baseline to remain the slow path even after query optimization because NetBox must still materialize every staged object change. The largest steady-state win comes from switching later `latestProcessed` runs onto Forward `nqe-diffs`.
 
-NetBox Branching guidance favors smaller review branches. UI and API-triggered sync jobs always use native multi-branch execution. If a full baseline would stage tens or hundreds of thousands of changes, the planner splits large model workloads into ordinary NetBox Branching branches using stable shard keys, with device-scoped models grouped by device.
+NetBox Branching guidance favors smaller review branches. The default backend uses native multi-branch execution. If a full baseline would stage tens or hundreds of thousands of changes, the planner splits large model workloads into ordinary NetBox Branching branches using stable shard keys, with device-scoped models grouped by device.
 
 For command-line validation, run the smoke sync with `--plan-only` first:
 
@@ -208,9 +208,11 @@ This stages one shard and leaves the sync at `Ready to merge`. After you review 
 
 If the planner reports that one shard key exceeds the branch budget, reduce that source model with a narrower NQE map or split the source data so the largest device or coalesce-key group fits under the operational branch size.
 
+For initial imports that are too large to review shard-by-shard, select `Fast bootstrap` as the sync execution backend. This still runs the same NQE maps, preflight validation, drift policies, coalesce contracts, row adapters, and ingestion issue reporting, but writes directly to NetBox instead of creating Branching branches. NQE remains the source of truth for row normalization and NetBox-shaped model data. Use fast bootstrap for a trusted baseline load, then switch the sync back to `Branching` for reviewable steady-state diffs.
+
 ## Forward Syncs
 
-Create a `Forward Sync` to bind a source, a NetBox model selection, and the branch-backed ingestion workflow.
+Create a `Forward Sync` to bind a source, a NetBox model selection, and the ingestion workflow.
 
 ### Sync Fields
 
@@ -223,14 +225,20 @@ Create a `Forward Sync` to bind a source, a NetBox model selection, and the bran
 - Model toggles
   - Enable or disable individual NetBox models for the sync.
   - The checked models define what this sync runs.
+- `Execution backend`
+  - `Branching` is the default and stages changes in native NetBox Branching shards.
+  - `Fast bootstrap` writes directly to NetBox after validation and is intended for very large trusted initial baselines.
+  - Fast bootstrap does not provide a Branching diff for review; use validation runs, ingestion issues, and model results as the review surface.
 - `Max changes per branch`
   - Defaults to `10000`.
   - Keep this aligned with local NetBox Branching operational guidance.
+  - Applies to the `Branching` backend only.
 - `Auto merge`
   - Enabled by default.
   - When enabled, each native Branching shard is merged automatically before the next shard runs.
   - When disabled, the sync stages one shard, pauses for review, and continues only after the user merges that shard and clicks `Continue Ingestion`.
   - Only the final successful shard is marked as the incremental diff baseline.
+  - Applies to the `Branching` backend only.
 - `Schedule at` / `Recurs every`
   - Optional scheduled execution controls.
 
@@ -239,9 +247,10 @@ Create a `Forward Sync` to bind a source, a NetBox model selection, and the bran
 - Syncs always use the `Network` selected on the source.
 - Syncs run NQE against the selected `Snapshot`.
 - The default snapshot selector is `latestProcessed`, which resolves to the latest processed snapshot in the source network at runtime.
-- Syncs always use native multi-branch execution.
-- Each branch is a native NetBox Branching branch.
-- `Auto merge` controls whether shards advance automatically or pause for review after each shard.
+- `Branching` syncs use native multi-branch execution.
+- Each Branching shard is a native NetBox Branching branch.
+- `Auto merge` controls whether Branching shards advance automatically or pause for review after each shard.
+- `Fast bootstrap` syncs create a branchless ingestion and write rows directly through the same NetBox adapters after validation.
 - Each ingestion records both the selected snapshot mode and the resolved snapshot ID used for the run.
 - Snapshot metrics returned by Forward are stored on the ingestion for later review.
 - `NQE Maps` are managed globally under `Plugins > Forward Networks > NQE Maps`.

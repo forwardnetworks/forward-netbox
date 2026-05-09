@@ -142,6 +142,7 @@ def smoke_sync(
     query_limit=5,
     plan_only=False,
     no_auto_merge=False,
+    execution_backend="branching",
     max_changes_per_branch=10000,
 ):
     flags = []
@@ -151,6 +152,8 @@ def smoke_sync(
         flags.append("--plan-only")
     if no_auto_merge:
         flags.append("--no-auto-merge")
+    if execution_backend != "branching":
+        flags.append(f"--execution-backend {execution_backend}")
     if query_limit != 5:
         flags.append(f"--query-limit {int(query_limit)}")
     if max_changes_per_branch != 10000:
