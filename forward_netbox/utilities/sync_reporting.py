@@ -10,6 +10,7 @@ from ..choices import ForwardIngestionPhaseChoices
 from ..exceptions import ForwardDependencySkipError
 from ..exceptions import ForwardQueryError
 from ..exceptions import ForwardSearchError
+from ..exceptions import ForwardSyncDataError
 from .sync_state import touch_branch_run_progress
 
 PROGRESS_HEARTBEAT_ROW_INTERVAL = 500
@@ -264,7 +265,7 @@ def apply_model_rows(runner, model_string, rows):
                 context=exc.context,
                 defaults=exc.defaults,
             )
-        except (ForwardSearchError, ForwardQueryError) as exc:
+        except (ForwardSearchError, ForwardQueryError, ForwardSyncDataError) as exc:
             logger.exception("Failed applying %s row", model_string)
             mark_dependency_failed(runner, model_string, row)
             runner.logger.increment_statistics(model_string, outcome="failed")

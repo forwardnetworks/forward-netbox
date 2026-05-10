@@ -175,6 +175,7 @@ class ForwardMultiBranchExecutor:
 
     def _execute_planned_items(self, context, plan, plan_preview, *, next_plan_index):
         ingestions = []
+        run_has_issues = False
         current_index = next_plan_index - 1
         while current_index < len(plan):
             item = plan[current_index]
@@ -189,7 +190,7 @@ class ForwardMultiBranchExecutor:
                 ingestion = self._run_plan_item(
                     item,
                     context,
-                    mark_baseline_ready=is_final,
+                    mark_baseline_ready=is_final and not run_has_issues,
                     merge=self.sync.auto_merge,
                     total_plan_items=len(plan),
                     plan_preview=plan_preview,
@@ -220,6 +221,8 @@ class ForwardMultiBranchExecutor:
                 continue
 
             ingestions.append(ingestion)
+            if ingestion.issues.exists():
+                run_has_issues = True
             if not self.sync.auto_merge:
                 return ingestions
             current_index += 1

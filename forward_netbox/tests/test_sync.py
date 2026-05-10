@@ -292,7 +292,7 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
         self.assertTrue(second_call.kwargs["fetch_all"])
 
     @patch("forward_netbox.utilities.query_fetch.get_query_specs")
-    def test_preflight_raises_before_full_fetch_on_invalid_rows(self, mock_specs):
+    def test_preflight_skips_invalid_model_before_full_fetch(self, mock_specs):
         client = Mock()
         client.get_snapshots.return_value = [
             {
@@ -320,10 +320,89 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
             logger_=Mock(),
         )
 
-        with self.assertRaisesRegex(ForwardQueryError, "missing required fields: slug"):
-            planner.build_plan(max_changes_per_branch=10, run_preflight=True)
+        _context, plan = planner.build_plan(
+            max_changes_per_branch=10, run_preflight=True
+        )
 
         client.run_nqe_query.assert_called_once()
+        self.assertEqual(plan, [])
+        self.assertEqual(planner.model_results[0]["model"], "dcim.site")
+        self.assertEqual(planner.model_results[0]["failure_count"], 1)
+        self.assertIn(
+            "missing required fields: slug",
+            planner.model_results[0]["diagnostics"][0]["message"],
+        )
+
+    @patch("forward_netbox.utilities.query_fetch.get_query_specs")
+    def test_preflight_failure_for_one_model_still_plans_later_models(self, mock_specs):
+        client = Mock()
+        client.get_snapshots.return_value = [
+            {
+                "id": "snapshot-after",
+                "state": "PROCESSED",
+                "created_at": "",
+                "processed_at": "2026-03-31T12:15:00Z",
+            }
+        ]
+        client.get_snapshot_metrics.return_value = {}
+
+        def run_nqe_query(*, query=None, fetch_all=False, **_kwargs):
+            if "site-1" in query:
+                return [{"name": "site-1"}]
+            return [
+                {
+                    "device": "device-1",
+                    "local_asn": 64512,
+                    "neighbor_address": "192.0.2.1",
+                    "peer_asn": 64513,
+                    "enabled": True,
+                    "status": "active",
+                }
+            ]
+
+        def query_specs(model_string, maps=None):
+            if model_string == "dcim.site":
+                return [
+                    QuerySpec(
+                        model_string="dcim.site",
+                        query_name="Forward Sites",
+                        query='select {name: "site-1"}',
+                    )
+                ]
+            return [
+                QuerySpec(
+                    model_string="netbox_routing.bgppeer",
+                    query_name="Forward BGP Peers",
+                    query=(
+                        'select {device: "device-1", local_asn: 64512, '
+                        'neighbor_address: "192.0.2.1", peer_asn: 64513, '
+                        'enabled: true, status: "active"}'
+                    ),
+                )
+            ]
+
+        client.run_nqe_query.side_effect = run_nqe_query
+        mock_specs.side_effect = query_specs
+        self.sync.resolve_snapshot_id = lambda client=None: "snapshot-after"
+        self.sync.get_model_strings = lambda: ["dcim.site", "netbox_routing.bgppeer"]
+        self.sync.incremental_diff_baseline = Mock(return_value=None)
+        planner = ForwardMultiBranchPlanner(
+            sync=self.sync,
+            client=client,
+            logger_=Mock(),
+        )
+
+        _context, plan = planner.build_plan(
+            max_changes_per_branch=10, run_preflight=True
+        )
+
+        self.assertEqual(
+            [item.model_string for item in plan], ["netbox_routing.bgppeer"]
+        )
+        failures = [
+            result for result in planner.model_results if result["model"] == "dcim.site"
+        ]
+        self.assertEqual(failures[0]["failure_count"], 1)
 
     def test_preflight_error_explains_disabled_optional_module_map(self):
         site_type = ContentType.objects.get(app_label="dcim", model="site")
@@ -362,11 +441,17 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
             logger_=Mock(),
         )
 
-        with self.assertRaisesRegex(
-            ForwardQueryError,
+        _context, plan = planner.build_plan(
+            max_changes_per_branch=10, run_preflight=True
+        )
+
+        self.assertEqual(plan, [])
+        self.assertEqual(planner.model_results[0]["model"], "dcim.module")
+        self.assertEqual(planner.model_results[0]["failure_count"], 1)
+        self.assertIn(
             "Enable the `Forward Modules` NQE Map or disable the `dcim.module` model",
-        ):
-            planner.build_plan(max_changes_per_branch=10, run_preflight=True)
+            planner.model_results[0]["diagnostics"][0]["message"],
+        )
 
     @patch("forward_netbox.utilities.query_fetch.get_query_specs")
     def test_build_plan_handles_multiple_specs_with_shared_model(self, mock_specs):
@@ -938,6 +1023,66 @@ class ForwardMultiBranchExecutorAdaptiveSplitTest(TestCase):
         validation_run = ForwardValidationRun.objects.get(sync=self.sync)
         self.assertFalse(validation_run.allowed)
         self.assertEqual(validation_run.status, "blocked")
+
+    def test_branch_row_issues_do_not_stop_later_shards_or_mark_baseline(self):
+        plan = build_branch_plan(
+            [
+                BranchWorkload(
+                    model_string="dcim.device",
+                    label="dcim.device | Forward Devices",
+                    upsert_rows=[{"name": "device-1"}],
+                    coalesce_fields=[["name"]],
+                ),
+                BranchWorkload(
+                    model_string="netbox_routing.bgppeer",
+                    label="netbox_routing.bgppeer | Forward BGP Peers",
+                    upsert_rows=[
+                        {
+                            "device": "device-2",
+                            "local_asn": 64512,
+                            "neighbor_address": "192.0.2.1",
+                            "peer_asn": 64513,
+                            "enabled": True,
+                            "status": "active",
+                        }
+                    ],
+                    coalesce_fields=[["device", "neighbor_address"]],
+                ),
+            ],
+            max_changes_per_branch=10,
+        )
+        executor = ForwardMultiBranchExecutor(
+            sync=self.sync,
+            client=Mock(),
+            logger_=Mock(),
+        )
+        self.sync.auto_merge = True
+        first_ingestion = ForwardIngestion.objects.create(sync=self.sync)
+        first_ingestion.issues.create(
+            model="dcim.device",
+            message="bad virtual chassis row",
+            exception="ForwardSyncDataError",
+        )
+        final_ingestion = ForwardIngestion.objects.create(sync=self.sync)
+        executor._run_plan_item = Mock(side_effect=[first_ingestion, final_ingestion])
+
+        ingestions = executor._execute_planned_items(
+            {
+                "snapshot_selector": "latestProcessed",
+                "snapshot_id": self.SNAPSHOT_ID,
+                "snapshot_info": {},
+                "snapshot_metrics": {},
+            },
+            plan,
+            {},
+            next_plan_index=1,
+        )
+
+        self.assertEqual(ingestions, [first_ingestion, final_ingestion])
+        self.assertEqual(executor._run_plan_item.call_count, 2)
+        self.assertFalse(
+            executor._run_plan_item.call_args_list[1].kwargs["mark_baseline_ready"]
+        )
 
 
 class ForwardFastBootstrapExecutorTest(TestCase):
@@ -3090,7 +3235,7 @@ class ForwardSyncRunnerTest(TestCase):
             ForwardIngestionIssue.objects.filter(ingestion=ingestion).count(), 1
         )
 
-    def test_apply_virtual_chassis_attaches_device_without_inventing_position(self):
+    def test_apply_virtual_chassis_rejects_membership_without_position(self):
         site = Site.objects.create(name="site-1", slug="site-1")
         manufacturer = Manufacturer.objects.create(name="vendor-1", slug="vendor-1")
         role = DeviceRole.objects.create(name="role-1", slug="role-1", color="9e9e9e")
@@ -3110,18 +3255,17 @@ class ForwardSyncRunnerTest(TestCase):
             sync=self.sync, ingestion=None, client=None, logger_=Mock()
         )
 
-        vc = runner._apply_dcim_virtualchassis(
-            {
-                "device": device.name,
-                "vc_name": "site-1-mlag-device-1--device-2",
-                "vc_domain": "device-1--device-2",
-            }
-        )
+        with self.assertRaisesRegex(ForwardSyncDataError, "requires `vc_position`"):
+            runner._apply_dcim_virtualchassis(
+                {
+                    "device": device.name,
+                    "vc_name": "site-1-mlag-device-1--device-2",
+                    "vc_domain": "device-1--device-2",
+                }
+            )
         device.refresh_from_db()
 
-        self.assertEqual(vc.name, "site-1-mlag-device-1--device-2")
-        self.assertEqual(vc.domain, "device-1--device-2")
-        self.assertEqual(device.virtual_chassis, vc)
+        self.assertIsNone(device.virtual_chassis)
         self.assertIsNone(device.vc_position)
 
     def test_apply_virtual_chassis_uses_supplied_position(self):

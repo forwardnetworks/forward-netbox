@@ -95,6 +95,7 @@ class ForwardQueryFetcher:
         self.client = client
         self.logger = logger_
         self.model_results: list[ForwardModelResult] = []
+        self._failed_model_results: dict[str, ForwardModelResult] = {}
 
     def resolve_context(self, *, branch_run_state=None) -> ForwardQueryContext:
         branch_run_state = branch_run_state or {}
@@ -154,10 +155,19 @@ class ForwardQueryFetcher:
             return
         max_workers = self._query_fetch_worker_count(len(jobs))
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            for model_string, spec, preflight_rows in executor.map(
+            for model_string, spec, preflight_rows, error in executor.map(
                 self._run_preflight_job,
                 ((context, row_limit, job) for job in jobs),
             ):
+                if error is not None:
+                    self._record_model_failure(
+                        context,
+                        model_string,
+                        spec,
+                        error,
+                        sync_mode="preflight",
+                    )
+                    continue
                 self.logger.log_info(
                     f"Preflight validated {len(preflight_rows)} rows for {model_string} from {spec.execution_mode} `{spec.execution_value}`.",
                     obj=self.sync,
@@ -166,27 +176,42 @@ class ForwardQueryFetcher:
     def _run_preflight_job(self, payload):
         context, row_limit, job = payload
         model_string, spec, coalesce_fields = job
-        preflight_rows = self.client.run_nqe_query(
-            query=spec.query,
-            query_id=spec.run_query_id,
-            commit_id=spec.commit_id,
-            network_id=context.network_id,
-            snapshot_id=context.snapshot_id,
-            parameters=spec.merged_parameters(context.query_parameters),
-            limit=row_limit,
-            fetch_all=False,
-        )
-        for row in preflight_rows:
-            validate_row_shape_for_model(model_string, row, coalesce_fields)
-        return model_string, spec, preflight_rows
+        try:
+            preflight_rows = self.client.run_nqe_query(
+                query=spec.query,
+                query_id=spec.run_query_id,
+                commit_id=spec.commit_id,
+                network_id=context.network_id,
+                snapshot_id=context.snapshot_id,
+                parameters=spec.merged_parameters(context.query_parameters),
+                limit=row_limit,
+                fetch_all=False,
+            )
+            for row in preflight_rows:
+                validate_row_shape_for_model(model_string, row, coalesce_fields)
+            return model_string, spec, preflight_rows, None
+        except (ForwardClientError, ForwardConnectivityError, ForwardQueryError) as exc:
+            return model_string, spec, [], exc
 
     def _query_jobs(self, context: ForwardQueryContext):
         jobs = []
         for model_string in self.sync.get_model_strings():
-            specs = get_query_specs(model_string, maps=context.maps)
-            specs = resolve_query_specs_for_client(specs, self.client)
-            if not specs:
-                raise ForwardQueryError(self._missing_query_specs_message(model_string))
+            try:
+                specs = get_query_specs(model_string, maps=context.maps)
+                specs = resolve_query_specs_for_client(specs, self.client)
+                if not specs:
+                    raise ForwardQueryError(
+                        self._missing_query_specs_message(model_string)
+                    )
+            except ForwardQueryError as exc:
+                self._record_model_failure(
+                    context,
+                    model_string,
+                    None,
+                    exc,
+                    sync_mode="preflight",
+                )
+                continue
             coalesce_fields = self._coalesce_fields(model_string, specs)
             for spec in specs:
                 jobs.append((model_string, spec, coalesce_fields))
@@ -219,7 +244,7 @@ class ForwardQueryFetcher:
         validate_rows=True,
     ) -> list[BranchWorkload]:
         workloads = []
-        self.model_results = []
+        self.model_results = list(self._failed_model_results.values())
         jobs = self._build_workload_jobs(context)
         if not jobs:
             return workloads
@@ -239,10 +264,24 @@ class ForwardQueryFetcher:
     def _build_workload_jobs(self, context: ForwardQueryContext):
         jobs = []
         for model_string in self.sync.get_model_strings():
-            specs = get_query_specs(model_string, maps=context.maps)
-            specs = resolve_query_specs_for_client(specs, self.client)
-            if not specs:
-                raise ForwardQueryError(self._missing_query_specs_message(model_string))
+            if model_string in self._failed_model_results:
+                continue
+            try:
+                specs = get_query_specs(model_string, maps=context.maps)
+                specs = resolve_query_specs_for_client(specs, self.client)
+                if not specs:
+                    raise ForwardQueryError(
+                        self._missing_query_specs_message(model_string)
+                    )
+            except ForwardQueryError as exc:
+                self._record_model_failure(
+                    context,
+                    model_string,
+                    None,
+                    exc,
+                    sync_mode="planning",
+                )
+                continue
             coalesce_fields = self._coalesce_fields(model_string, specs)
             baseline = self.sync.incremental_diff_baseline(
                 specs=specs,
@@ -257,20 +296,34 @@ class ForwardQueryFetcher:
         model_string, spec, baseline, coalesce_fields = job
         baseline_snapshot_id = getattr(baseline, "snapshot_id", "") or ""
         started = time.perf_counter()
-        rows, delete_rows, sync_mode = self._fetch_spec_rows(
-            model_string,
-            spec,
-            baseline,
-            context,
-            coalesce_fields,
-        )
-        runtime_ms = round((time.perf_counter() - started) * 1000, 1)
-        if validate_rows:
-            self.validate_rows(
+        try:
+            rows, delete_rows, sync_mode = self._fetch_spec_rows(
                 model_string,
-                rows,
-                delete_rows,
+                spec,
+                baseline,
+                context,
                 coalesce_fields,
+            )
+            runtime_ms = round((time.perf_counter() - started) * 1000, 1)
+            if validate_rows:
+                self.validate_rows(
+                    model_string,
+                    rows,
+                    delete_rows,
+                    coalesce_fields,
+                )
+        except (ForwardClientError, ForwardConnectivityError, ForwardQueryError) as exc:
+            runtime_ms = round((time.perf_counter() - started) * 1000, 1)
+            return (
+                self._failure_result(
+                    context,
+                    model_string,
+                    spec,
+                    exc,
+                    sync_mode="planning",
+                    runtime_ms=runtime_ms,
+                ),
+                None,
             )
         model_result = ForwardModelResult(
             model_string=model_string,
@@ -302,6 +355,59 @@ class ForwardQueryFetcher:
                 ),
             )
         return model_result, workload
+
+    def _record_model_failure(
+        self,
+        context: ForwardQueryContext,
+        model_string: str,
+        spec,
+        exc: Exception,
+        *,
+        sync_mode: str,
+    ) -> None:
+        if model_string in self._failed_model_results:
+            return
+        result = self._failure_result(
+            context,
+            model_string,
+            spec,
+            exc,
+            sync_mode=sync_mode,
+        )
+        self._failed_model_results[model_string] = result
+        self.logger.log_warning(
+            f"Skipping {model_string} because Forward query validation failed: {exc}",
+            obj=self.sync,
+        )
+
+    def _failure_result(
+        self,
+        context: ForwardQueryContext,
+        model_string: str,
+        spec,
+        exc: Exception,
+        *,
+        sync_mode: str,
+        runtime_ms: float | None = None,
+    ) -> ForwardModelResult:
+        return ForwardModelResult(
+            model_string=model_string,
+            query_name=getattr(spec, "query_name", "") or model_string,
+            execution_mode=getattr(spec, "execution_mode", "") or "",
+            execution_value=getattr(spec, "execution_value", "") or "",
+            sync_mode=sync_mode,
+            row_count=0,
+            delete_count=0,
+            failure_count=1,
+            runtime_ms=runtime_ms,
+            snapshot_id=context.snapshot_id,
+            diagnostics=[
+                {
+                    "name": "query_validation_failure",
+                    "message": str(exc),
+                }
+            ],
+        )
 
     def _append_ipaddress_diagnostics(self, context: ForwardQueryContext) -> None:
         return sync_append_ipaddress_diagnostics(self, context)

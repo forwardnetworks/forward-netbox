@@ -113,9 +113,12 @@ def run_plan_item(
     )
     if ingestion.issues.exists():
         messages = list(ingestion.issues.values_list("message", flat=True)[:5])
-        raise SyncError(
-            "Forward multi-branch shard completed with issues: " + "; ".join(messages)
+        executor.logger.log_warning(
+            "Forward multi-branch shard completed with row issues and will "
+            "continue with later shards: " + "; ".join(messages),
+            obj=ingestion,
         )
+        mark_baseline_ready = False
 
     actual_changes = branch.get_unmerged_changes().count()
     record_model_density(
