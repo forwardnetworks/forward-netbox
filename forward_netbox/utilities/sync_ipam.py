@@ -147,12 +147,15 @@ def apply_ipam_ipaddress(runner, row):
                 context={"device": device.name, "interface": row["interface"]},
                 data=row,
             )
-        raise ForwardSearchError(
-            f"Unable to find interface {row['interface']} on device {device.name} for IP assignment.",
+        runner._record_aggregated_skip_warning(
             model_string="ipam.ipaddress",
-            context={"device": device.name, "interface": row["interface"]},
-            data=row,
+            reason="missing-interface",
+            warning_message=(
+                f"Skipping IP address `{row['address']}` on `{device.name}` "
+                f"`{row['interface']}` because the target interface was not imported."
+            ),
         )
+        return False
     skip_reason = runner._ipaddress_assignment_skip_reason(row["address"])
     if skip_reason:
         reason_label = {

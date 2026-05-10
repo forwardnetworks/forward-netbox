@@ -804,7 +804,7 @@ select {
 - Expected fields: `device`, `interface`, `vrf`, `address`, `status`
 - Query file: [`forward_ip_addresses.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_ip_addresses.nqe)
 
-The shipped query combines rows from subinterfaces, bridge interfaces, tunnels, and routed VLAN interfaces, applies a final `select distinct` over the merged result, and then projects a single deterministic row per NetBox IP identity. VRF-scoped rows keep the normal `(address, vrf)` identity. Global-table rows are canonicalized by bare host IP so the plugin does not try to create multiple global IP objects for the same host with different masks; when that happens, the most specific mask wins. It still skips subnet network IDs and IPv4 broadcast addresses that NetBox cannot assign to interfaces, while preserving point-to-point endpoint prefixes such as IPv4 `/31` and IPv6 `/127`. These rows are skipped rather than rewritten because there is no NetBox-native host address to infer safely from the device configuration.
+The shipped query combines rows from subinterfaces, bridge interfaces, tunnels, and routed VLAN interfaces, filters those candidates through the importable Forward interface set, applies a final `select distinct` over the merged result, and then projects a single deterministic row per NetBox IP identity. VRF-scoped rows keep the normal `(address, vrf)` identity. Global-table rows are canonicalized by bare host IP so the plugin does not try to create multiple global IP objects for the same host with different masks; when that happens, the most specific mask wins. It still skips subnet network IDs and IPv4 broadcast addresses that NetBox cannot assign to interfaces, while preserving point-to-point endpoint prefixes such as IPv4 `/31` and IPv6 `/127`. These rows are skipped rather than rewritten because there is no NetBox-native host address to infer safely from the device configuration. If an IP row still targets an interface that was not imported, the NetBox adapter records an aggregated skip warning instead of treating the row as a fatal sync failure.
 
 When `ipam.ipaddress` is enabled, the sync also runs an internal read-only diagnostic query that reports how many Forward interface addresses were filtered for this reason and logs capped examples. This diagnostic query is not seeded as a NetBox import map and does not create, update, or delete NetBox objects. See the query file for the complete import text:
 
@@ -1021,7 +1021,7 @@ When any optional routing map is enabled, the sync also runs an internal read-on
 forward_netbox/queries/forward_routing_import_diagnostics.nqe
 ```
 
-For routing maps on large datasets, publish the NQE into the Forward NQE library and set the NetBox map to the saved `query_id`. The first successful run establishes a full baseline; later `latestProcessed` runs can use Forward NQE diffs when every enabled map for the model is query-ID backed.
+For routing maps on large datasets, publish the NQE into the Forward NQE library and bulk bind the NetBox maps to the committed repository query paths. The first successful run establishes a full baseline; later `latestProcessed` runs can use Forward NQE diffs when every enabled map for the model is backed by a repository path or direct query ID.
 
 ## Important Caveats
 

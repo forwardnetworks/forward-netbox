@@ -16,6 +16,7 @@ from forward_netbox.utilities.query_registry import (
 from forward_netbox.utilities.query_registry import (
     IPADDRESS_UNASSIGNABLE_DIAGNOSTIC_QUERY_NAME,
 )
+from forward_netbox.utilities.query_registry import QuerySpec
 from forward_netbox.utilities.query_registry import routing_import_diagnostic_query
 from forward_netbox.utilities.query_registry import ROUTING_IMPORT_DIAGNOSTIC_QUERY_NAME
 
@@ -129,6 +130,58 @@ def _field_pattern(field_name):
 
 
 class QueryRegistryTest(TestCase):
+    def test_query_spec_resolves_repository_path_to_runtime_query_id(self):
+        class Client:
+            def resolve_nqe_query_reference(self, *, repository, query_path, commit_id):
+                self.call = {
+                    "repository": repository,
+                    "query_path": query_path,
+                    "commit_id": commit_id,
+                }
+                return {
+                    "queryId": "Q_devices",
+                    "commitId": "commit-1",
+                }
+
+        client = Client()
+        spec = QuerySpec(
+            model_string="dcim.device",
+            query_name="Forward Devices",
+            query_repository="org",
+            query_path="/forward_netbox_validation/forward_devices",
+        )
+
+        resolved = spec.resolve(client)
+
+        self.assertEqual(resolved.run_query_id, "Q_devices")
+        self.assertEqual(resolved.diff_query_id, "Q_devices")
+        self.assertEqual(resolved.commit_id, "commit-1")
+        self.assertEqual(resolved.execution_mode, "query_path")
+        self.assertEqual(
+            resolved.execution_value,
+            "org:/forward_netbox_validation/forward_devices",
+        )
+        self.assertEqual(
+            client.call,
+            {
+                "repository": "org",
+                "query_path": "/forward_netbox_validation/forward_devices",
+                "commit_id": None,
+            },
+        )
+
+    def test_query_spec_requires_one_query_reference(self):
+        with self.assertRaisesRegex(
+            ValueError,
+            "Exactly one of",
+        ):
+            QuerySpec(
+                model_string="dcim.device",
+                query_name="Forward Devices",
+                query="select {}",
+                query_id="Q_devices",
+            )
+
     def test_builtin_queries_expose_required_output_fields(self):
         for query_default in BUILTIN_QUERY_MAPS:
             model_specs = BUILTIN_QUERY_SPECS[query_default["model_string"]]
@@ -764,6 +817,12 @@ class QueryRegistryTest(TestCase):
         self.assertIn(
             "let chosen_prefix_length = max(foreach candidate in grouped_rows",
             ip_spec.query,
+        )
+        self.assertIn("importable_interfaces =", ip_spec.query)
+        self.assertIn("assignable_candidate_rows =", ip_spec.query)
+        self.assertIn("where imported_interface.device == row.device", ip_spec.query)
+        self.assertIn(
+            "where imported_interface.interface == row.interface", ip_spec.query
         )
         self.assertEqual(
             ip_spec.query.count(

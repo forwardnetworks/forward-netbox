@@ -188,6 +188,66 @@ async function main() {
     await assertNoHorizontalOverflow(page, "desktop sync form");
     evidence.checks.push("sync creation form exposes branch budget and auto merge controls");
 
+    await page.goto(`${baseURL}/plugins/forward/nqe-map/add/`, {
+      waitUntil: "domcontentloaded",
+    });
+    await expectVisible(page, "Forward NQE Map");
+    await expectVisible(page, "Query Definition Mode");
+    await expectVisible(page, "Forward Source for Query Lookup");
+    await expectVisible(page, "Query Repository");
+    await expectVisible(page, "Query Folder");
+    await expectVisible(page, "Query Path");
+    await expectVisible(page, "Query ID");
+    await expectVisible(page, "Commit ID");
+    const queryModeTag = await page
+      .locator('[name="query_mode"]')
+      .evaluate((element) => element.tagName);
+    assert(queryModeTag === "SELECT", "NQE map query mode should render as a select");
+    assert(
+      (await page.locator('input[type="radio"][name="query_mode"]').count()) === 0,
+      "NQE map query mode should not render as mis-styled radio inputs",
+    );
+    await assertNoHorizontalOverflow(page, "desktop NQE map form");
+    evidence.checks.push("NQE map form exposes repository path, direct query ID, and commit selectors");
+
+    await page.goto(`${baseURL}/plugins/forward/nqe-map/`, {
+      waitUntil: "domcontentloaded",
+    });
+    await expectVisible(page, "Forward NQE Maps");
+    await page.locator('input[name="pk"]').first().check();
+    await page.getByRole("button", { name: /Edit Selected/ }).click();
+    await expectVisible(page, "Bulk Edit");
+    await expectVisible(page, "Bulk Query Reference");
+    await expectVisible(page, "Query Bulk Operation");
+    const bulkOperationOptions = await page
+      .locator('[name="query_bulk_operation"] option')
+      .allTextContents();
+    assert(
+      bulkOperationOptions.includes("Bind selected maps to repository query paths"),
+      "NQE map bulk edit should offer repository path binding",
+    );
+    assert(
+      bulkOperationOptions.includes("Publish bundled queries to Org Repository and bind selected maps"),
+      "NQE map bulk edit should offer bundled query publishing",
+    );
+    assert(
+      bulkOperationOptions.includes("Restore bundled raw query text"),
+      "NQE map bulk edit should offer raw query restore",
+    );
+    await expectVisible(page, "Forward Source for Query Lookup");
+    await expectVisible(page, "Query Repository");
+    await expectVisible(page, "Repository Folder");
+    await expectVisible(page, "Overwrite existing repository queries");
+    await expectVisible(page, "Commit message");
+    await expectVisible(page, "Map Query Choices");
+    await expectVisible(page, "Forward Locations");
+    await expectVisible(page, "Pin current commit");
+    await expectVisible(page, "resolves query IDs from selected query paths during sync");
+    await assertNoHorizontalOverflow(page, "desktop NQE map list");
+    evidence.checks.push(
+      "native NQE map bulk edit exposes bidirectional query reference controls",
+    );
+
     await page.setViewportSize({ width: 390, height: 900 });
     await page.goto(`${baseURL}/plugins/forward/sync/`, {
       waitUntil: "domcontentloaded",

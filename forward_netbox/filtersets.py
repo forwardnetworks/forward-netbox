@@ -61,6 +61,8 @@ class ForwardNQEMapFilterSet(ChangeLoggedModelFilterSet):
         return queryset.filter(
             Q(name__icontains=value)
             | Q(query_id__icontains=value)
+            | Q(query_path__icontains=value)
+            | Q(query_repository__icontains=value)
             | Q(query__icontains=value)
             | Q(commit_id__icontains=value)
             | Q(netbox_model__app_label__icontains=value)

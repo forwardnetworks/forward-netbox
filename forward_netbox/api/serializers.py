@@ -40,6 +40,8 @@ class ForwardNQEMapSerializer(NestedGroupModelSerializer):
             "display",
             "netbox_model",
             "query_id",
+            "query_repository",
+            "query_path",
             "query",
             "commit_id",
             "parameters",

@@ -54,8 +54,22 @@ def clean_forward_source(source):
 
 
 def clean_forward_nqe_map(nqe_map):
-    if bool(nqe_map.query_id) == bool(nqe_map.query):
-        raise ValidationError(_("Set exactly one of `Query ID` or `Query`."))
+    query_reference_count = sum(
+        bool(value)
+        for value in (
+            nqe_map.query_id,
+            getattr(nqe_map, "query_path", ""),
+            nqe_map.query,
+        )
+    )
+    if query_reference_count != 1:
+        raise ValidationError(
+            _("Set exactly one of `Query ID`, `Query Path`, or `Query`.")
+        )
+    if getattr(nqe_map, "query_path", "") and not getattr(
+        nqe_map, "query_repository", ""
+    ):
+        raise ValidationError(_("Set `Query Repository` when `Query Path` is set."))
     if nqe_map.parameters and not isinstance(nqe_map.parameters, dict):
         raise ValidationError(_("Parameters must be a JSON object."))
     try:

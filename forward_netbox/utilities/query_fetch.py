@@ -26,6 +26,7 @@ from .query_diagnostics import (
 )
 from .query_registry import get_query_specs
 from .query_registry import optional_builtin_query_names_for_model
+from .query_registry import resolve_query_specs_for_client
 from .sync import ForwardSyncRunner
 from .sync_contracts import default_coalesce_fields_for_model
 from .sync_contracts import validate_row_shape_for_model
@@ -167,7 +168,7 @@ class ForwardQueryFetcher:
         model_string, spec, coalesce_fields = job
         preflight_rows = self.client.run_nqe_query(
             query=spec.query,
-            query_id=spec.query_id,
+            query_id=spec.run_query_id,
             commit_id=spec.commit_id,
             network_id=context.network_id,
             snapshot_id=context.snapshot_id,
@@ -183,6 +184,7 @@ class ForwardQueryFetcher:
         jobs = []
         for model_string in self.sync.get_model_strings():
             specs = get_query_specs(model_string, maps=context.maps)
+            specs = resolve_query_specs_for_client(specs, self.client)
             if not specs:
                 raise ForwardQueryError(self._missing_query_specs_message(model_string))
             coalesce_fields = self._coalesce_fields(model_string, specs)
@@ -238,6 +240,7 @@ class ForwardQueryFetcher:
         jobs = []
         for model_string in self.sync.get_model_strings():
             specs = get_query_specs(model_string, maps=context.maps)
+            specs = resolve_query_specs_for_client(specs, self.client)
             if not specs:
                 raise ForwardQueryError(self._missing_query_specs_message(model_string))
             coalesce_fields = self._coalesce_fields(model_string, specs)
@@ -354,7 +357,7 @@ class ForwardQueryFetcher:
         started = time.perf_counter()
         rows = self.client.run_nqe_query(
             query=spec.query,
-            query_id=spec.query_id,
+            query_id=spec.run_query_id,
             commit_id=spec.commit_id,
             network_id=context.network_id,
             snapshot_id=context.snapshot_id,
@@ -425,10 +428,10 @@ class ForwardQueryFetcher:
         )
         runner._model_coalesce_fields[model_string] = coalesce_fields
 
-        if baseline is not None and spec.query_id:
+        if baseline is not None and spec.run_query_id:
             try:
                 diff_rows = self.client.run_nqe_diff(
-                    query_id=spec.query_id,
+                    query_id=spec.run_query_id,
                     commit_id=spec.commit_id,
                     before_snapshot_id=baseline.snapshot_id,
                     after_snapshot_id=context.snapshot_id,
@@ -445,7 +448,7 @@ class ForwardQueryFetcher:
 
         rows = self.client.run_nqe_query(
             query=spec.query,
-            query_id=spec.query_id,
+            query_id=spec.run_query_id,
             commit_id=spec.commit_id,
             network_id=context.network_id,
             snapshot_id=context.snapshot_id,

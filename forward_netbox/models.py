@@ -206,6 +206,8 @@ class ForwardNQEMap(ForwardPluginModelDocsMixin, ChangeLoggedModel):
         limit_choices_to=FORWARD_SUPPORTED_SYNC_MODELS,
     )
     query_id = models.CharField(max_length=100, blank=True)
+    query_repository = models.CharField(max_length=10, blank=True, default="")
+    query_path = models.CharField(max_length=500, blank=True, default="")
     query = models.TextField(blank=True)
     commit_id = models.CharField(max_length=100, blank=True)
     parameters = models.JSONField(blank=True, default=dict)
@@ -229,10 +231,15 @@ class ForwardNQEMap(ForwardPluginModelDocsMixin, ChangeLoggedModel):
 
     @property
     def execution_mode(self):
+        if self.query_path:
+            return "query_path"
         return "query_id" if self.query_id else "query"
 
     @property
     def execution_value(self):
+        if self.query_path:
+            repository = self.query_repository or "org"
+            return f"{repository}:{self.query_path}"
         return self.query_id or self.name
 
     def get_absolute_url(self):
@@ -337,7 +344,7 @@ class ForwardSync(ForwardPluginModelDocsMixin, JobsMixin, TagsMixin, ChangeLogge
     ):
         if self.get_snapshot_id() != LATEST_PROCESSED_SNAPSHOT:
             return None
-        if not specs or any(not getattr(spec, "query_id", None) for spec in specs):
+        if not specs or any(not getattr(spec, "diff_query_id", None) for spec in specs):
             return None
         baseline = self.latest_baseline_ingestion(
             exclude_ingestion_id=exclude_ingestion_id

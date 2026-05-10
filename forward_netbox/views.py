@@ -3,6 +3,7 @@ from core.exceptions import SyncError
 from core.models import ObjectChange
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
+from django.core.exceptions import ValidationError
 from django.db import models
 from django.shortcuts import get_object_or_404
 from django.shortcuts import redirect
@@ -60,6 +61,10 @@ from .tables import ForwardSourceTable
 from .tables import ForwardSyncTable
 from .tables import ForwardValidationRunTable
 from .utilities.direct_changes import object_changes_for_ingestion
+from .utilities.query_binding import apply_explicit_nqe_map_bindings
+from .utilities.query_binding import build_nqe_map_bindings
+from .utilities.query_binding import publish_builtin_nqe_map_queries
+from .utilities.query_binding import restore_builtin_raw_query_bindings
 
 
 def annotate_statistics(queryset):
@@ -201,6 +206,124 @@ class ForwardNQEMapBulkEditView(generic.BulkEditView):
     queryset = ForwardNQEMap.objects.select_related("netbox_model")
     table = ForwardNQEMapTable
     form = ForwardNQEMapBulkEditForm
+
+    def _update_objects(self, form, request):
+        query_bulk_operation = form.get_query_bulk_operation()
+        if not query_bulk_operation:
+            return super()._update_objects(form, request)
+
+        selected_queryset = self.queryset.filter(pk__in=form.cleaned_data["pk"])
+        if form.has_query_restore_request():
+            try:
+                results = restore_builtin_raw_query_bindings(queryset=selected_queryset)
+            except Exception as exc:
+                raise ValidationError(
+                    f"Unable to restore bundled Forward NQE map queries: {exc}"
+                ) from exc
+
+            updated_ids = [result.map_id for result in results if result.matched]
+            if not updated_ids:
+                raise ValidationError(
+                    "No selected Forward NQE maps could be restored to bundled raw query text."
+                )
+            skipped_count = len([result for result in results if result.skipped_reason])
+            if skipped_count:
+                messages.warning(
+                    request,
+                    _(
+                        "Skipped %(count)s selected Forward NQE maps because their "
+                        "bundled raw query could not be identified unambiguously."
+                    )
+                    % {"count": skipped_count},
+                )
+            return list(self.queryset.filter(pk__in=updated_ids))
+
+        if form.has_query_publish_request():
+            bind_source = form.cleaned_data.get("bind_query_source")
+            bind_folder = form.cleaned_data.get("bind_query_folder")
+            if not bind_source or not bind_folder:
+                raise ValidationError(
+                    "Select a Forward source and Org Repository folder for NQE publishing."
+                )
+            try:
+                results = publish_builtin_nqe_map_queries(
+                    client=bind_source.get_client(),
+                    directory=bind_folder,
+                    queryset=selected_queryset,
+                    overwrite=form.cleaned_data.get("publish_overwrite", False),
+                    commit_message=form.cleaned_data.get("publish_commit_message", ""),
+                    pin_commit=form.cleaned_data.get("bind_pin_commit", False),
+                )
+            except Exception as exc:
+                raise ValidationError(
+                    f"Unable to publish bundled Forward NQE maps: {exc}"
+                ) from exc
+
+            updated_ids = [result.map_id for result in results if result.matched]
+            if not updated_ids:
+                raise ValidationError(
+                    "No selected Forward NQE maps could be published and bound."
+                )
+            skipped_count = len([result for result in results if result.skipped_reason])
+            if skipped_count:
+                messages.warning(
+                    request,
+                    _(
+                        "Skipped %(count)s selected Forward NQE maps because their "
+                        "bundled source could not be identified unambiguously."
+                    )
+                    % {"count": skipped_count},
+                )
+            messages.info(
+                request,
+                _(
+                    "Published bundled Forward NQE source to the Org Repository "
+                    "and bound %(count)s selected maps."
+                )
+                % {"count": len(updated_ids)},
+            )
+            return list(self.queryset.filter(pk__in=updated_ids))
+
+        bind_source = form.cleaned_data.get("bind_query_source")
+        bind_folder = form.cleaned_data.get("bind_query_folder")
+        selected_query_paths = form.selected_query_paths_by_map_id()
+        if not bind_source or not bind_folder:
+            raise ValidationError(
+                "Select a Forward source and repository folder for query path binding."
+            )
+
+        try:
+            bindings = build_nqe_map_bindings(
+                client=bind_source.get_client(),
+                repository=form.cleaned_data.get("bind_query_repository") or "org",
+                directory=bind_folder,
+                pin_commit=form.cleaned_data.get("bind_pin_commit", False),
+            )
+            results = apply_explicit_nqe_map_bindings(
+                bindings,
+                query_path_by_map_id=selected_query_paths,
+                queryset=selected_queryset,
+            )
+        except Exception as exc:
+            raise ValidationError(f"Unable to bind Forward NQE maps: {exc}") from exc
+
+        updated_ids = [result.map_id for result in results if result.matched]
+        if not updated_ids:
+            raise ValidationError(
+                "No selected Forward NQE maps matched queries in the selected folder."
+            )
+        skipped_count = len([result for result in results if result.skipped_reason])
+        if skipped_count:
+            messages.warning(
+                request,
+                _(
+                    "Skipped %(count)s selected Forward NQE maps because their "
+                    "selected repository query path was blank, missing, or targeted "
+                    "a different NetBox model."
+                )
+                % {"count": skipped_count},
+            )
+        return list(self.queryset.filter(pk__in=updated_ids))
 
 
 @register_model_view(ForwardNQEMap, "bulk_rename", path="rename", detail=False)
