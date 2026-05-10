@@ -1,5 +1,6 @@
 import json
 import time
+from urllib.parse import quote
 
 import httpx
 
@@ -18,6 +19,62 @@ DEFAULT_FORWARD_API_RETRY_BACKOFF_SECONDS = 2
 MAX_NQE_PAGE_SIZE = 10000
 DEFAULT_NQE_PAGE_SIZE = 10000
 TRANSIENT_FORWARD_HTTP_STATUS_CODES = {408, 429, 502, 503, 504}
+NQE_QUERY_REPOSITORIES = {"org", "fwd"}
+
+
+def _normalize_nqe_directory(directory):
+    directory = str(directory or "/").strip() or "/"
+    if not directory.startswith("/"):
+        directory = f"/{directory}"
+    if not directory.endswith("/"):
+        directory = f"{directory}/"
+    return directory
+
+
+def _normalize_nqe_query_path(query_path):
+    query_path = str(query_path or "").strip()
+    if not query_path:
+        return ""
+    if not query_path.startswith("/"):
+        query_path = f"/{query_path}"
+    return query_path
+
+
+def _query_in_directory(query_path, directory):
+    directory = _normalize_nqe_directory(directory)
+    query_path = str(query_path or "")
+    return directory == "/" or query_path.startswith(directory)
+
+
+def _normalize_nqe_query_row(row, *, repository=None):
+    query_id = str(row.get("queryId") or "").strip()
+    path = str(row.get("path") or "").strip()
+    if not query_id or not path:
+        return None
+    normalized = {
+        "queryId": query_id,
+        "path": path,
+        "intent": str(row.get("intent") or "").strip(),
+        "repository": str(row.get("repository") or repository or "").strip(),
+        "lastCommitId": str(row.get("lastCommitId") or "").strip(),
+    }
+    return normalized
+
+
+def _normalize_nqe_repository(repository):
+    repository = str(repository or "org").strip().lower()
+    if repository not in NQE_QUERY_REPOSITORIES:
+        raise ForwardClientError(f"Unsupported Forward NQE repository `{repository}`.")
+    return repository
+
+
+def _commit_message_payload(message):
+    message = str(message or "").strip() or "Publish Forward NetBox NQE maps"
+    title, _, body = message.partition("\n")
+    return {
+        "title": title.strip() or "Publish Forward NetBox NQE maps",
+        "body": body.strip(),
+    }
 
 
 class ForwardClient:
@@ -210,6 +267,156 @@ class ForwardClient:
     def get_snapshot_metrics(self, snapshot_id):
         response = self._request("GET", f"/snapshots/{snapshot_id}/metrics")
         return response.json() or {}
+
+    def get_org_nqe_queries(self, *, directory="/"):
+        directory = _normalize_nqe_directory(directory)
+        params = {"dir": directory}
+        response = self._request("GET", "/nqe/queries", params=params or None)
+        data = response.json() or []
+        return data if isinstance(data, list) else []
+
+    def get_nqe_repository_queries(self, *, repository="org", directory="/"):
+        repository = _normalize_nqe_repository(repository)
+        directory = _normalize_nqe_directory(directory)
+        if repository == "org":
+            rows = self.get_org_nqe_queries(directory=directory)
+            normalized_rows = [
+                normalized
+                for row in rows
+                if (normalized := _normalize_nqe_query_row(row, repository=repository))
+            ]
+            if normalized_rows or directory != "/":
+                return normalized_rows
+
+        response = self._request(
+            "GET",
+            f"/nqe/repos/{repository}/commits/head/queries",
+        )
+        data = response.json() or {}
+        rows = data.get("queries") if isinstance(data, dict) else []
+        return [
+            normalized
+            for row in rows or []
+            if _query_in_directory(row.get("path"), directory)
+            if (normalized := _normalize_nqe_query_row(row, repository=repository))
+        ]
+
+    def get_committed_nqe_query(
+        self, *, repository="org", query_path="", commit_id="head"
+    ):
+        repository = _normalize_nqe_repository(repository)
+        query_path = _normalize_nqe_query_path(query_path)
+        commit_id = str(commit_id or "head").strip() or "head"
+        if not query_path:
+            raise ForwardClientError("Forward NQE query path is required.")
+        response = self._request(
+            "GET",
+            f"/nqe/repos/{repository}/commits/{quote(commit_id, safe='')}/queries",
+            params={"path": query_path},
+        )
+        data = response.json() or {}
+        if not isinstance(data, dict):
+            raise ForwardClientError(
+                f"Forward NQE repository lookup for `{query_path}` returned an invalid response."
+            )
+        return data
+
+    def resolve_nqe_query_reference(
+        self, *, repository="org", query_path="", commit_id=None
+    ):
+        query = self.get_committed_nqe_query(
+            repository=repository,
+            query_path=query_path,
+            commit_id=commit_id or "head",
+        )
+        query_id = str(query.get("queryId") or "").strip()
+        if not query_id:
+            raise ForwardClientError(
+                f"Forward NQE query `{repository}:{query_path}` did not include a query ID."
+            )
+        last_commit = query.get("lastCommit") or {}
+        resolved_commit_id = str(
+            commit_id or last_commit.get("id") or query.get("lastCommitId") or ""
+        ).strip()
+        return {
+            "queryId": query_id,
+            "commitId": resolved_commit_id,
+            "repository": str(query.get("repository") or repository).strip(),
+            "path": str(query.get("path") or query_path).strip(),
+            "intent": str(query.get("intent") or "").strip(),
+        }
+
+    def get_nqe_query_history(self, query_id):
+        query_id = str(query_id or "").strip()
+        if not query_id:
+            return []
+        response = self._request(
+            "GET",
+            f"/nqe/queries/{quote(query_id, safe='')}/history",
+        )
+        data = response.json() or {}
+        commits = data.get("commits") if isinstance(data, dict) else []
+        return commits or []
+
+    def add_org_nqe_query(self, *, query_path, source_code):
+        query_path = _normalize_nqe_query_path(query_path)
+        if not query_path:
+            raise ForwardClientError("Forward NQE query path is required.")
+        self._request(
+            "POST",
+            "/users/current/nqe/changes",
+            params={"action": "addQuery", "path": query_path},
+            json_body={"sourceCode": source_code},
+        )
+
+    def edit_org_nqe_query(self, *, query_path, source_code, query_id, commit_id):
+        query_path = _normalize_nqe_query_path(query_path)
+        query_id = str(query_id or "").strip()
+        commit_id = str(commit_id or "").strip()
+        if not query_path:
+            raise ForwardClientError("Forward NQE query path is required.")
+        if not query_id or not commit_id:
+            raise ForwardClientError(
+                "Forward NQE query ID and commit ID are required to update an existing query."
+            )
+        self._request(
+            "POST",
+            "/users/current/nqe/changes",
+            params={"action": "editQuery", "path": query_path},
+            json_body={
+                "sourceCode": source_code,
+                "basis": {
+                    "queryId": query_id,
+                    "commitId": commit_id,
+                },
+            },
+        )
+
+    def get_org_nqe_head_commit_id(self):
+        response = self._request("GET", "/nqe/repos/org/commits/head")
+        data = response.json()
+        if isinstance(data, dict):
+            return str(data.get("id") or data.get("commitId") or "").strip()
+        return str(data or "").strip()
+
+    def commit_org_nqe_queries(self, *, query_paths, message):
+        query_paths = [
+            _normalize_nqe_query_path(query_path)
+            for query_path in query_paths
+            if _normalize_nqe_query_path(query_path)
+        ]
+        if not query_paths:
+            return ""
+        self._request(
+            "POST",
+            "/nqe/repos/org/commits",
+            json_body={
+                "paths": query_paths,
+                "accessSettings": [],
+                "message": _commit_message_payload(message),
+            },
+        )
+        return self.get_org_nqe_head_commit_id()
 
     def _parse_nqe_records(self, data):
         items = data.get("items") or []

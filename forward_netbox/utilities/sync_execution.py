@@ -3,6 +3,7 @@ from ..exceptions import ForwardConnectivityError
 from ..exceptions import ForwardQueryError
 from ..exceptions import ForwardSyncDataError
 from .query_registry import get_query_specs
+from .query_registry import resolve_query_specs_for_client
 from .sync_contracts import default_coalesce_fields_for_model
 from .sync_contracts import validate_row_shape_for_model
 
@@ -88,6 +89,7 @@ def run_sync_stage(runner):
         )
         try:
             specs = get_query_specs(model_string, maps=maps)
+            specs = resolve_query_specs_for_client(specs, runner.client)
             if specs:
                 runner._model_coalesce_fields[model_string] = [
                     list(field_set) for field_set in specs[0].coalesce_fields
@@ -106,7 +108,7 @@ def run_sync_stage(runner):
             for spec in specs:
                 rows = []
                 delete_rows = []
-                if model_baseline is not None and spec.query_id:
+                if model_baseline is not None and spec.run_query_id:
                     try:
                         runner.logger.log_info(
                             f"Running Forward NQE diff `{spec.execution_value}` for {model_string} "
@@ -114,7 +116,7 @@ def run_sync_stage(runner):
                             obj=runner.sync,
                         )
                         diff_rows = runner.client.run_nqe_diff(
-                            query_id=spec.query_id,
+                            query_id=spec.run_query_id,
                             commit_id=spec.commit_id,
                             before_snapshot_id=model_baseline.snapshot_id,
                             after_snapshot_id=snapshot_id,
@@ -135,14 +137,14 @@ def run_sync_stage(runner):
                         )
                         model_baseline = None
 
-                if model_baseline is None or not spec.query_id:
+                if model_baseline is None or not spec.run_query_id:
                     runner.logger.log_info(
                         f"Running Forward {spec.execution_mode} `{spec.execution_value}` for {model_string}.",
                         obj=runner.sync,
                     )
                     rows = runner.client.run_nqe_query(
                         query=spec.query,
-                        query_id=spec.query_id,
+                        query_id=spec.run_query_id,
                         commit_id=spec.commit_id,
                         network_id=network_id,
                         snapshot_id=snapshot_id,

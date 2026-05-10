@@ -92,12 +92,32 @@ Create a `Forward Source` for each Forward deployment or tenant you want to sync
 
 Each map must define exactly one of:
 
+- repository `query_path`
 - `query_id`
 - raw `query`
 
-Use `query_id` when you want the map to call a named or published Forward query. Use raw `query` when you want the exact NQE text stored directly in NetBox.
+Use repository `query_path` when you want the map to call a committed Forward
+query by path. This is the preferred mode because it survives different Forward
+orgs: the plugin resolves the org-specific query ID from the selected source at
+sync time. Use direct `query_id` only when the map is tied to one Forward org.
+Use raw `query` when you want the exact NQE text stored directly in NetBox.
 
-`query_id` values are resolved from the Forward Org Repository. They are not properties of a `Forward Source`, and they should be tracked in custom `Forward NQE Maps` instead of source configuration.
+`query_path` and direct `query_id` values are map properties, not source
+configuration. The `Forward Source` supplies credentials and org context for
+selector lookup and runtime path resolution.
+
+When editing an NQE map in the UI, choose `Repository Query Path`, `Direct Query
+ID`, or `Raw Query Text` under `Query Definition Mode`.
+
+For repository-path queries, the UI uses `Forward Source for Query Lookup` to
+populate selectors. Pick the query repository, then a folder, then the query
+path. The plugin detects Org Repository queries and Forward Library queries
+from the selected source. After a query is selected, the `Commit ID` selector
+can pin a specific committed revision; leave it blank to resolve the latest
+committed revision at sync time.
+
+For raw queries, paste the NQE in `Query`. The form clears `query_id` and
+`commit_id` before saving so each map has exactly one execution mode.
 
 ### Identity Contract Validation
 
@@ -133,7 +153,7 @@ The plugin also seeds a default `Forward Device Feature Tags` map and a disabled
 
 Optional routing sync is behind `PLUGINS_CONFIG["forward_netbox"]["enable_bgp_sync"] = True`. When enabled and the optional NetBox plugins are installed, the sync form exposes disabled-by-default maps for `netbox_routing.bgppeer`, `netbox_routing.bgpaddressfamily`, `netbox_routing.bgppeeraddressfamily`, `netbox_routing.ospfinstance`, `netbox_routing.ospfarea`, `netbox_routing.ospfinterface`, and `netbox_peering_manager.peeringsession`. The `netbox-routing` maps are the primary native BGP/OSPF targets; the `netbox-peering-manager` map creates an overlay session linked to the BGP peer. Leave this flag off unless those optional plugins are installed and the routing beta path is intentionally being tested. The routing queries use explicit local identity when Forward provides it, then apply conservative native-query inference from reciprocal Forward peer evidence. During planning, routing diagnostics report BGP neighbors skipped because no explicit or safely inferred local AS exists, unsupported BGP address families, and OSPF rows skipped because no unique process-level local router ID can be inferred safely.
 
-For large routing datasets, publish the routing NQE into the Forward NQE library and set each enabled NetBox map to the saved `query_id`. The first run still performs a full baseline. Later `latestProcessed` runs can use Forward NQE diffs only when all enabled maps for that model are query-ID backed; inline query text falls back to full execution.
+For large routing datasets, publish the routing NQE into the Forward NQE library and bind each enabled NetBox map to the repository query path. The first run still performs a full baseline. Later `latestProcessed` runs can use Forward NQE diffs only when all enabled maps for that model are backed by a repository path or direct query ID; inline query text falls back to full execution.
 
 Large datasets should prefer saved queries plus `latestProcessed`. That keeps the first run as a full baseline, then lets later runs use Forward `nqe-diffs` directly. The current built-ins also collapse NetBox identities in NQE where the source emits many raw rows for one object, such as prefix, IP, MAC, and VLAN records.
 
@@ -168,10 +188,76 @@ The repository query files are also linked directly under [`forward_netbox/queri
 
 If you want Forward to own the modular source instead of storing raw NQE inside NetBox:
 
+1. In NetBox, open `Plugins > Forward Networks > NQE Maps`.
+2. Select the maps to publish and bind. To publish every visible built-in map,
+   use the table header checkbox, then click the native `Edit Selected` bulk
+   action.
+3. In the bulk edit form, set `Query Bulk Operation` to `Publish bundled
+   queries to Org Repository and bind selected maps`.
+4. Set `Forward Source for Query Lookup` and select the destination
+   `Repository Folder`.
+5. Leave `Overwrite existing repository queries` disabled to publish only
+   missing files. Enable it when you want the bundled source from this plugin
+   release to replace existing files at the same paths.
+6. Set a `Commit message`, then apply the edit.
+7. Validate against a known snapshot before enabling the map in production syncs.
+
+This publishes the selected maps' bundled NQE source plus required local imports
+such as `netbox_utilities` into the selected Forward source's Org Repository,
+commits those changes, and binds the selected NetBox maps to the resulting
+repository paths. The selected Forward source credentials must have Forward
+Network Operator or equivalent NQE-library write permission. Read-only or
+query-only credentials can still bind existing repository queries, but cannot
+publish or commit new Org Repository content.
+
+If you prefer to manage the query files in Forward directly:
+
 1. Upload the query set, including `netbox_utilities`, into an Org Repository folder.
 2. Commit the folder in Forward.
-3. Use the resulting `query_id` and optional `commit_id` in a custom `Forward NQE Map`.
-4. Validate against a known snapshot before enabling the map in production syncs.
+3. In NetBox, open `Plugins > Forward Networks > NQE Maps`.
+4. Select the maps to bind. To bind every visible map, use the table header
+   checkbox, then click the native `Edit Selected` bulk action.
+5. In the bulk edit form, set `Query Bulk Operation` to `Bind selected maps to
+   repository query paths`.
+6. Set `Forward Source for Query Lookup`, confirm `Query Repository`, and select
+   the `Repository Folder`.
+7. Under `Map Query Choices`, choose the repository query path for each selected
+   NetBox map that should be bound. The folder limits the choices, and each
+   selector is filtered to the selected map's NetBox model.
+8. Apply the edit.
+9. Validate against a known snapshot before enabling the map in production syncs.
+
+The native bulk edit workflow applies only to the maps selected in the table.
+For each selected map, the operator explicitly chooses the committed query path
+to bind. The plugin verifies that the selected query path targets the same
+NetBox model as the map before saving it. Matched maps clear direct `query_id`
+and raw `query`, and optional `commit_id` is stored only when `Pin current
+commit` is selected.
+
+The same native bulk edit form can move selected maps back to bundled raw query
+text. Select the maps, choose `Restore bundled raw query text`, and apply the
+edit. The plugin restores the shipped NQE source and clears `query_id`,
+`query_path`, `query_repository`, and `commit_id` for maps it can identify
+unambiguously. Custom or ambiguous maps are skipped and reported instead of
+being guessed.
+
+This workflow intentionally does not store static query IDs on every map.
+Repository paths are portable across Forward orgs; the plugin resolves each
+path to the correct query ID from the selected `Forward Source` during sync and
+diff execution.
+
+For a single map, the equivalent API shape is:
+
+```bash
+curl -X PATCH \
+  -H "Authorization: Bearer $NETBOX_TOKEN" \
+  -H "Content-Type: application/json" \
+  https://netbox.example.com/api/plugins/forward/nqe-map/123/ \
+  --data '{"query_repository":"org","query_path":"/forward_netbox_validation/forward_ip_addresses","query_id":"","query":"","commit_id":""}'
+```
+
+Use `Token $NETBOX_TOKEN` instead of `Bearer $NETBOX_TOKEN` only for legacy
+NetBox v1 API tokens.
 
 ### Initial Baseline Strategy
 
@@ -195,13 +281,13 @@ direct writes, its statistics are derived from native `ObjectChange` rows, and
 the ingestion `Changes` tab shows those direct NetBox changes instead of branch
 diffs.
 
-For large datasets, prefer Org Repository-backed `query_id` maps over bundled raw `query` maps.
+For large datasets, prefer Org Repository-backed `query_path` maps over bundled raw `query` maps.
 
 - Keep the query source in Forward by committing the modular query set into the Org Repository.
-- Point custom `Forward NQE Maps` at the committed `query_id` values.
+- Bulk bind `Forward NQE Maps` to the committed repository query paths.
 - Leave the sync `Snapshot` at `latestProcessed`.
 - Run one clean baseline ingestion first, either by merging the Branching baseline or completing a trusted fast-bootstrap baseline.
-- After that baseline exists, switch or keep the sync on `Branching`; later `latestProcessed` runs can use Forward `nqe-diffs` for eligible `query_id` maps instead of rerunning every model as a full snapshot sync.
+- After that baseline exists, switch or keep the sync on `Branching`; later `latestProcessed` runs can use Forward `nqe-diffs` for eligible repository-path or direct-query-ID maps instead of rerunning every model as a full snapshot sync.
 
 This keeps NQE as the source of truth, lets Forward own the row-diff computation, and is the recommended operating mode for larger inventories.
 

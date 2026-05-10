@@ -32,6 +32,50 @@ from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.models import ForwardValidationRun
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
+from forward_netbox.utilities.query_binding import builtin_filename_to_query_default
+from forward_netbox.utilities.query_binding import query_filename_from_path
+
+
+NQE_REPOSITORY_LABELS = {
+    "org": "Org Repository",
+    "fwd": "Forward Library",
+}
+
+
+def _normalize_query_directory(directory):
+    directory = str(directory or "/").strip() or "/"
+    if not directory.startswith("/"):
+        directory = f"/{directory}"
+    if not directory.endswith("/"):
+        directory = f"{directory}/"
+    return directory
+
+
+def _query_parent_directories(query_path):
+    parts = [part for part in str(query_path or "").strip("/").split("/")[:-1] if part]
+    directories = ["/"]
+    current = ""
+    for part in parts:
+        current = f"{current}/{part}"
+        directories.append(f"{current}/")
+    return directories
+
+
+def _commit_display(commit):
+    commit_id = str(commit.get("id") or "").strip()
+    committed_at = str(commit.get("committedAt") or "").strip()
+    message = commit.get("message") or {}
+    if isinstance(message, dict):
+        subject = str(message.get("subject") or message.get("summary") or "").strip()
+    else:
+        subject = str(message or "").strip()
+    if not subject:
+        subject = str(commit.get("title") or "").strip()
+    if len(subject) > 140:
+        subject = f"{subject[:137]}..."
+    short_commit_id = commit_id[:12] if commit_id else ""
+    parts = [part for part in (short_commit_id, committed_at, subject) if part]
+    return " | ".join(parts) or commit_id
 
 
 class ForwardSourceViewSet(NetBoxModelViewSet):
@@ -161,6 +205,191 @@ class ForwardNQEMapViewSet(NetBoxModelViewSet):
     queryset = ForwardNQEMap.objects.select_related("netbox_model")
     serializer_class = ForwardNQEMapSerializer
     filterset_class = ForwardNQEMapFilterSet
+
+    @action(detail=False, methods=["get"], url_path="available-query-folders")
+    def available_query_folders(self, request):
+        source_id = request.GET.get("source_id")
+        repository = (request.GET.get("repository") or "org").strip().lower()
+        q = (request.GET.get("q") or "").strip().lower()
+        try:
+            source = ForwardSource.objects.get(pk=source_id)
+        except (ForwardSource.DoesNotExist, TypeError, ValueError):
+            return Response(
+                {
+                    "count": 0,
+                    "results": [],
+                    "detail": "Select a Forward Source to load query folders.",
+                }
+            )
+
+        try:
+            queries = source.get_client().get_nqe_repository_queries(
+                repository=repository,
+                directory="/",
+            )
+        except Exception:
+            return Response(
+                {
+                    "count": 0,
+                    "results": [],
+                    "detail": "Could not load Forward query folders from this source.",
+                }
+            )
+
+        folders = sorted(
+            {
+                folder
+                for query in queries
+                for folder in _query_parent_directories(query.get("path"))
+            }
+        )
+        results = []
+        repository_label = NQE_REPOSITORY_LABELS.get(repository, repository)
+        for folder in folders:
+            display = f"{repository_label} {folder}"
+            if q and q not in display.lower():
+                continue
+            results.append(
+                {
+                    "id": folder,
+                    "name": folder,
+                    "display": display,
+                }
+            )
+        return Response({"count": len(results), "results": results})
+
+    @action(detail=False, methods=["get"], url_path="available-queries")
+    def available_queries(self, request):
+        source_id = request.GET.get("source_id")
+        repository = (request.GET.get("repository") or "org").strip().lower()
+        directory = _normalize_query_directory(request.GET.get("directory") or "/")
+        value_mode = (request.GET.get("value_mode") or "path").strip().lower()
+        model_string = (request.GET.get("model_string") or "").strip().lower()
+        q = (request.GET.get("q") or "").strip().lower()
+        try:
+            source = ForwardSource.objects.get(pk=source_id)
+        except (ForwardSource.DoesNotExist, TypeError, ValueError):
+            return Response(
+                {
+                    "count": 0,
+                    "results": [],
+                    "detail": "Select a Forward Source to load Org Repository queries.",
+                }
+            )
+
+        results = []
+        try:
+            queries = source.get_client().get_nqe_repository_queries(
+                repository=repository,
+                directory=directory,
+            )
+        except Exception:
+            return Response(
+                {
+                    "count": 0,
+                    "results": [],
+                    "detail": "Could not load Forward queries from this source.",
+                }
+            )
+
+        repository_label = NQE_REPOSITORY_LABELS.get(repository, repository)
+        filename_to_query_default = builtin_filename_to_query_default()
+        for query in queries:
+            query_id = str(query.get("queryId") or "").strip()
+            path = str(query.get("path") or "").strip()
+            intent = str(query.get("intent") or "").strip()
+            last_commit_id = str(query.get("lastCommitId") or "").strip()
+            if not query_id or not path:
+                continue
+            query_default = filename_to_query_default.get(
+                query_filename_from_path(path)
+            )
+            if model_string and (
+                not query_default
+                or str(query_default["model_string"]).lower() != model_string
+            ):
+                continue
+            display = f"{repository_label} | {path} | {query_id}"
+            if intent:
+                display = f"{repository_label} | {intent} | {path} | {query_id}"
+            if q and q not in display.lower() and q not in query_id.lower():
+                continue
+            result_id = query_id if value_mode == "query_id" else path
+            results.append(
+                {
+                    "id": result_id,
+                    "name": path.rsplit("/", 1)[-1] or path,
+                    "display": display,
+                    "query_id": query_id,
+                    "path": path,
+                    "intent": intent,
+                    "repository": repository,
+                    "last_commit_id": last_commit_id,
+                }
+            )
+        return Response({"count": len(results), "results": results})
+
+    @action(detail=False, methods=["get"], url_path="available-query-commits")
+    def available_query_commits(self, request):
+        source_id = request.GET.get("source_id")
+        query_id = (request.GET.get("query_id") or "").strip()
+        repository = (request.GET.get("repository") or "org").strip().lower()
+        query_path = (request.GET.get("query_path") or "").strip()
+        q = (request.GET.get("q") or "").strip().lower()
+        if not query_id and not query_path:
+            return Response(
+                {
+                    "count": 0,
+                    "results": [],
+                    "detail": "Select a Query Path or Query ID to load committed revisions.",
+                }
+            )
+        try:
+            source = ForwardSource.objects.get(pk=source_id)
+        except (ForwardSource.DoesNotExist, TypeError, ValueError):
+            return Response(
+                {
+                    "count": 0,
+                    "results": [],
+                    "detail": "Select a Forward Source to load query revisions.",
+                }
+            )
+
+        try:
+            client = source.get_client()
+            if query_path and not query_id:
+                resolved = client.resolve_nqe_query_reference(
+                    repository=repository,
+                    query_path=query_path,
+                )
+                query_id = str(resolved.get("queryId") or "").strip()
+            commits = client.get_nqe_query_history(query_id)
+        except Exception:
+            return Response(
+                {
+                    "count": 0,
+                    "results": [],
+                    "detail": "Could not load Forward query revisions from this source.",
+                }
+            )
+
+        results = []
+        for commit in commits:
+            commit_id = str(commit.get("id") or "").strip()
+            if not commit_id:
+                continue
+            display = _commit_display(commit)
+            if q and q not in display.lower() and q not in commit_id.lower():
+                continue
+            results.append(
+                {
+                    "id": commit_id,
+                    "name": commit_id,
+                    "display": display,
+                    "path": str(commit.get("path") or "").strip(),
+                }
+            )
+        return Response({"count": len(results), "results": results})
 
 
 class ForwardSyncViewSet(NetBoxModelViewSet):

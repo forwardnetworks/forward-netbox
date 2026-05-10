@@ -55,6 +55,28 @@ def _snapshot_selected_choice(selected_value):
     return choices
 
 
+FORWARD_NQE_QUERY_MODE_CHOICES = (
+    ("query_path", "Repository Query Path"),
+    ("query_id", "Direct Query ID"),
+    ("query", "Raw Query Text"),
+)
+
+FORWARD_NQE_QUERY_REPOSITORY_CHOICES = (
+    ("org", "Org Repository"),
+    ("fwd", "Forward Library"),
+)
+
+FORWARD_NQE_BULK_QUERY_OPERATION_CHOICES = (
+    ("", "No query reference change"),
+    ("bind_query_path", "Bind selected maps to repository query paths"),
+    (
+        "publish_bundled_query_path",
+        "Publish bundled queries to Org Repository and bind selected maps",
+    ),
+    ("restore_raw_query", "Restore bundled raw query text"),
+)
+
+
 class ForwardSourceForm(NetBoxModelForm):
     comments = CommentField()
 
@@ -526,10 +548,48 @@ class ForwardSyncBulkEditForm(NetBoxModelBulkEditForm):
 
 
 class ForwardNQEMapForm(NetBoxModelForm):
-    query_id = forms.CharField(
+    query_mode = forms.ChoiceField(
+        choices=FORWARD_NQE_QUERY_MODE_CHOICES,
         required=False,
-        label="Query ID",
-        help_text="Use this for a published Forward query. Leave `Query` blank when `Query ID` is set.",
+        initial="query_path",
+        label="Query Definition Mode",
+        help_text="Choose whether this map resolves a repository query path, runs a direct query ID, or stores raw NQE text in NetBox.",
+    )
+    query_source = forms.ModelChoiceField(
+        queryset=ForwardSource.objects.all(),
+        required=False,
+        label="Forward Source for Query Lookup",
+        help_text="Used only to populate Forward query selectors.",
+    )
+    query_repository = forms.ChoiceField(
+        choices=FORWARD_NQE_QUERY_REPOSITORY_CHOICES,
+        required=False,
+        initial="org",
+        label="Query Repository",
+        help_text="Select Org Repository for custom queries or Forward Library for built-in Forward queries.",
+    )
+    query_folder = forms.ChoiceField(
+        required=False,
+        label="Query Folder",
+        choices=(),
+        widget=APISelect(
+            api_url="/api/plugins/forward/nqe-map/available-query-folders/"
+        ),
+        help_text="Optional folder filter for the query selector.",
+    )
+    query_id = forms.ChoiceField(
+        required=False,
+        label="Direct Query ID",
+        choices=(),
+        widget=APISelect(api_url="/api/plugins/forward/nqe-map/available-queries/"),
+        help_text="Org-specific published Forward query ID. Prefer `Repository Query Path` for portable maps.",
+    )
+    query_path = forms.ChoiceField(
+        required=False,
+        label="Query Path",
+        choices=(),
+        widget=APISelect(api_url="/api/plugins/forward/nqe-map/available-queries/"),
+        help_text="Repository path to resolve at sync time. Required when mode is `Repository Query Path`.",
     )
     query = forms.CharField(
         required=False,
@@ -537,10 +597,14 @@ class ForwardNQEMapForm(NetBoxModelForm):
         help_text="Use this for raw NQE text. Leave `Query ID` blank when `Query` is set.",
         widget=forms.Textarea(attrs={"class": "font-monospace", "rows": 10}),
     )
-    commit_id = forms.CharField(
+    commit_id = forms.ChoiceField(
         required=False,
         label="Commit ID",
-        help_text="Optional published query revision. Only applies when `Query ID` is used.",
+        choices=(),
+        widget=APISelect(
+            api_url="/api/plugins/forward/nqe-map/available-query-commits/"
+        ),
+        help_text="Optional published query revision. Leave blank to use the latest committed revision.",
     )
 
     class Meta:
@@ -549,6 +613,8 @@ class ForwardNQEMapForm(NetBoxModelForm):
             "name",
             "netbox_model",
             "query_id",
+            "query_repository",
+            "query_path",
             "query",
             "commit_id",
             "enabled",
@@ -558,20 +624,394 @@ class ForwardNQEMapForm(NetBoxModelForm):
     fieldsets = (
         FieldSet("name", "netbox_model", name="NQE Map"),
         FieldSet(
+            "query_mode",
+            "query_source",
+            "query_repository",
+            "query_folder",
+            "query_path",
             "query_id",
-            "query",
             "commit_id",
+            "query",
             "enabled",
             "weight",
             name="Query Definition",
         ),
     )
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        selected_query_mode = (
+            self.data.get("query_mode")
+            if self.is_bound
+            else (
+                "query_path"
+                if getattr(self.instance, "query_path", "")
+                else (
+                    "query_id"
+                    if getattr(self.instance, "query_id", "")
+                    else (
+                        "query" if getattr(self.instance, "query", "") else "query_path"
+                    )
+                )
+            )
+        )
+        selected_repository = (
+            self.data.get("query_repository")
+            if self.is_bound
+            else (
+                getattr(self.instance, "query_repository", "")
+                or (
+                    "fwd"
+                    if str(getattr(self.instance, "query_id", "")).startswith("FQ_")
+                    else "org"
+                )
+            )
+        )
+        selected_folder = self.data.get("query_folder") if self.is_bound else "/"
+        selected_query_path = (
+            self.data.get("query_path")
+            if self.is_bound
+            else getattr(self.instance, "query_path", "")
+        )
+        selected_query_id = (
+            self.data.get("query_id")
+            if self.is_bound
+            else getattr(self.instance, "query_id", "")
+        )
+        selected_commit_id = (
+            self.data.get("commit_id")
+            if self.is_bound
+            else getattr(self.instance, "commit_id", "")
+        )
+        self.fields["query_mode"].initial = selected_query_mode
+        self.fields["query_repository"].initial = selected_repository
+        self.fields["query_folder"].choices = _selected_choice(selected_folder)
+        self.fields["query_path"].choices = _selected_choice(selected_query_path)
+        self.fields["query_id"].choices = _selected_choice(selected_query_id)
+        self.fields["commit_id"].choices = _selected_choice(selected_commit_id)
+        _configure_api_select(
+            self.fields["query_folder"].widget,
+            {
+                "source_id": "$query_source",
+                "repository": "$query_repository",
+            },
+        )
+        _configure_api_select(
+            self.fields["query_path"].widget,
+            {
+                "source_id": "$query_source",
+                "repository": "$query_repository",
+                "directory": "$query_folder",
+                "value_mode": "path",
+            },
+        )
+        _configure_api_select(
+            self.fields["query_id"].widget,
+            {
+                "source_id": "$query_source",
+                "repository": "$query_repository",
+                "directory": "$query_folder",
+                "value_mode": "query_id",
+            },
+        )
+        _configure_api_select(
+            self.fields["commit_id"].widget,
+            {
+                "source_id": "$query_source",
+                "repository": "$query_repository",
+                "query_path": "$query_path",
+                "query_id": "$query_id",
+            },
+        )
+        if not self.is_bound:
+            first_source = ForwardSource.objects.order_by("pk").first()
+            if first_source is not None:
+                self.fields["query_source"].initial = first_source.pk
+
+    def clean(self):
+        cleaned = super().clean() or self.cleaned_data
+        query_id = (cleaned.get("query_id") or "").strip()
+        query_path = (cleaned.get("query_path") or "").strip()
+        query_repository = (cleaned.get("query_repository") or "").strip()
+        query = (cleaned.get("query") or "").strip()
+        query_mode = cleaned.get("query_mode") or (
+            "query_path" if query_path else ("query_id" if query_id else "query")
+        )
+        if query_mode == "query_path":
+            if not query_path:
+                self.add_error("query_path", "Select a Forward query path.")
+            if not query_repository:
+                cleaned["query_repository"] = "org"
+            cleaned["query_id"] = ""
+            cleaned["query"] = ""
+        elif query_mode == "query_id":
+            if not query_id:
+                self.add_error("query_id", "Select a published Forward query.")
+            cleaned["query_path"] = ""
+            cleaned["query"] = ""
+        elif query_mode == "query":
+            if not query:
+                self.add_error("query", "Enter raw NQE query text.")
+            cleaned["query_id"] = ""
+            cleaned["query_repository"] = ""
+            cleaned["query_path"] = ""
+            cleaned["commit_id"] = ""
+        return cleaned
+
 
 class ForwardNQEMapBulkEditForm(NetBoxModelBulkEditForm):
+    query_bulk_operation = forms.ChoiceField(
+        choices=FORWARD_NQE_BULK_QUERY_OPERATION_CHOICES,
+        required=False,
+        label="Query Bulk Operation",
+        help_text=(
+            "Choose whether this native bulk edit should update selected maps' "
+            "query references. Leave unchanged for ordinary map bulk edits."
+        ),
+    )
+    bind_query_source = forms.ModelChoiceField(
+        queryset=ForwardSource.objects.all(),
+        required=False,
+        label="Forward Source for Query Lookup",
+        help_text=(
+            "Choose the Forward source used to read the repository folder. "
+            "The plugin resolves query IDs from selected query paths during sync."
+        ),
+    )
+    bind_query_repository = forms.ChoiceField(
+        choices=FORWARD_NQE_QUERY_REPOSITORY_CHOICES,
+        required=False,
+        initial="org",
+        label="Query Repository",
+        help_text="Repository containing the committed Forward NetBox query folder.",
+    )
+    bind_query_folder = forms.ChoiceField(
+        required=False,
+        label="Repository Folder",
+        choices=(),
+        widget=APISelect(
+            api_url="/api/plugins/forward/nqe-map/available-query-folders/"
+        ),
+        help_text=(
+            "Folder containing the committed query set. It limits the per-map "
+            "query selectors below."
+        ),
+    )
+    bind_pin_commit = forms.BooleanField(
+        required=False,
+        label="Pin current commit",
+        help_text="Store the current query commit ID instead of resolving latest at sync time.",
+    )
+    publish_overwrite = forms.BooleanField(
+        required=False,
+        label="Overwrite existing repository queries",
+        help_text="Update existing Org Repository query files before committing. Leave disabled to publish only missing files and still bind selected maps to existing paths.",
+    )
+    publish_commit_message = forms.CharField(
+        required=False,
+        label="Commit message",
+        initial="Publish Forward NetBox NQE maps",
+        help_text="Commit title for Forward Org Repository writes. Requires Forward Network Operator or equivalent NQE-library write permission on the selected source.",
+    )
     enabled = forms.NullBooleanField(required=False, label="Enabled")
     model = ForwardNQEMap
-    fields = ("enabled",)
+    fields = (
+        "query_bulk_operation",
+        "bind_query_source",
+        "bind_query_repository",
+        "bind_query_folder",
+        "bind_pin_commit",
+        "publish_overwrite",
+        "publish_commit_message",
+        "enabled",
+    )
+
+    fieldsets = (
+        FieldSet(
+            "query_bulk_operation",
+            "bind_query_source",
+            "bind_query_repository",
+            "bind_query_folder",
+            "bind_pin_commit",
+            "publish_overwrite",
+            "publish_commit_message",
+            name="Bulk Query Reference",
+        ),
+        FieldSet(name="Map Query Choices"),
+        FieldSet("enabled", name="Map State"),
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.selected_query_path_fields = []
+        selected_folder = self.data.get("bind_query_folder") if self.is_bound else "/"
+        self.fields["bind_query_folder"].choices = _selected_choice(selected_folder)
+        _configure_api_select(
+            self.fields["bind_query_folder"].widget,
+            {
+                "source_id": "$bind_query_source",
+                "repository": "$bind_query_repository",
+            },
+        )
+        selected_maps = self._selected_maps()
+        for query_map in selected_maps:
+            field_name = self.query_path_field_name(query_map.pk)
+            existing_query_path = getattr(query_map, "query_path", "")
+            selected_query_path = (
+                self.data.get(field_name) if self.is_bound else existing_query_path
+            )
+            self.fields[field_name] = forms.ChoiceField(
+                required=False,
+                label=f"{query_map.name} ({query_map.model_string})",
+                choices=_selected_choice(selected_query_path),
+                initial=existing_query_path,
+                widget=APISelect(
+                    api_url="/api/plugins/forward/nqe-map/available-queries/"
+                ),
+                help_text=(
+                    "Select the repository query path to bind to this NetBox map. "
+                    "Choices are filtered to this map's NetBox model; leave blank "
+                    "to keep this map unchanged."
+                ),
+            )
+            _configure_api_select(
+                self.fields[field_name].widget,
+                {
+                    "source_id": "$bind_query_source",
+                    "repository": "$bind_query_repository",
+                    "directory": "$bind_query_folder",
+                    "value_mode": "path",
+                    "model_string": query_map.model_string,
+                },
+            )
+            self.selected_query_path_fields.append(field_name)
+
+        self.fieldsets = (
+            FieldSet(
+                "query_bulk_operation",
+                "bind_query_source",
+                "bind_query_repository",
+                "bind_query_folder",
+                "bind_pin_commit",
+                "publish_overwrite",
+                "publish_commit_message",
+                name="Bulk Query Reference",
+            ),
+            FieldSet(*self.selected_query_path_fields, name="Map Query Choices"),
+            FieldSet("enabled", name="Map State"),
+        )
+
+    @staticmethod
+    def query_path_field_name(map_id):
+        return f"bind_query_path_{map_id}"
+
+    def _selected_maps(self):
+        pk_values = []
+        if self.is_bound:
+            if hasattr(self.data, "getlist"):
+                pk_values = self.data.getlist("pk")
+            else:
+                raw_pk_values = self.data.get("pk", [])
+                pk_values = (
+                    raw_pk_values
+                    if isinstance(raw_pk_values, (list, tuple))
+                    else [raw_pk_values]
+                )
+        else:
+            initial_pk = self.initial.get("pk", [])
+            pk_values = [getattr(value, "pk", value) for value in initial_pk]
+        pk_values = [pk for pk in pk_values if str(pk).isdigit()]
+        if not pk_values:
+            return ForwardNQEMap.objects.none()
+        return ForwardNQEMap.objects.filter(pk__in=pk_values).select_related(
+            "netbox_model"
+        )
+
+    def selected_query_paths_by_map_id(self):
+        selected = {}
+        for field_name in self.selected_query_path_fields:
+            query_path = (self.cleaned_data.get(field_name) or "").strip()
+            if not query_path:
+                continue
+            map_id = int(field_name.rsplit("_", 1)[-1])
+            selected[map_id] = query_path
+        return selected
+
+    def get_query_bulk_operation(self):
+        return self.cleaned_data.get("query_bulk_operation") or ""
+
+    def has_query_binding_request(self):
+        return self.get_query_bulk_operation() == "bind_query_path"
+
+    def has_query_publish_request(self):
+        return self.get_query_bulk_operation() == "publish_bundled_query_path"
+
+    def has_query_restore_request(self):
+        return self.get_query_bulk_operation() == "restore_raw_query"
+
+    def clean(self):
+        cleaned = super().clean() or self.cleaned_data
+        query_bulk_operation = cleaned.get("query_bulk_operation") or ""
+        bind_source = cleaned.get("bind_query_source")
+        bind_folder = (cleaned.get("bind_query_folder") or "").strip()
+        selected_query_paths = [
+            (cleaned.get(field_name) or "").strip()
+            for field_name in self.selected_query_path_fields
+        ]
+        has_query_path_selection = any(selected_query_paths)
+        if not query_bulk_operation:
+            return cleaned
+        if query_bulk_operation == "restore_raw_query":
+            return cleaned
+        if query_bulk_operation == "publish_bundled_query_path":
+            if not bind_source:
+                self.add_error(
+                    "bind_query_source",
+                    "Select a Forward source for Org Repository publishing.",
+                )
+            if not bind_folder:
+                self.add_error(
+                    "bind_query_folder",
+                    "Select the Org Repository folder to publish into.",
+                )
+            if cleaned.get("bind_query_repository") not in ("", "org"):
+                self.add_error(
+                    "bind_query_repository",
+                    "Bundled query publishing writes only to the Forward Org Repository.",
+                )
+            if bind_source and not cleaned.get("bind_query_repository"):
+                cleaned["bind_query_repository"] = "org"
+            if not (cleaned.get("publish_commit_message") or "").strip():
+                cleaned["publish_commit_message"] = "Publish Forward NetBox NQE maps"
+            return cleaned
+        if query_bulk_operation != "bind_query_path":
+            self.add_error(
+                "query_bulk_operation", "Select a valid query bulk operation."
+            )
+            return cleaned
+        if bind_source and not bind_folder:
+            self.add_error(
+                "bind_query_folder",
+                "Select a repository folder to bind selected maps.",
+            )
+        if (bind_folder or has_query_path_selection) and not bind_source:
+            self.add_error(
+                "bind_query_source",
+                "Select a Forward source for query path binding.",
+            )
+        if has_query_path_selection and not bind_folder:
+            self.add_error(
+                "bind_query_folder",
+                "Select the repository folder for the selected query paths.",
+            )
+        if bind_source and bind_folder and not has_query_path_selection:
+            self.add_error(
+                None,
+                "Select at least one per-map repository query path to bind.",
+            )
+        if bind_source and not cleaned.get("bind_query_repository"):
+            cleaned["bind_query_repository"] = "org"
+        return cleaned
 
 
 class ForwardDriftPolicyForm(NetBoxModelForm):
