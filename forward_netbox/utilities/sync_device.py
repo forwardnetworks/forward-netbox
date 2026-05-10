@@ -2,6 +2,7 @@ from django.core.exceptions import ObjectDoesNotExist
 
 from ..exceptions import ForwardDependencySkipError
 from ..exceptions import ForwardSearchError
+from ..exceptions import ForwardSyncDataError
 
 
 def delete_dcim_device(runner, row):
@@ -58,9 +59,14 @@ def apply_dcim_virtualchassis(runner, row):
                 context={"device": row["device"]},
                 data=row,
             ) from exc
-        defaults = {"virtual_chassis": vc}
-        if row.get("vc_position"):
-            defaults["vc_position"] = row["vc_position"]
+        if not row.get("vc_position"):
+            raise ForwardSyncDataError(
+                "Virtual chassis assignment requires `vc_position`; update the Forward NQE map before syncing.",
+                model_string="dcim.virtualchassis",
+                context={"device": row["device"], "virtual_chassis": vc_name},
+                data=row,
+            )
+        defaults = {"virtual_chassis": vc, "vc_position": row["vc_position"]}
         Device.objects.filter(pk=device.pk).update(**defaults)
     return vc
 
