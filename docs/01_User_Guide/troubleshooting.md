@@ -163,6 +163,29 @@ Checks:
 - Confirm the affected built-in or custom NQE map is emitting NetBox-valid values directly.
 - Do not patch the value in Python if the intended contract is NetBox-ready NQE output; fix the query instead.
 
+## Device Shard Fails With `vc_position`
+
+Symptoms:
+
+- The sync appears to progress, but an ingestion part for `dcim.device` or
+  `dcim.virtualchassis` records a failure similar to `A device assigned to a
+  virtual chassis must have its position defined`.
+- Routing, cabling, IP, or other downstream models appear empty or incomplete
+  because the base device/virtual-chassis shard did not finish cleanly.
+
+Checks:
+
+- Confirm the `Forward Virtual Chassis` map emits `vc_position`.
+- If the map is bound to a Forward Org Repository `query_path`, upgrading the
+  NetBox plugin does not rewrite the already-published Forward query. Use the
+  native NQE map bulk edit workflow and select `Publish bundled queries to Org
+  Repository and bind selected maps` with `Overwrite existing repository
+  queries` enabled, or restore the affected map to bundled raw query text.
+- Re-run validation or a sync after the map has been refreshed. Current plugin
+  versions fail stale virtual-chassis query output during preflight instead of
+  allowing a positionless VC assignment to surface later as a device save
+  failure.
+
 ## Snapshot Metrics Are Missing
 
 Symptoms:

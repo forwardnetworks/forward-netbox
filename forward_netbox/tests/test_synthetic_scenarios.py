@@ -5,7 +5,6 @@ from core.exceptions import SyncError
 from django.test import TestCase
 
 from forward_netbox.choices import ForwardValidationStatusChoices
-from forward_netbox.exceptions import ForwardQueryError
 from forward_netbox.models import ForwardIngestion
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
@@ -75,7 +74,7 @@ class SyntheticSyncScenarioHarnessTest(TestCase):
         executor.plan.assert_not_called()
 
     @patch("forward_netbox.utilities.query_fetch.get_query_specs")
-    def test_bad_model_rows_fail_during_preflight(self, mock_specs):
+    def test_bad_model_rows_are_isolated_during_preflight(self, mock_specs):
         client = Mock()
         client.get_snapshots.return_value = [scenarios.snapshot()]
         client.get_snapshot_metrics.return_value = {}
@@ -96,10 +95,18 @@ class SyntheticSyncScenarioHarnessTest(TestCase):
             logger_=Mock(),
         )
 
-        with self.assertRaisesRegex(ForwardQueryError, "missing required fields: slug"):
-            planner.build_plan(max_changes_per_branch=10, run_preflight=True)
+        _context, plan = planner.build_plan(
+            max_changes_per_branch=10, run_preflight=True
+        )
 
         client.run_nqe_query.assert_called_once()
+        self.assertEqual(plan, [])
+        self.assertEqual(planner.model_results[0]["model"], "dcim.site")
+        self.assertEqual(planner.model_results[0]["failure_count"], 1)
+        self.assertIn(
+            "missing required fields: slug",
+            planner.model_results[0]["diagnostics"][0]["message"],
+        )
         self.assertEqual(
             client.run_nqe_query.call_args.kwargs["limit"],
             DEFAULT_PREFLIGHT_ROW_LIMIT,
