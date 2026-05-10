@@ -57,7 +57,7 @@ MODEL_SYNC_CONTRACTS: dict[str, ModelSyncContract] = {
         default_coalesce_fields=(("name",),),
     ),
     "dcim.virtualchassis": ModelSyncContract(
-        required_fields=("device", "vc_name", "vc_domain"),
+        required_fields=("device", "vc_name", "vc_domain", "vc_position"),
         allowed_coalesce_fields=("name",),
         default_coalesce_fields=(("name",),),
     ),
