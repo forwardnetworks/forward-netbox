@@ -6,7 +6,8 @@
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v0.8.1.1` | `4.5.9` validated; `4.5.x` only | Current release; fixes virtual chassis NQE output so NetBox receives a member position with virtual chassis assignments |
+| `v0.8.2` | `4.5.9` validated; `4.5.x` only | Current release; adds portable repository query-path execution with native NetBox selectors, publish-and-bind bulk edit, bidirectional restore, and fixes IP address rows whose Forward interface cannot be resolved |
+| `v0.8.1.1` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.8.2`; fixes virtual chassis NQE output so NetBox receives a member position with virtual chassis assignments |
 | `v0.8.1` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.8.1.1`; fixes fast-bootstrap native change tracking/statistics and adds timeout guidance plus transient Forward API HTTP retries |
 | `v0.8.0` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.8.1`; adds an opt-in fast bootstrap backend for trusted large baselines while keeping Branching as default, and skips NetBox-invalid LAG cable endpoints |
 | `v0.7.1` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.8.0`; keeps the NetBox-native multi-branch workflow, adds shard heartbeat visibility, and hardens large-shard retries and cable ingestion handling |
@@ -31,6 +32,7 @@
 
 | Release | Summary |
 | --- | --- |
+| `v0.8.2` | Adds portable repository `query_path` execution with Forward-backed selectors, true native bulk edit for publishing bundled NQE into the Forward Org Repository, binding selected maps to repository paths, restoring bundled raw NQE, and clearer skipping for IP address rows whose interface cannot be resolved. |
 | `v0.8.1.1` | Emits `vc_position` in the built-in virtual chassis NQE map for vPC and MLAG memberships so NetBox does not reject virtual chassis device assignments without a member position. |
 | `v0.8.1` | Runs fast bootstrap inside native NetBox change tracking, shows branchless ingestion changes from `ObjectChange` rows, updates fast-bootstrap counters from real object changes, warns about undersized worker timeouts, and retries transient Forward API HTTP timeouts/gateway responses. |
 | `v0.8.0` | Adds an opt-in fast bootstrap direct-write backend for trusted large baselines, keeps NQE validation and row adapters shared with Branching, and skips LAG cable endpoints that NetBox cannot cable directly. |
@@ -83,7 +85,7 @@ This repository is provided for use at your own risk. It is an unsupported relea
 - Built-in shipped NQE maps that can be used as-is or copied into custom map definitions
 - Disabled alternate NQE maps for NetBox Device Type Library alias matching through a Forward JSON data file
 - Disabled alternate NQE map for data-file-driven device feature tag rules
-- Support for both `query_id` and raw `query` execution modes
+- Support for repository `query_path`, direct `query_id`, and raw `query` execution modes
 - Snapshot selection per sync, including `latestProcessed`
 - Snapshot details and Forward metrics recorded on each ingestion
 

@@ -31,6 +31,8 @@ def seed_builtin_nqe_maps(sender, **kwargs):
             built_in=True,
             defaults={
                 "query_id": row["query_id"],
+                "query_repository": row["query_repository"],
+                "query_path": row["query_path"],
                 "query": row["query"],
                 "commit_id": row["commit_id"],
                 "parameters": row["parameters"],
@@ -45,7 +47,7 @@ def seed_builtin_nqe_maps(sender, **kwargs):
             continue
 
         update_fields = []
-        if not query_map.query_id:
+        if not query_map.query_id and not query_map.query_path:
             for field_name in ("query", "commit_id"):
                 value = row[field_name]
                 if getattr(query_map, field_name) != value:

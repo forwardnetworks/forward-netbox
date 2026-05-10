@@ -20,13 +20,15 @@
           </tr>
           <tr>
             <th scope="row">{% trans "Execution" %}</th>
-            <td>
-              {% if object.query_id %}
-                {% trans "Query ID" %}
-              {% else %}
-                {% trans "Raw Query" %}
-              {% endif %}
-            </td>
+            <td>{{ object.execution_mode }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Query Repository" %}</th>
+            <td>{{ object.query_repository|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Query Path" %}</th>
+            <td>{{ object.query_path|placeholder }}</td>
           </tr>
           <tr>
             <th scope="row">{% trans "Query ID" %}</th>
@@ -61,7 +63,7 @@
         {% if object.query %}
           <pre class="mb-0"><code>{{ object.query }}</code></pre>
         {% else %}
-          <span class="text-muted">{% trans "This map uses Query ID execution. The raw Query field is intentionally blank." %}</span>
+          <span class="text-muted">{% trans "This map uses a saved Forward query reference. The raw Query field is intentionally blank." %}</span>
         {% endif %}
       </div>
     </div>

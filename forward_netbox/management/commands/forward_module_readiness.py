@@ -19,6 +19,7 @@ from forward_netbox.utilities.module_readiness import summarize_module_readiness
 from forward_netbox.utilities.module_readiness import write_module_bay_import_csv
 from forward_netbox.utilities.query_registry import get_query_specs
 from forward_netbox.utilities.query_registry import get_seeded_builtin_query_spec
+from forward_netbox.utilities.query_registry import resolve_query_specs_for_client
 
 
 class Command(BaseCommand):
@@ -153,6 +154,7 @@ class Command(BaseCommand):
             specs = [
                 get_seeded_builtin_query_spec("dcim.module", "Forward Modules"),
             ]
+        specs = resolve_query_specs_for_client(specs, client)
 
         rows = []
         for spec in specs:
@@ -160,7 +162,7 @@ class Command(BaseCommand):
                 rows.extend(
                     client.run_nqe_query(
                         query=spec.query,
-                        query_id=spec.query_id,
+                        query_id=spec.run_query_id,
                         commit_id=spec.commit_id,
                         network_id=network_id,
                         snapshot_id=snapshot_id,
