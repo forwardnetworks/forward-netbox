@@ -45,7 +45,7 @@ class ForwardNQEMapTable(NetBoxTable):
     name = tables.Column(linkify=True)
     netbox_model = columns.ContentTypeColumn(verbose_name=_("NetBox Model"))
     execution_mode = tables.Column(verbose_name=_("Execution"))
-    execution_value = tables.Column(verbose_name=_("Query ID or Query Name"))
+    execution_value = tables.Column(verbose_name=_("Query Reference"))
 
     class Meta(NetBoxTable.Meta):
         model = ForwardNQEMap

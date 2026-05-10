@@ -1,6 +1,7 @@
 import re
 from dataclasses import dataclass
 from dataclasses import field
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -15,22 +16,62 @@ class QuerySpec:
     query_name: str
     query: str | None = None
     query_id: str | None = None
+    query_repository: str | None = None
+    query_path: str | None = None
     commit_id: str | None = None
+    resolved_query_id: str | None = None
     parameters: dict[str, Any] = field(default_factory=dict)
     coalesce_fields: tuple[tuple[str, ...], ...] = ()
     placeholder: bool = False
 
     def __post_init__(self):
-        if bool(self.query) == bool(self.query_id):
-            raise ValueError("Exactly one of `query` or `query_id` must be defined.")
+        reference_count = sum(
+            bool(value) for value in (self.query, self.query_id, self.query_path)
+        )
+        if reference_count != 1:
+            raise ValueError(
+                "Exactly one of `query`, `query_id`, or `query_path` must be defined."
+            )
+        if self.query_path and not self.query_repository:
+            raise ValueError("`query_repository` must be defined with `query_path`.")
 
     @property
     def execution_mode(self) -> str:
+        if self.query_path:
+            return "query_path"
         return "query_id" if self.query_id else "query"
 
     @property
     def execution_value(self) -> str:
+        if self.query_path:
+            return f"{self.query_repository}:{self.query_path}"
         return self.query_id or self.query_name
+
+    @property
+    def run_query_id(self) -> str | None:
+        return self.query_id or self.resolved_query_id
+
+    @property
+    def diff_query_id(self) -> str | None:
+        return self.run_query_id
+
+    def resolve(self, client) -> "QuerySpec":
+        if not self.query_path:
+            return self
+        resolved = client.resolve_nqe_query_reference(
+            repository=self.query_repository or "org",
+            query_path=self.query_path,
+            commit_id=self.commit_id,
+        )
+        resolved_query_id = str(resolved.get("queryId") or "").strip()
+        resolved_commit_id = str(
+            self.commit_id or resolved.get("commitId") or ""
+        ).strip()
+        return replace(
+            self,
+            resolved_query_id=resolved_query_id or None,
+            commit_id=resolved_commit_id or None,
+        )
 
     def merged_parameters(
         self, extra_parameters: dict[str, Any] | None = None
@@ -55,6 +96,33 @@ ROUTING_IMPORT_DIAGNOSTIC_QUERY_FILE = "forward_routing_import_diagnostics.nqe"
 
 def _read_query_source(filename: str) -> str:
     return (QUERY_DIR / filename).read_text(encoding="utf-8").strip()
+
+
+def read_builtin_query_source(filename: str) -> str:
+    return _read_query_source(filename)
+
+
+def builtin_query_source_filenames(filename: str) -> tuple[str, ...]:
+    ordered_filenames = []
+    seen_paths = set()
+
+    def visit(path: Path):
+        resolved_path = path.resolve()
+        if resolved_path in seen_paths:
+            return
+        seen_paths.add(resolved_path)
+        source = resolved_path.read_text(encoding="utf-8").strip()
+        for line in source.splitlines():
+            match = LOCAL_IMPORT_RE.match(line)
+            if not match:
+                continue
+            import_path = _resolve_local_import(resolved_path, match.group(1))
+            if import_path is not None:
+                visit(import_path)
+        ordered_filenames.append(resolved_path.name)
+
+    visit(QUERY_DIR / filename)
+    return tuple(ordered_filenames)
 
 
 def _resolve_local_import(base_path: Path, import_target: str) -> Path | None:
@@ -313,6 +381,8 @@ def builtin_nqe_map_rows() -> list[dict[str, Any]]:
                 "model_string": query_default["model_string"],
                 "name": query_default["name"],
                 "query_id": "",
+                "query_repository": "",
+                "query_path": "",
                 "query": _read_query_source(query_default["filename"]),
                 "commit_id": "",
                 "parameters": {},
@@ -363,6 +433,19 @@ def _build_query_spec_from_map(query_map) -> QuerySpec:
                     ),
                     placeholder=False,
                 )
+            if getattr(query_map, "query_path", ""):
+                return QuerySpec(
+                    model_string=query_map.model_string,
+                    query_name=query_map.name,
+                    query_repository=query_map.query_repository or "org",
+                    query_path=query_map.query_path,
+                    commit_id=query_map.commit_id or None,
+                    parameters=query_map.parameters or {},
+                    coalesce_fields=tuple(
+                        tuple(field_set) for field_set in normalized_coalesce
+                    ),
+                    placeholder=False,
+                )
             return QuerySpec(
                 model_string=query_map.model_string,
                 query_name=query_map.name,
@@ -378,11 +461,17 @@ def _build_query_spec_from_map(query_map) -> QuerySpec:
         query_name=query_map.name,
         query=query_map.query or None,
         query_id=query_map.query_id or None,
+        query_repository=getattr(query_map, "query_repository", "") or None,
+        query_path=getattr(query_map, "query_path", "") or None,
         commit_id=query_map.commit_id or None,
         parameters=query_map.parameters or {},
         coalesce_fields=tuple(tuple(field_set) for field_set in normalized_coalesce),
         placeholder=False,
     )
+
+
+def resolve_query_specs_for_client(specs: list[QuerySpec], client) -> list[QuerySpec]:
+    return [spec.resolve(client) for spec in specs]
 
 
 def _resolve_map_query_specs(model_string: str, maps) -> list[QuerySpec]:

@@ -174,8 +174,25 @@ candidate_rows =
 )
   select distinct row;
 
-global_candidate_rows =
+importable_interfaces =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  foreach interface in device.interfaces
+  select {
+    device: device.name,
+    interface: interface.name
+  };
+
+assignable_candidate_rows =
   foreach row in candidate_rows
+  foreach imported_interface in importable_interfaces
+  where imported_interface.device == row.device
+  where imported_interface.interface == row.interface
+  select distinct row;
+
+global_candidate_rows =
+  foreach row in assignable_candidate_rows
   where !isPresent(row.vrf)
   select row;
 
@@ -199,7 +216,7 @@ global_rows =
   };
 
 vrf_candidate_rows =
-  foreach row in candidate_rows
+  foreach row in assignable_candidate_rows
   where isPresent(row.vrf)
   select row;
 

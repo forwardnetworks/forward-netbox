@@ -376,6 +376,209 @@ class ForwardClientTest(TestCase):
                 [{"column": "name", "operator": "contains", "value": "sw"}],
             )
 
+    def test_get_org_nqe_queries_normalizes_directory(self):
+        self.client._request = Mock(
+            return_value=self._response(
+                [
+                    {
+                        "queryId": "Q_devices",
+                        "path": "/forward_netbox_validation/forward_devices",
+                        "intent": "Forward Devices",
+                    }
+                ]
+            )
+        )
+
+        rows = self.client.get_org_nqe_queries(directory="/forward_netbox_validation")
+
+        self.assertEqual(rows[0]["queryId"], "Q_devices")
+        self.client._request.assert_called_once_with(
+            "GET",
+            "/nqe/queries",
+            params={"dir": "/forward_netbox_validation/"},
+        )
+
+    def test_get_nqe_repository_queries_reads_forward_library(self):
+        self.client._request = Mock(
+            return_value=self._response(
+                {
+                    "queries": [
+                        {
+                            "queryId": "FQ_devices",
+                            "path": "/netbox/forward_devices",
+                            "lastCommitId": "commit-1",
+                        },
+                        {
+                            "queryId": "FQ_other",
+                            "path": "/other/query",
+                            "lastCommitId": "commit-2",
+                        },
+                    ]
+                }
+            )
+        )
+
+        rows = self.client.get_nqe_repository_queries(
+            repository="fwd",
+            directory="/netbox",
+        )
+
+        self.assertEqual(
+            rows,
+            [
+                {
+                    "queryId": "FQ_devices",
+                    "path": "/netbox/forward_devices",
+                    "intent": "",
+                    "repository": "fwd",
+                    "lastCommitId": "commit-1",
+                }
+            ],
+        )
+        self.client._request.assert_called_once_with(
+            "GET",
+            "/nqe/repos/fwd/commits/head/queries",
+        )
+
+    def test_get_nqe_query_history(self):
+        self.client._request = Mock(
+            return_value=self._response(
+                {
+                    "commits": [
+                        {
+                            "id": "commit-1",
+                            "path": "/netbox/forward_devices",
+                        }
+                    ]
+                }
+            )
+        )
+
+        rows = self.client.get_nqe_query_history("FQ/devices")
+
+        self.assertEqual(rows[0]["id"], "commit-1")
+        self.client._request.assert_called_once_with(
+            "GET",
+            "/nqe/queries/FQ%2Fdevices/history",
+        )
+
+    def test_get_committed_nqe_query_resolves_repository_path(self):
+        self.client._request = Mock(
+            return_value=self._response(
+                {
+                    "queryId": "Q_devices",
+                    "path": "/netbox/forward_devices",
+                    "lastCommit": {"id": "commit-1"},
+                }
+            )
+        )
+
+        query = self.client.get_committed_nqe_query(
+            repository="org",
+            query_path="netbox/forward_devices",
+            commit_id="commit-1",
+        )
+
+        self.assertEqual(query["queryId"], "Q_devices")
+        self.client._request.assert_called_once_with(
+            "GET",
+            "/nqe/repos/org/commits/commit-1/queries",
+            params={"path": "/netbox/forward_devices"},
+        )
+
+    def test_resolve_nqe_query_reference_returns_query_id_and_commit(self):
+        self.client._request = Mock(
+            return_value=self._response(
+                {
+                    "queryId": "Q_devices",
+                    "path": "/netbox/forward_devices",
+                    "lastCommit": {"id": "commit-1"},
+                }
+            )
+        )
+
+        resolved = self.client.resolve_nqe_query_reference(
+            repository="org",
+            query_path="/netbox/forward_devices",
+        )
+
+        self.assertEqual(
+            resolved,
+            {
+                "queryId": "Q_devices",
+                "commitId": "commit-1",
+                "repository": "org",
+                "path": "/netbox/forward_devices",
+                "intent": "",
+            },
+        )
+
+    def test_add_org_nqe_query_creates_user_workspace_change(self):
+        self.client._request = Mock(return_value=self._response({}))
+
+        self.client.add_org_nqe_query(
+            query_path="netbox/forward_devices",
+            source_code="select {}",
+        )
+
+        self.client._request.assert_called_once_with(
+            "POST",
+            "/users/current/nqe/changes",
+            params={"action": "addQuery", "path": "/netbox/forward_devices"},
+            json_body={"sourceCode": "select {}"},
+        )
+
+    def test_edit_org_nqe_query_uses_existing_query_basis(self):
+        self.client._request = Mock(return_value=self._response({}))
+
+        self.client.edit_org_nqe_query(
+            query_path="/netbox/forward_devices",
+            source_code="select {}",
+            query_id="OQ_devices",
+            commit_id="commit-1",
+        )
+
+        self.client._request.assert_called_once_with(
+            "POST",
+            "/users/current/nqe/changes",
+            params={"action": "editQuery", "path": "/netbox/forward_devices"},
+            json_body={
+                "sourceCode": "select {}",
+                "basis": {
+                    "queryId": "OQ_devices",
+                    "commitId": "commit-1",
+                },
+            },
+        )
+
+    def test_commit_org_nqe_queries_commits_paths_and_returns_head(self):
+        self.client._request = Mock(
+            side_effect=[
+                self._response({}),
+                self._response("commit-2"),
+            ]
+        )
+
+        commit_id = self.client.commit_org_nqe_queries(
+            query_paths=["netbox/forward_devices"],
+            message="Publish test queries",
+        )
+
+        self.assertEqual(commit_id, "commit-2")
+        self.client._request.assert_any_call(
+            "POST",
+            "/nqe/repos/org/commits",
+            json_body={
+                "paths": ["/netbox/forward_devices"],
+                "accessSettings": [],
+                "message": {
+                    "title": "Publish test queries",
+                    "body": "",
+                },
+            },
+        )
+        self.client._request.assert_any_call("GET", "/nqe/repos/org/commits/head")
+
     def test_run_nqe_diff_returns_single_page_by_default(self):
         self.client._request = Mock(
             return_value=self._response(

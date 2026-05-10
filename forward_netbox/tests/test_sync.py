@@ -2211,7 +2211,7 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertIn("broadcast addresses", warning_messages[1])
         logger.increment_statistics.assert_any_call("ipam.ipaddress", outcome="skipped")
 
-    def test_apply_ipam_ipaddress_records_missing_interface_issue_and_continues(
+    def test_apply_ipam_ipaddress_skips_missing_interface_and_continues(
         self,
     ):
         ingestion = ForwardIngestion.objects.create(sync=self.sync)
@@ -2254,11 +2254,14 @@ class ForwardSyncRunnerTest(TestCase):
                 ingestion=ingestion,
                 model="ipam.ipaddress",
             ).count(),
-            1,
+            0,
         )
         self.assertEqual(IPAddress.objects.count(), 1)
         self.assertEqual(str(IPAddress.objects.get().address), "10.0.0.2/24")
-        logger.increment_statistics.assert_any_call("ipam.ipaddress", outcome="failed")
+        warning_messages = [call.args[0] for call in logger.log_warning.call_args_list]
+        self.assertEqual(len(warning_messages), 1)
+        self.assertIn("target interface was not imported", warning_messages[0])
+        logger.increment_statistics.assert_any_call("ipam.ipaddress", outcome="skipped")
         logger.increment_statistics.assert_any_call("ipam.ipaddress", outcome="applied")
 
     def test_apply_ipam_ipaddress_allows_point_to_point_endpoint_addresses(self):

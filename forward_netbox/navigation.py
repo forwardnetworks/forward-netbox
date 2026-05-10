@@ -53,7 +53,7 @@ nqe_map = PluginMenuItem(
             title=_("Add"),
             icon_class="mdi mdi-plus-thick",
             permissions=["forward_netbox.add_forwardnqemap"],
-        )
+        ),
     ],
     permissions=["forward_netbox.view_forwardnqemap"],
 )
