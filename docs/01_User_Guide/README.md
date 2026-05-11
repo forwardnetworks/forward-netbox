@@ -12,26 +12,27 @@ Install the plugin package, enable the required plugins, run the migrations, and
 Install the wheel from GitHub Releases into the same Python environment as NetBox:
 
 ```bash
-pip install /path/to/forward_netbox-0.8.4-py3-none-any.whl
+pip install /path/to/forward_netbox-0.8.5-py3-none-any.whl
 ```
 
 Alternatively, install directly from the GitHub source archive:
 
 ```bash
-pip install /path/to/forward_netbox-0.8.4.tar.gz
+pip install /path/to/forward_netbox-0.8.5.tar.gz
 ```
 
 If you mirror the package into a private Python index, pin the same release version:
 
 ```bash
-pip install --pre forward-netbox==0.8.4
+pip install --pre forward-netbox==0.8.5
 ```
 
 ## Release Compatibility
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v0.8.4` | `4.5.9` validated; `4.5.x` only | Current release; stops importing Forward HA peers as NetBox virtual chassis by default, hardens repository query lookup responses, and clears stale row progress when a sync fails or advances phases |
+| `v0.8.5` | `4.5.9` validated; `4.5.x` only | Current release; makes the beta routing and module maps broadly available by default while keeping virtual chassis conservative, hardens repository query lookup responses, and clears stale row progress when a sync fails or advances phases |
+| `v0.8.4` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.8.5`; stops importing Forward HA peers as NetBox virtual chassis by default, hardens repository query lookup responses, and clears stale row progress when a sync fails or advances phases |
 | `v0.8.3` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.8.4`; isolates per-model query failures, blocks positionless virtual-chassis assignments before NetBox save, and lets later shards such as routing continue while withholding dirty diff baselines |
 | `v0.8.2` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.8.3`; adds portable repository query-path execution with native NetBox selectors, publish-and-bind bulk edit, bidirectional restore, and fixes IP address rows whose Forward interface cannot be resolved |
 | `v0.8.1.1` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.8.2`; fixes virtual chassis NQE output so NetBox receives a member position with virtual chassis assignments |
@@ -59,7 +60,7 @@ pip install --pre forward-netbox==0.8.4
 
 | Release | Summary |
 | --- | --- |
-| `v0.8.4` | Keeps the bundled virtual chassis map conservative by emitting no rows for Forward HA peers, preserves custom virtual-chassis maps for true NetBox membership, handles Forward repository query lookups that return a `queries` list, and makes failed sync activity show the terminal failure instead of stale row heartbeat text. |
+| `v0.8.5` | Makes the beta routing and module maps broadly available by default, preserves the conservative bundled virtual chassis map, handles Forward repository query lookups that return a `queries` list, and makes failed sync activity show the terminal failure instead of stale row heartbeat text. |
 | `v0.8.3` | Isolates stale or invalid per-model query output, rejects virtual-chassis rows missing `vc_position`, records row issues without aborting later multi-branch shards, and prevents dirty runs from becoming diff baselines. |
 | `v0.8.2` | Adds portable repository `query_path` execution with Forward-backed selectors, true native bulk edit for publishing bundled NQE into the Forward Org Repository, binding selected maps to repository paths, restoring bundled raw NQE, and clearer skipping for IP address rows whose interface cannot be resolved. |
 | `v0.8.1.1` | Emits `vc_position` in the built-in virtual chassis NQE map for vPC and MLAG memberships so NetBox does not reject virtual chassis device assignments without a member position. |

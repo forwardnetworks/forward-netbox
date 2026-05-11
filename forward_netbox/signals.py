@@ -5,6 +5,7 @@ from django.dispatch import receiver
 
 from .models import ForwardNQEMap
 from .utilities.query_registry import builtin_nqe_map_rows
+from .utilities.query_registry import BUILTIN_OPTIONAL_QUERY_MAPS
 
 
 @receiver(post_migrate)
@@ -17,6 +18,12 @@ def seed_builtin_nqe_maps(sender, **kwargs):
         return
     if ForwardNQEMap._meta.db_table not in connection.introspection.table_names():
         return
+
+    enabled_optional_maps = {
+        (query_default["model_string"], query_default["name"])
+        for query_default in BUILTIN_OPTIONAL_QUERY_MAPS
+        if query_default.get("enabled", True)
+    }
 
     for row in builtin_nqe_map_rows():
         app_label, model = row["model_string"].split(".", 1)
@@ -58,5 +65,14 @@ def seed_builtin_nqe_maps(sender, **kwargs):
             if getattr(query_map, field_name) != value:
                 setattr(query_map, field_name, value)
                 update_fields.append(field_name)
+        if (
+            not query_map.query_id
+            and not query_map.query_path
+            and query_map.query == row["query"]
+            and (row["model_string"], row["name"]) in enabled_optional_maps
+            and not query_map.enabled
+        ):
+            query_map.enabled = True
+            update_fields.append("enabled")
         if update_fields:
             query_map.save(update_fields=update_fields)

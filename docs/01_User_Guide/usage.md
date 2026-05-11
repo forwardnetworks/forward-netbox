@@ -173,7 +173,7 @@ The normal UI/API `Run Sync` path uses the same execution backends exposed on th
 
 ## Optional Module Import Readiness
 
-The built-in `Forward Modules` map is disabled by default. The native `dcim.module` import path is beta in `v0.6.x`: use it when you want chassis modules, line cards, supervisors, fabric modules, or routing engines modeled as native NetBox `dcim.module` objects instead of generic inventory items, and review the staged branch carefully before merging.
+The built-in `Forward Modules` map is enabled by default. The native `dcim.module` import path is beta in `v0.6.x`: use it when you want chassis modules, line cards, supervisors, fabric modules, or routing engines modeled as native NetBox `dcim.module` objects instead of generic inventory items, and review the staged branch carefully before merging.
 
 NetBox modules require matching module bays on the device. When `dcim.module` is enabled, the sync creates missing module bays with native NetBox model operations in the same branch shard as the module import. To preview that work before enabling the model, run the readiness helper against the same Forward Sync you plan to use:
 
