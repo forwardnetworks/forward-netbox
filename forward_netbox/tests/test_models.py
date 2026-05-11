@@ -60,6 +60,7 @@ BGP_DISABLED_PLUGIN_CONFIG = {
         if key != "enable_bgp_sync"
     },
 }
+BGP_DISABLED_PLUGIN_CONFIG["forward_netbox"]["enable_bgp_sync"] = False
 
 
 class ForwardSyncModelTest(TestCase):

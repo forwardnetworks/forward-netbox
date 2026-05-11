@@ -852,7 +852,7 @@ select distinct {
 - `NetBox Model`: `dcim.module`
 - Expected fields: `device`, `module_bay`, `manufacturer`, `manufacturer_slug`, `model`, `part_number`, `status`, `serial`, `asset_tag`, `description`
 - Query file: [`forward_modules.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_modules.nqe)
-- Enabled: disabled by default
+- Enabled: enabled by default
 - Stability: beta in `v0.6.x`; review staged module and module-bay changes carefully before merging
 
 The module map uses the same device-first parallel shape as the inventory-item map, but keeps the target model separate so bay-aware chassis hardware can be modeled without overlapping the generic inventory-item fallback. NQE is the classification layer: this map emits only `LINE_CARD`, `SUPERVISOR`, `FABRIC_MODULE`, and `ROUTING_ENGINE` components. Transceivers, fans, power supplies, chassis records, stack artifacts, and motherboards remain inventory-item candidates; application pseudo-parts are not imported as inventory items by default.
@@ -901,8 +901,8 @@ select distinct {
 - `NetBox Model`: `netbox_routing.bgppeer`
 - Expected fields: `device`, `vrf`, `local_asn`, `neighbor_address`, `peer_asn`, `enabled`, `status`
 - Query file: [`forward_bgp_peers.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_bgp_peers.nqe)
-- Enabled: disabled by default
-- Feature flag: requires `PLUGINS_CONFIG["forward_netbox"]["enable_bgp_sync"] = True`
+- Enabled: enabled by default
+- Feature flag: enabled unless `PLUGINS_CONFIG["forward_netbox"]["enable_bgp_sync"] = False`
 - Optional dependency: requires the `netbox-routing` NetBox plugin
 - Stability: beta
 
@@ -913,8 +913,8 @@ The BGP peer map uses Forward structured BGP neighbor state, not raw configurati
 - `NetBox Model`: `netbox_routing.bgpaddressfamily`
 - Expected fields: `device`, `vrf`, `local_asn`, `afi_safi`
 - Query file: [`forward_bgp_address_families.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_bgp_address_families.nqe)
-- Enabled: disabled by default
-- Feature flag: requires `PLUGINS_CONFIG["forward_netbox"]["enable_bgp_sync"] = True`
+- Enabled: enabled by default
+- Feature flag: enabled unless `PLUGINS_CONFIG["forward_netbox"]["enable_bgp_sync"] = False`
 - Optional dependency: requires the `netbox-routing` NetBox plugin
 - Stability: beta
 
@@ -925,8 +925,8 @@ The BGP address-family map joins Forward BGP RIB AFI/SAFI state back to structur
 - `NetBox Model`: `netbox_routing.bgppeeraddressfamily`
 - Expected fields: `device`, `vrf`, `local_asn`, `neighbor_address`, `peer_asn`, `afi_safi`, `enabled`
 - Query file: [`forward_bgp_peer_address_families.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_bgp_peer_address_families.nqe)
-- Enabled: disabled by default
-- Feature flag: requires `PLUGINS_CONFIG["forward_netbox"]["enable_bgp_sync"] = True`
+- Enabled: enabled by default
+- Feature flag: enabled unless `PLUGINS_CONFIG["forward_netbox"]["enable_bgp_sync"] = False`
 - Optional dependency: requires the `netbox-routing` NetBox plugin
 - Stability: beta
 
@@ -937,8 +937,8 @@ The BGP peer address-family map links each native BGP peer to the AFI/SAFI rows 
 - `NetBox Model`: `netbox_routing.ospfinstance`
 - Expected fields: `device`, `vrf`, `process_id`, `router_id`
 - Query file: [`forward_ospf_instances.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_ospf_instances.nqe)
-- Enabled: disabled by default
-- Feature flag: requires `PLUGINS_CONFIG["forward_netbox"]["enable_bgp_sync"] = True`
+- Enabled: enabled by default
+- Feature flag: enabled unless `PLUGINS_CONFIG["forward_netbox"]["enable_bgp_sync"] = False`
 - Optional dependency: requires the `netbox-routing` NetBox plugin
 - Stability: beta
 
@@ -949,8 +949,8 @@ The OSPF instance map uses Forward structured OSPF neighbor state and inferred r
 - `NetBox Model`: `netbox_routing.ospfarea`
 - Expected fields: `area_id`, `area_type`
 - Query file: [`forward_ospf_areas.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_ospf_areas.nqe)
-- Enabled: disabled by default
-- Feature flag: requires `PLUGINS_CONFIG["forward_netbox"]["enable_bgp_sync"] = True`
+- Enabled: enabled by default
+- Feature flag: enabled unless `PLUGINS_CONFIG["forward_netbox"]["enable_bgp_sync"] = False`
 - Optional dependency: requires the `netbox-routing` NetBox plugin
 - Stability: beta
 
@@ -961,8 +961,8 @@ The OSPF area map creates native NetBox routing areas from Forward structured OS
 - `NetBox Model`: `netbox_routing.ospfinterface`
 - Expected fields: `device`, `process_id`, `router_id`, `area_id`, `area_type`, `local_interface`
 - Query file: [`forward_ospf_interfaces.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_ospf_interfaces.nqe)
-- Enabled: disabled by default
-- Feature flag: requires `PLUGINS_CONFIG["forward_netbox"]["enable_bgp_sync"] = True`
+- Enabled: enabled by default
+- Feature flag: enabled unless `PLUGINS_CONFIG["forward_netbox"]["enable_bgp_sync"] = False`
 - Optional dependency: requires the `netbox-routing` NetBox plugin
 - Stability: beta
 
@@ -973,8 +973,8 @@ The OSPF interface map binds native OSPF instances and areas to exact NetBox int
 - `NetBox Model`: `netbox_peering_manager.peeringsession`
 - Expected fields: `device`, `vrf`, `local_asn`, `neighbor_address`, `peer_asn`, `enabled`, `status`, `relationship`, `relationship_slug`, `service_reference`
 - Query file: [`forward_peering_sessions.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_peering_sessions.nqe)
-- Enabled: disabled by default
-- Feature flag: requires `PLUGINS_CONFIG["forward_netbox"]["enable_bgp_sync"] = True`
+- Enabled: enabled by default
+- Feature flag: enabled unless `PLUGINS_CONFIG["forward_netbox"]["enable_bgp_sync"] = False`
 - Optional dependencies: requires `netbox-routing` and `netbox-peering-manager`
 - Stability: beta
 
@@ -991,10 +991,10 @@ For routing maps on large datasets, publish the NQE into the Forward NQE library
 ## Important Caveats
 
 - `dcim.inventoryitem` remains the default best-fit path for generic components.
-- `dcim.module` is disabled by default and should only be enabled when you want bay-aware hardware modeled as modules instead of inventory items.
+- `dcim.module` is enabled by default and remains beta; set the feature flag to `False` only when you want bay-aware hardware kept in inventory items instead of modules.
 - The module path uses native NetBox model operations to create missing module bays from the NQE `module_bay` field when `dcim.module` is enabled. Those bay creations are part of the normal Branching diff.
 - Before enabling module sync, run `python manage.py forward_module_readiness --sync-name "<sync name>"` to generate a readiness summary and an optional native NetBox module-bay import CSV for missing bays.
 - `dcim.module` uses a default branch density of 2 changes per NQE row because a new row can create both a module bay and a module.
 - SFP/transceiver rows remain in the inventory-item path by default; do not enable module import expecting optics to become NetBox modules unless the query is customized for device types that expose matching module bays.
-- Optional routing maps are hidden unless `enable_bgp_sync` is true, and they still require the target optional NetBox plugins to be installed.
+- Optional routing maps are visible unless `enable_bgp_sync` is false, and they still require the target optional NetBox plugins to be installed.
 - BGP policy objects such as route maps, prefix lists, and communities are not part of the normalized built-in path. Those objects require a separate config-derived query layer with vendor-specific contracts.
