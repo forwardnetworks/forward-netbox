@@ -1,4 +1,5 @@
 from datetime import timedelta
+from unittest.mock import Mock
 
 from django.test import TestCase
 from django.utils import timezone
@@ -6,10 +7,12 @@ from django.utils import timezone
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
+from forward_netbox.utilities.multi_branch_lifecycle import set_runtime_phase
 from forward_netbox.utilities.sync_state import clear_branch_run_state
 from forward_netbox.utilities.sync_state import get_branch_run_state
 from forward_netbox.utilities.sync_state import get_display_parameters
 from forward_netbox.utilities.sync_state import get_sync_activity
+from forward_netbox.utilities.sync_state import mark_branch_run_failed
 from forward_netbox.utilities.sync_state import set_branch_run_state
 from forward_netbox.utilities.sync_state import set_model_change_density
 from forward_netbox.utilities.sync_state import touch_branch_run_progress
@@ -161,3 +164,65 @@ class ForwardSyncStateHelperTest(TestCase):
         self.assertEqual(state["current_row_count"], 10)
         self.assertEqual(state["current_row_total"], 12000)
         self.assertTrue(state["last_progress_at"])
+
+    def test_mark_branch_run_failed_clears_stale_progress(self):
+        started = (timezone.now() - timedelta(minutes=12)).isoformat()
+        set_branch_run_state(
+            self.sync,
+            {
+                "phase": "executing",
+                "phase_message": "Applying planned shard changes.",
+                "phase_started": started,
+                "last_progress_message": "Applying 3500/3845 rows for dcim.module.",
+                "last_progress_at": started,
+                "current_model_string": "dcim.module",
+                "current_row_count": 3500,
+                "current_row_total": 3845,
+                "awaiting_merge": True,
+            },
+        )
+
+        self.assertTrue(mark_branch_run_failed(self.sync, "Forward ingestion failed."))
+
+        state = get_branch_run_state(self.sync)
+        self.assertEqual(state["phase"], "failed")
+        self.assertEqual(state["phase_message"], "Forward ingestion failed.")
+        self.assertFalse(state["awaiting_merge"])
+        self.assertNotIn("last_progress_message", state)
+        self.assertNotIn("current_model_string", state)
+        self.assertIn("Forward ingestion failed.", get_sync_activity(self.sync))
+
+    def test_set_runtime_phase_clears_previous_row_progress(self):
+        started = (timezone.now() - timedelta(minutes=4)).isoformat()
+        set_branch_run_state(
+            self.sync,
+            {
+                "phase": "executing",
+                "phase_message": "Fast bootstrap applying dcim.module (17/24).",
+                "phase_started": started,
+                "last_progress_message": "Applying 3500/3845 rows for dcim.module.",
+                "last_progress_at": started,
+                "current_model_string": "dcim.module",
+                "current_row_count": 3500,
+                "current_row_total": 3845,
+                "total_plan_items": 24,
+            },
+        )
+        executor = Mock(sync=self.sync, logger=Mock())
+
+        set_runtime_phase(
+            executor,
+            "executing",
+            "Fast bootstrap applying netbox_routing.bgppeer (18/24).",
+            next_plan_index=18,
+            total_plan_items=24,
+        )
+
+        state = get_branch_run_state(self.sync)
+        self.assertNotIn("last_progress_message", state)
+        self.assertNotIn("current_model_string", state)
+        self.assertEqual(
+            state["phase_message"],
+            "Fast bootstrap applying netbox_routing.bgppeer (18/24).",
+        )
+        self.assertIn("netbox_routing.bgppeer", get_sync_activity(self.sync))

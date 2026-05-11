@@ -16,6 +16,7 @@ from ..models import ForwardSync
 from ..models import ForwardValidationRun
 from ..utilities.logging import SyncLogging
 from .runtime_guidance import log_worker_timeout_guidance
+from .sync_state import mark_branch_run_failed
 
 logger = logging.getLogger("forward_netbox.models")
 
@@ -67,6 +68,7 @@ def _record_forward_sync_failure(sync, job, executor, ingestion, exc):
         ):
             ingestion.validation_run = validation_run
             ingestion.save(update_fields=["validation_run"])
+    mark_branch_run_failed(sync, f"Forward ingestion failed: {exc}")
     sync.logger.log_failure(f"Forward ingestion failed: {exc}", obj=ingestion)
     ForwardIngestionIssue.objects.create(
         ingestion=ingestion,
