@@ -45,7 +45,7 @@ def forward_plugin_settings():
 
 
 def forward_bgp_sync_enabled():
-    return bool(forward_plugin_settings().get("enable_bgp_sync", False))
+    return bool(forward_plugin_settings().get("enable_bgp_sync", True))
 
 
 def forward_configured_models():

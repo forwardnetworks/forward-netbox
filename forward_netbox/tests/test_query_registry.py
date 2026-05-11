@@ -4,6 +4,7 @@ from django.contrib.contenttypes.models import ContentType
 from django.test import TestCase
 
 from forward_netbox.models import ForwardNQEMap
+from forward_netbox.signals import seed_builtin_nqe_maps
 from forward_netbox.utilities.query_registry import builtin_nqe_map_rows
 from forward_netbox.utilities.query_registry import BUILTIN_OPTIONAL_QUERY_MAPS
 from forward_netbox.utilities.query_registry import BUILTIN_QUERY_MAPS
@@ -438,13 +439,13 @@ class QueryRegistryTest(TestCase):
             {query_default["name"] for query_default in BUILTIN_QUERY_MAPS},
         )
 
-    def test_optional_module_maps_are_seeded_disabled(self):
+    def test_optional_module_maps_are_seeded_enabled(self):
         rows = {
             (row["model_string"], row["name"]): row for row in builtin_nqe_map_rows()
         }
 
         row = rows[("dcim.module", "Forward Modules")]
-        self.assertFalse(row["enabled"])
+        self.assertTrue(row["enabled"])
         self.assertIn("device.platform.components", row["query"])
         self.assertIn("isNetBoxModuleComponent(component)", row["query"])
         self.assertIn("component.partType == DevicePartType.LINE_CARD", row["query"])
@@ -478,13 +479,13 @@ class QueryRegistryTest(TestCase):
         self.assertEqual(spec.query_name, "Forward Modules")
         self.assertIn("isNetBoxModuleComponent", spec.query)
 
-    def test_optional_bgp_maps_are_seeded_disabled(self):
+    def test_optional_bgp_maps_are_seeded_enabled(self):
         rows = {
             (row["model_string"], row["name"]): row for row in builtin_nqe_map_rows()
         }
 
         bgp_row = rows[("netbox_routing.bgppeer", "Forward BGP Peers")]
-        self.assertFalse(bgp_row["enabled"])
+        self.assertTrue(bgp_row["enabled"])
         self.assertIn("protocol.bgp.neighbors", bgp_row["query"])
         self.assertIn("neighbor.neighborAddress", bgp_row["query"])
         self.assertIn("neighbor.peerAS", bgp_row["query"])
@@ -500,7 +501,7 @@ class QueryRegistryTest(TestCase):
         bgp_af_row = rows[
             ("netbox_routing.bgpaddressfamily", "Forward BGP Address Families")
         ]
-        self.assertFalse(bgp_af_row["enabled"])
+        self.assertTrue(bgp_af_row["enabled"])
         self.assertIn("device.bgpRib.afiSafis", bgp_af_row["query"])
         self.assertIn(
             'afi_safi == "AfiSafiType.L3VPN_IPV4_UNICAST"', bgp_af_row["query"]
@@ -522,7 +523,7 @@ class QueryRegistryTest(TestCase):
                 "Forward BGP Peer Address Families",
             )
         ]
-        self.assertFalse(bgp_peer_af_row["enabled"])
+        self.assertTrue(bgp_peer_af_row["enabled"])
         self.assertIn("device.bgpRib.afiSafis", bgp_peer_af_row["query"])
         self.assertIn(
             'afi_safi == "AfiSafiType.L3VPN_IPV4_UNICAST"',
@@ -545,7 +546,7 @@ class QueryRegistryTest(TestCase):
         ospf_instance_row = rows[
             ("netbox_routing.ospfinstance", "Forward OSPF Instances")
         ]
-        self.assertFalse(ospf_instance_row["enabled"])
+        self.assertTrue(ospf_instance_row["enabled"])
         self.assertIn("protocol.ospf", ospf_instance_row["query"])
         self.assertIn("inferred_router_id", ospf_instance_row["query"])
         self.assertIn("router_id:", ospf_instance_row["query"])
@@ -557,14 +558,14 @@ class QueryRegistryTest(TestCase):
         ospf_interface_row = rows[
             ("netbox_routing.ospfinterface", "Forward OSPF Interfaces")
         ]
-        self.assertFalse(ospf_interface_row["enabled"])
+        self.assertTrue(ospf_interface_row["enabled"])
         self.assertIn("inferred_router_id", ospf_interface_row["query"])
         self.assertIn("local_interface:", ospf_interface_row["query"])
 
         peering_row = rows[
             ("netbox_peering_manager.peeringsession", "Forward Peering Sessions")
         ]
-        self.assertFalse(peering_row["enabled"])
+        self.assertTrue(peering_row["enabled"])
         self.assertIn("reciprocal_local_asn", peering_row["query"])
         self.assertIn("internal_peer_asn", peering_row["query"])
         self.assertIn("relationship_slug:", peering_row["query"])
@@ -581,6 +582,23 @@ class QueryRegistryTest(TestCase):
             "Forward BGP Peers",
             {query_default["name"] for query_default in BUILTIN_OPTIONAL_QUERY_MAPS},
         )
+
+    def test_seed_builtin_maps_enables_existing_optional_routing_map_defaults(self):
+        netbox_model = ContentType.objects.get(
+            app_label="netbox_routing", model="bgppeer"
+        )
+        query_map = ForwardNQEMap.objects.get(
+            name="Forward BGP Peers",
+            netbox_model=netbox_model,
+            built_in=True,
+        )
+        query_map.enabled = False
+        query_map.save(update_fields=["enabled"])
+
+        seed_builtin_nqe_maps(type("Sender", (), {"label": "forward_netbox"}))
+
+        query_map.refresh_from_db()
+        self.assertTrue(query_map.enabled)
 
     def test_builtin_map_query_id_overrides_bundled_query_for_diff_support(self):
         content_type = ContentType.objects.get(app_label="dcim", model="site")

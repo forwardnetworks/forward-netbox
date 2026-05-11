@@ -533,6 +533,11 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
             enabled=False,
             built_in=True,
         )
+        ForwardNQEMap.objects.filter(
+            name="Forward Modules",
+            netbox_model=module_type,
+            built_in=True,
+        ).update(enabled=False)
         self.sync.get_model_strings = lambda: ["dcim.module"]
         client = Mock()
         client.get_snapshots.return_value = [
