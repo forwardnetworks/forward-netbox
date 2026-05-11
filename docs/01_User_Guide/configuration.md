@@ -165,7 +165,7 @@ The current built-in map set is:
 - `Forward Platforms`
 - `Forward Device Models`
 - `Forward Devices`
-- `Forward Virtual Chassis`
+- `Forward Virtual Chassis` (conservative no-op unless customized)
 - `Forward Device Feature Tags`
 - `Forward Interfaces`
 - `Forward Inferred Interface Cables`

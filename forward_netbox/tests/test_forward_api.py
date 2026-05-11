@@ -486,6 +486,35 @@ class ForwardClientTest(TestCase):
             params={"path": "/netbox/forward_devices"},
         )
 
+    def test_get_committed_nqe_query_selects_matching_query_from_list_response(self):
+        self.client._request = Mock(
+            return_value=self._response(
+                {
+                    "queries": [
+                        {
+                            "queryId": "Q_sites",
+                            "path": "/netbox/forward_sites",
+                            "lastCommitId": "commit-1",
+                        },
+                        {
+                            "queryId": "Q_devices",
+                            "path": "/netbox/forward_devices",
+                            "lastCommitId": "commit-2",
+                        },
+                    ]
+                }
+            )
+        )
+
+        query = self.client.get_committed_nqe_query(
+            repository="org",
+            query_path="netbox/forward_devices",
+            commit_id="head",
+        )
+
+        self.assertEqual(query["queryId"], "Q_devices")
+        self.assertEqual(query["lastCommitId"], "commit-2")
+
     def test_resolve_nqe_query_reference_returns_query_id_and_commit(self):
         self.client._request = Mock(
             return_value=self._response(
