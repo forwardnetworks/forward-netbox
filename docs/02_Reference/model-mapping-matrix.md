@@ -12,7 +12,7 @@ This matrix summarizes how the shipped Forward NQE maps populate each NetBox mod
 | `dcim.platform` | `Forward Platforms` | `device.platform.os` plus vendor | Exact | Platform slugs are shaped in NQE. |
 | `dcim.devicetype` | `Forward Device Models` | `device.platform.model` plus vendor | Best-fit | Forward model is used as both model and part number. |
 | `dcim.device` | `Forward Devices` | `network.devices` | Exact | Device lookup is by NetBox device name. |
-| `dcim.virtualchassis` | `Forward Virtual Chassis` | `device.ha.vpc.domainId` and `device.ha.mlagPeer` | Best-fit | Maps vPC/MLAG-style HA to NetBox virtual chassis with deterministic naming and domain keys. |
+| `dcim.virtualchassis` | `Forward Virtual Chassis` | None by default | Exact only when customized | The bundled map is conservative and emits no rows. Forward HA peer relationships such as vPC, MLAG, and active/standby clusters are separate control-plane relationships, not native NetBox virtual chassis membership. |
 | `extras.taggeditem` | `Forward Device Feature Tags` | Forward structured protocol feature evidence | Best-fit | Adds NetBox tags to devices by exact device name; the default map tags BGP-enabled devices as `Prot_BGP`, and the disabled rules-aware variant can source tag policy from `netbox_feature_tag_rules`. |
 | `dcim.interface` | `Forward Interfaces` | Interfaces under `device.interfaces` | Best-fit | NetBox interface type is derived from negotiated speed lookup values for physical Ethernet rows. Forward aggregate interfaces map to native NetBox LAG interfaces, and physical members attach through `Interface.lag` when Forward reports `ethernet.aggregateId`. A member can create a minimal native LAG placeholder when sharding applies the member before the aggregate row. MTU is preserved from Forward's normalized `interface.mtu` value. |
 | `dcim.cable` | `Forward Inferred Interface Cables` | `interface.links` resolved from Forward topology discovery | Best-fit | Creates cables only when the resolved neighbor device and port exactly match NetBox device/interface names. |
@@ -34,7 +34,7 @@ This matrix summarizes how the shipped Forward NQE maps populate each NetBox mod
 
 ## Important Caveats
 
-- `dcim.virtualchassis` is a pragmatic approximation for HA pairs and domains, not a claim that all Forward HA constructs are shared-control-plane switch stacks.
+- `dcim.virtualchassis` is intentionally no-op by default. If you need this model, use a custom NQE map that emits true NetBox virtual chassis membership rows with unique `vc_position` values.
 - The plugin intentionally keeps NetBox-ready shaping in NQE where possible. Python adapters apply rows and enforce object lookups; they should not silently normalize meaning after the query runs.
 - Manufacturer-bearing built-in queries intentionally canonicalize vendor names and slugs in NQE through the shared `netbox_utilities` module. If your NetBox already uses different curated manufacturer rows with the default maps, copy the query set and update `manufacturer_name_overrides` there before syncing.
 - Disabled alias-aware variants for `dcim.devicetype` and `dcim.device` can map Forward model strings to NetBox Device Type Library model/slug values through the `netbox_device_type_aliases` Forward data file. That data file can also carry manufacturer override rows for the alias-aware maps. Keep the default maps enabled unless the selected Forward snapshot exposes the data file value.

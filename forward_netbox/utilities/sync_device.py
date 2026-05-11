@@ -66,6 +66,24 @@ def apply_dcim_virtualchassis(runner, row):
                 context={"device": row["device"], "virtual_chassis": vc_name},
                 data=row,
             )
+        position_conflict = (
+            Device.objects.filter(virtual_chassis=vc, vc_position=row["vc_position"])
+            .exclude(pk=device.pk)
+            .order_by("name")
+            .first()
+        )
+        if position_conflict is not None:
+            raise ForwardSyncDataError(
+                f"Virtual chassis `{vc_name}` already has device `{position_conflict.name}` at position `{row['vc_position']}`.",
+                model_string="dcim.virtualchassis",
+                context={
+                    "device": row["device"],
+                    "virtual_chassis": vc_name,
+                    "vc_position": row["vc_position"],
+                    "conflicting_device": position_conflict.name,
+                },
+                data=row,
+            )
         defaults = {"virtual_chassis": vc, "vc_position": row["vc_position"]}
         Device.objects.filter(pk=device.pk).update(**defaults)
     return vc

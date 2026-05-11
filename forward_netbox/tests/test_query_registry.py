@@ -298,41 +298,22 @@ class QueryRegistryTest(TestCase):
             spec.query,
         )
 
-    def test_virtual_chassis_query_supports_vpc_and_mlag_semantics(self):
+    def test_virtual_chassis_query_does_not_map_ha_peers_by_default(self):
         spec = next(
             spec
             for spec in BUILTIN_QUERY_SPECS["dcim.virtualchassis"]
             if spec.query_name == "Forward Virtual Chassis"
         )
 
-        self.assertIn("let has_vpc =", spec.query)
-        self.assertIn("let has_mlag_peer =", spec.query)
-        self.assertIn("truncate(value: String, max_len: Integer)", spec.query)
-        self.assertIn("compactMemberKey(value: String)", spec.query)
-        self.assertIn("let member_a = if has_mlag_peer", spec.query)
-        self.assertIn("let member_b = if has_mlag_peer", spec.query)
-        self.assertIn(
-            "let bounded_mlag_domain = if length(raw_mlag_domain) <= 30", spec.query
-        )
-        self.assertIn("&& isPresent(device.ha.vpc)", spec.query)
-        self.assertIn("where has_vpc || has_mlag_peer", spec.query)
-        self.assertIn("device.ha.vpc.domainId > 0", spec.query)
-        self.assertIn("device.ha.mlagPeer", spec.query)
-        self.assertIn("let vpc_role =", spec.query)
-        self.assertIn("let vpc_position =", spec.query)
-        self.assertIn("let vc_position = if has_mlag_peer", spec.query)
-        self.assertIn("where isPresent(vc_position)", spec.query)
-        self.assertIn(
-            'join("-", [truncate(site_name, 28), "mlag", vc_domain])', spec.query
-        )
-        self.assertIn(
-            'join("--", [compactMemberKey(member_a), compactMemberKey(member_b)])',
-            spec.query,
-        )
-        self.assertNotIn("else []", spec.query)
-        self.assertNotIn(" and isPresent", spec.query)
-        self.assertNotIn("where has_vpc or has_mlag_peer", spec.query)
-        self.assertNotIn("?.", spec.query)
+        self.assertIn("foreach device in network.devices", spec.query)
+        self.assertIn("where false", spec.query)
+        self.assertIn("device: device.name", spec.query)
+        self.assertIn("vc_name:", spec.query)
+        self.assertIn("vc_domain:", spec.query)
+        self.assertIn("vc_position:", spec.query)
+        self.assertNotIn("device.ha.vpc", spec.query)
+        self.assertNotIn("device.ha.mlagPeer", spec.query)
+        self.assertNotIn("clusterHa", spec.query)
 
     def test_wrapped_device_queries_keep_device_first_parallel_shape(self):
         rows = {row["name"]: row for row in builtin_nqe_map_rows()}
@@ -395,7 +376,7 @@ class QueryRegistryTest(TestCase):
         specs = get_query_specs("dcim.virtualchassis", maps=[builtin_map])
 
         self.assertEqual(len(specs), 1)
-        self.assertIn("where has_vpc || has_mlag_peer", specs[0].query)
+        self.assertIn("where false", specs[0].query)
         self.assertNotIn('select {stale: "query"}', specs[0].query)
 
     def test_builtin_map_rows_keep_authored_query_source(self):
