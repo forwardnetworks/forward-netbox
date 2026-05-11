@@ -11,12 +11,12 @@ Optional plugin-wide flags live in NetBox `configuration.py`:
 ```python
 PLUGINS_CONFIG = {
     "forward_netbox": {
-        "enable_bgp_sync": False,
+        "enable_bgp_sync": True,
     }
 }
 ```
 
-`enable_bgp_sync` defaults to `False`. Set it to `True` only when testing the beta BGP path with the optional `netbox-routing` and, if desired, `netbox-peering-manager` plugins installed and migrated.
+`enable_bgp_sync` defaults to `True`. Set it to `False` only if you want to hide the beta module/routing surface from the sync UI.
 
 ## Forward Sources
 
@@ -151,7 +151,7 @@ The alias-aware variants require a Forward JSON data file named `netbox_device_t
 
 The plugin also seeds a default `Forward Device Feature Tags` map and a disabled `Forward Device Feature Tags with Rules` variant. The default map requires no data file and tags BGP-enabled devices as `Prot_BGP` from Forward's structured protocol state. The rules-aware variant requires a Forward JSON data file named `netbox_feature_tag_rules.json` with NQE name `netbox_feature_tag_rules`; use it when operators need to rename tags, change colors, or apply multiple tags from the same structured feature. See [Feature Tag Rules Data File](../02_Reference/feature-tag-rules-data-file.md).
 
-Optional routing sync is behind `PLUGINS_CONFIG["forward_netbox"]["enable_bgp_sync"] = True`. When enabled and the optional NetBox plugins are installed, the sync form exposes disabled-by-default maps for `netbox_routing.bgppeer`, `netbox_routing.bgpaddressfamily`, `netbox_routing.bgppeeraddressfamily`, `netbox_routing.ospfinstance`, `netbox_routing.ospfarea`, `netbox_routing.ospfinterface`, and `netbox_peering_manager.peeringsession`. The `netbox-routing` maps are the primary native BGP/OSPF targets; the `netbox-peering-manager` map creates an overlay session linked to the BGP peer. Leave this flag off unless those optional plugins are installed and the routing beta path is intentionally being tested. The routing queries use explicit local identity when Forward provides it, then apply conservative native-query inference from reciprocal Forward peer evidence. During planning, routing diagnostics report BGP neighbors skipped because no explicit or safely inferred local AS exists, unsupported BGP address families, and OSPF rows skipped because no unique process-level local router ID can be inferred safely.
+Optional routing sync is enabled by default through `PLUGINS_CONFIG["forward_netbox"]["enable_bgp_sync"] = True`. When the optional NetBox plugins are installed, the sync form exposes the beta `netbox_routing.bgppeer`, `netbox_routing.bgpaddressfamily`, `netbox_routing.bgppeeraddressfamily`, `netbox_routing.ospfinstance`, `netbox_routing.ospfarea`, `netbox_routing.ospfinterface`, and `netbox_peering_manager.peeringsession` maps. The `netbox-routing` maps are the primary native BGP/OSPF targets; the `netbox-peering-manager` map creates an overlay session linked to the BGP peer. Set the flag to `False` only if you want to hide that beta surface. The routing queries use explicit local identity when Forward provides it, then apply conservative native-query inference from reciprocal Forward peer evidence. During planning, routing diagnostics report BGP neighbors skipped because no explicit or safely inferred local AS exists, unsupported BGP address families, and OSPF rows skipped because no unique process-level local router ID can be inferred safely.
 
 For large routing datasets, publish the routing NQE into the Forward NQE library and bind each enabled NetBox map to the repository query path. The first run still performs a full baseline. Later `latestProcessed` runs can use Forward NQE diffs only when all enabled maps for that model are backed by a repository path or direct query ID; inline query text falls back to full execution.
 
@@ -177,7 +177,7 @@ The current built-in map set is:
 - `Forward IP Addresses`
 - `Forward Inventory Items`
 
-The disabled optional map set also includes `Forward Modules`, `Forward BGP Peers`, `Forward BGP Address Families`, `Forward BGP Peer Address Families`, `Forward OSPF Instances`, `Forward OSPF Areas`, `Forward OSPF Interfaces`, and `Forward Peering Sessions` when their target ContentTypes exist.
+The optional beta map set also includes `Forward Modules`, `Forward BGP Peers`, `Forward BGP Address Families`, `Forward BGP Peer Address Families`, `Forward OSPF Instances`, `Forward OSPF Areas`, `Forward OSPF Interfaces`, and `Forward Peering Sessions` when their target ContentTypes exist.
 
 See the [Built-In NQE Reference](../02_Reference/built-in-nqe-maps.md) for the exact shipped query text and expected output fields.
 See the [Model Mapping Matrix](../02_Reference/model-mapping-matrix.md) for the current exact vs best-fit mapping semantics per NetBox model.
