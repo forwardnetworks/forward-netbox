@@ -11,6 +11,14 @@ from .execution_telemetry import build_branch_run_summary
 from .execution_telemetry import build_sync_execution_summary
 
 STALE_BRANCH_PROGRESS_SECONDS = 15 * 60
+PROGRESS_STATE_KEYS = (
+    "last_progress_message",
+    "last_progress_at",
+    "current_model_string",
+    "current_shard_index",
+    "current_row_count",
+    "current_row_total",
+)
 
 
 def get_branch_run_state(sync):
@@ -36,6 +44,25 @@ def clear_branch_run_state(sync):
         parameters.pop(BRANCH_RUN_STATE_PARAMETER, None)
         sync.parameters = parameters
         sync.__class__.objects.filter(pk=sync.pk).update(parameters=parameters)
+
+
+def clear_branch_run_progress_fields(state):
+    for key in PROGRESS_STATE_KEYS:
+        state.pop(key, None)
+    return state
+
+
+def mark_branch_run_failed(sync, message):
+    state = get_branch_run_state(sync)
+    if not state:
+        return False
+    clear_branch_run_progress_fields(state)
+    state["phase"] = "failed"
+    state["phase_message"] = str(message)
+    state["phase_started"] = timezone.now().isoformat()
+    state["awaiting_merge"] = False
+    set_branch_run_state(sync, state)
+    return True
 
 
 def touch_branch_run_progress(

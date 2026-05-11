@@ -17,6 +17,7 @@ from .branching import build_branch_name
 from .branching import build_branch_request
 from .query_fetch import plan_item_model_result
 from .sync import ForwardSyncRunner
+from .sync_state import clear_branch_run_progress_fields
 from .sync_state import touch_branch_run_progress
 
 AUTO_SPLIT_MIN_ROWS_PER_BRANCH = 1
@@ -26,6 +27,8 @@ def set_runtime_phase(
     executor, phase, message, *, next_plan_index=None, total_plan_items=None
 ):
     state = executor.sync.get_branch_run_state()
+    if state.get("phase") != str(phase) or state.get("phase_message") != str(message):
+        clear_branch_run_progress_fields(state)
     if next_plan_index is not None:
         state["next_plan_index"] = int(next_plan_index)
     if total_plan_items is not None:
