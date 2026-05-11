@@ -117,7 +117,7 @@ class ForwardClient:
         return {
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "forward-netbox/0.8.3",
+            "User-Agent": "forward-netbox/0.8.3.1",
         }
 
     def _auth(self):
@@ -318,6 +318,13 @@ class ForwardClient:
         if not isinstance(data, dict):
             raise ForwardClientError(
                 f"Forward NQE repository lookup for `{query_path}` returned an invalid response."
+            )
+        if isinstance(data.get("queries"), list):
+            for query in data["queries"]:
+                if isinstance(query, dict) and query.get("path") == query_path:
+                    return query
+            raise ForwardClientError(
+                f"Forward NQE repository lookup did not include `{query_path}`."
             )
         return data
 

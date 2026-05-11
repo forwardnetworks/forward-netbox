@@ -404,6 +404,116 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
         ]
         self.assertEqual(failures[0]["failure_count"], 1)
 
+    @patch("forward_netbox.utilities.query_fetch.get_query_specs")
+    def test_duplicate_virtual_chassis_positions_skip_model_not_later_models(
+        self, mock_specs
+    ):
+        client = Mock()
+        client.get_snapshots.return_value = [
+            {
+                "id": "snapshot-after",
+                "state": "PROCESSED",
+                "created_at": "",
+                "processed_at": "2026-03-31T12:15:00Z",
+            }
+        ]
+        client.get_snapshot_metrics.return_value = {}
+
+        def run_nqe_query(*, query=None, fetch_all=False, **_kwargs):
+            if "vc-1" in query:
+                if not fetch_all:
+                    return [
+                        {
+                            "device": "device-1",
+                            "vc_name": "vc-1",
+                            "name": "vc-1",
+                            "vc_domain": "100",
+                            "vc_position": 1,
+                        }
+                    ]
+                return [
+                    {
+                        "device": "device-1",
+                        "vc_name": "vc-1",
+                        "name": "vc-1",
+                        "vc_domain": "100",
+                        "vc_position": 1,
+                    },
+                    {
+                        "device": "device-2",
+                        "vc_name": "vc-1",
+                        "name": "vc-1",
+                        "vc_domain": "100",
+                        "vc_position": 1,
+                    },
+                ]
+            return [
+                {
+                    "device": "device-3",
+                    "local_asn": 64512,
+                    "neighbor_address": "192.0.2.1",
+                    "peer_asn": 64513,
+                    "enabled": True,
+                    "status": "active",
+                }
+            ]
+
+        def query_specs(model_string, maps=None):
+            if model_string == "dcim.virtualchassis":
+                return [
+                    QuerySpec(
+                        model_string="dcim.virtualchassis",
+                        query_name="Forward Virtual Chassis",
+                        query=(
+                            'select {device: "device-1", vc_name: "vc-1", '
+                            'name: "vc-1", vc_domain: "100", vc_position: 1}'
+                        ),
+                    )
+                ]
+            return [
+                QuerySpec(
+                    model_string="netbox_routing.bgppeer",
+                    query_name="Forward BGP Peers",
+                    query=(
+                        'select {device: "device-3", local_asn: 64512, '
+                        'neighbor_address: "192.0.2.1", peer_asn: 64513, '
+                        'enabled: true, status: "active"}'
+                    ),
+                )
+            ]
+
+        client.run_nqe_query.side_effect = run_nqe_query
+        mock_specs.side_effect = query_specs
+        self.sync.resolve_snapshot_id = lambda client=None: "snapshot-after"
+        self.sync.get_model_strings = lambda: [
+            "dcim.virtualchassis",
+            "netbox_routing.bgppeer",
+        ]
+        self.sync.incremental_diff_baseline = Mock(return_value=None)
+        planner = ForwardMultiBranchPlanner(
+            sync=self.sync,
+            client=client,
+            logger_=Mock(),
+        )
+
+        _context, plan = planner.build_plan(
+            max_changes_per_branch=10, run_preflight=True
+        )
+
+        self.assertEqual(
+            [item.model_string for item in plan], ["netbox_routing.bgppeer"]
+        )
+        failures = [
+            result
+            for result in planner.model_results
+            if result["model"] == "dcim.virtualchassis"
+        ]
+        self.assertEqual(failures[0]["failure_count"], 1)
+        self.assertIn(
+            "Duplicate virtual chassis position",
+            failures[0]["diagnostics"][0]["message"],
+        )
+
     def test_preflight_error_explains_disabled_optional_module_map(self):
         site_type = ContentType.objects.get(app_label="dcim", model="site")
         module_type = ContentType.objects.get(app_label="dcim", model="module")
@@ -3301,6 +3411,58 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertEqual(device.virtual_chassis, vc)
         self.assertEqual(device.vc_position, 2)
         self.assertEqual(VirtualChassis.objects.get(pk=vc.pk).domain, "100")
+
+    def test_apply_virtual_chassis_rejects_duplicate_position(self):
+        site = Site.objects.create(name="site-3", slug="site-3")
+        manufacturer = Manufacturer.objects.create(name="vendor-3", slug="vendor-3")
+        role = DeviceRole.objects.create(name="role-3", slug="role-3", color="9e9e9e")
+        device_type = DeviceType.objects.create(
+            manufacturer=manufacturer,
+            model="model-3",
+            slug="model-3",
+        )
+        device_1 = Device.objects.create(
+            name="device-3a",
+            site=site,
+            role=role,
+            device_type=device_type,
+            status="active",
+        )
+        device_2 = Device.objects.create(
+            name="device-3b",
+            site=site,
+            role=role,
+            device_type=device_type,
+            status="active",
+        )
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        runner._apply_dcim_virtualchassis(
+            {
+                "device": device_1.name,
+                "vc_name": "site-3-vpc-200",
+                "vc_domain": "200",
+                "vc_position": 1,
+            }
+        )
+
+        with self.assertRaisesRegex(
+            ForwardSyncDataError,
+            "already has device `device-3a` at position `1`",
+        ):
+            runner._apply_dcim_virtualchassis(
+                {
+                    "device": device_2.name,
+                    "vc_name": "site-3-vpc-200",
+                    "vc_domain": "200",
+                    "vc_position": 1,
+                }
+            )
+        device_2.refresh_from_db()
+
+        self.assertIsNone(device_2.virtual_chassis)
+        self.assertIsNone(device_2.vc_position)
 
 
 class EventsClearerTest(TestCase):

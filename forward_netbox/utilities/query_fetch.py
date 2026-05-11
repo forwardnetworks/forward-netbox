@@ -495,6 +495,26 @@ class ForwardQueryFetcher:
             validate_row_shape_for_model(model_string, row, coalesce_fields)
         for row in delete_rows:
             validate_row_shape_for_model(model_string, row, coalesce_fields)
+        if model_string == "dcim.virtualchassis":
+            self._validate_virtual_chassis_positions(rows)
+
+    def _validate_virtual_chassis_positions(self, rows: list[dict]) -> None:
+        seen_positions = {}
+        for row in rows:
+            vc_name = row.get("vc_name") or row.get("name")
+            position = row.get("vc_position")
+            device = row.get("device")
+            key = (vc_name, position)
+            if key not in seen_positions:
+                seen_positions[key] = device
+                continue
+            if seen_positions[key] == device:
+                continue
+            raise ForwardQueryError(
+                "Duplicate virtual chassis position returned by Forward NQE: "
+                f"`{vc_name}` position `{position}` is assigned to both "
+                f"`{seen_positions[key]}` and `{device}`."
+            )
 
     def _resolve_snapshot_info(
         self,
