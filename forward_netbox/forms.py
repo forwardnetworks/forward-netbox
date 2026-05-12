@@ -68,10 +68,13 @@ FORWARD_NQE_QUERY_REPOSITORY_CHOICES = (
 
 FORWARD_NQE_BULK_QUERY_OPERATION_CHOICES = (
     ("", "No query reference change"),
-    ("bind_query_path", "Bind selected maps to repository query paths"),
+    (
+        "bind_query_path",
+        "Use repository query paths (query IDs resolve at sync time)",
+    ),
     (
         "publish_bundled_query_path",
-        "Publish bundled queries to Org Repository and bind selected maps",
+        "Publish bundled queries and use repository query paths",
     ),
     ("restore_raw_query", "Restore bundled raw query text"),
 )
@@ -765,8 +768,10 @@ class ForwardNQEMapBulkEditForm(NetBoxModelBulkEditForm):
         required=False,
         label="Query Bulk Operation",
         help_text=(
-            "Choose whether this native bulk edit should update selected maps' "
-            "query references. Leave unchanged for ordinary map bulk edits."
+            "Bulk edit does not store direct query IDs. Choose a repository-path "
+            "operation to set selected maps to Repository Query Path mode; the "
+            "plugin resolves the current query ID from the selected source during "
+            "sync and diff execution."
         ),
     )
     bind_query_source = forms.ModelChoiceField(
@@ -775,7 +780,8 @@ class ForwardNQEMapBulkEditForm(NetBoxModelBulkEditForm):
         label="Forward Source for Query Lookup",
         help_text=(
             "Choose the Forward source used to read the repository folder. "
-            "The plugin resolves query IDs from selected query paths during sync."
+            "The source credentials are also used later to resolve each selected "
+            "repository path into its current Forward query ID."
         ),
     )
     bind_query_repository = forms.ChoiceField(
@@ -793,8 +799,9 @@ class ForwardNQEMapBulkEditForm(NetBoxModelBulkEditForm):
             api_url="/api/plugins/forward/nqe-map/available-query-folders/"
         ),
         help_text=(
-            "Folder containing the committed query set. It limits the per-map "
-            "query selectors below."
+            "Folder containing the committed query set. For customer-published "
+            "Forward NetBox queries, select `/forward_netbox_validation`; the "
+            "selectors below bind paths from that folder, not static query IDs."
         ),
     )
     bind_pin_commit = forms.BooleanField(
@@ -837,7 +844,7 @@ class ForwardNQEMapBulkEditForm(NetBoxModelBulkEditForm):
             "publish_commit_message",
             name="Bulk Query Reference",
         ),
-        FieldSet(name="Map Query Choices"),
+        FieldSet(name="Map Query Path Choices"),
         FieldSet("enabled", name="Map State"),
     )
 
@@ -869,9 +876,10 @@ class ForwardNQEMapBulkEditForm(NetBoxModelBulkEditForm):
                     api_url="/api/plugins/forward/nqe-map/available-queries/"
                 ),
                 help_text=(
-                    "Select the repository query path to bind to this NetBox map. "
-                    "Choices are filtered to this map's NetBox model; leave blank "
-                    "to keep this map unchanged."
+                    "Select the repository query path for this NetBox map. Saving "
+                    "this field sets execution to Repository Query Path; the query "
+                    "ID is resolved from this path during sync and diff execution. "
+                    "Leave blank to keep this map unchanged."
                 ),
             )
             _configure_api_select(
@@ -897,7 +905,10 @@ class ForwardNQEMapBulkEditForm(NetBoxModelBulkEditForm):
                 "publish_commit_message",
                 name="Bulk Query Reference",
             ),
-            FieldSet(*self.selected_query_path_fields, name="Map Query Choices"),
+            FieldSet(
+                *self.selected_query_path_fields,
+                name="Map Query Path Choices",
+            ),
             FieldSet("enabled", name="Map State"),
         )
 

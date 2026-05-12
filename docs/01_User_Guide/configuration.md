@@ -217,8 +217,8 @@ If you prefer to manage the query files in Forward directly:
 3. In NetBox, open `Plugins > Forward Networks > NQE Maps`.
 4. Select the maps to bind. To bind every visible map, use the table header
    checkbox, then click the native `Edit Selected` bulk action.
-5. In the bulk edit form, set `Query Bulk Operation` to `Bind selected maps to
-   repository query paths`.
+5. In the bulk edit form, set `Query Bulk Operation` to `Use repository query
+   paths (query IDs resolve at sync time)`.
 6. Set `Forward Source for Query Lookup`, confirm `Query Repository`, and select
    the `Repository Folder`.
 7. Under `Map Query Choices`, choose the repository query path for each selected
@@ -241,10 +241,11 @@ edit. The plugin restores the shipped NQE source and clears `query_id`,
 unambiguously. Custom or ambiguous maps are skipped and reported instead of
 being guessed.
 
-This workflow intentionally does not store static query IDs on every map.
-Repository paths are portable across Forward orgs; the plugin resolves each
-path to the correct query ID from the selected `Forward Source` during sync and
-diff execution.
+This workflow intentionally does not store static query IDs on every map, so
+there is no direct query-ID selector in the native bulk edit form. Repository
+paths are portable across Forward orgs; the plugin resolves each path to the
+correct query ID from the selected `Forward Source` during sync and diff
+execution.
 
 For a single map, the equivalent API shape is:
 
