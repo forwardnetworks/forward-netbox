@@ -102,6 +102,10 @@ def read_builtin_query_source(filename: str) -> str:
     return _read_query_source(filename)
 
 
+def read_compiled_builtin_query_source(filename: str) -> str:
+    return _read_query(filename)
+
+
 def builtin_query_source_filenames(filename: str) -> tuple[str, ...]:
     ordered_filenames = []
     seen_paths = set()

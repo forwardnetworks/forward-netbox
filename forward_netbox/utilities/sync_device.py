@@ -125,12 +125,22 @@ def apply_dcim_device(runner, row):
         "serial": row.get("serial", ""),
         "status": row["status"],
     }
-    if row.get("virtual_chassis"):
+    if row.get("virtual_chassis") and row.get("vc_position"):
         defaults["virtual_chassis"] = runner._apply_dcim_virtualchassis(
             {"name": row["virtual_chassis"]}
         )
-        if row.get("vc_position"):
-            defaults["vc_position"] = row["vc_position"]
+        defaults["vc_position"] = row["vc_position"]
+    elif row.get("virtual_chassis"):
+        runner._record_aggregated_skip_warning(
+            model_string="dcim.device",
+            reason="virtual-chassis-without-position",
+            warning_message=(
+                "Skipping incomplete virtual chassis assignment on device "
+                f"`{row['name']}` because the row has `virtual_chassis` but no "
+                "`vc_position`. True virtual chassis membership should be emitted "
+                "by the `dcim.virtualchassis` map."
+            ),
+        )
 
     runner._upsert_values_from_defaults(
         "dcim.device",

@@ -138,7 +138,7 @@ The plugin enforces a strict identity contract:
 
 Built-in maps are seeded automatically after migration. They are stored as the shipped source text from this repository and can be used directly or copied into custom maps.
 
-Several built-in queries import the shared [`netbox_utilities.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/netbox_utilities.nqe) module. The plugin flattens those local imports at execution time for bundled built-ins, but the source files remain modular so the same query set can be uploaded into the Forward Org Repository and tested by `query_id`/`commit_id`.
+Several built-in queries import the shared [`netbox_utilities.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/netbox_utilities.nqe) module. The plugin flattens those local imports at execution time for bundled built-ins and when publishing built-ins into the Forward Org Repository, so saved `query_id`/`commit_id` execution does not depend on local module import resolution.
 
 Manufacturer-bearing built-in maps canonicalize vendor names and slugs in NQE. If your NetBox already uses different curated manufacturer rows with the default maps, copy the query set and adjust `manufacturer_name_overrides` in `netbox_utilities` before syncing.
 
@@ -202,13 +202,13 @@ If you want Forward to own the modular source instead of storing raw NQE inside 
 6. Set a `Commit message`, then apply the edit.
 7. Validate against a known snapshot before enabling the map in production syncs.
 
-This publishes the selected maps' bundled NQE source plus required local imports
-such as `netbox_utilities` into the selected Forward source's Org Repository,
-commits those changes, and binds the selected NetBox maps to the resulting
-repository paths. The selected Forward source credentials must have Forward
-Network Operator or equivalent NQE-library write permission. Read-only or
-query-only credentials can still bind existing repository queries, but cannot
-publish or commit new Org Repository content.
+This publishes the selected maps' bundled NQE source as executable flattened
+queries into the selected Forward source's Org Repository, commits those
+changes, and binds the selected NetBox maps to the resulting repository paths.
+The selected Forward source credentials must have Forward Network Operator or
+equivalent NQE-library write permission. Read-only or query-only credentials can
+still bind existing repository queries, but cannot publish or commit new Org
+Repository content.
 
 If you prefer to manage the query files in Forward directly:
 
