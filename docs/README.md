@@ -6,9 +6,11 @@
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v0.8.5` | `4.5.9` validated; `4.5.x` only | Current release; makes the beta routing and module maps broadly available by default while keeping virtual chassis conservative, hardens repository query lookup responses, and clears stale row progress when a sync fails or advances phases |
+| `v0.8.6.1` | `4.5.9` validated; `4.5.x` only | Current release; clarifies the native NQE map bulk edit workflow so repository-path mode and runtime query-ID resolution are explicit in the UI |
+| `v0.8.6` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.8.6.1`; refreshes org-repository query publishing with flattened built-ins, filters invalid IPv4 prefix artifacts, adds parent-prefix diagnostics, and hardens virtual chassis/device and routing issue handling |
+| `v0.8.5` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.8.6`; makes the beta routing and module maps broadly available by default while keeping virtual chassis conservative, hardens repository query lookup responses, and clears stale row progress when a sync fails or advances phases |
 | `v0.8.4` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.8.5`; stops importing Forward HA peers as NetBox virtual chassis by default, hardens repository query lookup responses, and clears stale row progress when a sync fails or advances phases |
-| `v0.8.3` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.8.5`; isolates per-model query failures, blocks positionless virtual-chassis assignments before NetBox save, and lets later shards such as routing continue while withholding dirty diff baselines |
+| `v0.8.3` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.8.4`; isolates per-model query failures, blocks positionless virtual-chassis assignments before NetBox save, and lets later shards such as routing continue while withholding dirty diff baselines |
 | `v0.8.2` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.8.3`; adds portable repository query-path execution with native NetBox selectors, publish-and-bind bulk edit, bidirectional restore, and fixes IP address rows whose Forward interface cannot be resolved |
 | `v0.8.1.1` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.8.2`; fixes virtual chassis NQE output so NetBox receives a member position with virtual chassis assignments |
 | `v0.8.1` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.8.1.1`; fixes fast-bootstrap native change tracking/statistics and adds timeout guidance plus transient Forward API HTTP retries |
@@ -35,6 +37,8 @@
 
 | Release | Summary |
 | --- | --- |
+| `v0.8.6.1` | Clarifies NQE map bulk edit labels and help text so operators use repository query paths and understand query IDs are resolved automatically during sync and diff execution. |
+| `v0.8.6` | Publishes flattened built-in NQE to Forward org repositories, filters IPv4 host/any/loopback prefix artifacts, reports IP rows missing imported parent prefixes on full baselines, and prevents stale virtual-chassis/device/routing row failures from blocking unrelated models. |
 | `v0.8.5` | Makes the beta routing and module maps broadly available by default, preserves the conservative bundled virtual chassis map, handles Forward repository query lookups that return a `queries` list, and makes failed sync activity show the terminal failure instead of stale row heartbeat text. |
 | `v0.8.3` | Isolates stale or invalid per-model query output, rejects virtual-chassis rows missing `vc_position`, records row issues without aborting later multi-branch shards, and prevents dirty runs from becoming diff baselines. |
 | `v0.8.2` | Adds portable repository `query_path` execution with Forward-backed selectors, true native bulk edit for publishing bundled NQE into the Forward Org Repository, binding selected maps to repository paths, restoring bundled raw NQE, and clearer skipping for IP address rows whose interface cannot be resolved. |
