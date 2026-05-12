@@ -394,6 +394,14 @@ class ForwardNQEMapBulkEditFormTest(TestCase):
             form.fields[query_path_field].widget.attrs["data-url"],
             "/api/plugins/forward/nqe-map/available-queries/",
         )
+        self.assertIn(
+            "does not store direct query IDs",
+            form.fields["query_bulk_operation"].help_text,
+        )
+        self.assertIn(
+            "Repository Query Path",
+            form.fields[query_path_field].help_text,
+        )
         dynamic_params = form.fields[query_path_field].widget.attrs[
             "data-dynamic-params"
         ]
