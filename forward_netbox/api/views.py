@@ -1,5 +1,6 @@
 from core.api.serializers_.jobs import JobSerializer
 from core.exceptions import SyncError
+from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import PermissionDenied
 from drf_spectacular.utils import extend_schema
 from netbox.api.viewsets import NetBoxModelViewSet
@@ -59,6 +60,19 @@ def _query_parent_directories(query_path):
         current = f"{current}/{part}"
         directories.append(f"{current}/")
     return directories
+
+
+def _normalize_model_string(model_string):
+    model_string = str(model_string or "").strip().lower()
+    if not model_string:
+        return ""
+    if "." in model_string:
+        return model_string
+    try:
+        content_type = ContentType.objects.get(pk=model_string)
+    except (ContentType.DoesNotExist, TypeError, ValueError):
+        return ""
+    return f"{content_type.app_label}.{content_type.model}".lower()
 
 
 def _commit_display(commit):
@@ -264,7 +278,7 @@ class ForwardNQEMapViewSet(NetBoxModelViewSet):
         repository = (request.GET.get("repository") or "org").strip().lower()
         directory = _normalize_query_directory(request.GET.get("directory") or "/")
         value_mode = (request.GET.get("value_mode") or "path").strip().lower()
-        model_string = (request.GET.get("model_string") or "").strip().lower()
+        model_string = _normalize_model_string(request.GET.get("model_string"))
         q = (request.GET.get("q") or "").strip().lower()
         try:
             source = ForwardSource.objects.get(pk=source_id)
