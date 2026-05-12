@@ -57,12 +57,49 @@ from forward_netbox.utilities.multi_branch import BranchBudgetExceeded
 from forward_netbox.utilities.multi_branch import DEFAULT_PREFLIGHT_ROW_LIMIT
 from forward_netbox.utilities.multi_branch import ForwardMultiBranchExecutor
 from forward_netbox.utilities.multi_branch import ForwardMultiBranchPlanner
+from forward_netbox.utilities.query_diagnostics import (
+    summarize_ipaddress_parent_prefix_rows,
+)
 from forward_netbox.utilities.query_fetch import ForwardModelResult
 from forward_netbox.utilities.query_fetch import ForwardQueryContext
 from forward_netbox.utilities.query_registry import QuerySpec
 from forward_netbox.utilities.sync import ForwardSyncRunner
 from forward_netbox.utilities.sync_contracts import validate_row_shape_for_model
 from forward_netbox.utilities.sync_events import EventsClearer
+
+
+class ForwardIPAMDiagnosticTest(TestCase):
+    def test_parent_prefix_diagnostic_reports_missing_covering_prefixes(self):
+        diagnostic = summarize_ipaddress_parent_prefix_rows(
+            ip_rows=[
+                {
+                    "device": "device-1",
+                    "interface": "Vlan10",
+                    "address": "192.0.2.10/24",
+                    "vrf": "",
+                },
+                {
+                    "device": "device-2",
+                    "interface": "Vlan20",
+                    "address": "198.51.100.10/24",
+                    "vrf": "",
+                },
+                {
+                    "device": "device-3",
+                    "interface": "Vlan30",
+                    "address": "2001:db8::1/64",
+                    "vrf": "blue",
+                },
+            ],
+            prefix_rows=[
+                {"prefix": "192.0.2.0/24", "vrf": ""},
+                {"prefix": "2001:db8::/64", "vrf": "blue"},
+            ],
+        )
+
+        self.assertEqual(diagnostic["total"], 1)
+        self.assertEqual(diagnostic["counts"], {"ipv4": 1})
+        self.assertEqual(diagnostic["examples"][0]["address"], "198.51.100.10/24")
 
 
 class ForwardBranchBudgetPlanTest(TestCase):
@@ -330,6 +367,83 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
         self.assertEqual(planner.model_results[0]["failure_count"], 1)
         self.assertIn(
             "missing required fields: slug",
+            planner.model_results[0]["diagnostics"][0]["message"],
+        )
+
+    @patch("forward_netbox.utilities.query_fetch.get_query_specs")
+    def test_virtual_chassis_failure_mentions_query_id_binding(self, mock_specs):
+        client = Mock()
+        client.get_snapshots.return_value = [
+            {
+                "id": "snapshot-after",
+                "state": "PROCESSED",
+                "created_at": "",
+                "processed_at": "2026-03-31T12:15:00Z",
+            }
+        ]
+        client.get_snapshot_metrics.return_value = {}
+        client.run_nqe_query.side_effect = [
+            [
+                {
+                    "device": "device-1",
+                    "vc_name": "vc-1",
+                    "name": "vc-1",
+                    "vc_domain": "domain-1",
+                    "vc_position": 1,
+                },
+                {
+                    "device": "device-2",
+                    "vc_name": "vc-1",
+                    "name": "vc-1",
+                    "vc_domain": "domain-1",
+                    "vc_position": 1,
+                },
+            ],
+            [
+                {
+                    "device": "device-1",
+                    "vc_name": "vc-1",
+                    "name": "vc-1",
+                    "vc_domain": "domain-1",
+                    "vc_position": 1,
+                },
+                {
+                    "device": "device-2",
+                    "vc_name": "vc-1",
+                    "name": "vc-1",
+                    "vc_domain": "domain-1",
+                    "vc_position": 1,
+                },
+            ],
+        ]
+        self.sync.resolve_snapshot_id = lambda client=None: "snapshot-after"
+        self.sync.get_model_strings = lambda: ["dcim.virtualchassis"]
+        self.sync.incremental_diff_baseline = Mock(return_value=None)
+        mock_specs.return_value = [
+            QuerySpec(
+                model_string="dcim.virtualchassis",
+                query_name="Forward Virtual Chassis",
+                query_id="Q_virtual_chassis",
+            )
+        ]
+        planner = ForwardMultiBranchPlanner(
+            sync=self.sync,
+            client=client,
+            logger_=Mock(),
+        )
+
+        _context, plan = planner.build_plan(
+            max_changes_per_branch=10, run_preflight=True
+        )
+
+        self.assertEqual(plan, [])
+        self.assertEqual(planner.model_results[0]["model"], "dcim.virtualchassis")
+        self.assertIn(
+            "query_id `Q_virtual_chassis`",
+            planner.model_results[0]["diagnostics"][0]["message"],
+        )
+        self.assertIn(
+            "will not rewrite the published Forward query",
             planner.model_results[0]["diagnostics"][0]["message"],
         )
 
@@ -2765,6 +2879,67 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertEqual(device.device_type.pk, expected_device_type.pk)
         expected_device_type.refresh_from_db()
         self.assertEqual(expected_device_type.part_number, "shared-model")
+
+    def test_apply_device_ignores_virtual_chassis_without_position(self):
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        runner._apply_dcim_device(
+            {
+                "name": "device-1",
+                "manufacturer": "Cisco",
+                "manufacturer_slug": "cisco",
+                "device_type": "model-1",
+                "device_type_slug": "model-1",
+                "site": "site-1",
+                "site_slug": "site-1",
+                "role": "switch",
+                "role_slug": "switch",
+                "role_color": "9e9e9e",
+                "status": "active",
+                "virtual_chassis": "stale-vc",
+            }
+        )
+
+        device = Device.objects.get(name="device-1")
+        self.assertIsNone(device.virtual_chassis)
+        self.assertIsNone(device.vc_position)
+        self.assertEqual(
+            runner._aggregated_skip_warning_counts[
+                ("dcim.device", "virtual-chassis-without-position")
+            ],
+            1,
+        )
+
+    def test_record_issue_serializes_model_objects(self):
+        ingestion = ForwardIngestion.objects.create(sync=self.sync)
+        runner = ForwardSyncRunner(
+            sync=self.sync,
+            ingestion=ingestion,
+            client=None,
+            logger_=Mock(),
+        )
+        site = Site.objects.create(name="site-1", slug="site-1")
+
+        issue = runner._record_issue(
+            "netbox_routing.bgppeer",
+            "routing failed",
+            {"device": "device-1", "site": site},
+            defaults={"router": site},
+            context={"site": site},
+        )
+
+        self.assertEqual(
+            issue.coalesce_fields["site"],
+            {
+                "model": "dcim.site",
+                "pk": site.pk,
+                "display": str(site),
+            },
+        )
+        self.assertEqual(issue.defaults["router"]["model"], "dcim.site")
+        self.assertEqual(issue.raw_data["site"]["pk"], site.pk)
 
     def test_run_persists_latest_processed_snapshot_metadata(self):
         ingestion = ForwardIngestion.objects.create(sync=self.sync)

@@ -3,9 +3,9 @@ from dataclasses import dataclass
 from django.db import transaction
 
 from ..models import ForwardNQEMap
-from .query_registry import builtin_query_source_filenames
 from .query_registry import BUILTIN_SEEDED_QUERY_MAPS
 from .query_registry import read_builtin_query_source
+from .query_registry import read_compiled_builtin_query_source
 
 
 @dataclass(frozen=True)
@@ -219,9 +219,8 @@ def publish_builtin_nqe_map_queries(
             continue
         filename = str(query_default["filename"])
         map_query_paths[query_map.pk] = query_path_from_filename(directory, filename)
-        for source_filename in builtin_query_source_filenames(filename):
-            if source_filename not in publish_filenames:
-                publish_filenames.append(source_filename)
+        if filename not in publish_filenames:
+            publish_filenames.append(filename)
 
     if not map_query_paths:
         return results
@@ -236,7 +235,7 @@ def publish_builtin_nqe_map_queries(
     changed_paths = []
     for filename in publish_filenames:
         query_path = query_path_from_filename(directory, filename)
-        source_code = read_builtin_query_source(filename)
+        source_code = read_compiled_builtin_query_source(filename)
         existing_query = existing_by_path.get(query_path)
         if existing_query and not overwrite:
             continue
