@@ -223,11 +223,11 @@ async function main() {
       .locator('[name="query_bulk_operation"] option')
       .allTextContents();
     assert(
-      bulkOperationOptions.includes("Bind selected maps to repository query paths"),
+      bulkOperationOptions.includes("Use repository query paths (query IDs resolve at sync time)"),
       "NQE map bulk edit should offer repository path binding",
     );
     assert(
-      bulkOperationOptions.includes("Publish bundled queries to Org Repository and bind selected maps"),
+      bulkOperationOptions.includes("Publish bundled queries and use repository query paths"),
       "NQE map bulk edit should offer bundled query publishing",
     );
     assert(
@@ -239,10 +239,11 @@ async function main() {
     await expectVisible(page, "Repository Folder");
     await expectVisible(page, "Overwrite existing repository queries");
     await expectVisible(page, "Commit message");
-    await expectVisible(page, "Map Query Choices");
+    await expectVisible(page, "Map Query Path Choices");
     await expectVisible(page, "Forward Locations");
     await expectVisible(page, "Pin current commit");
-    await expectVisible(page, "resolves query IDs from selected query paths during sync");
+    await expectVisible(page, "does not store direct query IDs");
+    await expectVisible(page, "resolves the current query ID");
     await assertNoHorizontalOverflow(page, "desktop NQE map list");
     evidence.checks.push(
       "native NQE map bulk edit exposes bidirectional query reference controls",
