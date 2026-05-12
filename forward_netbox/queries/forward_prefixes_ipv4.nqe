@@ -11,6 +11,10 @@ where isPresent(ni.afts?.ipv4Unicast?.ipEntries)
 foreach entry in ni.afts.ipv4Unicast.ipEntries
 where length(entry.prefix) > 0
 where length(entry.prefix) < 32
+where !(toNumber(networkAddress(entry.prefix)) >= toNumber(ipAddress("0.0.0.0"))
+  && toNumber(networkAddress(entry.prefix)) <= toNumber(ipAddress("0.255.255.255")))
+where !(toNumber(networkAddress(entry.prefix)) >= toNumber(ipAddress("127.0.0.0"))
+  && toNumber(networkAddress(entry.prefix)) <= toNumber(ipAddress("127.255.255.255")))
 select distinct {
   vrf: if ni.name != "default"
     then if toString(ni.instanceType) != "NetworkInstanceType.DEFAULT_INSTANCE" then ni.name else null : String

@@ -790,6 +790,8 @@ class QueryRegistryTest(TestCase):
 
         self.assertIn("where length(entry.prefix) < 32", ipv4_spec.query)
         self.assertNotIn("length(entry.prefix) <= 32", ipv4_spec.query)
+        self.assertIn('ipAddress("0.0.0.0")', ipv4_spec.query)
+        self.assertIn('ipAddress("127.0.0.0")', ipv4_spec.query)
         self.assertIn("where length(entry.prefix) < 128", ipv6_spec.query)
 
     def test_ipaddress_query_excludes_unassignable_interface_addresses(self):

@@ -13,6 +13,7 @@ from forward_netbox.utilities.query_binding import build_nqe_map_bindings
 from forward_netbox.utilities.query_binding import publish_builtin_nqe_map_queries
 from forward_netbox.utilities.query_binding import restore_builtin_raw_query_bindings
 from forward_netbox.utilities.query_registry import read_builtin_query_source
+from forward_netbox.utilities.query_registry import read_compiled_builtin_query_source
 from forward_netbox.views import ForwardNQEMapBulkEditView
 
 
@@ -219,9 +220,17 @@ class NQEMapBindingTest(TestCase):
         self.assertEqual(
             published_paths,
             [
-                "/forward_netbox_validation/netbox_utilities",
                 "/forward_netbox_validation/forward_devices",
             ],
+        )
+        published_devices = client.add_org_nqe_query.call_args_list[0]
+        self.assertEqual(
+            published_devices.kwargs["source_code"],
+            read_compiled_builtin_query_source("forward_devices.nqe"),
+        )
+        self.assertNotIn(
+            'import "netbox_utilities";',
+            published_devices.kwargs["source_code"],
         )
         client.commit_org_nqe_queries.assert_called_once_with(
             query_paths=published_paths,

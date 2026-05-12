@@ -53,6 +53,10 @@ Checks:
 - If multiple NetBox rows can match the same coalesce keys, fix the duplicate data in NetBox or tighten coalesce fields.
 - Prefer keeping NetBox-ready shaping in NQE rather than adding Python-side normalization.
 - If `ipam.ipaddress` fails with a global-table duplicate IP error, inspect the selected Forward snapshot for the same host IP reported on multiple interfaces with different masks. The built-in query now collapses global-table host collisions to one deterministic row, so a failure here usually means the snapshot or a custom query is still emitting an exact duplicate global IP.
+- If an ingestion warning reports IP addresses without an imported parent prefix,
+  compare the enabled `ipam.prefix` maps with the affected IP rows. The plugin
+  logs capped examples on full baseline runs where both models are enabled, but
+  does not synthesize missing parent prefixes.
 
 Expected row-scoped apply/delete failures are recorded as `Forward Ingestion Issues` and counted as failed or skipped rows without stopping the rest of the shard. Preflight, query execution, branch, and merge failures can still stop the current phase because they are not tied to a single row.
 
@@ -182,11 +186,12 @@ Checks:
 - If you intentionally import `dcim.virtualchassis`, confirm the map emits
   `device`, `vc_name`, `name`, `vc_domain`, and a unique `vc_position` per
   member in each virtual chassis.
-- If the map is bound to a Forward Org Repository `query_path`, upgrading the
-  NetBox plugin does not rewrite the already-published Forward query. Use the
-  native NQE map bulk edit workflow and select `Publish bundled queries to Org
-  Repository and bind selected maps` with `Overwrite existing repository
-  queries` enabled, or restore the affected map to bundled raw query text.
+- If the map is bound to a Forward Org Repository `query_path` or a pinned
+  `query_id`, upgrading the NetBox plugin does not rewrite the already-published
+  Forward query. Use the native NQE map bulk edit workflow and select `Publish
+  bundled queries to Org Repository and bind selected maps` with `Overwrite
+  existing repository queries` enabled, or restore the affected map to bundled
+  raw query text.
 - Re-run validation or a sync after the map has been refreshed. Current plugin
   versions fail stale or invalid virtual-chassis query output during preflight
   instead of allowing an invalid VC assignment to surface later as a device save

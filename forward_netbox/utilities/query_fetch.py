@@ -15,6 +15,9 @@ from .query_diagnostics import (
     append_ipaddress_diagnostics as sync_append_ipaddress_diagnostics,
 )
 from .query_diagnostics import (
+    append_ipaddress_parent_prefix_diagnostics as sync_append_ipaddress_parent_prefix_diagnostics,
+)
+from .query_diagnostics import (
     append_routing_diagnostics as sync_append_routing_diagnostics,
 )
 from .query_diagnostics import diagnostic_row_count as sync_diagnostic_row_count
@@ -258,6 +261,7 @@ class ForwardQueryFetcher:
                 if workload is not None:
                     workloads.append(workload)
         self._append_ipaddress_diagnostics(context)
+        self._append_ipaddress_parent_prefix_diagnostics(workloads)
         self._append_routing_diagnostics(context)
         return workloads
 
@@ -404,13 +408,43 @@ class ForwardQueryFetcher:
             diagnostics=[
                 {
                     "name": "query_validation_failure",
-                    "message": str(exc),
+                    "message": self._failure_message(model_string, spec, exc),
                 }
             ],
         )
 
+    def _failure_message(self, model_string: str, spec, exc: Exception) -> str:
+        message = str(exc)
+        if model_string != "dcim.virtualchassis" or spec is None:
+            return message
+
+        binding = self._virtual_chassis_binding_message(spec)
+        if not binding:
+            return message
+        return f"{message} {binding}"
+
+    def _virtual_chassis_binding_message(self, spec) -> str:
+        mode = getattr(spec, "execution_mode", "") or ""
+        value = getattr(spec, "execution_value", "") or ""
+        if mode == "query_id" and value:
+            return (
+                f"Forward Virtual Chassis is bound to query_id `{value}`; "
+                "upgrading the plugin will not rewrite the published Forward query."
+            )
+        if mode == "query_path" and value:
+            return (
+                f"Forward Virtual Chassis is bound to repository query `{value}`; "
+                "refresh or republish that query before retrying."
+            )
+        if mode == "query":
+            return "Forward Virtual Chassis is using bundled raw query text."
+        return ""
+
     def _append_ipaddress_diagnostics(self, context: ForwardQueryContext) -> None:
         return sync_append_ipaddress_diagnostics(self, context)
+
+    def _append_ipaddress_parent_prefix_diagnostics(self, workloads) -> None:
+        return sync_append_ipaddress_parent_prefix_diagnostics(self, workloads)
 
     def _run_ipaddress_unassignable_diagnostic(
         self,
