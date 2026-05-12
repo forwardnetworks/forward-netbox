@@ -2,6 +2,7 @@ from unittest.mock import Mock
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.contrib.contenttypes.models import ContentType
 from django.test import TestCase
 from rest_framework.test import APIRequestFactory
 from rest_framework.test import force_authenticate
@@ -238,6 +239,45 @@ class ForwardNQEMapAPIViewTest(TestCase):
                 "repository": "org",
                 "directory": "/forward_netbox_validation/",
                 "model_string": "dcim.device",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(
+            response.data["results"][0]["id"],
+            "/forward_netbox_validation/forward_devices",
+        )
+
+    @patch("forward_netbox.api.views.ForwardSource.get_client")
+    def test_available_queries_filters_by_netbox_model_content_type_id(
+        self, mock_get_client
+    ):
+        mock_client = Mock()
+        mock_client.get_nqe_repository_queries.return_value = [
+            {
+                "queryId": "Q_devices",
+                "path": "/forward_netbox_validation/forward_devices",
+                "intent": "Forward Devices",
+            },
+            {
+                "queryId": "Q_interfaces",
+                "path": "/forward_netbox_validation/forward_interfaces",
+                "intent": "Forward Interfaces",
+            },
+        ]
+        mock_get_client.return_value = mock_client
+        model_pk = ContentType.objects.get(app_label="dcim", model="device").pk
+
+        response = self._invoke(
+            self.user,
+            "available_queries",
+            "available-queries",
+            {
+                "source_id": self.source.pk,
+                "repository": "org",
+                "directory": "/forward_netbox_validation/",
+                "model_string": model_pk,
             },
         )
 

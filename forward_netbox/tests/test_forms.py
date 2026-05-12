@@ -217,6 +217,21 @@ class ForwardNQEMapFormTest(TestCase):
             form.fields["query_path"].widget.attrs["data-url"],
             "/api/plugins/forward/nqe-map/available-queries/",
         )
+        self.assertIn(
+            '"fieldName":"netbox_model"',
+            form.fields["query_path"].widget.attrs["data-dynamic-params"],
+        )
+        self.assertIn(
+            "filtered by the selected NetBox model", form.fields["query_path"].help_text
+        )
+        self.assertIn(
+            '"queryParam":"model_string"',
+            form.fields["query_path"].widget.attrs["data-dynamic-params"],
+        )
+        self.assertIn(
+            '"fieldName":"netbox_model"',
+            form.fields["query_id"].widget.attrs["data-dynamic-params"],
+        )
         self.assertEqual(
             form.fields["commit_id"].widget.attrs["data-url"],
             "/api/plugins/forward/nqe-map/available-query-commits/",

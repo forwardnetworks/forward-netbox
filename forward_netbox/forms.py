@@ -1,5 +1,6 @@
 from core.choices import JobIntervalChoices
 from django import forms
+from django.contrib.contenttypes.models import ContentType
 from netbox.forms import NetBoxModelBulkEditForm
 from netbox.forms import NetBoxModelForm
 from utilities.datetime import local_now
@@ -53,6 +54,24 @@ def _snapshot_selected_choice(selected_value):
     elif selected_value:
         choices.append((selected_value, selected_value))
     return choices
+
+
+def _model_string_from_form(form):
+    if form.is_bound:
+        model_value = form.data.get("netbox_model")
+        if not model_value:
+            return ""
+        if "." in str(model_value):
+            return str(model_value).strip().lower()
+        try:
+            content_type = ContentType.objects.get(pk=model_value)
+        except (ContentType.DoesNotExist, TypeError, ValueError):
+            return ""
+        return f"{content_type.app_label}.{content_type.model}".lower()
+    instance_model = getattr(form.instance, "netbox_model", None)
+    if instance_model:
+        return f"{instance_model.app_label}.{instance_model.model}".lower()
+    return ""
 
 
 FORWARD_NQE_QUERY_MODE_CHOICES = (
@@ -562,7 +581,10 @@ class ForwardNQEMapForm(NetBoxModelForm):
         queryset=ForwardSource.objects.all(),
         required=False,
         label="Forward Source for Query Lookup",
-        help_text="Used only to populate Forward query selectors.",
+        help_text=(
+            "Used only to populate Forward query selectors. Query choices are "
+            "filtered by the selected NetBox model."
+        ),
     )
     query_repository = forms.ChoiceField(
         choices=FORWARD_NQE_QUERY_REPOSITORY_CHOICES,
@@ -585,14 +607,22 @@ class ForwardNQEMapForm(NetBoxModelForm):
         label="Direct Query ID",
         choices=(),
         widget=APISelect(api_url="/api/plugins/forward/nqe-map/available-queries/"),
-        help_text="Org-specific published Forward query ID. Prefer `Repository Query Path` for portable maps.",
+        help_text=(
+            "Org-specific published Forward query ID. Query choices are "
+            "filtered by the selected NetBox model. Prefer `Repository Query Path` "
+            "for portable maps."
+        ),
     )
     query_path = forms.ChoiceField(
         required=False,
         label="Query Path",
         choices=(),
         widget=APISelect(api_url="/api/plugins/forward/nqe-map/available-queries/"),
-        help_text="Repository path to resolve at sync time. Required when mode is `Repository Query Path`.",
+        help_text=(
+            "Repository path to resolve at sync time. Query choices are "
+            "filtered by the selected NetBox model. Required when mode is "
+            "`Repository Query Path`."
+        ),
     )
     query = forms.CharField(
         required=False,
@@ -706,6 +736,7 @@ class ForwardNQEMapForm(NetBoxModelForm):
                 "repository": "$query_repository",
                 "directory": "$query_folder",
                 "value_mode": "path",
+                "model_string": "$netbox_model",
             },
         )
         _configure_api_select(
@@ -715,6 +746,7 @@ class ForwardNQEMapForm(NetBoxModelForm):
                 "repository": "$query_repository",
                 "directory": "$query_folder",
                 "value_mode": "query_id",
+                "model_string": "$netbox_model",
             },
         )
         _configure_api_select(
