@@ -16,6 +16,7 @@ from .exceptions import ForwardSyncError
 from .models import ForwardIngestion
 from .models import ForwardIngestionIssue
 from .models import ForwardSync
+from .utilities.json_safe import json_safe_value
 from .utilities.logging import SyncLogging
 from .utilities.validation import ForwardValidationRunner
 
@@ -55,7 +56,7 @@ def safe_save_job_data(job, obj_with_logger):
         if hasattr(obj_with_logger, "logger") and hasattr(
             obj_with_logger.logger, "log_data"
         ):
-            log_data = obj_with_logger.logger.log_data
+            log_data = json_safe_value(obj_with_logger.logger.log_data)
             update_fields = ["data"]
             job.data = log_data
             job.log_entries = _build_job_log_entries(log_data)

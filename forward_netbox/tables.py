@@ -15,6 +15,7 @@ from .models import ForwardNQEMap
 from .models import ForwardSource
 from .models import ForwardSync
 from .models import ForwardValidationRun
+from .utilities.json_safe import json_safe_value
 
 
 DIFF_BUTTON = """
@@ -266,7 +267,7 @@ class ForwardIngestionIssueTable(NetBoxTable):
     actions = None
 
     def _render_json(self, value):
-        payload = value or {}
+        payload = json_safe_value(value or {})
         return format_html(
             "<code>{}</code>",
             json.dumps(payload, sort_keys=True, separators=(",", ":")),
