@@ -5,13 +5,13 @@ from ipaddress import ip_interface
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 from django.db import transaction
-from django.db.models import Model
 
 from ..choices import ForwardIngestionPhaseChoices
 from ..exceptions import ForwardDependencySkipError
 from ..exceptions import ForwardQueryError
 from ..exceptions import ForwardSearchError
 from ..exceptions import ForwardSyncDataError
+from .json_safe import json_safe_value
 from .sync_state import touch_branch_run_progress
 
 PROGRESS_HEARTBEAT_ROW_INTERVAL = 500
@@ -183,8 +183,8 @@ def record_issue(
         if exception is not None
         else "ForwardSyncDataError"
     )
-    context_data = _json_safe_value(dict(context or {}))
-    defaults_data = _json_safe_value(dict(defaults or {}))
+    context_data = json_safe_value(dict(context or {}))
+    defaults_data = json_safe_value(dict(defaults or {}))
     issue_key = (
         runner.ingestion.pk if runner.ingestion else None,
         ForwardIngestionPhaseChoices.SYNC,
@@ -216,7 +216,7 @@ def record_issue(
         message=message,
         coalesce_fields=context_data,
         defaults=defaults_data,
-        raw_data=_json_safe_value(row or {}),
+        raw_data=json_safe_value(row or {}),
         exception=exception_name,
     )
     runner._recorded_issue_ids.add(issue_key)
@@ -224,20 +224,6 @@ def record_issue(
         exception.issue_id = issue.pk
     runner.logger.log_failure(f"{model_string}: {message}", obj=runner.ingestion)
     return issue
-
-
-def _json_safe_value(value):
-    if isinstance(value, Model):
-        return {
-            "model": value._meta.label_lower,
-            "pk": value.pk,
-            "display": str(value),
-        }
-    if isinstance(value, dict):
-        return {str(key): _json_safe_value(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple, set)):
-        return [_json_safe_value(item) for item in value]
-    return value
 
 
 def apply_model_rows(runner, model_string, rows):

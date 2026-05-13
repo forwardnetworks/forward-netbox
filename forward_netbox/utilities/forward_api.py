@@ -117,7 +117,7 @@ class ForwardClient:
         return {
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "forward-netbox/0.8.6.1",
+            "User-Agent": "forward-netbox/0.8.6.2",
         }
 
     def _auth(self):
