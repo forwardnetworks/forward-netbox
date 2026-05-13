@@ -41,6 +41,8 @@ Persist enough per-model execution metadata on ingestions to answer operational 
 
 Improve live smoke reporting so a run states which source, snapshot selector, models, query modes, and ready-to-merge outcome were exercised without storing committed customer identifiers.
 
+Harden issue and job-log rendering so any nested model instances, UUIDs, dates, or other non-primitive payload members are coerced to JSON-safe display values before they reach the UI or API. This keeps routing and merge failures diagnosable even if an unexpected object leaks into an issue payload.
+
 Publish a concrete parity matrix with four states:
 
 - supported now
@@ -59,6 +61,7 @@ Use the parity matrix to pick Forward-native additions because they reduce opera
 - Snapshot selection persistence tests.
 - No-hidden-override tests.
 - Smoke command tests with synthetic identifiers only.
+- Issue-rendering safety tests for nested payload values.
 - Documentation checks for the parity matrix and built-in NQE reference.
 - `invoke harness-check`
 - `invoke harness-test`

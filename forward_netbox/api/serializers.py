@@ -19,6 +19,7 @@ from forward_netbox.models import ForwardNQEMap
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.models import ForwardValidationRun
+from forward_netbox.utilities.json_safe import json_safe_value
 
 
 class EmptySerializer(serializers.Serializer):
@@ -238,6 +239,13 @@ class ForwardIngestionSerializer(NestedGroupModelSerializer):
 class ForwardIngestionIssueSerializer(NestedGroupModelSerializer):
     phase = ChoiceField(choices=ForwardIngestionPhaseChoices, read_only=True)
     ingestion = ForwardIngestionSerializer(nested=True)
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data["coalesce_fields"] = json_safe_value(data.get("coalesce_fields"))
+        data["defaults"] = json_safe_value(data.get("defaults"))
+        data["raw_data"] = json_safe_value(data.get("raw_data"))
+        return data
 
     class Meta:
         model = ForwardIngestionIssue
