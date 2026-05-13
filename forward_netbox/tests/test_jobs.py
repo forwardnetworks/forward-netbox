@@ -1,5 +1,7 @@
+from datetime import datetime
 from types import SimpleNamespace
 
+from dcim.models import Site
 from django.test import TestCase
 from rq.timeouts import JobTimeoutException
 
@@ -97,5 +99,46 @@ class ForwardJobsTest(TestCase):
         self.assertEqual(
             job.log_entries[0]["message"],
             "Synthetic UI harness ingestion completed.",
+        )
+        self.assertEqual(job.saved_update_fields, ["data", "log_entries"])
+
+    def test_safe_save_job_data_serializes_nested_model_values(self):
+        class DummyJob:
+            pk = 53
+
+            def __init__(self):
+                self.data = None
+                self.log_entries = []
+                self.saved_update_fields = None
+
+            def save(self, update_fields=None):
+                self.saved_update_fields = update_fields
+
+        site = Site.objects.create(name="site-1", slug="site-1")
+        job = DummyJob()
+        obj_with_logger = SimpleNamespace(
+            logger=SimpleNamespace(
+                log_data={
+                    "logs": [
+                        [
+                            datetime.fromisoformat(
+                                "2026-05-04T14:00:00+00:00"
+                            ).isoformat(),
+                            "success",
+                            site,
+                            "/plugins/forward/sync/2/",
+                            "Synthetic UI harness ingestion completed.",
+                        ]
+                    ],
+                    "statistics": {"dcim.site": {"last_object": site}},
+                }
+            )
+        )
+
+        safe_save_job_data(job, obj_with_logger)
+
+        self.assertEqual(job.data["logs"][0][2]["model"], "dcim.site")
+        self.assertEqual(
+            job.data["statistics"]["dcim.site"]["last_object"]["pk"], site.pk
         )
         self.assertEqual(job.saved_update_fields, ["data", "log_entries"])
