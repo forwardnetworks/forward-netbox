@@ -106,6 +106,9 @@ class ForwardSyncSerializer(NestedGroupModelSerializer):
     source = ForwardSourceSerializer(nested=True)
     enabled_models = serializers.SerializerMethodField(read_only=True)
     latest_validation_run = serializers.SerializerMethodField(read_only=True)
+    analysis_summary = serializers.SerializerMethodField(read_only=True)
+    workload_summary = serializers.SerializerMethodField(read_only=True)
+    advisory_summary = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = ForwardSync
@@ -120,6 +123,9 @@ class ForwardSyncSerializer(NestedGroupModelSerializer):
             "auto_merge",
             "drift_policy",
             "latest_validation_run",
+            "analysis_summary",
+            "workload_summary",
+            "advisory_summary",
             "last_synced",
             "scheduled",
             "interval",
@@ -135,6 +141,9 @@ class ForwardSyncSerializer(NestedGroupModelSerializer):
             "enabled_models",
             "status",
             "auto_merge",
+            "analysis_summary",
+            "workload_summary",
+            "advisory_summary",
         )
 
     def get_enabled_models(self, obj):
@@ -143,6 +152,15 @@ class ForwardSyncSerializer(NestedGroupModelSerializer):
     def get_latest_validation_run(self, obj):
         validation_run = obj.latest_validation_run
         return validation_run.pk if validation_run else None
+
+    def get_analysis_summary(self, obj):
+        return obj.get_analysis_summary()
+
+    def get_workload_summary(self, obj):
+        return obj.get_workload_summary()
+
+    def get_advisory_summary(self, obj):
+        return obj.get_advisory_summary()
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
@@ -216,6 +234,9 @@ class ForwardIngestionSerializer(NestedGroupModelSerializer):
     branch = BranchSerializer(read_only=True)
     sync = ForwardSyncSerializer(nested=True)
     validation_run = ForwardValidationRunSerializer(nested=True, required=False)
+    analysis_summary = serializers.SerializerMethodField(read_only=True)
+    workload_summary = serializers.SerializerMethodField(read_only=True)
+    advisory_summary = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = ForwardIngestion
@@ -226,6 +247,9 @@ class ForwardIngestionSerializer(NestedGroupModelSerializer):
             "branch",
             "sync",
             "validation_run",
+            "analysis_summary",
+            "workload_summary",
+            "advisory_summary",
             "snapshot_selector",
             "snapshot_id",
             "snapshot_info",
@@ -234,6 +258,15 @@ class ForwardIngestionSerializer(NestedGroupModelSerializer):
             "created",
         )
         brief_fields = ("id", "display", "name", "branch", "sync", "snapshot_id")
+
+    def get_analysis_summary(self, obj):
+        return obj.get_analysis_summary()
+
+    def get_workload_summary(self, obj):
+        return obj.get_workload_summary()
+
+    def get_advisory_summary(self, obj):
+        return obj.get_advisory_summary()
 
 
 class ForwardIngestionIssueSerializer(NestedGroupModelSerializer):
