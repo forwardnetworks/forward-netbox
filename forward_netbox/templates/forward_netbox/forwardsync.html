@@ -141,7 +141,16 @@
       {% include 'extras/inc/configcontext_data.html' with title="Parameters" data=object.get_display_parameters format="json" copyid="forward-sync-parameters" %}
     </div>
     <div class="card">
+      {% include 'extras/inc/configcontext_data.html' with title="Workload Preview" data=object.get_workload_summary format="json" copyid="forward-sync-workload-summary" %}
+    </div>
+    <div class="card">
       {% include 'extras/inc/configcontext_data.html' with title="Execution Summary" data=object.get_execution_summary format="json" copyid="forward-sync-execution-summary" %}
+    </div>
+    <div class="card">
+      {% include 'extras/inc/configcontext_data.html' with title="Analysis Summary" data=object.get_analysis_summary format="json" copyid="forward-sync-analysis-summary" %}
+    </div>
+    <div class="card">
+      {% include 'extras/inc/configcontext_data.html' with title="Advisory Summary" data=object.get_advisory_summary format="json" copyid="forward-sync-advisory-summary" %}
     </div>
     {% include 'inc/panels/custom_fields.html' %}
     {% plugin_right_page object %}

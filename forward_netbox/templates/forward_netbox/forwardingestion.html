@@ -147,6 +147,15 @@
     <div class="card">
       {% include 'extras/inc/configcontext_data.html' with title="Execution Summary" data=object.get_execution_summary format="json" copyid="forward-ingestion-execution-summary" %}
     </div>
+    <div class="card">
+      {% include 'extras/inc/configcontext_data.html' with title="Workload Preview" data=object.get_workload_summary format="json" copyid="forward-ingestion-workload-summary" %}
+    </div>
+    <div class="card">
+      {% include 'extras/inc/configcontext_data.html' with title="Analysis Summary" data=object.get_analysis_summary format="json" copyid="forward-ingestion-analysis-summary" %}
+    </div>
+    <div class="card">
+      {% include 'extras/inc/configcontext_data.html' with title="Advisory Summary" data=object.get_advisory_summary format="json" copyid="forward-ingestion-advisory-summary" %}
+    </div>
     {% include 'inc/panels/custom_fields.html' %}
     {% plugin_right_page object %}
   </div>
