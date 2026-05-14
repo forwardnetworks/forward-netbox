@@ -24,6 +24,8 @@ let reciprocal_local_asn = the(
 let internal_peer_asn = if isPresent(neighbor.peerType) && toString(neighbor.peerType) == "PeerType.INTERNAL" then neighbor.peerAS else null : Integer
 let local_asn = if isPresent(neighbor.localAS) then neighbor.localAS else if isPresent(protocol.bgp.asNumber) then protocol.bgp.asNumber else if isPresent(reciprocal_local_asn) then reciprocal_local_asn else internal_peer_asn
 where isPresent(local_asn)
+where local_asn >= 1
+where neighbor.peerAS >= 1
 select distinct {
   device: device.name,
   vrf: if network_instance.name != "default" then network_instance.name else null : String,
