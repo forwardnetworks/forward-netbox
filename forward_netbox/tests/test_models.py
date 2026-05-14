@@ -220,7 +220,44 @@ class ForwardSyncModelTest(TestCase):
         self.assertIn("branch_run", params)
         self.assertEqual(params["branch_run"]["phase"], "planning")
         self.assertEqual(params["branch_run"]["phase_message"], "Building shard plan.")
-        self.assertEqual(params["branch_run"]["plan_preview"], {})
+
+    def test_workload_summary_includes_branch_preview_details(self):
+        sync = ForwardSync.objects.create(
+            name="sync-workload",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+            },
+        )
+        sync.set_branch_run_state(
+            {
+                "snapshot_id": "snapshot-1",
+                "next_plan_index": 1,
+                "total_plan_items": 3,
+                "awaiting_merge": False,
+                "phase": "planning",
+                "phase_message": "Planning shard layout.",
+                "plan_preview": {
+                    "planned_shards": 3,
+                    "estimated_changes": 15,
+                    "model_count": 2,
+                    "retry_risk": "medium",
+                },
+            }
+        )
+
+        summary = sync.get_workload_summary()
+
+        self.assertTrue(summary["uses_multi_branch"])
+        self.assertFalse(summary["baseline_ready"])
+        self.assertEqual(summary["branch_run"]["phase"], "planning")
+        self.assertEqual(
+            summary["pre_run_estimate"]["planned_shards"],
+            3,
+        )
+        self.assertEqual(summary["branch_budget_hints"]["dcim.device"], 10000)
+        self.assertIn("dcim.device", summary["enabled_models"])
 
     def test_display_parameters_include_branch_budget_hints(self):
         sync = ForwardSync.objects.create(
@@ -1101,6 +1138,185 @@ class ForwardIngestionSnapshotSummaryTest(TestCase):
                 "processingDuration": 900,
             },
         )
+
+    def test_analysis_summary_helpers_roll_up_validation_and_issues(self):
+        validation_run = ForwardValidationRun.objects.create(
+            sync=self.sync,
+            status=ForwardValidationStatusChoices.BLOCKED,
+            allowed=False,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-before",
+            baseline_snapshot_id="snapshot-baseline",
+            drift_summary={
+                "model_count": 2,
+                "blocked_models": 1,
+            },
+            blocking_reasons=["threshold exceeded"],
+        )
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            validation_run=validation_run,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-before",
+            sync_mode="diff",
+            baseline_ready=True,
+            model_results=[
+                {"model": "dcim.device", "diagnostics": [{"message": "one"}]},
+                {
+                    "model": "ipam.prefix",
+                    "diagnostics": [{"message": "two"}, {"message": "three"}],
+                },
+            ],
+        )
+        ForwardIngestionIssue.objects.create(
+            ingestion=ingestion,
+            phase="sync",
+            model="dcim.device",
+            message="device warning",
+            exception="warning",
+        )
+        ForwardIngestionIssue.objects.create(
+            ingestion=ingestion,
+            phase="merge",
+            model="ipam.prefix",
+            message="prefix warning",
+            exception="warning",
+        )
+
+        analysis = ingestion.get_analysis_summary()
+        sync_analysis = self.sync.get_analysis_summary()
+
+        self.assertEqual(analysis["baseline_ready"], True)
+        self.assertEqual(analysis["sync_mode"], "diff")
+        self.assertEqual(analysis["issue_count"], 2)
+        self.assertEqual(analysis["issue_models"], ["dcim.device", "ipam.prefix"])
+        self.assertEqual(analysis["issue_phases"], {"merge": 1, "sync": 1})
+        self.assertEqual(analysis["model_result_count"], 2)
+        self.assertEqual(analysis["diagnostic_count"], 3)
+        self.assertEqual(analysis["validation_run"], validation_run.pk)
+        self.assertEqual(
+            analysis["validation_status"], ForwardValidationStatusChoices.BLOCKED
+        )
+        self.assertEqual(analysis["validation_allowed"], False)
+        self.assertEqual(analysis["validation_blocking_reason_count"], 1)
+        self.assertEqual(
+            analysis["validation_drift_summary"],
+            {"model_count": 2, "blocked_models": 1},
+        )
+        self.assertEqual(sync_analysis["latest_validation_run"], validation_run.pk)
+        self.assertEqual(
+            sync_analysis["latest_validation_status"],
+            ForwardValidationStatusChoices.BLOCKED,
+        )
+        self.assertTrue(sync_analysis["latest_ingestion"]["baseline_ready"])
+        self.assertEqual(sync_analysis["latest_ingestion"]["issue_count"], 2)
+
+    def test_advisory_summary_helpers_include_top_model_results(self):
+        validation_run = ForwardValidationRun.objects.create(
+            sync=self.sync,
+            status=ForwardValidationStatusChoices.BLOCKED,
+            allowed=False,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-before",
+            baseline_snapshot_id="snapshot-baseline",
+            drift_summary={"model_count": 2, "blocked_models": 1},
+            blocking_reasons=["threshold exceeded"],
+        )
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            validation_run=validation_run,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-before",
+            sync_mode="diff",
+            baseline_ready=True,
+            model_results=[
+                {
+                    "model": "ipam.prefix",
+                    "query_name": "Forward Prefixes",
+                    "estimated_changes": 8,
+                    "row_count": 5,
+                    "delete_count": 1,
+                    "diagnostics": [{"message": "one"}],
+                    "execution_mode": "query_id",
+                },
+                {
+                    "model": "dcim.device",
+                    "query_name": "Forward Devices",
+                    "estimated_changes": 13,
+                    "row_count": 10,
+                    "delete_count": 2,
+                    "diagnostics": [{"message": "two"}, {"message": "three"}],
+                    "execution_mode": "query_id",
+                },
+            ],
+        )
+        ForwardIngestionIssue.objects.create(
+            ingestion=ingestion,
+            phase="sync",
+            model="dcim.device",
+            message="device warning",
+            exception="warning",
+        )
+
+        advisory = ingestion.get_advisory_summary()
+        sync_advisory = self.sync.get_advisory_summary()
+
+        self.assertTrue(advisory["baseline_ready"])
+        self.assertEqual(advisory["blast_radius"]["estimated_changes"], 21)
+        self.assertEqual(advisory["intent_signals"]["validation_status"], "blocked")
+        self.assertEqual(advisory["intent_signals"]["issue_count"], 1)
+        self.assertEqual(advisory["path_signals"]["diagnostic_count"], 3)
+        self.assertEqual(
+            advisory["path_signals"]["top_model_results"][0]["model"], "dcim.device"
+        )
+        self.assertEqual(
+            advisory["path_signals"]["top_model_results"][0]["estimated_changes"], 13
+        )
+        self.assertEqual(sync_advisory["latest_validation_run"], validation_run.pk)
+        self.assertEqual(
+            sync_advisory["latest_ingestion"]["intent_signals"]["issue_count"], 1
+        )
+
+    def test_workload_summary_helpers_roll_up_execution_details(self):
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-before",
+            sync_mode="hybrid",
+            baseline_ready=True,
+            model_results=[
+                {
+                    "model": "dcim.device",
+                    "row_count": 4,
+                    "delete_count": 1,
+                    "estimated_changes": 5,
+                    "runtime_ms": 12.5,
+                    "branch_plan_total": 7,
+                    "diagnostics": [{"message": "one"}],
+                },
+                {
+                    "model": "ipam.prefix",
+                    "row_count": 3,
+                    "delete_count": 2,
+                    "estimated_changes": 5,
+                    "runtime_ms": 7.5,
+                    "branch_plan_total": 7,
+                    "diagnostics": [],
+                },
+            ],
+        )
+
+        workload = ingestion.get_workload_summary()
+
+        self.assertEqual(workload["sync_mode"], "hybrid")
+        self.assertTrue(workload["baseline_ready"])
+        self.assertEqual(workload["model_count"], 2)
+        self.assertEqual(workload["shard_count"], 7)
+        self.assertEqual(workload["estimated_changes"], 10)
+        self.assertEqual(workload["row_count"], 7)
+        self.assertEqual(workload["delete_count"], 3)
+        self.assertEqual(workload["runtime_ms"], 20.0)
+        self.assertEqual(workload["diagnostic_count"], 1)
 
     def test_ingestion_defaults_to_full_mode_and_not_baseline_ready(self):
         ingestion = ForwardIngestion.objects.create(

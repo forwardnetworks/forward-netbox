@@ -124,6 +124,9 @@ async function main() {
     await expectVisible(page, "Validate");
     await expectVisible(page, "Drift Policy");
     await expectVisible(page, "Latest Validation");
+    await expectVisible(page, "Workload Preview");
+    await expectVisible(page, "Analysis Summary");
+    await expectVisible(page, "Advisory Summary");
     await expectVisible(page, "ui-harness-drift-policy");
     await expectVisible(page, "latestProcessed");
     await expectVisible(page, "max_changes_per_branch");
@@ -168,6 +171,9 @@ async function main() {
     await expectVisible(page, "Progress");
     await expectVisible(page, "Statistics");
     await expectVisible(page, "Forward Snapshot Metrics");
+    await expectVisible(page, "Workload Preview");
+    await expectVisible(page, "Analysis Summary");
+    await expectVisible(page, "Advisory Summary");
     await expectVisible(page, "Validation");
     await expectVisible(page, "Model Results");
     await expectVisible(page, "Sync Results");

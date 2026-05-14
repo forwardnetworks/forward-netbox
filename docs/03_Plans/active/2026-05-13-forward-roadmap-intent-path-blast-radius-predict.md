@@ -6,6 +6,13 @@ Define the next product layers for the NetBox plugin so it can expose Forward-na
 
 The outcome should be a roadmap that keeps the current sync bridge intact while adding read-only/operator-facing analysis surfaces around it.
 
+For the 0.9.0 execution pass, predict remains deferred. The release should
+cover read-only analysis, workload preview, and lifecycle advisory surfaces
+without introducing any predict-based mutation or advisory workflow yet.
+
+The concrete release plan for that pass lives in
+`docs/03_Plans/active/2026-05-14-release-0.9.0-readonly-analysis.md`.
+
 ## Constraints
 
 - Keep NQE as the normalization and source-of-truth layer for row shape.
@@ -61,6 +68,22 @@ This layer should help users reason about oversized imports before they hit NetB
 
 When possible, keep these previews tied to the same path-search and intent-verification semantics that Forward already exposes, rather than inventing a new policy language in the plugin.
 
+#### Seed baseline from fast bootstrap
+
+The current product can use fast bootstrap as the initial seed for later Branching diffs, but only under the existing baseline contract:
+
+- fast bootstrap can mark a completed ingestion as baseline-ready
+- Branching can only reuse that baseline for a later snapshot
+- the same snapshot does not become a diff target just because fast bootstrap succeeded once
+
+If we want to make this smoother, the roadmap should treat it as a UI/flow improvement rather than a new execution model:
+
+- make it explicit that fast bootstrap is the initial seed path
+- show when the Branching baseline becomes available
+- keep the later steady-state path on Branching diffs with the same native map bindings
+
+Do not reinterpret fast bootstrap as a live diff surrogate. It is a seed, not a parallel modeling engine.
+
 ### 3. Predict readiness
 
 Prepare the plugin to accept predict-style results as a future advisory layer:
@@ -70,6 +93,9 @@ Prepare the plugin to accept predict-style results as a future advisory layer:
 - allow predicted results to be presented as guidance, not as mutation authority
 
 The plugin should not become a second modeling engine. It should ask Forward to evaluate the scenario and then display the result in a NetBox-native workflow.
+
+This section is intentionally future-facing and out of scope for the current
+0.9.0 release plan.
 
 ### 4. Unified reporting
 
@@ -99,9 +125,12 @@ The plugin can expose or consume those curated results where helpful, but the ro
 
 ### 6. Add lifecycle enrichment
 
-Add EoS/EoL-style lifecycle enrichment as an inventory advisory layer.
+Lifecycle enrichment stays on the roadmap, but it is deferred until we have a
+real source contract for support-window or end-of-life data.
 
-This should help operators prioritize upgrades and replacements by surfacing lifecycle risk against the NetBox object model:
+The 0.9.0 release should not invent a lifecycle authority inside the plugin.
+When this work returns, it should surface advisory context against the NetBox
+object model:
 
 - manufacturer
 - device type
@@ -109,7 +138,8 @@ This should help operators prioritize upgrades and replacements by surfacing lif
 - software version
 - support window or end-of-life date
 
-Like CVE data, lifecycle enrichment should remain read-only context around the source of truth, not part of the mutation contract.
+Like CVE data, lifecycle enrichment should remain read-only context around the
+source of truth, not part of the mutation contract.
 
 ## Validation
 

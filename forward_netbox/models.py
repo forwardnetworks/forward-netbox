@@ -41,6 +41,12 @@ from .utilities.ingestion_merge import (
     record_change_totals as record_forward_change_totals,
 )
 from .utilities.ingestion_presentation import (
+    get_advisory_summary as build_ingestion_advisory_summary,
+)
+from .utilities.ingestion_presentation import (
+    get_analysis_summary as build_ingestion_analysis_summary,
+)
+from .utilities.ingestion_presentation import (
     get_execution_summary as build_ingestion_execution_summary_from_presentation,
 )
 from .utilities.ingestion_presentation import (
@@ -54,6 +60,9 @@ from .utilities.ingestion_presentation import (
 )
 from .utilities.ingestion_presentation import (
     get_statistics as build_ingestion_statistics,
+)
+from .utilities.ingestion_presentation import (
+    get_workload_summary as build_ingestion_workload_summary,
 )
 from .utilities.logging import SyncLogging
 from .utilities.model_validation import clean_forward_nqe_map
@@ -70,6 +79,8 @@ from .utilities.sync_facade import normalize_forward_sync
 from .utilities.sync_facade import resolve_snapshot_id as resolve_forward_snapshot_id
 from .utilities.sync_facade import uses_multi_branch as uses_forward_multi_branch
 from .utilities.sync_state import clear_branch_run_state as clear_sync_branch_run_state
+from .utilities.sync_state import get_advisory_summary as build_sync_advisory_summary
+from .utilities.sync_state import get_analysis_summary as build_sync_analysis_summary
 from .utilities.sync_state import get_branch_run_state as get_sync_branch_run_state
 from .utilities.sync_state import (
     get_display_parameters as build_sync_display_parameters,
@@ -85,6 +96,7 @@ from .utilities.sync_state import (
     get_model_change_density as get_sync_model_change_density,
 )
 from .utilities.sync_state import get_sync_activity as build_sync_activity
+from .utilities.sync_state import get_workload_summary as build_sync_workload_summary
 from .utilities.sync_state import has_pending_branch_run as has_pending_sync_branch_run
 from .utilities.sync_state import (
     is_waiting_for_branch_merge as is_sync_waiting_for_branch_merge,
@@ -430,6 +442,15 @@ class ForwardSync(ForwardPluginModelDocsMixin, JobsMixin, TagsMixin, ChangeLogge
     def get_execution_summary(self):
         return build_sync_execution_summary_from_state(self)
 
+    def get_analysis_summary(self):
+        return build_sync_analysis_summary(self)
+
+    def get_workload_summary(self):
+        return build_sync_workload_summary(self)
+
+    def get_advisory_summary(self):
+        return build_sync_advisory_summary(self)
+
     def get_sync_activity(self):
         return build_sync_activity(self)
 
@@ -638,6 +659,15 @@ class ForwardIngestion(ForwardPluginModelDocsMixin, JobsMixin, models.Model):
 
     def get_execution_summary(self):
         return build_ingestion_execution_summary_from_presentation(self)
+
+    def get_analysis_summary(self):
+        return build_ingestion_analysis_summary(self)
+
+    def get_workload_summary(self):
+        return build_ingestion_workload_summary(self)
+
+    def get_advisory_summary(self):
+        return build_ingestion_advisory_summary(self)
 
     @staticmethod
     def get_job_logs(job):
