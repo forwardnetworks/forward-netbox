@@ -3,6 +3,7 @@ from core.models import ObjectType
 from netbox.context import current_request
 from netbox.context_managers import event_tracking
 
+from ..choices import FORWARD_OPTIONAL_MODELS
 from .branching import build_branch_request
 from .direct_changes import action_counts_for_request
 from .direct_changes import any_object_changes_for_request
@@ -90,11 +91,19 @@ class ForwardFastBootstrapExecutor:
         applied = sum(int(stats.get("applied") or 0) for stats in statistics.values())
         ingestion.record_change_totals(applied=applied, failed=failed)
 
-    def _raise_if_issues_exist(self, ingestion, *, request_id=None):
+    def _raise_if_blocking_issues_exist(self, ingestion, *, request_id=None):
         if not ingestion.issues.exists():
-            return
+            return False
         self._record_change_totals(ingestion, request_id=request_id)
-        messages = list(ingestion.issues.values_list("message", flat=True)[:5])
+        blocking_issues = ingestion.issues.exclude(model__in=FORWARD_OPTIONAL_MODELS)
+        if not blocking_issues.exists():
+            self.logger.log_warning(
+                "Forward fast bootstrap completed with non-blocking optional-model issues; "
+                "review ingestion issues for skipped beta/optional rows.",
+                obj=ingestion,
+            )
+            return True
+        messages = list(blocking_issues.values_list("message", flat=True)[:5])
         raise SyncError(
             "Forward fast bootstrap completed with issues: " + "; ".join(messages)
         )
@@ -187,7 +196,7 @@ class ForwardFastBootstrapExecutor:
                     runner._delete_model_rows(model_string, delete_rows)
                     self._record_change_totals(ingestion, request_id=request.id)
 
-                self._raise_if_issues_exist(ingestion, request_id=request.id)
+                self._raise_if_blocking_issues_exist(ingestion, request_id=request.id)
                 ingestion.sync_mode = self._sync_mode()
                 ingestion.baseline_ready = True
                 ingestion.model_results = self.last_model_results

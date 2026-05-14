@@ -174,10 +174,51 @@ bgp_neighbors_without_local_as =
     count: length(grouped_rows)
   };
 
+bgp_neighbors_with_invalid_asn_rows =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  foreach network_instance in device.networkInstances
+  foreach protocol in network_instance.protocols
+  where isPresent(protocol.bgp)
+  foreach neighbor in protocol.bgp.neighbors
+  let reciprocal_local_asn = the(
+    foreach peer_device in network.devices
+    where isPresent(neighbor.peerDeviceName) && peer_device.name == neighbor.peerDeviceName
+    foreach peer_network_instance in peer_device.networkInstances
+    where !isPresent(neighbor.peerVrf) || peer_network_instance.name == neighbor.peerVrf
+    foreach peer_protocol in peer_network_instance.protocols
+    where isPresent(peer_protocol.bgp)
+    foreach peer_neighbor in peer_protocol.bgp.neighbors
+    where isPresent(peer_neighbor.peerDeviceName) && peer_neighbor.peerDeviceName == device.name
+    select distinct peer_neighbor.peerAS
+  )
+  let internal_peer_asn = if isPresent(neighbor.peerType) && toString(neighbor.peerType) == "PeerType.INTERNAL" then neighbor.peerAS else null : Integer
+  let local_asn = if isPresent(neighbor.localAS) then neighbor.localAS else if isPresent(protocol.bgp.asNumber) then protocol.bgp.asNumber else if isPresent(reciprocal_local_asn) then reciprocal_local_asn else internal_peer_asn
+  where isPresent(local_asn)
+  where local_asn < 1 || neighbor.peerAS < 1
+  select {
+    device: device.name
+  };
+
+bgp_neighbors_with_invalid_asn =
+  foreach row in bgp_neighbors_with_invalid_asn_rows
+  group row as grouped_rows by row.device as device
+  select {
+    reason: "bgp-neighbor-invalid-asn",
+    model_target: "netbox_routing.bgppeer",
+    protocol: "bgp",
+    device: device,
+    interface: "",
+    detail: "Forward exposed a local or peer ASN lower than 1; NetBox requires ASNs to be greater than or equal to 1.",
+    count: length(grouped_rows)
+  };
+
 foreach row in (
   ospf_neighbors_without_remote_peer
     + ospf_neighbors_without_reverse_peer
     + unsupported_bgp_address_families
     + bgp_neighbors_without_local_as
+    + bgp_neighbors_with_invalid_asn
 )
 select distinct row

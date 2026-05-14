@@ -1383,21 +1383,18 @@ class ForwardNQEMapModelTest(TestCase):
 
         self.assertIn("missing required fields", str(ctx.exception))
 
-    def test_virtual_chassis_map_rejects_query_missing_position(self):
+    def test_virtual_chassis_map_allows_query_missing_position(self):
         netbox_model = ContentType.objects.get(app_label="dcim", model="virtualchassis")
         query_map = ForwardNQEMap(
             name="Virtual Chassis Map",
             netbox_model=netbox_model,
             query=(
-                'select {\n  device: "device-1",\n  vc_name: "vc-1",\n'
+                'select {\n  device: "device-1",\n  vc_name: "vc-1",\n  name: "vc-1",\n'
                 '  vc_domain: "domain-1"\n}'
             ),
         )
 
-        with self.assertRaises(ValidationError) as ctx:
-            query_map.clean()
-
-        self.assertIn("vc_position", str(ctx.exception))
+        query_map.clean()
 
     def test_seed_builtin_maps_updates_existing_prefix_map_defaults(self):
         netbox_model = ContentType.objects.get(app_label="ipam", model="prefix")

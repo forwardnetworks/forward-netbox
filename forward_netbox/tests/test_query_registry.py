@@ -490,6 +490,8 @@ class QueryRegistryTest(TestCase):
         self.assertIn("neighbor.neighborAddress", bgp_row["query"])
         self.assertIn("neighbor.peerAS", bgp_row["query"])
         self.assertIn("local_asn:", bgp_row["query"])
+        self.assertIn("where local_asn >= 1", bgp_row["query"])
+        self.assertIn("where neighbor.peerAS >= 1", bgp_row["query"])
         self.assertIn("reciprocal_local_asn", bgp_row["query"])
         self.assertIn("internal_peer_asn", bgp_row["query"])
         self.assertEqual(
@@ -508,6 +510,8 @@ class QueryRegistryTest(TestCase):
         )
         self.assertIn("reciprocal_local_asn", bgp_af_row["query"])
         self.assertIn("internal_peer_asn", bgp_af_row["query"])
+        self.assertIn("where local_asn >= 1", bgp_af_row["query"])
+        self.assertIn("where neighbor.peerAS >= 1", bgp_af_row["query"])
         self.assertNotIn('afi_safi == "AfiSafiType.IPV4_MDT"', bgp_af_row["query"])
         self.assertEqual(
             bgp_af_row["coalesce_fields"],
@@ -531,6 +535,8 @@ class QueryRegistryTest(TestCase):
         )
         self.assertIn("reciprocal_local_asn", bgp_peer_af_row["query"])
         self.assertIn("internal_peer_asn", bgp_peer_af_row["query"])
+        self.assertIn("where local_asn >= 1", bgp_peer_af_row["query"])
+        self.assertIn("where neighbor.peerAS >= 1", bgp_peer_af_row["query"])
         self.assertNotIn(
             'afi_safi == "AfiSafiType.IPV4_MDT"',
             bgp_peer_af_row["query"],
@@ -568,6 +574,8 @@ class QueryRegistryTest(TestCase):
         self.assertTrue(peering_row["enabled"])
         self.assertIn("reciprocal_local_asn", peering_row["query"])
         self.assertIn("internal_peer_asn", peering_row["query"])
+        self.assertIn("where local_asn >= 1", peering_row["query"])
+        self.assertIn("where neighbor.peerAS >= 1", peering_row["query"])
         self.assertIn("relationship_slug:", peering_row["query"])
         self.assertIn("service_reference:", peering_row["query"])
         self.assertEqual(
@@ -850,6 +858,7 @@ class QueryRegistryTest(TestCase):
 
         self.assertNotIn(ROUTING_IMPORT_DIAGNOSTIC_QUERY_NAME, seeded_names)
         self.assertIn('reason: "bgp-neighbor-without-local-as"', diagnostic_query)
+        self.assertIn('reason: "bgp-neighbor-invalid-asn"', diagnostic_query)
         self.assertIn('reason: "bgp-unsupported-address-family"', diagnostic_query)
         self.assertIn('reason: "ospf-neighbor-without-remote-peer"', diagnostic_query)
         self.assertIn('reason: "ospf-neighbor-without-reverse-peer"', diagnostic_query)

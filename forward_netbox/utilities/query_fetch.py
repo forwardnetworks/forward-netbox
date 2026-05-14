@@ -538,6 +538,8 @@ class ForwardQueryFetcher:
             vc_name = row.get("vc_name") or row.get("name")
             position = row.get("vc_position")
             device = row.get("device")
+            if position in (None, ""):
+                continue
             key = (vc_name, position)
             if key not in seen_positions:
                 seen_positions[key] = device
