@@ -28,6 +28,18 @@ def apply_dcim_virtualchassis(runner, row):
     from dcim.models import VirtualChassis
 
     vc_name = row.get("vc_name") or row.get("name")
+    if row.get("device") and not row.get("vc_position"):
+        runner._record_aggregated_skip_warning(
+            model_string="dcim.virtualchassis",
+            reason="virtual-chassis-without-position",
+            warning_message=(
+                "Skipping incomplete virtual chassis assignment for device "
+                f"`{row['device']}` because the row has virtual chassis "
+                "membership but no `vc_position`."
+            ),
+        )
+        return False
+
     vc_values = {
         "name": vc_name,
         "domain": row.get("vc_domain", row.get("domain", "")),
@@ -59,13 +71,6 @@ def apply_dcim_virtualchassis(runner, row):
                 context={"device": row["device"]},
                 data=row,
             ) from exc
-        if not row.get("vc_position"):
-            raise ForwardSyncDataError(
-                "Virtual chassis assignment requires `vc_position`; update the Forward NQE map before syncing.",
-                model_string="dcim.virtualchassis",
-                context={"device": row["device"], "virtual_chassis": vc_name},
-                data=row,
-            )
         position_conflict = (
             Device.objects.filter(virtual_chassis=vc, vc_position=row["vc_position"])
             .exclude(pk=device.pk)

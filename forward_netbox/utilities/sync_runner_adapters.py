@@ -450,6 +450,10 @@ class ForwardSyncRunnerAdapterMixin:
             asn_number = int(asn_value)
         except (TypeError, ValueError) as exc:
             raise ForwardQueryError(f"Invalid BGP ASN value `{asn_value}`.") from exc
+        if asn_number < 1:
+            raise ForwardQueryError(
+                f"Invalid BGP ASN value `{asn_value}`; ASNs must be greater than or equal to 1."
+            )
         existing = self._get_unique_or_raise(ASN, {"asn": asn_number})
         if existing is not None:
             return existing

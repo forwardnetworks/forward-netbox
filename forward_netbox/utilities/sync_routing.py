@@ -257,12 +257,25 @@ def ensure_bgp_scope(runner, row, router, vrf):
     BGPScope = runner._optional_model(
         "netbox_routing", "BGPScope", "netbox_routing.bgppeer"
     )
-    scope, _ = runner._upsert_values_from_defaults(
-        "netbox_routing.bgppeer",
-        BGPScope,
-        values={"router": router, "vrf": vrf},
-        coalesce_sets=[("router", "vrf")],
-    )
+    values = runner._model_field_values(BGPScope, {"router": router, "vrf": vrf})
+    scope = BGPScope.objects.filter(router=router, vrf=vrf).order_by("pk").first()
+    if scope is None:
+        scope = BGPScope(**values)
+        scope.full_clean()
+        scope.save()
+        return scope
+
+    duplicate_count = BGPScope.objects.filter(router=router, vrf=vrf).count() - 1
+    if duplicate_count > 0:
+        runner._record_aggregated_skip_warning(
+            model_string="netbox_routing.bgppeer",
+            reason="duplicate-bgp-scope",
+            warning_message=(
+                "Reusing the oldest duplicate BGP scope for router "
+                f"`{router}` and VRF `{vrf or 'global'}`; "
+                f"{duplicate_count} duplicate scope(s) already exist."
+            ),
+        )
     return scope
 
 
