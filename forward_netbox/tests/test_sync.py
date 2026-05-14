@@ -27,6 +27,7 @@ from extras.models import Tag
 from ipam.models import ASN
 from ipam.models import IPAddress
 from ipam.models import RIR
+from ipam.models import VRF
 
 from forward_netbox.choices import FORWARD_SUPPORTED_MODELS
 from forward_netbox.exceptions import ForwardClientError
@@ -1562,6 +1563,74 @@ class ForwardFastBootstrapExecutorTest(TestCase):
         self.assertEqual(ingestion.applied_change_count, 0)
         self.assertEqual(ingestion.failed_change_count, 1)
 
+    @patch("forward_netbox.utilities.fast_bootstrap_executor.ForwardSyncRunner")
+    @patch("forward_netbox.utilities.fast_bootstrap_executor.ForwardQueryFetcher")
+    def test_run_marks_baseline_ready_when_only_optional_model_issues_exist(
+        self,
+        mock_fetcher_class,
+        mock_runner_class,
+    ):
+        logger = SyncLogging()
+        context = ForwardQueryContext(
+            network_id="test-network",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id=self.SNAPSHOT_ID,
+            snapshot_info={"state": "PROCESSED"},
+            snapshot_metrics={},
+            query_parameters={},
+            maps=[],
+        )
+        workload = BranchWorkload(
+            model_string="netbox_routing.bgppeer",
+            label="bgp peers",
+            upsert_rows=[{"device": "device-1"}],
+            delete_rows=[],
+            sync_mode="full",
+            coalesce_fields=[["device"]],
+            query_name="Forward BGP Peers",
+            execution_mode="query_id",
+            execution_value="FQ_bgp",
+        )
+        model_result = ForwardModelResult(
+            model_string="netbox_routing.bgppeer",
+            query_name="Forward BGP Peers",
+            execution_mode="query_id",
+            execution_value="FQ_bgp",
+            sync_mode="full",
+            row_count=1,
+            delete_count=0,
+            snapshot_id=self.SNAPSHOT_ID,
+        )
+        fetcher = mock_fetcher_class.return_value
+        fetcher.resolve_context.return_value = context
+        fetcher.fetch_workloads.return_value = [workload]
+        fetcher.model_results = [model_result]
+        runner = mock_runner_class.return_value
+        runner._model_coalesce_fields = {}
+
+        def apply_rows(model_string, _rows):
+            ingestion = ForwardIngestion.objects.get(sync=self.sync)
+            ingestion.issues.create(
+                model=model_string,
+                message="Unable to apply optional BGP row.",
+                exception="validation failed",
+            )
+            logger.increment_statistics(model_string, outcome="failed")
+
+        runner._apply_model_rows.side_effect = apply_rows
+
+        ingestions = ForwardFastBootstrapExecutor(
+            self.sync,
+            Mock(),
+            logger,
+        ).run()
+
+        ingestion = ingestions[0]
+        ingestion.refresh_from_db()
+        self.assertTrue(ingestion.baseline_ready)
+        self.assertEqual(ingestion.issues.count(), 1)
+        self.assertEqual(ingestion.failed_change_count, 1)
+
 
 class ForwardSyncRunnerTest(TestCase):
     def setUp(self):
@@ -1687,6 +1756,36 @@ class ForwardSyncRunnerTest(TestCase):
         asn.refresh_from_db()
         self.assertEqual(asn.rir, rir)
         self.assertFalse(RIR.objects.filter(slug="forward-observed").exists())
+
+    def test_bgp_asn_rejects_non_positive_values_before_netbox_validation(self):
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        with self.assertRaisesRegex(ForwardQueryError, "greater than or equal to 1"):
+            runner._ensure_asn(0)
+
+    def test_bgp_scope_uses_exact_vrf_lookup_without_router_only_ambiguity(self):
+        if not apps.is_installed("netbox_routing"):
+            self.skipTest("netbox-routing optional plugin is not installed")
+        BGPRouter = apps.get_model("netbox_routing", "BGPRouter")
+        BGPScope = apps.get_model("netbox_routing", "BGPScope")
+        device = self._create_device("device-1")
+        asn = ASN.objects.create(rir=RIR.objects.create(name="ARIN"), asn=64512)
+        router = BGPRouter.objects.create(
+            name="device-1 AS64512",
+            assigned_object_type=ContentType.objects.get_for_model(Device),
+            assigned_object_id=device.pk,
+            asn=asn,
+        )
+        global_scope = BGPScope.objects.create(router=router, vrf=None)
+        BGPScope.objects.create(router=router, vrf=VRF.objects.create(name="VRF-A"))
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        self.assertEqual(runner._ensure_bgp_scope({}, router, None), global_scope)
+        runner.logger.log_warning.assert_not_called()
 
     def test_bgp_peer_address_family_adapter_creates_native_address_family(self):
         if not apps.is_installed("netbox_routing"):
@@ -3525,7 +3624,7 @@ class ForwardSyncRunnerTest(TestCase):
             ForwardIngestionIssue.objects.filter(ingestion=ingestion).count(), 1
         )
 
-    def test_apply_virtual_chassis_rejects_membership_without_position(self):
+    def test_apply_virtual_chassis_skips_membership_without_position(self):
         site = Site.objects.create(name="site-1", slug="site-1")
         manufacturer = Manufacturer.objects.create(name="vendor-1", slug="vendor-1")
         role = DeviceRole.objects.create(name="role-1", slug="role-1", color="9e9e9e")
@@ -3545,18 +3644,20 @@ class ForwardSyncRunnerTest(TestCase):
             sync=self.sync, ingestion=None, client=None, logger_=Mock()
         )
 
-        with self.assertRaisesRegex(ForwardSyncDataError, "requires `vc_position`"):
-            runner._apply_dcim_virtualchassis(
-                {
-                    "device": device.name,
-                    "vc_name": "site-1-mlag-device-1--device-2",
-                    "vc_domain": "device-1--device-2",
-                }
-            )
+        result = runner._apply_dcim_virtualchassis(
+            {
+                "device": device.name,
+                "vc_name": "site-1-mlag-device-1--device-2",
+                "vc_domain": "device-1--device-2",
+            }
+        )
         device.refresh_from_db()
 
+        self.assertFalse(result)
         self.assertIsNone(device.virtual_chassis)
         self.assertIsNone(device.vc_position)
+        self.assertFalse(VirtualChassis.objects.exists())
+        runner.logger.log_warning.assert_called()
 
     def test_apply_virtual_chassis_uses_supplied_position(self):
         site = Site.objects.create(name="site-2", slug="site-2")
