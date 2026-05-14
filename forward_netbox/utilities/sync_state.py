@@ -247,6 +247,73 @@ def get_execution_summary(sync):
     )
 
 
+def get_analysis_summary(sync):
+    last_ingestion = sync.last_ingestion
+    latest_validation_run = sync.latest_validation_run
+    summary = {
+        "enabled_models": list(sync.get_model_strings()),
+        "latest_validation_run": (
+            latest_validation_run.pk if latest_validation_run else None
+        ),
+        "latest_validation_status": (
+            latest_validation_run.status if latest_validation_run else ""
+        ),
+        "latest_ingestion": None,
+    }
+    if last_ingestion is not None:
+        summary["latest_ingestion"] = last_ingestion.get_analysis_summary()
+        summary["baseline_ready"] = bool(last_ingestion.baseline_ready)
+        summary["sync_mode"] = last_ingestion.sync_mode or ""
+    return summary
+
+
+def get_workload_summary(sync):
+    enabled_models = sync.get_model_strings()
+    max_changes_per_branch = get_max_changes_per_branch(
+        sync,
+        sync.get_max_changes_per_branch(),
+    )
+    model_change_density = get_model_change_density(sync)
+    state = get_branch_run_state(sync)
+    return {
+        "enabled_models": list(enabled_models),
+        "max_changes_per_branch": max_changes_per_branch,
+        "model_change_density": dict(model_change_density or {}),
+        "branch_budget_hints": build_branch_budget_hints(
+            enabled_models,
+            max_changes_per_branch=max_changes_per_branch,
+            model_change_density=model_change_density,
+        ),
+        "branch_run": build_branch_run_summary(state) if state else {},
+        "pre_run_estimate": state.get("plan_preview") or {},
+        "baseline_ready": (
+            bool(sync.last_ingestion.baseline_ready) if sync.last_ingestion else False
+        ),
+        "execution_backend": (
+            (sync.parameters or {}).get("execution_backend")
+            or ForwardExecutionBackendChoices.BRANCHING
+        ),
+        "uses_multi_branch": sync.uses_multi_branch(),
+    }
+
+
+def get_advisory_summary(sync):
+    summary = get_workload_summary(sync)
+    last_ingestion = sync.last_ingestion
+    if last_ingestion is not None:
+        summary["latest_ingestion"] = last_ingestion.get_advisory_summary()
+        summary["analysis_summary"] = last_ingestion.get_analysis_summary()
+    latest_validation_run = sync.latest_validation_run
+    if latest_validation_run is not None:
+        summary["latest_validation_run"] = latest_validation_run.pk
+        summary["latest_validation_status"] = latest_validation_run.status
+        summary["latest_validation_allowed"] = latest_validation_run.allowed
+        summary["latest_validation_drift_summary"] = dict(
+            latest_validation_run.drift_summary or {}
+        )
+    return summary
+
+
 def get_sync_activity(sync):
     state = get_branch_run_state(sync)
     progress_message = state.get("last_progress_message") or ""
