@@ -680,6 +680,18 @@ class ForwardIngestion(ForwardPluginModelDocsMixin, JobsMixin, models.Model):
             remove_branch=remove_branch,
         )
 
+    @property
+    def can_queue_merge(self):
+        if not self.branch or getattr(self.branch, "status", "") == "merged":
+            return False
+        if self.merge_job and not self.merge_job.completed:
+            return False
+        state = self.sync.get_branch_run_state()
+        return bool(
+            self.sync.status == ForwardSyncStatusChoices.READY_TO_MERGE
+            or state.get("pending_ingestion_id") == self.pk
+        )
+
     def get_statistics(self, stage="sync"):
         return build_ingestion_statistics(self, stage=stage)
 

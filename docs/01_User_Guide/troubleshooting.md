@@ -119,7 +119,11 @@ Checks:
 - If using Branching, keep `Max changes per branch` aligned to your Branching
   guidance and let the plugin shard the run instead of raising the branch
   budget to force everything into one branch.
-- Re-run the sync (and merge if needed) after increasing timeout.
+- Use `Continue Ingestion` to resume a resumable Branching baseline from the
+  recorded plan index after a timeout. Do not start a new baseline unless the
+  plan or source data needs to change.
+- If the timeout happened after a shard was staged, open that ingestion and
+  requeue the merge instead of rerunning the shard.
 - Review `core/jobs` plus ingestion issues for the matching timestamp window.
 
 Example NetBox configuration:

@@ -148,12 +148,13 @@ class ForwardQueryFetcher:
         context: ForwardQueryContext,
         *,
         row_limit=DEFAULT_PREFLIGHT_ROW_LIMIT,
+        model_strings=None,
     ) -> None:
         self.logger.log_info(
             "Running Forward query preflight before building the sync workload.",
             obj=self.sync,
         )
-        jobs = self._query_jobs(context)
+        jobs = self._query_jobs(context, model_strings=model_strings)
         if not jobs:
             return
         max_workers = self._query_fetch_worker_count(len(jobs))
@@ -196,9 +197,10 @@ class ForwardQueryFetcher:
         except (ForwardClientError, ForwardConnectivityError, ForwardQueryError) as exc:
             return model_string, spec, [], exc
 
-    def _query_jobs(self, context: ForwardQueryContext):
+    def _query_jobs(self, context: ForwardQueryContext, *, model_strings=None):
         jobs = []
-        for model_string in self.sync.get_model_strings():
+        enabled_models = list(model_strings or self.sync.get_model_strings())
+        for model_string in enabled_models:
             try:
                 specs = get_query_specs(model_string, maps=context.maps)
                 specs = resolve_query_specs_for_client(specs, self.client)
@@ -245,10 +247,11 @@ class ForwardQueryFetcher:
         context: ForwardQueryContext,
         *,
         validate_rows=True,
+        model_strings=None,
     ) -> list[BranchWorkload]:
         workloads = []
         self.model_results = list(self._failed_model_results.values())
-        jobs = self._build_workload_jobs(context)
+        jobs = self._build_workload_jobs(context, model_strings=model_strings)
         if not jobs:
             return workloads
         max_workers = self._query_fetch_worker_count(len(jobs))
@@ -265,9 +268,10 @@ class ForwardQueryFetcher:
         self._append_routing_diagnostics(context)
         return workloads
 
-    def _build_workload_jobs(self, context: ForwardQueryContext):
+    def _build_workload_jobs(self, context: ForwardQueryContext, *, model_strings=None):
         jobs = []
-        for model_string in self.sync.get_model_strings():
+        enabled_models = list(model_strings or self.sync.get_model_strings())
+        for model_string in enabled_models:
             if model_string in self._failed_model_results:
                 continue
             try:
@@ -475,9 +479,10 @@ class ForwardQueryFetcher:
         context: ForwardQueryContext,
         *,
         row_limit=DEFAULT_PREFLIGHT_ROW_LIMIT,
+        model_strings=None,
     ) -> list[ForwardModelResult]:
         self.model_results = []
-        jobs = self._query_jobs(context)
+        jobs = self._query_jobs(context, model_strings=model_strings)
         if not jobs:
             return self.model_results
         max_workers = self._query_fetch_worker_count(len(jobs))

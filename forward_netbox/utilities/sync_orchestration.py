@@ -83,16 +83,22 @@ def _record_forward_sync_failure(sync, job, executor, ingestion, exc):
 def _finalize_forward_sync(sync, job):
     sync.last_synced = timezone.now()
     sync.source.last_synced = sync.last_synced
-    sync.source.status = (
-        ForwardSourceStatusChoices.READY
-        if sync.status
-        in (
-            ForwardSyncStatusChoices.READY_TO_MERGE,
-            ForwardSyncStatusChoices.MERGING,
-            ForwardSyncStatusChoices.COMPLETED,
+    if sync.status in (
+        ForwardSyncStatusChoices.QUEUED,
+        ForwardSyncStatusChoices.SYNCING,
+    ):
+        sync.source.status = ForwardSourceStatusChoices.SYNCING
+    else:
+        sync.source.status = (
+            ForwardSourceStatusChoices.READY
+            if sync.status
+            in (
+                ForwardSyncStatusChoices.READY_TO_MERGE,
+                ForwardSyncStatusChoices.MERGING,
+                ForwardSyncStatusChoices.COMPLETED,
+            )
+            else ForwardSourceStatusChoices.FAILED
         )
-        else ForwardSourceStatusChoices.FAILED
-    )
     ForwardSource.objects.filter(pk=sync.source.pk).update(
         last_synced=sync.source.last_synced,
         status=sync.source.status,
@@ -159,6 +165,12 @@ def run_forward_sync(sync, job=None, *, max_changes_per_branch=None):
             ingestions = executor.run(
                 max_changes_per_branch=max_changes_per_branch,
             )
+        if getattr(executor, "resumable_started", False) is True:
+            sync.logger.log_success(
+                "Forward Branching plan queued for resumable shard execution.",
+                obj=sync,
+            )
+            return
         if not ingestions:
             sync.status = ForwardSyncStatusChoices.COMPLETED
             sync.logger.log_success("Forward ingestion completed.", obj=sync)
