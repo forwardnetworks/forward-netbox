@@ -1131,6 +1131,124 @@ class ForwardMultiBranchExecutorAdaptiveSplitTest(TestCase):
         self.assertEqual(executor._split_overflow_item.call_count, 1)
         self.assertEqual(self.sync.get_branch_run_state(), {})
 
+    @patch("forward_netbox.utilities.multi_branch_executor.enqueue_branch_stage_job")
+    @patch("forward_netbox.utilities.multi_branch_executor.ForwardValidationRunner")
+    def test_job_backed_run_persists_plan_and_queues_first_shard(
+        self,
+        mock_validation_runner,
+        mock_enqueue_stage,
+    ):
+        workload = BranchWorkload(
+            model_string="dcim.device",
+            label="dcim.device | Forward Devices",
+            upsert_rows=[{"name": f"device-{index}"} for index in range(8)],
+            coalesce_fields=[["name"]],
+        )
+        plan = build_branch_plan([workload], max_changes_per_branch=4)
+        validation_run = ForwardValidationRun.objects.create(
+            sync=self.sync,
+            status="passed",
+            allowed=True,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id=self.SNAPSHOT_ID,
+        )
+        mock_validation_runner.return_value.record_plan_validation.return_value = (
+            validation_run
+        )
+        executor = ForwardMultiBranchExecutor(
+            sync=self.sync,
+            client=Mock(),
+            logger_=Mock(),
+            job=Mock(pk=123),
+        )
+        context = {
+            "snapshot_selector": LATEST_PROCESSED_SNAPSHOT,
+            "snapshot_id": self.SNAPSHOT_ID,
+            "snapshot_info": {},
+            "snapshot_metrics": {},
+        }
+        planning_ingestion = ForwardIngestion.objects.create(sync=self.sync)
+        executor.plan = Mock(return_value=(context, plan))
+        executor._create_planning_ingestion = Mock(return_value=planning_ingestion)
+        executor._run_plan_item = Mock()
+
+        ingestions = executor.run(max_changes_per_branch=4)
+
+        self.assertEqual(ingestions, [planning_ingestion])
+        self.assertTrue(executor.resumable_started)
+        executor._run_plan_item.assert_not_called()
+        mock_enqueue_stage.assert_called_once_with(
+            self.sync,
+            user=None,
+            adhoc=True,
+        )
+        state = self.sync.get_branch_run_state()
+        self.assertEqual(state["next_plan_index"], 1)
+        self.assertEqual(state["total_plan_items"], len(plan))
+        self.assertEqual(len(state["plan_items"]), len(plan))
+        self.assertEqual(state["plan_items"][0]["status"], "pending")
+        self.assertNotIn("upsert_rows", state["plan_items"][0])
+
+    def test_run_next_plan_item_stages_one_shard(self):
+        workload = BranchWorkload(
+            model_string="dcim.device",
+            label="dcim.device | Forward Devices",
+            upsert_rows=[{"name": f"device-{index}"} for index in range(8)],
+            coalesce_fields=[["name"]],
+        )
+        plan = build_branch_plan([workload], max_changes_per_branch=4)
+        validation_run = ForwardValidationRun.objects.create(
+            sync=self.sync,
+            status="passed",
+            allowed=True,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id=self.SNAPSHOT_ID,
+        )
+        self.sync.set_branch_run_state(
+            {
+                "snapshot_selector": LATEST_PROCESSED_SNAPSHOT,
+                "snapshot_id": self.SNAPSHOT_ID,
+                "next_plan_index": 1,
+                "total_plan_items": len(plan),
+                "awaiting_merge": False,
+                "validation_run_id": validation_run.pk,
+                "plan_items": [
+                    {
+                        "index": item.index,
+                        "status": "pending",
+                    }
+                    for item in plan
+                ],
+            }
+        )
+        executor = ForwardMultiBranchExecutor(
+            sync=self.sync,
+            client=Mock(),
+            logger_=Mock(),
+            job=Mock(pk=123),
+        )
+        context = {
+            "snapshot_selector": LATEST_PROCESSED_SNAPSHOT,
+            "snapshot_id": self.SNAPSHOT_ID,
+            "snapshot_info": {},
+            "snapshot_metrics": {},
+        }
+        staged_ingestion = ForwardIngestion.objects.create(sync=self.sync)
+        executor.plan = Mock(return_value=(context, plan))
+        executor._run_plan_item = Mock(return_value=staged_ingestion)
+
+        ingestions = executor.run_next_plan_item(max_changes_per_branch=4)
+
+        self.assertEqual(ingestions, [staged_ingestion])
+        executor._run_plan_item.assert_called_once()
+        call_kwargs = executor._run_plan_item.call_args.kwargs
+        self.assertFalse(call_kwargs["merge"])
+        self.assertFalse(call_kwargs["automated_merge"])
+        self.assertEqual(executor._run_plan_item.call_args.args[0].index, 1)
+        state = self.sync.get_branch_run_state()
+        self.assertEqual(state["phase"], "staging")
+        self.assertEqual(state["plan_items"][0]["status"], "staging")
+
     def test_branch_budget_retry_resplits_future_same_model_items(self):
         current_workload = BranchWorkload(
             model_string="dcim.device",

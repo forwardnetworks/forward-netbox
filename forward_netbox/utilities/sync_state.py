@@ -294,7 +294,48 @@ def get_workload_summary(sync):
             or ForwardExecutionBackendChoices.BRANCHING
         ),
         "uses_multi_branch": sync.uses_multi_branch(),
+        "branching_guidance": get_branching_guidance(sync),
     }
+
+
+def get_branching_guidance(sync):
+    state = get_branch_run_state(sync)
+    preview = state.get("plan_preview") or {}
+    max_changes_per_branch = get_max_changes_per_branch(
+        sync,
+        sync.get_max_changes_per_branch(),
+    )
+    planned_shards = _safe_int(preview.get("planned_shards"))
+    estimated_changes = _safe_int(preview.get("estimated_changes"))
+    execution_backend = (sync.parameters or {}).get(
+        "execution_backend"
+    ) or ForwardExecutionBackendChoices.BRANCHING
+    if execution_backend != ForwardExecutionBackendChoices.BRANCHING:
+        return {}
+    if not planned_shards and not estimated_changes:
+        return {}
+    large_baseline = planned_shards >= 10 or estimated_changes >= (
+        max_changes_per_branch * 5
+    )
+    if not large_baseline:
+        return {}
+    return {
+        "severity": "warning",
+        "message": (
+            "This Branching baseline is large enough to exceed worker timeout "
+            "windows. For trusted first loads, use Fast bootstrap to seed the "
+            "baseline, then use Branching with query IDs on a later snapshot for "
+            "reviewable diffs. If this run is already in progress, resume or "
+            "retry the current shard rather than restarting the baseline."
+        ),
+    }
+
+
+def _safe_int(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
 
 
 def get_advisory_summary(sync):
