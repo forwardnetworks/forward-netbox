@@ -19,12 +19,13 @@ class ForwardMultiBranchPlanner:
         max_changes_per_branch=DEFAULT_MAX_CHANGES_PER_BRANCH,
         run_preflight=True,
         model_change_density=None,
+        model_strings=None,
     ):
         fetcher = ForwardQueryFetcher(self.sync, self.client, self.logger)
         context = fetcher.resolve_context(branch_run_state=self.branch_run_state)
         if run_preflight:
-            fetcher.run_preflight(context)
-        workloads = fetcher.fetch_workloads(context)
+            fetcher.run_preflight(context, model_strings=model_strings)
+        workloads = fetcher.fetch_workloads(context, model_strings=model_strings)
         self.model_results = [result.as_dict() for result in fetcher.model_results]
         plan = build_branch_plan_with_density(
             workloads,

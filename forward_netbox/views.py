@@ -145,6 +145,7 @@ def _job_export_payload(job):
 
 
 def _ingestion_log_export_payload(ingestion, *, active_stage):
+    branch_run_state = json_safe_value(ingestion.sync.get_branch_run_state())
     return {
         "exported_at": timezone.now().isoformat(),
         "active_stage": active_stage,
@@ -165,10 +166,20 @@ def _ingestion_log_export_payload(ingestion, *, active_stage):
             "name": ingestion.sync.name,
             "status": ingestion.sync.status,
             "current_activity": ingestion.sync.get_sync_activity(),
-            "branch_run_state": json_safe_value(ingestion.sync.get_branch_run_state()),
+            "branch_run_state": branch_run_state,
             "analysis_summary": ingestion.sync.get_analysis_summary(),
             "workload_summary": ingestion.sync.get_workload_summary(),
             "advisory_summary": ingestion.sync.get_advisory_summary(),
+        },
+        "branch_plan": {
+            "next_plan_index": branch_run_state.get("next_plan_index"),
+            "total_plan_items": branch_run_state.get("total_plan_items"),
+            "phase": branch_run_state.get("phase") or "",
+            "phase_message": branch_run_state.get("phase_message") or "",
+            "current_model_string": branch_run_state.get("current_model_string") or "",
+            "current_shard_index": branch_run_state.get("current_shard_index"),
+            "last_stage_job_id": branch_run_state.get("last_stage_job_id"),
+            "plan_items": branch_run_state.get("plan_items") or [],
         },
         "job_results": json_safe_value(ingestion.get_job_logs(ingestion.job)),
         "merge_job_results": json_safe_value(

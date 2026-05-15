@@ -9,6 +9,8 @@ from ..choices import ForwardSyncStatusChoices
 from ..exceptions import ForwardSyncError
 from .branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
 from .forward_api import LATEST_PROCESSED_SNAPSHOT
+from .resumable_branching import enqueue_branch_stage_job
+from .resumable_branching import get_plan_items
 from .sync_state import get_max_changes_per_branch as get_state_max_changes_per_branch
 
 
@@ -88,6 +90,8 @@ def enqueue_sync_job(sync, adhoc=False, user=None):
         )
     if not user:
         user = sync.user
+    if sync.has_pending_branch_run and get_plan_items(sync):
+        return enqueue_branch_stage_job(sync, user=user, adhoc=adhoc)
     if adhoc or sync.status == ForwardSyncStatusChoices.NEW:
         sync.status = ForwardSyncStatusChoices.QUEUED
         sync.__class__.objects.filter(pk=sync.pk).update(status=sync.status)

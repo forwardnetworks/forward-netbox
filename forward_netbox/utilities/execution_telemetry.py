@@ -150,6 +150,9 @@ def build_branch_run_summary(branch_run_state):
         "current_row_count": state.get("current_row_count"),
         "current_row_total": state.get("current_row_total"),
         "plan_preview": state.get("plan_preview") or {},
+        "plan_items": state.get("plan_items") or [],
+        "last_stage_job_id": state.get("last_stage_job_id"),
+        "last_error": state.get("last_error") or "",
         "model_change_density": state.get("model_change_density") or {},
     }
     return summary
