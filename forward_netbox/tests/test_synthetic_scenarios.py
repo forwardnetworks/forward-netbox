@@ -287,6 +287,7 @@ class SyntheticSyncScenarioHarnessTest(TestCase):
             max_changes_per_branch=10,
             run_preflight=False,
             model_change_density={},
+            model_strings=None,
         )
         self.assertEqual(executor.last_validation_run, validation_run)
         executor._run_plan_item.assert_called_once()

@@ -16,6 +16,7 @@ from .branch_budget import split_workload
 from .branching import build_branch_name
 from .branching import build_branch_request
 from .query_fetch import plan_item_model_result
+from .resumable_branching import update_plan_item_state
 from .sync import ForwardSyncRunner
 from .sync_state import clear_branch_run_progress_fields
 from .sync_state import touch_branch_run_progress
@@ -71,6 +72,7 @@ def run_plan_item(
     merge,
     total_plan_items,
     plan_preview,
+    automated_merge=False,
 ):
     from ..models import ForwardIngestion
 
@@ -142,6 +144,12 @@ def run_plan_item(
         )
 
     if not merge:
+        phase = "queued_merge" if automated_merge else "awaiting_merge"
+        phase_message = (
+            f"Queued merge for shard {item.index}/{total_plan_items}."
+            if automated_merge
+            else f"Forward sync paused after shard {item.index}/{total_plan_items}; merge the branch to continue."
+        )
         executor.sync.set_branch_run_state(
             {
                 "snapshot_selector": context["snapshot_selector"],
@@ -149,24 +157,51 @@ def run_plan_item(
                 "max_changes_per_branch": executor.max_changes_per_branch,
                 "next_plan_index": item.index + 1,
                 "total_plan_items": total_plan_items,
-                "auto_merge": False,
-                "awaiting_merge": True,
+                "auto_merge": bool(automated_merge),
+                "awaiting_merge": not automated_merge,
                 "pending_ingestion_id": ingestion.pk,
                 "pending_plan_index": item.index,
                 "pending_is_final": mark_baseline_ready,
                 "model_change_density": executor.model_change_density,
                 "validation_run_id": getattr(executor.last_validation_run, "pk", None),
                 "plan_preview": plan_preview,
+                "plan_items": (
+                    executor.sync.get_branch_run_state().get("plan_items") or []
+                ),
+                "phase": phase,
+                "phase_message": phase_message,
             }
         )
-        executor.sync.status = ForwardSyncStatusChoices.READY_TO_MERGE
+        update_plan_item_state(
+            executor.sync,
+            item.index,
+            status="staged",
+            ingestion_id=ingestion.pk,
+            branch_name=branch.name,
+        )
+        executor.sync.status = (
+            ForwardSyncStatusChoices.QUEUED
+            if automated_merge
+            else ForwardSyncStatusChoices.READY_TO_MERGE
+        )
         executor.sync.__class__.objects.filter(pk=executor.sync.pk).update(
             status=executor.sync.status,
         )
         executor.logger.log_info(
-            f"Forward sync paused after shard {item.index}/{total_plan_items}; merge the branch to continue.",
+            phase_message,
             obj=ingestion,
         )
+        if automated_merge:
+            merge_job = ingestion.enqueue_merge_job(
+                user=executor.user,
+                remove_branch=True,
+            )
+            update_plan_item_state(
+                executor.sync,
+                item.index,
+                status="merge_queued",
+                merge_job_id=merge_job.pk,
+            )
         return ingestion
 
     ingestion.sync_merge(mark_baseline_ready=mark_baseline_ready)

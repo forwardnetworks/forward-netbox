@@ -1,6 +1,6 @@
 {% load i18n %}
 {% if perms.forward_netbox.merge_forwardingestion %}
-  {% if object.sync.status == "ready_to_merge" and object.branch and object.branch.status != "merged" %}
+  {% if object.can_queue_merge %}
     <a href="#"
        hx-get="{% url 'plugins:forward_netbox:forwardingestion_merge' pk=object.pk %}"
        hx-target="#htmx-modal-content"
