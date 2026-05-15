@@ -33,6 +33,11 @@
       </span>
     {% endif %}
   {% endif %}
+  {% if object.last_ingestion %}
+    <a class="btn btn-outline-secondary" href="{% url 'plugins:forward_netbox:forwardingestion_export_logs' pk=object.last_ingestion.pk %}?stage=sync">
+      <i class="mdi mdi-download" aria-hidden="true"></i>&nbsp;{% trans "Export Logs" %}
+    </a>
+  {% endif %}
 {% endblock extra_controls %}
 
 {% block content %}

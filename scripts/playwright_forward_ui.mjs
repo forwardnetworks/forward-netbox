@@ -127,6 +127,7 @@ async function main() {
     await expectVisible(page, "Workload Preview");
     await expectVisible(page, "Analysis Summary");
     await expectVisible(page, "Advisory Summary");
+    await expectVisible(page, "Export Logs");
     await expectVisible(page, "ui-harness-drift-policy");
     await expectVisible(page, "latestProcessed");
     await expectVisible(page, "max_changes_per_branch");
@@ -177,6 +178,7 @@ async function main() {
     await expectVisible(page, "Validation");
     await expectVisible(page, "Model Results");
     await expectVisible(page, "Sync Results");
+    await expectVisible(page, "Export Logs");
     await expectVisible(page, "Synthetic UI harness ingestion completed.");
     await assertNoHorizontalOverflow(page, "desktop ingestion detail");
     evidence.screenshots.push(await screenshot(page, "desktop-ingestion-detail.jpg"));
