@@ -16,8 +16,10 @@ from .exceptions import ForwardSyncError
 from .models import ForwardIngestion
 from .models import ForwardIngestionIssue
 from .models import ForwardSync
+from .utilities.ingestion_merge import maybe_enqueue_next_branch_stage
 from .utilities.json_safe import json_safe_value
 from .utilities.logging import SyncLogging
+from .utilities.resumable_branching import update_plan_item_state
 from .utilities.validation import ForwardValidationRunner
 
 logger = logging.getLogger(__name__)
@@ -214,6 +216,7 @@ def merge_forwardingestion(job, remove_branch=True, *args, **kwargs):
         ingestion.sync.logger = SyncLogging(job=job.pk)
         with event_tracking(request):
             ingestion.sync_merge(remove_branch=remove_branch)
+        maybe_enqueue_next_branch_stage(ingestion, job.user)
 
         safe_save_job_data(job, ingestion.sync)
         job.terminate()
@@ -238,8 +241,84 @@ def merge_forwardingestion(job, remove_branch=True, *args, **kwargs):
                 ForwardIngestionPhaseChoices.MERGE,
                 message,
             )
+            state = ingestion.sync.get_branch_run_state()
+            pending_index = int(state.get("pending_plan_index") or 0)
+            if pending_index:
+                update_plan_item_state(
+                    ingestion.sync,
+                    pending_index,
+                    status="merge_timeout",
+                    last_error=message,
+                    retry_count=_plan_item_retry_count(state, pending_index) + 1,
+                )
             ingestion.sync.logger.log_failure(message, obj=ingestion)
         if type(exc) in (SyncError, JobTimeoutException):
+            logger.error(exc)
+        else:
+            raise
+
+
+def _plan_item_retry_count(state, index):
+    for item in state.get("plan_items") or []:
+        if int(item.get("index") or 0) == int(index):
+            return int(item.get("retry_count") or 0)
+    return 0
+
+
+def stage_forward_branch_item(job, *args, **kwargs):
+    sync = ForwardSync.objects.get(pk=job.object_id)
+    from .utilities.multi_branch import ForwardMultiBranchExecutor
+
+    try:
+        job.start()
+        sync.logger = SyncLogging(job=job.pk)
+        executor = ForwardMultiBranchExecutor(
+            sync,
+            sync.source.get_client(),
+            sync.logger,
+            user=job.user,
+            job=job,
+        )
+        executor.run_next_plan_item(
+            max_changes_per_branch=sync.get_max_changes_per_branch()
+        )
+        safe_save_job_data(job, sync)
+        job.terminate()
+    except Exception as exc:
+        safe_save_job_data(job, sync)
+        timeout = isinstance(exc, JobTimeoutException)
+        state = sync.get_branch_run_state()
+        current_index = int(
+            state.get("pending_plan_index") or state.get("next_plan_index") or 1
+        )
+        update_plan_item_state(
+            sync,
+            current_index,
+            status="timeout" if timeout else "failed",
+            last_error=str(exc),
+            retry_count=_plan_item_retry_count(state, current_index) + 1,
+        )
+        job.terminate(status=JobStatusChoices.STATUS_ERRORED)
+        ForwardSync.objects.filter(pk=sync.pk).update(
+            status=(
+                ForwardSyncStatusChoices.TIMEOUT
+                if timeout
+                else ForwardSyncStatusChoices.FAILED
+            )
+        )
+        ingestion = ForwardIngestion.objects.filter(sync=sync).order_by("-pk").first()
+        if timeout:
+            message = (
+                "Forward Branching shard job timed out. Resume the ingestion to retry "
+                "the current shard instead of restarting the baseline."
+            )
+            record_timeout_issue(
+                ingestion,
+                ForwardIngestionPhaseChoices.SYNC,
+                message,
+            )
+            sync.logger.log_failure(message, obj=sync)
+        if isinstance(exc, (ForwardSyncError, SyncError, JobTimeoutException)):
             logger.error(exc)
         else:
             raise

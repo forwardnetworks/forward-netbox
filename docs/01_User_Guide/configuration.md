@@ -314,6 +314,14 @@ both:
 - Ensure NetBox workers and Postgres have enough capacity for the selected
   concurrency and the number of simultaneous syncs.
 
+Branching runs are staged as resumable NetBox jobs. The initial sync job records
+the snapshot, validation result, branch plan, and next shard in the sync state.
+Each shard and merge then runs as its own NetBox background job. If a worker
+timeout, restart, or transient failure interrupts a shard, use `Continue
+Ingestion` to resume from the current plan item instead of starting over from
+the first shard. If the interrupted item was already staged, requeue the merge
+from the ingestion detail page.
+
 The plugin logs a non-blocking warning when it can see that
 `RQ_DEFAULT_TIMEOUT` is shorter than the Forward source timeout, or when a large
 Branching plan is being run with a short worker timeout. These warnings do not
@@ -326,7 +334,11 @@ For command-line validation, run the smoke sync with `--plan-only` first:
 invoke forward_netbox.smoke-sync --plan-only --max-changes-per-branch 10000
 ```
 
-If the plan is acceptable, run the same sync. Each shard is staged in a native Branching branch and merged before the next shard runs. Only the final successful shard becomes the incremental diff baseline, so later `latestProcessed` runs can use Forward `nqe-diffs`.
+If the plan is acceptable, run the same sync. Each shard is staged in a native
+Branching branch and merged before the next shard runs. The sync stores the next
+plan index so interrupted baselines can resume without discarding completed
+shards. Only the final successful shard becomes the incremental diff baseline,
+so later `latestProcessed` runs can use Forward `nqe-diffs`.
 
 ```bash
 invoke forward_netbox.smoke-sync --max-changes-per-branch 10000
