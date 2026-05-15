@@ -4,10 +4,17 @@
 
 <div class="card">
   <h5 class="card-header d-flex justify-content-between align-items-center">
-    {% if active_stage == 'merge' %}{% trans "Merge Results" %}{% else %}{% trans "Sync Results" %}{% endif %}
-    {% if job %}
-      {% include 'forward_netbox/partials/stage_switcher_buttons.html' with active_stage=active_stage merge_disabled=merge_disabled job=job %}
-    {% endif %}
+    <span>{% if active_stage == 'merge' %}{% trans "Merge Results" %}{% else %}{% trans "Sync Results" %}{% endif %}</span>
+    <span class="d-flex gap-2 align-items-center">
+      {% if export_logs_url %}
+        <a class="btn btn-outline-secondary btn-sm" href="{{ export_logs_url }}?stage={{ active_stage|default:'sync' }}">
+          <i class="mdi mdi-download" aria-hidden="true"></i>&nbsp;{% trans "Export Logs" %}
+        </a>
+      {% endif %}
+      {% if job %}
+        {% include 'forward_netbox/partials/stage_switcher_buttons.html' with active_stage=active_stage merge_disabled=merge_disabled job=job %}
+      {% endif %}
+    </span>
   </h5>
   <div class="card-body">
     <p class="mb-2">
