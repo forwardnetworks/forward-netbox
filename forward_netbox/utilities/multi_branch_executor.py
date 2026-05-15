@@ -1,5 +1,6 @@
 from core.exceptions import SyncError
 
+from ..choices import ForwardSyncStatusChoices
 from .branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
 from .execution_telemetry import build_plan_preview
 from .multi_branch_lifecycle import cleanup_overflow_branch
@@ -12,6 +13,11 @@ from .multi_branch_lifecycle import set_runtime_phase
 from .multi_branch_lifecycle import split_overflow_item
 from .multi_branch_lifecycle import validation_run_from_state
 from .multi_branch_planner import ForwardMultiBranchPlanner
+from .resumable_branching import enqueue_branch_stage_job
+from .resumable_branching import get_plan_items
+from .resumable_branching import plan_items_snapshot
+from .resumable_branching import resumable_branching_enabled
+from .resumable_branching import update_plan_item_state
 from .runtime_guidance import log_branch_plan_timeout_guidance
 from .validation import ForwardValidationRunner
 
@@ -46,6 +52,7 @@ class ForwardMultiBranchExecutor:
         max_changes_per_branch=DEFAULT_MAX_CHANGES_PER_BRANCH,
         run_preflight=True,
         model_change_density=None,
+        model_strings=None,
     ):
         planner = ForwardMultiBranchPlanner(
             self.sync,
@@ -57,11 +64,12 @@ class ForwardMultiBranchExecutor:
             max_changes_per_branch=max_changes_per_branch,
             run_preflight=run_preflight,
             model_change_density=model_change_density,
+            model_strings=model_strings,
         )
         self.last_model_results = planner.model_results
         return context, plan
 
-    def _load_execution_context(self, *, max_changes_per_branch):
+    def _load_execution_context(self, *, max_changes_per_branch, model_strings=None):
         run_state = self.sync.get_branch_run_state()
         persisted_density = self.sync.get_model_change_density()
         run_state_density = run_state.get("model_change_density") or {}
@@ -78,6 +86,7 @@ class ForwardMultiBranchExecutor:
                 "Forward sync is waiting for the current shard branch to be merged."
             )
         next_plan_index = int(run_state.get("next_plan_index") or 1)
+        has_persisted_plan = bool(get_plan_items(self.sync))
         self._set_runtime_phase(
             "planning",
             "Resolving snapshot, running query preflight, and building shard plan.",
@@ -85,15 +94,16 @@ class ForwardMultiBranchExecutor:
         )
         context, plan = self.plan(
             max_changes_per_branch=max_changes_per_branch,
-            run_preflight=next_plan_index <= 1,
+            run_preflight=next_plan_index <= 1 and not has_persisted_plan,
             model_change_density=model_change_density,
+            model_strings=model_strings,
         )
         plan_preview = build_plan_preview(
             plan,
             max_changes_per_branch=self.max_changes_per_branch,
         )
         log_branch_plan_timeout_guidance(self.sync, self.logger, plan)
-        if next_plan_index <= 1:
+        if next_plan_index <= 1 and not has_persisted_plan:
             self._set_runtime_phase(
                 "validating",
                 "Recording plan validation results.",
@@ -135,10 +145,30 @@ class ForwardMultiBranchExecutor:
                 "model_change_density": model_change_density,
                 "validation_run_id": getattr(self.last_validation_run, "pk", None),
                 "plan_preview": plan_preview,
+                "plan_items": plan_items_snapshot(
+                    plan,
+                    existing_items=get_plan_items(self.sync),
+                ),
                 "phase": "executing",
                 "phase_message": "Applying planned shard changes.",
             }
         )
+
+    def _create_planning_ingestion(self, context):
+        from ..models import ForwardIngestion
+
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            job=self.job,
+            validation_run=self.last_validation_run,
+            snapshot_selector=context["snapshot_selector"],
+            snapshot_id=context["snapshot_id"],
+            snapshot_info=context["snapshot_info"],
+            snapshot_metrics=context["snapshot_metrics"],
+            model_results=self.last_model_results,
+        )
+        self.current_ingestion = ingestion
+        return ingestion
 
     def _handle_branch_budget_exceeded(self, exc, plan, current_index):
         self._record_model_density(
@@ -256,12 +286,179 @@ class ForwardMultiBranchExecutor:
             auto_merge=self.sync.auto_merge,
             model_change_density=self.model_change_density,
         )
+        if self.job and resumable_branching_enabled(self.sync):
+            ingestion = self._create_planning_ingestion(context)
+            enqueue_branch_stage_job(
+                self.sync,
+                user=self.user,
+                adhoc=True,
+            )
+            self.resumable_started = True
+            self.logger.log_info(
+                "Forward Branching plan persisted; queued the first shard job.",
+                obj=self.sync,
+            )
+            return [ingestion]
         return self._execute_planned_items(
             context,
             plan,
             plan_preview,
             next_plan_index=next_plan_index,
         )
+
+    def run_next_plan_item(
+        self,
+        *,
+        max_changes_per_branch=DEFAULT_MAX_CHANGES_PER_BRANCH,
+    ):
+        self.max_changes_per_branch = max_changes_per_branch
+        state = self.sync.get_branch_run_state()
+        next_plan_index = int(state.get("next_plan_index") or 1)
+        persisted_item = self._persisted_plan_item(next_plan_index)
+        model_strings = (
+            [persisted_item["model"]]
+            if persisted_item and persisted_item.get("model")
+            else None
+        )
+        context, plan, plan_preview, next_plan_index, model_change_density = (
+            self._load_execution_context(
+                max_changes_per_branch=max_changes_per_branch,
+                model_strings=model_strings,
+            )
+        )
+        self.model_change_density = model_change_density
+        total_plan_items = int(state.get("total_plan_items") or len(plan))
+        full_plan_preview = state.get("plan_preview") or plan_preview
+        item = self._select_plan_item(plan, persisted_item, next_plan_index)
+        if item is None:
+            self.sync.clear_branch_run_state()
+            self.sync.status = ForwardSyncStatusChoices.COMPLETED
+            self.sync.__class__.objects.filter(pk=self.sync.pk).update(
+                status=self.sync.status
+            )
+            self.logger.log_info("Forward multi-branch sync already completed.")
+            return []
+
+        item = self._with_global_index(item, next_plan_index)
+        is_final = next_plan_index >= total_plan_items
+        update_plan_item_state(
+            self.sync,
+            item.index,
+            status="staging",
+            last_error="",
+        )
+        self._set_runtime_phase(
+            "staging",
+            f"Applying shard {item.index}/{total_plan_items} for {item.model_string}.",
+            next_plan_index=item.index,
+            total_plan_items=total_plan_items,
+        )
+        try:
+            ingestion = self._run_plan_item(
+                item,
+                context,
+                mark_baseline_ready=is_final,
+                merge=False,
+                total_plan_items=total_plan_items,
+                plan_preview=full_plan_preview,
+                automated_merge=self.sync.auto_merge,
+            )
+        except BranchBudgetExceeded as exc:
+            plan = self._handle_branch_budget_exceeded(exc, plan, 0)
+            self._replace_persisted_plan_item_with_split(
+                next_plan_index,
+                plan,
+            )
+            enqueue_branch_stage_job(self.sync, user=self.user, adhoc=True)
+            return []
+        return [ingestion]
+
+    def _persisted_plan_item(self, index):
+        for item in get_plan_items(self.sync):
+            if int(item.get("index") or 0) == int(index):
+                return item
+        return None
+
+    def _select_plan_item(self, plan, persisted_item, index):
+        if not persisted_item:
+            if 1 <= int(index) <= len(plan):
+                return plan[int(index) - 1]
+            return None
+        if not persisted_item.get("model"):
+            if 1 <= int(index) <= len(plan):
+                return plan[int(index) - 1]
+            return None
+        shard_keys = set(persisted_item.get("shard_keys") or [])
+        candidates = [
+            item
+            for item in plan
+            if item.model_string == persisted_item.get("model")
+            and item.query_name == persisted_item.get("query_name", item.query_name)
+            and item.execution_value
+            == persisted_item.get("execution_value", item.execution_value)
+        ]
+        if shard_keys:
+            for item in candidates:
+                if set(item.shard_keys or ()) == shard_keys:
+                    return item
+        if len(candidates) == 1:
+            return candidates[0]
+        for item in candidates:
+            if int(item.estimated_changes) == int(
+                persisted_item.get("estimated_changes") or 0
+            ):
+                return item
+        return None
+
+    def _with_global_index(self, item, index):
+        if int(item.index) == int(index):
+            return item
+        return item.__class__(
+            index=int(index),
+            model_string=item.model_string,
+            label=item.label,
+            estimated_changes=item.estimated_changes,
+            upsert_rows=item.upsert_rows,
+            delete_rows=item.delete_rows,
+            sync_mode=item.sync_mode,
+            coalesce_fields=item.coalesce_fields,
+            shard_keys=item.shard_keys,
+            query_name=item.query_name,
+            execution_mode=item.execution_mode,
+            execution_value=item.execution_value,
+            query_runtime_ms=item.query_runtime_ms,
+            baseline_snapshot_id=item.baseline_snapshot_id,
+        )
+
+    def _replace_persisted_plan_item_with_split(self, current_index, split_plan):
+        state = self.sync.get_branch_run_state()
+        existing_items = get_plan_items(self.sync)
+        split_items = plan_items_snapshot(split_plan)
+        replacement_count = len(split_items)
+        updated_items = []
+        for item in existing_items:
+            item_index = int(item.get("index") or 0)
+            if item_index < int(current_index):
+                updated_items.append(item)
+                continue
+            if item_index == int(current_index):
+                for offset, split_item in enumerate(split_items):
+                    split_item["index"] = int(current_index) + offset
+                    split_item["status"] = "pending"
+                    updated_items.append(split_item)
+                continue
+            shifted = dict(item)
+            shifted["index"] = item_index + max(0, replacement_count - 1)
+            updated_items.append(shifted)
+        state["plan_items"] = updated_items
+        state["next_plan_index"] = int(current_index)
+        state["total_plan_items"] = len(updated_items)
+        state["model_change_density"] = self.model_change_density
+        state["phase"] = "queued"
+        state["phase_message"] = (
+            "Branch budget retry split the current shard; queued the smaller shard."
+        )
+        self.sync.set_branch_run_state(state)
 
     def _set_runtime_phase(
         self, phase, message, *, next_plan_index=None, total_plan_items=None
@@ -286,6 +483,7 @@ class ForwardMultiBranchExecutor:
         merge,
         total_plan_items,
         plan_preview,
+        automated_merge=False,
     ):
         return run_plan_item(
             self,
@@ -295,6 +493,7 @@ class ForwardMultiBranchExecutor:
             merge=merge,
             total_plan_items=total_plan_items,
             plan_preview=plan_preview,
+            automated_merge=automated_merge,
         )
 
     def _validation_run_from_state(self, run_state):

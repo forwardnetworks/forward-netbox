@@ -259,6 +259,34 @@ class ForwardSyncModelTest(TestCase):
         self.assertEqual(summary["branch_budget_hints"]["dcim.device"], 10000)
         self.assertIn("dcim.device", summary["enabled_models"])
 
+    def test_workload_summary_warns_for_large_branching_baseline(self):
+        sync = ForwardSync.objects.create(
+            name="sync-large-branching-guidance",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+                "max_changes_per_branch": 10000,
+            },
+        )
+        sync.set_branch_run_state(
+            {
+                "snapshot_id": "snapshot-2",
+                "next_plan_index": 1,
+                "total_plan_items": 12,
+                "awaiting_merge": False,
+                "plan_preview": {
+                    "planned_shards": 12,
+                    "estimated_changes": 120000,
+                },
+            }
+        )
+
+        guidance = sync.get_workload_summary()["branching_guidance"]
+
+        self.assertEqual(guidance["severity"], "warning")
+        self.assertIn("Fast bootstrap", guidance["message"])
+
     def test_display_parameters_include_branch_budget_hints(self):
         sync = ForwardSync.objects.create(
             name="sync-display-budget",
@@ -1419,6 +1447,41 @@ class ForwardIngestionSnapshotSummaryTest(TestCase):
         self.assertFalse(state["awaiting_merge"])
         self.assertEqual(state["next_plan_index"], 2)
         self.assertTrue(self.sync.ready_to_continue_sync)
+        self.assertEqual(state["phase"], "merged")
+
+    def test_sync_merge_records_resumable_plan_item_merged(self):
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-before",
+        )
+        self.sync.set_branch_run_state(
+            {
+                "snapshot_selector": LATEST_PROCESSED_SNAPSHOT,
+                "snapshot_id": "snapshot-before",
+                "max_changes_per_branch": DEFAULT_MAX_CHANGES_PER_BRANCH,
+                "next_plan_index": 2,
+                "total_plan_items": 3,
+                "auto_merge": True,
+                "awaiting_merge": False,
+                "pending_ingestion_id": ingestion.pk,
+                "pending_plan_index": 1,
+                "pending_is_final": False,
+                "plan_items": [
+                    {"index": 1, "status": "merge_queued"},
+                    {"index": 2, "status": "pending"},
+                ],
+            }
+        )
+
+        with patch("forward_netbox.utilities.merge.merge_branch"):
+            ingestion.sync_merge()
+
+        self.sync.refresh_from_db()
+        state = self.sync.get_branch_run_state()
+        self.assertEqual(state["plan_items"][0]["status"], "merged")
+        self.assertEqual(state["plan_items"][0]["ingestion_id"], ingestion.pk)
+        self.assertEqual(state["next_plan_index"], 2)
 
     def test_sync_merge_clears_gated_branch_run_after_final_merge(self):
         ingestion = ForwardIngestion.objects.create(

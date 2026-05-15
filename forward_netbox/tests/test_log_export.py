@@ -131,6 +131,7 @@ class ForwardIngestionLogExportViewTest(TestCase):
         self.assertEqual(data["ingestion"]["pk"], self.ingestion.pk)
         self.assertEqual(data["ingestion"]["job"]["pk"], self.job.pk)
         self.assertEqual(data["ingestion"]["merge_job"]["pk"], self.merge_job.pk)
+        self.assertIn("branch_plan", data)
         self.assertEqual(
             data["job_results"]["logs"][0][4], "Synthetic sync stage completed."
         )
