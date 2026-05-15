@@ -279,6 +279,8 @@ curl -sS -H "Authorization: Token ${NETBOX_TOKEN}" \
 
 ### 3) Pull plugin runtime logs from the host/container
 
+For a single failed ingestion, use the native `Export Logs` action on the ingestion detail page first. It downloads the sync-stage and merge-stage job payloads together, which is the quickest way to hand over Forward-specific failure context without scraping the UI.
+
 If file logging is enabled, collect:
 
 ```bash

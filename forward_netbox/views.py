@@ -5,10 +5,12 @@ from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.core.exceptions import ValidationError
 from django.db import models
+from django.http import JsonResponse
 from django.shortcuts import get_object_or_404
 from django.shortcuts import redirect
 from django.shortcuts import render
 from django.urls import reverse
+from django.utils import timezone
 from django.utils.translation import gettext as _
 from django.views.generic import View
 from netbox.object_actions import AddObject
@@ -61,6 +63,7 @@ from .tables import ForwardSourceTable
 from .tables import ForwardSyncTable
 from .tables import ForwardValidationRunTable
 from .utilities.direct_changes import object_changes_for_ingestion
+from .utilities.json_safe import json_safe_value
 from .utilities.query_binding import apply_explicit_nqe_map_bindings
 from .utilities.query_binding import build_nqe_map_bindings
 from .utilities.query_binding import publish_builtin_nqe_map_queries
@@ -124,6 +127,60 @@ def annotate_statistics(queryset):
         branch_name=models.F("branch__name"),
         sync_name=models.F("sync__name"),
     )
+
+
+def _job_export_payload(job):
+    if not job:
+        return None
+    return {
+        "pk": job.pk,
+        "status": getattr(job, "status", ""),
+        "created": getattr(job, "created", None),
+        "started": getattr(job, "started", None),
+        "completed": getattr(job, "completed", None),
+        "duration": getattr(job, "duration", None),
+        "data": json_safe_value(getattr(job, "data", {}) or {}),
+        "log_entries": json_safe_value(list(getattr(job, "log_entries", []) or [])),
+    }
+
+
+def _ingestion_log_export_payload(ingestion, *, active_stage):
+    return {
+        "exported_at": timezone.now().isoformat(),
+        "active_stage": active_stage,
+        "ingestion": {
+            "pk": ingestion.pk,
+            "name": ingestion.name,
+            "sync_mode": ingestion.sync_mode or "",
+            "baseline_ready": bool(ingestion.baseline_ready),
+            "snapshot_id": ingestion.snapshot_id or "",
+            "snapshot_selector": ingestion.snapshot_selector or "",
+            "branch": ingestion.branch.name if ingestion.branch else "",
+            "sync_status": ingestion.sync.status,
+            "job": _job_export_payload(ingestion.job),
+            "merge_job": _job_export_payload(ingestion.merge_job),
+        },
+        "sync": {
+            "pk": ingestion.sync.pk,
+            "name": ingestion.sync.name,
+            "status": ingestion.sync.status,
+            "current_activity": ingestion.sync.get_sync_activity(),
+            "branch_run_state": json_safe_value(ingestion.sync.get_branch_run_state()),
+            "analysis_summary": ingestion.sync.get_analysis_summary(),
+            "workload_summary": ingestion.sync.get_workload_summary(),
+            "advisory_summary": ingestion.sync.get_advisory_summary(),
+        },
+        "job_results": json_safe_value(ingestion.get_job_logs(ingestion.job)),
+        "merge_job_results": json_safe_value(
+            ingestion.get_job_logs(ingestion.merge_job)
+        ),
+    }
+
+
+def _download_json_response(payload, filename):
+    response = JsonResponse(payload, json_dumps_params={"indent": 2}, safe=True)
+    response["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return response
 
 
 @register_model_view(ForwardSource, "list", path="", detail=False)
@@ -474,6 +531,10 @@ class ForwardIngestionLogView(LoginRequiredMixin, View):
         data["merge_job_results"] = ingestion.get_job_logs(ingestion.merge_job)
         data["active_stage"] = active_stage
         data["merge_disabled"] = not ingestion.merge_job
+        data["export_logs_url"] = reverse(
+            "plugins:forward_netbox:forwardingestion_export_logs",
+            kwargs={"pk": ingestion.pk},
+        )
 
         if request.htmx:
             sync_running = ingestion.job and not ingestion.job.completed
@@ -483,6 +544,25 @@ class ForwardIngestionLogView(LoginRequiredMixin, View):
                 bool(anything_ever_ran) and not sync_running and not merge_running
             )
         return render(request, self.template_name, data)
+
+
+@register_model_view(ForwardIngestion, name="export_logs", path="logs/export")
+class ForwardIngestionLogExportView(BaseObjectView):
+    queryset = annotate_statistics(ForwardIngestion.objects.all())
+
+    def get_required_permission(self):
+        return "forward_netbox.view_forwardingestion"
+
+    def get(self, request, pk):
+        ingestion = get_object_or_404(self.queryset, pk=pk)
+        active_stage = request.GET.get("stage", "sync")
+        filename_stage = "merge" if active_stage == "merge" else "sync"
+        payload = _ingestion_log_export_payload(
+            ingestion,
+            active_stage=filename_stage,
+        )
+        filename = f"forward-ingestion-{ingestion.pk}-{filename_stage}-logs.json"
+        return _download_json_response(payload, filename)
 
 
 @register_model_view(ForwardIngestion, name="progress", path="progress")
@@ -517,6 +597,10 @@ class ForwardIngestionView(generic.ObjectView):
         data["merge_job_results"] = instance.get_job_logs(instance.merge_job)
         data["active_stage"] = active_stage
         data["merge_disabled"] = not instance.merge_job
+        data["export_logs_url"] = reverse(
+            "plugins:forward_netbox:forwardingestion_export_logs",
+            kwargs={"pk": instance.pk},
+        )
         return data
 
 
