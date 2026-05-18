@@ -6,12 +6,15 @@ services:
     ports:
       - "8000:8000"
     env_file: env/netbox.env
+    environment:
+      NETBOX_VER: "${NETBOX_VER}"
     healthcheck:
       start_period: 5s
       timeout: 3s
       interval: 5s
-      # It takes about 180s for NetBox to start from scratch due to migrations
-      retries: 40
+      # Fresh environments can take longer than 180s.
+      # Reason: full NetBox/plugin migrations on first boot.
+      retries: 120
       test: "curl -f http://localhost:8000/api/ || exit 1"
     volumes:
       - ./configuration:/etc/netbox/config:ro

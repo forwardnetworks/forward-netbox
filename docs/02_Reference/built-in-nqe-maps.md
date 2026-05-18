@@ -771,6 +771,11 @@ select distinct {
 
 The shipped query combines rows from subinterfaces, bridge interfaces, tunnels, and routed VLAN interfaces, filters those candidates through the importable Forward interface set, applies a final `select distinct` over the merged result, and then projects a single deterministic row per NetBox IP identity. VRF-scoped rows keep the normal `(address, vrf)` identity. Global-table rows are canonicalized by bare host IP so the plugin does not try to create multiple global IP objects for the same host with different masks; when that happens, the most specific mask wins. It still skips subnet network IDs and IPv4 broadcast addresses that NetBox cannot assign to interfaces, while preserving point-to-point endpoint prefixes such as IPv4 `/31` and IPv6 `/127`. These rows are skipped rather than rewritten because there is no NetBox-native host address to infer safely from the device configuration. If an IP row still targets an interface that was not imported, the NetBox adapter records an aggregated skip warning instead of treating the row as a fatal sync failure.
 
+For shard-scoped Branching retries, the plugin applies native Forward column
+filters and then enforces the shard boundary again in NetBox before applying
+rows. Query-side NQE parameters remain deferred until the built-in query is
+converted to a live-validated parameterized `@query` form.
+
 When `ipam.ipaddress` is enabled, the sync also runs an internal read-only diagnostic query that reports how many Forward interface addresses were filtered for this reason and logs capped examples. This diagnostic query is not seeded as a NetBox import map and does not create, update, or delete NetBox objects. See the query file for the complete import text:
 
 On full baseline runs where both `ipam.prefix` and `ipam.ipaddress` are enabled,
@@ -913,6 +918,12 @@ select distinct {
 - Stability: beta
 
 The BGP peer map uses Forward structured BGP neighbor state, not raw configuration parsing and not BGP RIB data. The query prefers explicit `localAS`, falls back to the BGP process `asNumber`, then uses reciprocal Forward peer evidence or explicit internal-BGP peer AS when those are uniquely available. The adapter creates or reuses native NetBox `RIR`, `ASN`, `VRF`, and peer `IPAddress` records, then creates `netbox-routing` routers, scopes, and peers. Missing optional plugin models are recorded as row failures so the rest of the shard can continue.
+
+For shard-scoped Branching retries, the plugin applies native Forward column
+filters for the row-owning device and then enforces the shard boundary again in
+NetBox before applying rows. Reciprocal peer lookups intentionally remain part
+of the full query semantics because local AS and OSPF router identity inference
+can depend on peer evidence outside the current shard.
 
 ## Forward BGP Address Families
 

@@ -1,0 +1,71 @@
+{
+  "checks": {
+    "adp_scale_runtime_matrix_verified": {
+      "evidence": {
+        "note": "Output is intentionally redacted to avoid storing customer identifiers. Use job logs and support bundles for deep triage.",
+        "runs": [
+          {
+            "command": "forward_smoke_sync --validate-only --query-limit 10",
+            "elapsed_ms": 29673,
+            "exit_code": 0,
+            "name": "run_a_branching_validate_only",
+            "ok": true
+          },
+          {
+            "command": "forward_smoke_sync --plan-only --max-changes-per-branch 10000",
+            "elapsed_ms": 452877,
+            "exit_code": 0,
+            "name": "run_b_branching_plan_only",
+            "ok": true
+          },
+          {
+            "command": "forward_smoke_sync --validate-only --query-limit 10 --execution-backend fast_bootstrap",
+            "elapsed_ms": 42691,
+            "exit_code": 0,
+            "name": "run_c_fast_bootstrap_validate_only",
+            "ok": true
+          }
+        ]
+      },
+      "status": "passed"
+    },
+    "destructive_runtime_worker_kill_evidence_verified": {
+      "evidence": {
+        "output_dir": "docs/03_Plans/evidence/chaos",
+        "scenarios": [
+          {
+            "bundle": "docs/03_Plans/evidence/chaos/chaos-stage-before-branch-run-1.json",
+            "exit_code": 0,
+            "ok": true,
+            "scenario": "stage-before-branch"
+          },
+          {
+            "bundle": null,
+            "exit_code": 0,
+            "ok": true,
+            "scenario": "stage-after-branch"
+          },
+          {
+            "bundle": null,
+            "exit_code": 0,
+            "ok": true,
+            "scenario": "stage-during-apply"
+          },
+          {
+            "bundle": null,
+            "exit_code": 0,
+            "ok": true,
+            "scenario": "merge-during-exec"
+          }
+        ]
+      },
+      "status": "passed"
+    }
+  },
+  "generated_at": "2026-05-17T16:11:53.208185+00:00",
+  "notes": {
+    "adp_status": "completed",
+    "sync_name": "ui-harness-sync"
+  },
+  "source": "invoke architecture-runtime-evidence"
+}

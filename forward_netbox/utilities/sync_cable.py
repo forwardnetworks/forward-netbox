@@ -56,9 +56,12 @@ def apply_dcim_cable(runner, row):
                 },
                 data=row,
             ) from exc
-        runner.logger.log_warning(
-            f"Skipping cable row because device `{row['device']}` was not found.",
-            obj=runner.sync,
+        runner._record_aggregated_skip_warning(
+            model_string="dcim.cable",
+            reason="missing-device",
+            warning_message=(
+                f"Skipping cable row because device `{row['device']}` was not found."
+            ),
         )
         return False
 
@@ -76,9 +79,12 @@ def apply_dcim_cable(runner, row):
                 },
                 data=row,
             ) from exc
-        runner.logger.log_warning(
-            f"Skipping cable row because remote device `{row['remote_device']}` was not found.",
-            obj=runner.sync,
+        runner._record_aggregated_skip_warning(
+            model_string="dcim.cable",
+            reason="missing-remote-device",
+            warning_message=(
+                f"Skipping cable row because remote device `{row['remote_device']}` was not found."
+            ),
         )
         return False
 
@@ -92,9 +98,12 @@ def apply_dcim_cable(runner, row):
                 context={"device": device.name, "interface": row["interface"]},
                 data=row,
             )
-        runner.logger.log_warning(
-            f"Skipping cable row because interface `{row['interface']}` was not found on `{device.name}`.",
-            obj=runner.sync,
+        runner._record_aggregated_skip_warning(
+            model_string="dcim.cable",
+            reason="missing-interface",
+            warning_message=(
+                f"Skipping cable row because interface `{row['interface']}` was not found on `{device.name}`."
+            ),
         )
         return False
 
@@ -111,9 +120,12 @@ def apply_dcim_cable(runner, row):
                 },
                 data=row,
             )
-        runner.logger.log_warning(
-            f"Skipping cable row because interface `{row['remote_interface']}` was not found on `{remote_device.name}`.",
-            obj=runner.sync,
+        runner._record_aggregated_skip_warning(
+            model_string="dcim.cable",
+            reason="missing-remote-interface",
+            warning_message=(
+                f"Skipping cable row because interface `{row['remote_interface']}` was not found on `{remote_device.name}`."
+            ),
         )
         return False
 

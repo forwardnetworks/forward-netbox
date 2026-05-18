@@ -8,6 +8,7 @@ from ..choices import ForwardExecutionBackendChoices
 from ..choices import ForwardSourceDeploymentChoices
 from ..utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from ..utilities.forward_api import MAX_NQE_PAGE_SIZE
+from ..utilities.forward_api import MAX_QUERY_FETCH_CONCURRENCY
 from .sync_contracts import normalize_coalesce_fields
 from .sync_contracts import validate_query_shape_for_model
 
@@ -25,6 +26,7 @@ def clean_forward_source(source):
             "retries",
             "network_id",
             "nqe_page_size",
+            "query_fetch_concurrency",
         }
     )
     if invalid:
@@ -50,6 +52,24 @@ def clean_forward_source(source):
                 _(f"`nqe_page_size` must be between 1 and {MAX_NQE_PAGE_SIZE}.")
             )
         parameters["nqe_page_size"] = nqe_page_size
+    if parameters.get("query_fetch_concurrency") is not None:
+        try:
+            query_fetch_concurrency = int(parameters.get("query_fetch_concurrency"))
+        except (TypeError, ValueError) as exc:
+            raise ValidationError(
+                _("`query_fetch_concurrency` must be an integer.")
+            ) from exc
+        if (
+            query_fetch_concurrency < 1
+            or query_fetch_concurrency > MAX_QUERY_FETCH_CONCURRENCY
+        ):
+            raise ValidationError(
+                _(
+                    "`query_fetch_concurrency` must be between 1 and "
+                    f"{MAX_QUERY_FETCH_CONCURRENCY}."
+                )
+            )
+        parameters["query_fetch_concurrency"] = query_fetch_concurrency
     source.parameters = parameters
 
 
@@ -102,6 +122,8 @@ def clean_forward_sync(sync):
             "multi_branch",
             "max_changes_per_branch",
             "snapshot_id",
+            "enable_bulk_orm",
+            "bulk_orm_models",
             *FORWARD_SUPPORTED_MODELS,
         }
     )
@@ -120,6 +142,13 @@ def clean_forward_sync(sync):
         raise ValidationError(_("`execution_backend` is not supported."))
     parameters["execution_backend"] = execution_backend
     parameters["auto_merge"] = bool(parameters.get("auto_merge", sync.auto_merge))
+    parameters["enable_bulk_orm"] = bool(parameters.get("enable_bulk_orm", False))
+    bulk_orm_models = parameters.get("bulk_orm_models") or []
+    if not isinstance(bulk_orm_models, list) or any(
+        not isinstance(model_string, str) for model_string in bulk_orm_models
+    ):
+        raise ValidationError(_("`bulk_orm_models` must be a list of model strings."))
+    parameters["bulk_orm_models"] = sorted(set(bulk_orm_models))
     parameters["multi_branch"] = True
     try:
         max_changes_per_branch = int(

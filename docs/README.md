@@ -6,7 +6,9 @@
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v0.8.6.3` | `4.5.9` validated; `4.5.x` only | Current release; hardens beta routing scope resolution, invalid ASN filtering, conservative virtual chassis skips, and fast-bootstrap baseline readiness when only optional model issues remain |
+| `v0.9.1` | `4.5.9` and `4.6.0` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Current release; keeps the shared-branch architecture, execution ledger, support logging, and scale hardening while preserving the read-only advisory surfaces from `v0.9.0` |
+| `v0.9.0` | `4.5.9` and `4.6.0` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v0.9.1`; adds read-only analysis, workload preview, advisory summaries, and native log export for troubleshooting while keeping lifecycle enrichment and predict deferred |
+| `v0.8.6.3` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.9.1`; hardens beta routing scope resolution, invalid ASN filtering, conservative virtual chassis skips, and fast-bootstrap baseline readiness when only optional model issues remain |
 | `v0.8.6.2` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.8.6.3`; hardens issue and job-log rendering so unexpected nested payload objects stay JSON-safe in the UI and API |
 | `v0.8.6.1` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.8.6.2`; clarifies the native NQE map bulk edit workflow so repository-path mode and runtime query-ID resolution are explicit in the UI |
 | `v0.8.6` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.8.6.1`; refreshes org-repository query publishing with flattened built-ins, filters invalid IPv4 prefix artifacts, adds parent-prefix diagnostics, and hardens virtual chassis/device and routing issue handling |
@@ -39,6 +41,8 @@
 
 | Release | Summary |
 | --- | --- |
+| `v0.9.1` | Keeps the shared 4.5/4.6 branch line, execution ledger, support logging, and scale hardening while preserving the read-only advisory surfaces from `v0.9.0`. |
+| `v0.9.0` | Adds read-only analysis, workload preview, advisory summaries, and native log export for troubleshooting while keeping lifecycle enrichment and predict deferred. |
 | `v0.8.6.3` | Hardens beta routing scope resolution, filters invalid BGP ASN rows in shipped NQE, skips positionless virtual-chassis rows conservatively, and lets fast bootstrap retain its diff baseline when only optional model issues remain. |
 | `v0.8.6.2` | Hardens issue and job-log rendering for JSON safety when unexpected nested payload objects leak into failure data. |
 | `v0.8.6.1` | Clarifies NQE map bulk edit labels and help text so operators use repository query paths and understand query IDs are resolved automatically during sync and diff execution. |

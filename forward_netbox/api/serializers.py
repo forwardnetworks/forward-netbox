@@ -6,6 +6,10 @@ from netbox_branching.api.serializers import BranchSerializer
 from rest_framework import serializers
 
 from forward_netbox.choices import ForwardDriftPolicyBaselineChoices
+from forward_netbox.choices import ForwardExecutionBackendChoices
+from forward_netbox.choices import ForwardExecutionRunStatusChoices
+from forward_netbox.choices import ForwardExecutionStepKindChoices
+from forward_netbox.choices import ForwardExecutionStepStatusChoices
 from forward_netbox.choices import ForwardIngestionPhaseChoices
 from forward_netbox.choices import ForwardSourceDeploymentChoices
 from forward_netbox.choices import ForwardSourceStatusChoices
@@ -13,12 +17,15 @@ from forward_netbox.choices import ForwardSyncStatusChoices
 from forward_netbox.choices import ForwardValidationStatusChoices
 from forward_netbox.models import FORWARD_SUPPORTED_SYNC_MODELS
 from forward_netbox.models import ForwardDriftPolicy
+from forward_netbox.models import ForwardExecutionRun
+from forward_netbox.models import ForwardExecutionStep
 from forward_netbox.models import ForwardIngestion
 from forward_netbox.models import ForwardIngestionIssue
 from forward_netbox.models import ForwardNQEMap
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.models import ForwardValidationRun
+from forward_netbox.utilities.apply_engine import apply_engine_decision_summary
 from forward_netbox.utilities.json_safe import json_safe_value
 
 
@@ -293,4 +300,137 @@ class ForwardIngestionIssueSerializer(NestedGroupModelSerializer):
             "defaults",
             "raw_data",
             "exception",
+        )
+
+
+class ForwardExecutionRunSerializer(NestedGroupModelSerializer):
+    sync = ForwardSyncSerializer(nested=True)
+    source = ForwardSourceSerializer(nested=True, required=False, allow_null=True)
+    validation_run = ForwardValidationRunSerializer(
+        nested=True, required=False, allow_null=True
+    )
+    backend = ChoiceField(choices=ForwardExecutionBackendChoices, read_only=True)
+    status = ChoiceField(choices=ForwardExecutionRunStatusChoices, read_only=True)
+    support_summary = serializers.SerializerMethodField(read_only=True)
+
+    class Meta:
+        model = ForwardExecutionRun
+        fields = (
+            "id",
+            "display",
+            "sync",
+            "source",
+            "job",
+            "validation_run",
+            "backend",
+            "status",
+            "phase",
+            "phase_message",
+            "snapshot_selector",
+            "snapshot_id",
+            "max_changes_per_branch",
+            "auto_merge",
+            "total_steps",
+            "next_step_index",
+            "plan_preview",
+            "model_change_density",
+            "reconciliation_events",
+            "latest_heartbeat",
+            "last_error",
+            "baseline_ready",
+            "support_summary",
+            "created",
+            "updated",
+            "completed",
+        )
+        brief_fields = (
+            "id",
+            "display",
+            "sync",
+            "backend",
+            "status",
+            "phase",
+            "total_steps",
+            "next_step_index",
+        )
+
+    def get_support_summary(self, obj):
+        return obj.as_support_summary()
+
+
+class ForwardExecutionStepSerializer(NestedGroupModelSerializer):
+    run = ForwardExecutionRunSerializer(nested=True)
+    kind = ChoiceField(choices=ForwardExecutionStepKindChoices, read_only=True)
+    status = ChoiceField(choices=ForwardExecutionStepStatusChoices, read_only=True)
+    apply_engine_decision = serializers.SerializerMethodField(read_only=True)
+    support_summary = serializers.SerializerMethodField(read_only=True)
+
+    class Meta:
+        model = ForwardExecutionStep
+        fields = (
+            "id",
+            "display",
+            "run",
+            "index",
+            "kind",
+            "status",
+            "model_string",
+            "label",
+            "query_name",
+            "execution_mode",
+            "execution_value",
+            "commit_id",
+            "sync_mode",
+            "baseline_snapshot_id",
+            "estimated_changes",
+            "actual_changes",
+            "fetched_row_count",
+            "query_runtime_ms",
+            "attempted_row_count",
+            "applied_row_count",
+            "skipped_row_count",
+            "failed_row_count",
+            "shard_keys",
+            "fetch_mode",
+            "fetch_key_family",
+            "fetch_parameters",
+            "query_parameters",
+            "fetch_column_filters",
+            "apply_engine",
+            "apply_engine_decision",
+            "branch",
+            "branch_name",
+            "ingestion",
+            "job",
+            "merge_job",
+            "retry_count",
+            "last_error",
+            "heartbeat",
+            "started",
+            "completed",
+            "support_summary",
+            "created",
+            "updated",
+        )
+        brief_fields = (
+            "id",
+            "display",
+            "run",
+            "index",
+            "kind",
+            "status",
+            "model_string",
+            "label",
+        )
+
+    def get_support_summary(self, obj):
+        return obj.as_support_summary()
+
+    def get_apply_engine_decision(self, obj):
+        if not obj.model_string:
+            return {}
+        return apply_engine_decision_summary(
+            sync=obj.run.sync,
+            model_string=obj.model_string,
+            backend=obj.run.backend,
         )

@@ -9,6 +9,8 @@ from netbox.tables import NetBoxTable
 from netbox_branching.models import ChangeDiff
 
 from .models import ForwardDriftPolicy
+from .models import ForwardExecutionRun
+from .models import ForwardExecutionStep
 from .models import ForwardIngestion
 from .models import ForwardIngestionIssue
 from .models import ForwardNQEMap
@@ -190,6 +192,126 @@ class ForwardValidationRunTable(NetBoxTable):
             "snapshot_id",
             "baseline_snapshot_id",
             "completed",
+        )
+
+
+class ForwardExecutionRunTable(NetBoxTable):
+    run = tables.Column(
+        accessor="pk",
+        linkify=lambda record: record.get_absolute_url(),
+        verbose_name=_("Execution Run"),
+    )
+    sync = tables.Column(linkify=True)
+    source = tables.Column(linkify=True)
+    validation_run = tables.Column(linkify=True)
+    job = tables.Column(linkify=True)
+    backend = columns.ChoiceFieldColumn()
+    status = columns.ChoiceFieldColumn()
+    actions = columns.ActionsColumn(actions=())
+
+    def render_run(self, record):
+        return str(record)
+
+    class Meta(NetBoxTable.Meta):
+        model = ForwardExecutionRun
+        fields = (
+            "run",
+            "pk",
+            "sync",
+            "source",
+            "backend",
+            "status",
+            "phase",
+            "snapshot_id",
+            "total_steps",
+            "next_step_index",
+            "auto_merge",
+            "job",
+            "validation_run",
+            "latest_heartbeat",
+            "completed",
+        )
+        default_columns = (
+            "run",
+            "sync",
+            "backend",
+            "status",
+            "phase",
+            "total_steps",
+            "next_step_index",
+            "latest_heartbeat",
+            "completed",
+        )
+
+
+class ForwardExecutionStepTable(NetBoxTable):
+    step = tables.Column(
+        accessor="pk",
+        linkify=lambda record: record.get_absolute_url(),
+        verbose_name=_("Step"),
+    )
+    run = tables.Column(linkify=True)
+    kind = columns.ChoiceFieldColumn()
+    status = columns.ChoiceFieldColumn()
+    branch = tables.Column(linkify=True)
+    ingestion = tables.Column(linkify=True)
+    job = tables.Column(linkify=True)
+    merge_job = tables.Column(linkify=True)
+    actions = columns.ActionsColumn(actions=())
+
+    def render_step(self, record):
+        return str(record)
+
+    class Meta(NetBoxTable.Meta):
+        model = ForwardExecutionStep
+        fields = (
+            "step",
+            "pk",
+            "run",
+            "index",
+            "kind",
+            "status",
+            "model_string",
+            "label",
+            "query_name",
+            "sync_mode",
+            "estimated_changes",
+            "actual_changes",
+            "fetched_row_count",
+            "query_runtime_ms",
+            "attempted_row_count",
+            "applied_row_count",
+            "skipped_row_count",
+            "failed_row_count",
+            "fetch_mode",
+            "fetch_key_family",
+            "apply_engine",
+            "branch",
+            "ingestion",
+            "job",
+            "merge_job",
+            "retry_count",
+            "heartbeat",
+            "completed",
+        )
+        default_columns = (
+            "step",
+            "index",
+            "kind",
+            "status",
+            "model_string",
+            "label",
+            "estimated_changes",
+            "actual_changes",
+            "fetched_row_count",
+            "attempted_row_count",
+            "applied_row_count",
+            "failed_row_count",
+            "fetch_mode",
+            "fetch_key_family",
+            "apply_engine",
+            "retry_count",
+            "heartbeat",
         )
 
 

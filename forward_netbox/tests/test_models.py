@@ -16,11 +16,14 @@ from forward_netbox.choices import FORWARD_BGP_MODELS
 from forward_netbox.choices import forward_configured_models
 from forward_netbox.choices import ForwardDriftPolicyBaselineChoices
 from forward_netbox.choices import ForwardExecutionBackendChoices
+from forward_netbox.choices import ForwardExecutionStepStatusChoices
 from forward_netbox.choices import ForwardSourceStatusChoices
 from forward_netbox.choices import ForwardSyncStatusChoices
 from forward_netbox.choices import ForwardValidationStatusChoices
 from forward_netbox.jobs import sync_forwardsync
 from forward_netbox.models import ForwardDriftPolicy
+from forward_netbox.models import ForwardExecutionRun
+from forward_netbox.models import ForwardExecutionStep
 from forward_netbox.models import ForwardIngestion
 from forward_netbox.models import ForwardIngestionIssue
 from forward_netbox.models import ForwardNQEMap
@@ -40,6 +43,8 @@ from forward_netbox.utilities.execution_telemetry import build_sync_execution_su
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from forward_netbox.utilities.query_registry import builtin_nqe_map_rows
 from forward_netbox.utilities.query_registry import QuerySpec
+from forward_netbox.utilities.sync_state import clear_branch_run_state
+from forward_netbox.utilities.sync_state import get_branch_run_display_state
 from forward_netbox.utilities.validation import force_allow_validation_run
 from forward_netbox.utilities.validation import ForwardValidationRunner
 from forward_netbox.views import annotate_statistics
@@ -714,6 +719,130 @@ class ForwardSyncModelTest(TestCase):
 
         sync.refresh_from_db()
         self.assertEqual(sync.status, "ready_to_merge")
+
+    def test_sync_sync_uses_execution_ledger_waiting_merge_without_branch_json(
+        self,
+    ):
+        sync = ForwardSync.objects.create(
+            name="sync-ledger-waiting-merge",
+            source=self.source,
+            status="ready_to_merge",
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+            },
+        )
+        execution_run = ForwardExecutionRun.objects.create(
+            sync=sync,
+            source=self.source,
+            backend="branching",
+            status="waiting",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-ledger",
+            total_steps=1,
+            next_step_index=1,
+        )
+        ForwardExecutionStep.objects.create(
+            run=execution_run,
+            index=1,
+            kind="stage",
+            status=ForwardExecutionStepStatusChoices.STAGED,
+            model_string="dcim.site",
+        )
+        clear_branch_run_state(sync)
+        initial_parameters = dict(sync.parameters or {})
+
+        sync.sync()
+
+        sync.refresh_from_db()
+        self.assertEqual(sync.status, "ready_to_merge")
+        self.assertEqual(sync.parameters, initial_parameters)
+
+    @patch("forward_netbox.utilities.sync_facade.enqueue_branch_stage_job")
+    def test_model_enqueue_sync_job_uses_execution_ledger_without_branch_json(
+        self,
+        mock_enqueue_stage,
+    ):
+        user = get_user_model().objects.create_user(username="enqueue-user")
+        sync = ForwardSync.objects.create(
+            name="sync-ledger-enqueue",
+            source=self.source,
+            user=user,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+            },
+        )
+        execution_run = ForwardExecutionRun.objects.create(
+            sync=sync,
+            source=self.source,
+            backend="branching",
+            status="running",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-ledger",
+            total_steps=1,
+            next_step_index=1,
+        )
+        ForwardExecutionStep.objects.create(
+            run=execution_run,
+            index=1,
+            kind="stage",
+            status=ForwardExecutionStepStatusChoices.PENDING,
+            model_string="dcim.site",
+        )
+        clear_branch_run_state(sync)
+        initial_parameters = dict(sync.parameters or {})
+
+        sync.enqueue_sync_job(adhoc=True)
+
+        mock_enqueue_stage.assert_called_once_with(sync, user=user, adhoc=True)
+        sync.refresh_from_db()
+        self.assertEqual(sync.parameters, initial_parameters)
+
+    @patch("forward_netbox.models.Job.enqueue")
+    @patch("forward_netbox.utilities.sync_facade.enqueue_branch_stage_job")
+    def test_model_enqueue_sync_job_prefers_completed_ledger_over_stale_json(
+        self,
+        mock_enqueue_stage,
+        mock_enqueue,
+    ):
+        user = get_user_model().objects.create_user(username="stale-enqueue-user")
+        sync = ForwardSync.objects.create(
+            name="sync-stale-ledger-enqueue",
+            source=self.source,
+            user=user,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+            },
+        )
+        ForwardExecutionRun.objects.create(
+            sync=sync,
+            source=self.source,
+            backend="branching",
+            status="completed",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-finished",
+            total_steps=1,
+            next_step_index=2,
+        )
+        sync.set_branch_run_state(
+            {
+                "next_plan_index": 1,
+                "total_plan_items": 1,
+                "awaiting_merge": False,
+                "phase": "planning",
+                "phase_message": "stale compatibility cache",
+            }
+        )
+        initial_parameters = dict(sync.parameters or {})
+
+        sync.enqueue_sync_job(adhoc=True)
+
+        mock_enqueue_stage.assert_not_called()
+        mock_enqueue.assert_called_once()
+        sync.refresh_from_db()
+        self.assertEqual(sync.parameters, initial_parameters)
 
     @patch("forward_netbox.models.Job.enqueue")
     def test_scheduled_enqueue_sets_queued_only_for_new_sync(self, mock_enqueue):
@@ -1442,12 +1571,9 @@ class ForwardIngestionSnapshotSummaryTest(TestCase):
 
         self.sync.refresh_from_db()
         ingestion.refresh_from_db()
-        state = self.sync.get_branch_run_state()
         self.assertFalse(ingestion.baseline_ready)
-        self.assertFalse(state["awaiting_merge"])
-        self.assertEqual(state["next_plan_index"], 2)
-        self.assertTrue(self.sync.ready_to_continue_sync)
-        self.assertEqual(state["phase"], "merged")
+        self.assertEqual(self.sync.get_branch_run_state(), {})
+        self.assertTrue(self.sync.ready_for_sync)
 
     def test_sync_merge_records_resumable_plan_item_merged(self):
         ingestion = ForwardIngestion.objects.create(
@@ -1478,9 +1604,8 @@ class ForwardIngestionSnapshotSummaryTest(TestCase):
             ingestion.sync_merge()
 
         self.sync.refresh_from_db()
-        state = self.sync.get_branch_run_state()
+        state = get_branch_run_display_state(self.sync)
         self.assertEqual(state["plan_items"][0]["status"], "merged")
-        self.assertEqual(state["plan_items"][0]["ingestion_id"], ingestion.pk)
         self.assertEqual(state["next_plan_index"], 2)
 
     def test_sync_merge_clears_gated_branch_run_after_final_merge(self):
@@ -1759,6 +1884,21 @@ class ForwardNQEMapModelTest(TestCase):
         self.assertEqual(query_map.query_id, "FQ_locations")
         self.assertEqual(query_map.query, "")
         self.assertEqual(query_map.commit_id, "commit-1")
+
+    def test_seed_builtin_maps_removes_stale_shard_parameters(self):
+        netbox_model = ContentType.objects.get(app_label="dcim", model="interface")
+        query_map = ForwardNQEMap.objects.get(
+            name="Forward Interfaces",
+            netbox_model=netbox_model,
+            built_in=True,
+        )
+        query_map.parameters = {"forward_netbox_shard_keys": []}
+        query_map.save(update_fields=["parameters"])
+
+        seed_builtin_nqe_maps(type("Sender", (), {"label": "forward_netbox"}))
+
+        query_map.refresh_from_db()
+        self.assertEqual(query_map.parameters, {})
 
     def test_seed_builtin_maps_creates_optional_alias_maps_disabled(self):
         netbox_model = ContentType.objects.get(app_label="dcim", model="device")
