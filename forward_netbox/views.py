@@ -28,6 +28,8 @@ from utilities.views import register_model_view
 from utilities.views import ViewTab
 
 from .filtersets import ForwardDriftPolicyFilterSet
+from .filtersets import ForwardExecutionRunFilterSet
+from .filtersets import ForwardExecutionStepFilterSet
 from .filtersets import ForwardIngestionChangeFilterSet
 from .filtersets import ForwardIngestionFilterSet
 from .filtersets import ForwardIngestionIssueFilterSet
@@ -47,6 +49,8 @@ from .forms import ForwardSyncBulkEditForm
 from .forms import ForwardSyncForm
 from .forms import ForwardValidationRunForceAllowForm
 from .models import ForwardDriftPolicy
+from .models import ForwardExecutionRun
+from .models import ForwardExecutionStep
 from .models import ForwardIngestion
 from .models import ForwardIngestionIssue
 from .models import ForwardNQEMap
@@ -54,6 +58,8 @@ from .models import ForwardSource
 from .models import ForwardSync
 from .models import ForwardValidationRun
 from .tables import ForwardDriftPolicyTable
+from .tables import ForwardExecutionRunTable
+from .tables import ForwardExecutionStepTable
 from .tables import ForwardIngestionChangesTable
 from .tables import ForwardIngestionIssueTable
 from .tables import ForwardIngestionObjectChangesTable
@@ -63,11 +69,26 @@ from .tables import ForwardSourceTable
 from .tables import ForwardSyncTable
 from .tables import ForwardValidationRunTable
 from .utilities.direct_changes import object_changes_for_ingestion
+from .utilities.execution_ledger import current_discardable_step
+from .utilities.execution_ledger import current_mergeable_step
+from .utilities.execution_ledger import current_retryable_step
+from .utilities.execution_ledger import discard_stage_branch_for_retry
+from .utilities.execution_ledger import execution_run_bundle_for_sync
+from .utilities.execution_ledger import execution_run_recovery_recommendation
+from .utilities.execution_ledger import execution_run_support_bundle
+from .utilities.execution_ledger import prepare_stage_step_retry
+from .utilities.execution_ledger import reconcile_execution_run
+from .utilities.health import live_data_file_health_check
+from .utilities.health import live_source_health_check
+from .utilities.health import sync_health_summary
 from .utilities.json_safe import json_safe_value
 from .utilities.query_binding import apply_explicit_nqe_map_bindings
 from .utilities.query_binding import build_nqe_map_bindings
+from .utilities.query_binding import live_query_binding_drift
 from .utilities.query_binding import publish_builtin_nqe_map_queries
 from .utilities.query_binding import restore_builtin_raw_query_bindings
+from .utilities.resumable_branching import enqueue_branch_stage_job
+from .utilities.sync_state import get_execution_display_state
 
 
 def annotate_statistics(queryset):
@@ -145,7 +166,12 @@ def _job_export_payload(job):
 
 
 def _ingestion_log_export_payload(ingestion, *, active_stage):
-    branch_run_state = json_safe_value(ingestion.sync.get_branch_run_state())
+    execution_state = json_safe_value(get_execution_display_state(ingestion.sync))
+    execution_state_source = (
+        execution_state.get("state_source") or "compatibility_cache"
+        if execution_state
+        else "none"
+    )
     return {
         "exported_at": timezone.now().isoformat(),
         "active_stage": active_stage,
@@ -166,25 +192,71 @@ def _ingestion_log_export_payload(ingestion, *, active_stage):
             "name": ingestion.sync.name,
             "status": ingestion.sync.status,
             "current_activity": ingestion.sync.get_sync_activity(),
-            "branch_run_state": branch_run_state,
+            "execution_state": execution_state,
+            "execution_state_source": execution_state_source,
             "analysis_summary": ingestion.sync.get_analysis_summary(),
             "workload_summary": ingestion.sync.get_workload_summary(),
             "advisory_summary": ingestion.sync.get_advisory_summary(),
         },
-        "branch_plan": {
-            "next_plan_index": branch_run_state.get("next_plan_index"),
-            "total_plan_items": branch_run_state.get("total_plan_items"),
-            "phase": branch_run_state.get("phase") or "",
-            "phase_message": branch_run_state.get("phase_message") or "",
-            "current_model_string": branch_run_state.get("current_model_string") or "",
-            "current_shard_index": branch_run_state.get("current_shard_index"),
-            "last_stage_job_id": branch_run_state.get("last_stage_job_id"),
-            "plan_items": branch_run_state.get("plan_items") or [],
+        "execution_plan": {
+            "next_plan_index": execution_state.get("next_plan_index"),
+            "total_plan_items": execution_state.get("total_plan_items"),
+            "phase": execution_state.get("phase") or "",
+            "phase_message": execution_state.get("phase_message") or "",
+            "current_model_string": execution_state.get("current_model_string") or "",
+            "current_shard_index": execution_state.get("current_shard_index"),
+            "last_stage_job_id": execution_state.get("last_stage_job_id"),
+            "plan_items": execution_state.get("plan_items") or [],
         },
+        "execution_run": json_safe_value(execution_run_bundle_for_sync(ingestion.sync)),
         "job_results": json_safe_value(ingestion.get_job_logs(ingestion.job)),
         "merge_job_results": json_safe_value(
             ingestion.get_job_logs(ingestion.merge_job)
         ),
+    }
+
+
+def _sync_support_bundle_payload(sync):
+    latest_ingestion = sync.last_ingestion
+    execution_state = json_safe_value(get_execution_display_state(sync))
+    execution_state_source = (
+        execution_state.get("state_source") or "compatibility_cache"
+        if execution_state
+        else "none"
+    )
+    return {
+        "exported_at": timezone.now().isoformat(),
+        "sync": {
+            "pk": sync.pk,
+            "name": sync.name,
+            "status": sync.status,
+            "source": sync.source_id,
+            "current_activity": sync.get_sync_activity(),
+            "execution_state": execution_state,
+            "execution_state_source": execution_state_source,
+            "analysis_summary": sync.get_analysis_summary(),
+            "workload_summary": sync.get_workload_summary(),
+            "advisory_summary": sync.get_advisory_summary(),
+        },
+        "latest_ingestion": (
+            {
+                "pk": latest_ingestion.pk,
+                "name": latest_ingestion.name,
+                "sync_mode": latest_ingestion.sync_mode or "",
+                "baseline_ready": bool(latest_ingestion.baseline_ready),
+                "snapshot_id": latest_ingestion.snapshot_id or "",
+                "snapshot_selector": latest_ingestion.snapshot_selector or "",
+                "branch": (
+                    latest_ingestion.branch.name if latest_ingestion.branch else ""
+                ),
+                "job": _job_export_payload(latest_ingestion.job),
+                "merge_job": _job_export_payload(latest_ingestion.merge_job),
+            }
+            if latest_ingestion is not None
+            else None
+        ),
+        "execution_run": json_safe_value(execution_run_bundle_for_sync(sync)),
+        "health": json_safe_value(sync_health_summary(sync)),
     }
 
 
@@ -434,6 +506,10 @@ class ForwardSyncView(generic.ObjectView):
             "last_ingestion": instance.last_ingestion,
             "latest_validation_run": instance.latest_validation_run,
             "enabled_models": instance.enabled_models(),
+            "support_bundle_url": reverse(
+                "plugins:forward_netbox:forwardsync_support_bundle",
+                kwargs={"pk": instance.pk},
+            ),
         }
         if instance.last_ingestion:
             data.update(instance.last_ingestion.get_statistics())
@@ -458,7 +534,7 @@ class ForwardStartSyncView(BaseObjectView):
         except SyncError as exc:
             messages.error(request, str(exc))
             return redirect(sync.get_absolute_url())
-        action = "continue" if sync.has_pending_branch_run else "run"
+        action = "continue" if sync.has_pending_execution else "run"
         messages.success(request, f"Queued job #{job.pk} to {action} {sync}.")
         return redirect(sync.get_absolute_url())
 
@@ -479,6 +555,107 @@ class ForwardStartValidationView(BaseObjectView):
         job = sync.enqueue_validation_job(user=request.user, adhoc=True)
         messages.success(request, f"Queued job #{job.pk} to validate {sync}.")
         return redirect(sync.get_absolute_url())
+
+
+@register_model_view(ForwardSync, "support_bundle", path="support-bundle")
+class ForwardSyncSupportBundleView(BaseObjectView):
+    queryset = ForwardSync.objects.all()
+
+    def get_required_permission(self):
+        return "forward_netbox.view_forwardsync"
+
+    def get(self, request, pk):
+        sync = get_object_or_404(self.queryset, pk=pk)
+        filename = f"forward-sync-{sync.pk}-support-bundle.json"
+        return _download_json_response(_sync_support_bundle_payload(sync), filename)
+
+
+@register_model_view(ForwardSync, "health")
+class ForwardSyncHealthView(generic.ObjectView):
+    queryset = ForwardSync.objects.all()
+    template_name = "forward_netbox/forwardsync_health.html"
+    tab = ViewTab(
+        label=_("Health"),
+        permission="forward_netbox.view_forwardsync",
+    )
+
+    def get_extra_context(self, request, instance):
+        return {"health": sync_health_summary(instance)}
+
+
+@register_model_view(ForwardSync, "query_drift", path="query-drift")
+class ForwardSyncQueryDriftView(BaseObjectView):
+    queryset = ForwardSync.objects.all()
+
+    def get_required_permission(self):
+        return "forward_netbox.view_forwardsync"
+
+    def get(self, request, pk):
+        sync = get_object_or_404(self.queryset, pk=pk)
+        client = sync.source.get_client()
+        maps = [
+            query_map
+            for query_map in sync.get_maps()
+            if sync.is_model_enabled(query_map.model_string)
+        ]
+        payload = {
+            "exported_at": timezone.now().isoformat(),
+            "sync": {
+                "pk": sync.pk,
+                "name": sync.name,
+                "source": sync.source_id,
+            },
+            "results": [
+                live_query_binding_drift(client=client, query_map=query_map)
+                for query_map in maps
+            ],
+        }
+        filename = f"forward-sync-{sync.pk}-live-query-drift.json"
+        return _download_json_response(json_safe_value(payload), filename)
+
+
+@register_model_view(ForwardSync, "source_health", path="source-health")
+class ForwardSyncSourceHealthView(BaseObjectView):
+    queryset = ForwardSync.objects.all()
+
+    def get_required_permission(self):
+        return "forward_netbox.view_forwardsync"
+
+    def get(self, request, pk):
+        sync = get_object_or_404(self.queryset, pk=pk)
+        payload = {
+            "exported_at": timezone.now().isoformat(),
+            "sync": {
+                "pk": sync.pk,
+                "name": sync.name,
+                "source": sync.source_id,
+            },
+            "source_health": live_source_health_check(sync),
+        }
+        filename = f"forward-sync-{sync.pk}-live-source-health.json"
+        return _download_json_response(json_safe_value(payload), filename)
+
+
+@register_model_view(ForwardSync, "data_file_health", path="data-file-health")
+class ForwardSyncDataFileHealthView(BaseObjectView):
+    queryset = ForwardSync.objects.all()
+
+    def get_required_permission(self):
+        return "forward_netbox.view_forwardsync"
+
+    def get(self, request, pk):
+        sync = get_object_or_404(self.queryset, pk=pk)
+        payload = {
+            "exported_at": timezone.now().isoformat(),
+            "sync": {
+                "pk": sync.pk,
+                "name": sync.name,
+                "source": sync.source_id,
+            },
+            "data_file_health": live_data_file_health_check(sync),
+        }
+        filename = f"forward-sync-{sync.pk}-live-data-file-health.json"
+        return _download_json_response(json_safe_value(payload), filename)
 
 
 @register_model_view(ForwardSync, "delete")
@@ -518,6 +695,246 @@ class ForwardIngestionTabView(generic.ObjectChildrenView):
 
     def get_children(self, request, parent):
         return annotate_statistics(ForwardIngestion.objects.filter(sync=parent))
+
+
+@register_model_view(ForwardSync, "execution_runs")
+class ForwardSyncExecutionRunsView(generic.ObjectChildrenView):
+    queryset = ForwardSync.objects.all()
+    child_model = ForwardExecutionRun
+    table = ForwardExecutionRunTable
+    filterset = ForwardExecutionRunFilterSet
+    tab = ViewTab(
+        label=_("Execution Runs"),
+        badge=lambda obj: ForwardExecutionRun.objects.filter(sync=obj).count(),
+        permission="forward_netbox.view_forwardexecutionrun",
+    )
+
+    def get_children(self, request, parent):
+        return ForwardExecutionRun.objects.filter(sync=parent).select_related(
+            "sync",
+            "source",
+            "job",
+            "validation_run",
+        )
+
+
+@register_model_view(ForwardExecutionRun, "list", path="", detail=False)
+class ForwardExecutionRunListView(generic.ObjectListView):
+    queryset = ForwardExecutionRun.objects.select_related(
+        "sync",
+        "source",
+        "job",
+        "validation_run",
+    )
+    filterset = ForwardExecutionRunFilterSet
+    table = ForwardExecutionRunTable
+    actions = (BulkExport,)
+
+
+@register_model_view(ForwardExecutionRun)
+class ForwardExecutionRunView(generic.ObjectView):
+    queryset = ForwardExecutionRun.objects.select_related(
+        "sync",
+        "source",
+        "job",
+        "validation_run",
+    )
+    template_name = "forward_netbox/forwardexecutionrun.html"
+    actions = ()
+
+    def get_extra_context(self, request, instance):
+        return {
+            "support_bundle_url": reverse(
+                "plugins:forward_netbox:forwardexecutionrun_export_bundle",
+                kwargs={"pk": instance.pk},
+            ),
+            "retryable_step": current_retryable_step(instance),
+            "discardable_step": current_discardable_step(instance),
+            "recovery_recommendation": execution_run_recovery_recommendation(instance),
+        }
+
+
+@register_model_view(ForwardExecutionRun, "steps")
+class ForwardExecutionRunStepsView(generic.ObjectChildrenView):
+    queryset = ForwardExecutionRun.objects.all()
+    child_model = ForwardExecutionStep
+    table = ForwardExecutionStepTable
+    filterset = ForwardExecutionStepFilterSet
+    tab = ViewTab(
+        label=_("Steps"),
+        badge=lambda obj: ForwardExecutionStep.objects.filter(run=obj).count(),
+        permission="forward_netbox.view_forwardexecutionstep",
+    )
+
+    def get_children(self, request, parent):
+        return ForwardExecutionStep.objects.filter(run=parent).select_related(
+            "run",
+            "branch",
+            "ingestion",
+            "job",
+            "merge_job",
+        )
+
+
+@register_model_view(ForwardExecutionRun, "export_bundle", path="support-bundle")
+class ForwardExecutionRunSupportBundleView(BaseObjectView):
+    queryset = ForwardExecutionRun.objects.all()
+
+    def get_required_permission(self):
+        return "forward_netbox.view_forwardexecutionrun"
+
+    def get(self, request, pk):
+        run = get_object_or_404(self.queryset, pk=pk)
+        filename = f"forward-execution-run-{run.pk}-support-bundle.json"
+        return _download_json_response(execution_run_support_bundle(run), filename)
+
+
+@register_model_view(ForwardExecutionRun, "reconcile")
+class ForwardExecutionRunReconcileView(BaseObjectView):
+    queryset = ForwardExecutionRun.objects.all()
+
+    def get_required_permission(self):
+        return "forward_netbox.change_forwardexecutionrun"
+
+    def get(self, request, pk):
+        return redirect(get_object_or_404(self.queryset, pk=pk).get_absolute_url())
+
+    def post(self, request, pk):
+        run = get_object_or_404(self.queryset, pk=pk)
+        result = reconcile_execution_run(run)
+        messages.success(
+            request,
+            _("Reconciled Forward execution run %(run)s; updated %(count)s steps.")
+            % {"run": run.pk, "count": result.get("updated_steps", 0)},
+        )
+        return redirect(run.get_absolute_url())
+
+
+@register_model_view(ForwardExecutionRun, "retry_current_step")
+class ForwardExecutionRunRetryCurrentStepView(BaseObjectView):
+    queryset = ForwardExecutionRun.objects.all()
+
+    def get_required_permission(self):
+        return "forward_netbox.run_forwardsync"
+
+    def get(self, request, pk):
+        return redirect(get_object_or_404(self.queryset, pk=pk).get_absolute_url())
+
+    def post(self, request, pk):
+        run = get_object_or_404(self.queryset, pk=pk)
+        step = current_retryable_step(run)
+        if step is None:
+            messages.error(request, _("No retryable Forward execution step was found."))
+            return redirect(run.get_absolute_url())
+        prepared = prepare_stage_step_retry(step)
+        if prepared is None:
+            messages.warning(
+                request,
+                _("Forward execution step %(step)s is already queued for retry.")
+                % {"step": step.index},
+            )
+            return redirect(run.get_absolute_url())
+        job = enqueue_branch_stage_job(run.sync, user=request.user, adhoc=True)
+        messages.success(
+            request,
+            _("Queued job #%(job)s to retry Forward execution step %(step)s.")
+            % {"job": job.pk, "step": step.index},
+        )
+        return redirect(run.get_absolute_url())
+
+
+@register_model_view(ForwardExecutionRun, "discard_branch_retry")
+class ForwardExecutionRunDiscardBranchRetryView(BaseObjectView):
+    queryset = ForwardExecutionRun.objects.all()
+
+    def get_required_permission(self):
+        return "forward_netbox.run_forwardsync"
+
+    def get(self, request, pk):
+        return redirect(get_object_or_404(self.queryset, pk=pk).get_absolute_url())
+
+    def post(self, request, pk):
+        run = get_object_or_404(self.queryset, pk=pk)
+        step = current_discardable_step(run)
+        if step is None:
+            messages.error(
+                request,
+                _(
+                    "No failed Forward execution step with a discardable branch was found."
+                ),
+            )
+            return redirect(run.get_absolute_url())
+        discarded = discard_stage_branch_for_retry(step)
+        if discarded is None:
+            messages.error(
+                request,
+                _("The failed Forward execution branch could not be discarded."),
+            )
+            return redirect(run.get_absolute_url())
+        job = enqueue_branch_stage_job(run.sync, user=request.user, adhoc=True)
+        messages.success(
+            request,
+            _(
+                "Discarded the failed branch and queued job #%(job)s to retry "
+                "Forward execution step %(step)s."
+            )
+            % {"job": job.pk, "step": step.index},
+        )
+        return redirect(run.get_absolute_url())
+
+
+@register_model_view(ForwardExecutionRun, "requeue_merge")
+class ForwardExecutionRunRequeueMergeView(BaseObjectView):
+    queryset = ForwardExecutionRun.objects.all()
+
+    def get_required_permission(self):
+        return "forward_netbox.merge_forwardingestion"
+
+    def get(self, request, pk):
+        return redirect(get_object_or_404(self.queryset, pk=pk).get_absolute_url())
+
+    def post(self, request, pk):
+        run = get_object_or_404(self.queryset, pk=pk)
+        step = current_mergeable_step(run)
+        if step is None:
+            messages.error(request, _("No mergeable Forward execution step was found."))
+            return redirect(run.get_absolute_url())
+        job = step.ingestion.enqueue_merge_job(user=request.user, remove_branch=True)
+        messages.success(
+            request,
+            _("Queued merge job #%(job)s for Forward execution step %(step)s.")
+            % {"job": job.pk, "step": step.index},
+        )
+        return redirect(run.get_absolute_url())
+
+
+@register_model_view(ForwardExecutionStep, "list", path="", detail=False)
+class ForwardExecutionStepListView(generic.ObjectListView):
+    queryset = ForwardExecutionStep.objects.select_related(
+        "run",
+        "run__sync",
+        "branch",
+        "ingestion",
+        "job",
+        "merge_job",
+    )
+    filterset = ForwardExecutionStepFilterSet
+    table = ForwardExecutionStepTable
+    actions = (BulkExport,)
+
+
+@register_model_view(ForwardExecutionStep)
+class ForwardExecutionStepView(generic.ObjectView):
+    queryset = ForwardExecutionStep.objects.select_related(
+        "run",
+        "run__sync",
+        "branch",
+        "ingestion",
+        "job",
+        "merge_job",
+    )
+    template_name = "forward_netbox/forwardexecutionstep.html"
+    actions = ()
 
 
 @register_model_view(ForwardIngestion, "list", path="", detail=False)

@@ -2,6 +2,10 @@ from core.exceptions import SyncError
 
 from ..choices import ForwardSyncStatusChoices
 from .branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
+from .execution_ledger import active_execution_run
+from .execution_ledger import branch_run_state_from_execution_run
+from .execution_ledger import ensure_branch_execution_run
+from .execution_ledger import mark_run_completed
 from .execution_telemetry import build_plan_preview
 from .multi_branch_lifecycle import cleanup_overflow_branch
 from .multi_branch_lifecycle import create_noop_ingestion
@@ -15,10 +19,11 @@ from .multi_branch_lifecycle import validation_run_from_state
 from .multi_branch_planner import ForwardMultiBranchPlanner
 from .resumable_branching import enqueue_branch_stage_job
 from .resumable_branching import get_plan_items
-from .resumable_branching import plan_items_snapshot
 from .resumable_branching import resumable_branching_enabled
 from .resumable_branching import update_plan_item_state
+from .runtime_guidance import log_branch_plan_capacity_guidance
 from .runtime_guidance import log_branch_plan_timeout_guidance
+from .sync_state import is_waiting_for_branch_merge
 from .validation import ForwardValidationRunner
 
 
@@ -53,24 +58,37 @@ class ForwardMultiBranchExecutor:
         run_preflight=True,
         model_change_density=None,
         model_strings=None,
+        shard_scope=None,
+        branch_run_state=None,
     ):
         planner = ForwardMultiBranchPlanner(
             self.sync,
             self.client,
             self.logger,
-            branch_run_state=self.sync.get_branch_run_state(),
+            branch_run_state=branch_run_state or self.sync.get_branch_run_state(),
         )
         context, plan = planner.build_plan(
             max_changes_per_branch=max_changes_per_branch,
             run_preflight=run_preflight,
             model_change_density=model_change_density,
             model_strings=model_strings,
+            shard_scope=shard_scope,
         )
         self.last_model_results = planner.model_results
         return context, plan
 
-    def _load_execution_context(self, *, max_changes_per_branch, model_strings=None):
+    def _load_execution_context(
+        self,
+        *,
+        max_changes_per_branch,
+        model_strings=None,
+        shard_scope=None,
+    ):
         run_state = self.sync.get_branch_run_state()
+        if not run_state:
+            active_run = active_execution_run(self.sync)
+            if active_run is not None:
+                run_state = branch_run_state_from_execution_run(active_run)
         persisted_density = self.sync.get_model_change_density()
         run_state_density = run_state.get("model_change_density") or {}
         model_change_density = {
@@ -81,7 +99,7 @@ class ForwardMultiBranchExecutor:
                 if isinstance(key, str)
             },
         }
-        if run_state.get("awaiting_merge"):
+        if run_state.get("awaiting_merge") or is_waiting_for_branch_merge(self.sync):
             raise SyncError(
                 "Forward sync is waiting for the current shard branch to be merged."
             )
@@ -97,12 +115,15 @@ class ForwardMultiBranchExecutor:
             run_preflight=next_plan_index <= 1 and not has_persisted_plan,
             model_change_density=model_change_density,
             model_strings=model_strings,
+            shard_scope=shard_scope,
+            branch_run_state=run_state,
         )
         plan_preview = build_plan_preview(
             plan,
-            max_changes_per_branch=self.max_changes_per_branch,
+            max_changes_per_branch=max_changes_per_branch,
         )
         log_branch_plan_timeout_guidance(self.sync, self.logger, plan)
+        log_branch_plan_capacity_guidance(self.sync, self.logger, plan)
         if next_plan_index <= 1 and not has_persisted_plan:
             self._set_runtime_phase(
                 "validating",
@@ -122,37 +143,6 @@ class ForwardMultiBranchExecutor:
         else:
             self.last_validation_run = validation_run_from_state(run_state)
         return context, plan, plan_preview, next_plan_index, model_change_density
-
-    def _persist_execution_state(
-        self,
-        context,
-        plan,
-        plan_preview,
-        *,
-        next_plan_index,
-        auto_merge,
-        model_change_density,
-    ):
-        self.sync.set_branch_run_state(
-            {
-                "snapshot_selector": context["snapshot_selector"],
-                "snapshot_id": context["snapshot_id"],
-                "max_changes_per_branch": self.max_changes_per_branch,
-                "next_plan_index": next_plan_index,
-                "total_plan_items": len(plan),
-                "auto_merge": auto_merge,
-                "awaiting_merge": False,
-                "model_change_density": model_change_density,
-                "validation_run_id": getattr(self.last_validation_run, "pk", None),
-                "plan_preview": plan_preview,
-                "plan_items": plan_items_snapshot(
-                    plan,
-                    existing_items=get_plan_items(self.sync),
-                ),
-                "phase": "executing",
-                "phase_message": "Applying planned shard changes.",
-            }
-        )
 
     def _create_planning_ingestion(self, context):
         from ..models import ForwardIngestion
@@ -216,6 +206,12 @@ class ForwardMultiBranchExecutor:
                 next_plan_index=item.index,
                 total_plan_items=len(plan),
             )
+            update_plan_item_state(
+                self.sync,
+                item.index,
+                status="staging",
+                last_error="",
+            )
             try:
                 ingestion = self._run_plan_item(
                     item,
@@ -227,26 +223,26 @@ class ForwardMultiBranchExecutor:
                 )
             except BranchBudgetExceeded as exc:
                 plan = self._handle_branch_budget_exceeded(exc, plan, current_index)
-                self.sync.set_branch_run_state(
-                    {
-                        "snapshot_selector": context["snapshot_selector"],
-                        "snapshot_id": context["snapshot_id"],
-                        "max_changes_per_branch": self.max_changes_per_branch,
-                        "next_plan_index": current_index + 1,
-                        "total_plan_items": len(plan),
-                        "auto_merge": self.sync.auto_merge,
-                        "awaiting_merge": False,
-                        "model_change_density": self.model_change_density,
-                        "validation_run_id": getattr(
-                            self.last_validation_run,
-                            "pk",
-                            None,
-                        ),
-                        "plan_preview": build_plan_preview(
-                            plan,
-                            max_changes_per_branch=self.max_changes_per_branch,
-                        ),
-                    }
+                ensure_branch_execution_run(
+                    sync=self.sync,
+                    context=context,
+                    plan=plan,
+                    plan_preview=build_plan_preview(
+                        plan,
+                        max_changes_per_branch=self.max_changes_per_branch,
+                    ),
+                    validation_run=self.last_validation_run,
+                    job=self.job,
+                    max_changes_per_branch=self.max_changes_per_branch,
+                    auto_merge=self.sync.auto_merge,
+                    model_change_density=self.model_change_density,
+                    next_plan_index=current_index + 1,
+                )
+                self._set_runtime_phase(
+                    "queued",
+                    "Branch budget retry split the current shard; queued the smaller shard.",
+                    next_plan_index=current_index + 1,
+                    total_plan_items=len(plan),
                 )
                 continue
 
@@ -278,15 +274,19 @@ class ForwardMultiBranchExecutor:
             self.logger.log_info("Forward multi-branch sync already completed.")
             return []
 
-        self._persist_execution_state(
-            context,
-            plan,
-            plan_preview,
-            next_plan_index=next_plan_index,
-            auto_merge=self.sync.auto_merge,
-            model_change_density=self.model_change_density,
-        )
         if self.job and resumable_branching_enabled(self.sync):
+            ensure_branch_execution_run(
+                sync=self.sync,
+                context=context,
+                plan=plan,
+                plan_preview=plan_preview,
+                validation_run=self.last_validation_run,
+                job=self.job,
+                max_changes_per_branch=self.max_changes_per_branch,
+                auto_merge=self.sync.auto_merge,
+                model_change_density=self.model_change_density,
+                next_plan_index=next_plan_index,
+            )
             ingestion = self._create_planning_ingestion(context)
             enqueue_branch_stage_job(
                 self.sync,
@@ -299,6 +299,18 @@ class ForwardMultiBranchExecutor:
                 obj=self.sync,
             )
             return [ingestion]
+        ensure_branch_execution_run(
+            sync=self.sync,
+            context=context,
+            plan=plan,
+            plan_preview=plan_preview,
+            validation_run=self.last_validation_run,
+            job=self.job,
+            max_changes_per_branch=self.max_changes_per_branch,
+            auto_merge=self.sync.auto_merge,
+            model_change_density=self.model_change_density,
+            next_plan_index=next_plan_index,
+        )
         return self._execute_planned_items(
             context,
             plan,
@@ -313,7 +325,14 @@ class ForwardMultiBranchExecutor:
     ):
         self.max_changes_per_branch = max_changes_per_branch
         state = self.sync.get_branch_run_state()
-        next_plan_index = int(state.get("next_plan_index") or 1)
+        run = active_execution_run(self.sync)
+        if not state and run is not None:
+            state = branch_run_state_from_execution_run(run)
+        next_plan_index = int(
+            state.get("next_plan_index")
+            or (run.next_step_index if run is not None else 1)
+            or 1
+        )
         persisted_item = self._persisted_plan_item(next_plan_index)
         model_strings = (
             [persisted_item["model"]]
@@ -324,6 +343,7 @@ class ForwardMultiBranchExecutor:
             self._load_execution_context(
                 max_changes_per_branch=max_changes_per_branch,
                 model_strings=model_strings,
+                shard_scope=persisted_item,
             )
         )
         self.model_change_density = model_change_density
@@ -332,6 +352,7 @@ class ForwardMultiBranchExecutor:
         item = self._select_plan_item(plan, persisted_item, next_plan_index)
         if item is None:
             self.sync.clear_branch_run_state()
+            mark_run_completed(self.sync, baseline_ready=True)
             self.sync.status = ForwardSyncStatusChoices.COMPLETED
             self.sync.__class__.objects.filter(pk=self.sync.pk).update(
                 status=self.sync.status
@@ -365,9 +386,26 @@ class ForwardMultiBranchExecutor:
             )
         except BranchBudgetExceeded as exc:
             plan = self._handle_branch_budget_exceeded(exc, plan, 0)
-            self._replace_persisted_plan_item_with_split(
-                next_plan_index,
-                plan,
+            ensure_branch_execution_run(
+                sync=self.sync,
+                context=context,
+                plan=plan,
+                plan_preview=build_plan_preview(
+                    plan,
+                    max_changes_per_branch=self.max_changes_per_branch,
+                ),
+                validation_run=self.last_validation_run,
+                job=self.job,
+                max_changes_per_branch=self.max_changes_per_branch,
+                auto_merge=self.sync.auto_merge,
+                model_change_density=self.model_change_density,
+                next_plan_index=next_plan_index,
+            )
+            self._set_runtime_phase(
+                "queued",
+                "Branch budget retry split the current shard; queued the smaller shard.",
+                next_plan_index=next_plan_index,
+                total_plan_items=len(plan),
             )
             enqueue_branch_stage_job(self.sync, user=self.user, adhoc=True)
             return []
@@ -429,36 +467,6 @@ class ForwardMultiBranchExecutor:
             query_runtime_ms=item.query_runtime_ms,
             baseline_snapshot_id=item.baseline_snapshot_id,
         )
-
-    def _replace_persisted_plan_item_with_split(self, current_index, split_plan):
-        state = self.sync.get_branch_run_state()
-        existing_items = get_plan_items(self.sync)
-        split_items = plan_items_snapshot(split_plan)
-        replacement_count = len(split_items)
-        updated_items = []
-        for item in existing_items:
-            item_index = int(item.get("index") or 0)
-            if item_index < int(current_index):
-                updated_items.append(item)
-                continue
-            if item_index == int(current_index):
-                for offset, split_item in enumerate(split_items):
-                    split_item["index"] = int(current_index) + offset
-                    split_item["status"] = "pending"
-                    updated_items.append(split_item)
-                continue
-            shifted = dict(item)
-            shifted["index"] = item_index + max(0, replacement_count - 1)
-            updated_items.append(shifted)
-        state["plan_items"] = updated_items
-        state["next_plan_index"] = int(current_index)
-        state["total_plan_items"] = len(updated_items)
-        state["model_change_density"] = self.model_change_density
-        state["phase"] = "queued"
-        state["phase_message"] = (
-            "Branch budget retry split the current shard; queued the smaller shard."
-        )
-        self.sync.set_branch_run_state(state)
 
     def _set_runtime_phase(
         self, phase, message, *, next_plan_index=None, total_plan_items=None

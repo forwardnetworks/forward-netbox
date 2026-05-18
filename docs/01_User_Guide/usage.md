@@ -2,6 +2,8 @@
 
 Run a sync from the `Forward Sync` detail page. The plugin executes the enabled NetBox models through the configured NQE maps, records failures as `Forward Ingestion Issues`, and applies the selected execution backend. The default backend stages changes in native NetBox Branching shards for review and merge. The optional fast bootstrap backend writes directly after validation for trusted large baselines.
 
+Version `v0.9.1` is the point where the architecture is split into explicit execution-ledger, health, and support-reporting surfaces while keeping the shared 4.5/4.6 branch line. In practice, that means the UI still looks like a normal NetBox sync flow, but long runs now have clearer run/step state, better troubleshooting export, and less ambiguity around branch planning and merge progress.
+
 ## Self-Test Workflow
 
 Use this flow to validate a new installation from the UI.
@@ -166,8 +168,10 @@ Optional knobs:
 - `--query-limit` limits rows fetched per query during `--validate-only`; normal syncs page through the full NQE result set
 - `invoke forward_netbox.smoke-sync --plan-only --max-changes-per-branch 10000` prints the native NetBox Branching shard plan for large baselines
 - `invoke forward_netbox.smoke-sync --max-changes-per-branch 10000` stages and merges large baselines in multiple native branches
+- `max_changes_per_branch` is treated as a guideline during execution: shards up to 5% over the configured value are accepted; larger overruns are auto-split and retried
 - `invoke forward_netbox.smoke-sync --no-auto-merge --max-changes-per-branch 10000` stages one native Branching shard and pauses for review
 - `invoke forward_netbox.smoke-sync --execution-backend fast_bootstrap` runs the trusted direct-write baseline backend after validation
+- `invoke forward_netbox.smoke-sync --enable-bulk-orm` enables the opt-in bulk ORM apply engine for the parity-tested model set: `dcim.site`, `dcim.manufacturer`, `dcim.devicerole`, `dcim.platform`, `dcim.devicetype`, `ipam.vrf`, and `ipam.vlan`. The adapter path remains the default for all models.
 
 The normal UI/API `Run Sync` path uses the same execution backends exposed on the sync form. Use the command-line smoke sync when you need explicit plan-only output, a targeted model subset, or a timed local baseline run.
 

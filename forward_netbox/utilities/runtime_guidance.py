@@ -2,9 +2,13 @@ from django.conf import settings
 
 from ..choices import ForwardExecutionBackendChoices
 from .forward_api import DEFAULT_FORWARD_API_TIMEOUT_SECONDS
+from .forward_api import DEFAULT_QUERY_FETCH_CONCURRENCY
+from .forward_api import MAX_QUERY_FETCH_CONCURRENCY
 
 
 MIN_LARGE_BRANCH_RQ_TIMEOUT_SECONDS = 1800
+DEFAULT_ESTIMATED_SECONDS_PER_CHANGE = 0.08
+BRANCH_TIMEOUT_RISK_RATIO = 0.8
 
 
 def configured_rq_default_timeout():
@@ -26,6 +30,18 @@ def source_timeout_seconds(sync):
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def source_query_fetch_concurrency(sync):
+    parameters = getattr(getattr(sync, "source", None), "parameters", None) or {}
+    value = parameters.get("query_fetch_concurrency")
+    if value in ("", None):
+        return DEFAULT_QUERY_FETCH_CONCURRENCY
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_QUERY_FETCH_CONCURRENCY
+    return max(1, min(MAX_QUERY_FETCH_CONCURRENCY, parsed))
 
 
 def log_worker_timeout_guidance(sync, logger_, *, execution_backend):
@@ -74,3 +90,71 @@ def log_branch_plan_timeout_guidance(sync, logger_, plan):
         "itself will remain bounded by the configured branch budget.",
         obj=sync,
     )
+
+
+def log_branch_plan_capacity_guidance(sync, logger_, plan):
+    rq_timeout = configured_rq_default_timeout()
+    if rq_timeout is None:
+        return
+    if not plan:
+        return
+
+    projected = _projected_plan_runtime_seconds(sync, plan)
+    if projected is None:
+        return
+    threshold = int(rq_timeout * BRANCH_TIMEOUT_RISK_RATIO)
+    if projected < threshold:
+        return
+
+    logger_.log_warning(
+        "Projected Branching stage runtime is "
+        f"{projected}s based on recent shard history, with RQ_DEFAULT_TIMEOUT at "
+        f"{rq_timeout}s. This run is at elevated timeout risk; consider reducing "
+        "query fetch concurrency, increasing worker timeout, or using Fast "
+        "bootstrap for the initial baseline.",
+        obj=sync,
+    )
+
+
+def _projected_plan_runtime_seconds(sync, plan):
+    estimated_changes = sum(int(item.estimated_changes or 0) for item in plan)
+    if estimated_changes <= 0:
+        return None
+    seconds_per_change = _recent_seconds_per_change(sync)
+    if seconds_per_change is None:
+        seconds_per_change = DEFAULT_ESTIMATED_SECONDS_PER_CHANGE
+    return round(estimated_changes * seconds_per_change, 3)
+
+
+def _recent_seconds_per_change(sync):
+    from ..models import ForwardExecutionRun
+    from ..choices import ForwardExecutionRunStatusChoices
+    from ..choices import ForwardExecutionStepStatusChoices
+
+    completed_statuses = {
+        ForwardExecutionStepStatusChoices.STAGED,
+        ForwardExecutionStepStatusChoices.MERGED,
+    }
+    run_statuses = {
+        ForwardExecutionRunStatusChoices.COMPLETED,
+        ForwardExecutionRunStatusChoices.FAILED,
+        ForwardExecutionRunStatusChoices.TIMEOUT,
+    }
+    runs = ForwardExecutionRun.objects.filter(
+        sync=sync, status__in=run_statuses
+    ).order_by("-created")[:3]
+    total_seconds = 0.0
+    total_changes = 0
+    for run in runs:
+        for step in run.steps.filter(status__in=completed_statuses):
+            if not step.started or not step.completed:
+                continue
+            attempted = int(step.attempted_row_count or 0)
+            if attempted <= 0:
+                continue
+            duration_seconds = max(0.0, (step.completed - step.started).total_seconds())
+            total_seconds += duration_seconds
+            total_changes += attempted
+    if total_changes <= 0:
+        return None
+    return total_seconds / total_changes

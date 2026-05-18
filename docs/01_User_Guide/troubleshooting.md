@@ -73,6 +73,24 @@ Checks:
 - Confirm the source has a valid `Network` selected.
 - Confirm the selected `Snapshot` is valid for that source network, or leave it at `latestProcessed`.
 - Confirm the required NQE maps are enabled.
+- Open the sync `Health` tab before rerunning. It summarizes source status,
+  query binding mode, diff eligibility, data-file-dependent maps, worker/source
+  timeout settings, latest validation, latest ingestion, latest execution run,
+  and the current recovery recommendation without making live Forward API calls.
+  Use `Export Live Source Check` when you want the plugin to call Forward and
+  export reachability diagnostics for the configured source/network/snapshot
+  without including the network ID or snapshot ID in the export.
+  It also includes `Local Query Drift` diagnostics that compare enabled maps to
+  bundled query metadata where that can be done locally. Direct query IDs remain
+  org-specific and require a live Forward repository lookup for full source/commit
+  drift verification; use `Export Live Query Drift Check` from the Health tab
+  when you want the plugin to call Forward and export repository/query-ID drift
+  diagnostics. Use `Export Live Data File Check` when optional data-file-backed
+  maps are enabled and you need to confirm the selected snapshot actually sees
+  rows for the required Forward NQE data files. When execution-step timing is
+  available, `Capacity Projection` estimates remaining shard time from completed
+  ledger steps and warns when observed shard duration approaches the configured
+  worker timeout.
 - If the selected model is `dcim.module`, confirm the optional beta module path
   is still enabled in the plugin and that the `Forward Modules` NQE Map remains
   turned on.
@@ -124,7 +142,13 @@ Checks:
   plan or source data needs to change.
 - If the timeout happened after a shard was staged, open that ingestion and
   requeue the merge instead of rerunning the shard.
-- Review `core/jobs` plus ingestion issues for the matching timestamp window.
+- Use `Export Support Bundle` from the sync page or `Export Logs` from the
+  ingestion page. For multi-shard Branching
+  runs, the export includes the execution run/step bundle with shard statuses,
+  linked stage/merge jobs, retry counts, branch names, health summary, and last
+  errors.
+- Review `core/jobs` plus ingestion issues for the matching timestamp window
+  when the exported bundle points to a specific failed job.
 
 Example NetBox configuration:
 
@@ -283,7 +307,23 @@ curl -sS -H "Authorization: Token ${NETBOX_TOKEN}" \
 
 ### 3) Pull plugin runtime logs from the host/container
 
-For a single failed ingestion, use the native `Export Logs` action on the ingestion detail page first. It downloads the sync-stage and merge-stage job payloads together, which is the quickest way to hand over Forward-specific failure context without scraping the UI.
+For a full sync/run handoff, use `Export Support Bundle` from the sync detail
+page first. For a single failed ingestion, use the native `Export Logs` action
+on the ingestion detail page. Both downloads include linked execution-run and
+job context so the failure can be investigated without scraping the UI.
+
+Also check the sync `Health` tab before collecting logs. It is read-only and is
+intended to answer the common first-pass questions: whether the source is marked
+ready, whether enabled maps are diff-capable, whether optional data-file maps
+are active, whether a baseline-ready ingestion exists, and whether the latest
+execution run recommends waiting, retrying, requeueing merge, or exporting a
+support bundle. Use `Export Live Source Check` from that tab for a live
+Forward reachability export. Its local query-drift check can identify raw bundled-query
+modifications and repository paths that no longer match the bundled query name;
+it does not contact Forward to compare repository source or commit contents
+unless you use the explicit `Export Live Query Drift Check` action. For
+optional data-file-backed maps, use `Export Live Data File Check` to verify that
+the selected snapshot has captured the uploaded data file value.
 
 If file logging is enabled, collect:
 

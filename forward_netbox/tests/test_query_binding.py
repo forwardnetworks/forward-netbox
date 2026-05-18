@@ -10,6 +10,8 @@ from forward_netbox.models import ForwardSource
 from forward_netbox.utilities.query_binding import apply_explicit_nqe_map_bindings
 from forward_netbox.utilities.query_binding import apply_nqe_map_bindings
 from forward_netbox.utilities.query_binding import build_nqe_map_bindings
+from forward_netbox.utilities.query_binding import live_query_binding_drift
+from forward_netbox.utilities.query_binding import local_query_binding_drift
 from forward_netbox.utilities.query_binding import publish_builtin_nqe_map_queries
 from forward_netbox.utilities.query_binding import restore_builtin_raw_query_bindings
 from forward_netbox.utilities.query_registry import read_builtin_query_source
@@ -179,6 +181,203 @@ class NQEMapBindingTest(TestCase):
         self.assertEqual(
             query_map.query, read_builtin_query_source("forward_devices.nqe")
         )
+
+    def test_local_query_binding_drift_reports_raw_modified_query(self):
+        netbox_model = ContentType.objects.get(app_label="dcim", model="device")
+        query_map = ForwardNQEMap.objects.create(
+            name="Forward Devices",
+            netbox_model=netbox_model,
+            query='foreach device in network.devices select {name: "changed"}',
+        )
+
+        drift = local_query_binding_drift(query_map)
+
+        self.assertEqual(drift["status"], "bundled_raw_modified")
+        self.assertEqual(drift["severity"], "warn")
+        self.assertEqual(drift["expected_filename"], "forward_devices.nqe")
+        self.assertEqual(drift["commit_binding"], "raw_query_not_applicable")
+
+    def test_local_query_binding_drift_reports_repository_path_match(self):
+        netbox_model = ContentType.objects.get(app_label="dcim", model="device")
+        query_map = ForwardNQEMap.objects.create(
+            name="Forward Devices",
+            netbox_model=netbox_model,
+            query_repository="org",
+            query_path="/forward_netbox_validation/forward_devices",
+        )
+
+        drift = local_query_binding_drift(query_map)
+
+        self.assertEqual(
+            drift["status"],
+            "repository_path_matches_bundled_filename",
+        )
+        self.assertEqual(drift["severity"], "pass")
+        self.assertEqual(drift["commit_binding"], "latest_commit")
+        self.assertIn(
+            "latest committed Forward query revision", drift["commit_message"]
+        )
+
+    def test_local_query_binding_drift_reports_pinned_commit_guidance(self):
+        netbox_model = ContentType.objects.get(app_label="dcim", model="device")
+        query_map = ForwardNQEMap.objects.create(
+            name="Forward Devices",
+            netbox_model=netbox_model,
+            query_repository="org",
+            query_path="/forward_netbox_validation/forward_devices",
+            commit_id="commit-1",
+        )
+
+        drift = local_query_binding_drift(query_map)
+
+        self.assertEqual(drift["status"], "repository_path_matches_bundled_filename")
+        self.assertEqual(drift["commit_binding"], "pinned_commit")
+        self.assertIn("pinned to a Forward query commit", drift["commit_message"])
+
+    def test_local_query_binding_drift_reports_direct_query_id_unverified(self):
+        netbox_model = ContentType.objects.get(app_label="dcim", model="device")
+        query_map = ForwardNQEMap.objects.create(
+            name="Forward Devices",
+            netbox_model=netbox_model,
+            query_id="query-devices",
+        )
+
+        drift = local_query_binding_drift(query_map)
+
+        self.assertEqual(drift["status"], "direct_query_id_unverified")
+        self.assertEqual(drift["severity"], "info")
+        self.assertEqual(drift["commit_binding"], "latest_commit")
+
+    def test_live_query_binding_drift_reports_repository_source_match(self):
+        netbox_model = ContentType.objects.get(app_label="dcim", model="device")
+        query_map = ForwardNQEMap.objects.create(
+            name="Forward Devices",
+            netbox_model=netbox_model,
+            query_repository="org",
+            query_path="/forward_netbox_validation/forward_devices",
+        )
+        client = Mock()
+        client.get_committed_nqe_query.return_value = {
+            "queryId": "Q_devices",
+            "lastCommitId": "commit-1",
+            "path": "/forward_netbox_validation/forward_devices",
+            "sourceCode": read_compiled_builtin_query_source("forward_devices.nqe"),
+        }
+
+        drift = live_query_binding_drift(client=client, query_map=query_map)
+
+        self.assertEqual(drift["status"], "live_repository_source_match")
+        self.assertEqual(drift["severity"], "pass")
+        self.assertTrue(drift["live_checked"])
+        self.assertEqual(drift["live_query_id"], "Q_devices")
+        self.assertEqual(drift["live_commit_id"], "commit-1")
+        self.assertEqual(drift["requested_commit_id"], "head")
+
+    def test_live_query_binding_drift_reports_repository_source_modified(self):
+        netbox_model = ContentType.objects.get(app_label="dcim", model="device")
+        query_map = ForwardNQEMap.objects.create(
+            name="Forward Devices",
+            netbox_model=netbox_model,
+            query_repository="org",
+            query_path="/forward_netbox_validation/forward_devices",
+        )
+        client = Mock()
+        client.get_committed_nqe_query.return_value = {
+            "queryId": "Q_devices",
+            "lastCommitId": "commit-1",
+            "path": "/forward_netbox_validation/forward_devices",
+            "sourceCode": 'foreach device in network.devices select {name: "changed"}',
+        }
+
+        drift = live_query_binding_drift(client=client, query_map=query_map)
+
+        self.assertEqual(drift["status"], "live_repository_source_modified")
+        self.assertEqual(drift["severity"], "warn")
+        self.assertFalse(drift["source_matches_bundled"])
+
+    def test_live_query_binding_drift_resolves_direct_query_id_to_repository(self):
+        netbox_model = ContentType.objects.get(app_label="dcim", model="device")
+        query_map = ForwardNQEMap.objects.create(
+            name="Forward Devices",
+            netbox_model=netbox_model,
+            query_id="Q_devices",
+        )
+        client = Mock()
+        client.get_nqe_repository_queries.side_effect = [
+            [
+                {
+                    "queryId": "Q_devices",
+                    "path": "/forward_netbox_validation/forward_devices",
+                    "lastCommitId": "commit-1",
+                }
+            ],
+            [],
+        ]
+        client.get_committed_nqe_query.return_value = {
+            "queryId": "Q_devices",
+            "lastCommitId": "commit-1",
+            "path": "/forward_netbox_validation/forward_devices",
+            "sourceCode": read_compiled_builtin_query_source("forward_devices.nqe"),
+        }
+
+        drift = live_query_binding_drift(client=client, query_map=query_map)
+
+        self.assertEqual(drift["status"], "live_repository_source_match")
+        self.assertEqual(drift["severity"], "pass")
+        self.assertEqual(drift["live_repository"], "org")
+
+    def test_live_query_binding_drift_uses_pinned_direct_query_commit(self):
+        netbox_model = ContentType.objects.get(app_label="dcim", model="device")
+        query_map = ForwardNQEMap.objects.create(
+            name="Forward Devices",
+            netbox_model=netbox_model,
+            query_id="Q_devices",
+            commit_id="commit-pinned",
+        )
+        client = Mock()
+        client.get_nqe_repository_queries.side_effect = [
+            [
+                {
+                    "queryId": "Q_devices",
+                    "path": "/forward_netbox_validation/forward_devices",
+                    "lastCommitId": "commit-latest",
+                }
+            ],
+            [],
+        ]
+        client.get_committed_nqe_query.return_value = {
+            "queryId": "Q_devices",
+            "lastCommitId": "commit-pinned",
+            "path": "/forward_netbox_validation/forward_devices",
+            "sourceCode": read_compiled_builtin_query_source("forward_devices.nqe"),
+        }
+
+        drift = live_query_binding_drift(client=client, query_map=query_map)
+
+        self.assertEqual(drift["status"], "live_repository_source_match")
+        self.assertEqual(drift["commit_binding"], "pinned_commit")
+        self.assertEqual(drift["requested_commit_id"], "commit-pinned")
+        client.get_committed_nqe_query.assert_called_once_with(
+            repository="org",
+            query_path="/forward_netbox_validation/forward_devices",
+            commit_id="commit-pinned",
+        )
+
+    def test_live_query_binding_drift_warns_when_direct_query_id_not_found(self):
+        netbox_model = ContentType.objects.get(app_label="dcim", model="device")
+        query_map = ForwardNQEMap.objects.create(
+            name="Forward Devices",
+            netbox_model=netbox_model,
+            query_id="Q_missing",
+        )
+        client = Mock()
+        client.get_nqe_repository_queries.return_value = []
+
+        drift = live_query_binding_drift(client=client, query_map=query_map)
+
+        self.assertEqual(drift["status"], "direct_query_id_unverified")
+        self.assertEqual(drift["severity"], "warn")
+        self.assertEqual(drift["live_status"], "direct_query_id_not_found")
 
     def test_publish_builtin_queries_adds_sources_commits_and_binds_selected_maps(self):
         netbox_model = ContentType.objects.get(app_label="dcim", model="device")

@@ -11,7 +11,9 @@ from ..exceptions import ForwardDependencySkipError
 from ..exceptions import ForwardQueryError
 from ..exceptions import ForwardSearchError
 from ..exceptions import ForwardSyncDataError
+from .execution_ledger import touch_execution_step_progress
 from .json_safe import json_safe_value
+from .sync_state import get_branch_run_display_state
 from .sync_state import touch_branch_run_progress
 
 PROGRESS_HEARTBEAT_ROW_INTERVAL = 500
@@ -152,6 +154,13 @@ def _emit_progress_heartbeat(
             row_count=processed_rows,
             row_total=total_rows,
         )
+        touch_execution_step_progress(
+            runner.sync,
+            model_string=model_string,
+            shard_index=shard_index,
+            row_count=processed_rows,
+            row_total=total_rows,
+        )
         return current_time
     return last_emit_at
 
@@ -241,7 +250,7 @@ def apply_model_rows(runner, model_string, rows):
         f"Applying {len(rows)} rows for {model_string}.",
         obj=runner.sync,
     )
-    state = runner.sync.get_branch_run_state()
+    state = get_branch_run_display_state(runner.sync)
     last_emit_at = 0.0
     processed_rows = 0
     for row in rows:
@@ -332,7 +341,7 @@ def delete_model_rows(runner, model_string, rows):
         f"Deleting {len(rows)} rows for {model_string}.",
         obj=runner.sync,
     )
-    state = runner.sync.get_branch_run_state()
+    state = get_branch_run_display_state(runner.sync)
     last_emit_at = 0.0
     processed_rows = 0
     for row in rows:
