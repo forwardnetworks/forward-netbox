@@ -79,17 +79,13 @@ def fetch_contract_summary(model_strings):
     modes = Counter(item["fetch_mode"] for item in contracts)
     reasons = Counter(item["reason_code"] for item in contracts)
     bucket_supported = sum(
-        1
-        for item in contracts
-        if (item.get("bucket_strategy") or {}).get("supported")
+        1 for item in contracts if (item.get("bucket_strategy") or {}).get("supported")
     )
     return {
         "modes": dict(modes),
         "fallback_reasons": dict(reasons),
         "shard_safe_count": sum(1 for item in contracts if item["shard_safe"]),
-        "model_fallback_count": sum(
-            1 for item in contracts if not item["shard_safe"]
-        ),
+        "model_fallback_count": sum(1 for item in contracts if not item["shard_safe"]),
         "bucket_supported_count": bucket_supported,
         "contracts": contracts,
     }

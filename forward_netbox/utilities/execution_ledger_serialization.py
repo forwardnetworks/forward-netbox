@@ -59,4 +59,3 @@ def ingestion_support_summary(ingestion):
             for issue in issues
         ],
     }
-

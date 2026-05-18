@@ -1,5 +1,4 @@
 from core.choices import JobStatusChoices
-from core.models import Job
 from django.db import transaction
 from django.utils import timezone
 
@@ -86,11 +85,15 @@ def reconcile_execution_run(run, *, update_run_from_branch_state_fn):
                 step.completed = step.completed or job.completed
                 step.heartbeat = timezone.now()
                 changed = True
-        if step.status in {
-            ForwardExecutionStepStatusChoices.FAILED,
-            ForwardExecutionStepStatusChoices.TIMEOUT,
-            ForwardExecutionStepStatusChoices.MERGE_TIMEOUT,
-        } and not step.last_error:
+        if (
+            step.status
+            in {
+                ForwardExecutionStepStatusChoices.FAILED,
+                ForwardExecutionStepStatusChoices.TIMEOUT,
+                ForwardExecutionStepStatusChoices.MERGE_TIMEOUT,
+            }
+            and not step.last_error
+        ):
             job = step.merge_job or step.job
             if job:
                 step.last_error = (
@@ -109,13 +112,16 @@ def reconcile_execution_run(run, *, update_run_from_branch_state_fn):
     before = run.as_support_summary()
     refreshed = update_run_from_branch_state_fn(run.sync)
     run.refresh_from_db()
-    if not run.steps.exclude(
-        status__in=[
-            ForwardExecutionStepStatusChoices.MERGED,
-            ForwardExecutionStepStatusChoices.SKIPPED,
-            ForwardExecutionStepStatusChoices.CANCELLED,
-        ]
-    ).exists() and run.status != ForwardExecutionRunStatusChoices.COMPLETED:
+    if (
+        not run.steps.exclude(
+            status__in=[
+                ForwardExecutionStepStatusChoices.MERGED,
+                ForwardExecutionStepStatusChoices.SKIPPED,
+                ForwardExecutionStepStatusChoices.CANCELLED,
+            ]
+        ).exists()
+        and run.status != ForwardExecutionRunStatusChoices.COMPLETED
+    ):
         run.status = ForwardExecutionRunStatusChoices.COMPLETED
         run.phase = "completed"
         run.phase_message = "Forward execution completed."
@@ -314,7 +320,10 @@ def _queued_step_has_applied_without_merge_path(step):
         return False
     if step.kind != ForwardExecutionStepKindChoices.STAGE:
         return False
-    if int(step.applied_row_count or 0) <= 0 and int(step.attempted_row_count or 0) <= 0:
+    if (
+        int(step.applied_row_count or 0) <= 0
+        and int(step.attempted_row_count or 0) <= 0
+    ):
         return False
     if step.merge_job_id:
         return False
@@ -363,13 +372,19 @@ def _merge_step_stale(step, now):
 
 
 def _append_reconciliation_events(run, events):
-    existing = run.reconciliation_events if isinstance(run.reconciliation_events, list) else []
+    existing = (
+        run.reconciliation_events if isinstance(run.reconciliation_events, list) else []
+    )
     run.reconciliation_events = [*existing, *events][-100:]
     run.save(update_fields=["reconciliation_events", "updated"])
 
 
 def _reconciliation_step_event(step, old_status, reason):
-    job = step.merge_job if step.status == ForwardExecutionStepStatusChoices.MERGE_TIMEOUT else step.job
+    job = (
+        step.merge_job
+        if step.status == ForwardExecutionStepStatusChoices.MERGE_TIMEOUT
+        else step.job
+    )
     return {
         "timestamp": timezone.now().isoformat(),
         "type": "step",
@@ -396,4 +411,3 @@ def _reconciliation_run_event(run, reason):
         "status": run.status,
         "phase": run.phase,
     }
-

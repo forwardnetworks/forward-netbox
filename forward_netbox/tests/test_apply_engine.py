@@ -1,21 +1,23 @@
 from unittest.mock import Mock
 from unittest.mock import patch
 
+from dcim.models import DeviceType
 from dcim.models import Manufacturer
 from dcim.models import Platform
 from dcim.models import Site
-from dcim.models import DeviceType
 from django.test import TestCase
 from ipam.models import VLAN
 from ipam.models import VRF
 
 from forward_netbox.choices import forward_configured_models
-from forward_netbox.management.commands.forward_smoke_sync import Command as SmokeSyncCommand
+from forward_netbox.management.commands.forward_smoke_sync import (
+    Command as SmokeSyncCommand,
+)
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.utilities import apply_engine as apply_engine_module
-from forward_netbox.utilities.apply_engine import ADAPTER_REQUIRED_MODELS
 from forward_netbox.utilities.apply_engine import ADAPTER_MODELS_WITHOUT_BLOCKER
+from forward_netbox.utilities.apply_engine import ADAPTER_REQUIRED_MODELS
 from forward_netbox.utilities.apply_engine import BULK_ORM_ENABLED_MODELS
 from forward_netbox.utilities.apply_engine import BULK_ORM_ENABLED_MODELS_WITHOUT_SPECS
 from forward_netbox.utilities.apply_engine import select_apply_engine

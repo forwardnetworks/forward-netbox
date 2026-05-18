@@ -1,10 +1,10 @@
 import json
 from io import StringIO
+from unittest.mock import patch
 
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import TestCase
-from unittest.mock import patch
 
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
@@ -72,11 +72,15 @@ class ForwardArchitectureAuditCommandTest(TestCase):
             "bulk_orm",
         )
         self.assertEqual(
-            matrix["model_eligibility"]["dcim.devicerole"]["bulk_enabled"]["selected_engine"],
+            matrix["model_eligibility"]["dcim.devicerole"]["bulk_enabled"][
+                "selected_engine"
+            ],
             "bulk_orm",
         )
         self.assertEqual(
-            matrix["model_eligibility"]["dcim.devicerole"]["bulk_enabled"]["reason_code"],
+            matrix["model_eligibility"]["dcim.devicerole"]["bulk_enabled"][
+                "reason_code"
+            ],
             "bulk_orm_enabled_safe_model_set",
         )
         self.assertIsNone(payload["sync_evidence"])
@@ -108,6 +112,7 @@ class ForwardArchitectureAuditCommandTest(TestCase):
         with patch(
             "forward_netbox.management.commands.forward_architecture_audit.apply_engine_decision_for"
         ) as decision:
+
             def _decision(*, sync, model_string, backend):
                 if model_string == "dcim.site":
                     return type(

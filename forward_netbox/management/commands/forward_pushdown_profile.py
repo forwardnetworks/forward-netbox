@@ -52,9 +52,7 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         sync = ForwardSync.objects.filter(name=options["sync_name"]).first()
         if sync is None:
-            raise CommandError(
-                f"Forward sync `{options['sync_name']}` was not found."
-            )
+            raise CommandError(f"Forward sync `{options['sync_name']}` was not found.")
         if options["sample_shard_keys"] < 1:
             raise CommandError("--sample-shard-keys must be at least 1.")
         if options["top_slow_models"] < 0:
@@ -312,7 +310,9 @@ class Command(BaseCommand):
             if not step.model_string or not step.started or not step.completed:
                 continue
             seconds = max(0.0, (step.completed - step.started).total_seconds())
-            model_seconds[step.model_string] = model_seconds.get(step.model_string, 0.0) + seconds
+            model_seconds[step.model_string] = (
+                model_seconds.get(step.model_string, 0.0) + seconds
+            )
         ordered = sorted(model_seconds.items(), key=lambda item: item[1], reverse=True)
         return [model_string for model_string, _ in ordered[:limit]]
 

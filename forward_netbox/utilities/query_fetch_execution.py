@@ -50,6 +50,7 @@ class ForwardQueryContext:
     network_id: str
     snapshot_selector: str
     snapshot_id: str
+    ingestion_id: int | None = None
     snapshot_info: dict[str, Any] = field(default_factory=dict)
     snapshot_metrics: dict[str, Any] = field(default_factory=dict)
     query_parameters: dict[str, Any] = field(default_factory=dict)
@@ -60,6 +61,7 @@ class ForwardQueryContext:
             "network_id": self.network_id,
             "snapshot_selector": self.snapshot_selector,
             "snapshot_id": self.snapshot_id,
+            "ingestion_id": self.ingestion_id,
             "snapshot_info": self.snapshot_info,
             "snapshot_metrics": self.snapshot_metrics,
             "query_parameters": self.query_parameters,
@@ -171,6 +173,11 @@ class ForwardQueryFetcher:
             network_id=network_id,
             snapshot_selector=snapshot_selector,
             snapshot_id=snapshot_id,
+            ingestion_id=(
+                branch_run_state.get("ingestion_id")
+                or branch_run_state.get("pending_ingestion_id")
+                or branch_run_state.get("current_ingestion_id")
+            ),
             snapshot_info=snapshot_info or {},
             snapshot_metrics=snapshot_metrics or {},
             query_parameters=self.sync.get_query_parameters(),
@@ -349,10 +356,18 @@ class ForwardQueryFetcher:
                 )
                 continue
             coalesce_fields = self._coalesce_fields(model_string, specs)
+            exclude_ingestion_id = getattr(context, "ingestion_id", None)
             baseline = self.sync.incremental_diff_baseline(
                 specs=specs,
                 current_snapshot_id=context.snapshot_id,
+                exclude_ingestion_id=exclude_ingestion_id,
             )
+            if baseline is not None:
+                self.logger.log_info(
+                    f"Selected Forward diff baseline ingestion `{baseline.pk}` "
+                    f"on snapshot `{baseline.snapshot_id}` for {model_string}.",
+                    obj=self.sync,
+                )
             for spec in specs:
                 jobs.append(
                     (
@@ -761,6 +776,25 @@ class ForwardQueryFetcher:
                 self.logger.log_warning(
                     f"Forward NQE diff failed for {model_string} using `{spec.execution_value}`; "
                     f"falling back to full query execution: {exc}",
+                    obj=self.sync,
+                )
+        elif baseline is not None and not spec.run_query_id:
+            self.logger.log_warning(
+                f"Forward diffs require a query_id; `{spec.execution_value}` is still raw query text, so running a full query for {model_string} instead.",
+                obj=self.sync,
+            )
+        elif spec.run_query_id:
+            latest_baseline = self.sync.latest_baseline_ingestion(
+                exclude_ingestion_id=getattr(context, "ingestion_id", None)
+            )
+            if (
+                latest_baseline is not None
+                and latest_baseline.snapshot_id == context.snapshot_id
+            ):
+                self.logger.log_warning(
+                    f"Forward diffs require a newer processed snapshot than the latest baseline; "
+                    f"baseline ingestion `{latest_baseline.pk}` already matches snapshot `{context.snapshot_id}`, "
+                    f"so running full query execution for {model_string} instead.",
                     obj=self.sync,
                 )
 
