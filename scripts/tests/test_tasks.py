@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import os
-import unittest
 import tempfile
+import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -52,7 +52,9 @@ class DockerChaosKillTaskTest(unittest.TestCase):
             return SimpleNamespace(stdout="")
 
         with (
-            patch.object(tasks, "docker_compose", side_effect=fake_docker_compose) as compose,
+            patch.object(
+                tasks, "docker_compose", side_effect=fake_docker_compose
+            ) as compose,
             patch.object(tasks, "_wait_for_chaos_scenario_ready") as wait_ready,
             patch.object(tasks, "_export_chaos_bundle") as export_bundle,
             patch.dict(os.environ, {}, clear=False),
@@ -206,7 +208,9 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
             output_abs = repo_root / output_rel
             chaos_dir = repo_root / "docs/03_Plans/evidence/chaos"
             chaos_dir.mkdir(parents=True, exist_ok=True)
-            (chaos_dir / "chaos-stage-before-branch-run-1.json").write_text("{}\n", encoding="utf-8")
+            (chaos_dir / "chaos-stage-before-branch-run-1.json").write_text(
+                "{}\n", encoding="utf-8"
+            )
 
             run_results = [
                 SimpleNamespace(exited=0, ok=True),
@@ -217,7 +221,6 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
             with (
                 patch.object(tasks, "manage_py") as manage_py,
                 patch.object(tasks, "docker_compose") as docker_compose,
-                patch.object(tasks, "print") as _print,
                 patch.object(context, "run", side_effect=run_results),
             ):
                 tasks.architecture_runtime_evidence.body(

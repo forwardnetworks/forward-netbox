@@ -452,7 +452,15 @@ def update_step_from_plan_item(
     return True
 
 
-def touch_execution_step_progress(sync, *, model_string, shard_index=None, row_count=None, row_total=None, active_execution_run_fn=None):
+def touch_execution_step_progress(
+    sync,
+    *,
+    model_string,
+    shard_index=None,
+    row_count=None,
+    row_total=None,
+    active_execution_run_fn=None,
+):
     from ..models import ForwardExecutionRun
     from ..models import ForwardExecutionStep
 
@@ -495,7 +503,9 @@ def touch_execution_step_progress(sync, *, model_string, shard_index=None, row_c
     return True
 
 
-def claim_stage_step(sync, index, job, *, claimable_stage_statuses, active_execution_run_fn):
+def claim_stage_step(
+    sync, index, job, *, claimable_stage_statuses, active_execution_run_fn
+):
     from ..models import ForwardExecutionStep
 
     run = active_execution_run_fn(sync)
@@ -533,7 +543,9 @@ def claim_stage_step(sync, index, job, *, claimable_stage_statuses, active_execu
         return step
 
 
-def mark_run_completed(sync, *, baseline_ready=False, active_execution_run_fn, latest_execution_run_fn):
+def mark_run_completed(
+    sync, *, baseline_ready=False, active_execution_run_fn, latest_execution_run_fn
+):
     candidate = active_execution_run_fn(sync)
     if candidate is None:
         candidate = latest_execution_run_fn(sync)
@@ -673,8 +685,7 @@ def _execution_step_kwargs_from_plan_item(item):
             item.get("fetch_parameters") or fetch_contract["fetch_parameters"]
         ),
         "fetch_column_filters": (
-            item.get("fetch_column_filters")
-            or fetch_contract["fetch_column_filters"]
+            item.get("fetch_column_filters") or fetch_contract["fetch_column_filters"]
         ),
         "apply_engine": item.get("apply_engine") or ForwardApplyEngineChoices.ADAPTER,
         "branch_name": item.get("branch_name") or "",

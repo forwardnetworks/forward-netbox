@@ -701,9 +701,9 @@ def apply_nqe_map_bindings(
                 continue
             binding = reference_matches[0]
 
-        query_map.query_id = ""
+        query_map.query_id = binding.query_id
         query_map.query_repository = binding.query_repository
-        query_map.query_path = binding.query_path
+        query_map.query_path = ""
         query_map.query = ""
         query_map.commit_id = binding.commit_id
         query_map.full_clean()
@@ -721,7 +721,7 @@ def apply_nqe_map_bindings(
                 model_string=binding.model_string,
                 query_name=binding.query_name,
                 query_filename=binding.query_filename,
-                query_path=binding.query_path,
+                query_path="",
                 query_repository=binding.query_repository,
                 query_id=binding.query_id,
                 commit_id=binding.commit_id,
@@ -848,9 +848,9 @@ def apply_explicit_nqe_map_bindings(
             )
             continue
 
-        query_map.query_id = ""
+        query_map.query_id = binding.query_id
         query_map.query_repository = binding.query_repository
-        query_map.query_path = binding.query_path
+        query_map.query_path = ""
         query_map.query = ""
         query_map.commit_id = binding.commit_id
         query_map.full_clean()
@@ -868,7 +868,7 @@ def apply_explicit_nqe_map_bindings(
                 model_string=binding.model_string,
                 query_name=binding.query_name,
                 query_filename=binding.query_filename,
-                query_path=binding.query_path,
+                query_path="",
                 query_repository=binding.query_repository,
                 query_id=binding.query_id,
                 commit_id=binding.commit_id,

@@ -96,7 +96,9 @@ class Command(BaseCommand):
             )
             if merge_step:
                 return merge_step
-        active_step = steps.filter(status__in=("running", "queued")).order_by("index").first()
+        active_step = (
+            steps.filter(status__in=("running", "queued")).order_by("index").first()
+        )
         if active_step:
             return active_step
         return steps.order_by("index").first()

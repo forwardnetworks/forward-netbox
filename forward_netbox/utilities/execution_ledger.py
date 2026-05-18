@@ -1,48 +1,91 @@
-from core.choices import JobStatusChoices
-from core.models import Job
-from django.db import transaction
 from django.utils import timezone
 
 from ..choices import ForwardApplyEngineChoices
-from ..choices import ForwardExecutionBackendChoices
 from ..choices import ForwardExecutionRunStatusChoices
 from ..choices import ForwardExecutionStepKindChoices
 from ..choices import ForwardExecutionStepStatusChoices
-from ..choices import ForwardIngestionPhaseChoices
-from ..choices import ForwardSyncStatusChoices
-from .branch_budget import shard_fetch_contract
-from .execution_ledger_metrics import apply_engine_decision as _apply_engine_decision_metric
-from .execution_ledger_metrics import execution_run_metrics as _execution_run_metrics_calc
+from .execution_ledger_metrics import (
+    apply_engine_decision as _apply_engine_decision_metric,
+)
+from .execution_ledger_metrics import duration_seconds as _duration_seconds_calc
+from .execution_ledger_metrics import (
+    execution_run_metrics as _execution_run_metrics_calc,
+)
 from .execution_ledger_metrics import fetch_explanation as _fetch_explanation_metric
 from .execution_ledger_metrics import job_summary as _job_summary_metric
 from .execution_ledger_metrics import runtime_bottleneck as _runtime_bottleneck_calc
-from .execution_ledger_metrics import duration_seconds as _duration_seconds_calc
 from .execution_ledger_metrics import sum_optional_float as _sum_optional_float_calc
-from .execution_ledger_reconciliation import current_discardable_step as _current_discardable_step_impl
-from .execution_ledger_reconciliation import current_mergeable_step as _current_mergeable_step_impl
-from .execution_ledger_reconciliation import current_retryable_step as _current_retryable_step_impl
-from .execution_ledger_reconciliation import discard_stage_branch_for_retry as _discard_stage_branch_for_retry_impl
-from .execution_ledger_reconciliation import prepare_stage_step_retry as _prepare_stage_step_retry_impl
-from .execution_ledger_reconciliation import reconcile_execution_run as _reconcile_execution_run_impl
-from .execution_ledger_run_store import active_execution_run as _active_execution_run_impl
-from .execution_ledger_run_store import claim_ingestion_merge_step as _claim_ingestion_merge_step_impl
+from .execution_ledger_reconciliation import (
+    current_discardable_step as _current_discardable_step_impl,
+)
+from .execution_ledger_reconciliation import (
+    current_mergeable_step as _current_mergeable_step_impl,
+)
+from .execution_ledger_reconciliation import (
+    current_retryable_step as _current_retryable_step_impl,
+)
+from .execution_ledger_reconciliation import (
+    discard_stage_branch_for_retry as _discard_stage_branch_for_retry_impl,
+)
+from .execution_ledger_reconciliation import (
+    prepare_stage_step_retry as _prepare_stage_step_retry_impl,
+)
+from .execution_ledger_reconciliation import (
+    reconcile_execution_run as _reconcile_execution_run_impl,
+)
+from .execution_ledger_run_store import (
+    _execution_step_kwargs_from_plan_item as _execution_step_kwargs_from_plan_item_impl,
+)
+from .execution_ledger_run_store import (
+    active_execution_run as _active_execution_run_impl,
+)
+from .execution_ledger_run_store import (
+    claim_ingestion_merge_step as _claim_ingestion_merge_step_impl,
+)
 from .execution_ledger_run_store import claim_stage_step as _claim_stage_step_impl
-from .execution_ledger_run_store import ensure_branch_execution_run as _ensure_branch_execution_run_impl
-from .execution_ledger_run_store import _execution_step_kwargs_from_plan_item as _execution_step_kwargs_from_plan_item_impl
-from .execution_ledger_run_store import execution_step_for_ingestion as _execution_step_for_ingestion_impl
-from .execution_ledger_run_store import ingestion_has_mergeable_execution_step as _ingestion_has_mergeable_execution_step_impl
-from .execution_ledger_run_store import ingestion_has_requeueable_merge_timeout_step as _ingestion_has_requeueable_merge_timeout_step_impl
-from .execution_ledger_run_store import latest_execution_run as _latest_execution_run_impl
-from .execution_ledger_run_store import legacy_execution_run_from_branch_state as _legacy_execution_run_from_branch_state_impl
-from .execution_ledger_run_store import mark_ingestion_step_merged as _mark_ingestion_step_merged_impl
+from .execution_ledger_run_store import (
+    ensure_branch_execution_run as _ensure_branch_execution_run_impl,
+)
+from .execution_ledger_run_store import (
+    execution_step_for_ingestion as _execution_step_for_ingestion_impl,
+)
+from .execution_ledger_run_store import (
+    ingestion_has_mergeable_execution_step as _ingestion_has_mergeable_execution_step_impl,
+)
+from .execution_ledger_run_store import (
+    ingestion_has_requeueable_merge_timeout_step as _ingestion_has_requeueable_merge_timeout_step_impl,
+)
+from .execution_ledger_run_store import (
+    latest_execution_run as _latest_execution_run_impl,
+)
+from .execution_ledger_run_store import (
+    legacy_execution_run_from_branch_state as _legacy_execution_run_from_branch_state_impl,
+)
+from .execution_ledger_run_store import (
+    mark_ingestion_step_merged as _mark_ingestion_step_merged_impl,
+)
 from .execution_ledger_run_store import mark_run_completed as _mark_run_completed_impl
-from .execution_ledger_run_store import sync_steps_from_plan as _sync_steps_from_plan_impl
-from .execution_ledger_run_store import touch_execution_step_progress as _touch_execution_step_progress_impl
-from .execution_ledger_run_store import update_run_from_branch_state as _update_run_from_branch_state_impl
-from .execution_ledger_run_store import update_step_from_plan_item as _update_step_from_plan_item_impl
-from .execution_ledger_run_store import upgrade_branch_run_state_to_execution_run as _upgrade_branch_run_state_to_execution_run_impl
-from .execution_ledger_serialization import execution_run_support_bundle as _execution_run_support_bundle
-from .execution_ledger_serialization import ingestion_support_summary as _ingestion_support_summary_data
+from .execution_ledger_run_store import (
+    sync_steps_from_plan as _sync_steps_from_plan_impl,
+)
+from .execution_ledger_run_store import (
+    touch_execution_step_progress as _touch_execution_step_progress_impl,
+)
+from .execution_ledger_run_store import (
+    update_run_from_branch_state as _update_run_from_branch_state_impl,
+)
+from .execution_ledger_run_store import (
+    update_step_from_plan_item as _update_step_from_plan_item_impl,
+)
+from .execution_ledger_run_store import (
+    upgrade_branch_run_state_to_execution_run as _upgrade_branch_run_state_to_execution_run_impl,
+)
+from .execution_ledger_serialization import (
+    execution_run_support_bundle as _execution_run_support_bundle,
+)
+from .execution_ledger_serialization import (
+    ingestion_support_summary as _ingestion_support_summary_data,
+)
 from .sync_state import STALE_BRANCH_PROGRESS_SECONDS
 
 
@@ -185,7 +228,10 @@ def execution_run_recovery_recommendation(run):
         .order_by("index")
         .first()
     )
-    if waiting_step is not None or run.status == ForwardExecutionRunStatusChoices.WAITING:
+    if (
+        waiting_step is not None
+        or run.status == ForwardExecutionRunStatusChoices.WAITING
+    ):
         return _recommendation(
             action="wait_for_review",
             severity="info",
@@ -274,10 +320,14 @@ def branch_run_state_from_execution_run(run):
 
 def _active_progress_step(run, steps):
     active_steps = [
-        step for step in steps if step.status == ForwardExecutionStepStatusChoices.RUNNING
+        step
+        for step in steps
+        if step.status == ForwardExecutionStepStatusChoices.RUNNING
     ]
     if active_steps:
-        return sorted(active_steps, key=lambda step: (step.index, step.kind, step.pk))[0]
+        return sorted(active_steps, key=lambda step: (step.index, step.kind, step.pk))[
+            0
+        ]
     for step in steps:
         if int(step.index) == int(run.next_step_index or 0):
             return step
@@ -403,7 +453,10 @@ def _queued_step_has_applied_without_merge_path(step):
         return False
     if step.kind != ForwardExecutionStepKindChoices.STAGE:
         return False
-    if int(step.applied_row_count or 0) <= 0 and int(step.attempted_row_count or 0) <= 0:
+    if (
+        int(step.applied_row_count or 0) <= 0
+        and int(step.attempted_row_count or 0) <= 0
+    ):
         return False
     if step.merge_job_id:
         return False
@@ -452,13 +505,19 @@ def _merge_step_stale(step, now):
 
 
 def _append_reconciliation_events(run, events):
-    existing = run.reconciliation_events if isinstance(run.reconciliation_events, list) else []
+    existing = (
+        run.reconciliation_events if isinstance(run.reconciliation_events, list) else []
+    )
     run.reconciliation_events = [*existing, *events][-100:]
     run.save(update_fields=["reconciliation_events", "updated"])
 
 
 def _reconciliation_step_event(step, old_status, reason):
-    job = step.merge_job if step.status == ForwardExecutionStepStatusChoices.MERGE_TIMEOUT else step.job
+    job = (
+        step.merge_job
+        if step.status == ForwardExecutionStepStatusChoices.MERGE_TIMEOUT
+        else step.job
+    )
     return {
         "timestamp": timezone.now().isoformat(),
         "type": "step",

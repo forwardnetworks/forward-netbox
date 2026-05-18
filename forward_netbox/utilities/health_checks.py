@@ -52,9 +52,7 @@ def health_checks(
         check(
             name="Model map coverage",
             status=(
-                "pass"
-                if not model_summary["enabled_models_without_map"]
-                else "warn"
+                "pass" if not model_summary["enabled_models_without_map"] else "warn"
             ),
             message=(
                 "Every enabled model has at least one enabled NQE map."
@@ -184,7 +182,10 @@ def query_drift_check_message(query_drift):
 def validation_check_status(validation_run):
     if validation_run is None:
         return "warn"
-    if validation_run.status == ForwardValidationStatusChoices.PASSED and validation_run.allowed:
+    if (
+        validation_run.status == ForwardValidationStatusChoices.PASSED
+        and validation_run.allowed
+    ):
         return "pass"
     if validation_run.status == ForwardValidationStatusChoices.BLOCKED:
         return "fail"
