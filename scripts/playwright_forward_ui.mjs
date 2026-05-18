@@ -127,16 +127,74 @@ async function main() {
     await expectVisible(page, "Workload Preview");
     await expectVisible(page, "Analysis Summary");
     await expectVisible(page, "Advisory Summary");
-    await expectVisible(page, "Export Logs");
+    await expectVisible(page, "Export Support Bundle");
+    await expectVisible(page, "Execution Runs");
+    await expectVisible(page, "Health");
     await expectVisible(page, "ui-harness-drift-policy");
     await expectVisible(page, "latestProcessed");
     await expectVisible(page, "max_changes_per_branch");
     await expectVisible(page, "Current activity");
-    await expectVisible(page, "Resolving snapshot, running query preflight, and building shard plan.");
+    await expectVisible(page, "Synthetic UI harness execution completed.");
     await assertNoHorizontalOverflow(page, "desktop sync detail");
     evidence.screenshots.push(await screenshot(page, "desktop-sync-detail.jpg"));
     evidence.checks.push(
-      "sync detail exposes validation, native branch budget, run controls, and preflight activity",
+      "sync detail exposes validation, native branch budget, run controls, support export, and current activity",
+    );
+
+    await page.locator('a[href*="/sync/"][href$="/health/"]').first().click();
+    await expectVisible(page, "Health Summary");
+    await expectVisible(page, "Export Live Source Check");
+    await expectVisible(page, "Query Binding");
+    await expectVisible(page, "Local Query Drift");
+    await expectVisible(page, "Export Live Query Drift Check");
+    await expectVisible(page, "Export Live Data File Check");
+    await expectVisible(page, "Capacity Projection");
+    await expectVisible(page, "Diff eligibility");
+    await expectVisible(page, "Next run");
+    await expectVisible(page, "Health Details");
+    await assertNoHorizontalOverflow(page, "desktop sync health");
+    evidence.screenshots.push(await screenshot(page, "desktop-sync-health.jpg"));
+    evidence.checks.push(
+      "sync health tab renders local diagnostics, query binding state, explicit live source export, explicit live query drift export, and explicit live data file export",
+    );
+
+    await page.goto(`${baseURL}/plugins/forward/sync/`, {
+      waitUntil: "domcontentloaded",
+    });
+    await page.getByRole("link", { name: "ui-harness-sync" }).first().click();
+
+    await page.locator('a[href*="/sync/"][href$="/execution_runs/"]').first().click();
+    await expectVisible(page, "Execution Runs");
+    await expectVisible(page, "ui-harness-sync");
+    await expectVisible(page, "Completed");
+    await assertNoHorizontalOverflow(page, "desktop execution run list");
+    evidence.checks.push("sync execution-runs tab renders ledger records");
+
+    await page.getByRole("link", { name: /ui-harness-sync execution/i }).first().click();
+    await expectVisible(page, "Execution Run");
+    await expectVisible(page, "Synthetic UI harness execution completed.");
+    await expectVisible(page, "Export Support Bundle");
+    await expectVisible(page, "Reconcile");
+    await expectVisible(page, "Plan Preview");
+    await expectVisible(page, "Model Change Density");
+    await assertNoHorizontalOverflow(page, "desktop execution run detail");
+    evidence.screenshots.push(await screenshot(page, "desktop-execution-run-detail.jpg"));
+    evidence.checks.push("execution run detail exposes support bundle and recovery controls");
+
+    await page.getByRole("link", { name: "Steps" }).first().click();
+    await expectVisible(page, "FETCH MODE");
+    await expectVisible(page, "dcim.interface");
+    await expectVisible(page, "nqe_column_filter");
+    await assertNoHorizontalOverflow(page, "desktop execution step list");
+    evidence.checks.push("execution step table exposes fetch mode and model progress");
+
+    await page.locator('a[href*="/execution-step/"]').first().click();
+    await expectVisible(page, "Execution Step");
+    await expectVisible(page, "Query Parameters");
+    await expectVisible(page, "forward_netbox_shard_keys");
+    await assertNoHorizontalOverflow(page, "desktop execution step detail");
+    evidence.checks.push(
+      "execution step detail exposes query parameter pushdown evidence",
     );
 
     await page.goto(`${baseURL}/plugins/forward/validation-run/`, {

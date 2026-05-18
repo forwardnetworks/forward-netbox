@@ -39,18 +39,18 @@ class ForwardClientTest(TestCase):
 
         with (
             patch(
-                "forward_netbox.utilities.forward_api.resolve_proxies",
+                "forward_netbox.utilities.forward_api_impl.resolve_proxies",
                 return_value={
                     "http": None,
                     "https": "http://proxy.example.com:3128",
                 },
             ) as resolve_proxies,
             patch(
-                "forward_netbox.utilities.forward_api.httpx.HTTPTransport",
+                "forward_netbox.utilities.forward_api_impl.httpx.HTTPTransport",
                 side_effect=lambda proxy: f"transport:{proxy}",
             ),
             patch(
-                "forward_netbox.utilities.forward_api.httpx.Client",
+                "forward_netbox.utilities.forward_api_impl.httpx.Client",
                 return_value=client_context,
             ) as http_client,
         ):
@@ -98,10 +98,10 @@ class ForwardClientTest(TestCase):
 
         with (
             patch(
-                "forward_netbox.utilities.forward_api.httpx.Client",
+                "forward_netbox.utilities.forward_api_impl.httpx.Client",
                 side_effect=[first_context, second_context],
             ),
-            patch("forward_netbox.utilities.forward_api.time.sleep") as sleep,
+            patch("forward_netbox.utilities.forward_api_impl.time.sleep") as sleep,
         ):
             result = self.client._request("POST", "/nqe", json_body={"query": "q"})
 
@@ -130,10 +130,10 @@ class ForwardClientTest(TestCase):
 
         with (
             patch(
-                "forward_netbox.utilities.forward_api.httpx.Client",
+                "forward_netbox.utilities.forward_api_impl.httpx.Client",
                 side_effect=[first_context, second_context],
             ),
-            patch("forward_netbox.utilities.forward_api.time.sleep") as sleep,
+            patch("forward_netbox.utilities.forward_api_impl.time.sleep") as sleep,
         ):
             result = self.client._request("POST", "/nqe", json_body={"query": "q"})
 
@@ -159,10 +159,10 @@ class ForwardClientTest(TestCase):
 
         with (
             patch(
-                "forward_netbox.utilities.forward_api.httpx.Client",
+                "forward_netbox.utilities.forward_api_impl.httpx.Client",
                 side_effect=[client_context, client_context],
             ),
-            patch("forward_netbox.utilities.forward_api.time.sleep"),
+            patch("forward_netbox.utilities.forward_api_impl.time.sleep"),
             self.assertRaisesRegex(
                 ForwardConnectivityError,
                 "transient HTTP 504",
@@ -185,10 +185,10 @@ class ForwardClientTest(TestCase):
 
         with (
             patch(
-                "forward_netbox.utilities.forward_api.httpx.Client",
+                "forward_netbox.utilities.forward_api_impl.httpx.Client",
                 side_effect=[client_context, client_context],
             ),
-            patch("forward_netbox.utilities.forward_api.time.sleep"),
+            patch("forward_netbox.utilities.forward_api_impl.time.sleep"),
             self.assertRaisesRegex(
                 ForwardConnectivityError,
                 "Could not connect to Forward API endpoint",
@@ -639,6 +639,10 @@ class ForwardClientTest(TestCase):
             self.client._request.call_args.kwargs["json_body"]["options"]["limit"],
             10000,
         )
+        self.assertNotIn(
+            "parameters",
+            self.client._request.call_args.kwargs["json_body"],
+        )
 
     def test_run_nqe_diff_fetch_all_pages_until_total_num_rows(self):
         self.client._request = Mock(
@@ -759,3 +763,27 @@ class ForwardClientTest(TestCase):
                 call.kwargs["json_body"]["options"]["columnFilters"],
                 [{"column": "site", "operator": "eq", "value": "core"}],
             )
+
+    def test_run_nqe_diff_includes_parameters_when_supplied(self):
+        self.client._request = Mock(
+            return_value=self._response(
+                {
+                    "rows": [
+                        {"type": "ADDED", "before": None, "after": {"n": 1}},
+                    ],
+                    "totalNumRows": 1,
+                }
+            )
+        )
+
+        self.client.run_nqe_diff(
+            query_id="Q_sites",
+            before_snapshot_id="snapshot-before",
+            after_snapshot_id="snapshot-after",
+            parameters={"forward_netbox_shard_keys": ["device-1"]},
+        )
+
+        self.assertEqual(
+            self.client._request.call_args.kwargs["json_body"]["parameters"],
+            {"forward_netbox_shard_keys": ["device-1"]},
+        )

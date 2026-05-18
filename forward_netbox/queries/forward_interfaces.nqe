@@ -5,11 +5,11 @@
  */
 
 ethernet_interfaces =
-  foreach device in network.devices
-  where device.snapshotInfo.result == DeviceSnapshotResult.completed
-  where device.platform.vendor != Vendor.FORWARD_CUSTOM
-  foreach interface in device.interfaces
-  where interface.interfaceType == IfaceType.IF_ETHERNET
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+foreach interface in device.interfaces
+where interface.interfaceType == IfaceType.IF_ETHERNET
   let speed_mbps = interface.ethernet.speedMbps
   let ethernet_by_speed_mbps = [
     { mbps: 10, type: "other" },
@@ -38,11 +38,11 @@ ethernet_interfaces =
   };
 
 loopback_interfaces =
-  foreach device in network.devices
-  where device.snapshotInfo.result == DeviceSnapshotResult.completed
-  where device.platform.vendor != Vendor.FORWARD_CUSTOM
-  foreach interface in device.interfaces
-  where interface.interfaceType == IfaceType.IF_LOOPBACK
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+foreach interface in device.interfaces
+where interface.interfaceType == IfaceType.IF_LOOPBACK
   select {
     device: device.name,
     name: interface.name,
@@ -55,11 +55,11 @@ loopback_interfaces =
   };
 
 other_interfaces =
-  foreach device in network.devices
-  where device.snapshotInfo.result == DeviceSnapshotResult.completed
-  where device.platform.vendor != Vendor.FORWARD_CUSTOM
-  foreach interface in device.interfaces
-  where interface.interfaceType != IfaceType.IF_ETHERNET
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+foreach interface in device.interfaces
+where interface.interfaceType != IfaceType.IF_ETHERNET
   where interface.interfaceType != IfaceType.IF_LOOPBACK
   select {
     device: device.name,

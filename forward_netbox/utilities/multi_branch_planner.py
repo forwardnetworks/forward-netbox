@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 from .branch_budget import build_branch_plan_with_density
 from .branch_budget import DEFAULT_DENSITY_SAFETY_FACTOR
 from .branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
@@ -20,12 +22,17 @@ class ForwardMultiBranchPlanner:
         run_preflight=True,
         model_change_density=None,
         model_strings=None,
+        shard_scope=None,
     ):
         fetcher = ForwardQueryFetcher(self.sync, self.client, self.logger)
         context = fetcher.resolve_context(branch_run_state=self.branch_run_state)
         if run_preflight:
             fetcher.run_preflight(context, model_strings=model_strings)
-        workloads = fetcher.fetch_workloads(context, model_strings=model_strings)
+        workloads = fetcher.fetch_workloads(
+            context,
+            model_strings=model_strings,
+            shard_scope=shard_scope,
+        )
         self.model_results = [result.as_dict() for result in fetcher.model_results]
         plan = build_branch_plan_with_density(
             workloads,
@@ -33,4 +40,29 @@ class ForwardMultiBranchPlanner:
             model_change_density=model_change_density,
             safety_factor=DEFAULT_DENSITY_SAFETY_FACTOR,
         )
+        plan = preserve_single_shard_scope(plan, shard_scope=shard_scope)
         return context.as_dict(), plan
+
+
+def preserve_single_shard_scope(plan, *, shard_scope=None):
+    if not shard_scope or len(plan) != 1:
+        return plan
+    shard_keys = tuple(sorted(str(key) for key in shard_scope.get("shard_keys") or ()))
+    if not shard_keys:
+        return plan
+    item = plan[0]
+    if item.shard_keys:
+        return plan
+    if str(shard_scope.get("model") or "") != item.model_string:
+        return plan
+    if (
+        shard_scope.get("query_name")
+        and shard_scope.get("query_name") != item.query_name
+    ):
+        return plan
+    if (
+        shard_scope.get("execution_value")
+        and shard_scope.get("execution_value") != item.execution_value
+    ):
+        return plan
+    return [replace(item, shard_keys=shard_keys)]

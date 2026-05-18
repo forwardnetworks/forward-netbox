@@ -92,10 +92,24 @@ IPADDRESS_UNASSIGNABLE_DIAGNOSTIC_QUERY_FILE = (
 )
 ROUTING_IMPORT_DIAGNOSTIC_QUERY_NAME = "Forward Routing Import Diagnostics"
 ROUTING_IMPORT_DIAGNOSTIC_QUERY_FILE = "forward_routing_import_diagnostics.nqe"
+SHARD_QUERY_PARAMETER_NAME = "forward_netbox_shard_keys"
+SHARD_QUERY_PARAMETER_DEFAULT = {SHARD_QUERY_PARAMETER_NAME: []}
+# Query-side shard parameters stay disabled until each built-in map is converted
+# to a live-validated `@query` declaration. Shard retries still use Forward
+# column filters plus local safety filtering.
+SHARD_PARAMETER_QUERY_FILES = set()
 
 
 def _read_query_source(filename: str) -> str:
     return (QUERY_DIR / filename).read_text(encoding="utf-8").strip()
+
+
+def _default_query_parameters(filename: str) -> dict[str, Any]:
+    if filename in SHARD_PARAMETER_QUERY_FILES:
+        source = _read_query(filename)
+        if SHARD_QUERY_PARAMETER_NAME in source:
+            return dict(SHARD_QUERY_PARAMETER_DEFAULT)
+    return {}
 
 
 def read_builtin_query_source(filename: str) -> str:
@@ -389,7 +403,7 @@ def builtin_nqe_map_rows() -> list[dict[str, Any]]:
                 "query_path": "",
                 "query": _read_query_source(query_default["filename"]),
                 "commit_id": "",
-                "parameters": {},
+                "parameters": _default_query_parameters(query_default["filename"]),
                 "coalesce_fields": default_coalesce_fields_for_model(
                     query_default["model_string"]
                 ),
@@ -405,6 +419,7 @@ def _build_builtin_query_spec(query_default: dict[str, Any]) -> QuerySpec:
         model_string=query_default["model_string"],
         query_name=query_default["name"],
         query=_read_query(query_default["filename"]),
+        parameters=_default_query_parameters(query_default["filename"]),
         coalesce_fields=tuple(
             tuple(field_set)
             for field_set in default_coalesce_fields_for_model(

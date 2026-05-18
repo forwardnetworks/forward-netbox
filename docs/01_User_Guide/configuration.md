@@ -50,6 +50,10 @@ Create a `Forward Source` for each Forward deployment or tenant you want to sync
   - Rows requested per `/api/nqe` page.
   - Defaults to `10000`; valid range is `1..10000`.
   - This controls request paging (`queryOptions.offset/limit`) only. It does not change query semantics.
+- `Query Fetch Concurrency`
+  - Maximum concurrent NQE map fetch jobs during preflight/workload fetch.
+  - Defaults to `6`; valid range is `1..16`.
+  - Increase gradually only when NetBox worker and database telemetry show headroom.
 - `Verify`
   - Only shown for custom deployments.
   - Leave enabled unless the custom deployment uses a self-signed certificate.
@@ -316,11 +320,13 @@ both:
 
 Branching runs are staged as resumable NetBox jobs. The initial sync job records
 the snapshot, validation result, branch plan, and next shard in the sync state.
-Each shard and merge then runs as its own NetBox background job. If a worker
-timeout, restart, or transient failure interrupts a shard, use `Continue
-Ingestion` to resume from the current plan item instead of starting over from
-the first shard. If the interrupted item was already staged, requeue the merge
-from the ingestion detail page.
+Each shard and merge then runs as its own NetBox background job. Newer releases
+also mirror that plan into execution run/step records so support exports can
+show the full multi-shard run, linked jobs, retry counts, branch names, and
+last-error state. If a worker timeout, restart, or transient failure interrupts
+a shard, use `Continue Ingestion` to resume from the current plan item instead
+of starting over from the first shard. If the interrupted item was already
+staged, requeue the merge from the ingestion detail page.
 
 The plugin logs a non-blocking warning when it can see that
 `RQ_DEFAULT_TIMEOUT` is shorter than the Forward source timeout, or when a large
@@ -339,10 +345,20 @@ Branching branch and merged before the next shard runs. The sync stores the next
 plan index so interrupted baselines can resume without discarding completed
 shards. Only the final successful shard becomes the incremental diff baseline,
 so later `latestProcessed` runs can use Forward `nqe-diffs`.
+`max_changes_per_branch` is an operational guideline, not a hard fail cutoff:
+small overruns (up to 5%) are accepted and merged, while larger overruns still
+trigger automatic shard splitting and retry.
 
 ```bash
 invoke forward_netbox.smoke-sync --max-changes-per-branch 10000
 ```
+
+For local performance proof runs, add `--enable-bulk-orm`. This only changes
+the apply engine for the parity-tested model set: `dcim.site`,
+`dcim.manufacturer`, `dcim.devicerole`, `dcim.platform`, `dcim.devicetype`,
+`ipam.vrf`, and `ipam.vlan`.
+Branching review semantics, Fast bootstrap semantics, and the default adapter
+path are unchanged.
 
 To review each shard before continuing, disable `Auto merge` in the UI or run:
 
@@ -379,6 +395,10 @@ Create a `Forward Sync` to bind a source, a NetBox model selection, and the inge
   - Defaults to `10000`.
   - Keep this aligned with local NetBox Branching operational guidance.
   - Applies to the `Branching` backend only.
+- `bulk_orm_models` (advanced parameter)
+  - Optional sync parameter list that narrows the safe bulk-ORM model set for this sync.
+  - Leave this unset to use the plugin's current parity-tested safe set.
+  - Use this only when you explicitly want to restrict bulk ORM to a subset of safe models for troubleshooting or staged rollout.
 - `Auto merge`
   - Enabled by default.
   - When enabled, each native Branching shard is merged automatically before the next shard runs.

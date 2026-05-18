@@ -3,10 +3,14 @@ import math
 from dataclasses import dataclass
 from dataclasses import field
 
+from ..choices import FORWARD_SUPPORTED_MODELS
+from ..choices import ForwardApplyEngineChoices
 from ..exceptions import ForwardQueryError
 from .sync_contracts import canonical_cable_endpoint_identity
+from .sync_contracts import default_coalesce_fields_for_model
 
 DEFAULT_MAX_CHANGES_PER_BRANCH = 10000
+BRANCH_BUDGET_SOFT_OVERRUN_PERCENT = 0.05
 BRANCH_RUN_STATE_PARAMETER = "_branch_run"
 MODEL_CHANGE_DENSITY_PARAMETER = "_model_change_density"
 DEFAULT_DENSITY_SAFETY_FACTOR = 0.7
@@ -43,6 +47,121 @@ DEVICE_SHARD_MODELS = {
     "netbox_peering_manager.peeringsession",
 }
 
+IPAM_SHARD_FILTER_FIELDS = {
+    "ipam.prefix": ("prefix",),
+    "ipam.vlan": ("vid",),
+    "ipam.vrf": ("rd", "name"),
+}
+STRUCTURED_SHARD_FILTER_FIELDS = {
+    "dcim.site": ("slug", "name"),
+    "dcim.manufacturer": ("slug", "name"),
+    "dcim.devicerole": ("slug", "name"),
+    "dcim.platform": ("slug", "name"),
+    "dcim.devicetype": ("slug", "model"),
+    "dcim.device": ("name",),
+    "dcim.virtualchassis": ("name",),
+    "netbox_routing.ospfarea": ("area_id",),
+    **IPAM_SHARD_FILTER_FIELDS,
+}
+
+SHARD_FETCH_PARAMETER_MODE = "shard_keys"
+SHARD_FETCH_PARAMETER_KEYS = "forward_netbox_shard_keys"
+SHARD_FETCH_PARAMETER_MODE_NAME = "forward_netbox_shard_mode"
+SHARD_FETCH_PARAMETER_BUCKET = "forward_netbox_shard_bucket"
+SHARD_FETCH_PARAMETER_BUCKET_COUNT = "forward_netbox_shard_bucket_count"
+
+
+def _model_fetch_fallback_contract(model_string):
+    bucket_key_family = _fallback_bucket_key_family(model_string)
+    return {
+        "model": model_string,
+        "fetch_mode": "model",
+        "key_family": "",
+        "shard_safe": False,
+        "local_safety_filter": True,
+        "schema_contract": "full_model_shape",
+        "reason_code": "model_fetch_fallback",
+        "reason": (
+            "No deterministic shard fetch contract is defined yet; the model is "
+            "fetched and the persisted shard is applied locally."
+        ),
+        "bucket_strategy": {
+            "supported": bool(bucket_key_family),
+            "key_family": bucket_key_family,
+            "reason_code": (
+                "deterministic_bucket_candidate"
+                if bucket_key_family
+                else "bucket_strategy_unavailable"
+            ),
+            "reason": (
+                f"Model can use deterministic `{bucket_key_family}` shard buckets "
+                "when query pushdown/bucketing primitives are available."
+                if bucket_key_family
+                else "No stable shard key family is available for deterministic bucket pushdown."
+            ),
+        },
+    }
+
+
+def _build_shard_fetch_model_contracts():
+    contracts = {}
+    for model_string in FORWARD_SUPPORTED_MODELS:
+        if model_string in DEVICE_SHARD_MODELS:
+            contracts[model_string] = {
+                "model": model_string,
+                "fetch_mode": "nqe_column_filter",
+                "key_family": "device",
+                "shard_safe": True,
+                "local_safety_filter": True,
+                "schema_contract": "same_nqe_row_shape",
+                "reason_code": "device_column_filter",
+                "reason": (
+                    "Device-scoped rows can be fetched with native Forward NQE "
+                    "column filters and still receive local shard safety filtering."
+                ),
+                "bucket_strategy": {
+                    "supported": True,
+                    "key_family": "device",
+                    "reason_code": "device_bucket_available",
+                    "reason": "Device shard keys can be bucketed deterministically.",
+                },
+            }
+        elif model_string in STRUCTURED_SHARD_FILTER_FIELDS:
+            contracts[model_string] = {
+                "model": model_string,
+                "fetch_mode": "nqe_column_filter",
+                "key_family": ",".join(STRUCTURED_SHARD_FILTER_FIELDS[model_string]),
+                "shard_safe": True,
+                "local_safety_filter": True,
+                "schema_contract": "same_nqe_row_shape",
+                "reason_code": (
+                    "ipam_column_filter"
+                    if model_string in IPAM_SHARD_FILTER_FIELDS
+                    else "structured_column_filter"
+                ),
+                "reason": (
+                    "Rows can be fetched with native Forward NQE column filters "
+                    "when the shard key exposes one of the stable identity columns."
+                ),
+                "bucket_strategy": {
+                    "supported": True,
+                    "key_family": ",".join(
+                        STRUCTURED_SHARD_FILTER_FIELDS[model_string]
+                    ),
+                    "reason_code": "column_filter_bucket_available",
+                    "reason": (
+                        "This model has deterministic identity fields suitable for "
+                        "column-filter pushdown and deterministic bucketing."
+                    ),
+                },
+            }
+        else:
+            contracts[model_string] = _model_fetch_fallback_contract(model_string)
+    return contracts
+
+
+SHARD_FETCH_MODEL_CONTRACTS = _build_shard_fetch_model_contracts()
+
 
 @dataclass(frozen=True)
 class BranchWorkload:
@@ -57,6 +176,9 @@ class BranchWorkload:
     execution_value: str = ""
     query_runtime_ms: float | None = None
     baseline_snapshot_id: str = ""
+    apply_engine: str = ForwardApplyEngineChoices.ADAPTER
+    apply_engine_reason: str = ""
+    apply_engine_decision: dict = field(default_factory=dict)
 
     @property
     def estimated_changes(self):
@@ -79,6 +201,9 @@ class BranchPlanItem:
     execution_value: str = ""
     query_runtime_ms: float | None = None
     baseline_snapshot_id: str = ""
+    apply_engine: str = ForwardApplyEngineChoices.ADAPTER
+    apply_engine_reason: str = ""
+    apply_engine_decision: dict = field(default_factory=dict)
 
 
 def row_shard_key(model_string, row, coalesce_fields):
@@ -111,6 +236,145 @@ def shard_key_digest(shard_key):
     return hashlib.sha256(str(shard_key).encode("utf-8")).hexdigest()
 
 
+def shard_fetch_contract(model_string, shard_keys):
+    shard_keys = tuple(sorted(str(key) for key in shard_keys or () if key))
+    if not shard_keys:
+        return {
+            "fetch_mode": "model",
+            "fetch_key_family": "",
+            "fetch_parameters": {},
+            "fetch_column_filters": [],
+        }
+
+    device_names = _device_names_from_shard_keys(shard_keys)
+    if device_names and model_string in DEVICE_SHARD_MODELS:
+        fetch_parameters = {
+            SHARD_FETCH_PARAMETER_MODE_NAME: SHARD_FETCH_PARAMETER_MODE,
+            SHARD_FETCH_PARAMETER_KEYS: list(shard_keys),
+            SHARD_FETCH_PARAMETER_BUCKET: 0,
+            SHARD_FETCH_PARAMETER_BUCKET_COUNT: 1,
+        }
+        return {
+            "fetch_mode": "nqe_column_filter",
+            "fetch_key_family": "device",
+            "fetch_parameters": fetch_parameters,
+            "query_parameters": {},
+            "fetch_column_filters": (
+                [
+                    {
+                        "operator": "DEFAULT",
+                        "columnName": "device",
+                        "value": device_names[0],
+                    }
+                ]
+                if len(device_names) == 1
+                else [
+                    {
+                        "operator": "EQUALS_ANY",
+                        "columnName": "device",
+                        "values": list(device_names),
+                    }
+                ]
+            ),
+        }
+
+    structured_contract = _structured_column_filter_contract(model_string, shard_keys)
+    if structured_contract:
+        return structured_contract
+
+    return {
+        "fetch_mode": "model",
+        "fetch_key_family": "",
+        "fetch_parameters": {},
+        "query_parameters": {},
+        "fetch_column_filters": [],
+    }
+
+
+def shard_fetch_capability_for_model(model_string):
+    model_string = str(model_string or "")
+    return dict(
+        SHARD_FETCH_MODEL_CONTRACTS.get(
+            model_string,
+            _model_fetch_fallback_contract(model_string),
+        )
+    )
+
+
+def _device_names_from_shard_keys(shard_keys):
+    device_names = []
+    for key in shard_keys:
+        if not str(key).startswith("device:"):
+            return []
+        device_name = str(key).removeprefix("device:")
+        if not device_name:
+            return []
+        device_names.append(device_name)
+    return sorted(device_names)
+
+
+def _structured_column_filter_contract(model_string, shard_keys):
+    candidate_fields = STRUCTURED_SHARD_FILTER_FIELDS.get(model_string)
+    if not candidate_fields:
+        return {}
+
+    parsed_keys = [_parse_structured_shard_key(key) for key in shard_keys]
+    if not parsed_keys or any(not parsed_key for parsed_key in parsed_keys):
+        return {}
+
+    for field_name in candidate_fields:
+        values = [
+            str(parsed_key[field_name])
+            for parsed_key in parsed_keys
+            if parsed_key.get(field_name) not in ("", None)
+        ]
+        if len(values) != len(parsed_keys):
+            continue
+        unique_values = sorted(set(values))
+        fetch_mode = "nqe_column_filter"
+        filters = [
+            {
+                "operator": "EQUALS_ANY",
+                "columnName": field_name,
+                "values": list(unique_values),
+            }
+        ]
+        return {
+            "fetch_key_family": field_name,
+            "fetch_parameters": {
+                SHARD_FETCH_PARAMETER_MODE_NAME: SHARD_FETCH_PARAMETER_MODE,
+                SHARD_FETCH_PARAMETER_KEYS: list(shard_keys),
+                SHARD_FETCH_PARAMETER_BUCKET: 0,
+                SHARD_FETCH_PARAMETER_BUCKET_COUNT: 1,
+            },
+            "fetch_mode": fetch_mode,
+            "fetch_column_filters": filters,
+        }
+    return {}
+
+
+def _fallback_bucket_key_family(model_string):
+    field_sets = default_coalesce_fields_for_model(model_string)
+    if not field_sets:
+        return ""
+    first = field_sets[0]
+    if not first:
+        return ""
+    return ",".join(str(field_name) for field_name in first if str(field_name))
+
+
+def _parse_structured_shard_key(shard_key):
+    parsed = {}
+    for part in str(shard_key).split("|"):
+        if "=" not in part:
+            return {}
+        field_name, value = part.split("=", 1)
+        if not field_name:
+            return {}
+        parsed[field_name] = value
+    return parsed
+
+
 def split_workload(workload, *, max_changes_per_branch):
     if max_changes_per_branch < 1:
         raise ValueError("`max_changes_per_branch` must be at least 1.")
@@ -131,6 +395,9 @@ def split_workload(workload, *, max_changes_per_branch):
                 execution_value=workload.execution_value,
                 query_runtime_ms=workload.query_runtime_ms,
                 baseline_snapshot_id=workload.baseline_snapshot_id,
+                apply_engine=workload.apply_engine,
+                apply_engine_reason=workload.apply_engine_reason,
+                apply_engine_decision=workload.apply_engine_decision,
             )
         ]
 
@@ -154,16 +421,18 @@ def split_workload(workload, *, max_changes_per_branch):
             "delete_rows"
         ].append(row)
 
+    soft_limit = soft_budget_limit(max_changes_per_branch)
     oversized = [
         (key, len(rows["upsert_rows"]) + len(rows["delete_rows"]))
         for key, rows in buckets.items()
-        if len(rows["upsert_rows"]) + len(rows["delete_rows"]) > max_changes_per_branch
+        if len(rows["upsert_rows"]) + len(rows["delete_rows"]) > soft_limit
     ]
     if oversized:
         key, count = sorted(oversized, key=lambda item: item[1], reverse=True)[0]
         raise ForwardQueryError(
             f"`{workload.model_string}` shard key `{key}` has {count} rows, "
-            f"which exceeds the branch budget of {max_changes_per_branch}."
+            f"which exceeds the soft branch budget limit of {soft_limit} "
+            f"(guideline {max_changes_per_branch})."
         )
 
     minimum_branch_count = math.ceil(
@@ -221,9 +490,17 @@ def split_workload(workload, *, max_changes_per_branch):
                 execution_value=workload.execution_value,
                 query_runtime_ms=workload.query_runtime_ms,
                 baseline_snapshot_id=workload.baseline_snapshot_id,
+                apply_engine=workload.apply_engine,
+                apply_engine_reason=workload.apply_engine_reason,
+                apply_engine_decision=workload.apply_engine_decision,
             )
         )
     return plan_items
+
+
+def soft_budget_limit(max_changes_per_branch):
+    budget = max(1, int(max_changes_per_branch or 1))
+    return int(budget * (1 + BRANCH_BUDGET_SOFT_OVERRUN_PERCENT))
 
 
 def build_branch_plan(workloads, *, max_changes_per_branch):
@@ -251,6 +528,9 @@ def build_branch_plan(workloads, *, max_changes_per_branch):
             execution_value=item.execution_value,
             query_runtime_ms=item.query_runtime_ms,
             baseline_snapshot_id=item.baseline_snapshot_id,
+            apply_engine=item.apply_engine,
+            apply_engine_reason=item.apply_engine_reason,
+            apply_engine_decision=item.apply_engine_decision,
         )
         for index, item in enumerate(plan, start=1)
     ]
@@ -325,6 +605,9 @@ def build_branch_plan_with_density(
             execution_value=item.execution_value,
             query_runtime_ms=item.query_runtime_ms,
             baseline_snapshot_id=item.baseline_snapshot_id,
+            apply_engine=item.apply_engine,
+            apply_engine_reason=item.apply_engine_reason,
+            apply_engine_decision=item.apply_engine_decision,
         )
         for index, item in enumerate(plan, start=1)
     ]

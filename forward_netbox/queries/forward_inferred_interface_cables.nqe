@@ -24,7 +24,8 @@ let remote_interface_type = max(
   where remote_interface.name == link.ifaceName
   select remote_interface.interfaceType
 )
-where !isPresent(remote_interface_type) || remote_interface_type != IfaceType.IF_AGGREGATE
+where isPresent(remote_interface_type)
+where remote_interface_type != IfaceType.IF_AGGREGATE
 where device.name != link.deviceName || interface.name != link.ifaceName
 select distinct {
   device: if device.name < link.deviceName || (device.name == link.deviceName && interface.name < link.ifaceName)

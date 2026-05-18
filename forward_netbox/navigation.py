@@ -44,6 +44,12 @@ validation_run = PluginMenuItem(
     permissions=["forward_netbox.view_forwardvalidationrun"],
 )
 
+execution_run = PluginMenuItem(
+    link="plugins:forward_netbox:forwardexecutionrun_list",
+    link_text=_("Execution Runs"),
+    permissions=["forward_netbox.view_forwardexecutionrun"],
+)
+
 nqe_map = PluginMenuItem(
     link="plugins:forward_netbox:forwardnqemap_list",
     link_text=_("NQE Maps"),
@@ -76,7 +82,7 @@ menu = PluginMenu(
     label="Forward Networks",
     icon_class="mdi mdi-cloud-sync",
     groups=(
-        ("Data Sync", (source, sync, ingestion, validation_run)),
+        ("Data Sync", (source, sync, ingestion, execution_run, validation_run)),
         ("Configuration", (nqe_map, drift_policy)),
     ),
 )

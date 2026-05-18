@@ -97,6 +97,16 @@ class Command(BaseCommand):
             ),
             help="Maximum estimated changes per native Branching shard.",
         )
+        parser.add_argument(
+            "--enable-bulk-orm",
+            action="store_true",
+            default=os.getenv("FORWARD_SMOKE_ENABLE_BULK_ORM", "").lower()
+            in ("1", "true", "yes", "on"),
+            help=(
+                "Enable the experimental bulk ORM apply engine for the narrow "
+                "model set with parity coverage. Defaults to the adapter path."
+            ),
+        )
 
     def handle(self, *args, **options):
         username = options["username"]
@@ -156,6 +166,7 @@ class Command(BaseCommand):
             selected_models=selected_models,
             auto_merge=not options["no_auto_merge"],
             execution_backend=options["execution_backend"],
+            enable_bulk_orm=options["enable_bulk_orm"],
         )
 
         if options["validate_only"]:
@@ -271,11 +282,13 @@ class Command(BaseCommand):
         selected_models,
         auto_merge,
         execution_backend,
+        enable_bulk_orm,
     ):
         sync_parameters = {
             "snapshot_id": snapshot_id,
             "auto_merge": auto_merge,
             "execution_backend": execution_backend,
+            "enable_bulk_orm": enable_bulk_orm,
         }
         for model_string in forward_configured_models():
             sync_parameters[model_string] = model_string in selected_models

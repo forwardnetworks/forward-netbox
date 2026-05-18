@@ -2,6 +2,7 @@ import logging
 import threading
 
 from core.models import Job
+from django.contrib.contenttypes.models import ContentType
 from django.core.cache import cache
 from django.utils import timezone
 from extras.choices import LogLevelChoices
@@ -62,6 +63,18 @@ class SyncLogging:
         except Exception as exc:
             self.logger.warning(
                 "Failed to load core job %s for log persistence: %s", self.job_id, exc
+            )
+            return
+
+        object_type_id = getattr(job, "object_type_id", None)
+        if (
+            object_type_id
+            and not ContentType.objects.filter(pk=object_type_id).exists()
+        ):
+            self.logger.warning(
+                "Skipping core job log persistence for job %s because content type %s is missing.",
+                self.job_id,
+                object_type_id,
             )
             return
 
