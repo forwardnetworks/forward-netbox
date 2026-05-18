@@ -103,7 +103,7 @@ class ForwardSyncHealthTest(TestCase):
         )
 
     def test_sync_health_summary_reports_local_state(self):
-        with patch.object(ForwardSource, "get_client") as get_client:
+        with patch.object(ForwardSource, "get_client"):
             summary = sync_health_summary(self.sync)
 
         self.assertEqual(summary["source"]["name"], "health-source")
@@ -236,7 +236,9 @@ class ForwardSyncHealthTest(TestCase):
                 kwargs={"pk": sync.pk},
             )
         )
-        self.assertContains(response, "Raw query text maps cannot use Forward nqe-diffs")
+        self.assertContains(
+            response, "Raw query text maps cannot use Forward nqe-diffs"
+        )
 
     def test_sync_health_view_renders_diagnostics(self):
         self.client.force_login(self.user)
@@ -301,9 +303,7 @@ class ForwardSyncHealthTest(TestCase):
         data = json.loads(response.content)
         self.assertTrue(data["source_health"]["reachable"])
         self.assertTrue(data["source_health"]["configured_network_visible"])
-        self.assertTrue(
-            data["source_health"]["latest_processed_snapshot_available"]
-        )
+        self.assertTrue(data["source_health"]["latest_processed_snapshot_available"])
 
     def test_live_data_file_health_check_reports_snapshot_captured_rows(self):
         client = Mock()
@@ -402,9 +402,7 @@ class ForwardSyncHealthTest(TestCase):
         self.assertEqual(data["sync"]["pk"], self.sync.pk)
         self.assertEqual(len(data["results"]), 2)
         path_result = next(
-            result
-            for result in data["results"]
-            if result["mode"] == "query_path"
+            result for result in data["results"] if result["mode"] == "query_path"
         )
         self.assertEqual(path_result["status"], "live_repository_source_match")
         self.assertEqual(path_result["live_query_id"], "Q_devices")

@@ -836,10 +836,9 @@ class ForwardNQEMapBulkEditForm(NetBoxModelBulkEditForm):
         required=False,
         label="Query Bulk Operation",
         help_text=(
-            "Bulk edit does not store direct query IDs. Choose a repository-path "
-            "operation to set selected maps to Repository Query Path mode; the "
-            "plugin resolves the current query ID from the selected source during "
-            "sync and diff execution."
+            "Bulk edit stores direct query IDs for diff support. Choose a "
+            "repository-path operation to resolve the selected queries from the "
+            "selected source and save the current query ID on each map."
         ),
     )
     bind_query_source = forms.ModelChoiceField(
@@ -847,9 +846,9 @@ class ForwardNQEMapBulkEditForm(NetBoxModelBulkEditForm):
         required=False,
         label="Forward Source for Query Lookup",
         help_text=(
-            "Choose the Forward source used to read the repository folder. "
-            "The source credentials are also used later to resolve each selected "
-            "repository path into its current Forward query ID."
+            "Choose the Forward source used to read the repository folder and "
+            "resolve each selected repository path into its current Forward "
+            "query ID."
         ),
     )
     bind_query_repository = forms.ChoiceField(
@@ -945,9 +944,8 @@ class ForwardNQEMapBulkEditForm(NetBoxModelBulkEditForm):
                 ),
                 help_text=(
                     "Select the repository query path for this NetBox map. Saving "
-                    "this field sets execution to Repository Query Path; the query "
-                    "ID is resolved from this path during sync and diff execution. "
-                    "Leave blank to keep this map unchanged."
+                    "this field resolves and stores the current Forward query ID "
+                    "for diff execution. Leave blank to keep this map unchanged."
                 ),
             )
             _configure_api_select(
@@ -975,7 +973,7 @@ class ForwardNQEMapBulkEditForm(NetBoxModelBulkEditForm):
             ),
             FieldSet(
                 *self.selected_query_path_fields,
-                name="Map Query Path Choices",
+                name="Map Query ID Choices",
             ),
             FieldSet("enabled", name="Map State"),
         )

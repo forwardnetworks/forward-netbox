@@ -315,7 +315,9 @@ def bulk_orm_apply_tree_models(
         for values in normalized_rows:
             existing = None
             for lookup_set in lookup_sets:
-                lookup = {field_name: values.get(field_name) for field_name in lookup_set}
+                lookup = {
+                    field_name: values.get(field_name) for field_name in lookup_set
+                }
                 if any(value in ("", None) for value in lookup.values()):
                     continue
                 existing = model.objects.filter(**lookup).order_by("pk").first()

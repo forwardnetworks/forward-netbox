@@ -69,7 +69,9 @@ def validation_summary(validation_run):
         "snapshot_selector": validation_run.snapshot_selector,
         "snapshot_id": validation_run.snapshot_id,
         "blocking_reason_count": len(validation_run.blocking_reasons or []),
-        "created": validation_run.created.isoformat() if validation_run.created else None,
+        "created": (
+            validation_run.created.isoformat() if validation_run.created else None
+        ),
         "completed": (
             validation_run.completed.isoformat() if validation_run.completed else None
         ),
@@ -173,7 +175,9 @@ def step_duration_seconds(step):
 
 def capacity_message(run, *, average_seconds, max_seconds, remaining_steps):
     if average_seconds is None:
-        return "Capacity estimate is unavailable until at least one stage step completes."
+        return (
+            "Capacity estimate is unavailable until at least one stage step completes."
+        )
     if remaining_steps <= 0:
         return "All planned steps are complete."
     return (

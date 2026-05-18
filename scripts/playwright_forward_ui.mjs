@@ -305,11 +305,11 @@ async function main() {
     await expectVisible(page, "Repository Folder");
     await expectVisible(page, "Overwrite existing repository queries");
     await expectVisible(page, "Commit message");
-    await expectVisible(page, "Map Query Path Choices");
+    await expectVisible(page, "Map Query ID Choices");
     await expectVisible(page, "Forward Locations");
     await expectVisible(page, "Pin current commit");
-    await expectVisible(page, "does not store direct query IDs");
-    await expectVisible(page, "resolves the current query ID");
+    await expectVisible(page, "Bulk edit stores direct query IDs");
+    await expectVisible(page, "resolves and stores the current Forward query ID");
     await assertNoHorizontalOverflow(page, "desktop NQE map list");
     evidence.checks.push(
       "native NQE map bulk edit exposes bidirectional query reference controls",
