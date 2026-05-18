@@ -179,7 +179,10 @@ ADAPTER_MODEL_BLOCKERS = {
 }
 
 APPLY_ENGINE_MODEL_CLASSIFICATIONS = {
-    **{model_string: "bulk_orm_candidate" for model_string in SIMPLE_BULK_CANDIDATE_MODELS},
+    **{
+        model_string: "bulk_orm_candidate"
+        for model_string in SIMPLE_BULK_CANDIDATE_MODELS
+    },
     **{
         model_string: "bulk_orm_experimental_candidate"
         for model_string in EXPERIMENTAL_BULK_ORM_MODELS
