@@ -28,8 +28,10 @@ from ipam.models import ASN
 from ipam.models import IPAddress
 from ipam.models import RIR
 from ipam.models import VRF
+from netbox_branching.models import Branch
 
 from forward_netbox.choices import FORWARD_SUPPORTED_MODELS
+from forward_netbox.choices import ForwardExecutionStepStatusChoices
 from forward_netbox.exceptions import ForwardClientError
 from forward_netbox.exceptions import ForwardDependencySkipError
 from forward_netbox.exceptions import ForwardQueryError
@@ -37,17 +39,29 @@ from forward_netbox.exceptions import ForwardSearchError
 from forward_netbox.exceptions import ForwardSyncDataError
 from forward_netbox.exceptions import ForwardSyncError
 from forward_netbox.models import ForwardDriftPolicy
+from forward_netbox.models import ForwardExecutionRun
+from forward_netbox.models import ForwardExecutionStep
 from forward_netbox.models import ForwardIngestion
 from forward_netbox.models import ForwardIngestionIssue
 from forward_netbox.models import ForwardNQEMap
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.models import ForwardValidationRun
+from forward_netbox.utilities.apply_engine import ADAPTER_MODELS_WITHOUT_BLOCKER
+from forward_netbox.utilities.apply_engine import ADAPTER_REQUIRED_MODELS
+from forward_netbox.utilities.apply_engine import apply_engine_decision_for
+from forward_netbox.utilities.apply_engine import APPLY_ENGINE_MODEL_CLASSIFICATIONS
+from forward_netbox.utilities.apply_engine import BULK_ORM_ENABLED_MODELS
+from forward_netbox.utilities.apply_engine import BULK_ORM_ENABLED_MODELS_WITHOUT_SPECS
+from forward_netbox.utilities.apply_engine import UNCLASSIFIED_SUPPORTED_MODELS
 from forward_netbox.utilities.branch_budget import BranchWorkload
 from forward_netbox.utilities.branch_budget import build_branch_plan
 from forward_netbox.utilities.branch_budget import build_branch_plan_with_density
 from forward_netbox.utilities.branch_budget import effective_row_budget_for_model
 from forward_netbox.utilities.branch_budget import row_shard_key
+from forward_netbox.utilities.branch_budget import shard_fetch_capability_for_model
+from forward_netbox.utilities.branch_budget import shard_fetch_contract
+from forward_netbox.utilities.branch_budget import SHARD_FETCH_MODEL_CONTRACTS
 from forward_netbox.utilities.direct_changes import object_changes_for_ingestion
 from forward_netbox.utilities.fast_bootstrap_executor import (
     ForwardFastBootstrapExecutor,
@@ -58,15 +72,22 @@ from forward_netbox.utilities.multi_branch import BranchBudgetExceeded
 from forward_netbox.utilities.multi_branch import DEFAULT_PREFLIGHT_ROW_LIMIT
 from forward_netbox.utilities.multi_branch import ForwardMultiBranchExecutor
 from forward_netbox.utilities.multi_branch import ForwardMultiBranchPlanner
+from forward_netbox.utilities.multi_branch_lifecycle import soft_budget_limit
 from forward_netbox.utilities.query_diagnostics import (
     summarize_ipaddress_parent_prefix_rows,
 )
 from forward_netbox.utilities.query_fetch import ForwardModelResult
 from forward_netbox.utilities.query_fetch import ForwardQueryContext
+from forward_netbox.utilities.query_fetch import ForwardQueryFetcher
 from forward_netbox.utilities.query_registry import QuerySpec
+from forward_netbox.utilities.resumable_branching import update_plan_item_state
 from forward_netbox.utilities.sync import ForwardSyncRunner
+from forward_netbox.utilities.sync_contracts import contract_for_model
+from forward_netbox.utilities.sync_contracts import default_coalesce_fields_for_model
 from forward_netbox.utilities.sync_contracts import validate_row_shape_for_model
 from forward_netbox.utilities.sync_events import EventsClearer
+from forward_netbox.utilities.sync_facade import enqueue_sync_job
+from forward_netbox.utilities.sync_state import get_branch_run_display_state
 
 
 class ForwardIPAMDiagnosticTest(TestCase):
@@ -155,9 +176,41 @@ class ForwardBranchBudgetPlanTest(TestCase):
 
         with self.assertRaisesRegex(
             ForwardQueryError,
-            "device:device-1.*exceeds the branch budget",
+            "device:device-1.*exceeds the soft branch budget limit",
         ):
             build_branch_plan([workload], max_changes_per_branch=5)
+
+    def test_single_bucket_within_soft_overrun_is_allowed(self):
+        workload = BranchWorkload(
+            model_string="dcim.interface",
+            label="interfaces",
+            upsert_rows=[
+                {"device": "device-1", "name": f"Ethernet1/{index}"}
+                for index in range(10272)
+            ],
+            coalesce_fields=[["device", "name"]],
+        )
+
+        plan = build_branch_plan([workload], max_changes_per_branch=10000)
+        self.assertEqual(len(plan), 1)
+        self.assertEqual(plan[0].estimated_changes, 10272)
+
+    def test_single_bucket_over_soft_overrun_still_fails(self):
+        workload = BranchWorkload(
+            model_string="dcim.interface",
+            label="interfaces",
+            upsert_rows=[
+                {"device": "device-1", "name": f"Ethernet1/{index}"}
+                for index in range(10600)
+            ],
+            coalesce_fields=[["device", "name"]],
+        )
+
+        with self.assertRaisesRegex(
+            ForwardQueryError,
+            "exceeds the soft branch budget limit",
+        ):
+            build_branch_plan([workload], max_changes_per_branch=10000)
 
     def test_cable_shard_key_is_direction_insensitive(self):
         row = {
@@ -231,6 +284,149 @@ class ForwardBranchBudgetPlanTest(TestCase):
             "device:device-1",
         )
 
+    def test_ipam_prefix_shard_fetch_contract_filters_by_prefix_column(self):
+        contract = shard_fetch_contract(
+            "ipam.prefix",
+            [
+                "prefix=10.0.0.0/24|vrf=blue",
+                "prefix=2001:db8::/64|vrf=blue",
+            ],
+        )
+
+        self.assertEqual(contract["fetch_mode"], "nqe_column_filter")
+        self.assertEqual(contract["fetch_key_family"], "prefix")
+        self.assertEqual(
+            contract["fetch_column_filters"],
+            [
+                {
+                    "operator": "EQUALS_ANY",
+                    "columnName": "prefix",
+                    "values": ["10.0.0.0/24", "2001:db8::/64"],
+                }
+            ],
+        )
+
+    def test_ipam_vlan_shard_fetch_contract_filters_by_vid_column(self):
+        contract = shard_fetch_contract(
+            "ipam.vlan",
+            ["site=site-a|vid=10", "site=site-b|vid=20"],
+        )
+
+        self.assertEqual(contract["fetch_mode"], "nqe_column_filter")
+        self.assertEqual(contract["fetch_key_family"], "vid")
+        self.assertEqual(
+            contract["fetch_column_filters"],
+            [
+                {
+                    "operator": "EQUALS_ANY",
+                    "columnName": "vid",
+                    "values": ["10", "20"],
+                }
+            ],
+        )
+
+    def test_ipam_vrf_shard_fetch_contract_filters_by_name_when_rd_absent(self):
+        contract = shard_fetch_contract(
+            "ipam.vrf",
+            ["name=blue", "name=red"],
+        )
+
+        self.assertEqual(contract["fetch_mode"], "nqe_column_filter")
+        self.assertEqual(contract["fetch_key_family"], "name")
+        self.assertEqual(
+            contract["fetch_column_filters"],
+            [
+                {
+                    "operator": "EQUALS_ANY",
+                    "columnName": "name",
+                    "values": ["blue", "red"],
+                }
+            ],
+        )
+
+    def test_dcim_device_shard_fetch_contract_filters_by_name_column(self):
+        contract = shard_fetch_contract(
+            "dcim.device",
+            ["name=device-1", "name=device-2"],
+        )
+
+        self.assertEqual(contract["fetch_mode"], "nqe_column_filter")
+        self.assertEqual(contract["fetch_key_family"], "name")
+        self.assertEqual(
+            contract["fetch_column_filters"],
+            [
+                {
+                    "operator": "EQUALS_ANY",
+                    "columnName": "name",
+                    "values": ["device-1", "device-2"],
+                }
+            ],
+        )
+
+    def test_device_shard_fetch_contract_uses_column_filters_without_query_params(
+        self,
+    ):
+        contract = shard_fetch_contract(
+            "dcim.interface",
+            ["device:device-1", "device:device-2"],
+        )
+
+        self.assertEqual(contract["query_parameters"], {})
+        self.assertEqual(
+            contract["fetch_column_filters"],
+            [
+                {
+                    "operator": "EQUALS_ANY",
+                    "columnName": "device",
+                    "values": ["device-1", "device-2"],
+                }
+            ],
+        )
+
+    def test_shard_fetch_capability_reports_model_fallbacks(self):
+        device_contract = shard_fetch_capability_for_model("dcim.interface")
+        prefix_contract = shard_fetch_capability_for_model("ipam.prefix")
+        site_contract = shard_fetch_capability_for_model("dcim.site")
+
+        self.assertEqual(device_contract["fetch_mode"], "nqe_column_filter")
+        self.assertEqual(device_contract["reason_code"], "device_column_filter")
+        self.assertTrue(device_contract["shard_safe"])
+        self.assertEqual(prefix_contract["reason_code"], "ipam_column_filter")
+        self.assertTrue(prefix_contract["shard_safe"])
+        self.assertEqual(site_contract["fetch_mode"], "nqe_column_filter")
+        self.assertEqual(site_contract["reason_code"], "structured_column_filter")
+        self.assertTrue(site_contract["shard_safe"])
+        self.assertTrue(site_contract["bucket_strategy"]["supported"])
+
+    def test_shard_fetch_contracts_cover_all_supported_models(self):
+        self.assertEqual(
+            set(SHARD_FETCH_MODEL_CONTRACTS),
+            set(FORWARD_SUPPORTED_MODELS),
+        )
+        for model_string in FORWARD_SUPPORTED_MODELS:
+            contract = shard_fetch_capability_for_model(model_string)
+            self.assertEqual(contract["model"], model_string)
+            self.assertIn(
+                contract["fetch_mode"],
+                {"nqe_column_filter", "nqe_query_parameter", "model"},
+            )
+            self.assertIn(
+                contract["schema_contract"],
+                {"same_nqe_row_shape", "full_model_shape"},
+            )
+            self.assertTrue(contract["local_safety_filter"])
+            self.assertTrue(contract["reason_code"])
+            self.assertTrue(contract["reason"])
+            self.assertIn("bucket_strategy", contract)
+            self.assertIn("supported", contract["bucket_strategy"])
+            self.assertIn("reason_code", contract["bucket_strategy"])
+            if contract["shard_safe"]:
+                self.assertEqual(contract["schema_contract"], "same_nqe_row_shape")
+            else:
+                self.assertEqual(contract["schema_contract"], "full_model_shape")
+                self.assertEqual(contract["reason_code"], "model_fetch_fallback")
+                self.assertIn("bucket_strategy", contract)
+
     def test_effective_row_budget_uses_cable_safety_override_with_observed_density(
         self,
     ):
@@ -287,7 +483,324 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
             },
         )
 
-    @patch("forward_netbox.utilities.query_fetch.get_query_specs")
+    def _shard_parity_case(self, model_string: str):
+        if model_string == "dcim.site":
+            target = {"name": "site-1", "slug": "site-1"}
+            noise = {"name": "site-2", "slug": "site-2"}
+        elif model_string == "dcim.manufacturer":
+            target = {"name": "manufacturer-1", "slug": "manufacturer-1"}
+            noise = {"name": "manufacturer-2", "slug": "manufacturer-2"}
+        elif model_string == "dcim.devicerole":
+            target = {"name": "role-1", "slug": "role-1", "color": "ff0000"}
+            noise = {"name": "role-2", "slug": "role-2", "color": "00ff00"}
+        elif model_string == "dcim.platform":
+            target = {
+                "name": "platform-1",
+                "slug": "platform-1",
+                "manufacturer": "Cisco",
+                "manufacturer_slug": "cisco",
+            }
+            noise = {
+                "name": "platform-2",
+                "slug": "platform-2",
+                "manufacturer": "Juniper",
+                "manufacturer_slug": "juniper",
+            }
+        elif model_string == "dcim.devicetype":
+            target = {
+                "manufacturer": "Cisco",
+                "manufacturer_slug": "cisco",
+                "model": "Model-1",
+                "slug": "model-1",
+            }
+            noise = {
+                "manufacturer": "Cisco",
+                "manufacturer_slug": "cisco",
+                "model": "Model-2",
+                "slug": "model-2",
+            }
+        elif model_string == "dcim.device":
+            target = {
+                "name": "device-1",
+                "manufacturer": "Cisco",
+                "manufacturer_slug": "cisco",
+                "device_type": "dt-1",
+                "device_type_slug": "dt-1",
+                "site": "site-1",
+                "site_slug": "site-1",
+                "role": "role-1",
+                "role_slug": "role-1",
+                "role_color": "ff0000",
+                "status": "active",
+            }
+            noise = {
+                "name": "device-2",
+                "manufacturer": "Cisco",
+                "manufacturer_slug": "cisco",
+                "device_type": "dt-2",
+                "device_type_slug": "dt-2",
+                "site": "site-2",
+                "site_slug": "site-2",
+                "role": "role-2",
+                "role_slug": "role-2",
+                "role_color": "00ff00",
+                "status": "active",
+            }
+        elif model_string == "dcim.virtualchassis":
+            target = {
+                "name": "vc-1",
+                "device": "device-1",
+                "vc_name": "vc-1",
+                "vc_domain": "domain-1",
+            }
+            noise = {
+                "name": "vc-2",
+                "device": "device-2",
+                "vc_name": "vc-2",
+                "vc_domain": "domain-2",
+            }
+        elif model_string == "extras.taggeditem":
+            target = {
+                "device": "device-1",
+                "tag": "Prot_BGP",
+                "tag_slug": "prot-bgp",
+                "tag_color": "2196f3",
+            }
+            noise = {
+                "device": "device-2",
+                "tag": "Prot_BGP",
+                "tag_slug": "prot-bgp",
+                "tag_color": "2196f3",
+            }
+        elif model_string == "dcim.interface":
+            target = {
+                "device": "device-1",
+                "name": "Ethernet1",
+                "type": "other",
+                "enabled": True,
+            }
+            noise = {
+                "device": "device-2",
+                "name": "Ethernet1",
+                "type": "other",
+                "enabled": True,
+            }
+        elif model_string == "dcim.cable":
+            target = {
+                "device": "device-1",
+                "interface": "Ethernet1/1",
+                "remote_device": "device-2",
+                "remote_interface": "Ethernet1/2",
+                "status": "connected",
+            }
+            noise = {
+                "device": "device-3",
+                "interface": "Ethernet1/1",
+                "remote_device": "device-4",
+                "remote_interface": "Ethernet1/2",
+                "status": "connected",
+            }
+        elif model_string == "dcim.macaddress":
+            target = {
+                "device": "device-1",
+                "interface": "Ethernet1/1",
+                "mac": "00:11:22:33:44:55",
+                "mac_address": "00:11:22:33:44:55",
+            }
+            noise = {
+                "device": "device-2",
+                "interface": "Ethernet1/1",
+                "mac": "00:11:22:33:44:55",
+                "mac_address": "00:11:22:33:44:55",
+            }
+        elif model_string == "ipam.vlan":
+            target = {"site": "site-1", "vid": 10, "name": "vlan10", "status": "active"}
+            noise = {"site": "site-2", "vid": 10, "name": "vlan10", "status": "active"}
+        elif model_string == "ipam.vrf":
+            target = {
+                "name": "blue",
+                "rd": "65000:1",
+                "description": "blue",
+                "enforce_unique": False,
+            }
+            noise = {
+                "name": "red",
+                "rd": "65000:2",
+                "description": "red",
+                "enforce_unique": False,
+            }
+        elif model_string == "ipam.prefix":
+            target = {
+                "prefix": "10.0.0.0/24",
+                "vrf": "blue",
+                "status": "active",
+            }
+            noise = {
+                "prefix": "10.0.0.0/24",
+                "vrf": "red",
+                "status": "active",
+            }
+        elif model_string == "ipam.ipaddress":
+            target = {
+                "device": "device-1",
+                "interface": "Ethernet1/1",
+                "address": "10.0.0.1/24",
+                "vrf": "blue",
+                "status": "active",
+            }
+            noise = {
+                "device": "device-2",
+                "interface": "Ethernet1/1",
+                "address": "10.0.0.1/24",
+                "vrf": "red",
+                "status": "active",
+            }
+        elif model_string == "dcim.inventoryitem":
+            target = {
+                "device": "device-1",
+                "name": "module-1",
+                "part_id": "P-1",
+                "serial": "S-1",
+                "status": "active",
+                "discovered": True,
+            }
+            noise = {
+                "device": "device-2",
+                "name": "module-1",
+                "part_id": "P-1",
+                "serial": "S-1",
+                "status": "active",
+                "discovered": True,
+            }
+        elif model_string == "dcim.module":
+            target = {
+                "device": "device-1",
+                "module_bay": "Slot 1",
+                "manufacturer": "Cisco",
+                "manufacturer_slug": "cisco",
+                "model": "Module-1",
+                "part_number": "PN-1",
+                "status": "active",
+            }
+            noise = {
+                "device": "device-2",
+                "module_bay": "Slot 1",
+                "manufacturer": "Cisco",
+                "manufacturer_slug": "cisco",
+                "model": "Module-1",
+                "part_number": "PN-1",
+                "status": "active",
+            }
+        elif model_string == "netbox_routing.bgppeer":
+            target = {
+                "device": "device-1",
+                "local_asn": 65000,
+                "neighbor_address": "192.0.2.1",
+                "peer_asn": 65100,
+                "enabled": True,
+                "status": "active",
+            }
+            noise = {
+                "device": "device-2",
+                "local_asn": 65000,
+                "neighbor_address": "192.0.2.1",
+                "peer_asn": 65100,
+                "enabled": True,
+                "status": "active",
+            }
+        elif model_string == "netbox_routing.bgpaddressfamily":
+            target = {
+                "device": "device-1",
+                "local_asn": 65000,
+                "afi_safi": "ipv4-unicast",
+            }
+            noise = {
+                "device": "device-2",
+                "local_asn": 65000,
+                "afi_safi": "ipv4-unicast",
+            }
+        elif model_string == "netbox_routing.bgppeeraddressfamily":
+            target = {
+                "device": "device-1",
+                "local_asn": 65000,
+                "neighbor_address": "192.0.2.1",
+                "peer_asn": 65100,
+                "afi_safi": "ipv4-unicast",
+                "enabled": True,
+            }
+            noise = {
+                "device": "device-2",
+                "local_asn": 65000,
+                "neighbor_address": "192.0.2.1",
+                "peer_asn": 65100,
+                "afi_safi": "ipv4-unicast",
+                "enabled": True,
+            }
+        elif model_string == "netbox_routing.ospfinstance":
+            target = {
+                "device": "device-1",
+                "process_id": 1,
+                "router_id": "1.1.1.1",
+            }
+            noise = {
+                "device": "device-2",
+                "process_id": 1,
+                "router_id": "1.1.1.1",
+            }
+        elif model_string == "netbox_routing.ospfarea":
+            target = {"area_id": "0.0.0.0", "area_type": "normal"}
+            noise = {"area_id": "0.0.0.1", "area_type": "normal"}
+        elif model_string == "netbox_routing.ospfinterface":
+            target = {
+                "device": "device-1",
+                "process_id": 1,
+                "router_id": "1.1.1.1",
+                "area_id": "0.0.0.0",
+                "area_type": "normal",
+                "local_interface": "Ethernet1/1",
+            }
+            noise = {
+                "device": "device-2",
+                "process_id": 1,
+                "router_id": "1.1.1.1",
+                "area_id": "0.0.0.0",
+                "area_type": "normal",
+                "local_interface": "Ethernet1/1",
+            }
+        elif model_string == "netbox_peering_manager.peeringsession":
+            target = {
+                "device": "device-1",
+                "local_asn": 65000,
+                "neighbor_address": "192.0.2.1",
+                "peer_asn": 65100,
+                "enabled": True,
+                "status": "active",
+            }
+            noise = {
+                "device": "device-2",
+                "local_asn": 65000,
+                "neighbor_address": "192.0.2.1",
+                "peer_asn": 65100,
+                "enabled": True,
+                "status": "active",
+            }
+        else:
+            raise AssertionError(f"Unhandled model: {model_string}")
+
+        return target, noise
+
+    def _query_for_model(self, model_string: str, row: dict) -> str:
+        fields = [
+            (
+                f'{field}: "{value}"'
+                if not isinstance(value, bool)
+                else f"{field}: {str(value).lower()}"
+            )
+            for field, value in row.items()
+        ]
+        return "select {" + ", ".join(fields) + "}"
+
+    @patch("forward_netbox.utilities.query_fetch_execution.get_query_specs")
     def test_build_plan_runs_query_preflight_before_fetching_full_rows(
         self, mock_specs
     ):
@@ -329,7 +842,635 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
         second_call = client.run_nqe_query.call_args_list[1]
         self.assertTrue(second_call.kwargs["fetch_all"])
 
-    @patch("forward_netbox.utilities.query_fetch.get_query_specs")
+    @patch("forward_netbox.utilities.query_fetch_execution.get_query_specs")
+    def test_build_plan_uses_shard_scoped_column_filter_for_single_device(
+        self,
+        mock_specs,
+    ):
+        client = Mock()
+        client.get_snapshots.return_value = [
+            {
+                "id": "snapshot-after",
+                "state": "PROCESSED",
+                "created_at": "",
+                "processed_at": "2026-03-31T12:15:00Z",
+            }
+        ]
+        client.get_snapshot_metrics.return_value = {}
+        client.run_nqe_query.return_value = [
+            {
+                "device": "device-1",
+                "name": "Ethernet1",
+                "type": "other",
+                "enabled": True,
+            },
+            {
+                "device": "device-2",
+                "name": "Ethernet1",
+                "type": "other",
+                "enabled": True,
+            },
+        ]
+        self.sync.resolve_snapshot_id = lambda client=None: "snapshot-after"
+        self.sync.get_model_strings = lambda: ["dcim.interface"]
+        self.sync.incremental_diff_baseline = Mock(return_value=None)
+        mock_specs.return_value = [
+            QuerySpec(
+                model_string="dcim.interface",
+                query_name="Forward Interfaces",
+                query=(
+                    'select {device: "device-1", name: "Ethernet1", '
+                    'type: "other", enabled: true}'
+                ),
+            )
+        ]
+        planner = ForwardMultiBranchPlanner(
+            sync=self.sync,
+            client=client,
+            logger_=Mock(),
+        )
+
+        _context, plan = planner.build_plan(
+            max_changes_per_branch=10,
+            run_preflight=False,
+            model_strings=["dcim.interface"],
+            shard_scope={
+                "model": "dcim.interface",
+                "query_name": "Forward Interfaces",
+                "shard_keys": ["device:device-1"],
+            },
+        )
+
+        self.assertEqual(
+            client.run_nqe_query.call_args.kwargs["column_filters"],
+            [
+                {
+                    "operator": "DEFAULT",
+                    "columnName": "device",
+                    "value": "device-1",
+                }
+            ],
+        )
+        self.assertEqual(len(plan), 1)
+        self.assertEqual(plan[0].upsert_rows, [client.run_nqe_query.return_value[0]])
+
+    @patch("forward_netbox.utilities.query_fetch_execution.get_query_specs")
+    def test_build_plan_uses_shard_scoped_column_filter_for_multiple_devices(
+        self,
+        mock_specs,
+    ):
+        client = Mock()
+        client.get_snapshots.return_value = [
+            {
+                "id": "snapshot-after",
+                "state": "PROCESSED",
+                "created_at": "",
+                "processed_at": "2026-03-31T12:15:00Z",
+            }
+        ]
+        client.get_snapshot_metrics.return_value = {}
+        client.run_nqe_query.return_value = [
+            {
+                "device": "device-1",
+                "name": "Ethernet1",
+                "type": "other",
+                "enabled": True,
+            },
+            {
+                "device": "device-2",
+                "name": "Ethernet1",
+                "type": "other",
+                "enabled": True,
+            },
+            {
+                "device": "device-3",
+                "name": "Ethernet1",
+                "type": "other",
+                "enabled": True,
+            },
+        ]
+        self.sync.resolve_snapshot_id = lambda client=None: "snapshot-after"
+        self.sync.get_model_strings = lambda: ["dcim.interface"]
+        self.sync.incremental_diff_baseline = Mock(return_value=None)
+        mock_specs.return_value = [
+            QuerySpec(
+                model_string="dcim.interface",
+                query_name="Forward Interfaces",
+                query=(
+                    'select {device: "device-1", name: "Ethernet1", '
+                    'type: "other", enabled: true}'
+                ),
+            )
+        ]
+        planner = ForwardMultiBranchPlanner(
+            sync=self.sync,
+            client=client,
+            logger_=Mock(),
+        )
+
+        _context, plan = planner.build_plan(
+            max_changes_per_branch=10,
+            run_preflight=False,
+            model_strings=["dcim.interface"],
+            shard_scope={
+                "model": "dcim.interface",
+                "query_name": "Forward Interfaces",
+                "shard_keys": ["device:device-1", "device:device-2"],
+            },
+        )
+
+        self.assertEqual(
+            client.run_nqe_query.call_args.kwargs["column_filters"],
+            [
+                {
+                    "operator": "EQUALS_ANY",
+                    "columnName": "device",
+                    "values": ["device-1", "device-2"],
+                }
+            ],
+        )
+        self.assertEqual(len(plan), 1)
+        self.assertEqual(
+            plan[0].upsert_rows,
+            client.run_nqe_query.return_value[:2],
+        )
+
+    @patch("forward_netbox.utilities.query_fetch_execution.get_query_specs")
+    def test_build_plan_preserves_interface_row_shape_during_shard_fetch(
+        self,
+        mock_specs,
+    ):
+        base_rows = [
+            {
+                "device": "device-1",
+                "name": "Ethernet1",
+                "type": "other",
+                "enabled": True,
+                "extra_debug": "kept",
+            }
+        ]
+        snapshot = {
+            "id": "snapshot-after",
+            "state": "PROCESSED",
+            "created_at": "",
+            "processed_at": "2026-03-31T12:15:00Z",
+        }
+        full_client = Mock()
+        full_client.get_snapshots.return_value = [snapshot]
+        full_client.get_snapshot_metrics.return_value = {}
+        full_client.run_nqe_query.return_value = list(base_rows)
+        shard_client = Mock()
+        shard_client.get_snapshots.return_value = [snapshot]
+        shard_client.get_snapshot_metrics.return_value = {}
+        shard_client.run_nqe_query.return_value = list(base_rows)
+        self.sync.resolve_snapshot_id = lambda client=None: "snapshot-after"
+        self.sync.get_model_strings = lambda: ["dcim.interface"]
+        self.sync.incremental_diff_baseline = Mock(return_value=None)
+        mock_specs.return_value = [
+            QuerySpec(
+                model_string="dcim.interface",
+                query_name="Forward Interfaces",
+                query=(
+                    'select {device: "device-1", name: "Ethernet1", '
+                    'type: "other", enabled: true}'
+                ),
+            )
+        ]
+
+        full_planner = ForwardMultiBranchPlanner(
+            sync=self.sync,
+            client=full_client,
+            logger_=Mock(),
+        )
+        _full_context, full_plan = full_planner.build_plan(
+            max_changes_per_branch=10,
+            run_preflight=False,
+            model_strings=["dcim.interface"],
+        )
+        shard_planner = ForwardMultiBranchPlanner(
+            sync=self.sync,
+            client=shard_client,
+            logger_=Mock(),
+        )
+        _shard_context, shard_plan = shard_planner.build_plan(
+            max_changes_per_branch=10,
+            run_preflight=False,
+            model_strings=["dcim.interface"],
+            shard_scope={
+                "model": "dcim.interface",
+                "query_name": "Forward Interfaces",
+                "shard_keys": ["device:device-1"],
+            },
+        )
+
+        self.assertEqual(full_plan[0].upsert_rows, shard_plan[0].upsert_rows)
+        self.assertEqual(
+            set(full_plan[0].upsert_rows[0]),
+            {"device", "name", "type", "enabled", "extra_debug"},
+        )
+        self.assertEqual(
+            shard_client.run_nqe_query.call_args.kwargs["column_filters"],
+            [
+                {
+                    "operator": "DEFAULT",
+                    "columnName": "device",
+                    "value": "device-1",
+                }
+            ],
+        )
+
+    @patch("forward_netbox.utilities.query_fetch_execution.get_query_specs")
+    def test_build_plan_preserves_prefix_row_shape_during_shard_fetch(
+        self,
+        mock_specs,
+    ):
+        base_rows = [
+            {
+                "prefix": "10.0.0.0/24",
+                "vrf": "blue",
+                "status": "active",
+                "extra_debug": "kept",
+            }
+        ]
+        snapshot = {
+            "id": "snapshot-after",
+            "state": "PROCESSED",
+            "created_at": "",
+            "processed_at": "2026-03-31T12:15:00Z",
+        }
+        full_client = Mock()
+        full_client.get_snapshots.return_value = [snapshot]
+        full_client.get_snapshot_metrics.return_value = {}
+        full_client.run_nqe_query.return_value = list(base_rows)
+        shard_client = Mock()
+        shard_client.get_snapshots.return_value = [snapshot]
+        shard_client.get_snapshot_metrics.return_value = {}
+        shard_client.run_nqe_query.return_value = list(base_rows)
+        self.sync.resolve_snapshot_id = lambda client=None: "snapshot-after"
+        self.sync.get_model_strings = lambda: ["ipam.prefix"]
+        self.sync.incremental_diff_baseline = Mock(return_value=None)
+        mock_specs.return_value = [
+            QuerySpec(
+                model_string="ipam.prefix",
+                query_name="Forward IPv4 Prefixes",
+                query=(
+                    'select {prefix: "10.0.0.0/24", vrf: "blue", ' 'status: "active"}'
+                ),
+            )
+        ]
+
+        full_planner = ForwardMultiBranchPlanner(
+            sync=self.sync,
+            client=full_client,
+            logger_=Mock(),
+        )
+        _full_context, full_plan = full_planner.build_plan(
+            max_changes_per_branch=10,
+            run_preflight=False,
+            model_strings=["ipam.prefix"],
+        )
+        shard_planner = ForwardMultiBranchPlanner(
+            sync=self.sync,
+            client=shard_client,
+            logger_=Mock(),
+        )
+        _shard_context, shard_plan = shard_planner.build_plan(
+            max_changes_per_branch=10,
+            run_preflight=False,
+            model_strings=["ipam.prefix"],
+            shard_scope={
+                "model": "ipam.prefix",
+                "query_name": "Forward IPv4 Prefixes",
+                "shard_keys": ["prefix=10.0.0.0/24|vrf=blue"],
+            },
+        )
+
+        self.assertEqual(full_plan[0].upsert_rows, shard_plan[0].upsert_rows)
+        self.assertEqual(
+            set(full_plan[0].upsert_rows[0]),
+            {"prefix", "vrf", "status", "extra_debug"},
+        )
+        self.assertEqual(
+            shard_client.run_nqe_query.call_args.kwargs["column_filters"],
+            [
+                {
+                    "operator": "EQUALS_ANY",
+                    "columnName": "prefix",
+                    "values": ["10.0.0.0/24"],
+                }
+            ],
+        )
+
+    @patch("forward_netbox.utilities.query_fetch_execution.get_query_specs")
+    def test_build_plan_preserves_fallback_model_row_shape_during_shard_fetch(
+        self,
+        mock_specs,
+    ):
+        base_rows = [
+            {
+                "name": "site-1",
+                "slug": "site-1",
+                "extra_debug": "kept",
+            }
+        ]
+        snapshot = {
+            "id": "snapshot-after",
+            "state": "PROCESSED",
+            "created_at": "",
+            "processed_at": "2026-03-31T12:15:00Z",
+        }
+        full_client = Mock()
+        full_client.get_snapshots.return_value = [snapshot]
+        full_client.get_snapshot_metrics.return_value = {}
+        full_client.run_nqe_query.return_value = list(base_rows)
+        shard_client = Mock()
+        shard_client.get_snapshots.return_value = [snapshot]
+        shard_client.get_snapshot_metrics.return_value = {}
+        shard_client.run_nqe_query.return_value = list(base_rows)
+        self.sync.resolve_snapshot_id = lambda client=None: "snapshot-after"
+        self.sync.get_model_strings = lambda: ["dcim.site"]
+        self.sync.incremental_diff_baseline = Mock(return_value=None)
+        mock_specs.return_value = [
+            QuerySpec(
+                model_string="dcim.site",
+                query_name="Forward Locations",
+                query='select {name: "site-1", slug: "site-1"}',
+            )
+        ]
+
+        full_planner = ForwardMultiBranchPlanner(
+            sync=self.sync,
+            client=full_client,
+            logger_=Mock(),
+        )
+        _full_context, full_plan = full_planner.build_plan(
+            max_changes_per_branch=10,
+            run_preflight=False,
+            model_strings=["dcim.site"],
+        )
+        shard_planner = ForwardMultiBranchPlanner(
+            sync=self.sync,
+            client=shard_client,
+            logger_=Mock(),
+        )
+        _shard_context, shard_plan = shard_planner.build_plan(
+            max_changes_per_branch=10,
+            run_preflight=False,
+            model_strings=["dcim.site"],
+            shard_scope={
+                "model": "dcim.site",
+                "query_name": "Forward Locations",
+                "shard_keys": ["slug=site-1"],
+            },
+        )
+
+        self.assertEqual(full_plan[0].upsert_rows, shard_plan[0].upsert_rows)
+        self.assertEqual(
+            set(full_plan[0].upsert_rows[0]),
+            {"name", "slug", "extra_debug"},
+        )
+        self.assertEqual(
+            shard_client.run_nqe_query.call_args.kwargs["column_filters"],
+            [
+                {
+                    "operator": "EQUALS_ANY",
+                    "columnName": "slug",
+                    "values": ["site-1"],
+                }
+            ],
+        )
+        self.assertEqual(
+            shard_plan[0].upsert_rows,
+            [base_rows[0]],
+        )
+
+    @patch("forward_netbox.utilities.query_fetch_execution.get_query_specs")
+    def test_build_plan_preserves_row_shape_across_supported_models(
+        self,
+        mock_specs,
+    ):
+        snapshot = {
+            "id": "snapshot-after",
+            "state": "PROCESSED",
+            "created_at": "",
+            "processed_at": "2026-03-31T12:15:00Z",
+        }
+        self.sync.resolve_snapshot_id = lambda client=None: "snapshot-after"
+        self.sync.incremental_diff_baseline = Mock(return_value=None)
+
+        for model_string in FORWARD_SUPPORTED_MODELS:
+            with self.subTest(model_string=model_string):
+                contract = contract_for_model(model_string)
+                target_row, _noise_row = self._shard_parity_case(model_string)
+                self.assertTrue(set(contract.required_fields).issubset(target_row))
+                full_client = Mock()
+                full_client.get_snapshots.return_value = [snapshot]
+                full_client.get_snapshot_metrics.return_value = {}
+                full_client.run_nqe_query.return_value = [target_row, _noise_row]
+                shard_client = Mock()
+                shard_client.get_snapshots.return_value = [snapshot]
+                shard_client.get_snapshot_metrics.return_value = {}
+                shard_client.run_nqe_query.return_value = [target_row, _noise_row]
+                mock_specs.return_value = [
+                    QuerySpec(
+                        model_string=model_string,
+                        query_name=f"Forward {model_string}",
+                        query=self._query_for_model(model_string, target_row),
+                    )
+                ]
+                full_planner = ForwardMultiBranchPlanner(
+                    sync=self.sync,
+                    client=full_client,
+                    logger_=Mock(),
+                )
+                _full_context, full_plan = full_planner.build_plan(
+                    max_changes_per_branch=10,
+                    run_preflight=False,
+                    model_strings=[model_string],
+                )
+                shard_scope = {
+                    "model": model_string,
+                    "query_name": f"Forward {model_string}",
+                    "shard_keys": [
+                        row_shard_key(
+                            model_string,
+                            target_row,
+                            default_coalesce_fields_for_model(model_string),
+                        )
+                    ],
+                }
+                shard_planner = ForwardMultiBranchPlanner(
+                    sync=self.sync,
+                    client=shard_client,
+                    logger_=Mock(),
+                )
+                _shard_context, shard_plan = shard_planner.build_plan(
+                    max_changes_per_branch=10,
+                    run_preflight=False,
+                    model_strings=[model_string],
+                    shard_scope=shard_scope,
+                )
+
+                full_rows = [
+                    row for plan_item in full_plan for row in plan_item.upsert_rows
+                ]
+                shard_rows = [
+                    row for plan_item in shard_plan for row in plan_item.upsert_rows
+                ]
+                self.assertTrue(full_rows)
+                self.assertIn(target_row, full_rows)
+                self.assertEqual(shard_rows, [target_row])
+
+    @patch("forward_netbox.utilities.query_fetch_execution.get_query_specs")
+    def test_build_plan_uses_shard_scoped_column_filter_for_ipam_prefix(
+        self,
+        mock_specs,
+    ):
+        client = Mock()
+        client.get_snapshots.return_value = [
+            {
+                "id": "snapshot-after",
+                "state": "PROCESSED",
+                "created_at": "",
+                "processed_at": "2026-03-31T12:15:00Z",
+            }
+        ]
+        client.get_snapshot_metrics.return_value = {}
+        client.run_nqe_query.return_value = [
+            {"prefix": "10.0.0.0/24", "vrf": "blue", "status": "active"},
+            {"prefix": "10.0.0.0/24", "vrf": "red", "status": "active"},
+            {"prefix": "192.0.2.0/24", "vrf": "blue", "status": "active"},
+        ]
+        self.sync.resolve_snapshot_id = lambda client=None: "snapshot-after"
+        self.sync.get_model_strings = lambda: ["ipam.prefix"]
+        self.sync.incremental_diff_baseline = Mock(return_value=None)
+        mock_specs.return_value = [
+            QuerySpec(
+                model_string="ipam.prefix",
+                query_name="Forward IPv4 Prefixes",
+                query='select {prefix: "10.0.0.0/24", vrf: "blue", status: "active"}',
+            )
+        ]
+        planner = ForwardMultiBranchPlanner(
+            sync=self.sync,
+            client=client,
+            logger_=Mock(),
+        )
+
+        _context, plan = planner.build_plan(
+            max_changes_per_branch=10,
+            run_preflight=False,
+            model_strings=["ipam.prefix"],
+            shard_scope={
+                "model": "ipam.prefix",
+                "query_name": "Forward IPv4 Prefixes",
+                "shard_keys": ["prefix=10.0.0.0/24|vrf=blue"],
+            },
+        )
+
+        self.assertEqual(
+            client.run_nqe_query.call_args.kwargs["column_filters"],
+            [
+                {
+                    "operator": "EQUALS_ANY",
+                    "columnName": "prefix",
+                    "values": ["10.0.0.0/24"],
+                }
+            ],
+        )
+        self.assertEqual(len(plan), 1)
+        self.assertEqual(plan[0].upsert_rows, [client.run_nqe_query.return_value[0]])
+
+    @patch("forward_netbox.utilities.query_fetch_execution.get_query_specs")
+    def test_build_plan_applies_shard_column_filter_to_nqe_diff(self, mock_specs):
+        baseline = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-before",
+            baseline_ready=True,
+        )
+        client = Mock()
+        client.get_snapshots.return_value = [
+            {
+                "id": "snapshot-after",
+                "state": "PROCESSED",
+                "created_at": "",
+                "processed_at": "2026-03-31T12:15:00Z",
+            }
+        ]
+        client.get_snapshot_metrics.return_value = {}
+        client.run_nqe_diff.return_value = [
+            {
+                "type": "ADDED",
+                "before": None,
+                "after": {
+                    "device": "device-1",
+                    "name": "Ethernet1",
+                    "type": "other",
+                    "enabled": True,
+                },
+            },
+            {
+                "type": "ADDED",
+                "before": None,
+                "after": {
+                    "device": "device-3",
+                    "name": "Ethernet1",
+                    "type": "other",
+                    "enabled": True,
+                },
+            },
+        ]
+        self.sync.resolve_snapshot_id = lambda client=None: "snapshot-after"
+        self.sync.get_model_strings = lambda: ["dcim.interface"]
+        self.sync.incremental_diff_baseline = Mock(return_value=baseline)
+        mock_specs.return_value = [
+            QuerySpec(
+                model_string="dcim.interface",
+                query_name="Forward Interfaces",
+                query_id="Q_interfaces",
+            )
+        ]
+        planner = ForwardMultiBranchPlanner(
+            sync=self.sync,
+            client=client,
+            logger_=Mock(),
+        )
+
+        _context, plan = planner.build_plan(
+            max_changes_per_branch=10,
+            run_preflight=False,
+            model_strings=["dcim.interface"],
+            shard_scope={
+                "model": "dcim.interface",
+                "query_name": "Forward Interfaces",
+                "shard_keys": ["device:device-1", "device:device-2"],
+            },
+        )
+
+        client.run_nqe_diff.assert_called_once_with(
+            query_id="Q_interfaces",
+            commit_id=None,
+            parameters={},
+            before_snapshot_id="snapshot-before",
+            after_snapshot_id="snapshot-after",
+            column_filters=[
+                {
+                    "operator": "EQUALS_ANY",
+                    "columnName": "device",
+                    "values": ["device-1", "device-2"],
+                }
+            ],
+            fetch_all=True,
+        )
+        client.run_nqe_query.assert_not_called()
+        self.assertEqual(len(plan), 1)
+        self.assertEqual(
+            plan[0].upsert_rows,
+            [client.run_nqe_diff.return_value[0]["after"]],
+        )
+
+    @patch("forward_netbox.utilities.query_fetch_execution.get_query_specs")
     def test_preflight_skips_invalid_model_before_full_fetch(self, mock_specs):
         client = Mock()
         client.get_snapshots.return_value = [
@@ -371,7 +1512,7 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
             planner.model_results[0]["diagnostics"][0]["message"],
         )
 
-    @patch("forward_netbox.utilities.query_fetch.get_query_specs")
+    @patch("forward_netbox.utilities.query_fetch_execution.get_query_specs")
     def test_virtual_chassis_failure_mentions_query_id_binding(self, mock_specs):
         client = Mock()
         client.get_snapshots.return_value = [
@@ -448,7 +1589,7 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
             planner.model_results[0]["diagnostics"][0]["message"],
         )
 
-    @patch("forward_netbox.utilities.query_fetch.get_query_specs")
+    @patch("forward_netbox.utilities.query_fetch_execution.get_query_specs")
     def test_preflight_failure_for_one_model_still_plans_later_models(self, mock_specs):
         client = Mock()
         client.get_snapshots.return_value = [
@@ -519,7 +1660,7 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
         ]
         self.assertEqual(failures[0]["failure_count"], 1)
 
-    @patch("forward_netbox.utilities.query_fetch.get_query_specs")
+    @patch("forward_netbox.utilities.query_fetch_execution.get_query_specs")
     def test_duplicate_virtual_chassis_positions_skip_model_not_later_models(
         self, mock_specs
     ):
@@ -683,7 +1824,7 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
             planner.model_results[0]["diagnostics"][0]["message"],
         )
 
-    @patch("forward_netbox.utilities.query_fetch.get_query_specs")
+    @patch("forward_netbox.utilities.query_fetch_execution.get_query_specs")
     def test_build_plan_handles_multiple_specs_with_shared_model(self, mock_specs):
         client = Mock()
         client.get_snapshots.return_value = [
@@ -754,7 +1895,7 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
             2,
         )
 
-    @patch("forward_netbox.utilities.query_fetch.get_query_specs")
+    @patch("forward_netbox.utilities.query_fetch_execution.get_query_specs")
     def test_build_plan_records_unassignable_ipaddress_diagnostics(self, mock_specs):
         client = Mock()
         client.get_snapshots.return_value = [
@@ -829,7 +1970,7 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
         self.assertIn("11.138.0.16/28", warning_messages[1])
         self.assertIn("11.138.0.31/28", warning_messages[2])
 
-    @patch("forward_netbox.utilities.query_fetch.get_query_specs")
+    @patch("forward_netbox.utilities.query_fetch_execution.get_query_specs")
     def test_build_plan_records_routing_import_diagnostics(self, mock_specs):
         client = Mock()
         client.get_snapshots.return_value = [
@@ -926,7 +2067,7 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
             "OSPF neighbors without reverse peer inference", warning_messages[0]
         )
 
-    @patch("forward_netbox.utilities.query_fetch.get_query_specs")
+    @patch("forward_netbox.utilities.query_fetch_execution.get_query_specs")
     def test_build_plan_attaches_routing_diagnostics_to_bgp_peer_results(
         self, mock_specs
     ):
@@ -1047,6 +2188,7 @@ class ForwardMultiBranchExecutorAdaptiveSplitTest(TestCase):
             logger_=logger,
         )
         executor.max_changes_per_branch = 10
+        executor.max_changes_per_branch = 10
         executor.plan = Mock(
             return_value=(
                 {
@@ -1131,9 +2273,145 @@ class ForwardMultiBranchExecutorAdaptiveSplitTest(TestCase):
         self.assertEqual(executor._split_overflow_item.call_count, 1)
         self.assertEqual(self.sync.get_branch_run_state(), {})
 
+    def test_soft_budget_limit_allows_guideline_overrun(self):
+        self.assertEqual(soft_budget_limit(10000), 10500)
+
+    def test_run_plan_item_allows_small_budget_overrun(self):
+        workload = BranchWorkload(
+            model_string="dcim.site",
+            label="dcim.site | Forward Sites",
+            upsert_rows=[{"name": "Site A", "slug": "site-a"}],
+            coalesce_fields=[["slug"]],
+        )
+        item = build_branch_plan([workload], max_changes_per_branch=10000)[0]
+        logger = Mock()
+        logger.log_data = {"statistics": {"dcim.site": {"current": 1, "applied": 1}}}
+        executor = ForwardMultiBranchExecutor(
+            sync=self.sync,
+            client=Mock(),
+            logger_=logger,
+        )
+        executor.max_changes_per_branch = 10000
+        executor.model_change_density = {}
+        context = {
+            "snapshot_selector": LATEST_PROCESSED_SNAPSHOT,
+            "snapshot_id": self.SNAPSHOT_ID,
+            "snapshot_info": {},
+            "snapshot_metrics": {},
+        }
+
+        with patch(
+            "forward_netbox.utilities.multi_branch_lifecycle.run_item_in_branch"
+        ), patch.object(Branch, "provision"), patch.object(
+            Branch, "refresh_from_db"
+        ), patch.object(
+            Branch, "get_unmerged_changes"
+        ) as mock_changes, patch.object(
+            ForwardIngestion,
+            "sync_merge",
+            autospec=True,
+            return_value=None,
+        ):
+            mock_changes.return_value.count.return_value = 10272
+            ingestion = executor._run_plan_item(
+                item,
+                context,
+                mark_baseline_ready=False,
+                merge=True,
+                total_plan_items=1,
+                plan_preview={},
+            )
+
+        self.assertIsNotNone(ingestion)
+        warning_messages = [call.args[0] for call in logger.log_warning.call_args_list]
+        self.assertTrue(
+            any("soft overrun limit" in message for message in warning_messages)
+        )
+
+    def test_run_plan_item_still_raises_for_large_budget_overrun(self):
+        workload = BranchWorkload(
+            model_string="dcim.site",
+            label="dcim.site | Forward Sites",
+            upsert_rows=[{"name": "Site A", "slug": "site-a"}],
+            coalesce_fields=[["slug"]],
+        )
+        item = build_branch_plan([workload], max_changes_per_branch=10000)[0]
+        logger = Mock()
+        logger.log_data = {"statistics": {"dcim.site": {"current": 1, "applied": 1}}}
+        executor = ForwardMultiBranchExecutor(
+            sync=self.sync,
+            client=Mock(),
+            logger_=logger,
+        )
+        executor.max_changes_per_branch = 10000
+        executor.model_change_density = {}
+        context = {
+            "snapshot_selector": LATEST_PROCESSED_SNAPSHOT,
+            "snapshot_id": self.SNAPSHOT_ID,
+            "snapshot_info": {},
+            "snapshot_metrics": {},
+        }
+
+        with patch(
+            "forward_netbox.utilities.multi_branch_lifecycle.run_item_in_branch"
+        ), patch.object(Branch, "provision"), patch.object(
+            Branch, "refresh_from_db"
+        ), patch.object(
+            Branch, "get_unmerged_changes"
+        ) as mock_changes:
+            mock_changes.return_value.count.return_value = 11000
+            with self.assertRaises(BranchBudgetExceeded):
+                executor._run_plan_item(
+                    item,
+                    context,
+                    mark_baseline_ready=False,
+                    merge=True,
+                    total_plan_items=1,
+                    plan_preview={},
+                )
+
+    @patch("forward_netbox.utilities.sync_facade.enqueue_branch_stage_job")
+    def test_enqueue_sync_job_continues_from_ledger_without_plan_items(
+        self,
+        mock_enqueue_stage,
+    ):
+        execution_run = ForwardExecutionRun.objects.create(
+            sync=self.sync,
+            source=self.source,
+            backend="branching",
+            status="running",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id=self.SNAPSHOT_ID,
+            total_steps=2,
+            next_step_index=2,
+        )
+        ForwardExecutionStep.objects.create(
+            run=execution_run,
+            index=1,
+            kind="stage",
+            status=ForwardExecutionStepStatusChoices.MERGED,
+            model_string="dcim.site",
+        )
+        ForwardExecutionStep.objects.create(
+            run=execution_run,
+            index=2,
+            kind="stage",
+            status=ForwardExecutionStepStatusChoices.PENDING,
+            model_string="dcim.device",
+        )
+        self.sync.clear_branch_run_state()
+
+        enqueue_sync_job(self.sync, adhoc=True, user=None)
+
+        mock_enqueue_stage.assert_called_once_with(
+            self.sync,
+            user=self.sync.user,
+            adhoc=True,
+        )
+
     @patch("forward_netbox.utilities.multi_branch_executor.enqueue_branch_stage_job")
     @patch("forward_netbox.utilities.multi_branch_executor.ForwardValidationRunner")
-    def test_job_backed_run_persists_plan_and_queues_first_shard(
+    def test_job_backed_run_queues_first_shard_using_execution_ledger(
         self,
         mock_validation_runner,
         mock_enqueue_stage,
@@ -1183,11 +2461,110 @@ class ForwardMultiBranchExecutorAdaptiveSplitTest(TestCase):
             adhoc=True,
         )
         state = self.sync.get_branch_run_state()
-        self.assertEqual(state["next_plan_index"], 1)
-        self.assertEqual(state["total_plan_items"], len(plan))
-        self.assertEqual(len(state["plan_items"]), len(plan))
-        self.assertEqual(state["plan_items"][0]["status"], "pending")
-        self.assertNotIn("upsert_rows", state["plan_items"][0])
+        self.assertEqual(state, {})
+        execution_run = ForwardExecutionRun.objects.get(sync=self.sync)
+        self.assertEqual(execution_run.sync, self.sync)
+        self.assertEqual(execution_run.snapshot_id, self.SNAPSHOT_ID)
+        self.assertEqual(execution_run.total_steps, len(plan))
+        self.assertEqual(execution_run.next_step_index, 1)
+        self.assertEqual(execution_run.plan_preview["planned_shards"], len(plan))
+        self.assertEqual(execution_run.steps.count(), len(plan))
+        first_step = execution_run.steps.order_by("index").first()
+        self.assertEqual(first_step.model_string, "dcim.device")
+        self.assertEqual(first_step.estimated_changes, plan[0].estimated_changes)
+        self.assertEqual(first_step.fetched_row_count, plan[0].estimated_changes)
+        self.assertEqual(first_step.apply_engine, "adapter")
+
+    @patch("forward_netbox.utilities.multi_branch_executor.ForwardValidationRunner")
+    def test_direct_run_persists_execution_ledger_before_applying_shard(
+        self,
+        mock_validation_runner,
+    ):
+        workload = BranchWorkload(
+            model_string="dcim.device",
+            label="dcim.device | Forward Devices",
+            upsert_rows=[{"name": f"device-{index}"} for index in range(8)],
+            coalesce_fields=[["name"]],
+        )
+        plan = build_branch_plan([workload], max_changes_per_branch=4)
+        validation_run = ForwardValidationRun.objects.create(
+            sync=self.sync,
+            status="passed",
+            allowed=True,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id=self.SNAPSHOT_ID,
+        )
+        mock_validation_runner.return_value.record_plan_validation.return_value = (
+            validation_run
+        )
+        executor = ForwardMultiBranchExecutor(
+            sync=self.sync,
+            client=Mock(),
+            logger_=Mock(),
+        )
+        context = {
+            "snapshot_selector": LATEST_PROCESSED_SNAPSHOT,
+            "snapshot_id": self.SNAPSHOT_ID,
+            "snapshot_info": {},
+            "snapshot_metrics": {},
+        }
+        staged_ingestion = ForwardIngestion.objects.create(sync=self.sync)
+        executor.plan = Mock(return_value=(context, plan))
+
+        def _stage_first_item(*args, **kwargs):
+            self.assertEqual(self.sync.get_branch_run_state(), {})
+            run = ForwardExecutionRun.objects.get(sync=self.sync)
+            self.assertEqual(run.total_steps, len(plan))
+            self.assertEqual(run.steps.count(), len(plan))
+            step = run.steps.get(index=1)
+            self.assertEqual(step.status, ForwardExecutionStepStatusChoices.RUNNING)
+            return staged_ingestion
+
+        executor._run_plan_item = Mock(side_effect=_stage_first_item)
+
+        ingestions = executor.run(max_changes_per_branch=4)
+
+        self.assertEqual(ingestions, [staged_ingestion])
+        self.assertEqual(self.sync.get_branch_run_state(), {})
+        execution_run = ForwardExecutionRun.objects.get(sync=self.sync)
+        self.assertEqual(execution_run.validation_run, validation_run)
+        self.assertEqual(execution_run.snapshot_id, self.SNAPSHOT_ID)
+        self.assertEqual(execution_run.total_steps, len(plan))
+        self.assertEqual(execution_run.next_step_index, 1)
+
+    def test_update_plan_item_state_ignores_completed_historical_ledger(self):
+        execution_run = ForwardExecutionRun.objects.create(
+            sync=self.sync,
+            source=self.source,
+            backend="branching",
+            status="completed",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id=self.SNAPSHOT_ID,
+            total_steps=1,
+            next_step_index=2,
+        )
+        step = ForwardExecutionStep.objects.create(
+            run=execution_run,
+            index=1,
+            kind="stage",
+            status=ForwardExecutionStepStatusChoices.MERGED,
+            model_string="dcim.device",
+            label="dcim.device | Forward Devices",
+            estimated_changes=1,
+        )
+        self.sync.clear_branch_run_state()
+
+        updated = update_plan_item_state(
+            self.sync,
+            1,
+            status="failed",
+            last_error="should not touch old run",
+        )
+
+        self.assertFalse(updated)
+        step.refresh_from_db()
+        self.assertEqual(step.status, ForwardExecutionStepStatusChoices.MERGED)
+        self.assertEqual(step.last_error, "")
 
     def test_run_next_plan_item_stages_one_shard(self):
         workload = BranchWorkload(
@@ -1204,23 +2581,32 @@ class ForwardMultiBranchExecutorAdaptiveSplitTest(TestCase):
             snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
             snapshot_id=self.SNAPSHOT_ID,
         )
-        self.sync.set_branch_run_state(
-            {
-                "snapshot_selector": LATEST_PROCESSED_SNAPSHOT,
-                "snapshot_id": self.SNAPSHOT_ID,
-                "next_plan_index": 1,
-                "total_plan_items": len(plan),
-                "awaiting_merge": False,
-                "validation_run_id": validation_run.pk,
-                "plan_items": [
-                    {
-                        "index": item.index,
-                        "status": "pending",
-                    }
-                    for item in plan
-                ],
-            }
+        execution_run = ForwardExecutionRun.objects.create(
+            sync=self.sync,
+            source=self.source,
+            backend="branching",
+            status="running",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id=self.SNAPSHOT_ID,
+            total_steps=len(plan),
+            next_step_index=1,
+            validation_run=validation_run,
         )
+        for item in plan:
+            ForwardExecutionStep.objects.create(
+                run=execution_run,
+                index=item.index,
+                kind="stage",
+                status=ForwardExecutionStepStatusChoices.PENDING,
+                model_string=item.model_string,
+                label=item.label,
+                query_name=item.query_name,
+                execution_mode=item.execution_mode,
+                execution_value=item.execution_value,
+                shard_keys=list(item.shard_keys),
+                estimated_changes=item.estimated_changes,
+            )
+        self.sync.clear_branch_run_state()
         executor = ForwardMultiBranchExecutor(
             sync=self.sync,
             client=Mock(),
@@ -1240,14 +2626,371 @@ class ForwardMultiBranchExecutorAdaptiveSplitTest(TestCase):
         ingestions = executor.run_next_plan_item(max_changes_per_branch=4)
 
         self.assertEqual(ingestions, [staged_ingestion])
+        self.assertEqual(
+            executor.plan.call_args.kwargs["model_strings"], ["dcim.device"]
+        )
+        self.assertEqual(
+            executor.plan.call_args.kwargs["shard_scope"]["model"],
+            "dcim.device",
+        )
         executor._run_plan_item.assert_called_once()
         call_kwargs = executor._run_plan_item.call_args.kwargs
         self.assertFalse(call_kwargs["merge"])
         self.assertFalse(call_kwargs["automated_merge"])
         self.assertEqual(executor._run_plan_item.call_args.args[0].index, 1)
-        state = self.sync.get_branch_run_state()
+        state = get_branch_run_display_state(self.sync)
         self.assertEqual(state["phase"], "staging")
-        self.assertEqual(state["plan_items"][0]["status"], "staging")
+        self.assertEqual(state["plan_items"][0]["status"], "running")
+
+    def test_inline_auto_merge_binds_step_before_merge(self):
+        workload = BranchWorkload(
+            model_string="dcim.site",
+            label="dcim.site | Forward Sites",
+            upsert_rows=[{"name": "Site A", "slug": "site-a"}],
+            coalesce_fields=[["slug"]],
+        )
+        item = build_branch_plan([workload], max_changes_per_branch=10)[0]
+        ForwardExecutionRun.objects.create(
+            sync=self.sync,
+            source=self.source,
+            backend="branching",
+            status="running",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id=self.SNAPSHOT_ID,
+            total_steps=1,
+            next_step_index=1,
+        )
+        step = ForwardExecutionStep.objects.create(
+            run=ForwardExecutionRun.objects.get(sync=self.sync),
+            index=1,
+            kind="stage",
+            status=ForwardExecutionStepStatusChoices.RUNNING,
+            model_string="dcim.site",
+            label="dcim.site | Forward Sites",
+            estimated_changes=1,
+        )
+        logger = Mock()
+        logger.log_data = {"statistics": {"dcim.site": {"current": 1, "applied": 1}}}
+        executor = ForwardMultiBranchExecutor(
+            sync=self.sync,
+            client=Mock(),
+            logger_=logger,
+        )
+        executor.max_changes_per_branch = 10
+        context = {
+            "snapshot_selector": LATEST_PROCESSED_SNAPSHOT,
+            "snapshot_id": self.SNAPSHOT_ID,
+            "snapshot_info": {},
+            "snapshot_metrics": {},
+        }
+
+        def _assert_bound_before_merge(ingestion, *args, **kwargs):
+            step.refresh_from_db()
+            self.assertEqual(step.status, ForwardExecutionStepStatusChoices.STAGED)
+            self.assertEqual(step.ingestion, ingestion)
+            self.assertEqual(step.branch_name, ingestion.branch.name)
+
+        with patch(
+            "forward_netbox.utilities.multi_branch_lifecycle.run_item_in_branch"
+        ), patch.object(Branch, "provision"), patch.object(
+            Branch, "refresh_from_db"
+        ), patch.object(
+            Branch, "get_unmerged_changes"
+        ) as mock_changes, patch.object(
+            ForwardIngestion,
+            "sync_merge",
+            autospec=True,
+            side_effect=_assert_bound_before_merge,
+        ):
+            mock_changes.return_value.count.return_value = 0
+            executor._run_plan_item(
+                item,
+                context,
+                mark_baseline_ready=True,
+                merge=True,
+                total_plan_items=1,
+                plan_preview={},
+            )
+
+    def test_run_next_plan_item_uses_ledger_without_branch_run_json(self):
+        workload = BranchWorkload(
+            model_string="dcim.device",
+            label="dcim.device | Forward Devices",
+            upsert_rows=[{"name": f"device-{index}"} for index in range(8)],
+            coalesce_fields=[["name"]],
+        )
+        plan = build_branch_plan([workload], max_changes_per_branch=4)
+        execution_run = ForwardExecutionRun.objects.create(
+            sync=self.sync,
+            source=self.source,
+            backend="branching",
+            status="running",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id=self.SNAPSHOT_ID,
+            total_steps=len(plan),
+            next_step_index=1,
+        )
+        ForwardExecutionStep.objects.create(
+            run=execution_run,
+            index=1,
+            kind="stage",
+            status=ForwardExecutionStepStatusChoices.PENDING,
+            model_string="dcim.device",
+            label="dcim.device | Forward Devices",
+            query_name=plan[0].query_name,
+            execution_mode=plan[0].execution_mode,
+            execution_value=plan[0].execution_value,
+            shard_keys=list(plan[0].shard_keys),
+            estimated_changes=plan[0].estimated_changes,
+        )
+        self.sync.clear_branch_run_state()
+        initial_parameters = dict(self.sync.parameters or {})
+        executor = ForwardMultiBranchExecutor(
+            sync=self.sync,
+            client=Mock(),
+            logger_=Mock(),
+            job=Mock(pk=124),
+        )
+        context = {
+            "snapshot_selector": LATEST_PROCESSED_SNAPSHOT,
+            "snapshot_id": self.SNAPSHOT_ID,
+            "snapshot_info": {},
+            "snapshot_metrics": {},
+        }
+        staged_ingestion = ForwardIngestion.objects.create(sync=self.sync)
+        executor._load_execution_context = Mock(return_value=(context, plan, {}, 1, {}))
+        executor._run_plan_item = Mock(return_value=staged_ingestion)
+
+        ingestions = executor.run_next_plan_item(max_changes_per_branch=4)
+
+        self.assertEqual(ingestions, [staged_ingestion])
+        executor._load_execution_context.assert_called_once()
+        load_kwargs = executor._load_execution_context.call_args.kwargs
+        self.assertEqual(load_kwargs["model_strings"], ["dcim.device"])
+        self.assertEqual(load_kwargs["shard_scope"]["model"], "dcim.device")
+        self.assertEqual(
+            load_kwargs["shard_scope"]["shard_keys"],
+            list(plan[0].shard_keys),
+        )
+        self.assertEqual(
+            load_kwargs["shard_scope"]["execution_value"],
+            plan[0].execution_value,
+        )
+        executor._run_plan_item.assert_called_once()
+        self.assertEqual(self.sync.get_branch_run_state(), {})
+        self.assertEqual(self.sync.parameters, initial_parameters)
+        execution_run.refresh_from_db()
+        self.assertEqual(execution_run.phase, "staging")
+        self.assertEqual(execution_run.next_step_index, 1)
+
+    def test_load_execution_context_uses_ledger_state_without_branch_run_json(self):
+        workload = BranchWorkload(
+            model_string="dcim.device",
+            label="dcim.device | Forward Devices",
+            upsert_rows=[{"name": f"device-{index}"} for index in range(8)],
+            coalesce_fields=[["name"]],
+        )
+        plan = build_branch_plan([workload], max_changes_per_branch=4)
+        execution_run = ForwardExecutionRun.objects.create(
+            sync=self.sync,
+            source=self.source,
+            backend="branching",
+            status="running",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id=self.SNAPSHOT_ID,
+            total_steps=len(plan),
+            next_step_index=1,
+            plan_preview={"planned_shards": len(plan)},
+        )
+        ForwardExecutionStep.objects.create(
+            run=execution_run,
+            index=1,
+            kind="stage",
+            status=ForwardExecutionStepStatusChoices.PENDING,
+            model_string="dcim.device",
+            label="dcim.device | Forward Devices",
+            query_name=plan[0].query_name,
+            execution_mode=plan[0].execution_mode,
+            execution_value=plan[0].execution_value,
+            shard_keys=list(plan[0].shard_keys),
+            estimated_changes=plan[0].estimated_changes,
+        )
+        self.sync.clear_branch_run_state()
+        executor = ForwardMultiBranchExecutor(
+            sync=self.sync,
+            client=Mock(),
+            logger_=Mock(),
+            job=Mock(pk=125),
+        )
+        context = {
+            "snapshot_selector": LATEST_PROCESSED_SNAPSHOT,
+            "snapshot_id": self.SNAPSHOT_ID,
+            "snapshot_info": {},
+            "snapshot_metrics": {},
+        }
+        executor.plan = Mock(return_value=(context, plan))
+
+        executor._load_execution_context(max_changes_per_branch=4)
+
+        plan_kwargs = executor.plan.call_args.kwargs
+        self.assertFalse(plan_kwargs["run_preflight"])
+        self.assertEqual(
+            plan_kwargs["branch_run_state"]["state_source"],
+            "execution_ledger",
+        )
+        self.assertEqual(
+            plan_kwargs["branch_run_state"]["snapshot_id"],
+            self.SNAPSHOT_ID,
+        )
+        self.assertEqual(
+            plan_kwargs["branch_run_state"]["plan_items"][0]["model"],
+            "dcim.device",
+        )
+
+    def test_load_execution_context_ignores_completed_ledger_plan_for_new_run(self):
+        workload = BranchWorkload(
+            model_string="dcim.device",
+            label="dcim.device | Forward Devices",
+            upsert_rows=[{"name": f"device-{index}"} for index in range(8)],
+            coalesce_fields=[["name"]],
+        )
+        plan = build_branch_plan([workload], max_changes_per_branch=4)
+        execution_run = ForwardExecutionRun.objects.create(
+            sync=self.sync,
+            source=self.source,
+            backend="branching",
+            status="completed",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id=self.SNAPSHOT_ID,
+            total_steps=len(plan),
+            next_step_index=len(plan) + 1,
+        )
+        ForwardExecutionStep.objects.create(
+            run=execution_run,
+            index=1,
+            kind="stage",
+            status=ForwardExecutionStepStatusChoices.MERGED,
+            model_string="dcim.device",
+            label="dcim.device | Forward Devices",
+            estimated_changes=4,
+        )
+        self.sync.clear_branch_run_state()
+        executor = ForwardMultiBranchExecutor(
+            sync=self.sync,
+            client=Mock(),
+            logger_=Mock(),
+            job=Mock(pk=126),
+        )
+        context = {
+            "snapshot_selector": LATEST_PROCESSED_SNAPSHOT,
+            "snapshot_id": self.SNAPSHOT_ID,
+            "snapshot_info": {},
+            "snapshot_metrics": {},
+        }
+        executor.plan = Mock(return_value=(context, plan))
+
+        with patch(
+            "forward_netbox.utilities.multi_branch_executor.ForwardValidationRunner"
+        ):
+            executor._load_execution_context(max_changes_per_branch=4)
+
+        plan_kwargs = executor.plan.call_args.kwargs
+        self.assertTrue(plan_kwargs["run_preflight"])
+        self.assertEqual(plan_kwargs["branch_run_state"], {})
+
+    @patch("forward_netbox.utilities.query_fetch_execution.get_query_specs")
+    def test_run_next_plan_item_uses_ledger_shard_scope_for_native_fetch(
+        self,
+        mock_specs,
+    ):
+        rows = [
+            {
+                "device": "device-1",
+                "name": "Ethernet1",
+                "type": "other",
+                "enabled": True,
+            },
+            {
+                "device": "device-2",
+                "name": "Ethernet1",
+                "type": "other",
+                "enabled": True,
+            },
+        ]
+        client = Mock()
+        client.get_snapshots.return_value = [
+            {
+                "id": self.SNAPSHOT_ID,
+                "state": "PROCESSED",
+                "created_at": "",
+                "processed_at": "2026-03-31T12:15:00Z",
+            }
+        ]
+        client.get_snapshot_metrics.return_value = {}
+        client.run_nqe_query.return_value = rows
+        self.sync.resolve_snapshot_id = lambda client=None: self.SNAPSHOT_ID
+        self.sync.get_model_strings = lambda: ["dcim.interface"]
+        self.sync.incremental_diff_baseline = Mock(return_value=None)
+        mock_specs.return_value = [
+            QuerySpec(
+                model_string="dcim.interface",
+                query_name="Forward Interfaces",
+                query=(
+                    'select {device: "device-1", name: "Ethernet1", '
+                    'type: "other", enabled: true}'
+                ),
+            )
+        ]
+        execution_run = ForwardExecutionRun.objects.create(
+            sync=self.sync,
+            source=self.source,
+            backend="branching",
+            status="running",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id=self.SNAPSHOT_ID,
+            total_steps=1,
+            next_step_index=1,
+        )
+        ForwardExecutionStep.objects.create(
+            run=execution_run,
+            index=1,
+            kind="stage",
+            status=ForwardExecutionStepStatusChoices.PENDING,
+            model_string="dcim.interface",
+            label="dcim.interface | Forward Interfaces shard",
+            query_name="Forward Interfaces",
+            execution_mode="query",
+            execution_value="Forward Interfaces",
+            shard_keys=["device:device-1"],
+            estimated_changes=1,
+        )
+        self.sync.clear_branch_run_state()
+        staged_ingestion = ForwardIngestion.objects.create(sync=self.sync)
+        executor = ForwardMultiBranchExecutor(
+            sync=self.sync,
+            client=client,
+            logger_=Mock(),
+            job=Mock(pk=127),
+        )
+        executor._run_plan_item = Mock(return_value=staged_ingestion)
+
+        ingestions = executor.run_next_plan_item(max_changes_per_branch=10)
+
+        self.assertEqual(ingestions, [staged_ingestion])
+        self.assertEqual(
+            client.run_nqe_query.call_args.kwargs["column_filters"],
+            [
+                {
+                    "operator": "DEFAULT",
+                    "columnName": "device",
+                    "value": "device-1",
+                }
+            ],
+        )
+        item = executor._run_plan_item.call_args.args[0]
+        self.assertEqual(item.upsert_rows, [rows[0]])
+        self.assertEqual(item.shard_keys, ("device:device-1",))
+        self.assertEqual(self.sync.get_branch_run_state(), {})
 
     def test_branch_budget_retry_resplits_future_same_model_items(self):
         current_workload = BranchWorkload(
@@ -1529,6 +3272,7 @@ class ForwardFastBootstrapExecutorTest(TestCase):
         self.assertEqual(ingestion.applied_change_count, 2)
         self.assertEqual(ingestion.failed_change_count, 0)
         self.assertEqual(ingestion.model_results, [model_result.as_dict()])
+        self.assertEqual(ingestion.model_results[0]["apply_engine"], "adapter")
         self.assertEqual(
             ForwardValidationRun.objects.get(sync=self.sync),
             ingestion.validation_run,
@@ -2506,6 +4250,71 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertEqual(Cable.objects.count(), 0)
         logger.log_warning.assert_called_once()
 
+    def test_apply_dcim_cable_aggregates_missing_remote_device_warnings(self):
+        device = self._create_device("device-a")
+        Interface.objects.create(
+            device=device,
+            name="Ethernet1/1",
+            type="1000base-t",
+        )
+        logger = Mock()
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=logger
+        )
+        rows = [
+            {
+                "device": "device-a",
+                "interface": "Ethernet1/1",
+                "remote_device": f"synthetic-node-{index}",
+                "remote_interface": "Ethernet1/2",
+                "status": "connected",
+            }
+            for index in range(ForwardSyncRunner.CONFLICT_WARNING_DETAIL_LIMIT + 4)
+        ]
+
+        runner._apply_model_rows("dcim.cable", rows)
+
+        warning_messages = [call.args[0] for call in logger.log_warning.call_args_list]
+        self.assertEqual(len(warning_messages), 21)
+        self.assertEqual(
+            warning_messages[-1],
+            "Suppressed 4 additional dcim.cable skip warnings for "
+            "`missing-remote-device` after the first 20.",
+        )
+
+    def test_apply_dcim_cable_aggregates_missing_interface_warnings(self):
+        self._create_device("device-a")
+        remote_device = self._create_device("device-b")
+        Interface.objects.create(
+            device=remote_device,
+            name="Ethernet1/2",
+            type="1000base-t",
+        )
+        logger = Mock()
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=logger
+        )
+        rows = [
+            {
+                "device": "device-a",
+                "interface": f"Ethernet1/{index}",
+                "remote_device": "device-b",
+                "remote_interface": "Ethernet1/2",
+                "status": "connected",
+            }
+            for index in range(ForwardSyncRunner.CONFLICT_WARNING_DETAIL_LIMIT + 2)
+        ]
+
+        runner._apply_model_rows("dcim.cable", rows)
+
+        warning_messages = [call.args[0] for call in logger.log_warning.call_args_list]
+        self.assertEqual(len(warning_messages), 21)
+        self.assertEqual(
+            warning_messages[-1],
+            "Suppressed 2 additional dcim.cable skip warnings for "
+            "`missing-interface` after the first 20.",
+        )
+
     def test_delete_dcim_cable_deletes_exact_cable(self):
         device = self._create_device("device-a")
         remote_device = self._create_device("device-b")
@@ -3383,6 +5192,7 @@ class ForwardSyncRunnerTest(TestCase):
         client.run_nqe_diff.assert_called_once_with(
             query_id="Q_sites",
             commit_id=None,
+            parameters={},
             before_snapshot_id=baseline.snapshot_id,
             after_snapshot_id="snapshot-after",
             fetch_all=True,
@@ -3449,6 +5259,169 @@ class ForwardSyncRunnerTest(TestCase):
         runner._delete_model_rows.assert_not_called()
         ingestion.refresh_from_db()
         self.assertEqual(ingestion.sync_mode, "full")
+
+    def test_fetch_spec_rows_partitions_large_column_filter_batches(self):
+        client = Mock()
+        logger = Mock()
+        fetcher = ForwardQueryFetcher(
+            sync=self.sync,
+            client=client,
+            logger_=logger,
+        )
+        context = ForwardQueryContext(
+            network_id="test-network",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-before",
+        )
+        spec = QuerySpec(
+            model_string="dcim.interface",
+            query_name="Forward Interfaces",
+            query="foreach interface select {device: interface.device.name}",
+            parameters={"existing": "value"},
+        )
+        shard_scope = {
+            "fetch_mode": "nqe_column_filter",
+            "fetch_column_filters": [
+                {
+                    "operator": "EQUALS_ANY",
+                    "columnName": "device",
+                    "values": ["device-1", "device-2", "device-3"],
+                }
+            ],
+            "shard_keys": [
+                "device:device-1",
+                "device:device-2",
+                "device:device-3",
+            ],
+            "query_parameters": {},
+        }
+        client.run_nqe_query.side_effect = [
+            [
+                {"device": "device-1", "name": "Ethernet1/1"},
+                {"device": "device-2", "name": "Ethernet1/1"},
+            ],
+            [{"device": "device-3", "name": "Ethernet1/1"}],
+        ]
+
+        with patch(
+            "forward_netbox.utilities.query_fetch_execution.SHARD_FETCH_COLUMN_FILTER_CHUNK_SIZE",
+            2,
+        ):
+            rows, delete_rows, mode = fetcher._fetch_spec_rows(
+                "dcim.interface",
+                spec,
+                baseline=None,
+                context=context,
+                coalesce_fields=[["device", "name"]],
+                shard_scope=shard_scope,
+            )
+
+        self.assertEqual(client.run_nqe_query.call_count, 2)
+        self.assertEqual(
+            client.run_nqe_query.call_args_list[0].kwargs["column_filters"][0][
+                "values"
+            ],
+            ["device-1", "device-2"],
+        )
+        self.assertEqual(
+            client.run_nqe_query.call_args_list[1].kwargs["column_filters"][0][
+                "values"
+            ],
+            ["device-3"],
+        )
+        self.assertEqual(mode, "full")
+        self.assertEqual(delete_rows, [])
+        self.assertEqual(
+            [row["device"] for row in rows],
+            ["device-1", "device-2", "device-3"],
+        )
+        self.assertEqual(
+            client.run_nqe_query.call_args.kwargs["parameters"],
+            {"existing": "value"},
+        )
+
+    def test_fetch_spec_rows_partitions_large_column_filter_diff_batches(self):
+        baseline = Mock(snapshot_id="snapshot-before")
+        client = Mock()
+        logger = Mock()
+        fetcher = ForwardQueryFetcher(
+            sync=self.sync,
+            client=client,
+            logger_=logger,
+        )
+        context = ForwardQueryContext(
+            network_id="test-network",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-after",
+        )
+        spec = QuerySpec(
+            model_string="dcim.interface",
+            query_name="Forward Interfaces",
+            query_id="Q_interfaces",
+            parameters={"existing": "value"},
+        )
+        shard_scope = {
+            "fetch_mode": "nqe_column_filter",
+            "fetch_column_filters": [
+                {
+                    "operator": "EQUALS_ANY",
+                    "columnName": "device",
+                    "values": ["device-1", "device-2", "device-3"],
+                }
+            ],
+            "shard_keys": [
+                "device:device-1",
+                "device:device-2",
+                "device:device-3",
+            ],
+            "query_parameters": {},
+        }
+        client.run_nqe_diff.side_effect = [
+            [
+                {
+                    "type": "ADDED",
+                    "before": None,
+                    "after": {"device": "device-1", "name": "Ethernet1/1"},
+                },
+                {
+                    "type": "ADDED",
+                    "before": None,
+                    "after": {"device": "device-2", "name": "Ethernet1/1"},
+                },
+            ],
+            [
+                {
+                    "type": "ADDED",
+                    "before": None,
+                    "after": {"device": "device-3", "name": "Ethernet1/1"},
+                }
+            ],
+        ]
+
+        with patch(
+            "forward_netbox.utilities.query_fetch_execution.SHARD_FETCH_COLUMN_FILTER_CHUNK_SIZE",
+            2,
+        ):
+            rows, delete_rows, mode = fetcher._fetch_spec_rows(
+                "dcim.interface",
+                spec,
+                baseline=baseline,
+                context=context,
+                coalesce_fields=[["device", "name"]],
+                shard_scope=shard_scope,
+            )
+
+        self.assertEqual(client.run_nqe_diff.call_count, 2)
+        self.assertEqual(mode, "diff")
+        self.assertEqual(delete_rows, [])
+        self.assertEqual(
+            [row["device"] for row in rows],
+            ["device-1", "device-2", "device-3"],
+        )
+        self.assertEqual(
+            client.run_nqe_diff.call_args.kwargs["parameters"],
+            {"existing": "value"},
+        )
 
     def test_run_records_issue_when_rows_miss_required_identity_fields(self):
         ingestion = ForwardIngestion.objects.create(sync=self.sync)
@@ -3550,6 +5523,62 @@ class ForwardSyncRunnerTest(TestCase):
                 hasattr(runner, handler_name),
                 msg=f"Missing adapter handler for {model_string}",
             )
+
+    def test_apply_engine_classifies_all_supported_models(self):
+        self.assertEqual(ADAPTER_MODELS_WITHOUT_BLOCKER, ())
+        self.assertEqual(UNCLASSIFIED_SUPPORTED_MODELS, ())
+        self.assertEqual(
+            set(APPLY_ENGINE_MODEL_CLASSIFICATIONS),
+            set(FORWARD_SUPPORTED_MODELS),
+        )
+        for model_string in FORWARD_SUPPORTED_MODELS:
+            decision = apply_engine_decision_for(
+                sync=self.sync,
+                model_string=model_string,
+                backend="branching",
+            )
+            if model_string in BULK_ORM_ENABLED_MODELS:
+                self.assertEqual(decision.selected_engine, "adapter")
+                self.assertEqual(decision.reason_code, "bulk_orm_disabled_by_default")
+            else:
+                self.assertEqual(decision.selected_engine, "adapter")
+            self.assertTrue(decision.reason_code)
+            self.assertTrue(decision.reason)
+            self.assertNotEqual(
+                decision.reason_code,
+                "adapter_default_unclassified_model",
+            )
+
+    def test_apply_engine_classifies_all_supported_models_when_bulk_orm_enabled(self):
+        self.sync.parameters["enable_bulk_orm"] = True
+        self.sync.save(update_fields=["parameters"])
+
+        self.assertEqual(BULK_ORM_ENABLED_MODELS_WITHOUT_SPECS, ())
+        self.assertEqual(UNCLASSIFIED_SUPPORTED_MODELS, ())
+        self.assertEqual(
+            set(APPLY_ENGINE_MODEL_CLASSIFICATIONS),
+            set(FORWARD_SUPPORTED_MODELS),
+        )
+        for model_string in FORWARD_SUPPORTED_MODELS:
+            decision = apply_engine_decision_for(
+                sync=self.sync,
+                model_string=model_string,
+                backend="branching",
+            )
+            if model_string in BULK_ORM_ENABLED_MODELS:
+                self.assertEqual(decision.selected_engine, "bulk_orm")
+                self.assertEqual(
+                    decision.reason_code,
+                    "bulk_orm_enabled_safe_model_set",
+                )
+            elif model_string in ADAPTER_REQUIRED_MODELS:
+                self.assertEqual(decision.selected_engine, "adapter")
+                self.assertEqual(
+                    decision.reason_code,
+                    "adapter_required_model_contract",
+                )
+            else:
+                self.fail(f"Unhandled model classification for {model_string}")
 
     def test_apply_model_rows_records_forward_query_error_and_continues(self):
         runner = ForwardSyncRunner(
@@ -3712,6 +5741,60 @@ class ForwardSyncRunnerTest(TestCase):
             "Applying shard 131/146 for dcim.site: 1/2 rows.",
         )
         self.assertEqual(kwargs["model_string"], "dcim.site")
+
+    def test_apply_model_rows_updates_ledger_progress_without_branch_state(self):
+        execution_run = ForwardExecutionRun.objects.create(
+            sync=self.sync,
+            source=self.source,
+            backend="branching",
+            status="running",
+            phase="executing",
+            phase_message="Applying planned shard changes.",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-1",
+            total_steps=1,
+            next_step_index=1,
+        )
+        step = ForwardExecutionStep.objects.create(
+            run=execution_run,
+            index=1,
+            kind="stage",
+            status="running",
+            model_string="dcim.site",
+            label="dcim.site part 1",
+            estimated_changes=2,
+        )
+        logger = Mock()
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=logger
+        )
+        runner._apply_dcim_site = Mock(side_effect=[True, True])
+
+        with patch(
+            "forward_netbox.utilities.sync_reporting.time.monotonic",
+            side_effect=[0.0, 120.0],
+        ):
+            runner._apply_model_rows(
+                "dcim.site",
+                [
+                    {"name": "site-1", "slug": "site-1"},
+                    {"name": "site-2", "slug": "site-2"},
+                ],
+            )
+
+        step.refresh_from_db()
+        execution_run.refresh_from_db()
+        self.assertEqual(self.sync.get_branch_run_state(), {})
+        self.assertEqual(step.attempted_row_count, 2)
+        self.assertEqual(step.fetched_row_count, 2)
+        self.assertIsNotNone(step.heartbeat)
+        self.assertEqual(execution_run.latest_heartbeat, step.heartbeat)
+        self.assertIn("Processing dcim.site shard 1/1", self.sync.get_sync_activity())
+        self.assertIn("(2/2 rows)", self.sync.get_sync_activity())
+        logger.log_info.assert_any_call(
+            "Applying shard 1/1 for dcim.site: 1/2 rows.",
+            obj=self.sync,
+        )
 
     def test_record_issue_reuses_issue_id_and_does_not_duplicate(self):
         ingestion = ForwardIngestion.objects.create(sync=self.sync)

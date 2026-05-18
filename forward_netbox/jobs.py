@@ -4,6 +4,7 @@ from datetime import timedelta
 
 from core.choices import JobStatusChoices
 from core.exceptions import SyncError
+from core.models import Job
 from core.models import ObjectType
 from netbox.context_managers import event_tracking
 from rq.timeouts import JobTimeoutException
@@ -16,10 +17,17 @@ from .exceptions import ForwardSyncError
 from .models import ForwardIngestion
 from .models import ForwardIngestionIssue
 from .models import ForwardSync
+from .utilities.execution_ledger import active_execution_run
+from .utilities.execution_ledger import branch_run_state_from_execution_run
+from .utilities.execution_ledger import claim_ingestion_merge_step
+from .utilities.execution_ledger import claim_stage_step
+from .utilities.execution_ledger import execution_step_for_ingestion
+from .utilities.execution_ledger import update_run_from_branch_state
 from .utilities.ingestion_merge import maybe_enqueue_next_branch_stage
 from .utilities.json_safe import json_safe_value
 from .utilities.logging import SyncLogging
 from .utilities.resumable_branching import update_plan_item_state
+from .utilities.sync_state import get_branch_run_display_state
 from .utilities.validation import ForwardValidationRunner
 
 logger = logging.getLogger(__name__)
@@ -108,6 +116,12 @@ def sync_forwardsync(job, *args, **kwargs):
                 else ForwardSyncStatusChoices.FAILED
             )
         )
+        sync.status = (
+            ForwardSyncStatusChoices.TIMEOUT
+            if timeout
+            else ForwardSyncStatusChoices.FAILED
+        )
+        update_run_from_branch_state(sync)
         if timeout:
             ingestion = (
                 ForwardIngestion.objects.filter(sync=sync).order_by("-pk").first()
@@ -211,7 +225,28 @@ def merge_forwardingestion(job, remove_branch=True, *args, **kwargs):
         )
 
         job.start()
-        ingestion.merge_job = job
+        if not ingestion.branch or getattr(ingestion.branch, "status", "") == "merged":
+            ingestion.sync.logger = SyncLogging(job=job.pk)
+            ingestion.sync.logger.log_info(
+                "Forward ingestion branch is already merged or no longer present; "
+                "skipping duplicate merge job.",
+                obj=ingestion,
+            )
+            safe_save_job_data(job, ingestion.sync)
+            job.terminate()
+            return
+        if not claim_ingestion_merge_step(ingestion, job):
+            ingestion.sync.logger = SyncLogging(job=job.pk)
+            ingestion.sync.logger.log_info(
+                "Forward ingestion merge is already claimed or completed; "
+                "skipping duplicate merge job.",
+                obj=ingestion,
+            )
+            safe_save_job_data(job, ingestion.sync)
+            job.terminate()
+            return
+        if isinstance(job, Job):
+            ingestion.merge_job = job
         ingestion.save(update_fields=["merge_job"])
         ingestion.sync.logger = SyncLogging(job=job.pk)
         with event_tracking(request):
@@ -234,6 +269,11 @@ def merge_forwardingestion(job, remove_branch=True, *args, **kwargs):
                 else ForwardSyncStatusChoices.FAILED
             )
         )
+        ingestion.sync.status = (
+            ForwardSyncStatusChoices.TIMEOUT
+            if timeout
+            else ForwardSyncStatusChoices.FAILED
+        )
         if timeout:
             message = "Forward merge job timed out. Increase RQ worker timeout and rerun the merge."
             record_timeout_issue(
@@ -241,8 +281,11 @@ def merge_forwardingestion(job, remove_branch=True, *args, **kwargs):
                 ForwardIngestionPhaseChoices.MERGE,
                 message,
             )
-            state = ingestion.sync.get_branch_run_state()
+            state = get_branch_run_display_state(ingestion.sync)
             pending_index = int(state.get("pending_plan_index") or 0)
+            if not pending_index:
+                ledger_step = execution_step_for_ingestion(ingestion)
+                pending_index = int(getattr(ledger_step, "index", 0) or 0)
             if pending_index:
                 update_plan_item_state(
                     ingestion.sync,
@@ -252,6 +295,7 @@ def merge_forwardingestion(job, remove_branch=True, *args, **kwargs):
                     retry_count=_plan_item_retry_count(state, pending_index) + 1,
                 )
             ingestion.sync.logger.log_failure(message, obj=ingestion)
+        update_run_from_branch_state(ingestion.sync)
         if type(exc) in (SyncError, JobTimeoutException):
             logger.error(exc)
         else:
@@ -272,6 +316,21 @@ def stage_forward_branch_item(job, *args, **kwargs):
     try:
         job.start()
         sync.logger = SyncLogging(job=job.pk)
+        state = sync.get_branch_run_state()
+        run = active_execution_run(sync)
+        if not state and run is not None:
+            state = branch_run_state_from_execution_run(run)
+        current_index = int(state.get("next_plan_index") or 1)
+        if run is not None:
+            claimed_step = claim_stage_step(sync, current_index, job)
+            if claimed_step is None:
+                sync.logger.log_info(
+                    "Forward Branching shard is already complete or no longer claimable.",
+                    obj=sync,
+                )
+                safe_save_job_data(job, sync)
+                job.terminate()
+                return
         executor = ForwardMultiBranchExecutor(
             sync,
             sync.source.get_client(),
@@ -287,7 +346,7 @@ def stage_forward_branch_item(job, *args, **kwargs):
     except Exception as exc:
         safe_save_job_data(job, sync)
         timeout = isinstance(exc, JobTimeoutException)
-        state = sync.get_branch_run_state()
+        state = get_branch_run_display_state(sync)
         current_index = int(
             state.get("pending_plan_index") or state.get("next_plan_index") or 1
         )
@@ -306,6 +365,12 @@ def stage_forward_branch_item(job, *args, **kwargs):
                 else ForwardSyncStatusChoices.FAILED
             )
         )
+        sync.status = (
+            ForwardSyncStatusChoices.TIMEOUT
+            if timeout
+            else ForwardSyncStatusChoices.FAILED
+        )
+        update_run_from_branch_state(sync)
         ingestion = ForwardIngestion.objects.filter(sync=sync).order_by("-pk").first()
         if timeout:
             message = (

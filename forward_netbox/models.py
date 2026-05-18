@@ -21,7 +21,12 @@ from utilities.querysets import RestrictedQuerySet
 from .choices import forward_configured_models
 from .choices import FORWARD_OPTIONAL_MODELS
 from .choices import FORWARD_SUPPORTED_MODELS
+from .choices import ForwardApplyEngineChoices
 from .choices import ForwardDriftPolicyBaselineChoices
+from .choices import ForwardExecutionBackendChoices
+from .choices import ForwardExecutionRunStatusChoices
+from .choices import ForwardExecutionStepKindChoices
+from .choices import ForwardExecutionStepStatusChoices
 from .choices import ForwardIngestionPhaseChoices
 from .choices import ForwardSourceDeploymentChoices
 from .choices import ForwardSourceStatusChoices
@@ -412,6 +417,10 @@ class ForwardSync(ForwardPluginModelDocsMixin, JobsMixin, TagsMixin, ChangeLogge
         return has_pending_sync_branch_run(self)
 
     @property
+    def has_pending_execution(self):
+        return has_pending_sync_branch_run(self)
+
+    @property
     def is_waiting_for_branch_merge(self):
         return is_sync_waiting_for_branch_merge(self)
 
@@ -585,6 +594,238 @@ class ForwardValidationRun(ForwardPluginModelDocsMixin, models.Model):
         return force_allow_validation_run(self, user=user, reason=reason)
 
 
+class ForwardExecutionRun(ForwardPluginModelDocsMixin, models.Model):
+    objects = RestrictedQuerySet.as_manager()
+
+    sync = models.ForeignKey(
+        ForwardSync,
+        on_delete=models.CASCADE,
+        related_name="execution_runs",
+    )
+    source = models.ForeignKey(
+        ForwardSource,
+        on_delete=models.SET_NULL,
+        related_name="execution_runs",
+        null=True,
+        blank=True,
+    )
+    job = models.ForeignKey(Job, on_delete=models.SET_NULL, null=True, blank=True)
+    validation_run = models.ForeignKey(
+        ForwardValidationRun,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="execution_runs",
+    )
+    backend = models.CharField(
+        max_length=30,
+        choices=ForwardExecutionBackendChoices,
+        default=ForwardExecutionBackendChoices.BRANCHING,
+    )
+    status = models.CharField(
+        max_length=30,
+        choices=ForwardExecutionRunStatusChoices,
+        default=ForwardExecutionRunStatusChoices.QUEUED,
+    )
+    phase = models.CharField(max_length=50, blank=True, default="")
+    phase_message = models.TextField(blank=True, default="")
+    snapshot_selector = models.CharField(max_length=100, blank=True, default="")
+    snapshot_id = models.CharField(max_length=100, blank=True, default="")
+    max_changes_per_branch = models.PositiveIntegerField(
+        default=DEFAULT_MAX_CHANGES_PER_BRANCH
+    )
+    auto_merge = models.BooleanField(default=False)
+    total_steps = models.PositiveIntegerField(default=0)
+    next_step_index = models.PositiveIntegerField(default=1)
+    plan_preview = models.JSONField(blank=True, default=dict)
+    model_change_density = models.JSONField(blank=True, default=dict)
+    reconciliation_events = models.JSONField(blank=True, default=list)
+    latest_heartbeat = models.DateTimeField(blank=True, null=True)
+    last_error = models.TextField(blank=True, default="")
+    baseline_ready = models.BooleanField(default=False)
+    created = models.DateTimeField(default=timezone.now, editable=False)
+    updated = models.DateTimeField(auto_now=True)
+    completed = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        ordering = ("-pk",)
+        verbose_name = _("Forward Execution Run")
+        verbose_name_plural = _("Forward Execution Runs")
+        db_table = "forward_netbox_execution_run"
+
+    def __str__(self):
+        return f"{self.sync} execution {self.pk or ''}".strip()
+
+    def get_absolute_url(self):
+        return reverse("plugins:forward_netbox:forwardexecutionrun", args=[self.pk])
+
+    def as_support_summary(self):
+        return {
+            "id": self.pk,
+            "sync": self.sync_id,
+            "source": self.source_id,
+            "job": self.job_id,
+            "validation_run": self.validation_run_id,
+            "backend": self.backend,
+            "status": self.status,
+            "phase": self.phase,
+            "phase_message": self.phase_message,
+            "snapshot_selector": self.snapshot_selector,
+            "snapshot_id": self.snapshot_id,
+            "max_changes_per_branch": self.max_changes_per_branch,
+            "auto_merge": self.auto_merge,
+            "total_steps": self.total_steps,
+            "next_step_index": self.next_step_index,
+            "plan_preview": self.plan_preview,
+            "model_change_density": self.model_change_density,
+            "reconciliation_events": self.reconciliation_events,
+            "latest_heartbeat": (
+                self.latest_heartbeat.isoformat() if self.latest_heartbeat else None
+            ),
+            "last_error": self.last_error,
+            "baseline_ready": self.baseline_ready,
+            "created": self.created.isoformat() if self.created else None,
+            "updated": self.updated.isoformat() if self.updated else None,
+            "completed": self.completed.isoformat() if self.completed else None,
+        }
+
+
+class ForwardExecutionStep(ForwardPluginModelDocsMixin, models.Model):
+    objects = RestrictedQuerySet.as_manager()
+
+    run = models.ForeignKey(
+        ForwardExecutionRun,
+        on_delete=models.CASCADE,
+        related_name="steps",
+    )
+    index = models.PositiveIntegerField()
+    kind = models.CharField(
+        max_length=30,
+        choices=ForwardExecutionStepKindChoices,
+        default=ForwardExecutionStepKindChoices.STAGE,
+    )
+    status = models.CharField(
+        max_length=30,
+        choices=ForwardExecutionStepStatusChoices,
+        default=ForwardExecutionStepStatusChoices.PENDING,
+    )
+    model_string = models.CharField(max_length=100, blank=True, default="")
+    label = models.CharField(max_length=250, blank=True, default="")
+    query_name = models.CharField(max_length=200, blank=True, default="")
+    execution_mode = models.CharField(max_length=30, blank=True, default="")
+    execution_value = models.CharField(max_length=600, blank=True, default="")
+    commit_id = models.CharField(max_length=100, blank=True, default="")
+    sync_mode = models.CharField(max_length=20, blank=True, default="")
+    baseline_snapshot_id = models.CharField(max_length=100, blank=True, default="")
+    estimated_changes = models.PositiveIntegerField(default=0)
+    actual_changes = models.PositiveIntegerField(default=0)
+    fetched_row_count = models.PositiveIntegerField(default=0)
+    query_runtime_ms = models.FloatField(blank=True, null=True)
+    attempted_row_count = models.PositiveIntegerField(default=0)
+    applied_row_count = models.PositiveIntegerField(default=0)
+    skipped_row_count = models.PositiveIntegerField(default=0)
+    failed_row_count = models.PositiveIntegerField(default=0)
+    shard_keys = models.JSONField(blank=True, default=list)
+    fetch_mode = models.CharField(max_length=30, blank=True, default="")
+    fetch_key_family = models.CharField(max_length=50, blank=True, default="")
+    fetch_parameters = models.JSONField(blank=True, default=dict)
+    query_parameters = models.JSONField(blank=True, default=dict)
+    fetch_column_filters = models.JSONField(blank=True, default=list)
+    apply_engine = models.CharField(
+        max_length=30,
+        choices=ForwardApplyEngineChoices,
+        blank=True,
+        default=ForwardApplyEngineChoices.ADAPTER,
+    )
+    branch = models.ForeignKey(Branch, on_delete=models.SET_NULL, null=True, blank=True)
+    branch_name = models.CharField(max_length=255, blank=True, default="")
+    ingestion = models.ForeignKey(
+        "ForwardIngestion",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="execution_steps",
+    )
+    job = models.ForeignKey(
+        Job,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="forward_execution_steps",
+    )
+    merge_job = models.ForeignKey(
+        Job,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="forward_execution_merge_steps",
+    )
+    retry_count = models.PositiveIntegerField(default=0)
+    last_error = models.TextField(blank=True, default="")
+    heartbeat = models.DateTimeField(blank=True, null=True)
+    started = models.DateTimeField(blank=True, null=True)
+    completed = models.DateTimeField(blank=True, null=True)
+    created = models.DateTimeField(default=timezone.now, editable=False)
+    updated = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("run", "index", "kind")
+        unique_together = (("run", "index", "kind"),)
+        verbose_name = _("Forward Execution Step")
+        verbose_name_plural = _("Forward Execution Steps")
+        db_table = "forward_netbox_execution_step"
+
+    def __str__(self):
+        return f"{self.run} step {self.index} {self.kind}".strip()
+
+    def get_absolute_url(self):
+        return reverse("plugins:forward_netbox:forwardexecutionstep", args=[self.pk])
+
+    def as_support_summary(self):
+        return {
+            "id": self.pk,
+            "run": self.run_id,
+            "index": self.index,
+            "kind": self.kind,
+            "status": self.status,
+            "model": self.model_string,
+            "label": self.label,
+            "query_name": self.query_name,
+            "execution_mode": self.execution_mode,
+            "execution_value": self.execution_value,
+            "commit_id": self.commit_id,
+            "sync_mode": self.sync_mode,
+            "baseline_snapshot_id": self.baseline_snapshot_id,
+            "estimated_changes": self.estimated_changes,
+            "actual_changes": self.actual_changes,
+            "fetched_row_count": self.fetched_row_count,
+            "query_runtime_ms": self.query_runtime_ms,
+            "attempted_row_count": self.attempted_row_count,
+            "applied_row_count": self.applied_row_count,
+            "skipped_row_count": self.skipped_row_count,
+            "failed_row_count": self.failed_row_count,
+            "shard_keys": self.shard_keys,
+            "fetch_mode": self.fetch_mode,
+            "fetch_key_family": self.fetch_key_family,
+            "fetch_parameters": self.fetch_parameters,
+            "query_parameters": self.query_parameters,
+            "fetch_column_filters": self.fetch_column_filters,
+            "apply_engine": self.apply_engine,
+            "branch": self.branch_id,
+            "branch_name": self.branch_name,
+            "ingestion": self.ingestion_id,
+            "job": self.job_id,
+            "merge_job": self.merge_job_id,
+            "retry_count": self.retry_count,
+            "last_error": self.last_error,
+            "heartbeat": self.heartbeat.isoformat() if self.heartbeat else None,
+            "started": self.started.isoformat() if self.started else None,
+            "completed": self.completed.isoformat() if self.completed else None,
+            "created": self.created.isoformat() if self.created else None,
+            "updated": self.updated.isoformat() if self.updated else None,
+        }
+
+
 class ForwardIngestion(ForwardPluginModelDocsMixin, JobsMixin, models.Model):
     objects = RestrictedQuerySet.as_manager()
 
@@ -684,9 +925,24 @@ class ForwardIngestion(ForwardPluginModelDocsMixin, JobsMixin, models.Model):
     def can_queue_merge(self):
         if not self.branch or getattr(self.branch, "status", "") == "merged":
             return False
+        from .utilities.execution_ledger import (
+            ingestion_has_requeueable_merge_timeout_step,
+        )
+
+        if ingestion_has_requeueable_merge_timeout_step(self):
+            return True
         if self.merge_job and not self.merge_job.completed:
             return False
         state = self.sync.get_branch_run_state()
+        if not (
+            self.sync.status == ForwardSyncStatusChoices.READY_TO_MERGE
+            or state.get("pending_ingestion_id") == self.pk
+        ):
+            from .utilities.execution_ledger import (
+                ingestion_has_mergeable_execution_step,
+            )
+
+            return ingestion_has_mergeable_execution_step(self)
         return bool(
             self.sync.status == ForwardSyncStatusChoices.READY_TO_MERGE
             or state.get("pending_ingestion_id") == self.pk

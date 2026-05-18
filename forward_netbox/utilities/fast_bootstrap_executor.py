@@ -4,6 +4,8 @@ from netbox.context import current_request
 from netbox.context_managers import event_tracking
 
 from ..choices import FORWARD_OPTIONAL_MODELS
+from ..choices import ForwardExecutionBackendChoices
+from .apply_engine import select_apply_engine
 from .branching import build_branch_request
 from .direct_changes import action_counts_for_request
 from .direct_changes import any_object_changes_for_request
@@ -179,8 +181,13 @@ class ForwardFastBootstrapExecutor:
                         workload.model_string,
                         workload.estimated_changes,
                     )
-                    runner._apply_model_rows(
-                        workload.model_string, workload.upsert_rows
+                    engine = select_apply_engine(
+                        sync=self.sync,
+                        model_string=workload.model_string,
+                        backend=ForwardExecutionBackendChoices.FAST_BOOTSTRAP,
+                    )
+                    engine.apply_upserts(
+                        runner, workload.model_string, workload.upsert_rows
                     )
                     self._record_change_totals(ingestion, request_id=request.id)
 
@@ -193,7 +200,12 @@ class ForwardFastBootstrapExecutor:
                         f"Fast bootstrap deleting {model_string}.",
                         total_plan_items=total_workloads,
                     )
-                    runner._delete_model_rows(model_string, delete_rows)
+                    engine = select_apply_engine(
+                        sync=self.sync,
+                        model_string=model_string,
+                        backend=ForwardExecutionBackendChoices.FAST_BOOTSTRAP,
+                    )
+                    engine.apply_deletes(runner, model_string, delete_rows)
                     self._record_change_totals(ingestion, request_id=request.id)
 
                 self._raise_if_blocking_issues_exist(ingestion, request_id=request.id)
