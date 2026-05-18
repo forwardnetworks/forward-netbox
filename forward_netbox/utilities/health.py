@@ -12,7 +12,9 @@ from .health_checks import ingestion_check_message as _ingestion_check_message_i
 from .health_checks import ingestion_check_status as _ingestion_check_status_impl
 from .health_checks import query_drift_check_message as _query_drift_check_message_impl
 from .health_checks import query_drift_check_status as _query_drift_check_status_impl
-from .health_checks import query_fetch_concurrency_check as _query_fetch_concurrency_check_impl
+from .health_checks import (
+    query_fetch_concurrency_check as _query_fetch_concurrency_check_impl,
+)
 from .health_checks import recommendation_status as _recommendation_status_impl
 from .health_checks import timeout_check as _timeout_check_impl
 from .health_checks import validation_check_message as _validation_check_message_impl
@@ -73,9 +75,7 @@ def sync_health_summary(sync):
     query_mode_counts = Counter(query_map.execution_mode for query_map in maps)
     raw_maps = [query_map for query_map in maps if query_map.execution_mode == "query"]
     data_file_maps = [
-        query_map
-        for query_map in maps
-        if _looks_data_file_dependent(query_map)
+        query_map for query_map in maps if _looks_data_file_dependent(query_map)
     ]
     model_summary = _model_summary(sync, maps)
     apply_engines = _apply_engine_summary(sync, model_summary["enabled_models"])

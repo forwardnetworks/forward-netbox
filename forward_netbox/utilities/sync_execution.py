@@ -102,11 +102,25 @@ def run_sync_stage(runner):
                 )
             runner.logger.init_statistics(model_string, 0)
             model_delete_rows = pending_deletes.setdefault(model_string, [])
+            latest_baseline = runner.sync.latest_baseline_ingestion(
+                exclude_ingestion_id=runner.ingestion.pk
+            )
             model_baseline = runner.sync.incremental_diff_baseline(
                 specs=specs,
                 current_snapshot_id=snapshot_id,
                 exclude_ingestion_id=runner.ingestion.pk,
             )
+            if (
+                latest_baseline is not None
+                and latest_baseline.snapshot_id == snapshot_id
+                and any(spec.run_query_id for spec in specs)
+            ):
+                runner.logger.log_warning(
+                    f"Forward diffs require a newer processed snapshot than the latest baseline; "
+                    f"baseline ingestion `{latest_baseline.pk}` already matches snapshot `{snapshot_id}`, "
+                    f"so running full query execution for {model_string} instead.",
+                    obj=runner.sync,
+                )
             for spec in specs:
                 rows = []
                 delete_rows = []
@@ -141,6 +155,11 @@ def run_sync_stage(runner):
                         model_baseline = None
 
                 if model_baseline is None or not spec.run_query_id:
+                    if model_baseline is not None and not spec.run_query_id:
+                        runner.logger.log_warning(
+                            f"Forward diffs require a query_id; `{spec.execution_value}` is still raw query text, so running a full query for {model_string} instead.",
+                            obj=runner.sync,
+                        )
                     runner.logger.log_info(
                         f"Running Forward {spec.execution_mode} `{spec.execution_value}` for {model_string}.",
                         obj=runner.sync,
