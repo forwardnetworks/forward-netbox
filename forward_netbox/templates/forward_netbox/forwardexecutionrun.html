@@ -1,0 +1,177 @@
+{% extends 'generic/object.html' %}
+{% load helpers %}
+{% load plugins %}
+{% load i18n %}
+
+{% block extra_controls %}
+  {% if perms.forward_netbox.view_forwardexecutionrun %}
+    <a class="btn btn-outline-secondary" href="{{ support_bundle_url }}">
+      <i class="mdi mdi-download" aria-hidden="true"></i>&nbsp;{% trans "Export Support Bundle" %}
+    </a>
+  {% endif %}
+  {% if perms.forward_netbox.change_forwardexecutionrun %}
+    <form action="{% url 'plugins:forward_netbox:forwardexecutionrun_reconcile' pk=object.pk %}" method="post">
+      {% csrf_token %}
+      <button type="submit" class="btn btn-outline-primary">
+        <i class="mdi mdi-refresh" aria-hidden="true"></i>&nbsp;{% trans "Reconcile" %}
+      </button>
+    </form>
+  {% endif %}
+  {% if perms.forward_netbox.run_forwardsync and retryable_step %}
+    <form action="{% url 'plugins:forward_netbox:forwardexecutionrun_retry_current_step' pk=object.pk %}" method="post">
+      {% csrf_token %}
+      <button type="submit" class="btn btn-primary">
+        <i class="mdi mdi-replay" aria-hidden="true"></i>&nbsp;{% trans "Retry Step" %}
+      </button>
+    </form>
+  {% endif %}
+  {% if perms.forward_netbox.run_forwardsync and discardable_step %}
+    <form action="{% url 'plugins:forward_netbox:forwardexecutionrun_discard_branch_retry' pk=object.pk %}" method="post">
+      {% csrf_token %}
+      <button type="submit" class="btn btn-outline-danger">
+        <i class="mdi mdi-delete-restore" aria-hidden="true"></i>&nbsp;{% trans "Discard Branch and Retry" %}
+      </button>
+    </form>
+  {% endif %}
+  {% if perms.forward_netbox.merge_forwardingestion %}
+    <form action="{% url 'plugins:forward_netbox:forwardexecutionrun_requeue_merge' pk=object.pk %}" method="post">
+      {% csrf_token %}
+      <button type="submit" class="btn btn-outline-primary">
+        <i class="mdi mdi-source-merge" aria-hidden="true"></i>&nbsp;{% trans "Requeue Merge" %}
+      </button>
+    </form>
+  {% endif %}
+{% endblock extra_controls %}
+
+{% block content %}
+<div class="row mb-3">
+  <div class="col col-md-6">
+    <div class="card">
+      <h5 class="card-header">{% trans "Execution Run" %}</h5>
+      <div class="card-body">
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">{% trans "Sync" %}</th>
+            <td><a href="{{ object.sync.get_absolute_url }}">{{ object.sync }}</a></td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Source" %}</th>
+            <td>
+              {% if object.source %}
+                <a href="{{ object.source.get_absolute_url }}">{{ object.source }}</a>
+              {% else %}
+                {{ ""|placeholder }}
+              {% endif %}
+            </td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Backend" %}</th>
+            <td>{{ object.get_backend_display }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Status" %}</th>
+            <td>{{ object.get_status_display }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Phase" %}</th>
+            <td>{{ object.phase|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Phase Message" %}</th>
+            <td>{{ object.phase_message|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Job" %}</th>
+            <td>
+              {% if object.job %}
+                <a href="{% url 'core:job' pk=object.job.pk %}">{{ object.job }}</a>
+              {% else %}
+                {{ ""|placeholder }}
+              {% endif %}
+            </td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Validation Run" %}</th>
+            <td>
+              {% if object.validation_run %}
+                <a href="{{ object.validation_run.get_absolute_url }}">{{ object.validation_run }}</a>
+              {% else %}
+                {{ ""|placeholder }}
+              {% endif %}
+            </td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Created" %}</th>
+            <td>{{ object.created }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Completed" %}</th>
+            <td>{{ object.completed|placeholder }}</td>
+          </tr>
+        </table>
+      </div>
+    </div>
+    {% plugin_left_page object %}
+  </div>
+  <div class="col col-md-6">
+    <div class="card">
+      <h5 class="card-header">{% trans "Progress" %}</h5>
+      <div class="card-body">
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">{% trans "Snapshot Selection" %}</th>
+            <td>{{ object.snapshot_selector|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Snapshot ID" %}</th>
+            <td>{{ object.snapshot_id|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Total Steps" %}</th>
+            <td>{{ object.total_steps }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Next Step" %}</th>
+            <td>{{ object.next_step_index }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Max Changes per Branch" %}</th>
+            <td>{{ object.max_changes_per_branch }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Auto Merge" %}</th>
+            <td>{{ object.auto_merge|yesno:"Yes,No" }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Baseline Ready" %}</th>
+            <td>{{ object.baseline_ready|yesno:"Yes,No" }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Latest Heartbeat" %}</th>
+            <td>{{ object.latest_heartbeat|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Recovery Recommendation" %}</th>
+            <td>{{ recovery_recommendation.message|placeholder }}</td>
+          </tr>
+        </table>
+      </div>
+    </div>
+    {% if object.last_error %}
+      <div class="card">
+        <h5 class="card-header">{% trans "Last Error" %}</h5>
+        <div class="card-body">
+          <pre>{{ object.last_error }}</pre>
+        </div>
+      </div>
+    {% endif %}
+    <div class="card">
+      {% include 'extras/inc/configcontext_data.html' with title="Plan Preview" data=object.plan_preview format="json" copyid="forward-execution-plan-preview" %}
+    </div>
+    <div class="card">
+      {% include 'extras/inc/configcontext_data.html' with title="Model Change Density" data=object.model_change_density format="json" copyid="forward-execution-model-change-density" %}
+    </div>
+    {% plugin_right_page object %}
+  </div>
+</div>
+{% endblock content %}

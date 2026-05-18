@@ -29,8 +29,10 @@ from .models import ForwardSync
 from .utilities.branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
 from .utilities.forward_api import DEFAULT_FORWARD_API_TIMEOUT_SECONDS
 from .utilities.forward_api import DEFAULT_NQE_PAGE_SIZE
+from .utilities.forward_api import DEFAULT_QUERY_FETCH_CONCURRENCY
 from .utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from .utilities.forward_api import MAX_NQE_PAGE_SIZE
+from .utilities.forward_api import MAX_QUERY_FETCH_CONCURRENCY
 
 
 def _configure_api_select(widget, query_params=None):
@@ -161,6 +163,17 @@ class ForwardSourceForm(NetBoxModelForm):
             help_text=f"Rows requested per NQE page. Default: {DEFAULT_NQE_PAGE_SIZE}.",
             widget=forms.NumberInput(attrs={"class": "form-control"}),
         )
+        self.fields["query_fetch_concurrency"] = forms.IntegerField(
+            required=False,
+            min_value=1,
+            max_value=MAX_QUERY_FETCH_CONCURRENCY,
+            label="Query Fetch Concurrency",
+            help_text=(
+                "Maximum concurrent NQE map fetch jobs per sync preflight/workload "
+                f"phase. Default: {DEFAULT_QUERY_FETCH_CONCURRENCY}."
+            ),
+            widget=forms.NumberInput(attrs={"class": "form-control"}),
+        )
         self.fields["verify"] = forms.BooleanField(
             required=False,
             initial=True,
@@ -203,6 +216,9 @@ class ForwardSourceForm(NetBoxModelForm):
         self.fields["nqe_page_size"].initial = (
             parameters.get("nqe_page_size") or DEFAULT_NQE_PAGE_SIZE
         )
+        self.fields["query_fetch_concurrency"].initial = (
+            parameters.get("query_fetch_concurrency") or DEFAULT_QUERY_FETCH_CONCURRENCY
+        )
         self.fields["verify"].initial = parameters.get("verify", True)
         self.fields["network_id"].initial = existing_network_id
         self.fields["network_id"].choices = _selected_choice(existing_network_id)
@@ -219,6 +235,7 @@ class ForwardSourceForm(NetBoxModelForm):
                     "network_id",
                     "timeout",
                     "nqe_page_size",
+                    "query_fetch_concurrency",
                     name="Parameters",
                 )
             )
@@ -231,6 +248,7 @@ class ForwardSourceForm(NetBoxModelForm):
                     "network_id",
                     "timeout",
                     "nqe_page_size",
+                    "query_fetch_concurrency",
                     name="Parameters",
                 )
             )
@@ -272,6 +290,9 @@ class ForwardSourceForm(NetBoxModelForm):
             "nqe_page_size": cleaned.get("nqe_page_size")
             or existing_parameters.get("nqe_page_size")
             or DEFAULT_NQE_PAGE_SIZE,
+            "query_fetch_concurrency": cleaned.get("query_fetch_concurrency")
+            or existing_parameters.get("query_fetch_concurrency")
+            or DEFAULT_QUERY_FETCH_CONCURRENCY,
             "network_id": selected_network_id,
         }
         self.instance.type = source_type
@@ -338,6 +359,9 @@ class ForwardSourceForm(NetBoxModelForm):
             "nqe_page_size": self.cleaned_data.get("nqe_page_size")
             or existing_parameters.get("nqe_page_size")
             or DEFAULT_NQE_PAGE_SIZE,
+            "query_fetch_concurrency": self.cleaned_data.get("query_fetch_concurrency")
+            or existing_parameters.get("query_fetch_concurrency")
+            or DEFAULT_QUERY_FETCH_CONCURRENCY,
             "network_id": self.cleaned_data.get("network_id") or "",
         }
         self.instance.status = ForwardSourceStatusChoices.NEW
@@ -538,6 +562,12 @@ class ForwardSyncForm(NetBoxModelForm):
             "max_changes_per_branch": cleaned.get("max_changes_per_branch")
             or DEFAULT_MAX_CHANGES_PER_BRANCH,
             "snapshot_id": snapshot_id,
+            "enable_bulk_orm": bool(
+                (self.instance.parameters or {}).get("enable_bulk_orm", False)
+            ),
+            "bulk_orm_models": list(
+                (self.instance.parameters or {}).get("bulk_orm_models") or []
+            ),
         }
         for model_string in forward_configured_models():
             parameters[model_string] = cleaned.get(model_string, False)
@@ -555,6 +585,12 @@ class ForwardSyncForm(NetBoxModelForm):
             or DEFAULT_MAX_CHANGES_PER_BRANCH,
             "snapshot_id": self.cleaned_data.get("snapshot_id")
             or LATEST_PROCESSED_SNAPSHOT,
+            "enable_bulk_orm": bool(
+                (self.instance.parameters or {}).get("enable_bulk_orm", False)
+            ),
+            "bulk_orm_models": list(
+                (self.instance.parameters or {}).get("bulk_orm_models") or []
+            ),
         }
         for model_string in forward_configured_models():
             parameters[model_string] = self.cleaned_data.get(model_string, False)

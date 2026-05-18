@@ -17,6 +17,7 @@ invoke harness-test
 invoke lint
 invoke check
 invoke scenario-test
+invoke scale-chaos-test
 invoke test
 invoke playwright-test
 invoke docs
@@ -27,6 +28,35 @@ For full parity with CI:
 
 ```bash
 invoke ci
+```
+
+For Branching recovery or orchestration changes, also run the opt-in destructive
+worker-kill harness and capture support-bundle evidence:
+
+```bash
+invoke docker-chaos-kill --scenario=stage-before-branch --confirm
+invoke docker-chaos-kill --scenario=stage-after-branch --confirm
+invoke docker-chaos-kill --scenario=stage-during-apply --confirm
+invoke docker-chaos-kill --scenario=merge-during-exec --confirm
+```
+
+For query-pushdown or shard-scope performance changes, capture at least one live
+pushdown profile report and attach it to release notes:
+
+```bash
+invoke pushdown-profile --sync-name "ui-harness-sync" --model "dcim.interface" --output-json /tmp/pushdown-dcim-interface.json
+invoke pushdown-profile --sync-name "ui-harness-sync" --top-slow-models 5 --output-json /tmp/pushdown-top-slow-models.json
+```
+
+For operational scale runs, keep source-level query concurrency conservative by
+default (`query_fetch_concurrency=6`) and increase gradually only when DB and
+worker telemetry confirms headroom. Use the Health tab runtime checks to detect
+high-concurrency contention risk.
+
+For repeated soak execution rehearsal, run:
+
+```bash
+invoke scale-soak --runs 3 --execution-backend branching --max-changes-per-branch 10000
 ```
 
 ## Publish Flow

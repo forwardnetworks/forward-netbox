@@ -1,7 +1,9 @@
+from ..choices import ForwardExecutionBackendChoices
 from ..exceptions import ForwardClientError
 from ..exceptions import ForwardConnectivityError
 from ..exceptions import ForwardQueryError
 from ..exceptions import ForwardSyncDataError
+from .apply_engine import select_apply_engine
 from .query_registry import get_query_specs
 from .query_registry import resolve_query_specs_for_client
 from .sync_contracts import default_coalesce_fields_for_model
@@ -118,6 +120,7 @@ def run_sync_stage(runner):
                         diff_rows = runner.client.run_nqe_diff(
                             query_id=spec.run_query_id,
                             commit_id=spec.commit_id,
+                            parameters=spec.merged_parameters(query_parameters),
                             before_snapshot_id=model_baseline.snapshot_id,
                             after_snapshot_id=snapshot_id,
                             fetch_all=True,
@@ -172,7 +175,12 @@ def run_sync_stage(runner):
                 runner.logger.add_statistics_total(
                     model_string, len(rows) + len(delete_rows)
                 )
-                runner._apply_model_rows(model_string, rows)
+                engine = select_apply_engine(
+                    sync=runner.sync,
+                    model_string=model_string,
+                    backend=ForwardExecutionBackendChoices.BRANCHING,
+                )
+                engine.apply_upserts(runner, model_string, rows)
                 model_delete_rows.extend(delete_rows)
             stats = runner.logger.log_data.get("statistics", {}).get(model_string, {})
             runner.logger.log_info(
@@ -203,7 +211,12 @@ def run_sync_stage(runner):
         if not delete_rows:
             continue
         try:
-            runner._delete_model_rows(model_string, delete_rows)
+            engine = select_apply_engine(
+                sync=runner.sync,
+                model_string=model_string,
+                backend=ForwardExecutionBackendChoices.BRANCHING,
+            )
+            engine.apply_deletes(runner, model_string, delete_rows)
         except ForwardSyncDataError as exc:
             runner.logger.log_warning(
                 f"Aborted delete phase for {model_string} after row failure: {exc}",

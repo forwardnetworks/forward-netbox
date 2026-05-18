@@ -18,8 +18,10 @@ from forward_netbox.utilities.query_registry import (
     IPADDRESS_UNASSIGNABLE_DIAGNOSTIC_QUERY_NAME,
 )
 from forward_netbox.utilities.query_registry import QuerySpec
+from forward_netbox.utilities.query_registry import read_builtin_query_source
 from forward_netbox.utilities.query_registry import routing_import_diagnostic_query
 from forward_netbox.utilities.query_registry import ROUTING_IMPORT_DIAGNOSTIC_QUERY_NAME
+from forward_netbox.utilities.query_registry import SHARD_PARAMETER_QUERY_FILES
 
 
 REQUIRED_FIELDS_BY_QUERY_NAME = {
@@ -128,6 +130,19 @@ MANUFACTURER_QUERY_NAMES = {
 
 def _field_pattern(field_name):
     return re.compile(rf"(?m)^\s*{re.escape(field_name)}\s*:")
+
+
+NETWORK_DEVICE_LOOP_RE = re.compile(
+    r"(?m)^\s*foreach\s+(?P<variable>[A-Za-z_][A-Za-z0-9_]*)\s+in\s+network\.devices\s*$"
+)
+
+
+def _network_device_loop_blocks(query):
+    matches = list(NETWORK_DEVICE_LOOP_RE.finditer(query))
+    for index, match in enumerate(matches):
+        block_start = match.end()
+        next_start = matches[index + 1].start() if index + 1 < len(matches) else None
+        yield match.group("variable"), query[block_start:next_start]
 
 
 class QueryRegistryTest(TestCase):
@@ -337,6 +352,49 @@ class QueryRegistryTest(TestCase):
                 query,
                 msg=f"{query_name} should deduplicate the projected record directly.",
             )
+
+    def test_device_scoped_builtin_queries_do_not_seed_unproven_parameters(self):
+        rows = {row["name"]: row for row in builtin_nqe_map_rows()}
+
+        for query_name in (
+            "Forward Interfaces",
+            "Forward IP Addresses",
+            "Forward MAC Addresses",
+            "Forward Modules",
+            "Forward BGP Peers",
+            "Forward Virtual Chassis",
+        ):
+            self.assertEqual(rows[query_name]["parameters"], {})
+
+        self.assertEqual(rows["Forward Locations"]["parameters"], {})
+
+    def test_builtin_queries_do_not_reference_unregistered_shard_parameters(self):
+        filenames = {
+            query["filename"]
+            for query in [*BUILTIN_QUERY_MAPS, *BUILTIN_OPTIONAL_QUERY_MAPS]
+        }
+        for filename in sorted(filenames):
+            query = read_builtin_query_source(filename)
+            if filename not in SHARD_PARAMETER_QUERY_FILES:
+                self.assertNotIn("forward_netbox_shard_keys", query)
+
+    def test_shard_parameter_queries_leave_peer_device_lookups_global(self):
+        for filename in sorted(SHARD_PARAMETER_QUERY_FILES):
+            query = read_builtin_query_source(filename)
+            for variable, block in _network_device_loop_blocks(query):
+                if variable != "peer_device":
+                    continue
+                self.assertNotRegex(
+                    block,
+                    (
+                        r"where\s+isEmpty\(forward_netbox_shard_keys\)\s*\|\|\s*"
+                        r"peer_device\.name\s+in\s+forward_netbox_shard_keys"
+                    ),
+                    msg=(
+                        f"{filename} constrains a cross-device peer inference lookup "
+                        "to the current shard."
+                    ),
+                )
 
     def test_custom_maps_win_over_built_in_maps_for_a_model(self):
         netbox_model = ContentType.objects.get(app_label="dcim", model="device")
@@ -682,6 +740,7 @@ class QueryRegistryTest(TestCase):
             spec.query,
         )
         self.assertIn("let remote_interface_type = max(", spec.query)
+        self.assertIn("where isPresent(remote_interface_type)", spec.query)
         self.assertIn(
             "remote_interface_type != IfaceType.IF_AGGREGATE",
             spec.query,

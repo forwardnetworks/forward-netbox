@@ -114,6 +114,82 @@ class ForwardExecutionBackendChoices(ChoiceSet):
     )
 
 
+class ForwardApplyEngineChoices(ChoiceSet):
+    ADAPTER = "adapter"
+    BULK_ORM = "bulk_orm"
+    TURBOBULK = "turbobulk"
+    PARQUET_BULK = "parquet_bulk"
+
+    CHOICES = (
+        (ADAPTER, _("Adapter"), "blue"),
+        (BULK_ORM, _("Bulk ORM"), "cyan"),
+        (TURBOBULK, _("TurboBulk"), "purple"),
+        (PARQUET_BULK, _("Parquet bulk"), "green"),
+    )
+
+
+class ForwardExecutionRunStatusChoices(ChoiceSet):
+    QUEUED = "queued"
+    RUNNING = "running"
+    WAITING = "waiting"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    TIMEOUT = "timeout"
+    CANCELLED = "cancelled"
+
+    CHOICES = (
+        (QUEUED, _("Queued"), "orange"),
+        (RUNNING, _("Running"), "cyan"),
+        (WAITING, _("Waiting"), "purple"),
+        (COMPLETED, _("Completed"), "green"),
+        (FAILED, _("Failed"), "red"),
+        (TIMEOUT, _("Timeout"), "pink"),
+        (CANCELLED, _("Cancelled"), "gray"),
+    )
+
+
+class ForwardExecutionStepKindChoices(ChoiceSet):
+    COORDINATOR = "coordinator"
+    STAGE = "stage"
+    MERGE = "merge"
+    FINALIZE = "finalize"
+
+    CHOICES = (
+        (COORDINATOR, _("Coordinator"), "blue"),
+        (STAGE, _("Stage"), "cyan"),
+        (MERGE, _("Merge"), "purple"),
+        (FINALIZE, _("Finalize"), "green"),
+    )
+
+
+class ForwardExecutionStepStatusChoices(ChoiceSet):
+    PENDING = "pending"
+    QUEUED = "queued"
+    RUNNING = "running"
+    STAGED = "staged"
+    MERGE_QUEUED = "merge_queued"
+    MERGED = "merged"
+    FAILED = "failed"
+    TIMEOUT = "timeout"
+    MERGE_TIMEOUT = "merge_timeout"
+    SKIPPED = "skipped"
+    CANCELLED = "cancelled"
+
+    CHOICES = (
+        (PENDING, _("Pending"), "gray"),
+        (QUEUED, _("Queued"), "orange"),
+        (RUNNING, _("Running"), "cyan"),
+        (STAGED, _("Staged"), "blue"),
+        (MERGE_QUEUED, _("Merge queued"), "purple"),
+        (MERGED, _("Merged"), "green"),
+        (FAILED, _("Failed"), "red"),
+        (TIMEOUT, _("Timeout"), "pink"),
+        (MERGE_TIMEOUT, _("Merge timeout"), "pink"),
+        (SKIPPED, _("Skipped"), "gray"),
+        (CANCELLED, _("Cancelled"), "gray"),
+    )
+
+
 class ForwardIngestionPhaseChoices(ChoiceSet):
     SYNC = "sync"
     MERGE = "merge"

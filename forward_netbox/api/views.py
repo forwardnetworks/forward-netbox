@@ -13,6 +13,8 @@ from ..exceptions import ForwardConnectivityError
 from ..exceptions import ForwardSyncError
 from .serializers import EmptySerializer
 from .serializers import ForwardDriftPolicySerializer
+from .serializers import ForwardExecutionRunSerializer
+from .serializers import ForwardExecutionStepSerializer
 from .serializers import ForwardIngestionIssueSerializer
 from .serializers import ForwardIngestionSerializer
 from .serializers import ForwardNQEMapSerializer
@@ -21,20 +23,32 @@ from .serializers import ForwardSyncSerializer
 from .serializers import ForwardValidationRunOverrideSerializer
 from .serializers import ForwardValidationRunSerializer
 from forward_netbox.filtersets import ForwardDriftPolicyFilterSet
+from forward_netbox.filtersets import ForwardExecutionRunFilterSet
+from forward_netbox.filtersets import ForwardExecutionStepFilterSet
 from forward_netbox.filtersets import ForwardNQEMapFilterSet
 from forward_netbox.filtersets import ForwardSourceFilterSet
 from forward_netbox.filtersets import ForwardSyncFilterSet
 from forward_netbox.filtersets import ForwardValidationRunFilterSet
 from forward_netbox.models import ForwardDriftPolicy
+from forward_netbox.models import ForwardExecutionRun
+from forward_netbox.models import ForwardExecutionStep
 from forward_netbox.models import ForwardIngestion
 from forward_netbox.models import ForwardIngestionIssue
 from forward_netbox.models import ForwardNQEMap
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.models import ForwardValidationRun
+from forward_netbox.utilities.execution_ledger import current_discardable_step
+from forward_netbox.utilities.execution_ledger import current_mergeable_step
+from forward_netbox.utilities.execution_ledger import current_retryable_step
+from forward_netbox.utilities.execution_ledger import discard_stage_branch_for_retry
+from forward_netbox.utilities.execution_ledger import execution_run_support_bundle
+from forward_netbox.utilities.execution_ledger import prepare_stage_step_retry
+from forward_netbox.utilities.execution_ledger import reconcile_execution_run
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from forward_netbox.utilities.query_binding import builtin_filename_to_query_default
 from forward_netbox.utilities.query_binding import query_filename_from_path
+from forward_netbox.utilities.resumable_branching import enqueue_branch_stage_job
 
 
 NQE_REPOSITORY_LABELS = {
@@ -489,6 +503,138 @@ class ForwardIngestionViewSet(NetBoxReadOnlyModelViewSet):
 class ForwardIngestionIssueViewSet(NetBoxReadOnlyModelViewSet):
     queryset = ForwardIngestionIssue.objects.all()
     serializer_class = ForwardIngestionIssueSerializer
+
+
+class ForwardExecutionRunViewSet(NetBoxReadOnlyModelViewSet):
+    queryset = ForwardExecutionRun.objects.select_related(
+        "sync",
+        "source",
+        "job",
+        "validation_run",
+    )
+    serializer_class = ForwardExecutionRunSerializer
+    filterset_class = ForwardExecutionRunFilterSet
+
+    @action(detail=True, methods=["get"], url_path="support-bundle")
+    def support_bundle(self, request, pk):
+        run = self.get_object()
+        return Response(execution_run_support_bundle(run))
+
+    @extend_schema(
+        methods=["post"],
+        request=EmptySerializer(),
+        responses={200: ForwardExecutionRunSerializer},
+    )
+    @action(detail=True, methods=["post"])
+    def reconcile(self, request, pk):
+        if not request.user.has_perm("forward_netbox.change_forwardexecutionrun"):
+            raise PermissionDenied(
+                "This user does not have permission to reconcile a Forward execution run."
+            )
+        run = self.get_object()
+        reconcile_execution_run(run)
+        run.refresh_from_db()
+        return Response(
+            ForwardExecutionRunSerializer(run, context={"request": request}).data
+        )
+
+    @extend_schema(
+        methods=["post"], request=EmptySerializer(), responses={201: JobSerializer()}
+    )
+    @action(detail=True, methods=["post"], url_path="retry-current-step")
+    def retry_current_step(self, request, pk):
+        if not request.user.has_perm("forward_netbox.run_forwardsync"):
+            raise PermissionDenied(
+                "This user does not have permission to run a Forward sync."
+            )
+        run = self.get_object()
+        step = current_retryable_step(run)
+        if step is None:
+            return Response(
+                {"detail": "No retryable Forward execution step was found."},
+                status=status.HTTP_409_CONFLICT,
+            )
+        prepared = prepare_stage_step_retry(step)
+        if prepared is None:
+            return Response(
+                {"detail": "Forward execution step is already queued for retry."},
+                status=status.HTTP_409_CONFLICT,
+            )
+        job = enqueue_branch_stage_job(run.sync, user=request.user, adhoc=True)
+        return Response(
+            JobSerializer(job, context={"request": request}).data, status=201
+        )
+
+    @extend_schema(
+        methods=["post"], request=EmptySerializer(), responses={201: JobSerializer()}
+    )
+    @action(detail=True, methods=["post"], url_path="discard-branch-retry")
+    def discard_branch_retry(self, request, pk):
+        if not request.user.has_perm("forward_netbox.run_forwardsync"):
+            raise PermissionDenied(
+                "This user does not have permission to run a Forward sync."
+            )
+        run = self.get_object()
+        step = current_discardable_step(run)
+        if step is None:
+            return Response(
+                {
+                    "detail": (
+                        "No failed Forward execution step with a discardable branch "
+                        "was found."
+                    )
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        discarded = discard_stage_branch_for_retry(step)
+        if discarded is None:
+            return Response(
+                {
+                    "detail": (
+                        "The failed Forward execution branch could not be discarded."
+                    )
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        job = enqueue_branch_stage_job(run.sync, user=request.user, adhoc=True)
+        return Response(
+            JobSerializer(job, context={"request": request}).data, status=201
+        )
+
+    @extend_schema(
+        methods=["post"], request=EmptySerializer(), responses={201: JobSerializer()}
+    )
+    @action(detail=True, methods=["post"], url_path="requeue-merge")
+    def requeue_merge(self, request, pk):
+        if not request.user.has_perm("forward_netbox.merge_forwardingestion"):
+            raise PermissionDenied(
+                "This user does not have permission to merge a Forward ingestion."
+            )
+        run = self.get_object()
+        step = current_mergeable_step(run)
+        if step is None:
+            return Response(
+                {"detail": "No mergeable Forward execution step was found."},
+                status=status.HTTP_409_CONFLICT,
+            )
+        job = step.ingestion.enqueue_merge_job(user=request.user, remove_branch=True)
+        return Response(
+            JobSerializer(job, context={"request": request}).data, status=201
+        )
+
+
+class ForwardExecutionStepViewSet(NetBoxReadOnlyModelViewSet):
+    queryset = ForwardExecutionStep.objects.select_related(
+        "run",
+        "run__sync",
+        "run__source",
+        "branch",
+        "ingestion",
+        "job",
+        "merge_job",
+    )
+    serializer_class = ForwardExecutionStepSerializer
+    filterset_class = ForwardExecutionStepFilterSet
 
 
 class ForwardDriftPolicyViewSet(NetBoxModelViewSet):
