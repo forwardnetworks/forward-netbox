@@ -1,10 +1,9 @@
 import json
-from pathlib import Path
 from datetime import timedelta
-
-from django.utils import timezone
+from pathlib import Path
 
 from django.core.management.base import BaseCommand
+from django.utils import timezone
 
 from forward_netbox.choices import FORWARD_SUPPORTED_MODELS
 from forward_netbox.management.commands.forward_architecture_audit import (
@@ -99,10 +98,10 @@ class Command(BaseCommand):
                 all(
                     marker in tasks_text
                     for marker in (
-                        'stage-before-branch',
-                        'stage-after-branch',
-                        'stage-during-apply',
-                        'merge-during-exec',
+                        "stage-before-branch",
+                        "stage-after-branch",
+                        "stage-during-apply",
+                        "merge-during-exec",
                     )
                 ),
                 "tasks.py: docker-chaos-kill scenario set",
@@ -130,9 +129,7 @@ class Command(BaseCommand):
 
         completed = sum(1 for item in checks if item["status"] == "completed")
         pending_external = sum(
-            1
-            for item in checks
-            if item["status"] == "needs_external_evidence"
+            1 for item in checks if item["status"] == "needs_external_evidence"
         )
         failed = sum(1 for item in checks if item["status"] == "failed")
         return {
@@ -157,7 +154,9 @@ class Command(BaseCommand):
     def _runtime_evidence(self):
         evidence_file = getattr(self, "_runtime_evidence_path", "").strip()
         if not evidence_file:
-            return self._default_runtime_evidence("No runtime evidence path configured.")
+            return self._default_runtime_evidence(
+                "No runtime evidence path configured."
+            )
         try:
             payload = json.loads(self._read_repo_text(evidence_file))
         except FileNotFoundError:
@@ -177,7 +176,9 @@ class Command(BaseCommand):
             "destructive_runtime_worker_kill_evidence_verified"
         )
         adp_ok = bool(is_fresh and adp_check and adp_check.get("status") == "passed")
-        chaos_ok = bool(is_fresh and chaos_check and chaos_check.get("status") == "passed")
+        chaos_ok = bool(
+            is_fresh and chaos_check and chaos_check.get("status") == "passed"
+        )
         freshness_note = (
             "fresh runtime evidence"
             if is_fresh

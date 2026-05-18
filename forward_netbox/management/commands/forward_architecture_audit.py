@@ -7,12 +7,12 @@ from django.core.management.base import CommandError
 from forward_netbox.choices import FORWARD_SUPPORTED_MODELS
 from forward_netbox.models import ForwardSync
 from forward_netbox.utilities.apply_engine import ADAPTER_MODEL_BLOCKERS
+from forward_netbox.utilities.apply_engine import ADAPTER_MODELS_WITHOUT_BLOCKER
 from forward_netbox.utilities.apply_engine import ADAPTER_REQUIRED_MODELS
+from forward_netbox.utilities.apply_engine import apply_engine_decision_for
 from forward_netbox.utilities.apply_engine import BULK_ORM_ENABLED_MODELS
 from forward_netbox.utilities.apply_engine import BULK_ORM_ENABLED_MODELS_WITHOUT_SPECS
 from forward_netbox.utilities.apply_engine import UNCLASSIFIED_SUPPORTED_MODELS
-from forward_netbox.utilities.apply_engine import ADAPTER_MODELS_WITHOUT_BLOCKER
-from forward_netbox.utilities.apply_engine import apply_engine_decision_for
 from forward_netbox.utilities.branch_budget import shard_fetch_capability_for_model
 from forward_netbox.utilities.execution_ledger import latest_execution_run
 from forward_netbox.utilities.health import sync_health_summary
@@ -83,7 +83,8 @@ class Command(BaseCommand):
         decision_fallback_models = sorted(
             model_string
             for model_string, decisions in model_eligibility.items()
-            if decisions["default"]["reason_code"] == "adapter_default_unclassified_model"
+            if decisions["default"]["reason_code"]
+            == "adapter_default_unclassified_model"
             or decisions["bulk_enabled"]["reason_code"]
             == "adapter_default_unclassified_model"
         )
@@ -110,7 +111,9 @@ class Command(BaseCommand):
             "fetch_contracts": fetch_contracts,
             "classification_gaps": {
                 "unclassified_supported_models": sorted(UNCLASSIFIED_SUPPORTED_MODELS),
-                "adapter_models_without_blocker": sorted(ADAPTER_MODELS_WITHOUT_BLOCKER),
+                "adapter_models_without_blocker": sorted(
+                    ADAPTER_MODELS_WITHOUT_BLOCKER
+                ),
                 "bulk_orm_enabled_models_without_specs": sorted(
                     BULK_ORM_ENABLED_MODELS_WITHOUT_SPECS
                 ),

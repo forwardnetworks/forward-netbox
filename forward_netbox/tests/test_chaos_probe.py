@@ -30,5 +30,9 @@ class ForwardChaosProbeCommandTest(SimpleTestCase):
     def test_stage_after_branch_requires_branch_name(self):
         queued_without_branch = SimpleNamespace(status="queued", branch_name="")
         queued_with_branch = SimpleNamespace(status="queued", branch_name="branch_abc")
-        self.assertFalse(self.command._is_ready(queued_without_branch, "stage-after-branch"))
-        self.assertTrue(self.command._is_ready(queued_with_branch, "stage-after-branch"))
+        self.assertFalse(
+            self.command._is_ready(queued_without_branch, "stage-after-branch")
+        )
+        self.assertTrue(
+            self.command._is_ready(queued_with_branch, "stage-after-branch")
+        )

@@ -5176,6 +5176,9 @@ class ForwardSyncRunnerTest(TestCase):
 
         self.sync.get_model_strings = lambda: ["dcim.site"]
         self.sync.resolve_snapshot_id = lambda client=None: "snapshot-after"
+        self.sync.incremental_diff_baseline = Mock(
+            return_value=Mock(snapshot_id="snapshot-before")
+        )
 
         with patch(
             "forward_netbox.utilities.sync_execution.get_query_specs",
@@ -5259,6 +5262,61 @@ class ForwardSyncRunnerTest(TestCase):
         runner._delete_model_rows.assert_not_called()
         ingestion.refresh_from_db()
         self.assertEqual(ingestion.sync_mode, "full")
+
+    def test_run_warns_when_branching_has_no_newer_snapshot_for_diff(self):
+        ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-after",
+            baseline_ready=True,
+        )
+        ingestion = ForwardIngestion.objects.create(sync=self.sync)
+        client = Mock()
+        client.get_latest_processed_snapshot.return_value = {
+            "id": "snapshot-after",
+            "processedAt": "2026-03-31T12:15:00Z",
+        }
+        client.get_snapshot_metrics.return_value = {}
+        client.run_nqe_query.return_value = [{"name": "site-1", "slug": "site-1"}]
+        logger = Mock()
+        runner = ForwardSyncRunner(
+            sync=self.sync,
+            ingestion=ingestion,
+            client=client,
+            logger_=logger,
+        )
+        runner._apply_model_rows = Mock()
+        runner._delete_model_rows = Mock()
+
+        self.sync.get_model_strings = lambda: ["dcim.site"]
+        self.sync.resolve_snapshot_id = lambda client=None: "snapshot-after"
+        self.sync.latest_baseline_ingestion = Mock(
+            return_value=Mock(pk=123, snapshot_id="snapshot-after")
+        )
+        self.sync.incremental_diff_baseline = Mock(return_value=None)
+
+        with patch(
+            "forward_netbox.utilities.sync_execution.get_query_specs",
+            return_value=[
+                QuerySpec(
+                    model_string="dcim.site",
+                    query_name="Forward Sites",
+                    query_id="Q_sites",
+                )
+            ],
+        ):
+            runner.run()
+
+        client.run_nqe_query.assert_called_once()
+        self.assertFalse(client.run_nqe_diff.called)
+        ingestion.refresh_from_db()
+        self.assertEqual(ingestion.sync_mode, "full")
+        self.assertTrue(
+            any(
+                "newer processed snapshot than the latest baseline" in str(call.args[0])
+                for call in logger.log_warning.call_args_list
+            )
+        )
 
     def test_fetch_spec_rows_partitions_large_column_filter_batches(self):
         client = Mock()
@@ -5422,6 +5480,36 @@ class ForwardSyncRunnerTest(TestCase):
             client.run_nqe_diff.call_args.kwargs["parameters"],
             {"existing": "value"},
         )
+
+    def test_resolve_context_carries_ingestion_id_from_branch_state(self):
+        client = Mock()
+        client.get_snapshot_metrics.return_value = {}
+        client.get_snapshots.return_value = []
+        client.get_latest_processed_snapshot.return_value = {
+            "id": "snapshot-after",
+            "processedAt": "2026-03-31T12:15:00Z",
+        }
+        fetcher = ForwardQueryFetcher(
+            sync=self.sync,
+            client=client,
+            logger_=Mock(),
+        )
+        self.sync.get_network_id = Mock(return_value="test-network")
+        self.sync.get_snapshot_id = Mock(return_value=LATEST_PROCESSED_SNAPSHOT)
+        self.sync.resolve_snapshot_id = Mock(return_value="snapshot-after")
+        self.sync.get_query_parameters = Mock(return_value={})
+        self.sync.get_maps = Mock(return_value=[])
+
+        context = fetcher.resolve_context(
+            branch_run_state={
+                "pending_ingestion_id": 42,
+                "snapshot_selector": LATEST_PROCESSED_SNAPSHOT,
+                "snapshot_id": "snapshot-after",
+            }
+        )
+
+        self.assertEqual(context.ingestion_id, 42)
+        self.assertEqual(context.as_dict()["ingestion_id"], 42)
 
     def test_run_records_issue_when_rows_miss_required_identity_fields(self):
         ingestion = ForwardIngestion.objects.create(sync=self.sync)

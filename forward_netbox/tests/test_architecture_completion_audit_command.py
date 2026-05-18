@@ -1,7 +1,7 @@
 import json
-from io import StringIO
 import os
 import tempfile
+from io import StringIO
 from pathlib import Path
 
 from django.core.management import call_command
@@ -44,9 +44,9 @@ class ForwardArchitectureCompletionAuditCommandTest(TestCase):
     def test_completion_audit_is_cwd_independent(self):
         stream = StringIO()
         original_cwd = os.getcwd()
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory():
             try:
-                os.chdir(tmpdir)
+                os.chdir(tempfile.gettempdir())
                 call_command("forward_architecture_completion_audit", stdout=stream)
             finally:
                 os.chdir(original_cwd)
@@ -60,7 +60,7 @@ class ForwardArchitectureCompletionAuditCommandTest(TestCase):
         self.assertTrue(payload["summary"]["all_repo_checks_green"])
 
     def test_completion_audit_uses_runtime_evidence_file_when_fresh_and_passed(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory():
             repo_root = Path(__file__).resolve().parents[2]
             rel_path = "docs/03_Plans/evidence/runtime-evidence-test.json"
             abs_path = repo_root / rel_path
