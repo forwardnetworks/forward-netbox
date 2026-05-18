@@ -11,6 +11,10 @@ from django.utils.module_loading import import_string
 
 from ..choices import ForwardSourceStatusChoices
 from ..choices import ForwardSyncStatusChoices
+from .execution_ledger import branch_run_state_from_execution_run
+from .execution_ledger import execution_step_for_ingestion
+from .execution_ledger import mark_ingestion_step_merged
+from .execution_ledger import mark_run_completed
 from .resumable_branching import enqueue_branch_stage_job
 from .resumable_branching import update_plan_item_state
 
@@ -58,10 +62,16 @@ def sync_merge_ingestion(ingestion, *, mark_baseline_ready=None, remove_branch=T
         "pending_ingestion_id"
     ) == ingestion.pk and branch_run_state.get("auto_merge")
     pending_plan_index = branch_run_state.get("pending_plan_index")
+    ledger_step = execution_step_for_ingestion(ingestion)
+    ledger_is_final = bool(
+        ledger_step
+        and ledger_step.run.total_steps
+        and int(ledger_step.index) >= int(ledger_step.run.total_steps)
+    )
     if mark_baseline_ready is None:
         mark_baseline_ready = not (
-            is_pending_branch_run or is_auto_pending_branch_run
-        ) or bool(branch_run_state.get("pending_is_final"))
+            is_pending_branch_run or is_auto_pending_branch_run or ledger_step
+        ) or bool(branch_run_state.get("pending_is_final") or ledger_is_final)
 
     forwardsync.status = ForwardSyncStatusChoices.MERGING
     ForwardSync = forwardsync.__class__
@@ -83,22 +93,21 @@ def sync_merge_ingestion(ingestion, *, mark_baseline_ready=None, remove_branch=T
                 ingestion_id=ingestion.pk,
             )
             branch_run_state = forwardsync.get_branch_run_state()
-        if is_pending_branch_run or is_auto_pending_branch_run:
+        mark_ingestion_step_merged(
+            ingestion,
+            baseline_ready=mark_baseline_ready,
+            merge_job=ingestion.merge_job,
+        )
+        if is_pending_branch_run:
             if branch_run_state.get("pending_is_final"):
-                forwardsync.clear_branch_run_state()
-            else:
-                branch_run_state["awaiting_merge"] = False
-                branch_run_state.pop("pending_ingestion_id", None)
-                branch_run_state.pop("pending_plan_index", None)
-                branch_run_state.pop("pending_is_final", None)
-                branch_run_state["phase"] = "merged"
-                branch_run_state["phase_message"] = (
-                    "Merged shard; ready for next shard."
-                )
-                forwardsync.set_branch_run_state(branch_run_state)
+                mark_run_completed(forwardsync, baseline_ready=mark_baseline_ready)
+            forwardsync.clear_branch_run_state()
         if remove_branch:
             ingestion._cleanup_merged_branch()
-        forwardsync.status = ForwardSyncStatusChoices.COMPLETED
+        if ledger_step and not ledger_is_final and ledger_step.run.auto_merge:
+            forwardsync.status = ForwardSyncStatusChoices.SYNCING
+        else:
+            forwardsync.status = ForwardSyncStatusChoices.COMPLETED
     except Exception:
         forwardsync.status = ForwardSyncStatusChoices.FAILED
         ForwardSync.objects.filter(pk=forwardsync.pk).update(
@@ -137,7 +146,12 @@ def maybe_enqueue_next_branch_stage(ingestion, user):
     sync = ingestion.sync
     state = sync.get_branch_run_state()
     if not state or not state.get("auto_merge"):
-        return None
+        ledger_step = execution_step_for_ingestion(ingestion)
+        ledger_run = ledger_step.run if ledger_step is not None else None
+        if not state and ledger_run is not None and ledger_run.auto_merge:
+            state = branch_run_state_from_execution_run(ledger_run)
+        else:
+            return None
     next_plan_index = int(state.get("next_plan_index") or 1)
     total_plan_items = int(state.get("total_plan_items") or 0)
     if total_plan_items and next_plan_index <= total_plan_items:

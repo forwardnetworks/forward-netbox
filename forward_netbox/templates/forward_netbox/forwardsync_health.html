@@ -1,0 +1,308 @@
+{% extends 'generic/object.html' %}
+{% load helpers %}
+{% load plugins %}
+{% load i18n %}
+
+{% block content %}
+<div class="row mb-3">
+  <div class="col col-md-6">
+    <div class="card">
+      <h5 class="card-header">{% trans "Health Summary" %}</h5>
+      <div class="card-body">
+        <div class="mb-3">
+          <a class="btn btn-sm btn-outline-primary" href="{% url 'plugins:forward_netbox:forwardsync_source_health' pk=object.pk %}">
+            {% trans "Export Live Source Check" %}
+          </a>
+          <span class="text-muted ms-2">
+            {% trans "Calls Forward with this source and exports reachability diagnostics." %}
+          </span>
+        </div>
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">{% trans "Source" %}</th>
+            <td><a href="{{ object.source.get_absolute_url }}">{{ health.source.name }}</a></td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Source status" %}</th>
+            <td>{{ health.source.status }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Source URL" %}</th>
+            <td>{{ health.source.url }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Execution backend" %}</th>
+            <td>{{ health.runtime.execution_backend }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Branching available" %}</th>
+            <td>{{ health.runtime.branching_available|yesno:"Yes,No" }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Max changes per branch" %}</th>
+            <td>{{ health.runtime.max_changes_per_branch }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Forward API timeout" %}</th>
+            <td>{{ health.runtime.source_timeout_seconds|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Worker timeout" %}</th>
+            <td>{{ health.runtime.rq_default_timeout_seconds|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Snapshot selection" %}</th>
+            <td>{{ health.runtime.snapshot_selector|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Next run" %}</th>
+            <td>
+              <div>{{ health.next_run.message }}</div>
+              {% if health.next_run.blockers %}
+                <ul class="mb-0 ps-3">
+                  {% for blocker in health.next_run.blockers %}
+                    <li>{{ blocker.message }}</li>
+                  {% endfor %}
+                </ul>
+              {% endif %}
+            </td>
+          </tr>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <h5 class="card-header">{% trans "Checks" %}</h5>
+      <div class="table-responsive">
+        <table class="table table-hover">
+          <thead>
+            <tr>
+              <th>{% trans "Check" %}</th>
+              <th>{% trans "Status" %}</th>
+              <th>{% trans "Message" %}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for check in health.checks %}
+              <tr>
+                <td>{{ check.name }}</td>
+                <td>
+                  {% if check.status == "pass" %}
+                    <span class="badge text-bg-success">{% trans "Pass" %}</span>
+                  {% elif check.status == "fail" %}
+                    <span class="badge text-bg-danger">{% trans "Fail" %}</span>
+                  {% elif check.status == "warn" %}
+                    <span class="badge text-bg-warning">{% trans "Warn" %}</span>
+                  {% else %}
+                    <span class="badge text-bg-secondary">{% trans "Info" %}</span>
+                  {% endif %}
+                </td>
+                <td>{{ check.message }}</td>
+              </tr>
+            {% empty %}
+              <tr>
+                <td colspan="3" class="text-muted">{% trans "No checks available" %}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {% plugin_left_page object %}
+  </div>
+  <div class="col col-md-6">
+    <div class="card">
+      <h5 class="card-header">{% trans "Query Binding" %}</h5>
+      <div class="card-body">
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">{% trans "Raw query maps" %}</th>
+            <td>{{ health.query_modes.query }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Direct query ID maps" %}</th>
+            <td>{{ health.query_modes.query_id }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Repository path maps" %}</th>
+            <td>{{ health.query_modes.query_path }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Diff-capable maps" %}</th>
+            <td>{{ health.query_modes.diff_capable }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Data-file-dependent maps" %}</th>
+            <td>
+              {{ health.query_modes.data_file_maps|length }}
+              {% if health.query_modes.data_file_maps %}
+                <a class="btn btn-sm btn-outline-primary ms-2" href="{% url 'plugins:forward_netbox:forwardsync_data_file_health' pk=object.pk %}">
+                  {% trans "Export Live Data File Check" %}
+                </a>
+              {% endif %}
+            </td>
+          </tr>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <h5 class="card-header">{% trans "Local Query Drift" %}</h5>
+      <div class="card-body border-bottom">
+        <a class="btn btn-sm btn-outline-primary" href="{% url 'plugins:forward_netbox:forwardsync_query_drift' pk=object.pk %}">
+          {% trans "Export Live Query Drift Check" %}
+        </a>
+        <span class="text-muted ms-2">
+          {% trans "Calls Forward with this source and exports repository/query-ID drift diagnostics." %}
+        </span>
+      </div>
+      <div class="table-responsive">
+        <table class="table table-hover">
+          <thead>
+            <tr>
+              <th>{% trans "Map" %}</th>
+              <th>{% trans "Mode" %}</th>
+              <th>{% trans "Commit" %}</th>
+              <th>{% trans "Status" %}</th>
+              <th>{% trans "Message" %}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in health.query_modes.local_drift %}
+              <tr>
+                <td>{{ item.name }}</td>
+                <td>{{ item.mode }}</td>
+                <td>{{ item.commit_message }}</td>
+                <td>
+                  {% if item.severity == "pass" %}
+                    <span class="badge text-bg-success">{{ item.status }}</span>
+                  {% elif item.severity == "warn" %}
+                    <span class="badge text-bg-warning">{{ item.status }}</span>
+                  {% else %}
+                    <span class="badge text-bg-secondary">{{ item.status }}</span>
+                  {% endif %}
+                </td>
+                <td>{{ item.message }}</td>
+              </tr>
+            {% empty %}
+              <tr>
+                <td colspan="5" class="text-muted">{% trans "No local query drift diagnostics available" %}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <h5 class="card-header">{% trans "Apply Engines" %}</h5>
+      <div class="card-body">
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">{% trans "Selected engines" %}</th>
+            <td>{{ health.apply_engines.selected }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Fallback reasons" %}</th>
+            <td>{{ health.apply_engines.fallback_reasons }}</td>
+          </tr>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <h5 class="card-header">{% trans "Fetch Contracts" %}</h5>
+      <div class="card-body">
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">{% trans "Fetch modes" %}</th>
+            <td>{{ health.fetch_contracts.modes }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Shard-safe models" %}</th>
+            <td>{{ health.fetch_contracts.shard_safe_count }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Model-fetch fallbacks" %}</th>
+            <td>{{ health.fetch_contracts.model_fallback_count }}</td>
+          </tr>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <h5 class="card-header">{% trans "Latest State" %}</h5>
+      <div class="card-body">
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">{% trans "Latest validation" %}</th>
+            <td>
+              {% if health.latest_validation %}
+                {{ health.latest_validation.status }}{% if health.latest_validation.allowed %} ({% trans "allowed" %}){% endif %}
+              {% else %}
+                {{ ""|placeholder }}
+              {% endif %}
+            </td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Latest ingestion" %}</th>
+            <td>
+              {% if health.latest_ingestion %}
+                {{ health.latest_ingestion.name }}{% if health.latest_ingestion.baseline_ready %} ({% trans "baseline ready" %}){% endif %}
+              {% else %}
+                {{ ""|placeholder }}
+              {% endif %}
+            </td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Latest execution run" %}</th>
+            <td>
+              {% if health.latest_execution_run %}
+                {{ health.latest_execution_run.status }} - {{ health.latest_execution_run.phase|placeholder }}
+              {% else %}
+                {{ ""|placeholder }}
+              {% endif %}
+            </td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Recovery recommendation" %}</th>
+            <td>
+              {% if health.latest_execution_run %}
+                {{ health.latest_execution_run.recovery_recommendation.message }}
+              {% else %}
+                {{ ""|placeholder }}
+              {% endif %}
+            </td>
+          </tr>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <h5 class="card-header">{% trans "Capacity Projection" %}</h5>
+      <div class="card-body">
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">{% trans "Completed steps" %}</th>
+            <td>{{ health.capacity.completed_steps|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Remaining steps" %}</th>
+            <td>{{ health.capacity.remaining_steps|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Average shard seconds" %}</th>
+            <td>{{ health.capacity.average_completed_step_seconds|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Max shard seconds" %}</th>
+            <td>{{ health.capacity.max_completed_step_seconds|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Projection" %}</th>
+            <td>{{ health.capacity.message }}</td>
+          </tr>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      {% include 'extras/inc/configcontext_data.html' with title="Health Details" data=health format="json" copyid="forward-sync-health-details" %}
+    </div>
+    {% plugin_right_page object %}
+  </div>
+</div>
+{% endblock content %}

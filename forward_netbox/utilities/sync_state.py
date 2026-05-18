@@ -3,6 +3,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
 from ..choices import ForwardExecutionBackendChoices
+from ..choices import ForwardExecutionRunStatusChoices
 from ..choices import ForwardSyncStatusChoices
 from .branch_budget import BRANCH_RUN_STATE_PARAMETER
 from .branch_budget import build_branch_budget_hints
@@ -26,16 +27,39 @@ def get_branch_run_state(sync):
     return state if isinstance(state, dict) else {}
 
 
+def get_branch_run_display_state(sync):
+    state = get_branch_run_state(sync)
+    run = _latest_execution_run(sync)
+    if run is not None:
+        from .execution_ledger import branch_run_state_from_execution_run
+
+        return branch_run_state_from_execution_run(run)
+    return state
+
+
+def get_execution_display_state(sync):
+    return get_branch_run_display_state(sync)
+
+
 def get_model_change_density(sync):
     density = (sync.parameters or {}).get(MODEL_CHANGE_DENSITY_PARAMETER) or {}
     return density if isinstance(density, dict) else {}
 
 
 def set_branch_run_state(sync, state):
+    from .execution_ledger import active_execution_run
+
+    active_run = active_execution_run(sync)
+    # Keep the compatibility payload read-only once a real execution run exists.
+    # The only allowed write in this mode is explicit linkage metadata that
+    # carries execution_run_id for compatibility-window exports.
+    if active_run is not None and not (state or {}).get("execution_run_id"):
+        return False
     parameters = dict(sync.parameters or {})
-    parameters[BRANCH_RUN_STATE_PARAMETER] = dict(state)
+    parameters[BRANCH_RUN_STATE_PARAMETER] = state or {}
     sync.parameters = parameters
     sync.__class__.objects.filter(pk=sync.pk).update(parameters=parameters)
+    return True
 
 
 def clear_branch_run_state(sync):
@@ -53,6 +77,25 @@ def clear_branch_run_progress_fields(state):
 
 
 def mark_branch_run_failed(sync, message):
+    from .execution_ledger import active_execution_run
+
+    run = active_execution_run(sync)
+    if run is not None:
+        run.status = ForwardExecutionRunStatusChoices.FAILED
+        run.phase = "failed"
+        run.phase_message = str(message)
+        run.last_error = str(message)
+        run.latest_heartbeat = timezone.now()
+        run.save(
+            update_fields=[
+                "status",
+                "phase",
+                "phase_message",
+                "last_error",
+                "latest_heartbeat",
+            ]
+        )
+        return True
     state = get_branch_run_state(sync)
     if not state:
         return False
@@ -62,6 +105,11 @@ def mark_branch_run_failed(sync, message):
     state["phase_started"] = timezone.now().isoformat()
     state["awaiting_merge"] = False
     set_branch_run_state(sync, state)
+    if run is not None:
+        run.phase = "failed"
+        run.phase_message = str(message)
+        run.latest_heartbeat = timezone.now()
+        run.save(update_fields=["phase", "phase_message", "latest_heartbeat"])
     return True
 
 
@@ -75,6 +123,32 @@ def touch_branch_run_progress(
     row_count=None,
     row_total=None,
 ):
+    from .execution_ledger import active_execution_run
+    from .execution_ledger import touch_execution_step_progress
+
+    run = active_execution_run(sync)
+    if run is not None:
+        if phase_message is not None:
+            run.phase_message = str(phase_message)
+        updated_fields = ["phase_message"]
+        if shard_index is not None:
+            run.next_step_index = int(shard_index)
+            updated_fields.append("next_step_index")
+        if total_plan_items is not None:
+            run.total_steps = int(total_plan_items)
+            updated_fields.append("total_steps")
+        if model_string is not None or row_count is not None or row_total is not None:
+            touch_execution_step_progress(
+                sync,
+                model_string=model_string or "",
+                shard_index=shard_index,
+                row_count=row_count,
+                row_total=row_total,
+            )
+        run.latest_heartbeat = timezone.now()
+        updated_fields.append("latest_heartbeat")
+        run.save(update_fields=updated_fields)
+        return True
     state = get_branch_run_state(sync)
     if not state:
         return False
@@ -92,6 +166,22 @@ def touch_branch_run_progress(
         state["current_row_total"] = int(row_total)
     state["last_progress_at"] = timezone.now().isoformat()
     set_branch_run_state(sync, state)
+    if run is not None:
+        if phase_message is not None:
+            run.phase_message = str(phase_message)
+        if shard_index is not None:
+            run.next_step_index = int(shard_index)
+        if total_plan_items is not None:
+            run.total_steps = int(total_plan_items)
+        run.latest_heartbeat = timezone.now()
+        run.save(
+            update_fields=[
+                "phase_message",
+                "next_step_index",
+                "total_steps",
+                "latest_heartbeat",
+            ]
+        )
     return True
 
 
@@ -112,15 +202,38 @@ def set_model_change_density(sync, model_change_density):
 
 
 def is_waiting_for_branch_merge(sync):
-    return bool(get_branch_run_state(sync).get("awaiting_merge"))
+    run = _latest_execution_run(sync)
+    if run is None:
+        return bool(get_branch_run_state(sync).get("awaiting_merge"))
+    from ..choices import ForwardExecutionStepStatusChoices
+
+    return run.steps.filter(
+        status=ForwardExecutionStepStatusChoices.STAGED,
+    ).exists()
 
 
 def has_pending_branch_run(sync):
-    state = get_branch_run_state(sync)
-    return bool(
-        state
-        and int(state.get("next_plan_index") or 1)
-        <= int(state.get("total_plan_items") or 0)
+    run = _latest_execution_run(sync)
+    if run is None:
+        return False
+    from ..choices import ForwardExecutionRunStatusChoices
+    from ..choices import ForwardExecutionStepKindChoices
+    from ..choices import ForwardExecutionStepStatusChoices
+
+    if run.status == ForwardExecutionRunStatusChoices.COMPLETED:
+        return False
+    return (
+        run.steps.filter(
+            kind=ForwardExecutionStepKindChoices.STAGE,
+        )
+        .exclude(
+            status__in=[
+                ForwardExecutionStepStatusChoices.MERGED,
+                ForwardExecutionStepStatusChoices.SKIPPED,
+                ForwardExecutionStepStatusChoices.CANCELLED,
+            ]
+        )
+        .exists()
     )
 
 
@@ -134,6 +247,15 @@ def ready_for_sync(sync):
 
 def ready_to_continue_sync(sync):
     return has_pending_branch_run(sync) and ready_for_sync(sync)
+
+
+def _latest_execution_run(sync):
+    if not getattr(sync, "pk", None):
+        return None
+    try:
+        return sync.execution_runs.order_by("-pk").first()
+    except Exception:
+        return None
 
 
 def get_max_changes_per_branch(sync, default_max_changes_per_branch):
@@ -220,7 +342,7 @@ def get_display_parameters(
             max_changes_per_branch=parameters["max_changes_per_branch"],
             model_change_density=model_change_density,
         )
-    state = get_branch_run_state(sync)
+    state = get_branch_run_display_state(sync)
     if state:
         parameters["branch_run"] = build_branch_run_summary(state)
     parameters["models"] = enabled_models
@@ -234,7 +356,7 @@ def get_execution_summary(sync):
         sync.get_max_changes_per_branch(),
     )
     model_change_density = get_model_change_density(sync)
-    state = get_branch_run_state(sync)
+    state = get_branch_run_display_state(sync)
     last_ingestion = sync.last_ingestion
     return build_sync_execution_summary(
         enabled_models=enabled_models,
@@ -274,7 +396,7 @@ def get_workload_summary(sync):
         sync.get_max_changes_per_branch(),
     )
     model_change_density = get_model_change_density(sync)
-    state = get_branch_run_state(sync)
+    state = get_branch_run_display_state(sync)
     return {
         "enabled_models": list(enabled_models),
         "max_changes_per_branch": max_changes_per_branch,
@@ -299,7 +421,7 @@ def get_workload_summary(sync):
 
 
 def get_branching_guidance(sync):
-    state = get_branch_run_state(sync)
+    state = get_branch_run_display_state(sync)
     preview = state.get("plan_preview") or {}
     max_changes_per_branch = get_max_changes_per_branch(
         sync,
@@ -356,7 +478,7 @@ def get_advisory_summary(sync):
 
 
 def get_sync_activity(sync):
-    state = get_branch_run_state(sync)
+    state = get_branch_run_display_state(sync)
     progress_message = state.get("last_progress_message") or ""
     if not progress_message and state.get("current_model_string"):
         progress_message = f"Processing {state.get('current_model_string')}"
