@@ -371,6 +371,8 @@ class ForwardSyncStateHelperTest(TestCase):
         self.assertEqual(state["state_source"], "execution_ledger")
         self.assertTrue(state["state_synthesized"])
         self.assertEqual(display["branch_run"]["phase"], "executing")
+        self.assertNotIn("plan_items", display["branch_run"])
+        self.assertEqual(display["branch_run"]["plan_items_count"], 1)
         self.assertEqual(workload["branch_run"]["phase"], "executing")
         self.assertEqual(workload["pre_run_estimate"]["planned_shards"], 3)
         self.assertEqual(execution["branch_run"]["phase"], "executing")
