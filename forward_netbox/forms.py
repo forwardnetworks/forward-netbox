@@ -104,6 +104,16 @@ FORWARD_NQE_BULK_QUERY_OPERATION_CHOICES = (
 class ForwardSourceForm(NetBoxModelForm):
     comments = CommentField()
 
+    @staticmethod
+    def _normalize_tag_values(value):
+        if not value:
+            return []
+        if isinstance(value, str):
+            return [part.strip() for part in value.split(",") if part.strip()]
+        if isinstance(value, (list, tuple)):
+            return [str(part).strip() for part in value if str(part).strip()]
+        return [str(value).strip()] if str(value).strip() else []
+
     class Meta:
         model = ForwardSource
         fields = [
@@ -187,6 +197,48 @@ class ForwardSourceForm(NetBoxModelForm):
             widget=APISelect(api_url="/api/plugins/forward/source/available-networks/"),
             help_text="Forward network used as the default for syncs using this source.",
         )
+        self.fields["device_tag_include_tags"] = forms.MultipleChoiceField(
+            required=False,
+            choices=(),
+            widget=APISelect(api_url="/api/plugins/forward/source/available-tags/"),
+            label="Device Tags Include",
+            help_text=(
+                "Optional Forward device tags. Devices must match the selected include logic."
+            ),
+        )
+        self.fields["device_tag_exclude_tags"] = forms.MultipleChoiceField(
+            required=False,
+            choices=(),
+            widget=APISelect(api_url="/api/plugins/forward/source/available-tags/"),
+            label="Device Tags Exclude",
+            help_text=(
+                "Optional Forward device tags. Devices with any selected tag are excluded."
+            ),
+        )
+        self.fields["device_tag_include_match"] = forms.ChoiceField(
+            required=False,
+            label="Include Tag Match",
+            choices=(
+                ("any", "Any selected tag (OR)"),
+                ("all", "All selected tags (AND)"),
+            ),
+            help_text="How include tags are matched.",
+        )
+        self.fields["device_tag_filter_mode"] = forms.ChoiceField(
+            required=False,
+            label="Tag Filter Mode",
+            choices=(
+                ("local", "Plugin Local Filter (default)"),
+                (
+                    "query_parameters",
+                    "Forward Query Parameters (query_id/query compatible only)",
+                ),
+            ),
+            help_text=(
+                "Use Local Filter for maximum compatibility. Use Query Parameters only when "
+                "your Forward query IDs support device_tag_include/device_tag_exclude."
+            ),
+        )
         _configure_api_select(
             self.fields["network_id"].widget,
             {
@@ -197,8 +249,38 @@ class ForwardSourceForm(NetBoxModelForm):
                 "verify": "$verify",
             },
         )
+        self.fields["device_tag_include_tags"].widget.attrs["multiple"] = "multiple"
+        self.fields["device_tag_exclude_tags"].widget.attrs["multiple"] = "multiple"
+        _configure_api_select(
+            self.fields["device_tag_include_tags"].widget,
+            {
+                "type": "$type",
+                "url": "$url",
+                "username": "$username",
+                "password": "$password",
+                "verify": "$verify",
+                "network_id": "$network_id",
+            },
+        )
+        _configure_api_select(
+            self.fields["device_tag_exclude_tags"].widget,
+            {
+                "type": "$type",
+                "url": "$url",
+                "username": "$username",
+                "password": "$password",
+                "verify": "$verify",
+                "network_id": "$network_id",
+            },
+        )
         if self.instance.pk:
             self.fields["network_id"].widget.add_query_param(
+                "source_id", self.instance.pk
+            )
+            self.fields["device_tag_include_tags"].widget.add_query_param(
+                "source_id", self.instance.pk
+            )
+            self.fields["device_tag_exclude_tags"].widget.add_query_param(
                 "source_id", self.instance.pk
             )
 
@@ -222,6 +304,51 @@ class ForwardSourceForm(NetBoxModelForm):
         self.fields["verify"].initial = parameters.get("verify", True)
         self.fields["network_id"].initial = existing_network_id
         self.fields["network_id"].choices = _selected_choice(existing_network_id)
+        include_bound = []
+        exclude_bound = []
+        if self.is_bound:
+            if hasattr(self.data, "getlist"):
+                include_bound = self.data.getlist("device_tag_include_tags")
+                exclude_bound = self.data.getlist("device_tag_exclude_tags")
+            else:
+                include_raw = self.data.get("device_tag_include_tags")
+                exclude_raw = self.data.get("device_tag_exclude_tags")
+                include_bound = (
+                    include_raw if isinstance(include_raw, list) else include_raw or []
+                )
+                exclude_bound = (
+                    exclude_raw if isinstance(exclude_raw, list) else exclude_raw or []
+                )
+        include_initial = (
+            include_bound
+            if self.is_bound
+            else parameters.get("device_tag_include_tags")
+        )
+        if include_initial is None and parameters.get("device_tag_include"):
+            include_initial = [parameters.get("device_tag_include")]
+        include_initial = self._normalize_tag_values(include_initial)
+        exclude_initial = (
+            exclude_bound
+            if self.is_bound
+            else parameters.get("device_tag_exclude_tags")
+        )
+        if exclude_initial is None and parameters.get("device_tag_exclude"):
+            exclude_initial = [parameters.get("device_tag_exclude")]
+        exclude_initial = self._normalize_tag_values(exclude_initial)
+        self.fields["device_tag_include_tags"].initial = include_initial
+        self.fields["device_tag_exclude_tags"].initial = exclude_initial
+        self.fields["device_tag_include_tags"].choices = [
+            (tag, tag) for tag in include_initial
+        ]
+        self.fields["device_tag_exclude_tags"].choices = [
+            (tag, tag) for tag in exclude_initial
+        ]
+        self.fields["device_tag_include_match"].initial = (
+            parameters.get("device_tag_include_match") or "any"
+        )
+        self.fields["device_tag_filter_mode"].initial = (
+            parameters.get("device_tag_filter_mode") or "local"
+        )
 
         if self.source_type == ForwardSourceDeploymentChoices.SAAS:
             self.fields["url"].initial = "https://fwd.app"
@@ -236,6 +363,10 @@ class ForwardSourceForm(NetBoxModelForm):
                     "timeout",
                     "nqe_page_size",
                     "query_fetch_concurrency",
+                    "device_tag_include_tags",
+                    "device_tag_include_match",
+                    "device_tag_exclude_tags",
+                    "device_tag_filter_mode",
                     name="Parameters",
                 )
             )
@@ -249,6 +380,10 @@ class ForwardSourceForm(NetBoxModelForm):
                     "timeout",
                     "nqe_page_size",
                     "query_fetch_concurrency",
+                    "device_tag_include_tags",
+                    "device_tag_include_match",
+                    "device_tag_exclude_tags",
+                    "device_tag_filter_mode",
                     name="Parameters",
                 )
             )
@@ -276,6 +411,12 @@ class ForwardSourceForm(NetBoxModelForm):
             raise forms.ValidationError("Custom Forward sources require a base URL.")
 
         selected_network_id = cleaned.get("network_id") or ""
+        include_tags = self._normalize_tag_values(
+            cleaned.get("device_tag_include_tags")
+        )
+        exclude_tags = self._normalize_tag_values(
+            cleaned.get("device_tag_exclude_tags")
+        )
         candidate_parameters = {
             "username": username,
             "password": password,
@@ -294,6 +435,16 @@ class ForwardSourceForm(NetBoxModelForm):
             or existing_parameters.get("query_fetch_concurrency")
             or DEFAULT_QUERY_FETCH_CONCURRENCY,
             "network_id": selected_network_id,
+            "device_tag_include_tags": include_tags,
+            "device_tag_exclude_tags": exclude_tags,
+            "device_tag_include_match": (
+                cleaned.get("device_tag_include_match") or "any"
+            ),
+            "device_tag_include": include_tags[0] if len(include_tags) == 1 else "",
+            "device_tag_exclude": exclude_tags[0] if len(exclude_tags) == 1 else "",
+            "device_tag_filter_mode": (
+                cleaned.get("device_tag_filter_mode") or "local"
+            ),
         }
         self.instance.type = source_type
         self.instance.url = (
@@ -328,6 +479,12 @@ class ForwardSourceForm(NetBoxModelForm):
         if not selected_network_id:
             raise forms.ValidationError("Select a Forward network for this source.")
         self.fields["network_id"].choices = _selected_choice(selected_network_id)
+        self.fields["device_tag_include_tags"].choices = [
+            (tag, tag) for tag in include_tags
+        ]
+        self.fields["device_tag_exclude_tags"].choices = [
+            (tag, tag) for tag in exclude_tags
+        ]
         return cleaned
 
     def save(self, *args, **kwargs):
@@ -340,6 +497,12 @@ class ForwardSourceForm(NetBoxModelForm):
             "https://fwd.app"
             if source_type == ForwardSourceDeploymentChoices.SAAS
             else (self.cleaned_data.get("url") or "").rstrip("/")
+        )
+        include_tags = self._normalize_tag_values(
+            self.cleaned_data.get("device_tag_include_tags")
+        )
+        exclude_tags = self._normalize_tag_values(
+            self.cleaned_data.get("device_tag_exclude_tags")
         )
         self.instance.parameters = {
             "username": self.cleaned_data.get("username")
@@ -363,6 +526,16 @@ class ForwardSourceForm(NetBoxModelForm):
             or existing_parameters.get("query_fetch_concurrency")
             or DEFAULT_QUERY_FETCH_CONCURRENCY,
             "network_id": self.cleaned_data.get("network_id") or "",
+            "device_tag_include_tags": include_tags,
+            "device_tag_exclude_tags": exclude_tags,
+            "device_tag_include_match": (
+                self.cleaned_data.get("device_tag_include_match") or "any"
+            ),
+            "device_tag_include": include_tags[0] if len(include_tags) == 1 else "",
+            "device_tag_exclude": exclude_tags[0] if len(exclude_tags) == 1 else "",
+            "device_tag_filter_mode": (
+                self.cleaned_data.get("device_tag_filter_mode") or "local"
+            ),
         }
         self.instance.status = ForwardSourceStatusChoices.NEW
         return super().save(*args, **kwargs)

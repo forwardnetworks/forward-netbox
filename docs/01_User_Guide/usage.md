@@ -2,7 +2,7 @@
 
 Run a sync from the `Forward Sync` detail page. The plugin executes the enabled NetBox models through the configured NQE maps, records failures as `Forward Ingestion Issues`, and applies the selected execution backend. The default backend stages changes in native NetBox Branching shards for review and merge. The optional fast bootstrap backend writes directly after validation for trusted large baselines.
 
-Version `v0.9.2` is the point where the architecture is split into explicit execution-ledger, health, and support-reporting surfaces while keeping the shared 4.5/4.6 branch line. In practice, that means the UI still looks like a normal NetBox sync flow, but long runs now have clearer run/step state, better troubleshooting export, and less ambiguity around branch planning and merge progress.
+Version `v0.9.3` is the point where the architecture is split into explicit execution-ledger, health, and support-reporting surfaces while keeping the shared 4.5/4.6 branch line. In practice, that means the UI still looks like a normal NetBox sync flow, but long runs now have clearer run/step state, better troubleshooting export, and less ambiguity around branch planning and merge progress.
 
 ## Self-Test Workflow
 

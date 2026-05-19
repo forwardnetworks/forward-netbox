@@ -87,6 +87,9 @@ from forward_netbox.utilities.sync_contracts import default_coalesce_fields_for_
 from forward_netbox.utilities.sync_contracts import validate_row_shape_for_model
 from forward_netbox.utilities.sync_events import EventsClearer
 from forward_netbox.utilities.sync_facade import enqueue_sync_job
+from forward_netbox.utilities.sync_facade import (
+    get_query_parameters as facade_get_query_parameters,
+)
 from forward_netbox.utilities.sync_state import get_branch_run_display_state
 
 
@@ -5573,7 +5576,7 @@ class ForwardSyncRunnerTest(TestCase):
         )
         self.assertEqual(
             client.run_nqe_diff.call_args.kwargs["parameters"],
-            {"existing": "value"},
+            {},
         )
 
     def test_resolve_context_carries_ingestion_id_from_branch_state(self):
@@ -5605,6 +5608,65 @@ class ForwardSyncRunnerTest(TestCase):
 
         self.assertEqual(context.ingestion_id, 42)
         self.assertEqual(context.as_dict()["ingestion_id"], 42)
+
+    def test_resolve_context_applies_source_device_tag_scope(self):
+        self.source.parameters["device_tag_include_tags"] = ["DATACENTER", "CORE"]
+        self.source.parameters["device_tag_include_match"] = "any"
+        self.source.parameters["device_tag_exclude_tags"] = ["BRANCH"]
+        self.source.save(update_fields=["parameters"])
+        client = Mock()
+        client.get_snapshot_metrics.return_value = {}
+        client.get_snapshots.return_value = []
+        client.get_latest_processed_snapshot.return_value = {
+            "id": "snapshot-after",
+            "processedAt": "2026-03-31T12:15:00Z",
+        }
+        client.run_nqe_query.return_value = [{"name": "core-1"}, {"name": "core-2"}]
+        fetcher = ForwardQueryFetcher(
+            sync=self.sync,
+            client=client,
+            logger_=Mock(),
+        )
+        self.sync.get_network_id = Mock(return_value="test-network")
+        self.sync.get_snapshot_id = Mock(return_value=LATEST_PROCESSED_SNAPSHOT)
+        self.sync.resolve_snapshot_id = Mock(return_value="snapshot-after")
+        self.sync.get_query_parameters = Mock(return_value={})
+        self.sync.get_maps = Mock(return_value=[])
+
+        context = fetcher.resolve_context()
+
+        self.assertEqual(context.device_tag_include_tags, ["DATACENTER", "CORE"])
+        self.assertEqual(context.device_tag_include_match, "any")
+        self.assertEqual(context.device_tag_exclude_tags, ["BRANCH"])
+        self.assertEqual(context.scoped_device_names, {"core-1", "core-2"})
+
+    def test_apply_device_tag_scope_filters_rows_with_device_keys(self):
+        fetcher = ForwardQueryFetcher(
+            sync=self.sync,
+            client=Mock(),
+            logger_=Mock(),
+        )
+        context = ForwardQueryContext(
+            network_id="test-network",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-after",
+            scoped_device_names={"core-1"},
+        )
+        rows = [
+            {"device": "core-1", "name": "Ethernet1"},
+            {"device": "branch-1", "name": "Ethernet1"},
+            {"name": "site-only-row"},
+        ]
+
+        filtered = fetcher._apply_device_tag_scope("dcim.interface", rows, context)
+
+        self.assertEqual(
+            filtered,
+            [
+                {"device": "core-1", "name": "Ethernet1"},
+                {"name": "site-only-row"},
+            ],
+        )
 
     def test_run_records_issue_when_rows_miss_required_identity_fields(self):
         ingestion = ForwardIngestion.objects.create(sync=self.sync)
@@ -6153,3 +6215,89 @@ class EventsClearerTest(TestCase):
         mock_on_commit.assert_called_once()
         mock_flush_events.assert_called_once_with([{"event_type": "create"}])
         mock_clear_events_send.assert_called_once_with(sender=None)
+
+
+class QueryParameterCompatibilityTest(TestCase):
+    def test_sync_facade_returns_empty_parameters_for_local_filter_mode(self):
+        source = Mock(
+            parameters={
+                "device_tag_include_tags": ["Core"],
+                "device_tag_filter_mode": "local",
+            }
+        )
+        sync = Mock(source=source)
+
+        self.assertEqual(facade_get_query_parameters(sync), {})
+
+    def test_sync_facade_returns_parameters_for_query_parameter_mode(self):
+        source = Mock(
+            parameters={
+                "device_tag_include_tags": ["Core", "DC"],
+                "device_tag_include_match": "all",
+                "device_tag_exclude_tags": ["Branch"],
+                "device_tag_filter_mode": "query_parameters",
+            }
+        )
+        sync = Mock(source=source)
+
+        self.assertEqual(
+            facade_get_query_parameters(sync),
+            {
+                "device_tag_include_tags": ["Core", "DC"],
+                "device_tag_include_match": "all",
+                "device_tag_exclude_tags": ["Branch"],
+                "device_tag_exclude": "Branch",
+            },
+        )
+
+    def test_query_fetch_retries_without_parameters_when_query_rejects_them(self):
+        sync = Mock()
+        fetcher = ForwardQueryFetcher(sync=sync, client=Mock(), logger_=Mock())
+        spec = Mock(
+            query="foreach device in network.devices select {name: device.name}",
+            run_query_id="qid-1",
+            commit_id="cid-1",
+            execution_value="qid-1",
+        )
+        context = Mock(network_id="n1", snapshot_id="s1")
+        fetcher.client.run_nqe_query.side_effect = [
+            ForwardClientError(
+                "Parameters were provided, but a main query does not take parameters"
+            ),
+            [{"name": "device-1"}],
+        ]
+
+        rows = fetcher._run_nqe_query_with_parameter_fallback(
+            spec=spec,
+            context=context,
+            parameters={"device_tag_include": "Core"},
+            fetch_all=True,
+        )
+
+        self.assertEqual(rows, [{"name": "device-1"}])
+        self.assertEqual(fetcher.client.run_nqe_query.call_count, 2)
+        self.assertEqual(
+            fetcher.client.run_nqe_query.call_args_list[1].kwargs["parameters"], {}
+        )
+
+    def test_diff_fetch_is_always_parameterless(self):
+        sync = Mock()
+        fetcher = ForwardQueryFetcher(sync=sync, client=Mock(), logger_=Mock())
+        spec = Mock(run_query_id="qid-1", commit_id="cid-1", execution_value="qid-1")
+        context = Mock(snapshot_id="after-s1")
+        fetcher.client.run_nqe_diff.return_value = [
+            {"changeType": "ADD", "data": {"name": "device-1"}}
+        ]
+
+        rows = fetcher._run_nqe_diff_without_parameters(
+            spec=spec,
+            context=context,
+            before_snapshot_id="before-s1",
+            column_filters=None,
+        )
+
+        self.assertEqual(rows, [{"changeType": "ADD", "data": {"name": "device-1"}}])
+        self.assertEqual(fetcher.client.run_nqe_diff.call_count, 1)
+        self.assertEqual(
+            fetcher.client.run_nqe_diff.call_args_list[0].kwargs["parameters"], {}
+        )
