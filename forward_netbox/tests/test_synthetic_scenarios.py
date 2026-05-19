@@ -661,6 +661,94 @@ class SyntheticSyncScenarioHarnessTest(TestCase):
             "queued_step_applied_without_merge_path",
         )
 
+    def test_reconcile_stage_job_completed_without_ingestion_resets_to_pending(self):
+        run = self._execution_run()
+        stage_job = self._job(
+            instance=self.sync,
+            status=JobStatusChoices.STATUS_COMPLETED,
+            completed=timezone.now(),
+        )
+        step = ForwardExecutionStep.objects.create(
+            run=run,
+            index=1,
+            kind=ForwardExecutionStepKindChoices.STAGE,
+            status=ForwardExecutionStepStatusChoices.QUEUED,
+            model_string="dcim.devicetype",
+            label="dcim.devicetype orphan queued shard",
+            job=stage_job,
+        )
+
+        result = reconcile_execution_run(run)
+
+        step.refresh_from_db()
+        self.assertEqual(result["updated_steps"], 1)
+        self.assertEqual(step.status, ForwardExecutionStepStatusChoices.PENDING)
+        self.assertIsNone(step.job_id)
+        self.assertEqual(
+            run.reconciliation_events[0]["reason"],
+            "stage_job_completed_without_ingestion",
+        )
+
+    def test_reconcile_duplicate_inflight_steps_keeps_single_inflight(self):
+        run = self._execution_run(next_step_index=10)
+        merged = ForwardExecutionStep.objects.create(
+            run=run,
+            index=11,
+            kind=ForwardExecutionStepKindChoices.STAGE,
+            status=ForwardExecutionStepStatusChoices.MERGED,
+            model_string="ipam.vlan",
+        )
+        queued_10 = ForwardExecutionStep.objects.create(
+            run=run,
+            index=10,
+            kind=ForwardExecutionStepKindChoices.STAGE,
+            status=ForwardExecutionStepStatusChoices.QUEUED,
+            model_string="ipam.vlan",
+        )
+        queued_12 = ForwardExecutionStep.objects.create(
+            run=run,
+            index=12,
+            kind=ForwardExecutionStepKindChoices.STAGE,
+            status=ForwardExecutionStepStatusChoices.QUEUED,
+            model_string="ipam.vlan",
+        )
+
+        result = reconcile_execution_run(run)
+
+        run.refresh_from_db()
+        queued_10.refresh_from_db()
+        queued_12.refresh_from_db()
+        merged.refresh_from_db()
+        self.assertGreaterEqual(result["updated_steps"], 1)
+        self.assertEqual(run.next_step_index, 12)
+        self.assertEqual(queued_12.status, ForwardExecutionStepStatusChoices.QUEUED)
+        self.assertEqual(queued_10.status, ForwardExecutionStepStatusChoices.PENDING)
+        reasons = [event.get("reason") for event in run.reconciliation_events]
+        self.assertIn("duplicate_inflight_step", reasons)
+
+    def test_reconcile_clears_stale_pending_job_binding(self):
+        run = self._execution_run()
+        stale_job = self._job(
+            instance=self.sync, status=JobStatusChoices.STATUS_COMPLETED
+        )
+        step = ForwardExecutionStep.objects.create(
+            run=run,
+            index=1,
+            kind=ForwardExecutionStepKindChoices.STAGE,
+            status=ForwardExecutionStepStatusChoices.PENDING,
+            model_string="dcim.site",
+            label="dcim.site pending shard",
+            job=stale_job,
+        )
+
+        result = reconcile_execution_run(run)
+
+        step.refresh_from_db()
+        self.assertGreaterEqual(result["updated_steps"], 1)
+        self.assertIsNone(step.job_id)
+        reasons = [event.get("reason") for event in run.reconciliation_events]
+        self.assertIn("cleared_stale_pending_job_binding", reasons)
+
     def test_duplicate_stage_job_cannot_reclaim_terminal_step(self):
         run = self._execution_run()
         ForwardExecutionStep.objects.create(
@@ -746,6 +834,30 @@ class SyntheticSyncScenarioHarnessTest(TestCase):
         self.assertIsNone(second_claim)
         self.assertEqual(step.status, ForwardExecutionStepStatusChoices.RUNNING)
         self.assertEqual(step.job_id, original_job.pk)
+
+    def test_claim_stage_step_blocks_when_another_index_is_running(self):
+        run = self._execution_run(next_step_index=11)
+        running_job = self._job(instance=self.sync)
+        ForwardExecutionStep.objects.create(
+            run=run,
+            index=11,
+            status=ForwardExecutionStepStatusChoices.RUNNING,
+            model_string="ipam.vlan",
+            job=running_job,
+        )
+        step_12 = ForwardExecutionStep.objects.create(
+            run=run,
+            index=12,
+            status=ForwardExecutionStepStatusChoices.QUEUED,
+            model_string="ipam.vlan",
+        )
+        new_job = self._job(instance=self.sync)
+
+        claimed = claim_stage_step(self.sync, 12, new_job)
+
+        step_12.refresh_from_db()
+        self.assertIsNone(claimed)
+        self.assertEqual(step_12.status, ForwardExecutionStepStatusChoices.QUEUED)
 
     def test_support_bundle_keeps_branch_evidence_after_cleanup(self):
         branch = Branch.objects.create(

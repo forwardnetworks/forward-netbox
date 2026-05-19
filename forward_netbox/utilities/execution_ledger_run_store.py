@@ -512,6 +512,22 @@ def claim_stage_step(
     if run is None:
         return None
     with transaction.atomic():
+        other_running_step = (
+            ForwardExecutionStep.objects.select_for_update()
+            .filter(
+                run=run,
+                kind=ForwardExecutionStepKindChoices.STAGE,
+                status=ForwardExecutionStepStatusChoices.RUNNING,
+            )
+            .exclude(index=int(index))
+            .order_by("index")
+            .first()
+        )
+        if other_running_step is not None:
+            running_job = getattr(other_running_step, "job", None)
+            # Permit claim only when the older running marker is clearly finished.
+            if running_job is None or getattr(running_job, "completed", None) is None:
+                return None
         step = (
             ForwardExecutionStep.objects.select_for_update()
             .filter(
