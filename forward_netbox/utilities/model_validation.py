@@ -27,6 +27,12 @@ def clean_forward_source(source):
             "network_id",
             "nqe_page_size",
             "query_fetch_concurrency",
+            "device_tag_include",
+            "device_tag_exclude",
+            "device_tag_include_tags",
+            "device_tag_exclude_tags",
+            "device_tag_include_match",
+            "device_tag_filter_mode",
         }
     )
     if invalid:
@@ -42,6 +48,32 @@ def clean_forward_source(source):
         parameters.get("network_id"), str
     ):
         raise ValidationError(_("`network_id` must be a string."))
+    for key in ("device_tag_include", "device_tag_exclude"):
+        if parameters.get(key) is not None and not isinstance(parameters.get(key), str):
+            raise ValidationError(_(f"`{key}` must be a string."))
+    for key in ("device_tag_include_tags", "device_tag_exclude_tags"):
+        if parameters.get(key) is None:
+            continue
+        if not isinstance(parameters.get(key), list) or any(
+            not isinstance(item, str) for item in parameters.get(key)
+        ):
+            raise ValidationError(_(f"`{key}` must be a list of strings."))
+    include_match = parameters.get("device_tag_include_match")
+    if include_match is not None:
+        if not isinstance(include_match, str):
+            raise ValidationError(_("`device_tag_include_match` must be a string."))
+        if include_match not in {"any", "all"}:
+            raise ValidationError(
+                _("`device_tag_include_match` must be `any` or `all`.")
+            )
+    filter_mode = parameters.get("device_tag_filter_mode")
+    if filter_mode is not None:
+        if not isinstance(filter_mode, str):
+            raise ValidationError(_("`device_tag_filter_mode` must be a string."))
+        if filter_mode not in {"local", "query_parameters"}:
+            raise ValidationError(
+                _("`device_tag_filter_mode` must be `local` or `query_parameters`.")
+            )
     if parameters.get("nqe_page_size") is not None:
         try:
             nqe_page_size = int(parameters.get("nqe_page_size"))

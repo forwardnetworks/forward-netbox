@@ -55,6 +55,10 @@ class ForwardQueryContext:
     snapshot_metrics: dict[str, Any] = field(default_factory=dict)
     query_parameters: dict[str, Any] = field(default_factory=dict)
     maps: list[Any] = field(default_factory=list)
+    device_tag_include_tags: list[str] = field(default_factory=list)
+    device_tag_exclude_tags: list[str] = field(default_factory=list)
+    device_tag_include_match: str = "any"
+    scoped_device_names: set[str] = field(default_factory=set)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -66,7 +70,58 @@ class ForwardQueryContext:
             "snapshot_metrics": self.snapshot_metrics,
             "query_parameters": self.query_parameters,
             "maps": self.maps,
+            "device_tag_include_tags": self.device_tag_include_tags,
+            "device_tag_exclude_tags": self.device_tag_exclude_tags,
+            "device_tag_include_match": self.device_tag_include_match,
+            "scoped_device_count": len(self.scoped_device_names),
         }
+
+
+def _extract_device_names(value: Any) -> set[str]:
+    names: set[str] = set()
+    if isinstance(value, str):
+        candidate = value.strip()
+        if candidate:
+            names.add(candidate)
+        return names
+    if isinstance(value, dict):
+        nested_name = value.get("name")
+        if isinstance(nested_name, str) and nested_name.strip():
+            names.add(nested_name.strip())
+        return names
+    if isinstance(value, list):
+        for item in value:
+            names.update(_extract_device_names(item))
+    return names
+
+
+_DEVICE_FIELD_NAMES = {
+    "device",
+    "device_name",
+    "peer_device",
+    "local_device",
+    "remote_device",
+    "a_device",
+    "z_device",
+    "a_device_name",
+    "z_device_name",
+}
+
+
+def _row_device_names(model_string: str, row: dict[str, Any]) -> set[str]:
+    names: set[str] = set()
+    if model_string == "dcim.device":
+        device_name = str(row.get("name") or "").strip()
+        if device_name:
+            names.add(device_name)
+        return names
+    for key, value in row.items():
+        key_lower = str(key).lower()
+        if key_lower in _DEVICE_FIELD_NAMES:
+            names.update(_extract_device_names(value))
+        elif key_lower.endswith("_device"):
+            names.update(_extract_device_names(value))
+    return names
 
 
 def _partition_column_filters(column_filters):
@@ -168,6 +223,27 @@ class ForwardQueryFetcher:
                 f"Unable to fetch Forward snapshot metrics for `{snapshot_id}`: {exc}",
                 obj=self.sync,
             )
+        source_parameters = dict(getattr(self.sync.source, "parameters", {}) or {})
+        include_tags = source_parameters.get("device_tag_include_tags") or []
+        exclude_tags = source_parameters.get("device_tag_exclude_tags") or []
+        if not include_tags and source_parameters.get("device_tag_include"):
+            include_tags = [source_parameters.get("device_tag_include")]
+        if not exclude_tags and source_parameters.get("device_tag_exclude"):
+            exclude_tags = [source_parameters.get("device_tag_exclude")]
+        include_tags = [str(tag).strip() for tag in include_tags if str(tag).strip()]
+        exclude_tags = [str(tag).strip() for tag in exclude_tags if str(tag).strip()]
+        include_match = str(
+            source_parameters.get("device_tag_include_match") or "any"
+        ).strip()
+        if include_match not in {"any", "all"}:
+            include_match = "any"
+        scoped_device_names = self._resolve_scoped_device_names(
+            network_id=network_id,
+            snapshot_id=snapshot_id,
+            include_tags=include_tags,
+            exclude_tags=exclude_tags,
+            include_match=include_match,
+        )
 
         return ForwardQueryContext(
             network_id=network_id,
@@ -182,7 +258,67 @@ class ForwardQueryFetcher:
             snapshot_metrics=snapshot_metrics or {},
             query_parameters=self.sync.get_query_parameters(),
             maps=self.sync.get_maps(),
+            device_tag_include_tags=include_tags,
+            device_tag_exclude_tags=exclude_tags,
+            device_tag_include_match=include_match,
+            scoped_device_names=scoped_device_names,
         )
+
+    def _resolve_scoped_device_names(
+        self,
+        *,
+        network_id: str,
+        snapshot_id: str,
+        include_tags: list[str],
+        exclude_tags: list[str],
+        include_match: str,
+    ) -> set[str]:
+        if not include_tags and not exclude_tags:
+            return set()
+        where = [
+            "where device.snapshotInfo.result == DeviceSnapshotResult.completed",
+            "where device.platform.vendor != Vendor.FORWARD_CUSTOM",
+        ]
+        include_exprs = [
+            f'"{tag.replace("\"", "\\\"")}" in device.tagNames' for tag in include_tags
+        ]
+        if include_exprs:
+            if include_match == "all":
+                where.extend([f"where {expr}" for expr in include_exprs])
+            else:
+                where.append(f"where ({' || '.join(include_exprs)})")
+        for tag in exclude_tags:
+            exclude_literal = tag.replace('"', '\\"')
+            where.append(f'where !("{exclude_literal}" in device.tagNames)')
+        query = "\n".join(
+            [
+                "foreach device in network.devices",
+                *where,
+                "select {name: device.name}",
+            ]
+        )
+        try:
+            rows = self.client.run_nqe_query(
+                query=query,
+                network_id=network_id,
+                snapshot_id=snapshot_id,
+                fetch_all=True,
+            )
+        except (ForwardClientError, ForwardConnectivityError, ForwardQueryError) as exc:
+            raise ForwardQueryError(
+                f"Forward device tag filter query failed: {exc}"
+            ) from exc
+        names = {
+            str(row.get("name") or "").strip()
+            for row in rows
+            if str(row.get("name") or "").strip()
+        }
+        self.logger.log_info(
+            f"Resolved device tag scope with {len(names)} devices "
+            f"(include={include_tags or ['-']}, include_match={include_match}, exclude={exclude_tags or ['-']}).",
+            obj=self.sync,
+        )
+        return names
 
     def run_preflight(
         self,
@@ -222,15 +358,15 @@ class ForwardQueryFetcher:
         context, row_limit, job = payload
         model_string, spec, coalesce_fields = job
         try:
-            preflight_rows = self.client.run_nqe_query(
-                query=spec.query,
-                query_id=spec.run_query_id,
-                commit_id=spec.commit_id,
-                network_id=context.network_id,
-                snapshot_id=context.snapshot_id,
+            preflight_rows = self._run_nqe_query_with_parameter_fallback(
+                spec=spec,
+                context=context,
                 parameters=spec.merged_parameters(context.query_parameters),
                 limit=row_limit,
                 fetch_all=False,
+            )
+            preflight_rows = self._apply_device_tag_scope(
+                model_string, preflight_rows, context
             )
             for row in preflight_rows:
                 validate_row_shape_for_model(model_string, row, coalesce_fields)
@@ -615,16 +751,14 @@ class ForwardQueryFetcher:
         context, row_limit, job = payload
         model_string, spec, coalesce_fields = job
         started = time.perf_counter()
-        rows = self.client.run_nqe_query(
-            query=spec.query,
-            query_id=spec.run_query_id,
-            commit_id=spec.commit_id,
-            network_id=context.network_id,
-            snapshot_id=context.snapshot_id,
+        rows = self._run_nqe_query_with_parameter_fallback(
+            spec=spec,
+            context=context,
             parameters=spec.merged_parameters(context.query_parameters),
             limit=row_limit,
             fetch_all=False,
         )
+        rows = self._apply_device_tag_scope(model_string, rows, context)
         self.validate_rows(model_string, rows, [], coalesce_fields)
         runtime_ms = round((time.perf_counter() - started) * 1000, 1)
         return ForwardModelResult(
@@ -752,17 +886,18 @@ class ForwardQueryFetcher:
                 diff_rows = []
                 for partition in column_filter_batches:
                     diff_rows.extend(
-                        self.client.run_nqe_diff(
-                            query_id=spec.run_query_id,
-                            commit_id=spec.commit_id,
-                            parameters=parameters,
+                        self._run_nqe_diff_without_parameters(
+                            spec=spec,
+                            context=context,
                             before_snapshot_id=baseline.snapshot_id,
-                            after_snapshot_id=context.snapshot_id,
                             column_filters=partition,
-                            fetch_all=True,
                         )
                     )
                 rows, delete_rows = runner._split_diff_rows(model_string, diff_rows)
+                rows = self._apply_device_tag_scope(model_string, rows, context)
+                delete_rows = self._apply_device_tag_scope(
+                    model_string, delete_rows, context
+                )
                 if shard_scope:
                     rows, delete_rows = self._filter_rows_to_shard(
                         model_string,
@@ -802,12 +937,9 @@ class ForwardQueryFetcher:
             rows = []
             for partition in column_filter_batches:
                 rows.extend(
-                    self.client.run_nqe_query(
-                        query=spec.query,
-                        query_id=spec.run_query_id,
-                        commit_id=spec.commit_id,
-                        network_id=context.network_id,
-                        snapshot_id=context.snapshot_id,
+                    self._run_nqe_query_with_parameter_fallback(
+                        spec=spec,
+                        context=context,
                         parameters=parameters,
                         column_filters=partition,
                         fetch_all=True,
@@ -821,12 +953,9 @@ class ForwardQueryFetcher:
                 f"{shard_scope['fetch_mode']}; falling back to full model fetch: {exc}",
                 obj=self.sync,
             )
-            rows = self.client.run_nqe_query(
-                query=spec.query,
-                query_id=spec.run_query_id,
-                commit_id=spec.commit_id,
-                network_id=context.network_id,
-                snapshot_id=context.snapshot_id,
+            rows = self._run_nqe_query_with_parameter_fallback(
+                spec=spec,
+                context=context,
                 parameters=parameters,
                 column_filters=None,
                 fetch_all=True,
@@ -839,7 +968,30 @@ class ForwardQueryFetcher:
                 coalesce_fields,
                 shard_scope,
             )
+        rows = self._apply_device_tag_scope(model_string, rows, context)
         return rows, [], "full"
+
+    def _apply_device_tag_scope(
+        self, model_string: str, rows: list[dict], context: ForwardQueryContext
+    ) -> list[dict]:
+        scoped_devices = context.scoped_device_names or set()
+        if not scoped_devices:
+            return rows
+        filtered = []
+        for row in rows:
+            row_devices = _row_device_names(model_string, row)
+            if not row_devices:
+                filtered.append(row)
+                continue
+            if row_devices.intersection(scoped_devices):
+                filtered.append(row)
+        removed = len(rows) - len(filtered)
+        if removed:
+            self.logger.log_info(
+                f"Applied device-tag scope to {model_string}: kept {len(filtered)}/{len(rows)} rows.",
+                obj=self.sync,
+            )
+        return filtered
 
     def _filter_rows_to_shard(
         self,
@@ -881,6 +1033,79 @@ class ForwardQueryFetcher:
             worker_limit = DEFAULT_QUERY_FETCH_CONCURRENCY
         worker_limit = max(1, min(MAX_QUERY_FETCH_CONCURRENCY, worker_limit))
         return max(1, min(worker_limit, int(job_count)))
+
+    def _supports_parameter_fallback_error(self, exc: Exception) -> bool:
+        message = str(exc)
+        unrecognized_parameters = (
+            "Unrecognized field" in message and "parameters" in message
+        )
+        return (
+            "does not take parameters" in message
+            or "Variable parameters not in scope" in message
+            or "Parameters were provided, but a main query does not take parameters"
+            in message
+            or unrecognized_parameters
+            or "not marked as ignorable" in message
+        )
+
+    def _run_nqe_query_with_parameter_fallback(
+        self,
+        *,
+        spec,
+        context: ForwardQueryContext,
+        parameters: dict[str, Any],
+        limit: int | None = None,
+        column_filters=None,
+        fetch_all: bool = False,
+    ):
+        try:
+            return self.client.run_nqe_query(
+                query=spec.query,
+                query_id=spec.run_query_id,
+                commit_id=spec.commit_id,
+                network_id=context.network_id,
+                snapshot_id=context.snapshot_id,
+                parameters=parameters,
+                limit=limit,
+                column_filters=column_filters,
+                fetch_all=fetch_all,
+            )
+        except (ForwardClientError, ForwardConnectivityError) as exc:
+            if not parameters or not self._supports_parameter_fallback_error(exc):
+                raise
+            self.logger.log_warning(
+                f"Forward query `{spec.execution_value}` rejected query parameters; retrying without parameters.",
+                obj=self.sync,
+            )
+            return self.client.run_nqe_query(
+                query=spec.query,
+                query_id=spec.run_query_id,
+                commit_id=spec.commit_id,
+                network_id=context.network_id,
+                snapshot_id=context.snapshot_id,
+                parameters={},
+                limit=limit,
+                column_filters=column_filters,
+                fetch_all=fetch_all,
+            )
+
+    def _run_nqe_diff_without_parameters(
+        self,
+        *,
+        spec,
+        context: ForwardQueryContext,
+        before_snapshot_id: str,
+        column_filters=None,
+    ):
+        return self.client.run_nqe_diff(
+            query_id=spec.run_query_id,
+            commit_id=spec.commit_id,
+            parameters={},
+            before_snapshot_id=before_snapshot_id,
+            after_snapshot_id=context.snapshot_id,
+            column_filters=column_filters,
+            fetch_all=True,
+        )
 
 
 def plan_item_model_result(

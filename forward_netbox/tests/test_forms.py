@@ -188,6 +188,36 @@ class ForwardSyncFormTest(TestCase):
         source = form.save()
         self.assertEqual(source.parameters["nqe_page_size"], 10000)
 
+    @patch("forward_netbox.forms.ForwardSource.validate_connection")
+    def test_source_form_persists_device_tag_scope(self, _mock_validate_connection):
+        form = ForwardSourceForm(
+            data={
+                "name": "source-3",
+                "type": ForwardSourceDeploymentChoices.SAAS,
+                "username": "user@example.com",
+                "password": "secret",
+                "network_id": "test-network",
+                "timeout": 1200,
+                "nqe_page_size": 10000,
+                "verify": True,
+                "device_tag_include_tags": ["DATACENTER", "CORE"],
+                "device_tag_include_match": "any",
+                "device_tag_exclude_tags": ["BRANCH"],
+                "device_tag_filter_mode": "query_parameters",
+            }
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+        source = form.save()
+        self.assertEqual(
+            source.parameters["device_tag_include_tags"], ["DATACENTER", "CORE"]
+        )
+        self.assertEqual(source.parameters["device_tag_include_match"], "any")
+        self.assertEqual(source.parameters["device_tag_exclude_tags"], ["BRANCH"])
+        self.assertEqual(
+            source.parameters["device_tag_filter_mode"], "query_parameters"
+        )
+
 
 class ForwardNQEMapFormTest(TestCase):
     def test_repository_path_uses_forward_query_selector(self):

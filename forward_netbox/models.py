@@ -183,6 +183,13 @@ class ForwardSource(ForwardPluginModelDocsMixin, JobsMixin, PrimaryModel):
             "timeout",
             "network_id",
             "nqe_page_size",
+            "query_fetch_concurrency",
+            "device_tag_include",
+            "device_tag_exclude",
+            "device_tag_include_tags",
+            "device_tag_exclude_tags",
+            "device_tag_include_match",
+            "device_tag_filter_mode",
         }
         parameters = {
             key: value
