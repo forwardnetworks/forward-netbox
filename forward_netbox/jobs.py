@@ -6,11 +6,13 @@ from core.choices import JobStatusChoices
 from core.exceptions import SyncError
 from core.models import Job
 from core.models import ObjectType
+from django.contrib.auth import get_user_model
 from netbox.context_managers import event_tracking
 from rq.timeouts import JobTimeoutException
 from utilities.datetime import local_now
 from utilities.request import NetBoxFakeRequest
 
+from .choices import ForwardExecutionStepStatusChoices
 from .choices import ForwardIngestionPhaseChoices
 from .choices import ForwardSyncStatusChoices
 from .exceptions import ForwardSyncError
@@ -22,6 +24,9 @@ from .utilities.execution_ledger import branch_run_state_from_execution_run
 from .utilities.execution_ledger import claim_ingestion_merge_step
 from .utilities.execution_ledger import claim_stage_step
 from .utilities.execution_ledger import execution_step_for_ingestion
+from .utilities.execution_ledger import latest_execution_run
+from .utilities.execution_ledger import mark_ingestion_step_merged
+from .utilities.execution_ledger import reconcile_execution_run
 from .utilities.execution_ledger import update_run_from_branch_state
 from .utilities.ingestion_merge import maybe_enqueue_next_branch_stage
 from .utilities.json_safe import json_safe_value
@@ -31,6 +36,15 @@ from .utilities.sync_state import get_branch_run_display_state
 from .utilities.validation import ForwardValidationRunner
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_request_user(*, sync, job=None):
+    if job is not None and getattr(job, "user", None) is not None:
+        return job.user
+    if getattr(sync, "user", None) is not None:
+        return sync.user
+    User = get_user_model()
+    return User.objects.filter(is_active=True, is_superuser=True).order_by("pk").first()
 
 
 def _normalize_job_log_level(level):
@@ -166,7 +180,7 @@ def sync_forwardsync(job, *args, **kwargs):
                         "POST": sync.parameters,
                         "GET": {},
                         "FILES": {},
-                        "user": sync.user,
+                        "user": _resolve_request_user(sync=sync, job=job),
                         "path": "",
                         "id": job.job_id,
                     }
@@ -212,13 +226,19 @@ def validate_forwardsync(job, *args, **kwargs):
 def merge_forwardingestion(job, remove_branch=True, *args, **kwargs):
     ingestion = ForwardIngestion.objects.get(pk=job.object_id)
     try:
+        run = active_execution_run(ingestion.sync) or latest_execution_run(
+            ingestion.sync
+        )
+        if run is not None:
+            reconcile_execution_run(run)
+            run.refresh_from_db()
         request = NetBoxFakeRequest(
             {
                 "META": {},
                 "POST": ingestion.sync.parameters,
                 "GET": {},
                 "FILES": {},
-                "user": ingestion.sync.user,
+                "user": _resolve_request_user(sync=ingestion.sync, job=job),
                 "path": "",
                 "id": job.job_id,
             }
@@ -232,6 +252,25 @@ def merge_forwardingestion(job, remove_branch=True, *args, **kwargs):
                 "skipping duplicate merge job.",
                 obj=ingestion,
             )
+            step = mark_ingestion_step_merged(
+                ingestion,
+                baseline_ready=bool(getattr(ingestion, "baseline_ready", False)),
+                merge_job=job if isinstance(job, Job) else None,
+            )
+            if step is not None:
+                ingestion.sync.logger.log_info(
+                    (
+                        "merge_queued -> merged "
+                        f"(job={getattr(job, 'pk', 'n/a')}, step={step.index})"
+                    ),
+                    obj=ingestion,
+                )
+            next_stage_job = maybe_enqueue_next_branch_stage(ingestion, job.user)
+            if next_stage_job is not None:
+                ingestion.sync.logger.log_info(
+                    f"Queued next stage step job {next_stage_job.pk} after merge completion.",
+                    obj=ingestion,
+                )
             safe_save_job_data(job, ingestion.sync)
             job.terminate()
             return
@@ -242,6 +281,15 @@ def merge_forwardingestion(job, remove_branch=True, *args, **kwargs):
                 "skipping duplicate merge job.",
                 obj=ingestion,
             )
+            if run is not None:
+                reconcile_execution_run(run)
+                run.refresh_from_db()
+            next_stage_job = maybe_enqueue_next_branch_stage(ingestion, job.user)
+            if next_stage_job is not None:
+                ingestion.sync.logger.log_info(
+                    f"Queued next stage step job {next_stage_job.pk} after merge reconciliation.",
+                    obj=ingestion,
+                )
             safe_save_job_data(job, ingestion.sync)
             job.terminate()
             return
@@ -251,6 +299,15 @@ def merge_forwardingestion(job, remove_branch=True, *args, **kwargs):
         ingestion.sync.logger = SyncLogging(job=job.pk)
         with event_tracking(request):
             ingestion.sync_merge(remove_branch=remove_branch)
+        step = execution_step_for_ingestion(ingestion)
+        if step is not None and step.status == ForwardExecutionStepStatusChoices.MERGED:
+            ingestion.sync.logger.log_info(
+                (
+                    "merge_queued -> merged "
+                    f"(job={getattr(job, 'pk', 'n/a')}, step={step.index})"
+                ),
+                obj=ingestion,
+            )
         maybe_enqueue_next_branch_stage(ingestion, job.user)
 
         safe_save_job_data(job, ingestion.sync)
@@ -318,19 +375,34 @@ def stage_forward_branch_item(job, *args, **kwargs):
         sync.logger = SyncLogging(job=job.pk)
         state = sync.get_branch_run_state()
         run = active_execution_run(sync)
+        if run is None:
+            run = latest_execution_run(sync)
+        if run is not None:
+            reconcile_execution_run(run)
+            run.refresh_from_db()
         if not state and run is not None:
             state = branch_run_state_from_execution_run(run)
         current_index = int(state.get("next_plan_index") or 1)
+        claimed_index = current_index
         if run is not None:
             claimed_step = claim_stage_step(sync, current_index, job)
             if claimed_step is None:
-                sync.logger.log_info(
-                    "Forward Branching shard is already complete or no longer claimable.",
-                    obj=sync,
-                )
-                safe_save_job_data(job, sync)
-                job.terminate()
-                return
+                # Reconcile once more and retry claim. This self-heals stale
+                # queued/running step rows left by worker restarts or abandoned jobs.
+                reconcile_execution_run(run)
+                run.refresh_from_db()
+                state = branch_run_state_from_execution_run(run)
+                current_index = int(state.get("next_plan_index") or current_index or 1)
+                claimed_step = claim_stage_step(sync, current_index, job)
+                if claimed_step is None:
+                    sync.logger.log_info(
+                        "Forward Branching shard is already complete or no longer claimable.",
+                        obj=sync,
+                    )
+                    safe_save_job_data(job, sync)
+                    job.terminate()
+                    return
+            claimed_index = int(claimed_step.index)
         executor = ForwardMultiBranchExecutor(
             sync,
             sync.source.get_client(),
@@ -339,7 +411,8 @@ def stage_forward_branch_item(job, *args, **kwargs):
             job=job,
         )
         executor.run_next_plan_item(
-            max_changes_per_branch=sync.get_max_changes_per_branch()
+            max_changes_per_branch=sync.get_max_changes_per_branch(),
+            expected_plan_index=claimed_index,
         )
         safe_save_job_data(job, sync)
         job.terminate()
