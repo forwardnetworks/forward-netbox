@@ -344,9 +344,25 @@ def get_display_parameters(
         )
     state = get_branch_run_display_state(sync)
     if state:
-        parameters["branch_run"] = build_branch_run_summary(state)
+        branch_run = build_branch_run_summary(state)
+        parameters["branch_run"] = _compact_display_branch_run(branch_run)
     parameters["models"] = enabled_models
     return parameters
+
+
+def _compact_display_branch_run(branch_run):
+    summary = dict(branch_run or {})
+    plan_items = summary.pop("plan_items", None)
+    if isinstance(plan_items, list):
+        summary["plan_items_count"] = len(plan_items)
+    preview = summary.get("plan_preview")
+    if isinstance(preview, dict) and len(preview) > 25:
+        summary["plan_preview"] = {
+            "planned_shards": preview.get("planned_shards"),
+            "planned_changes": preview.get("planned_changes"),
+            "truncated": True,
+        }
+    return summary
 
 
 def get_execution_summary(sync):
