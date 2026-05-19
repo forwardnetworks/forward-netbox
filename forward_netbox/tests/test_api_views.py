@@ -53,6 +53,17 @@ class ForwardSourceAPIViewTest(TestCase):
         view = ForwardSourceViewSet.as_view({"get": "available_networks"})
         return view(request)
 
+    @staticmethod
+    def _invoke_tags(request_user, params):
+        factory = APIRequestFactory()
+        request = factory.get(
+            "/api/plugins/forward/source/available-tags/",
+            params,
+        )
+        force_authenticate(request, user=request_user)
+        view = ForwardSourceViewSet.as_view({"get": "available_tags"})
+        return view(request)
+
     def test_available_networks_requires_forward_credentials(self):
         response = self._invoke(self.user, {"type": "saas"})
 
@@ -108,6 +119,39 @@ class ForwardSourceAPIViewTest(TestCase):
         self.assertIn(
             "Could not contact the Forward API endpoint",
             response.data["detail"],
+        )
+
+    def test_available_tags_requires_forward_credentials(self):
+        response = self._invoke_tags(self.user, {"type": "saas"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 0)
+        self.assertIn("Enter Forward username and password", response.data["detail"])
+
+    @patch("forward_netbox.api.views.ForwardSource.get_client")
+    def test_available_tags_returns_distinct_tags(self, mock_get_client):
+        mock_client = Mock()
+        mock_client.run_nqe_query.return_value = [
+            {"tagNames": ["Core", "Branch"]},
+            {"tagNames": ["Core", "Edge"]},
+        ]
+        mock_get_client.return_value = mock_client
+
+        response = self._invoke_tags(
+            self.user,
+            {
+                "type": "saas",
+                "username": "user@example.com",
+                "password": "secret",
+                "network_id": "net-1",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 3)
+        self.assertEqual(
+            [row["id"] for row in response.data["results"]],
+            ["Branch", "Core", "Edge"],
         )
 
 

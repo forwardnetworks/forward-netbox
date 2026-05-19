@@ -228,6 +228,125 @@ class ForwardSourceViewSet(NetBoxModelViewSet):
                 )
         return Response({"count": len(results), "results": results})
 
+    @action(detail=False, methods=["get"], url_path="available-tags")
+    def available_tags(self, request):
+        source = None
+        source_id = request.GET.get("source_id")
+        network_id = (request.GET.get("network_id") or "").strip()
+        if source_id:
+            try:
+                source = ForwardSource.objects.get(pk=source_id)
+            except (ForwardSource.DoesNotExist, TypeError, ValueError):
+                source = None
+
+        if source is None:
+            source_type = (
+                request.GET.get("type") or ForwardSource._meta.get_field("type").default
+            )
+            url = request.GET.get("url") or "https://fwd.app"
+            if source_type == "saas":
+                url = "https://fwd.app"
+                verify = True
+            else:
+                verify = str(request.GET.get("verify", "true")).lower() in {
+                    "1",
+                    "true",
+                    "yes",
+                    "on",
+                }
+            username = request.GET.get("username") or ""
+            password = request.GET.get("password") or ""
+            if username and password:
+                source = ForwardSource(
+                    type=source_type,
+                    url=url,
+                    parameters={
+                        "username": username,
+                        "password": password,
+                        "verify": verify,
+                        "network_id": network_id,
+                    },
+                )
+            else:
+                return Response(
+                    {
+                        "count": 0,
+                        "results": [],
+                        "detail": (
+                            "Enter Forward username and password so the plugin can "
+                            "load device tags."
+                        ),
+                    }
+                )
+        elif not network_id:
+            network_id = str((source.parameters or {}).get("network_id") or "").strip()
+
+        if not network_id:
+            return Response(
+                {
+                    "count": 0,
+                    "results": [],
+                    "detail": "Select a Forward network to load device tags.",
+                }
+            )
+
+        q = (request.GET.get("q") or "").strip().lower()
+        tag_set = set()
+        try:
+            rows = source.get_client().run_nqe_query(
+                query=(
+                    "foreach device in network.devices\n"
+                    "where device.snapshotInfo.result == DeviceSnapshotResult.completed\n"
+                    "where device.platform.vendor != Vendor.FORWARD_CUSTOM\n"
+                    "select {tagNames: device.tagNames}"
+                ),
+                network_id=network_id,
+                snapshot_id=LATEST_PROCESSED_SNAPSHOT,
+                fetch_all=True,
+            )
+            for row in rows:
+                for tag in row.get("tagNames") or []:
+                    candidate = str(tag or "").strip()
+                    if not candidate:
+                        continue
+                    if q and q not in candidate.lower():
+                        continue
+                    tag_set.add(candidate)
+        except ForwardSyncError as error:
+            message = str(error)
+            if isinstance(error, ForwardConnectivityError):
+                detail = (
+                    "Could not contact the Forward API endpoint. Check URL reachability, "
+                    "DNS/network connectivity, and whether Forward is reachable from this "
+                    "NetBox host."
+                )
+            elif (
+                "Forward API request failed with HTTP 401" in message
+                or "HTTP 403" in message
+            ):
+                detail = (
+                    "Could not authenticate to Forward. Verify username and password. "
+                    "For new Forward accounts, set the account password in the Forward "
+                    "web UI before using NetBox."
+                )
+            else:
+                detail = "Could not load device tags from this Forward account."
+            return Response({"count": 0, "results": [], "detail": detail})
+        except Exception:
+            return Response(
+                {
+                    "count": 0,
+                    "results": [],
+                    "detail": "Could not load device tags from this Forward account.",
+                }
+            )
+
+        results = [
+            {"id": tag, "name": tag, "display": tag}
+            for tag in sorted(tag_set, key=lambda value: value.lower())
+        ]
+        return Response({"count": len(results), "results": results})
+
 
 class ForwardNQEMapViewSet(NetBoxModelViewSet):
     queryset = ForwardNQEMap.objects.select_related("netbox_model")

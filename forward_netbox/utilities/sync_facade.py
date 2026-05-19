@@ -53,7 +53,38 @@ def get_maps(sync):
 
 
 def get_query_parameters(sync):
-    return {}
+    source_parameters = dict(
+        getattr(getattr(sync, "source", None), "parameters", {}) or {}
+    )
+    filter_mode = str(
+        source_parameters.get("device_tag_filter_mode") or "local"
+    ).strip()
+    if filter_mode != "query_parameters":
+        return {}
+    include_tags = source_parameters.get("device_tag_include_tags") or []
+    exclude_tags = source_parameters.get("device_tag_exclude_tags") or []
+    if not include_tags and source_parameters.get("device_tag_include"):
+        include_tags = [source_parameters.get("device_tag_include")]
+    if not exclude_tags and source_parameters.get("device_tag_exclude"):
+        exclude_tags = [source_parameters.get("device_tag_exclude")]
+    include_tags = [str(tag).strip() for tag in include_tags if str(tag).strip()]
+    exclude_tags = [str(tag).strip() for tag in exclude_tags if str(tag).strip()]
+    include_match = str(
+        source_parameters.get("device_tag_include_match") or "any"
+    ).strip()
+    if include_match not in {"any", "all"}:
+        include_match = "any"
+    query_parameters = {}
+    if len(include_tags) == 1:
+        query_parameters["device_tag_include"] = include_tags[0]
+    if len(exclude_tags) == 1:
+        query_parameters["device_tag_exclude"] = exclude_tags[0]
+    if include_tags:
+        query_parameters["device_tag_include_tags"] = include_tags
+        query_parameters["device_tag_include_match"] = include_match
+    if exclude_tags:
+        query_parameters["device_tag_exclude_tags"] = exclude_tags
+    return query_parameters
 
 
 def uses_multi_branch(sync):
