@@ -412,6 +412,63 @@ class ForwardJobsTest(TestCase):
         self.assertEqual(execution_run.next_step_index, 2)
         self.assertIsNone(job.terminated_status)
 
+    @patch("forward_netbox.utilities.multi_branch.ForwardMultiBranchExecutor")
+    @patch("forward_netbox.jobs.reconcile_execution_run")
+    @patch("forward_netbox.jobs.claim_stage_step")
+    def test_stage_forward_branch_item_retries_claim_after_reconcile(
+        self,
+        mock_claim_stage_step,
+        mock_reconcile,
+        mock_executor,
+    ):
+        class DummyJob:
+            pk = 59
+            object_id = self.sync.pk
+            user = None
+            job_id = "ledger-stage-retry-job"
+
+            def __init__(self):
+                self.data = None
+                self.log_entries = []
+                self.started = None
+                self.terminated_status = None
+
+            def start(self):
+                self.started = True
+
+            def terminate(self, status=None):
+                self.terminated_status = status
+
+            def save(self, update_fields=None):
+                self.saved_update_fields = update_fields
+
+        execution_run = ForwardExecutionRun.objects.create(
+            sync=self.sync,
+            source=self.source,
+            snapshot_selector="latestProcessed",
+            snapshot_id="snapshot-1",
+            total_steps=2,
+            next_step_index=2,
+            status="running",
+        )
+        step = ForwardExecutionStep.objects.create(
+            run=execution_run,
+            index=2,
+            status="pending",
+            model_string="dcim.device",
+            estimated_changes=2,
+        )
+        self.sync.clear_branch_run_state()
+        job = DummyJob()
+        mock_claim_stage_step.side_effect = [None, step]
+
+        stage_forward_branch_item(job)
+
+        self.assertEqual(mock_claim_stage_step.call_count, 2)
+        self.assertGreaterEqual(mock_reconcile.call_count, 2)
+        mock_executor.return_value.run_next_plan_item.assert_called_once()
+        self.assertIsNone(job.terminated_status)
+
     @patch("forward_netbox.utilities.resumable_branching.Job.enqueue")
     def test_enqueue_branch_stage_job_uses_ledger_without_branch_run_json(
         self,
@@ -515,6 +572,128 @@ class ForwardJobsTest(TestCase):
         self.assertEqual(step.status, ForwardExecutionStepStatusChoices.QUEUED)
         self.assertEqual(step.job_id, queued_job.pk)
 
+    @patch("forward_netbox.utilities.resumable_branching.Job.enqueue")
+    def test_enqueue_branch_stage_job_uses_latest_failed_ledger_without_branch_run_json(
+        self,
+        mock_enqueue,
+    ):
+        queued_job = Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=self.sync.pk,
+            name="queued shard job",
+            user=None,
+            status=JobStatusChoices.STATUS_PENDING,
+            job_id=uuid4(),
+            created=timezone.now(),
+            data={},
+        )
+        mock_enqueue.return_value = queued_job
+        execution_run = ForwardExecutionRun.objects.create(
+            sync=self.sync,
+            source=self.source,
+            snapshot_selector="latestProcessed",
+            snapshot_id="snapshot-1",
+            total_steps=2,
+            next_step_index=2,
+            status="failed",
+        )
+        ForwardExecutionStep.objects.create(
+            run=execution_run,
+            index=1,
+            status="merged",
+            model_string="dcim.site",
+            estimated_changes=1,
+        )
+        step = ForwardExecutionStep.objects.create(
+            run=execution_run,
+            index=2,
+            status="pending",
+            model_string="dcim.device",
+            estimated_changes=2,
+        )
+        self.sync.clear_branch_run_state()
+
+        job = enqueue_branch_stage_job(self.sync, user=None, adhoc=True)
+
+        self.assertEqual(job, queued_job)
+        step.refresh_from_db()
+        execution_run.refresh_from_db()
+        self.assertEqual(step.status, ForwardExecutionStepStatusChoices.QUEUED)
+        self.assertEqual(step.job_id, queued_job.pk)
+        self.assertEqual(execution_run.status, "running")
+
+    @patch("forward_netbox.utilities.resumable_branching.Job.enqueue")
+    def test_enqueue_branch_stage_job_skips_when_another_stage_is_running(
+        self, mock_enqueue
+    ):
+        execution_run = ForwardExecutionRun.objects.create(
+            sync=self.sync,
+            source=self.source,
+            snapshot_selector="latestProcessed",
+            snapshot_id="snapshot-1",
+            total_steps=3,
+            next_step_index=2,
+            status="running",
+        )
+        ForwardExecutionStep.objects.create(
+            run=execution_run,
+            index=1,
+            status="merged",
+            model_string="dcim.site",
+            estimated_changes=1,
+        )
+        ForwardExecutionStep.objects.create(
+            run=execution_run,
+            index=2,
+            status="running",
+            model_string="dcim.device",
+            estimated_changes=2,
+        )
+        self.sync.clear_branch_run_state()
+
+        job = enqueue_branch_stage_job(self.sync, user=None, adhoc=True)
+
+        self.assertIsNone(job)
+        mock_enqueue.assert_not_called()
+
+    @patch("forward_netbox.utilities.resumable_branching.Job.enqueue")
+    def test_enqueue_branch_stage_job_reuses_existing_queued_step_job(
+        self, mock_enqueue
+    ):
+        execution_run = ForwardExecutionRun.objects.create(
+            sync=self.sync,
+            source=self.source,
+            snapshot_selector="latestProcessed",
+            snapshot_id="snapshot-1",
+            total_steps=2,
+            next_step_index=2,
+            status="running",
+        )
+        existing_job = Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=self.sync.pk,
+            name="existing queued stage job",
+            user=None,
+            status=JobStatusChoices.STATUS_PENDING,
+            job_id=uuid4(),
+            created=timezone.now(),
+            data={},
+        )
+        ForwardExecutionStep.objects.create(
+            run=execution_run,
+            index=2,
+            status="queued",
+            model_string="dcim.device",
+            estimated_changes=2,
+            job=existing_job,
+        )
+        self.sync.clear_branch_run_state()
+
+        job = enqueue_branch_stage_job(self.sync, user=None, adhoc=True)
+
+        self.assertEqual(job, existing_job)
+        mock_enqueue.assert_not_called()
+
     def test_merge_forwardingestion_skips_duplicate_merge_without_branch(self):
         class DummyJob:
             pk = 56
@@ -551,6 +730,83 @@ class ForwardJobsTest(TestCase):
         self.assertEqual(
             job.data["logs"][0][4],
             "Forward ingestion branch is already merged or no longer present; skipping duplicate merge job.",
+        )
+
+    @patch("forward_netbox.utilities.ingestion_merge.enqueue_branch_stage_job")
+    def test_merge_forwardingestion_reconciles_completed_merge_queued_step_without_branch(
+        self, mock_enqueue_stage
+    ):
+        class DummyJob:
+            pk = 156
+            object_id = self.ingestion.pk
+            user = None
+            job_id = "duplicate-merge-finish-job"
+
+            def __init__(self):
+                self.data = None
+                self.log_entries = []
+                self.started = None
+                self.terminated_status = None
+
+            def start(self):
+                self.started = True
+
+            def terminate(self, status=None):
+                self.terminated_status = status
+
+            def save(self, update_fields=None):
+                self.saved_update_fields = update_fields
+
+        self.sync.auto_merge = True
+        self.sync.save(update_fields=["auto_merge"])
+        execution_run = ForwardExecutionRun.objects.create(
+            sync=self.sync,
+            source=self.source,
+            snapshot_selector="latestProcessed",
+            snapshot_id="snapshot-1",
+            total_steps=2,
+            next_step_index=1,
+            auto_merge=True,
+            status="running",
+        )
+        prior_merge_job = Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardIngestion),
+            object_id=self.ingestion.pk,
+            name="prior merge",
+            user=None,
+            status=JobStatusChoices.STATUS_COMPLETED,
+            job_id=uuid4(),
+            created=timezone.now(),
+            completed=timezone.now(),
+            data={},
+        )
+        step = ForwardExecutionStep.objects.create(
+            run=execution_run,
+            index=1,
+            status=ForwardExecutionStepStatusChoices.MERGE_QUEUED,
+            model_string="dcim.site",
+            ingestion=self.ingestion,
+            merge_job=prior_merge_job,
+        )
+        job = DummyJob()
+        queued_job = SimpleNamespace(pk=999)
+        mock_enqueue_stage.return_value = queued_job
+
+        with patch("forward_netbox.utilities.merge.merge_branch") as mock_merge:
+            merge_forwardingestion(job)
+
+        mock_merge.assert_not_called()
+        step.refresh_from_db()
+        execution_run.refresh_from_db()
+        self.assertEqual(step.status, ForwardExecutionStepStatusChoices.MERGED)
+        self.assertEqual(execution_run.next_step_index, 2)
+        mock_enqueue_stage.assert_called_once()
+        messages = [entry[4] for entry in job.data["logs"]]
+        self.assertTrue(
+            any("merge_queued -> merged" in message for message in messages)
+        )
+        self.assertTrue(
+            any("Queued next stage step job 999" in message for message in messages)
         )
 
     def test_merge_forwardingestion_skips_merge_claimed_by_unfinished_step(self):
@@ -694,3 +950,36 @@ class ForwardJobsTest(TestCase):
             ).count(),
             1,
         )
+
+    def test_merge_forwardingestion_uses_job_user_when_sync_user_missing(self):
+        branch = Branch.objects.create(
+            name=f"merge-user-{uuid4().hex[:12]}",
+            schema_id=f"merge_user_{uuid4().hex[:12]}",
+        )
+        self.ingestion.branch = branch
+        self.ingestion.save(update_fields=["branch"])
+        self.sync.user = None
+        self.sync.save(update_fields=["user"])
+        user = get_user_model().objects.create_user(
+            username=f"merge-user-{uuid4().hex[:12]}"
+        )
+        job = Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardIngestion),
+            object_id=self.ingestion.pk,
+            name="merge user fallback job",
+            user=user,
+            status=JobStatusChoices.STATUS_PENDING,
+            job_id=uuid4(),
+            created=timezone.now(),
+            data={},
+        )
+
+        def _assert_request_user(*args, **kwargs):
+            request = current_request.get()
+            assert request is not None
+            assert request.user == user
+
+        with patch.object(
+            ForwardIngestion, "sync_merge", side_effect=_assert_request_user
+        ):
+            merge_forwardingestion(job)

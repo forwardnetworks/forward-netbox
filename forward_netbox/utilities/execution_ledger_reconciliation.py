@@ -22,6 +22,13 @@ def reconcile_execution_run(run, *, update_run_from_branch_state_fn):
         changed = False
         old_status = step.status
         reason = ""
+        if (
+            step.status == ForwardExecutionStepStatusChoices.PENDING
+            and step.job_id is not None
+        ):
+            step.job = None
+            changed = True
+            reason = "cleared_stale_pending_job_binding"
         if _stage_step_stale_without_branch(step, now):
             step.status = ForwardExecutionStepStatusChoices.FAILED
             step.last_error = step.last_error or (
@@ -82,6 +89,9 @@ def reconcile_execution_run(run, *, update_run_from_branch_state_fn):
                 elif step.ingestion_id:
                     step.status = ForwardExecutionStepStatusChoices.STAGED
                     reason = "stage_job_completed"
+                else:
+                    step.status = ForwardExecutionStepStatusChoices.PENDING
+                    reason = "stage_job_completed_without_ingestion"
                 step.completed = step.completed or job.completed
                 step.heartbeat = timezone.now()
                 changed = True
@@ -102,16 +112,28 @@ def reconcile_execution_run(run, *, update_run_from_branch_state_fn):
                 )
                 changed = True
                 reason = reason or "failed_step_missing_error"
+        if (
+            step.status == ForwardExecutionStepStatusChoices.PENDING
+            and step.job_id is not None
+        ):
+            step.job = None
+            changed = True
+            reason = reason or "cleared_stale_pending_job_binding"
         if changed:
             step.save()
             updated_steps += 1
             messages.append(f"Updated step {step.index} to {step.status}.")
             events.append(_reconciliation_step_event(step, old_status, reason))
 
+    updated_steps += _normalize_inflight_stage_steps(run, events)
+
     run.sync.refresh_from_db()
     before = run.as_support_summary()
     refreshed = update_run_from_branch_state_fn(run.sync)
     run.refresh_from_db()
+    updated_run = False
+    if _enforce_monotonic_next_step_index(run):
+        updated_run = True
     if (
         not run.steps.exclude(
             status__in=[
@@ -132,7 +154,11 @@ def reconcile_execution_run(run, *, update_run_from_branch_state_fn):
         events.append(_reconciliation_run_event(run, "marked_completed"))
 
     after = run.as_support_summary()
-    updated_run = bool(refreshed) and before != after
+    if _align_run_with_active_step(run):
+        run.refresh_from_db()
+        after = run.as_support_summary()
+        updated_run = True
+    updated_run = updated_run or (bool(refreshed) and before != after)
     if events:
         _append_reconciliation_events(run, events)
     return {
@@ -141,6 +167,167 @@ def reconcile_execution_run(run, *, update_run_from_branch_state_fn):
         "updated_run": updated_run,
         "messages": messages,
     }
+
+
+def _normalize_inflight_stage_steps(run, events):
+    now = timezone.now()
+    updated = 0
+    stage_steps = list(
+        run.steps.filter(kind=ForwardExecutionStepKindChoices.STAGE).order_by("index")
+    )
+    inflight = [
+        step
+        for step in stage_steps
+        if step.status
+        in {
+            ForwardExecutionStepStatusChoices.QUEUED,
+            ForwardExecutionStepStatusChoices.RUNNING,
+            ForwardExecutionStepStatusChoices.MERGE_QUEUED,
+        }
+    ]
+    if len(inflight) <= 1:
+        return 0
+
+    merged_max = max(
+        [
+            int(step.index)
+            for step in stage_steps
+            if step.status
+            in {
+                ForwardExecutionStepStatusChoices.MERGED,
+                ForwardExecutionStepStatusChoices.SKIPPED,
+                ForwardExecutionStepStatusChoices.CANCELLED,
+            }
+        ]
+        or [0]
+    )
+    floor_index = max(int(run.next_step_index or 1), merged_max + 1)
+    keep = min(
+        inflight,
+        key=lambda step: (
+            0 if step.status == ForwardExecutionStepStatusChoices.RUNNING else 1,
+            0 if int(step.index) >= int(floor_index) else 1,
+            int(step.index),
+        ),
+    )
+    for step in inflight:
+        if step.pk == keep.pk:
+            continue
+        old_status = step.status
+        if step.status == ForwardExecutionStepStatusChoices.MERGE_QUEUED:
+            step.status = ForwardExecutionStepStatusChoices.MERGE_TIMEOUT
+            step.last_error = step.last_error or (
+                "Reconciled duplicate merge_queued step; requeue merge for this shard."
+            )
+        else:
+            step.status = ForwardExecutionStepStatusChoices.PENDING
+            step.last_error = step.last_error or (
+                "Reconciled duplicate queued/running stage step; this shard was "
+                "reset to pending."
+            )
+            if step.job_id is not None:
+                step.job = None
+        step.completed = step.completed or now
+        step.heartbeat = now
+        step.save()
+        updated += 1
+        events.append(
+            _reconciliation_step_event(step, old_status, "duplicate_inflight_step")
+        )
+    return updated
+
+
+def _enforce_monotonic_next_step_index(run):
+    merged_max = (
+        run.steps.filter(
+            kind=ForwardExecutionStepKindChoices.STAGE,
+            status__in=[
+                ForwardExecutionStepStatusChoices.MERGED,
+                ForwardExecutionStepStatusChoices.SKIPPED,
+                ForwardExecutionStepStatusChoices.CANCELLED,
+            ],
+        )
+        .order_by("-index")
+        .values_list("index", flat=True)
+        .first()
+        or 0
+    )
+    min_next = int(merged_max) + 1
+    current = int(run.next_step_index or 1)
+    if current >= min_next:
+        return False
+    run.next_step_index = min_next
+    run.latest_heartbeat = timezone.now()
+    run.save(update_fields=["next_step_index", "latest_heartbeat", "updated"])
+    return True
+
+
+def _align_run_with_active_step(run):
+    active_step = (
+        run.steps.filter(
+            kind=ForwardExecutionStepKindChoices.STAGE,
+            status__in=[
+                ForwardExecutionStepStatusChoices.RUNNING,
+                ForwardExecutionStepStatusChoices.QUEUED,
+                ForwardExecutionStepStatusChoices.MERGE_QUEUED,
+            ],
+        )
+        .order_by("index")
+        .first()
+    )
+    if active_step is None:
+        return False
+    desired_index = int(active_step.index)
+    desired_phase = (
+        "queued_merge"
+        if active_step.status == ForwardExecutionStepStatusChoices.MERGE_QUEUED
+        else (
+            "staging"
+            if active_step.status == ForwardExecutionStepStatusChoices.RUNNING
+            else "queued"
+        )
+    )
+    total = int(run.total_steps or 0)
+    if desired_phase == "queued_merge":
+        desired_message = (
+            f"Queued merge for shard {desired_index}/{total}."
+            if total
+            else f"Queued merge for shard {desired_index}."
+        )
+    elif desired_phase == "staging":
+        desired_message = (
+            f"Applying shard {desired_index}/{total}."
+            if total
+            else f"Applying shard {desired_index}."
+        )
+    else:
+        desired_message = (
+            f"Queued shard {desired_index}/{total} for Branching execution."
+            if total
+            else f"Queued shard {desired_index} for Branching execution."
+        )
+    changed = False
+    if int(run.next_step_index or 1) != desired_index:
+        run.next_step_index = desired_index
+        changed = True
+    if run.phase != desired_phase:
+        run.phase = desired_phase
+        changed = True
+    if (run.phase_message or "") != desired_message:
+        run.phase_message = desired_message
+        changed = True
+    if changed:
+        run.latest_heartbeat = timezone.now()
+        run.save(
+            update_fields=[
+                "next_step_index",
+                "phase",
+                "phase_message",
+                "latest_heartbeat",
+                "updated",
+            ]
+        )
+    return changed
 
 
 def current_retryable_step(run):
