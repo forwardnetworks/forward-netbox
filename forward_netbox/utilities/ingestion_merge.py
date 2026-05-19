@@ -13,10 +13,12 @@ from ..choices import ForwardSourceStatusChoices
 from ..choices import ForwardSyncStatusChoices
 from .execution_ledger import branch_run_state_from_execution_run
 from .execution_ledger import execution_step_for_ingestion
+from .execution_ledger import latest_execution_run
 from .execution_ledger import mark_ingestion_step_merged
 from .execution_ledger import mark_run_completed
 from .resumable_branching import enqueue_branch_stage_job
 from .resumable_branching import update_plan_item_state
+from .sync_state import has_pending_branch_run
 
 try:
     from dcim.signals import sync_cached_scope_fields
@@ -104,7 +106,14 @@ def sync_merge_ingestion(ingestion, *, mark_baseline_ready=None, remove_branch=T
             forwardsync.clear_branch_run_state()
         if remove_branch:
             ingestion._cleanup_merged_branch()
-        if ledger_step and not ledger_is_final and ledger_step.run.auto_merge:
+        active_run = latest_execution_run(forwardsync)
+        has_more_planned_steps = bool(
+            active_run
+            and bool(active_run.auto_merge)
+            and int(active_run.total_steps or 0) > 0
+            and int(active_run.next_step_index or 1) <= int(active_run.total_steps)
+        )
+        if has_more_planned_steps or has_pending_branch_run(forwardsync):
             forwardsync.status = ForwardSyncStatusChoices.SYNCING
         else:
             forwardsync.status = ForwardSyncStatusChoices.COMPLETED
@@ -148,6 +157,8 @@ def maybe_enqueue_next_branch_stage(ingestion, user):
     if not state or not state.get("auto_merge"):
         ledger_step = execution_step_for_ingestion(ingestion)
         ledger_run = ledger_step.run if ledger_step is not None else None
+        if not state and ledger_run is None:
+            ledger_run = latest_execution_run(sync)
         if not state and ledger_run is not None and ledger_run.auto_merge:
             state = branch_run_state_from_execution_run(ledger_run)
         else:
