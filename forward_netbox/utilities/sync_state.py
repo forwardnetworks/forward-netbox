@@ -478,6 +478,15 @@ def get_advisory_summary(sync):
 
 
 def get_sync_activity(sync):
+    run = _latest_execution_run(sync)
+    if run is not None and _should_reconcile_for_activity(run):
+        try:
+            from .execution_ledger import reconcile_execution_run
+
+            reconcile_execution_run(run)
+        except Exception:
+            # Activity rendering should never hard-fail on reconciliation.
+            pass
     state = get_branch_run_display_state(sync)
     progress_message = state.get("last_progress_message") or ""
     if not progress_message and state.get("current_model_string"):
@@ -523,3 +532,44 @@ def get_job_logs(job):
     if job.data:
         return job.data
     return cache.get(f"forward_sync_{job.pk}") or {}
+
+
+def _should_reconcile_for_activity(run):
+    try:
+        from ..choices import ForwardExecutionStepKindChoices
+        from ..choices import ForwardExecutionStepStatusChoices
+        from .execution_ledger import TERMINAL_RUN_STATUSES
+
+        if run.status in TERMINAL_RUN_STATUSES:
+            return False
+        step_qs = run.steps.filter(kind=ForwardExecutionStepKindChoices.STAGE)
+        inflight = step_qs.filter(
+            status__in=[
+                ForwardExecutionStepStatusChoices.QUEUED,
+                ForwardExecutionStepStatusChoices.RUNNING,
+                ForwardExecutionStepStatusChoices.MERGE_QUEUED,
+            ]
+        )
+        if inflight.count() > 1:
+            return True
+        running = inflight.filter(
+            status=ForwardExecutionStepStatusChoices.RUNNING
+        ).first()
+        if (
+            running is not None
+            and running.job_id
+            and getattr(running.job, "completed", None)
+        ):
+            return True
+        queued = inflight.filter(
+            status=ForwardExecutionStepStatusChoices.QUEUED
+        ).first()
+        if (
+            queued is not None
+            and queued.job_id
+            and getattr(queued.job, "completed", None)
+        ):
+            return True
+    except Exception:
+        return False
+    return False

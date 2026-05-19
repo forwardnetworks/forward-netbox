@@ -322,35 +322,66 @@ class ForwardMultiBranchExecutor:
         self,
         *,
         max_changes_per_branch=DEFAULT_MAX_CHANGES_PER_BRANCH,
+        expected_plan_index=None,
     ):
         self.max_changes_per_branch = max_changes_per_branch
         state = self.sync.get_branch_run_state()
         run = active_execution_run(self.sync)
         if not state and run is not None:
             state = branch_run_state_from_execution_run(run)
-        next_plan_index = int(
+        state_next_plan_index = int(
             state.get("next_plan_index")
             or (run.next_step_index if run is not None else 1)
             or 1
         )
+        next_plan_index = int(expected_plan_index or state_next_plan_index)
+        if expected_plan_index is not None and int(expected_plan_index) != int(
+            state_next_plan_index
+        ):
+            self.logger.log_warning(
+                (
+                    "Claimed shard index does not match run state; "
+                    f"executing claimed shard {int(expected_plan_index)} "
+                    f"instead of state index {int(state_next_plan_index)}."
+                ),
+                obj=self.sync,
+            )
         persisted_item = self._persisted_plan_item(next_plan_index)
         model_strings = (
             [persisted_item["model"]]
             if persisted_item and persisted_item.get("model")
             else None
         )
-        context, plan, plan_preview, next_plan_index, model_change_density = (
+        context, plan, plan_preview, loaded_plan_index, model_change_density = (
             self._load_execution_context(
                 max_changes_per_branch=max_changes_per_branch,
                 model_strings=model_strings,
                 shard_scope=persisted_item,
             )
         )
+        next_plan_index = int(loaded_plan_index or next_plan_index or 1)
+        if expected_plan_index is not None and int(expected_plan_index) != int(
+            next_plan_index
+        ):
+            self.logger.log_warning(
+                (
+                    "Execution context returned a different shard index than claimed; "
+                    f"executing claimed shard {int(expected_plan_index)} "
+                    f"instead of loaded index {int(next_plan_index)}."
+                ),
+                obj=self.sync,
+            )
+            next_plan_index = int(expected_plan_index)
         self.model_change_density = model_change_density
         total_plan_items = int(state.get("total_plan_items") or len(plan))
         full_plan_preview = state.get("plan_preview") or plan_preview
         item = self._select_plan_item(plan, persisted_item, next_plan_index)
         if item is None:
+            if expected_plan_index is not None:
+                raise SyncError(
+                    "Unable to resolve execution shard for claimed index "
+                    f"{int(expected_plan_index)}."
+                )
             self.sync.clear_branch_run_state()
             mark_run_completed(self.sync, baseline_ready=True)
             self.sync.status = ForwardSyncStatusChoices.COMPLETED
