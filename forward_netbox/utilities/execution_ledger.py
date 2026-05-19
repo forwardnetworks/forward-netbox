@@ -573,12 +573,19 @@ def update_run_from_branch_state(sync):
     return _update_run_from_branch_state_impl(sync)
 
 
+def _active_or_latest_execution_run(sync):
+    run = active_execution_run(sync)
+    if run is None:
+        run = latest_execution_run(sync)
+    return run
+
+
 def update_step_from_plan_item(sync, index, **updates):
     return _update_step_from_plan_item_impl(
         sync,
         index,
         terminal_stage_statuses=TERMINAL_STAGE_STATUSES,
-        active_execution_run_fn=active_execution_run,
+        active_execution_run_fn=_active_or_latest_execution_run,
         **updates,
     )
 
@@ -597,7 +604,7 @@ def touch_execution_step_progress(
         shard_index=shard_index,
         row_count=row_count,
         row_total=row_total,
-        active_execution_run_fn=active_execution_run,
+        active_execution_run_fn=_active_or_latest_execution_run,
     )
 
 
@@ -607,7 +614,7 @@ def claim_stage_step(sync, index, job):
         index,
         job,
         claimable_stage_statuses=CLAIMABLE_STAGE_STATUSES,
-        active_execution_run_fn=active_execution_run,
+        active_execution_run_fn=_active_or_latest_execution_run,
     )
 
 

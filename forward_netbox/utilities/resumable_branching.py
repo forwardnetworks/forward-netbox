@@ -7,6 +7,7 @@ from ..choices import ForwardSyncStatusChoices
 from .branch_budget import shard_fetch_contract
 from .execution_ledger import active_execution_run
 from .execution_ledger import branch_run_state_from_execution_run
+from .execution_ledger import latest_execution_run
 from .execution_ledger import update_step_from_plan_item
 
 
@@ -99,11 +100,13 @@ def update_plan_item_state(sync, index, **updates):
         sync.set_branch_run_state(state)
         update_step_from_plan_item(sync, index, **updates)
         return True
-    return update_step_from_plan_item(sync, index, **updates)
+    return False
 
 
 def enqueue_branch_stage_job(sync, *, user=None, adhoc=True):
     run = active_execution_run(sync)
+    if run is None:
+        run = latest_execution_run(sync)
     state = (
         branch_run_state_from_execution_run(run)
         if run is not None
@@ -111,6 +114,35 @@ def enqueue_branch_stage_job(sync, *, user=None, adhoc=True):
     )
     next_plan_index = int(state.get("next_plan_index") or 1)
     total_plan_items = int(state.get("total_plan_items") or 0)
+    if run is not None:
+        from ..choices import ForwardExecutionStepStatusChoices
+
+        running_step = (
+            run.steps.filter(
+                kind="stage",
+                status=ForwardExecutionStepStatusChoices.RUNNING,
+            )
+            .order_by("index")
+            .first()
+        )
+        if running_step is not None:
+            # A shard is already in flight; don't enqueue another one.
+            return None
+        existing_inflight = (
+            run.steps.filter(
+                kind="stage",
+                index=next_plan_index,
+                status__in=[
+                    ForwardExecutionStepStatusChoices.QUEUED,
+                    ForwardExecutionStepStatusChoices.RUNNING,
+                ],
+            )
+            .order_by("index")
+            .first()
+        )
+        if existing_inflight is not None:
+            # Avoid duplicate queue jobs for same index.
+            return getattr(existing_inflight, "job", None)
     sync.status = ForwardSyncStatusChoices.QUEUED
     sync.__class__.objects.filter(pk=sync.pk).update(status=sync.status)
     job = Job.enqueue(
