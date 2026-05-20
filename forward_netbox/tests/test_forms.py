@@ -2,6 +2,7 @@ from unittest.mock import patch
 
 from django.conf import settings
 from django.contrib.contenttypes.models import ContentType
+from django.http import QueryDict
 from django.test import override_settings
 from django.test import TestCase
 
@@ -219,6 +220,59 @@ class ForwardSyncFormTest(TestCase):
             source.parameters["device_tag_filter_mode"], "query_parameters"
         )
         self.assertTrue(source.parameters["device_tag_prune_out_of_scope"])
+
+    @patch("forward_netbox.forms.ForwardSource.validate_connection")
+    def test_source_form_accepts_scalar_tag_widget_payloads(
+        self, _mock_validate_connection
+    ):
+        form = ForwardSourceForm(
+            data={
+                "name": "source-4",
+                "type": ForwardSourceDeploymentChoices.SAAS,
+                "username": "user@example.com",
+                "password": "secret",
+                "network_id": "test-network",
+                "timeout": 1200,
+                "nqe_page_size": 10000,
+                "verify": True,
+                "device_tag_include_tags": "Prod_Core",
+                "device_tag_include_match": "any",
+                "device_tag_exclude_tags": "Branch",
+            }
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+        source = form.save()
+        self.assertEqual(source.parameters["device_tag_include_tags"], ["Prod_Core"])
+        self.assertEqual(source.parameters["device_tag_exclude_tags"], ["Branch"])
+
+    @patch("forward_netbox.forms.ForwardSource.validate_connection")
+    def test_source_form_accepts_bracketed_multi_select_payloads(
+        self, _mock_validate_connection
+    ):
+        payload = QueryDict("", mutable=True)
+        payload.update(
+            {
+                "name": "source-5",
+                "type": ForwardSourceDeploymentChoices.SAAS,
+                "username": "user@example.com",
+                "password": "secret",
+                "network_id": "test-network",
+                "timeout": "1200",
+                "nqe_page_size": "10000",
+                "verify": "on",
+                "device_tag_include_match": "any",
+            }
+        )
+        payload.setlist("device_tag_include_tags[]", ["Prod_Core"])
+        payload.setlist("device_tag_exclude_tags[]", ["Branch"])
+
+        form = ForwardSourceForm(data=payload)
+
+        self.assertTrue(form.is_valid(), form.errors)
+        source = form.save()
+        self.assertEqual(source.parameters["device_tag_include_tags"], ["Prod_Core"])
+        self.assertEqual(source.parameters["device_tag_exclude_tags"], ["Branch"])
 
 
 class ForwardNQEMapFormTest(TestCase):
