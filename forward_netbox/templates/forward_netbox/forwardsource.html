@@ -59,6 +59,50 @@
         </table>
       </div>
     </div>
+    <div class="card mt-3">
+      <h5 class="card-header">{% trans "Tag Scope Preview" %}</h5>
+      <div class="card-body">
+        {% if tag_scope_preview.enabled %}
+          <table class="table table-hover attr-table">
+            <tr>
+              <th scope="row">{% trans "Network" %}</th>
+              <td>{{ tag_scope_preview.network_id|placeholder }}</td>
+            </tr>
+            <tr>
+              <th scope="row">{% trans "Include Tags" %}</th>
+              <td>{{ tag_scope_preview.include_tags|join:", "|placeholder }}</td>
+            </tr>
+            <tr>
+              <th scope="row">{% trans "Include Match" %}</th>
+              <td>{{ tag_scope_preview.include_match|capfirst }}</td>
+            </tr>
+            <tr>
+              <th scope="row">{% trans "Exclude Tags" %}</th>
+              <td>{{ tag_scope_preview.exclude_tags|join:", "|placeholder }}</td>
+            </tr>
+            <tr>
+              <th scope="row">{% trans "Total Devices" %}</th>
+              <td>{{ tag_scope_preview.total_devices|placeholder }}</td>
+            </tr>
+            <tr>
+              <th scope="row">{% trans "Matched Devices" %}</th>
+              <td>{{ tag_scope_preview.matched_devices|placeholder }}</td>
+            </tr>
+            <tr>
+              <th scope="row">{% trans "Excluded by Scope" %}</th>
+              <td>{{ tag_scope_preview.excluded_devices|placeholder }}</td>
+            </tr>
+          </table>
+          {% if tag_scope_preview.error %}
+            <div class="alert alert-warning mb-0">
+              {{ tag_scope_preview.error }}
+            </div>
+          {% endif %}
+        {% else %}
+          <span class="text-muted">{% trans "No include/exclude tags configured for this source." %}</span>
+        {% endif %}
+      </div>
+    </div>
     <div class="card">
       {% include 'extras/inc/configcontext_data.html' with title="Parameters" data=masked_parameters format="json" copyid="forward-source-parameters" %}
     </div>

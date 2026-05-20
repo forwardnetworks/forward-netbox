@@ -106,6 +106,54 @@ class ForwardSyncModelTest(TestCase):
             "`nqe_page_size` must be between 1 and 10000.", str(ctx.exception)
         )
 
+    @patch("forward_netbox.models.ForwardSource.get_client")
+    def test_source_tag_scope_preview_reports_counts(self, mock_get_client):
+        self.source.parameters.update(
+            {
+                "device_tag_include_tags": ["N.Patel"],
+                "device_tag_exclude_tags": ["Branch"],
+                "device_tag_include_match": "any",
+            }
+        )
+        self.source.save(update_fields=["parameters"])
+
+        client = Mock()
+        client.get_latest_processed_snapshot.return_value = {"id": "snap-1"}
+        client.run_nqe_query.side_effect = [
+            [
+                {"name": "dev-a"},
+                {"name": "dev-b"},
+                {"name": "dev-c"},
+            ],
+            [
+                {"name": "dev-a"},
+                {"name": "dev-c"},
+            ],
+        ]
+        mock_get_client.return_value = client
+
+        preview = self.source.get_tag_scope_preview()
+        self.assertTrue(preview["enabled"])
+        self.assertEqual(preview["total_devices"], 3)
+        self.assertEqual(preview["matched_devices"], 2)
+        self.assertEqual(preview["excluded_devices"], 1)
+        self.assertEqual(preview["error"], "")
+
+    @patch("forward_netbox.models.ForwardSource.get_client")
+    def test_source_tag_scope_preview_returns_error_when_snapshot_missing(
+        self, mock_get_client
+    ):
+        self.source.parameters.update({"device_tag_include_tags": ["N.Patel"]})
+        self.source.save(update_fields=["parameters"])
+
+        client = Mock()
+        client.get_latest_processed_snapshot.return_value = {"id": ""}
+        mock_get_client.return_value = client
+
+        preview = self.source.get_tag_scope_preview()
+        self.assertTrue(preview["enabled"])
+        self.assertIn("No processed snapshot", preview["error"])
+
     def test_sync_rejects_query_overrides_parameter(self):
         sync = ForwardSync(
             name="sync-1",
