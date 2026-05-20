@@ -5658,7 +5658,9 @@ class ForwardSyncRunnerTest(TestCase):
             {"name": "site-only-row"},
         ]
 
-        filtered = fetcher._apply_device_tag_scope("dcim.interface", rows, context)
+        filtered, removed = fetcher._apply_device_tag_scope(
+            "dcim.interface", rows, context
+        )
 
         self.assertEqual(
             filtered,
@@ -5666,6 +5668,47 @@ class ForwardSyncRunnerTest(TestCase):
                 {"device": "core-1", "name": "Ethernet1"},
                 {"name": "site-only-row"},
             ],
+        )
+        self.assertEqual(removed, [{"device": "branch-1", "name": "Ethernet1"}])
+
+    def test_fetch_spec_rows_prunes_out_of_scope_rows_into_deletes(self):
+        fetcher = ForwardQueryFetcher(
+            sync=self.sync,
+            client=Mock(),
+            logger_=Mock(),
+        )
+        spec = Mock(
+            run_query_id=None,
+            execution_value="raw",
+            merged_parameters=Mock(return_value={}),
+        )
+        context = ForwardQueryContext(
+            network_id="test-network",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-after",
+            scoped_device_names={"core-1"},
+            device_tag_prune_out_of_scope=True,
+        )
+        fetcher._run_nqe_query_with_parameter_fallback = Mock(
+            return_value=[
+                {"device": "core-1", "name": "Ethernet1"},
+                {"device": "branch-1", "name": "Ethernet1"},
+            ]
+        )
+
+        rows, delete_rows, sync_mode = fetcher._fetch_spec_rows(
+            "dcim.interface",
+            spec,
+            baseline=None,
+            context=context,
+            coalesce_fields=[["device", "name"]],
+        )
+
+        self.assertEqual(sync_mode, "full")
+        self.assertEqual(rows, [{"device": "core-1", "name": "Ethernet1"}])
+        self.assertEqual(
+            delete_rows,
+            [{"device": "branch-1", "name": "Ethernet1"}],
         )
 
     def test_run_records_issue_when_rows_miss_required_identity_fields(self):
