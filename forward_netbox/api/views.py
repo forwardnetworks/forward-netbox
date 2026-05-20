@@ -293,7 +293,22 @@ class ForwardSourceViewSet(NetBoxModelViewSet):
         q = (request.GET.get("q") or "").strip().lower()
         tag_set = set()
         try:
-            rows = source.get_client().run_nqe_query(
+            client = source.get_client()
+            snapshot = client.get_latest_processed_snapshot(network_id)
+            snapshot_id = str(snapshot.get("id") or "").strip()
+            if not snapshot_id:
+                return Response(
+                    {
+                        "count": 0,
+                        "results": [],
+                        "detail": (
+                            "Could not determine a processed snapshot for this "
+                            "Forward network."
+                        ),
+                    }
+                )
+
+            rows = client.run_nqe_query(
                 query=(
                     "foreach device in network.devices\n"
                     "where device.snapshotInfo.result == DeviceSnapshotResult.completed\n"
@@ -301,7 +316,7 @@ class ForwardSourceViewSet(NetBoxModelViewSet):
                     "select {tagNames: device.tagNames}"
                 ),
                 network_id=network_id,
-                snapshot_id=LATEST_PROCESSED_SNAPSHOT,
+                snapshot_id=snapshot_id,
                 fetch_all=True,
             )
             for row in rows:
