@@ -296,6 +296,26 @@ class ForwardQueryFetcher:
         for tag in exclude_tags:
             exclude_literal = tag.replace('"', '\\"')
             where.append(f'where !("{exclude_literal}" in device.tagNames)')
+        base_query = "\n".join(
+            [
+                "foreach device in network.devices",
+                "where device.snapshotInfo.result == DeviceSnapshotResult.completed",
+                "where device.platform.vendor != Vendor.FORWARD_CUSTOM",
+                "select {name: device.name}",
+            ]
+        )
+        total_rows = self.client.run_nqe_query(
+            query=base_query,
+            network_id=network_id,
+            snapshot_id=snapshot_id,
+            fetch_all=True,
+        )
+        total_names = {
+            str(row.get("name") or "").strip()
+            for row in total_rows
+            if str(row.get("name") or "").strip()
+        }
+
         query = "\n".join(
             [
                 "foreach device in network.devices",
@@ -320,7 +340,9 @@ class ForwardQueryFetcher:
             if str(row.get("name") or "").strip()
         }
         self.logger.log_info(
-            f"Resolved device tag scope with {len(names)} devices "
+            f"Resolved device tag scope with {len(names)} matched devices "
+            f"out of {len(total_names)} total "
+            f"(excluded={max(len(total_names) - len(names), 0)}) "
             f"(include={include_tags or ['-']}, include_match={include_match}, exclude={exclude_tags or ['-']}).",
             obj=self.sync,
         )
