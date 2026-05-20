@@ -204,6 +204,7 @@ class ForwardSyncFormTest(TestCase):
                 "device_tag_include_match": "any",
                 "device_tag_exclude_tags": ["BRANCH"],
                 "device_tag_filter_mode": "query_parameters",
+                "device_tag_prune_out_of_scope": True,
             }
         )
 
@@ -217,6 +218,7 @@ class ForwardSyncFormTest(TestCase):
         self.assertEqual(
             source.parameters["device_tag_filter_mode"], "query_parameters"
         )
+        self.assertTrue(source.parameters["device_tag_prune_out_of_scope"])
 
 
 class ForwardNQEMapFormTest(TestCase):
