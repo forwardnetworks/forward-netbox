@@ -287,7 +287,10 @@ class ForwardSourceView(generic.ObjectView):
     template_name = "forward_netbox/forwardsource.html"
 
     def get_extra_context(self, request, instance):
-        return {"masked_parameters": instance.get_masked_parameters()}
+        return {
+            "masked_parameters": instance.get_masked_parameters(),
+            "tag_scope_preview": instance.get_tag_scope_preview(),
+        }
 
 
 @register_model_view(ForwardSource, "delete")
