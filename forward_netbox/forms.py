@@ -101,18 +101,17 @@ FORWARD_NQE_BULK_QUERY_OPERATION_CHOICES = (
 )
 
 
+class FlexibleMultipleChoiceField(forms.MultipleChoiceField):
+    """Accept scalar widget payloads and coerce them into list form."""
+
+    def to_python(self, value):
+        if isinstance(value, str):
+            value = [value]
+        return super().to_python(value)
+
+
 class ForwardSourceForm(NetBoxModelForm):
     comments = CommentField()
-
-    @staticmethod
-    def _normalize_tag_values(value):
-        if not value:
-            return []
-        if isinstance(value, str):
-            return [part.strip() for part in value.split(",") if part.strip()]
-        if isinstance(value, (list, tuple)):
-            return [str(part).strip() for part in value if str(part).strip()]
-        return [str(value).strip()] if str(value).strip() else []
 
     class Meta:
         model = ForwardSource
@@ -127,6 +126,30 @@ class ForwardSourceForm(NetBoxModelForm):
         widgets = {
             "type": HTMXSelect(),
         }
+
+    @staticmethod
+    def _normalize_tag_values(value):
+        if not value:
+            return []
+        if isinstance(value, str):
+            return [part.strip() for part in value.split(",") if part.strip()]
+        if isinstance(value, (list, tuple)):
+            return [str(part).strip() for part in value if str(part).strip()]
+        return [str(value).strip()] if str(value).strip() else []
+
+    def _bound_tag_values(self, field_name):
+        if not self.is_bound:
+            return []
+        if hasattr(self.data, "getlist"):
+            values = self.data.getlist(field_name) or self.data.getlist(
+                f"{field_name}[]"
+            )
+            if values:
+                return values
+            scalar = self.data.get(field_name) or self.data.get(f"{field_name}[]")
+            return self._normalize_tag_values(scalar)
+        raw = self.data.get(field_name) or self.data.get(f"{field_name}[]")
+        return self._normalize_tag_values(raw)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -197,7 +220,7 @@ class ForwardSourceForm(NetBoxModelForm):
             widget=APISelect(api_url="/api/plugins/forward/source/available-networks/"),
             help_text="Forward network used as the default for syncs using this source.",
         )
-        self.fields["device_tag_include_tags"] = forms.MultipleChoiceField(
+        self.fields["device_tag_include_tags"] = FlexibleMultipleChoiceField(
             required=False,
             choices=(),
             widget=APISelect(api_url="/api/plugins/forward/source/available-tags/"),
@@ -206,7 +229,7 @@ class ForwardSourceForm(NetBoxModelForm):
                 "Optional Forward device tags. Devices must match the selected include logic."
             ),
         )
-        self.fields["device_tag_exclude_tags"] = forms.MultipleChoiceField(
+        self.fields["device_tag_exclude_tags"] = FlexibleMultipleChoiceField(
             required=False,
             choices=(),
             widget=APISelect(api_url="/api/plugins/forward/source/available-tags/"),
@@ -315,18 +338,8 @@ class ForwardSourceForm(NetBoxModelForm):
         include_bound = []
         exclude_bound = []
         if self.is_bound:
-            if hasattr(self.data, "getlist"):
-                include_bound = self.data.getlist("device_tag_include_tags")
-                exclude_bound = self.data.getlist("device_tag_exclude_tags")
-            else:
-                include_raw = self.data.get("device_tag_include_tags")
-                exclude_raw = self.data.get("device_tag_exclude_tags")
-                include_bound = (
-                    include_raw if isinstance(include_raw, list) else include_raw or []
-                )
-                exclude_bound = (
-                    exclude_raw if isinstance(exclude_raw, list) else exclude_raw or []
-                )
+            include_bound = self._bound_tag_values("device_tag_include_tags")
+            exclude_bound = self._bound_tag_values("device_tag_exclude_tags")
         include_initial = (
             include_bound
             if self.is_bound
@@ -430,6 +443,14 @@ class ForwardSourceForm(NetBoxModelForm):
         exclude_tags = self._normalize_tag_values(
             cleaned.get("device_tag_exclude_tags")
         )
+        if not include_tags:
+            include_tags = self._normalize_tag_values(
+                self._bound_tag_values("device_tag_include_tags")
+            )
+        if not exclude_tags:
+            exclude_tags = self._normalize_tag_values(
+                self._bound_tag_values("device_tag_exclude_tags")
+            )
         candidate_parameters = {
             "username": username,
             "password": password,
@@ -520,6 +541,14 @@ class ForwardSourceForm(NetBoxModelForm):
         exclude_tags = self._normalize_tag_values(
             self.cleaned_data.get("device_tag_exclude_tags")
         )
+        if not include_tags:
+            include_tags = self._normalize_tag_values(
+                self._bound_tag_values("device_tag_include_tags")
+            )
+        if not exclude_tags:
+            exclude_tags = self._normalize_tag_values(
+                self._bound_tag_values("device_tag_exclude_tags")
+            )
         self.instance.parameters = {
             "username": self.cleaned_data.get("username")
             or existing_parameters.get("username")
