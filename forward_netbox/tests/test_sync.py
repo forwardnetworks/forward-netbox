@@ -21,6 +21,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
+from django.db.models.deletion import ProtectedError
 from django.test import override_settings
 from django.test import TestCase
 from extras.models import Tag
@@ -90,6 +91,7 @@ from forward_netbox.utilities.sync_facade import enqueue_sync_job
 from forward_netbox.utilities.sync_facade import (
     get_query_parameters as facade_get_query_parameters,
 )
+from forward_netbox.utilities.sync_primitives import delete_by_coalesce
 from forward_netbox.utilities.sync_state import get_branch_run_display_state
 
 
@@ -5977,6 +5979,26 @@ class ForwardSyncRunnerTest(TestCase):
         runner.logger.increment_statistics.assert_any_call(
             "dcim.site", outcome="applied"
         )
+
+    def test_delete_by_coalesce_maps_protected_error_to_dependency_skip(self):
+        class _DummyModel:
+            class _meta:
+                label_lower = "dcim.device"
+
+        class _DummyObject:
+            def delete(self):
+                raise ProtectedError("blocked", set())
+
+        runner = Mock()
+        with patch(
+            "forward_netbox.utilities.sync_primitives.get_unique_or_raise",
+            return_value=_DummyObject(),
+        ):
+            with self.assertRaises(ForwardDependencySkipError) as exc:
+                delete_by_coalesce(runner, _DummyModel, [{"name": "device-1"}])
+
+        self.assertEqual(exc.exception.model_string, "dcim.device")
+        self.assertEqual(exc.exception.context, {"name": "device-1"})
 
     def test_apply_model_rows_marks_handler_false_as_skipped(self):
         logger = Mock()
