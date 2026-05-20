@@ -239,6 +239,14 @@ class ForwardSourceForm(NetBoxModelForm):
                 "your Forward query IDs support device_tag_include/device_tag_exclude."
             ),
         )
+        self.fields["device_tag_prune_out_of_scope"] = forms.BooleanField(
+            required=False,
+            label="Prune Out-of-Scope Rows",
+            help_text=(
+                "When enabled, rows excluded by device-tag scope are treated as delete "
+                "candidates during full query execution."
+            ),
+        )
         _configure_api_select(
             self.fields["network_id"].widget,
             {
@@ -349,6 +357,9 @@ class ForwardSourceForm(NetBoxModelForm):
         self.fields["device_tag_filter_mode"].initial = (
             parameters.get("device_tag_filter_mode") or "local"
         )
+        self.fields["device_tag_prune_out_of_scope"].initial = bool(
+            parameters.get("device_tag_prune_out_of_scope")
+        )
 
         if self.source_type == ForwardSourceDeploymentChoices.SAAS:
             self.fields["url"].initial = "https://fwd.app"
@@ -367,6 +378,7 @@ class ForwardSourceForm(NetBoxModelForm):
                     "device_tag_include_match",
                     "device_tag_exclude_tags",
                     "device_tag_filter_mode",
+                    "device_tag_prune_out_of_scope",
                     name="Parameters",
                 )
             )
@@ -384,6 +396,7 @@ class ForwardSourceForm(NetBoxModelForm):
                     "device_tag_include_match",
                     "device_tag_exclude_tags",
                     "device_tag_filter_mode",
+                    "device_tag_prune_out_of_scope",
                     name="Parameters",
                 )
             )
@@ -444,6 +457,9 @@ class ForwardSourceForm(NetBoxModelForm):
             "device_tag_exclude": exclude_tags[0] if len(exclude_tags) == 1 else "",
             "device_tag_filter_mode": (
                 cleaned.get("device_tag_filter_mode") or "local"
+            ),
+            "device_tag_prune_out_of_scope": bool(
+                cleaned.get("device_tag_prune_out_of_scope")
             ),
         }
         self.instance.type = source_type
@@ -535,6 +551,9 @@ class ForwardSourceForm(NetBoxModelForm):
             "device_tag_exclude": exclude_tags[0] if len(exclude_tags) == 1 else "",
             "device_tag_filter_mode": (
                 self.cleaned_data.get("device_tag_filter_mode") or "local"
+            ),
+            "device_tag_prune_out_of_scope": bool(
+                self.cleaned_data.get("device_tag_prune_out_of_scope")
             ),
         }
         self.instance.status = ForwardSourceStatusChoices.NEW
