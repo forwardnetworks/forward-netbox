@@ -58,6 +58,7 @@ class ForwardQueryContext:
     device_tag_include_tags: list[str] = field(default_factory=list)
     device_tag_exclude_tags: list[str] = field(default_factory=list)
     device_tag_include_match: str = "any"
+    device_tag_prune_out_of_scope: bool = False
     scoped_device_names: set[str] = field(default_factory=set)
 
     def as_dict(self) -> dict[str, Any]:
@@ -73,6 +74,7 @@ class ForwardQueryContext:
             "device_tag_include_tags": self.device_tag_include_tags,
             "device_tag_exclude_tags": self.device_tag_exclude_tags,
             "device_tag_include_match": self.device_tag_include_match,
+            "device_tag_prune_out_of_scope": self.device_tag_prune_out_of_scope,
             "scoped_device_count": len(self.scoped_device_names),
         }
 
@@ -237,6 +239,9 @@ class ForwardQueryFetcher:
         ).strip()
         if include_match not in {"any", "all"}:
             include_match = "any"
+        prune_out_of_scope = bool(
+            source_parameters.get("device_tag_prune_out_of_scope")
+        )
         scoped_device_names = self._resolve_scoped_device_names(
             network_id=network_id,
             snapshot_id=snapshot_id,
@@ -261,6 +266,7 @@ class ForwardQueryFetcher:
             device_tag_include_tags=include_tags,
             device_tag_exclude_tags=exclude_tags,
             device_tag_include_match=include_match,
+            device_tag_prune_out_of_scope=prune_out_of_scope,
             scoped_device_names=scoped_device_names,
         )
 
@@ -365,7 +371,7 @@ class ForwardQueryFetcher:
                 limit=row_limit,
                 fetch_all=False,
             )
-            preflight_rows = self._apply_device_tag_scope(
+            preflight_rows, _ = self._apply_device_tag_scope(
                 model_string, preflight_rows, context
             )
             for row in preflight_rows:
@@ -758,7 +764,7 @@ class ForwardQueryFetcher:
             limit=row_limit,
             fetch_all=False,
         )
-        rows = self._apply_device_tag_scope(model_string, rows, context)
+        rows, _ = self._apply_device_tag_scope(model_string, rows, context)
         self.validate_rows(model_string, rows, [], coalesce_fields)
         runtime_ms = round((time.perf_counter() - started) * 1000, 1)
         return ForwardModelResult(
@@ -881,7 +887,18 @@ class ForwardQueryFetcher:
                     obj=self.sync,
                 )
 
-        if baseline is not None and spec.run_query_id:
+        if (
+            baseline is not None
+            and spec.run_query_id
+            and context.device_tag_prune_out_of_scope
+            and context.scoped_device_names
+        ):
+            self.logger.log_info(
+                f"Tag prune mode enabled for {model_string}; running full query execution "
+                "to compute out-of-scope deletions.",
+                obj=self.sync,
+            )
+        elif baseline is not None and spec.run_query_id:
             try:
                 diff_rows = []
                 for partition in column_filter_batches:
@@ -894,8 +911,8 @@ class ForwardQueryFetcher:
                         )
                     )
                 rows, delete_rows = runner._split_diff_rows(model_string, diff_rows)
-                rows = self._apply_device_tag_scope(model_string, rows, context)
-                delete_rows = self._apply_device_tag_scope(
+                rows, _ = self._apply_device_tag_scope(model_string, rows, context)
+                delete_rows, _ = self._apply_device_tag_scope(
                     model_string, delete_rows, context
                 )
                 if shard_scope:
@@ -968,16 +985,20 @@ class ForwardQueryFetcher:
                 coalesce_fields,
                 shard_scope,
             )
-        rows = self._apply_device_tag_scope(model_string, rows, context)
-        return rows, [], "full"
+        filtered_rows, removed_rows = self._apply_device_tag_scope(
+            model_string, rows, context
+        )
+        delete_rows = removed_rows if context.device_tag_prune_out_of_scope else []
+        return filtered_rows, delete_rows, "full"
 
     def _apply_device_tag_scope(
         self, model_string: str, rows: list[dict], context: ForwardQueryContext
-    ) -> list[dict]:
+    ) -> tuple[list[dict], list[dict]]:
         scoped_devices = context.scoped_device_names or set()
         if not scoped_devices:
-            return rows
+            return rows, []
         filtered = []
+        removed = []
         for row in rows:
             row_devices = _row_device_names(model_string, row)
             if not row_devices:
@@ -985,13 +1006,15 @@ class ForwardQueryFetcher:
                 continue
             if row_devices.intersection(scoped_devices):
                 filtered.append(row)
-        removed = len(rows) - len(filtered)
-        if removed:
+                continue
+            removed.append(row)
+        removed_count = len(removed)
+        if removed_count:
             self.logger.log_info(
                 f"Applied device-tag scope to {model_string}: kept {len(filtered)}/{len(rows)} rows.",
                 obj=self.sync,
             )
-        return filtered
+        return filtered, removed
 
     def _filter_rows_to_shard(
         self,
