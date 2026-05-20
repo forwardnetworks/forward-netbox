@@ -190,6 +190,7 @@ class ForwardSource(ForwardPluginModelDocsMixin, JobsMixin, PrimaryModel):
             "device_tag_exclude_tags",
             "device_tag_include_match",
             "device_tag_filter_mode",
+            "device_tag_prune_out_of_scope",
         }
         parameters = {
             key: value
