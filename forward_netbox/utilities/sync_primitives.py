@@ -1,5 +1,7 @@
 from django.db import IntegrityError
+from django.db.models.deletion import ProtectedError
 
+from ..exceptions import ForwardDependencySkipError
 from ..exceptions import ForwardSearchError
 
 
@@ -166,7 +168,14 @@ def delete_by_coalesce(runner, model, lookups):
     for lookup in lookups:
         obj = get_unique_or_raise(runner, model, lookup)
         if obj is not None:
-            obj.delete()
+            try:
+                obj.delete()
+            except ProtectedError as exc:
+                raise ForwardDependencySkipError(
+                    f"Skipping delete for `{model._meta.label_lower}` due to protected dependencies: {exc}",
+                    model_string=model._meta.label_lower,
+                    context=lookup,
+                ) from exc
             return True
     return False
 
