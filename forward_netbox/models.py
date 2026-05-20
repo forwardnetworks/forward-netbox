@@ -32,6 +32,7 @@ from .choices import ForwardSourceDeploymentChoices
 from .choices import ForwardSourceStatusChoices
 from .choices import ForwardSyncStatusChoices
 from .choices import ForwardValidationStatusChoices
+from .exceptions import ForwardQueryError
 from .exceptions import ForwardSyncError
 from .utilities.branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
 from .utilities.forward_api import ForwardClient
@@ -217,6 +218,103 @@ class ForwardSource(ForwardPluginModelDocsMixin, JobsMixin, PrimaryModel):
             raise ForwardSyncError(
                 f"Network {network_id} is not available to this Forward user."
             )
+
+    def get_tag_scope_preview(self):
+        parameters = dict(self.parameters or {})
+        network_id = str(parameters.get("network_id") or "").strip()
+        include_tags = parameters.get("device_tag_include_tags") or []
+        exclude_tags = parameters.get("device_tag_exclude_tags") or []
+        include_match = str(parameters.get("device_tag_include_match") or "any")
+        if include_match not in {"any", "all"}:
+            include_match = "any"
+
+        include_tags = [str(tag).strip() for tag in include_tags if str(tag).strip()]
+        exclude_tags = [str(tag).strip() for tag in exclude_tags if str(tag).strip()]
+
+        preview = {
+            "enabled": bool(include_tags or exclude_tags),
+            "network_id": network_id,
+            "include_tags": include_tags,
+            "exclude_tags": exclude_tags,
+            "include_match": include_match,
+            "total_devices": None,
+            "matched_devices": None,
+            "excluded_devices": None,
+            "error": "",
+        }
+        if not preview["enabled"] or not network_id:
+            return preview
+
+        try:
+            client = self.get_client()
+            snapshot = client.get_latest_processed_snapshot(network_id)
+            snapshot_id = str(snapshot.get("id") or "").strip()
+            if not snapshot_id:
+                preview["error"] = (
+                    "No processed snapshot is available for the configured network."
+                )
+                return preview
+
+            base_where = (
+                "where device.snapshotInfo.result == DeviceSnapshotResult.completed\n"
+                "where device.platform.vendor != Vendor.FORWARD_CUSTOM\n"
+            )
+            total_rows = client.run_nqe_query(
+                query=(
+                    "foreach device in network.devices\n"
+                    f"{base_where}"
+                    "select {name: device.name}"
+                ),
+                network_id=network_id,
+                snapshot_id=snapshot_id,
+                fetch_all=True,
+            )
+            total_devices = {
+                str(row.get("name") or "").strip()
+                for row in total_rows
+                if str(row.get("name") or "").strip()
+            }
+
+            where_clauses = []
+            include_exprs = [
+                f'"{tag.replace("\"", "\\\"")}" in device.tagNames'
+                for tag in include_tags
+            ]
+            if include_exprs:
+                if include_match == "all":
+                    where_clauses.extend([f"where {expr}" for expr in include_exprs])
+                else:
+                    where_clauses.append(f"where ({' || '.join(include_exprs)})")
+            for tag in exclude_tags:
+                escaped = tag.replace('"', '\\"')
+                where_clauses.append(f'where !("{escaped}" in device.tagNames)')
+
+            scoped_rows = client.run_nqe_query(
+                query=(
+                    "foreach device in network.devices\n"
+                    f"{base_where}"
+                    + ("\n".join(where_clauses) + "\n" if where_clauses else "")
+                    + "select {name: device.name}"
+                ),
+                network_id=network_id,
+                snapshot_id=snapshot_id,
+                fetch_all=True,
+            )
+            matched_devices = {
+                str(row.get("name") or "").strip()
+                for row in scoped_rows
+                if str(row.get("name") or "").strip()
+            }
+
+            preview["total_devices"] = len(total_devices)
+            preview["matched_devices"] = len(matched_devices)
+            preview["excluded_devices"] = max(
+                len(total_devices) - len(matched_devices), 0
+            )
+            return preview
+        except (ForwardSyncError, ForwardQueryError, Exception) as exc:
+            preview["error"] = str(exc)
+            return preview
 
 
 class ForwardNQEMap(ForwardPluginModelDocsMixin, ChangeLoggedModel):
