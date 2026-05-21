@@ -962,6 +962,7 @@ class ForwardIngestionLogView(LoginRequiredMixin, View):
         data["merge_job_results"] = ingestion.get_job_logs(ingestion.merge_job)
         data["active_stage"] = active_stage
         data["merge_disabled"] = not ingestion.merge_job
+        data["execution_state"] = get_execution_display_state(ingestion.sync)
         data["export_logs_url"] = reverse(
             "plugins:forward_netbox:forwardingestion_export_logs",
             kwargs={"pk": ingestion.pk},
@@ -1010,6 +1011,7 @@ class ForwardIngestionProgressView(LoginRequiredMixin, View):
         data["merge_job"] = ingestion.merge_job
         data["active_stage"] = active_stage
         data["merge_disabled"] = not ingestion.merge_job
+        data["execution_state"] = get_execution_display_state(ingestion.sync)
         return render(request, self.template_name, data)
 
 
@@ -1028,6 +1030,7 @@ class ForwardIngestionView(generic.ObjectView):
         data["merge_job_results"] = instance.get_job_logs(instance.merge_job)
         data["active_stage"] = active_stage
         data["merge_disabled"] = not instance.merge_job
+        data["execution_state"] = get_execution_display_state(instance.sync)
         data["export_logs_url"] = reverse(
             "plugins:forward_netbox:forwardingestion_export_logs",
             kwargs={"pk": instance.pk},
