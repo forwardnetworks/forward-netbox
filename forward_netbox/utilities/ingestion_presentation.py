@@ -171,7 +171,13 @@ def get_statistics(ingestion, stage="sync"):
     for model_string, stats in raw_stats.items():
         total = stats.get("total", 0)
         if total:
-            statistics[model_string] = stats.get("current", 0) / total * 100
+            current = max(0, int(stats.get("current", 0) or 0))
+            total = max(0, int(total or 0))
+            if total:
+                # Clamp visualization to 100% so oversized intermediate accounting
+                # (for example cascading delete operations) does not render as
+                # runaway progress in the UI.
+                statistics[model_string] = min(current, total) / total * 100
     if not getattr(ingestion, "num_created", 0):
         ingestion.num_created = ingestion.created_change_count
     if not getattr(ingestion, "num_updated", 0):
