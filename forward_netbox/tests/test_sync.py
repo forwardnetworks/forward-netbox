@@ -59,6 +59,7 @@ from forward_netbox.utilities.branch_budget import BranchWorkload
 from forward_netbox.utilities.branch_budget import build_branch_plan
 from forward_netbox.utilities.branch_budget import build_branch_plan_with_density
 from forward_netbox.utilities.branch_budget import effective_row_budget_for_model
+from forward_netbox.utilities.branch_budget import effective_workload_row_budget
 from forward_netbox.utilities.branch_budget import row_shard_key
 from forward_netbox.utilities.branch_budget import shard_fetch_capability_for_model
 from forward_netbox.utilities.branch_budget import shard_fetch_contract
@@ -462,6 +463,46 @@ class ForwardBranchBudgetPlanTest(TestCase):
         self.assertEqual(len(default_plan), 2)
         self.assertEqual(len(density_plan), 4)
         self.assertTrue(all(item.estimated_changes <= 3 for item in density_plan))
+
+    def test_delete_heavy_device_workload_uses_conservative_row_budget(self):
+        workload = BranchWorkload(
+            model_string="dcim.device",
+            label="devices",
+            delete_rows=[{"name": f"device-{index}"} for index in range(2000)],
+            coalesce_fields=[["name"]],
+        )
+
+        budget = effective_workload_row_budget(
+            workload,
+            max_changes_per_branch=10000,
+            model_change_density={},
+        )
+        plan = build_branch_plan_with_density(
+            [workload],
+            max_changes_per_branch=10000,
+            model_change_density={},
+        )
+
+        self.assertEqual(budget, 833)
+        self.assertGreater(len(plan), 1)
+        self.assertTrue(all(item.estimated_changes <= budget for item in plan))
+        self.assertEqual(sum(item.estimated_changes for item in plan), 2000)
+
+    def test_device_upsert_workload_keeps_normal_row_budget(self):
+        workload = BranchWorkload(
+            model_string="dcim.device",
+            label="devices",
+            upsert_rows=[{"name": f"device-{index}"} for index in range(2000)],
+            coalesce_fields=[["name"]],
+        )
+
+        budget = effective_workload_row_budget(
+            workload,
+            max_changes_per_branch=10000,
+            model_change_density={},
+        )
+
+        self.assertEqual(budget, 10000)
 
 
 class ForwardMultiBranchPlannerPreflightTest(TestCase):
@@ -2181,6 +2222,27 @@ class ForwardMultiBranchExecutorAdaptiveSplitTest(TestCase):
 
         self.assertGreater(len(split_items), 1)
         self.assertTrue(all(part.estimated_changes <= 1 for part in split_items))
+
+    def test_split_overflow_item_uses_delete_heavy_row_budget(self):
+        workload = BranchWorkload(
+            model_string="dcim.device",
+            label="dcim.device | Forward Devices",
+            delete_rows=[{"name": f"device-{index}"} for index in range(2000)],
+            coalesce_fields=[["name"]],
+        )
+        item = build_branch_plan([workload], max_changes_per_branch=5000)[0]
+        executor = ForwardMultiBranchExecutor(
+            sync=self.sync,
+            client=Mock(),
+            logger_=Mock(),
+        )
+        executor.max_changes_per_branch = 10000
+        executor.model_change_density = {}
+
+        split_items = executor._split_overflow_item(item)
+
+        self.assertGreater(len(split_items), 1)
+        self.assertTrue(all(part.estimated_changes <= 833 for part in split_items))
 
     @override_settings(RQ_DEFAULT_TIMEOUT=300)
     def test_load_execution_context_warns_for_large_plan_with_short_worker_timeout(
