@@ -23,6 +23,7 @@ Prevent delete-heavy Branching shards from exceeding NetBox branch-change guidan
 2. Add delete-sensitive row-budget estimation for models where delete rows are known to expand into many NetBox changes.
 3. Apply the same budget rule during initial planning and adaptive retry re-splitting.
 4. Cover the behavior with focused branch-budget tests.
+5. Use a conservative `dcim.device` delete expansion factor because live tag-prune evidence showed 12x still allowed a shard to exceed 10k native branch changes.
 
 ## Validation
 
@@ -39,3 +40,4 @@ Remove the delete-sensitive workload budget helper and return `build_branch_plan
 - Rejected display-only correction because the reported shard still exceeded branch-change guidance after UI clamping.
 - Rejected hard-capping all `dcim.device` shards because it would slow normal device upsert imports unnecessarily.
 - Chose workload-sensitive budgeting so delete-heavy cleanup runs get smaller shards while normal upsert runs keep current behavior.
+- Raised the default `dcim.device` delete expansion factor to 20x after live evidence showed a 12x assumption still produced an 11,957-change shard.
