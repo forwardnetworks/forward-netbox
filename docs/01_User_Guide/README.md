@@ -12,26 +12,27 @@ Install the plugin package, enable the required plugins, run the migrations, and
 Install the wheel from GitHub Releases into the same Python environment as NetBox:
 
 ```bash
-pip install /path/to/forward_netbox-0.9.4.4-py3-none-any.whl
+pip install /path/to/forward_netbox-0.9.4.5-py3-none-any.whl
 ```
 
 Alternatively, install directly from the GitHub source archive:
 
 ```bash
-pip install /path/to/forward_netbox-0.9.4.4.tar.gz
+pip install /path/to/forward_netbox-0.9.4.5.tar.gz
 ```
 
 If you mirror the package into a private Python index, pin the same release version:
 
 ```bash
-pip install --pre forward-netbox==0.9.4.4
+pip install --pre forward-netbox==0.9.4.5
 ```
 
 ## Release Compatibility
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v0.9.4.4` | `4.5.9` and `4.6.0` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Current release; clarifies large branching progress by clamping progress-bar display and surfacing current shard row progress in the ingestion UI |
+| `v0.9.4.5` | `4.5.9` and `4.6.0` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Current release; plans delete-heavy device cleanup shards more conservatively so tag-scope prune runs stay closer to native Branching change-budget guidance |
+| `v0.9.4.4` | `4.5.9` and `4.6.0` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v0.9.4.5`; clarifies large branching progress by clamping progress-bar display and surfacing current shard row progress in the ingestion UI |
 | `v0.9.4.3` | `4.5.9` and `4.6.0` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v0.9.4.4`; hardens delete behavior by converting protected-reference delete failures into dependency skips so tag-scope prune/device cleanup runs continue safely |
 | `v0.9.4.1.1` | `4.5.9` and `4.6.0` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v0.9.4.3`; keeps the shared-branch architecture, execution ledger, support logging, and scale hardening while preserving the read-only advisory surfaces from `v0.9.0` |
 | `v0.9.0` | `4.5.9` and `4.6.0` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v0.9.4.1.1`; adds read-only analysis, workload preview, advisory summaries, and native log export for troubleshooting while keeping lifecycle enrichment and predict deferred |
@@ -68,6 +69,7 @@ pip install --pre forward-netbox==0.9.4.4
 
 | Release | Summary |
 | --- | --- |
+| `v0.9.4.5` | Plans delete-heavy `dcim.device` cleanup shards with a conservative row budget so tag-scope prune runs do not pack thousands of cascading device deletes into one Branching shard. |
 | `v0.9.4.4` | Clarifies large branching progress by clamping utilization display to 100% during intermediate accounting overshoots and showing current shard row progress in the ingestion UI. |
 | `v0.9.4.3` | Converts NetBox protected-reference delete failures into dependency skips so large tag-scope prune/device cleanup runs continue without shard-failing delete rows. |
 | `v0.9.4.1.1` | Keeps the shared 4.5/4.6 branch line, execution ledger, support logging, and scale hardening while preserving the read-only advisory surfaces from `v0.9.0`. |
