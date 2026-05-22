@@ -14,7 +14,7 @@ from ..exceptions import ForwardQueryError
 from .apply_engine import select_apply_engine
 from .branch_budget import BranchWorkload
 from .branch_budget import DEFAULT_DENSITY_SAFETY_FACTOR
-from .branch_budget import effective_row_budget_for_model
+from .branch_budget import effective_workload_row_budget
 from .branch_budget import soft_budget_limit
 from .branch_budget import split_workload
 from .branching import build_branch_name
@@ -422,19 +422,6 @@ def model_row_counters(logger_, model_string):
 
 
 def split_overflow_item(executor, item):
-    row_budget = effective_row_budget_for_model(
-        item.model_string,
-        max_changes_per_branch=executor.max_changes_per_branch,
-        model_change_density=executor.model_change_density,
-        safety_factor=DEFAULT_DENSITY_SAFETY_FACTOR,
-    )
-    row_budget = max(AUTO_SPLIT_MIN_ROWS_PER_BRANCH, row_budget)
-    if row_budget >= item.estimated_changes:
-        row_budget = max(
-            AUTO_SPLIT_MIN_ROWS_PER_BRANCH,
-            item.estimated_changes // 2,
-        )
-
     workload = BranchWorkload(
         model_string=item.model_string,
         label=item.label,
@@ -448,6 +435,19 @@ def split_overflow_item(executor, item):
         query_runtime_ms=item.query_runtime_ms,
         baseline_snapshot_id=item.baseline_snapshot_id,
     )
+    row_budget = effective_workload_row_budget(
+        workload,
+        max_changes_per_branch=executor.max_changes_per_branch,
+        model_change_density=executor.model_change_density,
+        safety_factor=DEFAULT_DENSITY_SAFETY_FACTOR,
+    )
+    row_budget = max(AUTO_SPLIT_MIN_ROWS_PER_BRANCH, row_budget)
+    if row_budget >= item.estimated_changes:
+        row_budget = max(
+            AUTO_SPLIT_MIN_ROWS_PER_BRANCH,
+            item.estimated_changes // 2,
+        )
+
     return split_workload(
         workload,
         max_changes_per_branch=row_budget,
@@ -455,16 +455,29 @@ def split_overflow_item(executor, item):
 
 
 def resplit_future_items_for_model(executor, plan, *, start_index, model_string):
-    row_budget = effective_row_budget_for_model(
-        model_string,
-        max_changes_per_branch=executor.max_changes_per_branch,
-        model_change_density=executor.model_change_density,
-        safety_factor=DEFAULT_DENSITY_SAFETY_FACTOR,
-    )
-    row_budget = max(AUTO_SPLIT_MIN_ROWS_PER_BRANCH, row_budget)
     updated_plan = []
     added_items = 0
     for index, item in enumerate(plan):
+        item_workload = BranchWorkload(
+            model_string=item.model_string,
+            label=item.label,
+            upsert_rows=list(item.upsert_rows),
+            delete_rows=list(item.delete_rows),
+            sync_mode=item.sync_mode,
+            coalesce_fields=list(item.coalesce_fields),
+            query_name=item.query_name,
+            execution_mode=item.execution_mode,
+            execution_value=item.execution_value,
+            query_runtime_ms=item.query_runtime_ms,
+            baseline_snapshot_id=item.baseline_snapshot_id,
+        )
+        row_budget = effective_workload_row_budget(
+            item_workload,
+            max_changes_per_branch=executor.max_changes_per_branch,
+            model_change_density=executor.model_change_density,
+            safety_factor=DEFAULT_DENSITY_SAFETY_FACTOR,
+        )
+        row_budget = max(AUTO_SPLIT_MIN_ROWS_PER_BRANCH, row_budget)
         if (
             index < start_index
             or item.model_string != model_string
