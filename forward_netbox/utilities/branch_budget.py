@@ -25,6 +25,9 @@ DEFAULT_MODEL_CHANGE_DENSITY = {
     "netbox_routing.ospfinterface": 3.0,
     "netbox_peering_manager.peeringsession": 2.0,
 }
+DEFAULT_MODEL_DELETE_CHANGE_DENSITY = {
+    "dcim.device": 12.0,
+}
 MODEL_DENSITY_SAFETY_FACTORS = {
     "dcim.cable": 0.5,
     "netbox_routing.bgppeer": 0.5,
@@ -568,6 +571,42 @@ def effective_row_budget_for_model(
     return max(1, min(max_changes_per_branch, scaled_budget))
 
 
+def effective_workload_row_budget(
+    workload,
+    *,
+    max_changes_per_branch,
+    model_change_density=None,
+    safety_factor=DEFAULT_DENSITY_SAFETY_FACTOR,
+):
+    base_budget = effective_row_budget_for_model(
+        workload.model_string,
+        max_changes_per_branch=max_changes_per_branch,
+        model_change_density=model_change_density,
+        safety_factor=safety_factor,
+    )
+    delete_count = len(workload.delete_rows)
+    if not delete_count:
+        return base_budget
+
+    delete_density = DEFAULT_MODEL_DELETE_CHANGE_DENSITY.get(workload.model_string)
+    if delete_density is None:
+        return base_budget
+
+    upsert_count = len(workload.upsert_rows)
+    total_rows = upsert_count + delete_count
+    if total_rows < 1:
+        return base_budget
+
+    weighted_change_estimate = upsert_count + (delete_count * float(delete_density))
+    if weighted_change_estimate <= 0:
+        return base_budget
+
+    weighted_budget = int(
+        (max_changes_per_branch * total_rows) / weighted_change_estimate
+    )
+    return max(1, min(base_budget, weighted_budget))
+
+
 def build_branch_plan_with_density(
     workloads,
     *,
@@ -577,8 +616,8 @@ def build_branch_plan_with_density(
 ):
     plan = []
     for workload in workloads:
-        model_budget = effective_row_budget_for_model(
-            workload.model_string,
+        model_budget = effective_workload_row_budget(
+            workload,
             max_changes_per_branch=max_changes_per_branch,
             model_change_density=model_change_density,
             safety_factor=safety_factor,
