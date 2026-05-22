@@ -26,7 +26,7 @@ DEFAULT_MODEL_CHANGE_DENSITY = {
     "netbox_peering_manager.peeringsession": 2.0,
 }
 DEFAULT_MODEL_DELETE_CHANGE_DENSITY = {
-    "dcim.device": 12.0,
+    "dcim.device": 20.0,
 }
 MODEL_DENSITY_SAFETY_FACTORS = {
     "dcim.cable": 0.5,

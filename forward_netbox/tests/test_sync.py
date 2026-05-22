@@ -483,7 +483,7 @@ class ForwardBranchBudgetPlanTest(TestCase):
             model_change_density={},
         )
 
-        self.assertEqual(budget, 833)
+        self.assertEqual(budget, 500)
         self.assertGreater(len(plan), 1)
         self.assertTrue(all(item.estimated_changes <= budget for item in plan))
         self.assertEqual(sum(item.estimated_changes for item in plan), 2000)
@@ -2242,7 +2242,7 @@ class ForwardMultiBranchExecutorAdaptiveSplitTest(TestCase):
         split_items = executor._split_overflow_item(item)
 
         self.assertGreater(len(split_items), 1)
-        self.assertTrue(all(part.estimated_changes <= 833 for part in split_items))
+        self.assertTrue(all(part.estimated_changes <= 500 for part in split_items))
 
     @override_settings(RQ_DEFAULT_TIMEOUT=300)
     def test_load_execution_context_warns_for_large_plan_with_short_worker_timeout(
