@@ -1165,6 +1165,7 @@ def plan_item_model_result(
         "execution_mode": item.execution_mode,
         "execution_value": item.execution_value,
         "sync_mode": item.sync_mode,
+        "operation": item.operation,
         "row_count": len(item.upsert_rows),
         "delete_count": len(item.delete_rows),
         "failure_count": 0,

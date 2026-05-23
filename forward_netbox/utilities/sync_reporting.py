@@ -174,6 +174,7 @@ def record_issue(
     exception=None,
     context=None,
     defaults=None,
+    log_level="failure",
 ):
     if runner.ingestion is None:
         return None
@@ -231,7 +232,10 @@ def record_issue(
     runner._recorded_issue_ids.add(issue_key)
     if exception is not None and hasattr(exception, "issue_id"):
         exception.issue_id = issue.pk
-    runner.logger.log_failure(f"{model_string}: {message}", obj=runner.ingestion)
+    if log_level == "warning":
+        runner.logger.log_warning(f"{model_string}: {message}", obj=runner.ingestion)
+    else:
+        runner.logger.log_failure(f"{model_string}: {message}", obj=runner.ingestion)
     return issue
 
 
@@ -274,6 +278,7 @@ def apply_model_rows(runner, model_string, rows):
                 exception=exc,
                 context=exc.context,
                 defaults=exc.defaults,
+                log_level="warning",
             )
         except (ForwardSearchError, ForwardQueryError, ForwardSyncDataError) as exc:
             logger.exception("Failed applying %s row", model_string)
@@ -354,6 +359,19 @@ def delete_model_rows(runner, model_string, rows):
                 runner.logger.increment_statistics(model_string, outcome="applied")
             else:
                 runner.logger.increment_statistics(model_string, outcome="skipped")
+        except ForwardDependencySkipError as exc:
+            logger.info("Skipped deleting %s row due to dependency", model_string)
+            runner.logger.increment_statistics(model_string, outcome="skipped")
+            record_issue(
+                runner,
+                model_string,
+                str(exc),
+                row,
+                exception=exc,
+                context=exc.context,
+                defaults=exc.defaults,
+                log_level="warning",
+            )
         except (ForwardSearchError, ForwardQueryError) as exc:
             logger.exception("Failed deleting %s row", model_string)
             runner.logger.increment_statistics(model_string, outcome="failed")

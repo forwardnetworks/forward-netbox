@@ -434,6 +434,10 @@ def split_overflow_item(executor, item):
         execution_value=item.execution_value,
         query_runtime_ms=item.query_runtime_ms,
         baseline_snapshot_id=item.baseline_snapshot_id,
+        apply_engine=item.apply_engine,
+        apply_engine_reason=item.apply_engine_reason,
+        apply_engine_decision=item.apply_engine_decision,
+        operation=item.operation,
     )
     row_budget = effective_workload_row_budget(
         workload,
@@ -470,6 +474,10 @@ def resplit_future_items_for_model(executor, plan, *, start_index, model_string)
             execution_value=item.execution_value,
             query_runtime_ms=item.query_runtime_ms,
             baseline_snapshot_id=item.baseline_snapshot_id,
+            apply_engine=item.apply_engine,
+            apply_engine_reason=item.apply_engine_reason,
+            apply_engine_decision=item.apply_engine_decision,
+            operation=item.operation,
         )
         row_budget = effective_workload_row_budget(
             item_workload,
@@ -535,6 +543,10 @@ def reindex_plan(plan):
             execution_value=item.execution_value,
             query_runtime_ms=item.query_runtime_ms,
             baseline_snapshot_id=item.baseline_snapshot_id,
+            apply_engine=item.apply_engine,
+            apply_engine_reason=item.apply_engine_reason,
+            apply_engine_decision=item.apply_engine_decision,
+            operation=item.operation,
         )
         for index, item in enumerate(plan, start=1)
     ]
