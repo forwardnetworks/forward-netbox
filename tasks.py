@@ -65,6 +65,41 @@ def manage_py(context, command, **kwargs):
     )
 
 
+def _host_memory_gib():
+    try:
+        pages = int(os.sysconf("SC_PHYS_PAGES"))
+        page_size = int(os.sysconf("SC_PAGE_SIZE"))
+        total_bytes = pages * page_size
+        gib = int(total_bytes / (1024**3))
+        return max(gib, 4)
+    except (AttributeError, OSError, ValueError):
+        return 8
+
+
+def _recommended_worker_replicas():
+    cpu_count = int(os.cpu_count() or 4)
+    return max(2, min(cpu_count, 32))
+
+
+def _recommended_postgres_settings():
+    memory_gib = _host_memory_gib()
+    shared_buffers_gib = max(2, min(memory_gib // 4, 16))
+    effective_cache_size_gib = max(4, min((memory_gib * 3) // 4, 96))
+    maintenance_work_mem_mb = max(512, min(memory_gib * 16, 4096))
+    return {
+        "shared_buffers": f"{shared_buffers_gib}GB",
+        "effective_cache_size": f"{effective_cache_size_gib}GB",
+        "work_mem": "32MB",
+        "maintenance_work_mem": f"{maintenance_work_mem_mb}MB",
+        "checkpoint_timeout": "15min",
+        "max_wal_size": "16GB",
+        "random_page_cost": "1.1",
+        "max_worker_processes": "16",
+        "max_parallel_workers": "16",
+        "max_parallel_workers_per_gather": "4",
+    }
+
+
 @task
 def build(context):
     docker_compose(context, "build")
@@ -124,6 +159,84 @@ def scenario_test(context):
     manage_py(
         context,
         "test --keepdb --noinput forward_netbox.tests.test_synthetic_scenarios",
+    )
+
+
+@task(name="ingestion-delete-regression")
+def ingestion_delete_regression(context):
+    manage_py(
+        context,
+        (
+            "test --keepdb --noinput "
+            "forward_netbox.tests.test_synthetic_scenarios."
+            "SyntheticSyncScenarioHarnessTest."
+            "test_full_site_ingestion_then_diff_delete "
+            "forward_netbox.tests.test_sync."
+            "ForwardBranchBudgetPlanTest."
+            "test_branch_plan_runs_prune_deletes_in_dependency_order "
+            "forward_netbox.tests.test_sync."
+            "ForwardBranchBudgetPlanTest."
+            "test_branch_plan_splits_mixed_workloads_into_apply_then_delete_phases"
+        ),
+    )
+
+
+@task(name="optimize-runtime")
+def optimize_runtime(
+    context,
+    worker_replicas=0,
+    query_fetch_concurrency=16,
+    nqe_page_size=10000,
+    source_name="",
+    apply_postgres=True,
+):
+    replicas = (
+        int(worker_replicas)
+        if int(worker_replicas) > 0
+        else _recommended_worker_replicas()
+    )
+    qfc = max(1, min(int(query_fetch_concurrency), 16))
+    page_size = max(1, min(int(nqe_page_size), 10000))
+
+    docker_compose(context, "up -d")
+    if apply_postgres:
+        postgres_settings = _recommended_postgres_settings()
+        for setting, value in postgres_settings.items():
+            docker_compose(
+                context,
+                (
+                    "exec -T postgres psql -U netbox -d netbox -v ON_ERROR_STOP=1 "
+                    f"-c \"ALTER SYSTEM SET {setting} = '{value}';\""
+                ),
+            )
+        docker_compose(context, "restart postgres")
+
+    docker_compose(
+        context,
+        f"up -d --scale netbox-worker={replicas} netbox netbox-worker",
+    )
+
+    if source_name:
+        source_literal = json.dumps(str(source_name))
+        manage_py(
+            context,
+            (
+                "shell -c "
+                '"from forward_netbox.models import ForwardSource; '
+                f"s=ForwardSource.objects.get(name={source_literal}); "
+                "p=dict(s.parameters or {}); "
+                f"p['query_fetch_concurrency']={qfc}; "
+                f"p['nqe_page_size']={page_size}; "
+                "p['timeout']=int(p.get('timeout') or 1200); "
+                "s.parameters=p; s.save(update_fields=['parameters']); "
+                "print('updated')\""
+            ),
+        )
+
+    print(
+        "Optimized local runtime: "
+        f"workers={replicas}, query_fetch_concurrency={qfc}, nqe_page_size={page_size}, "
+        f"postgres_tuned={'yes' if apply_postgres else 'no'}."
     )
 
 
@@ -629,6 +742,7 @@ def architecture_completion_audit(context, output_json=""):
         start,
         check,
         scenario_test,
+        ingestion_delete_regression,
         scale_chaos_test,
         test,
         playwright_test,

@@ -69,6 +69,28 @@ Create a `Forward Source` for each Forward deployment or tenant you want to sync
 - Syncs always use the source `Network`.
 - The source detail page masks the stored password.
 
+### Large-Ingestion Tuning Baseline
+
+For large first-time imports, start with a conservative, NetBox-native baseline:
+
+- `timeout`: `1200`
+- `nqe_page_size`: `10000`
+- `query_fetch_concurrency`: `6` to `12` (increase only when workers and Postgres have headroom)
+- `max_changes_per_branch`: keep near your Branching guidance (typically `10000`)
+
+Recommended workflow:
+
+1. Run first baseline in `Fast bootstrap` when the dataset is very large and trusted.
+2. Switch to `Branching` for steady-state runs with review/merge controls.
+3. Use repository `query_path` or direct `query_id` for maps that need Forward API diff execution on later runs.
+4. Avoid inline raw `query` for long-term diff-based operations because raw text maps fall back to full model fetch.
+
+Capacity notes:
+
+- Raising `query_fetch_concurrency` helps preflight/query fetch only; it does not remove Branching merge serialization.
+- Increasing `max_changes_per_branch` can reduce shard count but make each shard/merge slower and riskier.
+- Keep one source of truth for row shaping in NQE; avoid Python-side normalization for performance tuning.
+
 ## Forward NQE Maps
 
 `Forward NQE Maps` define how a specific NetBox model is populated.
@@ -317,6 +339,32 @@ both:
   to review as branches, then switch back to `Branching`.
 - Ensure NetBox workers and Postgres have enough capacity for the selected
   concurrency and the number of simultaneous syncs.
+
+For local Docker performance runs, use the built-in runtime optimizer before
+running smoke or scale tests:
+
+```bash
+invoke forward_netbox.optimize-runtime --worker-replicas 0 --query-fetch-concurrency 16 --nqe-page-size 10000 --apply-postgres
+```
+
+What this does:
+
+- auto-scales `netbox-worker` replicas from host CPU count (or use an explicit
+  value with `--worker-replicas`)
+- applies practical Postgres `ALTER SYSTEM` defaults for larger ingestion runs
+  (`shared_buffers`, `effective_cache_size`, `work_mem`, WAL/checkpoint
+  settings, parallel worker settings)
+- optionally updates one Forward source's `query_fetch_concurrency` and
+  `nqe_page_size` when `--source-name <name>` is supplied
+
+Recommended rollout for large baselines:
+
+1. Run `--plan-only` first and confirm shard counts are operationally acceptable.
+2. Start with `query_fetch_concurrency=6` if your DB is shared, then raise
+   toward `16` only when DB and worker telemetry show headroom.
+3. Keep `Max changes per branch` near operator guidance (commonly 10k).
+4. For trusted very large first loads, use `Fast bootstrap`, then switch back to
+   `Branching` for steady-state diff runs.
 
 Branching runs are staged as resumable NetBox jobs. The initial sync job records
 the snapshot, validation result, branch plan, and next shard in the sync state.
