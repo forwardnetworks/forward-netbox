@@ -458,6 +458,7 @@ class ForwardMultiBranchExecutor:
                 return plan[int(index) - 1]
             return None
         shard_keys = set(persisted_item.get("shard_keys") or [])
+        persisted_operation = persisted_item.get("operation")
         candidates = [
             item
             for item in plan
@@ -465,6 +466,10 @@ class ForwardMultiBranchExecutor:
             and item.query_name == persisted_item.get("query_name", item.query_name)
             and item.execution_value
             == persisted_item.get("execution_value", item.execution_value)
+            and (
+                persisted_operation in ("", None, "mixed")
+                or item.operation == persisted_operation
+            )
         ]
         if shard_keys:
             for item in candidates:
@@ -497,6 +502,10 @@ class ForwardMultiBranchExecutor:
             execution_value=item.execution_value,
             query_runtime_ms=item.query_runtime_ms,
             baseline_snapshot_id=item.baseline_snapshot_id,
+            apply_engine=item.apply_engine,
+            apply_engine_reason=item.apply_engine_reason,
+            apply_engine_decision=item.apply_engine_decision,
+            operation=item.operation,
         )
 
     def _set_runtime_phase(

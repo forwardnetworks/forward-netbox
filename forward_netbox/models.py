@@ -822,6 +822,7 @@ class ForwardExecutionStep(ForwardPluginModelDocsMixin, models.Model):
     execution_value = models.CharField(max_length=600, blank=True, default="")
     commit_id = models.CharField(max_length=100, blank=True, default="")
     sync_mode = models.CharField(max_length=20, blank=True, default="")
+    operation = models.CharField(max_length=20, blank=True, default="mixed")
     baseline_snapshot_id = models.CharField(max_length=100, blank=True, default="")
     estimated_changes = models.PositiveIntegerField(default=0)
     actual_changes = models.PositiveIntegerField(default=0)
@@ -901,6 +902,7 @@ class ForwardExecutionStep(ForwardPluginModelDocsMixin, models.Model):
             "execution_value": self.execution_value,
             "commit_id": self.commit_id,
             "sync_mode": self.sync_mode,
+            "operation": self.operation,
             "baseline_snapshot_id": self.baseline_snapshot_id,
             "estimated_changes": self.estimated_changes,
             "actual_changes": self.actual_changes,

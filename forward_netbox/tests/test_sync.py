@@ -488,6 +488,58 @@ class ForwardBranchBudgetPlanTest(TestCase):
         self.assertTrue(all(item.estimated_changes <= budget for item in plan))
         self.assertEqual(sum(item.estimated_changes for item in plan), 2000)
 
+    def test_branch_plan_runs_prune_deletes_in_dependency_order(self):
+        plan = build_branch_plan_with_density(
+            [
+                BranchWorkload(
+                    model_string="dcim.device",
+                    label="devices",
+                    delete_rows=[{"name": "device-1"}],
+                    coalesce_fields=[["name"]],
+                ),
+                BranchWorkload(
+                    model_string="dcim.interface",
+                    label="interfaces",
+                    delete_rows=[{"device": "device-1", "name": "Ethernet1"}],
+                    coalesce_fields=[["device", "name"]],
+                ),
+                BranchWorkload(
+                    model_string="netbox_routing.ospfinstance",
+                    label="ospf instances",
+                    delete_rows=[{"device": "device-1", "process_id": 1}],
+                    coalesce_fields=[["device", "process_id"]],
+                ),
+            ],
+            max_changes_per_branch=10000,
+            model_change_density={},
+        )
+
+        self.assertEqual(
+            [item.model_string for item in plan],
+            ["netbox_routing.ospfinstance", "dcim.interface", "dcim.device"],
+        )
+        self.assertTrue(all(item.operation == "delete" for item in plan))
+
+    def test_branch_plan_splits_mixed_workloads_into_apply_then_delete_phases(self):
+        plan = build_branch_plan(
+            [
+                BranchWorkload(
+                    model_string="dcim.device",
+                    label="devices",
+                    upsert_rows=[{"name": "device-new"}],
+                    delete_rows=[{"name": "device-old"}],
+                    coalesce_fields=[["name"]],
+                )
+            ],
+            max_changes_per_branch=10000,
+        )
+
+        self.assertEqual([item.operation for item in plan], ["apply", "delete"])
+        self.assertEqual(len(plan[0].upsert_rows), 1)
+        self.assertEqual(plan[0].delete_rows, [])
+        self.assertEqual(plan[1].upsert_rows, [])
+        self.assertEqual(len(plan[1].delete_rows), 1)
+
     def test_device_upsert_workload_keeps_normal_row_budget(self):
         workload = BranchWorkload(
             model_string="dcim.device",
@@ -2243,6 +2295,41 @@ class ForwardMultiBranchExecutorAdaptiveSplitTest(TestCase):
 
         self.assertGreater(len(split_items), 1)
         self.assertTrue(all(part.estimated_changes <= 500 for part in split_items))
+        self.assertTrue(all(part.operation == "delete" for part in split_items))
+
+    def test_select_plan_item_uses_operation_to_resume_delete_shard(self):
+        plan = build_branch_plan(
+            [
+                BranchWorkload(
+                    model_string="dcim.device",
+                    label="dcim.device | Forward Devices",
+                    upsert_rows=[{"name": "device-1"}],
+                    delete_rows=[{"name": "device-1"}],
+                    coalesce_fields=[["name"]],
+                )
+            ],
+            max_changes_per_branch=10000,
+        )
+        executor = ForwardMultiBranchExecutor(
+            sync=self.sync,
+            client=Mock(),
+            logger_=Mock(),
+        )
+
+        selected = executor._select_plan_item(
+            plan,
+            {
+                "model": "dcim.device",
+                "query_name": "",
+                "execution_value": "",
+                "operation": "delete",
+                "shard_keys": ["name=device-1"],
+            },
+            2,
+        )
+
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected.operation, "delete")
 
     @override_settings(RQ_DEFAULT_TIMEOUT=300)
     def test_load_execution_context_warns_for_large_plan_with_short_worker_timeout(
@@ -6040,6 +6127,41 @@ class ForwardSyncRunnerTest(TestCase):
         )
         runner.logger.increment_statistics.assert_any_call(
             "dcim.site", outcome="applied"
+        )
+
+    def test_delete_model_rows_records_dependency_skip_as_skipped_warning(self):
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        runner._delete_dcim_device = Mock(
+            side_effect=[
+                ForwardDependencySkipError(
+                    "protected child remains",
+                    model_string="dcim.device",
+                    context={"name": "device-1"},
+                ),
+                True,
+            ]
+        )
+        with patch(
+            "forward_netbox.utilities.sync_reporting.record_issue"
+        ) as record_issue:
+            runner._delete_model_rows(
+                "dcim.device",
+                [
+                    {"name": "device-1"},
+                    {"name": "device-2"},
+                ],
+            )
+
+        self.assertEqual(runner._delete_dcim_device.call_count, 2)
+        _, _, kwargs = record_issue.mock_calls[0]
+        self.assertEqual(kwargs["log_level"], "warning")
+        runner.logger.increment_statistics.assert_any_call(
+            "dcim.device", outcome="skipped"
+        )
+        runner.logger.increment_statistics.assert_any_call(
+            "dcim.device", outcome="applied"
         )
 
     def test_delete_by_coalesce_maps_protected_error_to_dependency_skip(self):

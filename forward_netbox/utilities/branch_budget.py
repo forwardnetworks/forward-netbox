@@ -33,6 +33,39 @@ MODEL_DENSITY_SAFETY_FACTORS = {
     "netbox_routing.bgppeer": 0.5,
     "netbox_routing.ospfinterface": 0.5,
 }
+BRANCH_PLAN_OPERATION_APPLY = "apply"
+BRANCH_PLAN_OPERATION_DELETE = "delete"
+BRANCH_PLAN_OPERATION_MIXED = "mixed"
+DELETE_DEPENDENCY_MODEL_ORDER = (
+    "dcim.cable",
+    "ipam.ipaddress",
+    "dcim.macaddress",
+    "netbox_routing.bgppeeraddressfamily",
+    "netbox_peering_manager.peeringsession",
+    "netbox_routing.bgpaddressfamily",
+    "netbox_routing.bgppeer",
+    "netbox_routing.ospfinterface",
+    "netbox_routing.ospfinstance",
+    "netbox_routing.ospfarea",
+    "dcim.interface",
+    "dcim.inventoryitem",
+    "dcim.module",
+    "extras.taggeditem",
+    "dcim.device",
+    "dcim.virtualchassis",
+    "ipam.prefix",
+    "ipam.vlan",
+    "ipam.vrf",
+    "dcim.devicetype",
+    "dcim.platform",
+    "dcim.devicerole",
+    "dcim.manufacturer",
+    "dcim.site",
+)
+DELETE_DEPENDENCY_MODEL_RANK = {
+    model_string: index
+    for index, model_string in enumerate(DELETE_DEPENDENCY_MODEL_ORDER)
+}
 
 DEVICE_SHARD_MODELS = {
     "dcim.cable",
@@ -182,6 +215,7 @@ class BranchWorkload:
     apply_engine: str = ForwardApplyEngineChoices.ADAPTER
     apply_engine_reason: str = ""
     apply_engine_decision: dict = field(default_factory=dict)
+    operation: str = BRANCH_PLAN_OPERATION_MIXED
 
     @property
     def estimated_changes(self):
@@ -207,6 +241,7 @@ class BranchPlanItem:
     apply_engine: str = ForwardApplyEngineChoices.ADAPTER
     apply_engine_reason: str = ""
     apply_engine_decision: dict = field(default_factory=dict)
+    operation: str = BRANCH_PLAN_OPERATION_MIXED
 
 
 def row_shard_key(model_string, row, coalesce_fields):
@@ -401,6 +436,7 @@ def split_workload(workload, *, max_changes_per_branch):
                 apply_engine=workload.apply_engine,
                 apply_engine_reason=workload.apply_engine_reason,
                 apply_engine_decision=workload.apply_engine_decision,
+                operation=workload.operation,
             )
         ]
 
@@ -496,6 +532,7 @@ def split_workload(workload, *, max_changes_per_branch):
                 apply_engine=workload.apply_engine,
                 apply_engine_reason=workload.apply_engine_reason,
                 apply_engine_decision=workload.apply_engine_decision,
+                operation=workload.operation,
             )
         )
     return plan_items
@@ -506,9 +543,72 @@ def soft_budget_limit(max_changes_per_branch):
     return int(budget * (1 + BRANCH_BUDGET_SOFT_OVERRUN_PERCENT))
 
 
+def dependency_phased_workloads(workloads):
+    apply_workloads = []
+    delete_workloads = []
+    for position, workload in enumerate(workloads):
+        if workload.upsert_rows:
+            apply_workloads.append(
+                (
+                    position,
+                    _workload_for_operation(
+                        workload,
+                        upsert_rows=workload.upsert_rows,
+                        delete_rows=[],
+                        operation=BRANCH_PLAN_OPERATION_APPLY,
+                    ),
+                )
+            )
+        if workload.delete_rows:
+            delete_workloads.append(
+                (
+                    position,
+                    _workload_for_operation(
+                        workload,
+                        upsert_rows=[],
+                        delete_rows=workload.delete_rows,
+                        operation=BRANCH_PLAN_OPERATION_DELETE,
+                    ),
+                )
+            )
+
+    ordered_deletes = sorted(
+        delete_workloads,
+        key=lambda item: (
+            DELETE_DEPENDENCY_MODEL_RANK.get(item[1].model_string, 10_000),
+            item[0],
+        ),
+    )
+    return [item[1] for item in apply_workloads] + [item[1] for item in ordered_deletes]
+
+
+def _workload_for_operation(workload, *, upsert_rows, delete_rows, operation):
+    return BranchWorkload(
+        model_string=workload.model_string,
+        label=(
+            f"{workload.label} deletes"
+            if operation == BRANCH_PLAN_OPERATION_DELETE
+            else workload.label
+        ),
+        upsert_rows=list(upsert_rows),
+        delete_rows=list(delete_rows),
+        sync_mode=workload.sync_mode,
+        coalesce_fields=workload.coalesce_fields,
+        query_name=workload.query_name,
+        execution_mode=workload.execution_mode,
+        execution_value=workload.execution_value,
+        query_runtime_ms=workload.query_runtime_ms,
+        baseline_snapshot_id=workload.baseline_snapshot_id,
+        apply_engine=workload.apply_engine,
+        apply_engine_reason=workload.apply_engine_reason,
+        apply_engine_decision=workload.apply_engine_decision,
+        operation=operation,
+    )
+
+
 def build_branch_plan(workloads, *, max_changes_per_branch):
     plan = []
-    for workload in workloads:
+    for workload in dependency_phased_workloads(workloads):
         plan.extend(
             split_workload(
                 workload,
@@ -534,6 +634,7 @@ def build_branch_plan(workloads, *, max_changes_per_branch):
             apply_engine=item.apply_engine,
             apply_engine_reason=item.apply_engine_reason,
             apply_engine_decision=item.apply_engine_decision,
+            operation=item.operation,
         )
         for index, item in enumerate(plan, start=1)
     ]
@@ -615,7 +716,7 @@ def build_branch_plan_with_density(
     safety_factor=DEFAULT_DENSITY_SAFETY_FACTOR,
 ):
     plan = []
-    for workload in workloads:
+    for workload in dependency_phased_workloads(workloads):
         model_budget = effective_workload_row_budget(
             workload,
             max_changes_per_branch=max_changes_per_branch,
@@ -647,6 +748,7 @@ def build_branch_plan_with_density(
             apply_engine=item.apply_engine,
             apply_engine_reason=item.apply_engine_reason,
             apply_engine_decision=item.apply_engine_decision,
+            operation=item.operation,
         )
         for index, item in enumerate(plan, start=1)
     ]

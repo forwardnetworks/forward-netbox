@@ -363,6 +363,7 @@ def _plan_item_from_execution_step(step):
         "execution_mode": step.execution_mode,
         "execution_value": step.execution_value,
         "baseline_snapshot_id": step.baseline_snapshot_id,
+        "operation": step.operation or "mixed",
         "apply_engine": step.apply_engine,
         "fetch_mode": step.fetch_mode,
         "fetch_key_family": step.fetch_key_family,

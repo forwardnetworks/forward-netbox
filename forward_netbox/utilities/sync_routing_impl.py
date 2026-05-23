@@ -1,6 +1,7 @@
 import hashlib
 
 from django.core.exceptions import ObjectDoesNotExist
+from django.db.models.deletion import ProtectedError
 
 from ..exceptions import ForwardDependencySkipError
 from ..exceptions import ForwardQueryError
@@ -23,7 +24,10 @@ def delete_netbox_routing_bgppeer(runner, row):
     peer = runner._resolve_bgp_peer_for_delete(row)
     if peer is None:
         return False
+    scope = getattr(peer, "scope", None)
+    router = getattr(scope, "router", None) if scope is not None else None
     peer.delete()
+    delete_bgp_scope_tree_if_unreferenced(scope=scope, router=router)
     return True
 
 
@@ -57,6 +61,16 @@ def delete_netbox_routing_bgppeeraddressfamily(runner, row):
             }
         ],
     )
+
+
+def delete_bgp_scope_tree_if_unreferenced(*, scope, router):
+    for obj in (scope, router):
+        if obj is None or getattr(obj, "pk", None) is None:
+            continue
+        try:
+            obj.delete()
+        except ProtectedError:
+            continue
 
 
 def delete_netbox_routing_ospfinstance(runner, row):
