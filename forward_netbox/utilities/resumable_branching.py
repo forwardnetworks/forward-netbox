@@ -30,6 +30,7 @@ def plan_item_snapshot(item, *, status="pending", existing=None):
         "label": item.label,
         "estimated_changes": int(item.estimated_changes),
         "sync_mode": item.sync_mode,
+        "operation": item.operation,
         "shard_keys": list(item.shard_keys or ()),
         "query_name": item.query_name,
         "execution_mode": item.execution_mode,
