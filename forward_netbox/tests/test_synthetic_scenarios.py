@@ -10,6 +10,7 @@ from uuid import uuid4
 from core.choices import JobStatusChoices
 from core.exceptions import SyncError
 from core.models import Job
+from dcim.models import Site
 from django.contrib.contenttypes.models import ContentType
 from django.db import close_old_connections
 from django.test import TestCase
@@ -252,6 +253,74 @@ class SyntheticSyncScenarioHarnessTest(TestCase):
             "dcim.site",
             [{"name": "site-deleted", "slug": "site-deleted"}],
         )
+
+    @patch("forward_netbox.utilities.sync_execution.get_query_specs")
+    def test_full_site_ingestion_then_diff_delete(self, mock_specs):
+        slug_keep = f"synthetic-site-{uuid4().hex[:8]}-keep"
+        slug_drop = f"synthetic-site-{uuid4().hex[:8]}-drop"
+        current_snapshot = {"id": scenarios.SNAPSHOT_BEFORE}
+        full_rows = [
+            {"name": slug_keep, "slug": slug_keep, "status": "active"},
+            {"name": slug_drop, "slug": slug_drop, "status": "active"},
+        ]
+        client = Mock()
+        client.get_snapshot_metrics.return_value = {}
+        client.get_latest_processed_snapshot.side_effect = (
+            lambda _network_id: scenarios.snapshot(current_snapshot["id"])
+        )
+        client.run_nqe_query.return_value = list(full_rows)
+        client.run_nqe_diff.return_value = [
+            {
+                "type": "DELETED",
+                "before": {"name": slug_drop, "slug": slug_drop, "status": "active"},
+                "after": None,
+            }
+        ]
+        mock_specs.return_value = [
+            QuerySpec(
+                model_string="dcim.site",
+                query_name="Forward Sites",
+                query_id="Q_sites",
+            )
+        ]
+        self.sync.get_model_strings = lambda: ["dcim.site"]
+        self.sync.resolve_snapshot_id = lambda client=None: current_snapshot["id"]
+
+        first_ingestion = ForwardIngestion.objects.create(sync=self.sync)
+        first_runner = ForwardSyncRunner(
+            sync=self.sync,
+            ingestion=first_ingestion,
+            client=client,
+            logger_=Mock(),
+        )
+        first_runner.run()
+
+        self.assertEqual(
+            Site.objects.filter(slug__in=[slug_keep, slug_drop]).count(), 2
+        )
+
+        first_ingestion.snapshot_selector = LATEST_PROCESSED_SNAPSHOT
+        first_ingestion.snapshot_id = scenarios.SNAPSHOT_BEFORE
+        first_ingestion.baseline_ready = True
+        first_ingestion.save(
+            update_fields=["snapshot_selector", "snapshot_id", "baseline_ready"]
+        )
+
+        current_snapshot["id"] = scenarios.SNAPSHOT_AFTER
+        second_ingestion = ForwardIngestion.objects.create(sync=self.sync)
+        second_runner = ForwardSyncRunner(
+            sync=self.sync,
+            ingestion=second_ingestion,
+            client=client,
+            logger_=Mock(),
+        )
+        second_runner.run()
+
+        self.assertTrue(Site.objects.filter(slug=slug_keep).exists())
+        self.assertFalse(Site.objects.filter(slug=slug_drop).exists())
+        self.assertEqual(client.run_nqe_diff.call_count, 1)
+        self.assertEqual(client.run_nqe_query.call_count, 1)
+        self.assertEqual(second_ingestion.sync_mode, "diff")
 
     def test_branch_overflow_scenario_splits_and_retries(self):
         workload = scenarios.branch_workload(
