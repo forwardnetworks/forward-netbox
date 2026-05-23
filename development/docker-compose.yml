@@ -53,7 +53,7 @@ services:
     image: postgres:16-alpine
     env_file: env/postgres.env
     volumes:
-      - netbox-postgres-data:/var/lib/postgresql/data
+      - ${FORWARD_NETBOX_POSTGRES_DATA_PATH:-netbox-postgres-data}:/var/lib/postgresql/data
   redis:
     image: redis:7-alpine
     command:

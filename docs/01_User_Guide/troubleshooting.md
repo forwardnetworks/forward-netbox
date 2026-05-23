@@ -159,6 +159,56 @@ RQ_DEFAULT_TIMEOUT = 7200
 Set the final value according to your environment, worker supervision policy,
 and how long a trusted large baseline is allowed to run.
 
+## Sync Is Slow But Still Running
+
+Symptoms:
+
+- Sync stays in `Syncing` for a long time.
+- No timeout/failure is recorded, but shard progress is slow.
+- Host CPU and memory look underutilized.
+
+Checks:
+
+- Confirm the run is actually progressing:
+  `Sync` detail `Execution` summary, latest ingestion `Logs`, and execution-step heartbeat.
+- Verify source runtime knobs:
+  `query_fetch_concurrency` and `nqe_page_size` on the active `Forward Source`.
+- Verify NetBox worker replica count and Postgres capacity for the same window.
+- Keep `max_changes_per_branch` near guidance; increasing it can make each shard
+  take longer even when total shard count drops.
+
+Large-ingestion triage order:
+
+1. Confirm execution mode and intent:
+   - First baseline: `Fast bootstrap` for trusted high-volume imports.
+   - Steady state: `Branching` with repository `query_path`/`query_id` maps for diff eligibility.
+2. Confirm workers/database are not under-sized relative to host capacity.
+3. Confirm `query_fetch_concurrency` is not too low for preflight volume.
+4. Confirm shard sizing is conservative (`max_changes_per_branch` near guidance) instead of oversized branches.
+5. Confirm long-running jobs have sufficient worker timeout (`RQ_DEFAULT_TIMEOUT` > expected shard runtime).
+
+Local Docker tuning path:
+
+```bash
+invoke forward_netbox.optimize-runtime --worker-replicas 0 --query-fetch-concurrency 16 --nqe-page-size 10000 --apply-postgres
+```
+
+Operational notes:
+
+- This improves query fetch/preflight and DB throughput, but one Branching
+  shard/merge remains mostly serialized by native NetBox Branching semantics.
+- For trusted very large first baselines, use `Fast bootstrap`, then switch
+  back to `Branching` once baseline exists for diff-based steady state.
+- Use `invoke forward_netbox.ingestion-delete-regression` to validate ingest and
+  diff-delete behavior in synthetic regression before live reruns.
+
+What to collect when opening a tuning issue:
+
+- `Export Support Bundle` from the Sync page.
+- Source runtime parameters (`timeout`, `nqe_page_size`, `query_fetch_concurrency`).
+- Sync mode (`Fast bootstrap` or `Branching`) and `max_changes_per_branch`.
+- NetBox worker count and worker timeout (`RQ_DEFAULT_TIMEOUT`).
+
 ## Fast Bootstrap Looks Like A Dry Run
 
 Symptoms:
