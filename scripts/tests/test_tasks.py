@@ -281,5 +281,72 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
         self.assertIn("--fail-on-gap", command)
 
 
+class RuntimeOptimizationTaskTest(unittest.TestCase):
+    def _context(self):
+        context = Mock()
+        context.forward_netbox = SimpleNamespace(
+            netbox_ver="v4.5.9",
+            project_name="forward-netbox",
+            compose_dir="/tmp/forward-netbox",
+        )
+        return context
+
+    def test_ingestion_delete_regression_runs_expected_tests(self):
+        context = self._context()
+        with patch.object(tasks, "manage_py") as manage_py:
+            tasks.ingestion_delete_regression.body(context)
+
+        manage_py.assert_called_once()
+        command = manage_py.call_args.args[1]
+        self.assertIn("test_full_site_ingestion_then_diff_delete", command)
+        self.assertIn(
+            "test_branch_plan_runs_prune_deletes_in_dependency_order", command
+        )
+
+    def test_optimize_runtime_scales_workers_and_tunes_postgres(self):
+        context = self._context()
+        with (
+            patch.object(tasks, "docker_compose") as docker_compose,
+            patch.object(tasks, "manage_py") as manage_py,
+            patch.object(tasks, "_recommended_worker_replicas", return_value=12),
+        ):
+            tasks.optimize_runtime.body(
+                context,
+                worker_replicas=0,
+                query_fetch_concurrency=16,
+                nqe_page_size=10000,
+                source_name="",
+                apply_postgres=True,
+            )
+
+        self.assertGreaterEqual(docker_compose.call_count, 4)
+        commands = [call.args[1] for call in docker_compose.call_args_list]
+        self.assertIn("up -d", commands[0])
+        self.assertIn("restart postgres", commands)
+        self.assertIn("up -d --scale netbox-worker=12 netbox netbox-worker", commands)
+        manage_py.assert_not_called()
+
+    def test_optimize_runtime_updates_source_parameters_when_source_name_set(self):
+        context = self._context()
+        with (
+            patch.object(tasks, "docker_compose"),
+            patch.object(tasks, "manage_py") as manage_py,
+        ):
+            tasks.optimize_runtime.body(
+                context,
+                worker_replicas=4,
+                query_fetch_concurrency=15,
+                nqe_page_size=9000,
+                source_name="live-source",
+                apply_postgres=False,
+            )
+
+        manage_py.assert_called_once()
+        command = manage_py.call_args.args[1]
+        self.assertIn("ForwardSource.objects.get", command)
+        self.assertIn("query_fetch_concurrency", command)
+        self.assertIn("nqe_page_size", command)
+
+
 if __name__ == "__main__":
     unittest.main()
