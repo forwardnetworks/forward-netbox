@@ -1,0 +1,13 @@
+sync-health-gate poll 1/12 sync_id=51 status=syncing run_status=running blocking=0 warnings=0 suppressed_warnings=0 errors=0
+sync-health-gate poll 2/12 sync_id=51 status=syncing run_status=running blocking=0 warnings=0 suppressed_warnings=0 errors=0
+sync-health-gate poll 3/12 sync_id=51 status=syncing run_status=running blocking=0 warnings=0 suppressed_warnings=0 errors=0
+sync-health-gate poll 4/12 sync_id=51 status=syncing run_status=running blocking=0 warnings=0 suppressed_warnings=0 errors=0
+sync-health-gate poll 5/12 sync_id=51 status=syncing run_status=running blocking=0 warnings=0 suppressed_warnings=0 errors=0
+sync-health-gate poll 6/12 sync_id=51 status=syncing run_status=running blocking=0 warnings=0 suppressed_warnings=0 errors=0
+sync-health-gate poll 7/12 sync_id=51 status=syncing run_status=running blocking=0 warnings=0 suppressed_warnings=0 errors=0
+sync-health-gate poll 8/12 sync_id=51 status=syncing run_status=running blocking=0 warnings=0 suppressed_warnings=0 errors=0
+sync-health-gate poll 9/12 sync_id=51 status=syncing run_status=running blocking=0 warnings=0 suppressed_warnings=0 errors=0
+sync-health-gate poll 10/12 sync_id=51 status=syncing run_status=running blocking=0 warnings=0 suppressed_warnings=0 errors=0
+sync-health-gate poll 11/12 sync_id=51 status=syncing run_status=running blocking=0 warnings=0 suppressed_warnings=0 errors=0
+sync-health-gate poll 12/12 sync_id=51 status=syncing run_status=running blocking=0 warnings=0 suppressed_warnings=0 errors=0
+sync-health-gate passed: audits are clean on non-terminal run state.

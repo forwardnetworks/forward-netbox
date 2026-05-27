@@ -6,6 +6,8 @@ from dataclasses import field
 from ..choices import FORWARD_SUPPORTED_MODELS
 from ..choices import ForwardApplyEngineChoices
 from ..exceptions import ForwardQueryError
+from .density_learning import density_budget_policy
+from .density_learning import normalize_density_profile
 from .sync_contracts import canonical_cable_endpoint_identity
 from .sync_contracts import default_coalesce_fields_for_model
 
@@ -13,7 +15,10 @@ DEFAULT_MAX_CHANGES_PER_BRANCH = 10000
 BRANCH_BUDGET_SOFT_OVERRUN_PERCENT = 0.05
 BRANCH_RUN_STATE_PARAMETER = "_branch_run"
 MODEL_CHANGE_DENSITY_PARAMETER = "_model_change_density"
+MODEL_CHANGE_DENSITY_PROFILE_PARAMETER = "_model_change_density_profile"
 DEFAULT_DENSITY_SAFETY_FACTOR = 0.7
+DENSITY_ROW_BUDGET_MAX_MULTIPLIER = 5
+DENSITY_ROW_BUDGET_WIDEN_POLICIES = {"high_confidence_learned_density"}
 DEFAULT_MODEL_CHANGE_DENSITY = {
     "dcim.cable": 3.0,
     "dcim.module": 2.0,
@@ -28,6 +33,15 @@ DEFAULT_MODEL_CHANGE_DENSITY = {
 DEFAULT_MODEL_DELETE_CHANGE_DENSITY = {
     "dcim.device": 20.0,
 }
+DELETE_LARGE_SHARD_WARNING_RATIO = 0.8
+DELETE_WAVE_WARNING_ROW_COUNT = 1000
+DELETE_WAVE_WARNING_SHARE = 0.5
+RUNTIME_BUDGET_MIN_ROWS = 200
+RUNTIME_BUDGET_SHAPE_MIN_FACTOR = 0.75
+RUNTIME_BUDGET_SHAPE_MAX_FACTOR = 1.25
+RUNTIME_BUDGET_MS_PER_ROW_LOW = 0.75
+RUNTIME_BUDGET_MS_PER_ROW_NEUTRAL = 3.0
+RUNTIME_BUDGET_MS_PER_ROW_HIGH = 12.0
 MODEL_DENSITY_SAFETY_FACTORS = {
     "dcim.cable": 0.5,
     "netbox_routing.bgppeer": 0.5,
@@ -36,6 +50,36 @@ MODEL_DENSITY_SAFETY_FACTORS = {
 BRANCH_PLAN_OPERATION_APPLY = "apply"
 BRANCH_PLAN_OPERATION_DELETE = "delete"
 BRANCH_PLAN_OPERATION_MIXED = "mixed"
+APPLY_DEPENDENCY_MODEL_ORDER = (
+    "dcim.site",
+    "dcim.manufacturer",
+    "dcim.devicerole",
+    "dcim.platform",
+    "dcim.devicetype",
+    "ipam.vlan",
+    "ipam.vrf",
+    "ipam.prefix",
+    "dcim.device",
+    "dcim.virtualchassis",
+    "extras.taggeditem",
+    "dcim.interface",
+    "dcim.module",
+    "dcim.inventoryitem",
+    "ipam.ipaddress",
+    "dcim.macaddress",
+    "dcim.cable",
+    "netbox_routing.ospfarea",
+    "netbox_routing.ospfinstance",
+    "netbox_routing.ospfinterface",
+    "netbox_routing.bgppeer",
+    "netbox_routing.bgpaddressfamily",
+    "netbox_routing.bgppeeraddressfamily",
+    "netbox_peering_manager.peeringsession",
+)
+APPLY_DEPENDENCY_MODEL_RANK = {
+    model_string: index
+    for index, model_string in enumerate(APPLY_DEPENDENCY_MODEL_ORDER)
+}
 DELETE_DEPENDENCY_MODEL_ORDER = (
     "dcim.cable",
     "ipam.ipaddress",
@@ -215,6 +259,11 @@ class BranchWorkload:
     apply_engine: str = ForwardApplyEngineChoices.ADAPTER
     apply_engine_reason: str = ""
     apply_engine_decision: dict = field(default_factory=dict)
+    fetch_mode: str = "model"
+    fetch_key_family: str = ""
+    fetch_parameters: dict = field(default_factory=dict)
+    query_parameters: dict = field(default_factory=dict)
+    fetch_column_filters: list = field(default_factory=list)
     operation: str = BRANCH_PLAN_OPERATION_MIXED
 
     @property
@@ -241,6 +290,11 @@ class BranchPlanItem:
     apply_engine: str = ForwardApplyEngineChoices.ADAPTER
     apply_engine_reason: str = ""
     apply_engine_decision: dict = field(default_factory=dict)
+    fetch_mode: str = "model"
+    fetch_key_family: str = ""
+    fetch_parameters: dict = field(default_factory=dict)
+    query_parameters: dict = field(default_factory=dict)
+    fetch_column_filters: list = field(default_factory=list)
     operation: str = BRANCH_PLAN_OPERATION_MIXED
 
 
@@ -284,6 +338,28 @@ def shard_fetch_contract(model_string, shard_keys):
             "fetch_column_filters": [],
         }
 
+    cable_device_names = _cable_device_names_from_shard_keys(shard_keys)
+    if cable_device_names and model_string == "dcim.cable":
+        fetch_parameters = {
+            SHARD_FETCH_PARAMETER_MODE_NAME: SHARD_FETCH_PARAMETER_MODE,
+            SHARD_FETCH_PARAMETER_KEYS: list(shard_keys),
+            SHARD_FETCH_PARAMETER_BUCKET: 0,
+            SHARD_FETCH_PARAMETER_BUCKET_COUNT: 1,
+        }
+        return {
+            "fetch_mode": "nqe_column_filter",
+            "fetch_key_family": "device",
+            "fetch_parameters": fetch_parameters,
+            "query_parameters": {},
+            "fetch_column_filters": [
+                {
+                    "operator": "EQUALS_ANY",
+                    "columnName": "device",
+                    "values": list(cable_device_names),
+                }
+            ],
+        }
+
     device_names = _device_names_from_shard_keys(shard_keys)
     if device_names and model_string in DEVICE_SHARD_MODELS:
         fetch_parameters = {
@@ -297,23 +373,13 @@ def shard_fetch_contract(model_string, shard_keys):
             "fetch_key_family": "device",
             "fetch_parameters": fetch_parameters,
             "query_parameters": {},
-            "fetch_column_filters": (
-                [
-                    {
-                        "operator": "DEFAULT",
-                        "columnName": "device",
-                        "value": device_names[0],
-                    }
-                ]
-                if len(device_names) == 1
-                else [
-                    {
-                        "operator": "EQUALS_ANY",
-                        "columnName": "device",
-                        "values": list(device_names),
-                    }
-                ]
-            ),
+            "fetch_column_filters": [
+                {
+                    "operator": "EQUALS_ANY",
+                    "columnName": "device",
+                    "values": list(device_names),
+                }
+            ],
         }
 
     structured_contract = _structured_column_filter_contract(model_string, shard_keys)
@@ -348,6 +414,25 @@ def _device_names_from_shard_keys(shard_keys):
         if not device_name:
             return []
         device_names.append(device_name)
+    return sorted(device_names)
+
+
+def _cable_device_names_from_shard_keys(shard_keys):
+    device_names = set()
+    for key in shard_keys:
+        key = str(key)
+        if not key.startswith("cable:"):
+            return []
+        endpoints = key.removeprefix("cable:").split("|")
+        if not endpoints:
+            return []
+        first_endpoint = endpoints[0]
+        if ":" not in first_endpoint:
+            return []
+        device_name, _interface_name = first_endpoint.split(":", 1)
+        if not device_name:
+            return []
+        device_names.add(device_name)
     return sorted(device_names)
 
 
@@ -436,6 +521,11 @@ def split_workload(workload, *, max_changes_per_branch):
                 apply_engine=workload.apply_engine,
                 apply_engine_reason=workload.apply_engine_reason,
                 apply_engine_decision=workload.apply_engine_decision,
+                fetch_mode=workload.fetch_mode,
+                fetch_key_family=workload.fetch_key_family,
+                fetch_parameters=workload.fetch_parameters,
+                query_parameters=workload.query_parameters,
+                fetch_column_filters=workload.fetch_column_filters,
                 operation=workload.operation,
             )
         ]
@@ -513,6 +603,10 @@ def split_workload(workload, *, max_changes_per_branch):
         estimated_changes = len(branch["upsert_rows"]) + len(branch["delete_rows"])
         if not estimated_changes:
             continue
+        fetch_contract = shard_fetch_contract(
+            workload.model_string,
+            branch["shard_keys"],
+        )
         plan_items.append(
             BranchPlanItem(
                 index=index,
@@ -532,6 +626,20 @@ def split_workload(workload, *, max_changes_per_branch):
                 apply_engine=workload.apply_engine,
                 apply_engine_reason=workload.apply_engine_reason,
                 apply_engine_decision=workload.apply_engine_decision,
+                fetch_mode=fetch_contract.get("fetch_mode") or workload.fetch_mode,
+                fetch_key_family=(
+                    fetch_contract.get("fetch_key_family") or workload.fetch_key_family
+                ),
+                fetch_parameters=(
+                    fetch_contract.get("fetch_parameters") or workload.fetch_parameters
+                ),
+                query_parameters=(
+                    fetch_contract.get("query_parameters") or workload.query_parameters
+                ),
+                fetch_column_filters=(
+                    fetch_contract.get("fetch_column_filters")
+                    or workload.fetch_column_filters
+                ),
                 operation=workload.operation,
             )
         )
@@ -572,6 +680,13 @@ def dependency_phased_workloads(workloads):
                 )
             )
 
+    ordered_applies = sorted(
+        apply_workloads,
+        key=lambda item: (
+            APPLY_DEPENDENCY_MODEL_RANK.get(item[1].model_string, 10_000),
+            item[0],
+        ),
+    )
     ordered_deletes = sorted(
         delete_workloads,
         key=lambda item: (
@@ -579,7 +694,7 @@ def dependency_phased_workloads(workloads):
             item[0],
         ),
     )
-    return [item[1] for item in apply_workloads] + [item[1] for item in ordered_deletes]
+    return [item[1] for item in ordered_applies] + [item[1] for item in ordered_deletes]
 
 
 def _workload_for_operation(workload, *, upsert_rows, delete_rows, operation):
@@ -602,6 +717,11 @@ def _workload_for_operation(workload, *, upsert_rows, delete_rows, operation):
         apply_engine=workload.apply_engine,
         apply_engine_reason=workload.apply_engine_reason,
         apply_engine_decision=workload.apply_engine_decision,
+        fetch_mode=workload.fetch_mode,
+        fetch_key_family=workload.fetch_key_family,
+        fetch_parameters=workload.fetch_parameters,
+        query_parameters=workload.query_parameters,
+        fetch_column_filters=workload.fetch_column_filters,
         operation=operation,
     )
 
@@ -634,6 +754,11 @@ def build_branch_plan(workloads, *, max_changes_per_branch):
             apply_engine=item.apply_engine,
             apply_engine_reason=item.apply_engine_reason,
             apply_engine_decision=item.apply_engine_decision,
+            fetch_mode=item.fetch_mode,
+            fetch_key_family=item.fetch_key_family,
+            fetch_parameters=item.fetch_parameters,
+            query_parameters=item.query_parameters,
+            fetch_column_filters=item.fetch_column_filters,
             operation=item.operation,
         )
         for index, item in enumerate(plan, start=1)
@@ -645,14 +770,18 @@ def effective_row_budget_for_model(
     *,
     max_changes_per_branch,
     model_change_density=None,
+    model_change_density_profile=None,
     safety_factor=DEFAULT_DENSITY_SAFETY_FACTOR,
 ):
     if max_changes_per_branch < 1:
         raise ValueError("`max_changes_per_branch` must be at least 1.")
 
-    density = (model_change_density or {}).get(model_string)
-    if density is None:
-        density = DEFAULT_MODEL_CHANGE_DENSITY.get(model_string)
+    density_policy = _effective_budget_density_policy(
+        model_string,
+        model_change_density=model_change_density,
+        model_change_density_profile=model_change_density_profile,
+    )
+    density = density_policy.get("density")
     if density is None:
         return max_changes_per_branch
     try:
@@ -666,10 +795,16 @@ def effective_row_budget_for_model(
         model_string,
         float(safety_factor),
     )
+    row_budget_ceiling = _density_row_budget_ceiling(
+        max_changes_per_branch,
+        density_policy=density_policy,
+        density_value=density_value,
+        safety_factor=effective_safety_factor,
+    )
     scaled_budget = int(
         (max_changes_per_branch * float(effective_safety_factor)) / density_value
     )
-    return max(1, min(max_changes_per_branch, scaled_budget))
+    return max(1, min(row_budget_ceiling, scaled_budget))
 
 
 def effective_workload_row_budget(
@@ -677,35 +812,83 @@ def effective_workload_row_budget(
     *,
     max_changes_per_branch,
     model_change_density=None,
+    model_change_density_profile=None,
     safety_factor=DEFAULT_DENSITY_SAFETY_FACTOR,
 ):
-    base_budget = effective_row_budget_for_model(
+    row_budget = effective_row_budget_for_model(
         workload.model_string,
         max_changes_per_branch=max_changes_per_branch,
         model_change_density=model_change_density,
+        model_change_density_profile=model_change_density_profile,
         safety_factor=safety_factor,
     )
     delete_count = len(workload.delete_rows)
-    if not delete_count:
-        return base_budget
+    if delete_count:
+        row_budget = min(row_budget, max_changes_per_branch)
+        delete_density = DEFAULT_MODEL_DELETE_CHANGE_DENSITY.get(workload.model_string)
+        if delete_density is not None:
+            upsert_count = len(workload.upsert_rows)
+            total_rows = upsert_count + delete_count
+            if total_rows > 0:
+                weighted_change_estimate = upsert_count + (
+                    delete_count * float(delete_density)
+                )
+                if weighted_change_estimate > 0:
+                    weighted_budget = int(
+                        (max_changes_per_branch * total_rows) / weighted_change_estimate
+                    )
+                    row_budget = max(1, min(row_budget, weighted_budget))
 
-    delete_density = DEFAULT_MODEL_DELETE_CHANGE_DENSITY.get(workload.model_string)
-    if delete_density is None:
-        return base_budget
-
-    upsert_count = len(workload.upsert_rows)
-    total_rows = upsert_count + delete_count
-    if total_rows < 1:
-        return base_budget
-
-    weighted_change_estimate = upsert_count + (delete_count * float(delete_density))
-    if weighted_change_estimate <= 0:
-        return base_budget
-
-    weighted_budget = int(
-        (max_changes_per_branch * total_rows) / weighted_change_estimate
+    runtime_shaped_budget = _runtime_shaped_row_budget(
+        row_budget,
+        workload=workload,
+        max_changes_per_branch=max_changes_per_branch,
     )
-    return max(1, min(base_budget, weighted_budget))
+    row_budget_cap = max(max_changes_per_branch, row_budget)
+    return max(1, min(row_budget_cap, runtime_shaped_budget))
+
+
+def _runtime_shaped_row_budget(base_budget, *, workload, max_changes_per_branch):
+    total_rows = len(workload.upsert_rows) + len(workload.delete_rows)
+    if total_rows < RUNTIME_BUDGET_MIN_ROWS:
+        return base_budget
+
+    try:
+        runtime_ms = float(workload.query_runtime_ms or 0.0)
+    except (TypeError, ValueError):
+        return base_budget
+    if runtime_ms <= 0:
+        return base_budget
+
+    runtime_per_row_ms = runtime_ms / float(total_rows)
+    factor = _runtime_budget_shape_factor(runtime_per_row_ms)
+    if workload.delete_rows and factor > 1.0:
+        factor = 1.0
+    shaped_budget = int(round(float(base_budget) * factor))
+    cap = max(max_changes_per_branch, base_budget)
+    return max(1, min(cap, shaped_budget))
+
+
+def _runtime_budget_shape_factor(runtime_per_row_ms):
+    if runtime_per_row_ms <= RUNTIME_BUDGET_MS_PER_ROW_LOW:
+        return RUNTIME_BUDGET_SHAPE_MIN_FACTOR
+    if runtime_per_row_ms >= RUNTIME_BUDGET_MS_PER_ROW_HIGH:
+        return RUNTIME_BUDGET_SHAPE_MAX_FACTOR
+
+    if runtime_per_row_ms <= RUNTIME_BUDGET_MS_PER_ROW_NEUTRAL:
+        span = RUNTIME_BUDGET_MS_PER_ROW_NEUTRAL - RUNTIME_BUDGET_MS_PER_ROW_LOW
+        if span <= 0:
+            return 1.0
+        ratio = (runtime_per_row_ms - RUNTIME_BUDGET_MS_PER_ROW_LOW) / span
+        return RUNTIME_BUDGET_SHAPE_MIN_FACTOR + (
+            (1.0 - RUNTIME_BUDGET_SHAPE_MIN_FACTOR) * ratio
+        )
+
+    span = RUNTIME_BUDGET_MS_PER_ROW_HIGH - RUNTIME_BUDGET_MS_PER_ROW_NEUTRAL
+    if span <= 0:
+        return 1.0
+    ratio = (runtime_per_row_ms - RUNTIME_BUDGET_MS_PER_ROW_NEUTRAL) / span
+    return 1.0 + ((RUNTIME_BUDGET_SHAPE_MAX_FACTOR - 1.0) * ratio)
 
 
 def build_branch_plan_with_density(
@@ -713,6 +896,7 @@ def build_branch_plan_with_density(
     *,
     max_changes_per_branch,
     model_change_density=None,
+    model_change_density_profile=None,
     safety_factor=DEFAULT_DENSITY_SAFETY_FACTOR,
 ):
     plan = []
@@ -721,6 +905,7 @@ def build_branch_plan_with_density(
             workload,
             max_changes_per_branch=max_changes_per_branch,
             model_change_density=model_change_density,
+            model_change_density_profile=model_change_density_profile,
             safety_factor=safety_factor,
         )
         plan.extend(
@@ -748,6 +933,11 @@ def build_branch_plan_with_density(
             apply_engine=item.apply_engine,
             apply_engine_reason=item.apply_engine_reason,
             apply_engine_decision=item.apply_engine_decision,
+            fetch_mode=item.fetch_mode,
+            fetch_key_family=item.fetch_key_family,
+            fetch_parameters=item.fetch_parameters,
+            query_parameters=item.query_parameters,
+            fetch_column_filters=item.fetch_column_filters,
             operation=item.operation,
         )
         for index, item in enumerate(plan, start=1)
@@ -759,12 +949,220 @@ def build_branch_budget_hints(
     *,
     max_changes_per_branch,
     model_change_density=None,
+    model_change_density_profile=None,
 ):
     return {
         model_string: effective_row_budget_for_model(
             model_string,
             max_changes_per_branch=max_changes_per_branch,
             model_change_density=model_change_density,
+            model_change_density_profile=model_change_density_profile,
         )
         for model_string in model_strings
     }
+
+
+def delete_dependency_plan_summary(plan_items, *, max_changes_per_branch):
+    total_changes = sum(max(0, int(item.estimated_changes or 0)) for item in plan_items)
+    delete_items = [
+        item
+        for item in plan_items
+        if item.operation == BRANCH_PLAN_OPERATION_DELETE or item.delete_rows
+    ]
+    total_delete_rows = sum(len(item.delete_rows or []) for item in delete_items)
+    models = {}
+    execution_order = []
+    max_delete_shard_changes = 0
+    for item in delete_items:
+        delete_count = len(item.delete_rows or [])
+        if not delete_count:
+            continue
+        rank = DELETE_DEPENDENCY_MODEL_RANK.get(item.model_string)
+        dependent_model_count = _dependent_delete_model_count(item.model_string)
+        entry = models.setdefault(
+            item.model_string,
+            {
+                "delete_rows": 0,
+                "delete_shards": 0,
+                "max_delete_shard_changes": 0,
+                "dependency_rank": rank,
+                "dependent_model_count": dependent_model_count,
+                "reference_blocker_risk": _reference_blocker_risk(
+                    dependent_model_count
+                ),
+                "first_plan_index": item.index,
+                "last_plan_index": item.index,
+            },
+        )
+        entry["delete_rows"] += delete_count
+        entry["delete_shards"] += 1
+        entry["max_delete_shard_changes"] = max(
+            entry["max_delete_shard_changes"],
+            max(0, int(item.estimated_changes or 0)),
+        )
+        entry["first_plan_index"] = min(entry["first_plan_index"], item.index)
+        entry["last_plan_index"] = max(entry["last_plan_index"], item.index)
+        max_delete_shard_changes = max(
+            max_delete_shard_changes,
+            max(0, int(item.estimated_changes or 0)),
+        )
+        if item.model_string not in execution_order:
+            execution_order.append(item.model_string)
+
+    delete_share = float(total_delete_rows / total_changes) if total_changes else 0.0
+    warnings = []
+    if total_delete_rows >= DELETE_WAVE_WARNING_ROW_COUNT or (
+        total_delete_rows and delete_share >= DELETE_WAVE_WARNING_SHARE
+    ):
+        warnings.append(
+            {
+                "code": "delete_wave",
+                "severity": "warning",
+                "message": (
+                    "Delete work is a material share of this plan; review the "
+                    "delete summary and dependency-risk models before merge."
+                ),
+            }
+        )
+    soft_large_shard = int(
+        max(1, int(max_changes_per_branch or 1)) * DELETE_LARGE_SHARD_WARNING_RATIO
+    )
+    if max_delete_shard_changes >= soft_large_shard:
+        warnings.append(
+            {
+                "code": "large_delete_shard",
+                "severity": "warning",
+                "message": (
+                    "At least one delete shard is near the branch budget; "
+                    "reference blockers may make the merge slower or noisier."
+                ),
+            }
+        )
+    high_risk_models = [
+        model
+        for model, entry in models.items()
+        if entry["reference_blocker_risk"] == "high"
+    ]
+    if high_risk_models:
+        warnings.append(
+            {
+                "code": "reference_blocker_risk",
+                "severity": "warning",
+                "models": high_risk_models,
+                "message": (
+                    "Some deleted models are dependency anchors; unresolved "
+                    "references should surface as row issues or merge blockers."
+                ),
+            }
+        )
+
+    status = "none"
+    if total_delete_rows:
+        status = "high" if warnings else "low"
+    return {
+        "status": status,
+        "delete_rows": total_delete_rows,
+        "delete_shards": len(delete_items),
+        "delete_model_count": len(models),
+        "delete_share": round(delete_share, 4),
+        "max_delete_shard_changes": max_delete_shard_changes,
+        "execution_order": execution_order,
+        "models": models,
+        "warnings": warnings,
+    }
+
+
+def _dependent_delete_model_count(model_string):
+    if model_string not in DELETE_DEPENDENCY_MODEL_RANK:
+        return 0
+    rank = DELETE_DEPENDENCY_MODEL_RANK[model_string]
+    return sum(
+        1
+        for candidate, candidate_rank in DELETE_DEPENDENCY_MODEL_RANK.items()
+        if candidate != model_string and candidate_rank < rank
+    )
+
+
+def _reference_blocker_risk(dependent_model_count):
+    if dependent_model_count >= 5:
+        return "high"
+    if dependent_model_count > 0:
+        return "medium"
+    return "low"
+
+
+def branch_budget_density_policy_summary(
+    model_strings,
+    *,
+    model_change_density=None,
+    model_change_density_profile=None,
+):
+    profile = normalize_density_profile(model_change_density_profile or {})
+    return {
+        model_string: density_budget_policy(
+            model_string,
+            learned_density=(model_change_density or {}).get(model_string),
+            profile_entry=profile.get(model_string) or {},
+            default_density=DEFAULT_MODEL_CHANGE_DENSITY.get(model_string),
+        )
+        for model_string in model_strings
+    }
+
+
+def _effective_budget_density(
+    model_string,
+    *,
+    model_change_density=None,
+    model_change_density_profile=None,
+):
+    return _effective_budget_density_policy(
+        model_string,
+        model_change_density=model_change_density,
+        model_change_density_profile=model_change_density_profile,
+    )["density"]
+
+
+def _effective_budget_density_policy(
+    model_string,
+    *,
+    model_change_density=None,
+    model_change_density_profile=None,
+):
+    learned_density = (model_change_density or {}).get(model_string)
+    default_density = DEFAULT_MODEL_CHANGE_DENSITY.get(model_string)
+    profile = normalize_density_profile(model_change_density_profile or {})
+    if model_change_density_profile is None or not profile:
+        density = learned_density if learned_density is not None else default_density
+        return {
+            "model": str(model_string or ""),
+            "density": density,
+            "policy": (
+                "legacy_learned_density"
+                if learned_density is not None
+                else "default_density"
+            ),
+            "confidence": "",
+            "confidence_score": None,
+        }
+    return density_budget_policy(
+        model_string,
+        learned_density=learned_density,
+        profile_entry=profile.get(model_string) or {},
+        default_density=default_density,
+    )
+
+
+def _density_row_budget_ceiling(
+    max_changes_per_branch,
+    *,
+    density_policy,
+    density_value,
+    safety_factor,
+):
+    base = max(1, int(max_changes_per_branch))
+    policy = str((density_policy or {}).get("policy") or "")
+    if policy not in DENSITY_ROW_BUDGET_WIDEN_POLICIES:
+        return base
+    if float(density_value or 0.0) >= float(safety_factor):
+        return base
+    return base * DENSITY_ROW_BUDGET_MAX_MULTIPLIER

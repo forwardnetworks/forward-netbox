@@ -34,7 +34,11 @@ ROUTING_DIAGNOSTIC_MODELS = {
 
 
 def append_ipaddress_diagnostics(fetcher, context):
-    if "ipam.ipaddress" not in fetcher.sync.get_model_strings():
+    ipaddress_has_rows = any(
+        result.model_string == "ipam.ipaddress" and int(result.row_count or 0) > 0
+        for result in fetcher.model_results
+    )
+    if not ipaddress_has_rows:
         return
     diagnostic = run_ipaddress_unassignable_diagnostic(fetcher, context)
     if not diagnostic:
@@ -190,6 +194,17 @@ def _ip_is_in_intervals(
 
 
 def run_ipaddress_unassignable_diagnostic(fetcher, context):
+    cached_lookup = getattr(fetcher, "_load_cached_diagnostic_result", None)
+    cached_store = getattr(fetcher, "_store_cached_diagnostic_result", None)
+    cache_hit = False
+    if callable(cached_lookup):
+        cache_hit, cached_diagnostic = cached_lookup(
+            diagnostic_name="unassignable_interface_addresses",
+            context=context,
+        )
+        if cache_hit:
+            return cached_diagnostic
+
     try:
         rows = fetcher.client.run_nqe_query(
             query=ipaddress_unassignable_diagnostic_query(),
@@ -208,6 +223,12 @@ def run_ipaddress_unassignable_diagnostic(fetcher, context):
 
     diagnostic = summarize_unassignable_ipaddress_rows(rows)
     if diagnostic["total"] <= 0:
+        if callable(cached_store):
+            cached_store(
+                diagnostic_name="unassignable_interface_addresses",
+                context=context,
+                diagnostic=None,
+            )
         return None
 
     count_summary = ", ".join(
@@ -234,6 +255,12 @@ def run_ipaddress_unassignable_diagnostic(fetcher, context):
             f"{suppressed} additional filtered IP address diagnostic examples "
             f"after the first {IPADDRESS_DIAGNOSTIC_DETAIL_LIMIT}.",
             obj=fetcher.sync,
+        )
+    if callable(cached_store):
+        cached_store(
+            diagnostic_name="unassignable_interface_addresses",
+            context=context,
+            diagnostic=diagnostic,
         )
     return diagnostic
 
@@ -264,8 +291,12 @@ def summarize_unassignable_ipaddress_rows(rows: list[dict]) -> dict:
 
 
 def append_routing_diagnostics(fetcher, context):
-    enabled_models = set(fetcher.sync.get_model_strings())
-    target_models = enabled_models & ROUTING_DIAGNOSTIC_MODELS
+    target_models = {
+        result.model_string
+        for result in fetcher.model_results
+        if result.model_string in ROUTING_DIAGNOSTIC_MODELS
+        and int(result.row_count or 0) > 0
+    }
     if not target_models:
         return
     diagnostic = run_routing_import_diagnostic(fetcher, context)
@@ -282,6 +313,17 @@ def append_routing_diagnostics(fetcher, context):
 
 
 def run_routing_import_diagnostic(fetcher, context):
+    cached_lookup = getattr(fetcher, "_load_cached_diagnostic_result", None)
+    cached_store = getattr(fetcher, "_store_cached_diagnostic_result", None)
+    cache_hit = False
+    if callable(cached_lookup):
+        cache_hit, cached_diagnostic = cached_lookup(
+            diagnostic_name="routing_import_skipped_rows",
+            context=context,
+        )
+        if cache_hit:
+            return cached_diagnostic
+
     try:
         rows = fetcher.client.run_nqe_query(
             query=routing_import_diagnostic_query(),
@@ -300,6 +342,12 @@ def run_routing_import_diagnostic(fetcher, context):
 
     diagnostic = summarize_routing_import_diagnostic_rows(rows)
     if diagnostic["total"] <= 0:
+        if callable(cached_store):
+            cached_store(
+                diagnostic_name="routing_import_skipped_rows",
+                context=context,
+                diagnostic=None,
+            )
         return None
 
     count_summary = ", ".join(
@@ -326,6 +374,12 @@ def run_routing_import_diagnostic(fetcher, context):
             f"{suppressed} additional routing diagnostic examples after the "
             f"first {ROUTING_DIAGNOSTIC_DETAIL_LIMIT}.",
             obj=fetcher.sync,
+        )
+    if callable(cached_store):
+        cached_store(
+            diagnostic_name="routing_import_skipped_rows",
+            context=context,
+            diagnostic=diagnostic,
         )
     return diagnostic
 

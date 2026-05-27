@@ -86,6 +86,7 @@ from .execution_ledger_serialization import (
 from .execution_ledger_serialization import (
     ingestion_support_summary as _ingestion_support_summary_data,
 )
+from .job_liveness import job_has_live_execution
 from .sync_state import STALE_BRANCH_PROGRESS_SECONDS
 
 
@@ -102,6 +103,14 @@ ACTIVE_STEP_STATUSES = {
     ForwardExecutionStepStatusChoices.RUNNING,
     ForwardExecutionStepStatusChoices.MERGE_QUEUED,
 }
+
+RECOVERY_ESCALATION_REASONS = {
+    "stale_stage_with_branch",
+    "stale_merge_job",
+}
+RECOVERY_ESCALATION_REASON_THRESHOLD = 3
+RUN_WATCHDOG_REASON = "stale_run_no_progress_watchdog"
+RUN_WATCHDOG_ESCALATION_THRESHOLD = 2
 
 FAILED_STEP_STATUSES = {
     ForwardExecutionStepStatusChoices.FAILED,
@@ -197,6 +206,92 @@ def execution_run_recovery_recommendation(run):
             "severity": "info",
             "message": "No execution run is available.",
         }
+    orphaned_queued = _queued_step_without_job_or_branch(run)
+    if orphaned_queued is not None:
+        return _recommendation(
+            action="reconcile",
+            severity="warning",
+            message=(
+                "Queued execution step has no queued job or branch state; "
+                "reconcile this run so the shard can be requeued safely."
+            ),
+            step=orphaned_queued,
+        )
+    stale_active = _stale_active_step(run)
+    if stale_active is not None:
+        return _recommendation(
+            action="reconcile",
+            severity="warning",
+            message=(
+                "Active execution step heartbeat is stale; reconcile this run to "
+                "refresh stale job state before retrying."
+            ),
+            step=stale_active,
+        )
+    active_step = (
+        run.steps.filter(status__in=ACTIVE_STEP_STATUSES).order_by("index").first()
+    )
+    if active_step is not None and active_step.job_id is not None:
+        if _job_is_live(active_step.job):
+            return _recommendation(
+                action="wait",
+                severity="info",
+                message="Wait for the active execution step to finish.",
+                step=active_step,
+            )
+        return _recommendation(
+            action="monitor",
+            severity="info",
+            message=(
+                "Active execution step has an assigned job. Wait briefly for queue "
+                "state to settle before escalating to manual intervention."
+            ),
+            step=active_step,
+        )
+    if active_step is not None:
+        return _recommendation(
+            action="wait",
+            severity="info",
+            message="Wait for the active execution step to finish.",
+            step=active_step,
+        )
+    watchdog = _run_watchdog_evidence(run)
+    if (
+        watchdog is not None
+        and watchdog.get("count", 0) >= RUN_WATCHDOG_ESCALATION_THRESHOLD
+    ):
+        return _recommendation(
+            action="manual_intervention",
+            severity="danger",
+            message=(
+                "Run-level no-progress watchdog reached escalation threshold. "
+                "Inspect queue/worker state and requeue or resume from the current "
+                "step after resolving executor health."
+            ),
+            watchdog_reason=watchdog["reason"],
+            watchdog_count=watchdog["count"],
+        )
+    escalation = _recovery_escalation_evidence(run)
+    if escalation is not None:
+        escalation_step = None
+        if escalation.get("step_index") is not None:
+            escalation_step = (
+                run.steps.filter(index=int(escalation["step_index"]))
+                .order_by("pk")
+                .first()
+            )
+        return _recommendation(
+            action="manual_intervention",
+            severity="danger",
+            message=(
+                "Repeated stale branch-associated recovery signals reached the "
+                "escalation threshold. Pause automatic retries for this shard and "
+                "inspect/discard the branch state before continuing."
+            ),
+            step=escalation_step,
+            escalation_reason=escalation["reason"],
+            escalation_count=escalation["count"],
+        )
     discardable = current_discardable_step(run)
     if discardable is not None:
         return _recommendation(
@@ -238,15 +333,16 @@ def execution_run_recovery_recommendation(run):
             message="Review and merge the staged Branching shard before continuing.",
             step=waiting_step,
         )
-    active_step = (
-        run.steps.filter(status__in=ACTIVE_STEP_STATUSES).order_by("index").first()
-    )
-    if active_step is not None:
+    if _run_heartbeat_stale(run):
         return _recommendation(
-            action="wait",
-            severity="info",
-            message="Wait for the active execution step to finish.",
-            step=active_step,
+            action="reconcile",
+            severity="warning",
+            message=(
+                "Execution run heartbeat is stale; reconcile this run before "
+                "continuing."
+            ),
+            watchdog_reason=RUN_WATCHDOG_REASON,
+            watchdog_count=int((watchdog or {}).get("count") or 0),
         )
     if run.status == ForwardExecutionRunStatusChoices.COMPLETED:
         return _recommendation(
@@ -270,8 +366,8 @@ def execution_run_recovery_recommendation(run):
     )
 
 
-def _recommendation(*, action, severity, message, step=None):
-    return {
+def _recommendation(*, action, severity, message, step=None, **extra):
+    payload = {
         "action": action,
         "severity": severity,
         "message": message,
@@ -280,6 +376,104 @@ def _recommendation(*, action, severity, message, step=None):
         "step_status": getattr(step, "status", "") if step is not None else "",
         "model": getattr(step, "model_string", "") if step is not None else "",
     }
+    if extra:
+        payload.update(extra)
+    return payload
+
+
+def _recovery_escalation_evidence(run):
+    events = (
+        run.reconciliation_events if isinstance(run.reconciliation_events, list) else []
+    )
+    counts = {}
+    latest_by_reason = {}
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        reason = str(event.get("reason") or "")
+        if reason not in RECOVERY_ESCALATION_REASONS:
+            continue
+        counts[reason] = int(counts.get(reason, 0)) + 1
+        latest_by_reason[reason] = event
+    for reason, count in sorted(counts.items(), key=lambda item: item[1], reverse=True):
+        if count >= RECOVERY_ESCALATION_REASON_THRESHOLD:
+            latest = latest_by_reason.get(reason) or {}
+            return {
+                "reason": reason,
+                "count": count,
+                "step_index": latest.get("index"),
+            }
+    return None
+
+
+def _run_watchdog_evidence(run):
+    events = (
+        run.reconciliation_events if isinstance(run.reconciliation_events, list) else []
+    )
+    count = 0
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("reason") or "") == RUN_WATCHDOG_REASON:
+            count += 1
+    if count <= 0:
+        return None
+    return {
+        "reason": RUN_WATCHDOG_REASON,
+        "count": int(count),
+    }
+
+
+def _stale_active_step(run):
+    if run.status not in {
+        ForwardExecutionRunStatusChoices.RUNNING,
+        ForwardExecutionRunStatusChoices.WAITING,
+    }:
+        return None
+    step = run.steps.filter(status__in=ACTIVE_STEP_STATUSES).order_by("index").first()
+    if step is None:
+        return None
+    if _job_is_live(step.job):
+        return None
+    timestamp = step.heartbeat or step.started
+    if timestamp is None:
+        return None
+    age_seconds = (timezone.now() - timestamp).total_seconds()
+    if age_seconds >= STALE_BRANCH_PROGRESS_SECONDS:
+        return step
+    return None
+
+
+def _job_is_live(job):
+    return job_has_live_execution(job)
+
+
+def _queued_step_without_job_or_branch(run):
+    return (
+        run.steps.filter(
+            kind=ForwardExecutionStepKindChoices.STAGE,
+            status=ForwardExecutionStepStatusChoices.QUEUED,
+            job__isnull=True,
+            merge_job__isnull=True,
+            branch__isnull=True,
+            ingestion__isnull=True,
+        )
+        .filter(branch_name="")
+        .order_by("index")
+        .first()
+    )
+
+
+def _run_heartbeat_stale(run):
+    if run.status not in {
+        ForwardExecutionRunStatusChoices.RUNNING,
+        ForwardExecutionRunStatusChoices.WAITING,
+    }:
+        return False
+    if run.latest_heartbeat is None:
+        return False
+    age_seconds = (timezone.now() - run.latest_heartbeat).total_seconds()
+    return age_seconds >= STALE_BRANCH_PROGRESS_SECONDS
 
 
 def _ingestion_support_summary(ingestion):
@@ -368,6 +562,7 @@ def _plan_item_from_execution_step(step):
         "fetch_mode": step.fetch_mode,
         "fetch_key_family": step.fetch_key_family,
         "fetch_parameters": step.fetch_parameters or {},
+        "query_parameters": step.query_parameters or {},
         "fetch_column_filters": step.fetch_column_filters or [],
         "status": step.status,
         "ingestion_id": step.ingestion_id,
@@ -620,12 +815,17 @@ def claim_stage_step(sync, index, job):
 
 
 def mark_run_completed(sync, *, baseline_ready=False):
-    return _mark_run_completed_impl(
+    run = _mark_run_completed_impl(
         sync,
         baseline_ready=baseline_ready,
         active_execution_run_fn=active_execution_run,
         latest_execution_run_fn=latest_execution_run,
     )
+    if run is not None and run.status == ForwardExecutionRunStatusChoices.COMPLETED:
+        from .fetch_artifacts import prune_fetch_artifacts_for_run
+
+        prune_fetch_artifacts_for_run(run.pk)
+    return run
 
 
 def _run_status_from_sync(sync):

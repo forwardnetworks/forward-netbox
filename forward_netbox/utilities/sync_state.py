@@ -2,14 +2,22 @@ from django.core.cache import cache
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
+from ..choices import ForwardDiffFallbackModeChoices
 from ..choices import ForwardExecutionBackendChoices
 from ..choices import ForwardExecutionRunStatusChoices
 from ..choices import ForwardSyncStatusChoices
+from .branch_budget import branch_budget_density_policy_summary
 from .branch_budget import BRANCH_RUN_STATE_PARAMETER
 from .branch_budget import build_branch_budget_hints
+from .branch_budget import DEFAULT_MODEL_CHANGE_DENSITY
 from .branch_budget import MODEL_CHANGE_DENSITY_PARAMETER
+from .branch_budget import MODEL_CHANGE_DENSITY_PROFILE_PARAMETER
+from .density_learning import density_profile_summary
+from .density_learning import normalize_density_map
+from .density_learning import normalize_density_profile
 from .execution_telemetry import build_branch_run_summary
 from .execution_telemetry import build_sync_execution_summary
+from .job_liveness import job_has_live_execution
 
 STALE_BRANCH_PROGRESS_SECONDS = 15 * 60
 PROGRESS_STATE_KEYS = (
@@ -24,16 +32,28 @@ PROGRESS_STATE_KEYS = (
 
 def get_branch_run_state(sync):
     state = (sync.parameters or {}).get(BRANCH_RUN_STATE_PARAMETER) or {}
-    return state if isinstance(state, dict) else {}
+    if not isinstance(state, dict):
+        return {}
+    if state and _has_execution_runs(sync):
+        # Once ledger history exists, compatibility state is no longer an
+        # authoritative runtime surface. Opportunistically prune if no run is
+        # active, and always present compatibility state as empty to callers.
+        prune_stale_branch_run_state(sync)
+        return {}
+    return state
 
 
 def get_branch_run_display_state(sync):
     state = get_branch_run_state(sync)
-    run = _latest_execution_run(sync)
+    run = _active_execution_run(sync)
     if run is not None:
         from .execution_ledger import branch_run_state_from_execution_run
 
         return branch_run_state_from_execution_run(run)
+    if _has_execution_runs(sync):
+        # Once ledger runs exist, compatibility JSON is no longer a display
+        # surface when no active run is present.
+        return {}
     return state
 
 
@@ -43,17 +63,30 @@ def get_execution_display_state(sync):
 
 def get_model_change_density(sync):
     density = (sync.parameters or {}).get(MODEL_CHANGE_DENSITY_PARAMETER) or {}
-    return density if isinstance(density, dict) else {}
+    if not isinstance(density, dict):
+        return {}
+    return normalize_density_map(density)
+
+
+def get_model_change_density_profile(sync):
+    profile = (sync.parameters or {}).get(MODEL_CHANGE_DENSITY_PROFILE_PARAMETER) or {}
+    if not isinstance(profile, dict):
+        return {}
+    return normalize_density_profile(profile)
 
 
 def set_branch_run_state(sync, state):
     from .execution_ledger import active_execution_run
 
     active_run = active_execution_run(sync)
-    # Keep the compatibility payload read-only once a real execution run exists.
-    # The only allowed write in this mode is explicit linkage metadata that
-    # carries execution_run_id for compatibility-window exports.
-    if active_run is not None and not (state or {}).get("execution_run_id"):
+    # Keep compatibility payload strictly read-only once a real execution run
+    # exists. Ledger rows are the active orchestration source.
+    if active_run is not None:
+        return False
+    if _has_execution_runs(sync):
+        # Once any execution run history exists, compatibility JSON is only a
+        # read-through upgrade bridge and must not be mutated by active runtime
+        # paths.
         return False
     parameters = dict(sync.parameters or {})
     parameters[BRANCH_RUN_STATE_PARAMETER] = state or {}
@@ -68,6 +101,23 @@ def clear_branch_run_state(sync):
         parameters.pop(BRANCH_RUN_STATE_PARAMETER, None)
         sync.parameters = parameters
         sync.__class__.objects.filter(pk=sync.pk).update(parameters=parameters)
+
+
+def prune_stale_branch_run_state(sync):
+    """Drop legacy compatibility state once only ledger history remains."""
+    if not getattr(sync, "pk", None):
+        return False
+    if not _has_execution_runs(sync):
+        return False
+    if _active_execution_run(sync) is not None:
+        return False
+    parameters = dict(sync.parameters or {})
+    if BRANCH_RUN_STATE_PARAMETER not in parameters:
+        return False
+    parameters.pop(BRANCH_RUN_STATE_PARAMETER, None)
+    sync.parameters = parameters
+    sync.__class__.objects.filter(pk=sync.pk).update(parameters=parameters)
+    return True
 
 
 def clear_branch_run_progress_fields(state):
@@ -95,8 +145,11 @@ def mark_branch_run_failed(sync, message):
                 "latest_heartbeat",
             ]
         )
+        from .fetch_artifacts import prune_fetch_artifacts_for_run
+
+        prune_fetch_artifacts_for_run(run.pk)
         return True
-    state = get_branch_run_state(sync)
+    state = get_branch_run_display_state(sync)
     if not state:
         return False
     clear_branch_run_progress_fields(state)
@@ -105,11 +158,6 @@ def mark_branch_run_failed(sync, message):
     state["phase_started"] = timezone.now().isoformat()
     state["awaiting_merge"] = False
     set_branch_run_state(sync, state)
-    if run is not None:
-        run.phase = "failed"
-        run.phase_message = str(message)
-        run.latest_heartbeat = timezone.now()
-        run.save(update_fields=["phase", "phase_message", "latest_heartbeat"])
     return True
 
 
@@ -149,7 +197,7 @@ def touch_branch_run_progress(
         updated_fields.append("latest_heartbeat")
         run.save(update_fields=updated_fields)
         return True
-    state = get_branch_run_state(sync)
+    state = get_branch_run_display_state(sync)
     if not state:
         return False
     if phase_message is not None:
@@ -166,44 +214,30 @@ def touch_branch_run_progress(
         state["current_row_total"] = int(row_total)
     state["last_progress_at"] = timezone.now().isoformat()
     set_branch_run_state(sync, state)
-    if run is not None:
-        if phase_message is not None:
-            run.phase_message = str(phase_message)
-        if shard_index is not None:
-            run.next_step_index = int(shard_index)
-        if total_plan_items is not None:
-            run.total_steps = int(total_plan_items)
-        run.latest_heartbeat = timezone.now()
-        run.save(
-            update_fields=[
-                "phase_message",
-                "next_step_index",
-                "total_steps",
-                "latest_heartbeat",
-            ]
-        )
     return True
 
 
 def set_model_change_density(sync, model_change_density):
-    normalized = {}
-    for model_string, density in (model_change_density or {}).items():
-        try:
-            density_value = float(density)
-        except (TypeError, ValueError):
-            continue
-        if density_value <= 0:
-            continue
-        normalized[str(model_string)] = density_value
+    normalized = normalize_density_map(model_change_density)
     parameters = dict(sync.parameters or {})
     parameters[MODEL_CHANGE_DENSITY_PARAMETER] = normalized
     sync.parameters = parameters
     sync.__class__.objects.filter(pk=sync.pk).update(parameters=parameters)
 
 
+def set_model_change_density_profile(sync, model_change_density_profile):
+    normalized = normalize_density_profile(model_change_density_profile)
+    parameters = dict(sync.parameters or {})
+    parameters[MODEL_CHANGE_DENSITY_PROFILE_PARAMETER] = normalized
+    sync.parameters = parameters
+    sync.__class__.objects.filter(pk=sync.pk).update(parameters=parameters)
+
+
 def is_waiting_for_branch_merge(sync):
-    run = _latest_execution_run(sync)
+    run = _active_execution_run(sync)
     if run is None:
+        if _has_execution_runs(sync):
+            return False
         return bool(get_branch_run_state(sync).get("awaiting_merge"))
     from ..choices import ForwardExecutionStepStatusChoices
 
@@ -213,9 +247,11 @@ def is_waiting_for_branch_merge(sync):
 
 
 def has_pending_branch_run(sync):
-    run = _latest_execution_run(sync)
+    run = _active_execution_run(sync)
     if run is None:
-        return False
+        if _has_execution_runs(sync):
+            return False
+        return bool(get_branch_run_state(sync))
     from ..choices import ForwardExecutionRunStatusChoices
     from ..choices import ForwardExecutionStepKindChoices
     from ..choices import ForwardExecutionStepStatusChoices
@@ -249,13 +285,24 @@ def ready_to_continue_sync(sync):
     return has_pending_branch_run(sync) and ready_for_sync(sync)
 
 
-def _latest_execution_run(sync):
+def _active_execution_run(sync):
     if not getattr(sync, "pk", None):
         return None
     try:
-        return sync.execution_runs.order_by("-pk").first()
+        from .execution_ledger import active_execution_run
+
+        return active_execution_run(sync)
     except Exception:
         return None
+
+
+def _has_execution_runs(sync):
+    if not getattr(sync, "pk", None):
+        return False
+    try:
+        return sync.execution_runs.exists()
+    except Exception:
+        return False
 
 
 def get_max_changes_per_branch(sync, default_max_changes_per_branch):
@@ -328,19 +375,38 @@ def get_display_parameters(
         (sync.parameters or {}).get("auto_merge", sync.auto_merge)
     )
     parameters["multi_branch"] = sync.uses_multi_branch()
+    parameters["diff_fallback_mode"] = (sync.parameters or {}).get(
+        "diff_fallback_mode",
+        ForwardDiffFallbackModeChoices.ALLOW_FALLBACK,
+    )
     parameters["max_changes_per_branch"] = get_max_changes_per_branch(
         sync,
         max_changes_per_branch_default,
     )
     model_change_density = get_model_change_density(sync)
+    density_profile = get_model_change_density_profile(sync)
     if model_change_density:
         parameters["model_change_density"] = model_change_density
+    if density_profile:
+        parameters["model_change_density_profile"] = density_profile_summary(
+            density_map=model_change_density,
+            density_profile=density_profile,
+            default_density_map=DEFAULT_MODEL_CHANGE_DENSITY,
+        )
     enabled_models = sync.get_model_strings()
     if enabled_models:
         parameters["branch_budget_hints"] = build_branch_budget_hints(
             enabled_models,
             max_changes_per_branch=parameters["max_changes_per_branch"],
             model_change_density=model_change_density,
+            model_change_density_profile=density_profile,
+        )
+        parameters["branch_budget_density_policy"] = (
+            branch_budget_density_policy_summary(
+                enabled_models,
+                model_change_density=model_change_density,
+                model_change_density_profile=density_profile,
+            )
         )
     state = get_branch_run_display_state(sync)
     if state:
@@ -372,12 +438,14 @@ def get_execution_summary(sync):
         sync.get_max_changes_per_branch(),
     )
     model_change_density = get_model_change_density(sync)
+    density_profile = get_model_change_density_profile(sync)
     state = get_branch_run_display_state(sync)
     last_ingestion = sync.last_ingestion
     return build_sync_execution_summary(
         enabled_models=enabled_models,
         max_changes_per_branch=max_changes_per_branch,
         model_change_density=model_change_density,
+        model_change_density_profile=density_profile,
         branch_run_state=state,
         latest_ingestion_summary=(
             last_ingestion.get_execution_summary() if last_ingestion else None
@@ -412,15 +480,27 @@ def get_workload_summary(sync):
         sync.get_max_changes_per_branch(),
     )
     model_change_density = get_model_change_density(sync)
+    density_profile = get_model_change_density_profile(sync)
     state = get_branch_run_display_state(sync)
     return {
         "enabled_models": list(enabled_models),
         "max_changes_per_branch": max_changes_per_branch,
         "model_change_density": dict(model_change_density or {}),
+        "model_change_density_profile": density_profile_summary(
+            density_map=model_change_density,
+            density_profile=density_profile,
+            default_density_map=DEFAULT_MODEL_CHANGE_DENSITY,
+        ),
         "branch_budget_hints": build_branch_budget_hints(
             enabled_models,
             max_changes_per_branch=max_changes_per_branch,
             model_change_density=model_change_density,
+            model_change_density_profile=density_profile,
+        ),
+        "branch_budget_density_policy": branch_budget_density_policy_summary(
+            enabled_models,
+            model_change_density=model_change_density,
+            model_change_density_profile=density_profile,
         ),
         "branch_run": build_branch_run_summary(state) if state else {},
         "pre_run_estimate": state.get("plan_preview") or {},
@@ -494,7 +574,7 @@ def get_advisory_summary(sync):
 
 
 def get_sync_activity(sync):
-    run = _latest_execution_run(sync)
+    run = _active_execution_run(sync)
     if run is not None and _should_reconcile_for_activity(run):
         try:
             from .execution_ledger import reconcile_execution_run
@@ -586,6 +666,21 @@ def _should_reconcile_for_activity(run):
             and getattr(queued.job, "completed", None)
         ):
             return True
+        merge_queued = inflight.filter(
+            status=ForwardExecutionStepStatusChoices.MERGE_QUEUED
+        ).first()
+        for candidate in (running, queued, merge_queued):
+            if candidate is None:
+                continue
+            candidate_job = (
+                candidate.merge_job
+                if candidate.status == ForwardExecutionStepStatusChoices.MERGE_QUEUED
+                else candidate.job
+            )
+            if candidate_job is None:
+                continue
+            if not job_has_live_execution(candidate_job):
+                return True
     except Exception:
         return False
     return False

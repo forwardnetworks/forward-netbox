@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from ..choices import FORWARD_SUPPORTED_MODELS
-from .sync_contracts import default_coalesce_fields_for_model
+from .model_contracts import architecture_default_coalesce_fields_for_model
 from .sync_contracts import normalize_coalesce_fields
 
 
@@ -404,7 +404,7 @@ def builtin_nqe_map_rows() -> list[dict[str, Any]]:
                 "query": _read_query_source(query_default["filename"]),
                 "commit_id": "",
                 "parameters": _default_query_parameters(query_default["filename"]),
-                "coalesce_fields": default_coalesce_fields_for_model(
+                "coalesce_fields": architecture_default_coalesce_fields_for_model(
                     query_default["model_string"]
                 ),
                 "weight": index * 100,
@@ -422,7 +422,7 @@ def _build_builtin_query_spec(query_default: dict[str, Any]) -> QuerySpec:
         parameters=_default_query_parameters(query_default["filename"]),
         coalesce_fields=tuple(
             tuple(field_set)
-            for field_set in default_coalesce_fields_for_model(
+            for field_set in architecture_default_coalesce_fields_for_model(
                 query_default["model_string"]
             )
         ),

@@ -21,27 +21,40 @@ class ForwardMultiBranchPlanner:
         max_changes_per_branch=DEFAULT_MAX_CHANGES_PER_BRANCH,
         run_preflight=True,
         model_change_density=None,
+        model_change_density_profile=None,
         model_strings=None,
         shard_scope=None,
     ):
         fetcher = ForwardQueryFetcher(self.sync, self.client, self.logger)
         context = fetcher.resolve_context(branch_run_state=self.branch_run_state)
-        if run_preflight:
+        if run_preflight and self._query_preflight_enabled():
             fetcher.run_preflight(context, model_strings=model_strings)
         workloads = fetcher.fetch_workloads(
             context,
             model_strings=model_strings,
             shard_scope=shard_scope,
+            include_diagnostics=shard_scope is None,
         )
         self.model_results = [result.as_dict() for result in fetcher.model_results]
         plan = build_branch_plan_with_density(
             workloads,
             max_changes_per_branch=max_changes_per_branch,
             model_change_density=model_change_density,
+            model_change_density_profile=model_change_density_profile,
             safety_factor=DEFAULT_DENSITY_SAFETY_FACTOR,
         )
         plan = preserve_single_shard_scope(plan, shard_scope=shard_scope)
         return context.as_dict(), plan
+
+    def _query_preflight_enabled(self) -> bool:
+        source = getattr(self.sync, "source", None)
+        parameters = dict(getattr(source, "parameters", {}) or {})
+        configured = parameters.get("query_preflight_enabled")
+        if configured is None:
+            return True
+        if isinstance(configured, str):
+            return configured.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(configured)
 
 
 def preserve_single_shard_scope(plan, *, shard_scope=None):

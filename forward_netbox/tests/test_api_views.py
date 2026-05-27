@@ -447,6 +447,7 @@ class ForwardValidationRunAPIViewTest(TestCase):
             parameters={
                 "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
                 "dcim.device": True,
+                "enable_bulk_orm": False,
             },
         )
 
@@ -502,7 +503,10 @@ class ForwardExecutionRunAPIViewTest(TestCase):
         cls.sync = ForwardSync.objects.create(
             name="execution-api-sync",
             source=cls.source,
-            parameters={"snapshot_id": LATEST_PROCESSED_SNAPSHOT},
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "enable_bulk_orm": False,
+            },
         )
         cls.execution_run = ForwardExecutionRun.objects.create(
             sync=cls.sync,
@@ -610,8 +614,8 @@ class ForwardExecutionRunAPIViewTest(TestCase):
 
         self.assertEqual(response.status_code, 200)
         stale_step.refresh_from_db()
-        self.assertEqual(stale_step.status, ForwardExecutionStepStatusChoices.FAILED)
-        self.assertIn("heartbeat is stale", stale_step.last_error)
+        self.assertEqual(stale_step.status, ForwardExecutionStepStatusChoices.PENDING)
+        self.assertIn("automatic requeue", stale_step.last_error)
 
     @patch("forward_netbox.api.views.enqueue_branch_stage_job")
     def test_retry_current_step_refuses_failed_step_with_partial_branch(

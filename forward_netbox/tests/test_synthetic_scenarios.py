@@ -18,6 +18,7 @@ from django.test import TransactionTestCase
 from django.utils import timezone
 from netbox_branching.models import Branch
 
+from forward_netbox.choices import ForwardExecutionRunStatusChoices
 from forward_netbox.choices import ForwardExecutionStepKindChoices
 from forward_netbox.choices import ForwardExecutionStepStatusChoices
 from forward_netbox.choices import ForwardIngestionPhaseChoices
@@ -41,6 +42,9 @@ from forward_netbox.utilities.execution_ledger import execution_run_support_bund
 from forward_netbox.utilities.execution_ledger import mark_run_completed
 from forward_netbox.utilities.execution_ledger import prepare_stage_step_retry
 from forward_netbox.utilities.execution_ledger import reconcile_execution_run
+from forward_netbox.utilities.execution_ledger_reconciliation import (
+    DEAD_STAGE_JOB_REQUEUE_GRACE_SECONDS,
+)
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from forward_netbox.utilities.job_compat import ensure_core_job_compat_defaults
 from forward_netbox.utilities.multi_branch import BranchBudgetExceeded
@@ -68,6 +72,7 @@ class SyntheticSyncScenarioHarnessTest(TestCase):
             parameters={
                 "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
                 "dcim.site": True,
+                "enable_bulk_orm": False,
             },
         )
 
@@ -444,6 +449,7 @@ class SyntheticSyncScenarioHarnessTest(TestCase):
             max_changes_per_branch=10,
             run_preflight=False,
             model_change_density={},
+            model_change_density_profile={},
             model_strings=None,
             shard_scope=None,
             branch_run_state=ANY,
@@ -510,7 +516,9 @@ class SyntheticSyncScenarioHarnessTest(TestCase):
         self.assertEqual(bundle["metrics"]["step_count"], 1)
         self.assertEqual(bundle["metrics"]["retry_count"], 0)
 
-    def test_stale_running_stage_without_branch_reconciles_to_retryable_step(self):
+    def test_stale_running_stage_without_branch_auto_resets_pending_when_no_live_job(
+        self,
+    ):
         run = self._execution_run()
         stale_started = timezone.now() - timedelta(
             seconds=STALE_BRANCH_PROGRESS_SECONDS + 5
@@ -538,29 +546,90 @@ class SyntheticSyncScenarioHarnessTest(TestCase):
         self.assertEqual(result["updated_steps"], 1)
         self.assertEqual(
             step.status,
-            ForwardExecutionStepStatusChoices.FAILED,
+            ForwardExecutionStepStatusChoices.PENDING,
         )
         self.assertIn("stale", step.last_error)
-        self.assertEqual(bundle["steps"][0]["status"], "failed")
+        self.assertEqual(step.retry_count, 1)
+        self.assertEqual(bundle["steps"][0]["status"], "pending")
         self.assertEqual(
             bundle["recovery_recommendation"]["action"],
-            "retry_current_step",
-        )
-        self.assertEqual(
-            bundle["recovery_recommendation"]["step_index"],
-            1,
+            "monitor",
         )
         self.assertEqual(
             run.reconciliation_events[0]["reason"],
-            "stale_stage_without_branch",
+            "stale_stage_without_branch_auto_requeue",
         )
         self.assertEqual(
             bundle["metrics"]["steps"][0]["status"],
-            "failed",
+            "pending",
+        )
+        self.assertEqual(
+            bundle["recovery_policy_summary"]["auto_policy_event_count"],
+            1,
+        )
+        self.assertEqual(
+            bundle["recovery_policy_summary"]["auto_policy_reasons"].get(
+                "stale_stage_without_branch_auto_requeue"
+            ),
+            1,
         )
 
-    def test_reconcile_stale_running_stage_without_branch_marks_retryable(self):
+    def test_reconcile_queued_stage_without_job_auto_resets_pending(self):
         run = self._execution_run()
+        step = ForwardExecutionStep.objects.create(
+            run=run,
+            index=1,
+            kind=ForwardExecutionStepKindChoices.STAGE,
+            status=ForwardExecutionStepStatusChoices.QUEUED,
+            model_string="dcim.site",
+            label="dcim.site orphaned queued shard",
+            query_name="Forward Sites",
+            execution_mode="query_id",
+            execution_value="query-sites",
+            started=timezone.now(),
+            heartbeat=timezone.now(),
+        )
+
+        before_bundle = execution_run_support_bundle(run)
+        result = reconcile_execution_run(run)
+
+        step.refresh_from_db()
+        bundle = execution_run_support_bundle(run)
+        self.assertEqual(
+            before_bundle["recovery_recommendation"]["action"], "reconcile"
+        )
+        self.assertEqual(result["updated_steps"], 1)
+        self.assertEqual(step.status, ForwardExecutionStepStatusChoices.PENDING)
+        self.assertIsNone(step.job_id)
+        self.assertEqual(step.retry_count, 1)
+        self.assertEqual(
+            run.reconciliation_events[0]["reason"],
+            "queued_stage_without_job_auto_reset",
+        )
+        self.assertEqual(
+            bundle["recovery_policy_summary"]["auto_policy_reasons"].get(
+                "queued_stage_without_job_auto_reset"
+            ),
+            1,
+        )
+
+    @patch("forward_netbox.utilities.execution_ledger.job_has_live_execution")
+    @patch(
+        "forward_netbox.utilities.execution_ledger_reconciliation.job_has_live_execution"
+    )
+    def test_reconcile_stale_running_stage_without_branch_with_live_job_stays_running(
+        self,
+        mock_reconciliation_job_live,
+        mock_ledger_job_live,
+    ):
+        mock_reconciliation_job_live.return_value = True
+        mock_ledger_job_live.return_value = True
+        run = self._execution_run()
+        running_job = self._job(
+            instance=self.sync,
+            status=JobStatusChoices.STATUS_RUNNING,
+            completed=None,
+        )
         stale_started = timezone.now() - timedelta(
             seconds=STALE_BRANCH_PROGRESS_SECONDS + 5
         )
@@ -574,6 +643,7 @@ class SyntheticSyncScenarioHarnessTest(TestCase):
             query_name="Forward Sites",
             execution_mode="query_id",
             execution_value="query-sites",
+            job=running_job,
             started=stale_started,
             heartbeat=stale_started,
         )
@@ -583,29 +653,595 @@ class SyntheticSyncScenarioHarnessTest(TestCase):
         step.refresh_from_db()
         bundle = execution_run_support_bundle(run)
 
-        self.assertEqual(result["updated_steps"], 1)
+        self.assertEqual(result["updated_steps"], 0)
         self.assertEqual(
             step.status,
-            ForwardExecutionStepStatusChoices.FAILED,
+            ForwardExecutionStepStatusChoices.RUNNING,
         )
-        self.assertIn("heartbeat is stale", step.last_error)
-        self.assertEqual(
-            run.reconciliation_events[0]["reason"],
-            "stale_stage_without_branch",
-        )
-        self.assertEqual(
-            current_retryable_step(run),
-            step,
-        )
+        self.assertEqual(step.last_error, "")
         self.assertEqual(
             bundle["recovery_recommendation"]["action"],
-            "retry_current_step",
+            "wait",
         )
         self.assertEqual(
             bundle["recovery_recommendation"]["step_index"],
             1,
         )
-        self.assertEqual(bundle["steps"][0]["status"], "failed")
+        self.assertEqual(bundle["steps"][0]["status"], "running")
+
+    @patch("forward_netbox.utilities.execution_ledger.job_has_live_execution")
+    @patch(
+        "forward_netbox.utilities.execution_ledger_reconciliation.job_has_live_execution"
+    )
+    def test_reconcile_stale_running_stage_with_stale_core_job_resets_pending(
+        self,
+        mock_reconciliation_job_live,
+        mock_ledger_job_live,
+    ):
+        mock_reconciliation_job_live.return_value = False
+        mock_ledger_job_live.return_value = False
+        run = self._execution_run()
+        stale_job = self._job(
+            instance=self.sync,
+            status=JobStatusChoices.STATUS_RUNNING,
+            completed=None,
+        )
+        stale_started = timezone.now() - timedelta(
+            seconds=STALE_BRANCH_PROGRESS_SECONDS + 5
+        )
+        step = ForwardExecutionStep.objects.create(
+            run=run,
+            index=1,
+            kind=ForwardExecutionStepKindChoices.STAGE,
+            status=ForwardExecutionStepStatusChoices.RUNNING,
+            model_string="dcim.site",
+            label="dcim.site stale core job shard",
+            query_name="Forward Sites",
+            execution_mode="query_id",
+            execution_value="query-sites",
+            job=stale_job,
+            started=stale_started,
+            heartbeat=stale_started,
+        )
+
+        result = reconcile_execution_run(run)
+
+        step.refresh_from_db()
+        bundle = execution_run_support_bundle(run)
+        self.assertEqual(result["updated_steps"], 1)
+        self.assertEqual(step.status, ForwardExecutionStepStatusChoices.PENDING)
+        self.assertIsNone(step.job_id)
+        self.assertEqual(step.retry_count, 1)
+        self.assertEqual(
+            run.reconciliation_events[0]["reason"],
+            "stale_stage_without_branch_auto_requeue",
+        )
+        self.assertEqual(bundle["recovery_recommendation"]["action"], "monitor")
+
+    @patch("forward_netbox.utilities.execution_ledger.job_has_live_execution")
+    @patch(
+        "forward_netbox.utilities.execution_ledger_reconciliation.job_has_live_execution"
+    )
+    def test_reconcile_running_stage_with_dead_rq_job_waits_inside_grace_window(
+        self,
+        mock_reconciliation_job_live,
+        mock_ledger_job_live,
+    ):
+        mock_reconciliation_job_live.return_value = False
+        mock_ledger_job_live.return_value = False
+        run = self._execution_run()
+        stale_job = self._job(
+            instance=self.sync,
+            status=JobStatusChoices.STATUS_RUNNING,
+            completed=None,
+        )
+        fresh_timestamp = timezone.now()
+        step = ForwardExecutionStep.objects.create(
+            run=run,
+            index=1,
+            kind=ForwardExecutionStepKindChoices.STAGE,
+            status=ForwardExecutionStepStatusChoices.RUNNING,
+            model_string="dcim.site",
+            label="dcim.site dead rq job shard",
+            query_name="Forward Sites",
+            execution_mode="query_id",
+            execution_value="query-sites",
+            job=stale_job,
+            started=fresh_timestamp,
+            heartbeat=fresh_timestamp,
+        )
+
+        result = reconcile_execution_run(run)
+
+        step.refresh_from_db()
+        self.assertEqual(result["updated_steps"], 0)
+        self.assertEqual(step.status, ForwardExecutionStepStatusChoices.RUNNING)
+        self.assertEqual(step.job_id, stale_job.pk)
+        self.assertEqual(step.retry_count, 0)
+        self.assertEqual(run.reconciliation_events, [])
+
+    @patch(
+        "forward_netbox.utilities.execution_ledger.job_has_live_execution",
+    )
+    @patch(
+        "forward_netbox.utilities.execution_ledger_reconciliation.job_has_live_execution",
+    )
+    def test_reconcile_running_stage_with_dead_rq_job_resets_after_grace_window(
+        self,
+        mock_reconciliation_job_live,
+        mock_ledger_job_live,
+    ):
+        mock_reconciliation_job_live.return_value = False
+        mock_ledger_job_live.return_value = False
+        run = self._execution_run()
+        stale_job = self._job(
+            instance=self.sync,
+            status=JobStatusChoices.STATUS_RUNNING,
+            completed=None,
+        )
+        stale_timestamp = timezone.now() - timedelta(
+            seconds=DEAD_STAGE_JOB_REQUEUE_GRACE_SECONDS + 5
+        )
+        step = ForwardExecutionStep.objects.create(
+            run=run,
+            index=1,
+            kind=ForwardExecutionStepKindChoices.STAGE,
+            status=ForwardExecutionStepStatusChoices.RUNNING,
+            model_string="dcim.site",
+            label="dcim.site dead rq job shard",
+            query_name="Forward Sites",
+            execution_mode="query_id",
+            execution_value="query-sites",
+            job=stale_job,
+            started=stale_timestamp,
+            heartbeat=stale_timestamp,
+        )
+
+        result = reconcile_execution_run(run)
+
+        step.refresh_from_db()
+        bundle = execution_run_support_bundle(run)
+        self.assertEqual(result["updated_steps"], 1)
+        self.assertEqual(step.status, ForwardExecutionStepStatusChoices.PENDING)
+        self.assertIsNone(step.job_id)
+        self.assertEqual(step.retry_count, 1)
+        self.assertEqual(
+            run.reconciliation_events[0]["reason"],
+            "dead_stage_job_without_branch_auto_requeue",
+        )
+        self.assertEqual(bundle["recovery_recommendation"]["action"], "monitor")
+
+    @patch(
+        "forward_netbox.utilities.execution_ledger.job_has_live_execution",
+    )
+    @patch(
+        "forward_netbox.utilities.execution_ledger_reconciliation.job_has_live_execution",
+    )
+    def test_reconcile_dead_running_job_ignores_probe_refreshed_heartbeat(
+        self,
+        mock_reconciliation_job_live,
+        mock_ledger_job_live,
+    ):
+        mock_reconciliation_job_live.return_value = False
+        mock_ledger_job_live.return_value = False
+        run = self._execution_run()
+        stale_job = self._job(
+            instance=self.sync,
+            status=JobStatusChoices.STATUS_RUNNING,
+            completed=None,
+        )
+        stale_timestamp = timezone.now() - timedelta(
+            seconds=DEAD_STAGE_JOB_REQUEUE_GRACE_SECONDS + 5
+        )
+        stale_job.started = stale_timestamp
+        stale_job.save(update_fields=["started"])
+        step = ForwardExecutionStep.objects.create(
+            run=run,
+            index=1,
+            kind=ForwardExecutionStepKindChoices.STAGE,
+            status=ForwardExecutionStepStatusChoices.RUNNING,
+            model_string="dcim.site",
+            label="dcim.site dead rq job shard",
+            query_name="Forward Sites",
+            execution_mode="query_id",
+            execution_value="query-sites",
+            job=stale_job,
+            started=stale_timestamp,
+            heartbeat=timezone.now(),
+        )
+
+        result = reconcile_execution_run(run)
+
+        step.refresh_from_db()
+        self.assertEqual(result["updated_steps"], 1)
+        self.assertEqual(step.status, ForwardExecutionStepStatusChoices.PENDING)
+        self.assertIsNone(step.job_id)
+        self.assertEqual(step.retry_count, 1)
+
+    def test_reconcile_stale_queued_stage_without_branch_auto_resets_pending(self):
+        run = self._execution_run()
+        stale_started = timezone.now() - timedelta(
+            seconds=STALE_BRANCH_PROGRESS_SECONDS + 5
+        )
+        stale_job = self._job(
+            instance=self.sync,
+            status=JobStatusChoices.STATUS_COMPLETED,
+            completed=timezone.now(),
+        )
+        step = ForwardExecutionStep.objects.create(
+            run=run,
+            index=1,
+            kind=ForwardExecutionStepKindChoices.STAGE,
+            status=ForwardExecutionStepStatusChoices.QUEUED,
+            model_string="dcim.site",
+            label="dcim.site stale queued shard",
+            query_name="Forward Sites",
+            execution_mode="query_id",
+            execution_value="query-sites",
+            job=stale_job,
+            started=stale_started,
+            heartbeat=stale_started,
+        )
+
+        result = reconcile_execution_run(run)
+
+        step.refresh_from_db()
+        bundle = execution_run_support_bundle(run)
+        self.assertEqual(result["updated_steps"], 1)
+        self.assertEqual(step.status, ForwardExecutionStepStatusChoices.PENDING)
+        self.assertIsNone(step.job_id)
+        self.assertEqual(step.retry_count, 1)
+        self.assertEqual(
+            run.reconciliation_events[0]["reason"],
+            "stale_queued_without_branch_auto_reset",
+        )
+        self.assertEqual(
+            bundle["recovery_policy_summary"]["auto_policy_reasons"].get(
+                "stale_queued_without_branch_auto_reset"
+            ),
+            1,
+        )
+
+    @patch("forward_netbox.utilities.execution_ledger.job_has_live_execution")
+    @patch(
+        "forward_netbox.utilities.execution_ledger_reconciliation.job_has_live_execution"
+    )
+    def test_reconcile_failed_stale_stage_with_live_job_restores_running(
+        self,
+        mock_reconciliation_job_live,
+        mock_ledger_job_live,
+    ):
+        mock_reconciliation_job_live.return_value = True
+        mock_ledger_job_live.return_value = True
+        run = self._execution_run()
+        running_job = self._job(
+            instance=self.sync,
+            status=JobStatusChoices.STATUS_RUNNING,
+            completed=None,
+        )
+        step = ForwardExecutionStep.objects.create(
+            run=run,
+            index=1,
+            kind=ForwardExecutionStepKindChoices.STAGE,
+            status=ForwardExecutionStepStatusChoices.FAILED,
+            model_string="dcim.site",
+            label="dcim.site false stale failure",
+            query_name="Forward Sites",
+            execution_mode="query_id",
+            execution_value="query-sites",
+            job=running_job,
+            last_error=(
+                "Stage job heartbeat is stale and no branch was recorded; retry "
+                "the current step instead of restarting the baseline."
+            ),
+            completed=timezone.now(),
+        )
+
+        result = reconcile_execution_run(run)
+
+        step.refresh_from_db()
+        bundle = execution_run_support_bundle(run)
+        self.assertEqual(result["updated_steps"], 1)
+        self.assertEqual(step.status, ForwardExecutionStepStatusChoices.RUNNING)
+        self.assertIsNone(step.completed)
+        self.assertEqual(step.last_error, "")
+        self.assertEqual(
+            run.reconciliation_events[0]["reason"],
+            "failed_stage_with_live_job_auto_restore",
+        )
+        self.assertEqual(
+            bundle["recovery_policy_summary"]["auto_policy_reasons"].get(
+                "failed_stage_with_live_job_auto_restore"
+            ),
+            1,
+        )
+
+    def test_recovery_recommendation_flags_stale_active_step_for_reconcile(self):
+        run = self._execution_run(status="running")
+        stale_started = timezone.now() - timedelta(
+            seconds=STALE_BRANCH_PROGRESS_SECONDS + 5
+        )
+        ForwardExecutionStep.objects.create(
+            run=run,
+            index=1,
+            kind=ForwardExecutionStepKindChoices.STAGE,
+            status=ForwardExecutionStepStatusChoices.RUNNING,
+            model_string="dcim.site",
+            label="dcim.site stale active shard",
+            query_name="Forward Sites",
+            execution_mode="query_id",
+            execution_value="query-sites",
+            started=stale_started,
+            heartbeat=stale_started,
+        )
+
+        bundle = execution_run_support_bundle(run)
+
+        self.assertEqual(bundle["recovery_recommendation"]["action"], "reconcile")
+        self.assertEqual(bundle["recovery_recommendation"]["step_index"], 1)
+        self.assertIn(
+            "heartbeat is stale",
+            bundle["recovery_recommendation"]["message"],
+        )
+
+    def test_recovery_recommendation_flags_stale_run_heartbeat_for_reconcile(self):
+        run = self._execution_run(status="running")
+        run.latest_heartbeat = timezone.now() - timedelta(
+            seconds=STALE_BRANCH_PROGRESS_SECONDS + 5
+        )
+        run.save(update_fields=["latest_heartbeat", "updated"])
+
+        bundle = execution_run_support_bundle(run)
+
+        self.assertEqual(bundle["recovery_recommendation"]["action"], "reconcile")
+        self.assertIsNone(bundle["recovery_recommendation"]["step_index"])
+        self.assertIn(
+            "run heartbeat is stale",
+            bundle["recovery_recommendation"]["message"],
+        )
+
+    def test_reconcile_stale_run_heartbeat_records_watchdog_event(self):
+        run = self._execution_run(status="running")
+        ForwardExecutionStep.objects.create(
+            run=run,
+            index=1,
+            kind=ForwardExecutionStepKindChoices.STAGE,
+            status=ForwardExecutionStepStatusChoices.PENDING,
+            model_string="dcim.site",
+            label="dcim.site pending shard",
+        )
+        run.latest_heartbeat = timezone.now() - timedelta(
+            seconds=STALE_BRANCH_PROGRESS_SECONDS + 5
+        )
+        run.save(update_fields=["latest_heartbeat", "updated"])
+
+        result = reconcile_execution_run(run)
+
+        run.refresh_from_db()
+        bundle = execution_run_support_bundle(run)
+        self.assertTrue(result["updated_run"] or result["updated_steps"] >= 0)
+        reasons = [event.get("reason") for event in run.reconciliation_events]
+        self.assertIn("stale_run_no_progress_watchdog", reasons)
+        self.assertEqual(
+            bundle["recovery_policy_summary"]["watchdog_event_count"],
+            1,
+        )
+        self.assertFalse(bundle["recovery_policy_summary"]["watchdog_required"])
+        self.assertEqual(
+            bundle["recovery_policy_summary"]["watchdog_reason"],
+            "stale_run_no_progress_watchdog",
+        )
+
+    def test_recovery_recommendation_escalates_repeated_run_watchdog_signals(self):
+        run = self._execution_run(status="running")
+        run.reconciliation_events = [
+            {
+                "reason": "stale_run_no_progress_watchdog",
+                "timestamp": timezone.now().isoformat(),
+            },
+            {
+                "reason": "stale_run_no_progress_watchdog",
+                "timestamp": timezone.now().isoformat(),
+            },
+        ]
+        run.save(update_fields=["reconciliation_events", "updated"])
+
+        bundle = execution_run_support_bundle(run)
+
+        self.assertEqual(
+            bundle["recovery_recommendation"]["action"],
+            "manual_intervention",
+        )
+        self.assertEqual(
+            bundle["recovery_recommendation"]["watchdog_reason"],
+            "stale_run_no_progress_watchdog",
+        )
+        self.assertEqual(
+            bundle["recovery_recommendation"]["watchdog_count"],
+            2,
+        )
+        self.assertTrue(bundle["recovery_policy_summary"]["watchdog_required"])
+
+    @patch("forward_netbox.utilities.execution_ledger._job_is_live", return_value=False)
+    def test_recovery_recommendation_prefers_monitor_when_active_step_has_job(
+        self, _mock_job_is_live
+    ):
+        run = self._execution_run(status="running")
+        active_job = self._job(
+            instance=self.sync, status=JobStatusChoices.STATUS_PENDING
+        )
+        ForwardExecutionStep.objects.create(
+            run=run,
+            index=1,
+            kind=ForwardExecutionStepKindChoices.STAGE,
+            status=ForwardExecutionStepStatusChoices.QUEUED,
+            model_string="dcim.site",
+            label="dcim.site queued shard",
+            job=active_job,
+        )
+        run.reconciliation_events = [
+            {
+                "reason": "stale_run_no_progress_watchdog",
+                "timestamp": timezone.now().isoformat(),
+            },
+            {
+                "reason": "stale_run_no_progress_watchdog",
+                "timestamp": timezone.now().isoformat(),
+            },
+        ]
+        run.save(update_fields=["reconciliation_events", "updated"])
+
+        bundle = execution_run_support_bundle(run)
+
+        self.assertEqual(bundle["recovery_recommendation"]["action"], "monitor")
+        self.assertEqual(bundle["recovery_recommendation"]["step_index"], 1)
+        self.assertEqual(bundle["recovery_recommendation"]["step_status"], "queued")
+
+    @patch("forward_netbox.utilities.execution_ledger._job_is_live", return_value=True)
+    def test_recovery_recommendation_waits_when_active_step_job_is_live(
+        self, _mock_job_is_live
+    ):
+        run = self._execution_run(status="running")
+        active_job = self._job(
+            instance=self.sync, status=JobStatusChoices.STATUS_RUNNING
+        )
+        ForwardExecutionStep.objects.create(
+            run=run,
+            index=1,
+            kind=ForwardExecutionStepKindChoices.STAGE,
+            status=ForwardExecutionStepStatusChoices.RUNNING,
+            model_string="dcim.site",
+            label="dcim.site running shard",
+            job=active_job,
+        )
+        run.reconciliation_events = [
+            {
+                "reason": "stale_run_no_progress_watchdog",
+                "timestamp": timezone.now().isoformat(),
+            },
+            {
+                "reason": "stale_run_no_progress_watchdog",
+                "timestamp": timezone.now().isoformat(),
+            },
+        ]
+        run.save(update_fields=["reconciliation_events", "updated"])
+
+        bundle = execution_run_support_bundle(run)
+
+        self.assertEqual(bundle["recovery_recommendation"]["action"], "wait")
+        self.assertEqual(bundle["recovery_recommendation"]["step_index"], 1)
+        self.assertEqual(bundle["recovery_recommendation"]["step_status"], "running")
+
+    def test_recovery_recommendation_waits_when_active_step_has_no_job(self):
+        run = self._execution_run(status="running")
+        ForwardExecutionStep.objects.create(
+            run=run,
+            index=1,
+            kind=ForwardExecutionStepKindChoices.STAGE,
+            status=ForwardExecutionStepStatusChoices.RUNNING,
+            model_string="dcim.site",
+            label="dcim.site running shard without job id",
+            started=timezone.now(),
+            heartbeat=timezone.now(),
+        )
+        run.reconciliation_events = [
+            {
+                "reason": "stale_run_no_progress_watchdog",
+                "timestamp": timezone.now().isoformat(),
+            },
+            {
+                "reason": "stale_run_no_progress_watchdog",
+                "timestamp": timezone.now().isoformat(),
+            },
+        ]
+        run.save(update_fields=["reconciliation_events", "updated"])
+
+        bundle = execution_run_support_bundle(run)
+
+        self.assertEqual(bundle["recovery_recommendation"]["action"], "wait")
+        self.assertEqual(bundle["recovery_recommendation"]["step_index"], 1)
+        self.assertEqual(bundle["recovery_recommendation"]["step_status"], "running")
+
+    def test_recovery_recommendation_escalates_repeated_branch_stale_signals(self):
+        run = self._execution_run(status="failed")
+        branch = Branch.objects.create(
+            name="synthetic-recovery-escalation-branch",
+            schema_id=f"synthetic_recovery_escalation_{uuid4().hex[:12]}",
+        )
+        ingestion = ForwardIngestion.objects.create(sync=self.sync, branch=branch)
+        step = ForwardExecutionStep.objects.create(
+            run=run,
+            index=1,
+            kind=ForwardExecutionStepKindChoices.STAGE,
+            status=ForwardExecutionStepStatusChoices.FAILED,
+            model_string="dcim.site",
+            label="dcim.site failed shard",
+            ingestion=ingestion,
+            branch=branch,
+        )
+        run.reconciliation_events = [
+            {"reason": "stale_stage_with_branch", "index": 1},
+            {"reason": "stale_stage_with_branch", "index": 1},
+            {"reason": "stale_stage_with_branch", "index": 1},
+        ]
+        run.save(update_fields=["reconciliation_events", "updated"])
+
+        bundle = execution_run_support_bundle(run)
+
+        self.assertTrue(bundle["recovery_policy_summary"]["escalation_required"])
+        self.assertEqual(
+            bundle["recovery_policy_summary"]["escalation_reasons"].get(
+                "stale_stage_with_branch"
+            ),
+            3,
+        )
+        self.assertEqual(
+            bundle["recovery_recommendation"]["action"],
+            "manual_intervention",
+        )
+        self.assertEqual(bundle["recovery_recommendation"]["step_index"], step.index)
+        self.assertEqual(
+            bundle["recovery_recommendation"]["escalation_reason"],
+            "stale_stage_with_branch",
+        )
+        self.assertEqual(
+            bundle["recovery_recommendation"]["escalation_count"],
+            3,
+        )
+
+    def test_pushdown_efficiency_reports_model_fallback_guardrail(self):
+        run = self._execution_run(status="running")
+        ForwardExecutionStep.objects.create(
+            run=run,
+            index=1,
+            kind=ForwardExecutionStepKindChoices.STAGE,
+            status=ForwardExecutionStepStatusChoices.MERGED,
+            model_string="dcim.device",
+            fetch_mode="model",
+        )
+        ForwardExecutionStep.objects.create(
+            run=run,
+            index=2,
+            kind=ForwardExecutionStepKindChoices.STAGE,
+            status=ForwardExecutionStepStatusChoices.MERGED,
+            model_string="dcim.device",
+            fetch_mode="model",
+        )
+
+        bundle = execution_run_support_bundle(run)
+        efficiency = bundle["metrics"]["pushdown_efficiency"]
+        guidance_codes = {
+            item.get("code") for item in (bundle["metrics"]["tuning_guidance"] or [])
+        }
+
+        self.assertEqual(efficiency["status"], "warn")
+        self.assertGreaterEqual(efficiency["fallback_budget_exceeded_count"], 1)
+        self.assertGreaterEqual(len(efficiency["model_fallback_guardrails"]), 1)
+        self.assertEqual(
+            efficiency["model_fallback_guardrails"][0]["model"],
+            "dcim.device",
+        )
+        self.assertIn("model_fallback_budget_guardrail", guidance_codes)
 
     def test_hard_kill_after_branch_creation_reconciles_to_discardable_step(self):
         branch = Branch.objects.create(
@@ -758,6 +1394,134 @@ class SyntheticSyncScenarioHarnessTest(TestCase):
             "stage_job_completed_without_ingestion",
         )
 
+    def test_reconcile_running_step_with_completed_merge_job_marks_merged(self):
+        run = self._execution_run()
+        merge_job = self._job(
+            instance=self.sync,
+            status=JobStatusChoices.STATUS_COMPLETED,
+            completed=timezone.now(),
+        )
+        step = ForwardExecutionStep.objects.create(
+            run=run,
+            index=1,
+            kind=ForwardExecutionStepKindChoices.STAGE,
+            status=ForwardExecutionStepStatusChoices.RUNNING,
+            model_string="ipam.prefix",
+            label="ipam.prefix running step with completed merge job",
+            merge_job=merge_job,
+            attempted_row_count=100,
+            applied_row_count=100,
+        )
+
+        result = reconcile_execution_run(run)
+
+        step.refresh_from_db()
+        self.assertEqual(result["updated_steps"], 1)
+        self.assertEqual(step.status, ForwardExecutionStepStatusChoices.MERGED)
+        self.assertEqual(
+            run.reconciliation_events[0]["reason"],
+            "running_step_merge_job_completed",
+        )
+
+    @patch(
+        "forward_netbox.utilities.execution_ledger.job_has_live_execution",
+    )
+    @patch(
+        "forward_netbox.utilities.execution_ledger_reconciliation.job_has_live_execution",
+    )
+    def test_reconcile_running_step_with_dead_merge_job_marks_merge_timeout(
+        self,
+        mock_reconciliation_job_live,
+        mock_ledger_job_live,
+    ):
+        mock_reconciliation_job_live.return_value = False
+        mock_ledger_job_live.return_value = False
+        run = self._execution_run()
+        merge_job = self._job(
+            instance=self.sync,
+            status=JobStatusChoices.STATUS_RUNNING,
+            completed=None,
+        )
+        stale_started = timezone.now() - timedelta(
+            seconds=DEAD_STAGE_JOB_REQUEUE_GRACE_SECONDS + 5
+        )
+        merge_job.started = stale_started
+        merge_job.save(update_fields=["started"])
+        step = ForwardExecutionStep.objects.create(
+            run=run,
+            index=1,
+            kind=ForwardExecutionStepKindChoices.STAGE,
+            status=ForwardExecutionStepStatusChoices.RUNNING,
+            model_string="ipam.prefix",
+            label="ipam.prefix running step with dead merge job",
+            merge_job=merge_job,
+            heartbeat=stale_started,
+        )
+
+        result = reconcile_execution_run(run)
+
+        step.refresh_from_db()
+        self.assertEqual(result["updated_steps"], 1)
+        self.assertEqual(
+            step.status,
+            ForwardExecutionStepStatusChoices.MERGE_TIMEOUT,
+        )
+        self.assertEqual(
+            run.reconciliation_events[0]["reason"],
+            "running_step_dead_merge_job",
+        )
+
+    def test_reconcile_reopens_completed_run_with_incomplete_steps(self):
+        run = self._execution_run(status=ForwardExecutionRunStatusChoices.COMPLETED)
+        run.total_steps = 3
+        run.next_step_index = 4
+        run.phase = "completed"
+        run.phase_message = "Forward execution completed."
+        run.baseline_ready = True
+        run.completed = timezone.now()
+        run.save()
+        self.sync.status = "completed"
+        self.sync.save(update_fields=["status"])
+        ForwardExecutionStep.objects.create(
+            run=run,
+            index=1,
+            kind=ForwardExecutionStepKindChoices.STAGE,
+            status=ForwardExecutionStepStatusChoices.MERGED,
+            model_string="dcim.site",
+        )
+        incomplete = ForwardExecutionStep.objects.create(
+            run=run,
+            index=2,
+            kind=ForwardExecutionStepKindChoices.STAGE,
+            status=ForwardExecutionStepStatusChoices.PENDING,
+            model_string="dcim.device",
+        )
+        ForwardExecutionStep.objects.create(
+            run=run,
+            index=3,
+            kind=ForwardExecutionStepKindChoices.STAGE,
+            status=ForwardExecutionStepStatusChoices.MERGED,
+            model_string="dcim.interface",
+        )
+
+        result = reconcile_execution_run(run)
+
+        run.refresh_from_db()
+        incomplete.refresh_from_db()
+        self.sync.refresh_from_db()
+        self.assertTrue(result["updated_run"])
+        self.assertEqual(run.status, ForwardExecutionRunStatusChoices.RUNNING)
+        self.assertEqual(run.next_step_index, 2)
+        self.assertEqual(run.phase, "reopened")
+        self.assertFalse(run.baseline_ready)
+        self.assertIsNone(run.completed)
+        self.assertEqual(incomplete.status, ForwardExecutionStepStatusChoices.PENDING)
+        self.assertEqual(self.sync.status, "syncing")
+        self.assertEqual(
+            run.reconciliation_events[-1]["reason"],
+            "completed_run_reopened",
+        )
+
     def test_reconcile_duplicate_inflight_steps_keeps_single_inflight(self):
         run = self._execution_run(next_step_index=10)
         merged = ForwardExecutionStep.objects.create(
@@ -790,10 +1554,10 @@ class SyntheticSyncScenarioHarnessTest(TestCase):
         merged.refresh_from_db()
         self.assertGreaterEqual(result["updated_steps"], 1)
         self.assertEqual(run.next_step_index, 12)
-        self.assertEqual(queued_12.status, ForwardExecutionStepStatusChoices.QUEUED)
+        self.assertEqual(queued_12.status, ForwardExecutionStepStatusChoices.PENDING)
         self.assertEqual(queued_10.status, ForwardExecutionStepStatusChoices.PENDING)
         reasons = [event.get("reason") for event in run.reconciliation_events]
-        self.assertIn("duplicate_inflight_step", reasons)
+        self.assertIn("queued_stage_without_job_auto_reset", reasons)
 
     def test_reconcile_clears_stale_pending_job_binding(self):
         run = self._execution_run()
@@ -836,6 +1600,16 @@ class SyntheticSyncScenarioHarnessTest(TestCase):
             failed_row_count=1,
             retry_count=1,
             fetch_mode="model",
+            fetch_parameters={
+                "partition_retry_summary": {
+                    "operation": "full",
+                    "partition_count": 1,
+                    "split_retry_count": 0,
+                    "split_retry_success_count": 0,
+                    "alternate_operator_retry_count": 1,
+                    "alternate_operator_success_count": 1,
+                }
+            },
             apply_engine="adapter",
         )
         duplicate_job = self._job(instance=self.sync)
@@ -881,6 +1655,101 @@ class SyntheticSyncScenarioHarnessTest(TestCase):
         self.assertEqual(bundle["metrics"]["steps"][0]["skipped_row_count"], 2)
         self.assertEqual(bundle["metrics"]["steps"][0]["failed_row_count"], 1)
         self.assertEqual(bundle["metrics"]["bottleneck"]["phase"], "forward_query")
+        self.assertEqual(
+            bundle["metrics"]["fallback_reason_summary"]["by_model"][0]["model"],
+            "dcim.site",
+        )
+        self.assertEqual(
+            bundle["metrics"]["fallback_reason_summary"]["top_reasons"][0]["reason"],
+            "model_fetch_contract_fallback",
+        )
+        self.assertEqual(
+            bundle["metrics"]["fallback_reason_summary"]["remediation_actions"][0][
+                "layer"
+            ],
+            "planner_query_contract",
+        )
+        self.assertEqual(
+            bundle["metrics"]["partition_retry_summary"][
+                "alternate_operator_retry_count"
+            ],
+            1,
+        )
+        self.assertEqual(
+            bundle["metrics"]["partition_retry_summary"][
+                "avoided_fallback_retry_count"
+            ],
+            1,
+        )
+
+    def test_support_bundle_exposes_throughput_smoothing_metrics(self):
+        now = timezone.now()
+        run = self._execution_run()
+        stage_job = self._job(
+            instance=self.sync,
+            status=JobStatusChoices.STATUS_COMPLETED,
+            completed=now - timedelta(seconds=5),
+        )
+        Job.objects.filter(pk=stage_job.pk).update(
+            created=now - timedelta(seconds=20),
+            started=now - timedelta(seconds=10),
+            completed=now - timedelta(seconds=5),
+        )
+        stage_job.refresh_from_db()
+        merge_job = self._job(
+            instance=self.sync,
+            status=JobStatusChoices.STATUS_COMPLETED,
+            completed=now,
+        )
+        Job.objects.filter(pk=merge_job.pk).update(
+            created=now - timedelta(seconds=4),
+            started=now - timedelta(seconds=2),
+            completed=now,
+        )
+        merge_job.refresh_from_db()
+        ForwardExecutionStep.objects.create(
+            run=run,
+            index=1,
+            status=ForwardExecutionStepStatusChoices.MERGED,
+            model_string="dcim.site",
+            label="dcim.site throughput shard",
+            estimated_changes=1,
+            query_runtime_ms=1000.0,
+            job=stage_job,
+            merge_job=merge_job,
+            started=now - timedelta(seconds=10),
+            completed=now - timedelta(seconds=5),
+        )
+
+        bundle = execution_run_support_bundle(run)
+        step_metrics = bundle["metrics"]["steps"][0]
+        throughput = bundle["metrics"]["throughput_smoothing"]
+
+        self.assertEqual(step_metrics["stage_queue_seconds"], 10.0)
+        self.assertEqual(step_metrics["stage_duration_seconds"], 5.0)
+        self.assertEqual(step_metrics["merge_queue_seconds"], 2.0)
+        self.assertEqual(step_metrics["merge_wait_seconds"], 3.0)
+        self.assertEqual(step_metrics["merge_duration_seconds"], 2.0)
+        self.assertEqual(throughput["wait_seconds"], 15.0)
+        self.assertEqual(throughput["status"], "warn")
+        self.assertEqual(throughput["hotspot_models"][0]["model"], "dcim.site")
+        self.assertEqual(
+            throughput["scheduler_overlap_readiness"]["status"],
+            "candidate_after_capacity_review",
+        )
+        self.assertEqual(
+            throughput["scheduler_overlap_readiness"]["dominant_wait_component"],
+            "stage_queue",
+        )
+        self.assertTrue(throughput["scheduler_overlap_readiness"]["ready"])
+        self.assertEqual(
+            bundle["metrics"]["bottleneck"]["phase"],
+            "queue_or_merge_wait",
+        )
+        self.assertIn(
+            "throughput_wait_pressure",
+            [item["code"] for item in bundle["metrics"]["tuning_guidance"]],
+        )
 
     def test_duplicate_stage_job_cannot_reclaim_running_step(self):
         run = self._execution_run()

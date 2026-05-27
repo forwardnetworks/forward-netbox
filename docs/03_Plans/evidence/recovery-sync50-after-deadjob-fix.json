@@ -1,0 +1,64 @@
+{
+  "enqueued_job": {
+    "id": 762,
+    "name": "job-audit-full-035333 - shard 13/286",
+    "status": "pending"
+  },
+  "next_step": {
+    "actual_changes": 0,
+    "applied_row_count": 0,
+    "attempted_row_count": 0,
+    "branch": null,
+    "estimated_changes": 7437,
+    "failed_row_count": 0,
+    "fetch_column_filter_count": 1,
+    "fetch_mode": "nqe_column_filter",
+    "id": 1923,
+    "index": 13,
+    "ingestion": null,
+    "job": 762,
+    "kind": "stage",
+    "last_error_length": 92,
+    "last_error_present": true,
+    "merge_job": null,
+    "model": "ipam.prefix",
+    "retry_count": 4,
+    "shard_key_count": 7437,
+    "skipped_row_count": 0,
+    "status": "queued"
+  },
+  "reconcile": {
+    "messages": [
+      "Updated step 13 to pending."
+    ],
+    "skipped": false,
+    "updated_run": true,
+    "updated_steps": 1
+  },
+  "recovery_recommendation": {
+    "action": "wait",
+    "message": "Wait for the active execution step to finish.",
+    "model": "ipam.prefix",
+    "severity": "info",
+    "step_id": 1923,
+    "step_index": 13,
+    "step_status": "queued"
+  },
+  "run": {
+    "auto_merge": true,
+    "backend": "branching",
+    "baseline_ready": false,
+    "completed": null,
+    "id": 174,
+    "last_error_length": 0,
+    "last_error_present": false,
+    "latest_heartbeat": "2026-05-26T10:05:19.318336+00:00",
+    "next_step_index": 13,
+    "phase": "queued",
+    "reconciliation_event_count": 7,
+    "source": 1,
+    "status": "running",
+    "sync": 50,
+    "total_steps": 286
+  }
+}

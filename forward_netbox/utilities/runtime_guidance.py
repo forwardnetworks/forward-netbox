@@ -9,6 +9,9 @@ from .forward_api import MAX_QUERY_FETCH_CONCURRENCY
 MIN_LARGE_BRANCH_RQ_TIMEOUT_SECONDS = 1800
 DEFAULT_ESTIMATED_SECONDS_PER_CHANGE = 0.08
 BRANCH_TIMEOUT_RISK_RATIO = 0.8
+DEFAULT_PUSHDOWN_FALLBACK_WARN_RATE = 0.5
+DEFAULT_PUSHDOWN_RUNTIME_FALLBACK_WARN_SHARE = 0.5
+DEFAULT_PUSHDOWN_DIFF_WARN_RATIO = 0.0
 
 
 def configured_rq_default_timeout():
@@ -42,6 +45,35 @@ def source_query_fetch_concurrency(sync):
     except (TypeError, ValueError):
         return DEFAULT_QUERY_FETCH_CONCURRENCY
     return max(1, min(MAX_QUERY_FETCH_CONCURRENCY, parsed))
+
+
+def source_pushdown_alert_thresholds(sync):
+    source = getattr(sync, "source", None)
+    parameters = getattr(source, "parameters", None) or {}
+    return {
+        "fallback_warn_rate": _bounded_ratio(
+            parameters.get("pushdown_fallback_warn_rate"),
+            DEFAULT_PUSHDOWN_FALLBACK_WARN_RATE,
+        ),
+        "runtime_fallback_warn_share": _bounded_ratio(
+            parameters.get("pushdown_runtime_fallback_warn_share"),
+            DEFAULT_PUSHDOWN_RUNTIME_FALLBACK_WARN_SHARE,
+        ),
+        "diff_warn_ratio": _bounded_ratio(
+            parameters.get("pushdown_diff_warn_ratio"),
+            DEFAULT_PUSHDOWN_DIFF_WARN_RATIO,
+        ),
+    }
+
+
+def _bounded_ratio(value, default):
+    if value in ("", None):
+        return float(default)
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    return max(0.0, min(1.0, parsed))
 
 
 def log_worker_timeout_guidance(sync, logger_, *, execution_backend):

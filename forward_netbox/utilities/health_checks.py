@@ -1,6 +1,7 @@
 from ..choices import ForwardSourceStatusChoices
 from ..choices import ForwardValidationStatusChoices
 from .execution_ledger import execution_run_recovery_recommendation
+from .ingestion_issues import has_blocking_issues
 from .runtime_guidance import configured_rq_default_timeout
 from .runtime_guidance import source_query_fetch_concurrency
 from .runtime_guidance import source_timeout_seconds
@@ -18,6 +19,9 @@ def health_checks(
     latest_ingestion,
     execution_run,
     capacity_summary,
+    query_pushdown,
+    large_run_tuning,
+    compatibility_cache,
     next_run,
     branching_available_fn,
 ):
@@ -103,6 +107,21 @@ def health_checks(
             status=ingestion_check_status(latest_ingestion),
             message=ingestion_check_message(latest_ingestion),
         ),
+        check(
+            name="Compatibility cache",
+            status=compatibility_cache_check_status(compatibility_cache),
+            message=compatibility_cache_check_message(compatibility_cache),
+        ),
+        check(
+            name="Pushdown efficiency",
+            status=query_pushdown_check_status(query_pushdown),
+            message=query_pushdown_check_message(query_pushdown),
+        ),
+        check(
+            name="Large-run tuning",
+            status=large_run_tuning_check_status(large_run_tuning),
+            message=large_run_tuning_check_message(large_run_tuning),
+        ),
     ]
     if execution_run is not None:
         recommendation = execution_run_recovery_recommendation(execution_run)
@@ -123,6 +142,24 @@ def health_checks(
     if query_fetch is not None:
         checks.append(query_fetch)
     return checks
+
+
+def compatibility_cache_check_status(compatibility_cache):
+    if not compatibility_cache:
+        return "info"
+    if compatibility_cache.get("stale_payload_present"):
+        return "warn"
+    if compatibility_cache.get("ledger_history"):
+        return "pass"
+    if compatibility_cache.get("compatibility_state_present"):
+        return "warn"
+    return "info"
+
+
+def compatibility_cache_check_message(compatibility_cache):
+    if not compatibility_cache:
+        return "Compatibility cache diagnostics are unavailable."
+    return str(compatibility_cache.get("message") or "").strip()
 
 
 def query_fetch_concurrency_check(sync):
@@ -151,6 +188,92 @@ def query_fetch_concurrency_check(sync):
         status="pass",
         message=f"Source query fetch concurrency is {concurrency}.",
     )
+
+
+def query_pushdown_check_status(query_pushdown):
+    efficiency = (query_pushdown or {}).get("efficiency") or {}
+    runtime_share = (query_pushdown or {}).get("runtime_share") or {}
+    diff_utilization = (query_pushdown or {}).get("diff_utilization") or {}
+    statuses = [
+        str(efficiency.get("status") or "info").strip().lower(),
+        str(runtime_share.get("status") or "info").strip().lower(),
+        str(diff_utilization.get("status") or "info").strip().lower(),
+    ]
+    if "fail" in statuses:
+        return "fail"
+    if "warn" in statuses:
+        return "warn"
+    if "pass" in statuses:
+        return "pass"
+    return "info"
+
+
+def query_pushdown_check_message(query_pushdown):
+    efficiency = (query_pushdown or {}).get("efficiency") or {}
+    runtime_share = (query_pushdown or {}).get("runtime_share") or {}
+    diff_utilization = (query_pushdown or {}).get("diff_utilization") or {}
+    message = str(efficiency.get("message") or "").strip()
+    hotspot_models = list(efficiency.get("hotspot_models") or [])
+    runtime_message = str(runtime_share.get("message") or "").strip()
+    diff_message = str(diff_utilization.get("message") or "").strip()
+    tuning_guidance = list((query_pushdown or {}).get("tuning_guidance") or [])
+
+    message_parts = []
+    if message:
+        message_parts.append(message)
+    if runtime_message:
+        message_parts.append(runtime_message)
+    if diff_message:
+        message_parts.append(diff_message)
+
+    if not hotspot_models:
+        message = (
+            " ".join(message_parts).strip()
+            or "Pushdown efficiency diagnostics are unavailable."
+        )
+    else:
+        hotspot_labels = ", ".join(
+            item.get("model", "unknown") for item in hotspot_models
+        )
+        if message_parts:
+            message = (
+                f"{' '.join(message_parts).strip()} Hotspot model(s): {hotspot_labels}."
+            )
+        else:
+            message = f"Hotspot model(s): {hotspot_labels}."
+
+    if not tuning_guidance:
+        return message
+    preview = "; ".join(
+        str(item.get("message") or "").strip()
+        for item in tuning_guidance[:2]
+        if str(item.get("message") or "").strip()
+    )
+    if not preview:
+        return message
+    return f"{message} Guidance: {preview}"
+
+
+def large_run_tuning_check_status(large_run_tuning):
+    status = str((large_run_tuning or {}).get("status") or "info").strip().lower()
+    if status in {"fail", "warn", "pass"}:
+        return status
+    return "info"
+
+
+def large_run_tuning_check_message(large_run_tuning):
+    if not large_run_tuning:
+        return "Large-run tuning diagnostics are unavailable."
+    message = str(large_run_tuning.get("message") or "").strip()
+    actions = list(large_run_tuning.get("first_order_actions") or [])
+    preview = "; ".join(
+        str(item.get("message") or "").strip()
+        for item in actions[:2]
+        if str(item.get("message") or "").strip()
+    )
+    if message and preview and preview not in message:
+        return f"{message} Next: {preview}"
+    return message or preview or "Large-run tuning diagnostics are unavailable."
 
 
 def query_drift_check_status(query_drift):
@@ -205,10 +328,12 @@ def ingestion_check_status(ingestion):
         return "warn"
     if ingestion.failed_change_count:
         return "fail"
-    if ingestion.issues.exists():
+    if has_blocking_issues(ingestion):
         return "warn"
     if ingestion.baseline_ready:
         return "pass"
+    if ingestion.issues.exists():
+        return "warn"
     return "warn"
 
 
@@ -220,9 +345,18 @@ def ingestion_check_message(ingestion):
             f"Latest ingestion {ingestion.pk} has "
             f"{ingestion.failed_change_count} failed change(s)."
         )
+    if has_blocking_issues(ingestion):
+        issue_count = ingestion.issues.count()
+        return (
+            f"Latest ingestion {ingestion.pk} recorded {issue_count} issue(s), "
+            "including blocking rows."
+        )
     issue_count = ingestion.issues.count()
     if issue_count:
-        return f"Latest ingestion {ingestion.pk} recorded {issue_count} issue(s)."
+        return (
+            f"Latest ingestion {ingestion.pk} recorded {issue_count} issue(s), "
+            "all currently classified as non-blocking."
+        )
     if ingestion.baseline_ready:
         return f"Latest ingestion {ingestion.pk} is baseline-ready."
     return f"Latest ingestion {ingestion.pk} is not marked baseline-ready."
