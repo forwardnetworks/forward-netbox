@@ -16,6 +16,7 @@ from utilities.forms.widgets import NumberWithOptions
 
 from .choices import forward_configured_models
 from .choices import FORWARD_OPTIONAL_MODELS
+from .choices import ForwardDiffFallbackModeChoices
 from .choices import ForwardExecutionBackendChoices
 from .choices import ForwardSourceDeploymentChoices
 from .choices import ForwardSourceStatusChoices
@@ -28,11 +29,25 @@ from .models import ForwardSource
 from .models import ForwardSync
 from .utilities.branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
 from .utilities.forward_api import DEFAULT_FORWARD_API_TIMEOUT_SECONDS
+from .utilities.forward_api import DEFAULT_NQE_FETCH_ALL_MAX_PAGES
+from .utilities.forward_api import DEFAULT_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT
 from .utilities.forward_api import DEFAULT_NQE_PAGE_SIZE
+from .utilities.forward_api import DEFAULT_QUERY_DIAGNOSTICS_ENABLED
 from .utilities.forward_api import DEFAULT_QUERY_FETCH_CONCURRENCY
+from .utilities.forward_api import DEFAULT_QUERY_PREFLIGHT_ENABLED
 from .utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
+from .utilities.forward_api import MAX_NQE_FETCH_ALL_MAX_PAGES
+from .utilities.forward_api import MAX_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT
 from .utilities.forward_api import MAX_NQE_PAGE_SIZE
 from .utilities.forward_api import MAX_QUERY_FETCH_CONCURRENCY
+from .utilities.query_fetch import DEFAULT_PREFLIGHT_ROW_LIMIT
+from .utilities.query_fetch import MAX_PREFLIGHT_ROW_LIMIT
+from .utilities.runtime_guidance import DEFAULT_PUSHDOWN_DIFF_WARN_RATIO
+from .utilities.runtime_guidance import DEFAULT_PUSHDOWN_FALLBACK_WARN_RATE
+from .utilities.runtime_guidance import (
+    DEFAULT_PUSHDOWN_RUNTIME_FALLBACK_WARN_SHARE,
+)
+from .utilities.sync_facade import DEFAULT_ENABLE_BULK_ORM_FOR_NEW_SYNCS
 
 
 def _configure_api_select(widget, query_params=None):
@@ -207,6 +222,89 @@ class ForwardSourceForm(NetBoxModelForm):
             ),
             widget=forms.NumberInput(attrs={"class": "form-control"}),
         )
+        self.fields["nqe_fetch_all_max_pages"] = forms.IntegerField(
+            required=False,
+            min_value=1,
+            max_value=MAX_NQE_FETCH_ALL_MAX_PAGES,
+            label="NQE Fetch-All Page Cap",
+            help_text=(
+                "Maximum pages allowed in one fetch-all query before failing fast. "
+                f"Default: {DEFAULT_NQE_FETCH_ALL_MAX_PAGES}."
+            ),
+            widget=forms.NumberInput(attrs={"class": "form-control"}),
+        )
+        self.fields["nqe_identical_full_page_streak_limit"] = forms.IntegerField(
+            required=False,
+            min_value=1,
+            max_value=MAX_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT,
+            label="NQE Identical-Page Streak Cap",
+            help_text=(
+                "Fail fetch-all when identical full pages repeat with no progress. "
+                f"Default: {DEFAULT_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT}."
+            ),
+            widget=forms.NumberInput(attrs={"class": "form-control"}),
+        )
+        self.fields["query_preflight_enabled"] = forms.BooleanField(
+            required=False,
+            label="Query Preflight",
+            help_text=(
+                "Run the preflight sample query phase before full workload fetch. "
+                "Disable to reduce startup query overhead on large runs."
+            ),
+        )
+        self.fields["query_preflight_row_limit"] = forms.IntegerField(
+            required=False,
+            min_value=1,
+            max_value=MAX_PREFLIGHT_ROW_LIMIT,
+            label="Query Preflight Row Limit",
+            help_text=(
+                "Sample rows fetched per query during preflight validation. "
+                f"Default: {DEFAULT_PREFLIGHT_ROW_LIMIT}."
+            ),
+            widget=forms.NumberInput(attrs={"class": "form-control"}),
+        )
+        self.fields["query_diagnostics_enabled"] = forms.BooleanField(
+            required=False,
+            label="Query Diagnostics",
+            help_text=(
+                "Run additional NQE diagnostic queries for importability summaries. "
+                "Disable to reduce query overhead during large ingestion runs."
+            ),
+        )
+        self.fields["pushdown_fallback_warn_rate"] = forms.FloatField(
+            required=False,
+            min_value=0.0,
+            max_value=1.0,
+            label="Pushdown Fallback Warn Rate",
+            help_text=(
+                "Warn in health/support when fallback fetch step rate meets or "
+                f"exceeds this ratio. Default: {DEFAULT_PUSHDOWN_FALLBACK_WARN_RATE}."
+            ),
+            widget=forms.NumberInput(attrs={"class": "form-control", "step": "0.01"}),
+        )
+        self.fields["pushdown_runtime_fallback_warn_share"] = forms.FloatField(
+            required=False,
+            min_value=0.0,
+            max_value=1.0,
+            label="Pushdown Runtime Fallback Warn Share",
+            help_text=(
+                "Warn in health/support when fallback fetch runtime share meets or "
+                "exceeds this ratio. Default: "
+                f"{DEFAULT_PUSHDOWN_RUNTIME_FALLBACK_WARN_SHARE}."
+            ),
+            widget=forms.NumberInput(attrs={"class": "form-control", "step": "0.01"}),
+        )
+        self.fields["pushdown_diff_warn_ratio"] = forms.FloatField(
+            required=False,
+            min_value=0.0,
+            max_value=1.0,
+            label="Pushdown Diff Warn Ratio",
+            help_text=(
+                "Warn in health/support when diff execution ratio for eligible "
+                f"query maps is at or below this ratio. Default: {DEFAULT_PUSHDOWN_DIFF_WARN_RATIO}."
+            ),
+            widget=forms.NumberInput(attrs={"class": "form-control", "step": "0.01"}),
+        )
         self.fields["verify"] = forms.BooleanField(
             required=False,
             initial=True,
@@ -332,6 +430,39 @@ class ForwardSourceForm(NetBoxModelForm):
         self.fields["query_fetch_concurrency"].initial = (
             parameters.get("query_fetch_concurrency") or DEFAULT_QUERY_FETCH_CONCURRENCY
         )
+        self.fields["nqe_fetch_all_max_pages"].initial = (
+            parameters.get("nqe_fetch_all_max_pages") or DEFAULT_NQE_FETCH_ALL_MAX_PAGES
+        )
+        self.fields["nqe_identical_full_page_streak_limit"].initial = (
+            parameters.get("nqe_identical_full_page_streak_limit")
+            or DEFAULT_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT
+        )
+        self.fields["query_preflight_enabled"].initial = bool(
+            parameters.get("query_preflight_enabled", DEFAULT_QUERY_PREFLIGHT_ENABLED)
+        )
+        self.fields["query_preflight_row_limit"].initial = (
+            parameters.get("query_preflight_row_limit") or DEFAULT_PREFLIGHT_ROW_LIMIT
+        )
+        self.fields["query_diagnostics_enabled"].initial = bool(
+            parameters.get(
+                "query_diagnostics_enabled", DEFAULT_QUERY_DIAGNOSTICS_ENABLED
+            )
+        )
+        self.fields["pushdown_fallback_warn_rate"].initial = (
+            parameters.get("pushdown_fallback_warn_rate")
+            if parameters.get("pushdown_fallback_warn_rate") not in ("", None)
+            else DEFAULT_PUSHDOWN_FALLBACK_WARN_RATE
+        )
+        self.fields["pushdown_runtime_fallback_warn_share"].initial = (
+            parameters.get("pushdown_runtime_fallback_warn_share")
+            if parameters.get("pushdown_runtime_fallback_warn_share") not in ("", None)
+            else DEFAULT_PUSHDOWN_RUNTIME_FALLBACK_WARN_SHARE
+        )
+        self.fields["pushdown_diff_warn_ratio"].initial = (
+            parameters.get("pushdown_diff_warn_ratio")
+            if parameters.get("pushdown_diff_warn_ratio") not in ("", None)
+            else DEFAULT_PUSHDOWN_DIFF_WARN_RATIO
+        )
         self.fields["verify"].initial = parameters.get("verify", True)
         self.fields["network_id"].initial = existing_network_id
         self.fields["network_id"].choices = _selected_choice(existing_network_id)
@@ -387,6 +518,14 @@ class ForwardSourceForm(NetBoxModelForm):
                     "timeout",
                     "nqe_page_size",
                     "query_fetch_concurrency",
+                    "nqe_fetch_all_max_pages",
+                    "nqe_identical_full_page_streak_limit",
+                    "query_preflight_enabled",
+                    "query_preflight_row_limit",
+                    "query_diagnostics_enabled",
+                    "pushdown_fallback_warn_rate",
+                    "pushdown_runtime_fallback_warn_share",
+                    "pushdown_diff_warn_ratio",
                     "device_tag_include_tags",
                     "device_tag_include_match",
                     "device_tag_exclude_tags",
@@ -405,6 +544,14 @@ class ForwardSourceForm(NetBoxModelForm):
                     "timeout",
                     "nqe_page_size",
                     "query_fetch_concurrency",
+                    "nqe_fetch_all_max_pages",
+                    "nqe_identical_full_page_streak_limit",
+                    "query_preflight_enabled",
+                    "query_preflight_row_limit",
+                    "query_diagnostics_enabled",
+                    "pushdown_fallback_warn_rate",
+                    "pushdown_runtime_fallback_warn_share",
+                    "pushdown_diff_warn_ratio",
                     "device_tag_include_tags",
                     "device_tag_include_match",
                     "device_tag_exclude_tags",
@@ -468,6 +615,55 @@ class ForwardSourceForm(NetBoxModelForm):
             "query_fetch_concurrency": cleaned.get("query_fetch_concurrency")
             or existing_parameters.get("query_fetch_concurrency")
             or DEFAULT_QUERY_FETCH_CONCURRENCY,
+            "nqe_fetch_all_max_pages": cleaned.get("nqe_fetch_all_max_pages")
+            or existing_parameters.get("nqe_fetch_all_max_pages")
+            or DEFAULT_NQE_FETCH_ALL_MAX_PAGES,
+            "nqe_identical_full_page_streak_limit": cleaned.get(
+                "nqe_identical_full_page_streak_limit"
+            )
+            or existing_parameters.get("nqe_identical_full_page_streak_limit")
+            or DEFAULT_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT,
+            "query_preflight_enabled": bool(
+                cleaned.get("query_preflight_enabled", DEFAULT_QUERY_PREFLIGHT_ENABLED)
+            ),
+            "query_preflight_row_limit": cleaned.get("query_preflight_row_limit")
+            or existing_parameters.get("query_preflight_row_limit")
+            or DEFAULT_PREFLIGHT_ROW_LIMIT,
+            "query_diagnostics_enabled": bool(
+                cleaned.get(
+                    "query_diagnostics_enabled", DEFAULT_QUERY_DIAGNOSTICS_ENABLED
+                )
+            ),
+            "pushdown_fallback_warn_rate": (
+                cleaned.get("pushdown_fallback_warn_rate")
+                if cleaned.get("pushdown_fallback_warn_rate") is not None
+                else (
+                    existing_parameters.get("pushdown_fallback_warn_rate")
+                    if existing_parameters.get("pushdown_fallback_warn_rate")
+                    not in ("", None)
+                    else DEFAULT_PUSHDOWN_FALLBACK_WARN_RATE
+                )
+            ),
+            "pushdown_runtime_fallback_warn_share": (
+                cleaned.get("pushdown_runtime_fallback_warn_share")
+                if cleaned.get("pushdown_runtime_fallback_warn_share") is not None
+                else (
+                    existing_parameters.get("pushdown_runtime_fallback_warn_share")
+                    if existing_parameters.get("pushdown_runtime_fallback_warn_share")
+                    not in ("", None)
+                    else DEFAULT_PUSHDOWN_RUNTIME_FALLBACK_WARN_SHARE
+                )
+            ),
+            "pushdown_diff_warn_ratio": (
+                cleaned.get("pushdown_diff_warn_ratio")
+                if cleaned.get("pushdown_diff_warn_ratio") is not None
+                else (
+                    existing_parameters.get("pushdown_diff_warn_ratio")
+                    if existing_parameters.get("pushdown_diff_warn_ratio")
+                    not in ("", None)
+                    else DEFAULT_PUSHDOWN_DIFF_WARN_RATIO
+                )
+            ),
             "network_id": selected_network_id,
             "device_tag_include_tags": include_tags,
             "device_tag_exclude_tags": exclude_tags,
@@ -570,6 +766,60 @@ class ForwardSourceForm(NetBoxModelForm):
             "query_fetch_concurrency": self.cleaned_data.get("query_fetch_concurrency")
             or existing_parameters.get("query_fetch_concurrency")
             or DEFAULT_QUERY_FETCH_CONCURRENCY,
+            "nqe_fetch_all_max_pages": self.cleaned_data.get("nqe_fetch_all_max_pages")
+            or existing_parameters.get("nqe_fetch_all_max_pages")
+            or DEFAULT_NQE_FETCH_ALL_MAX_PAGES,
+            "nqe_identical_full_page_streak_limit": self.cleaned_data.get(
+                "nqe_identical_full_page_streak_limit"
+            )
+            or existing_parameters.get("nqe_identical_full_page_streak_limit")
+            or DEFAULT_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT,
+            "query_preflight_enabled": bool(
+                self.cleaned_data.get(
+                    "query_preflight_enabled", DEFAULT_QUERY_PREFLIGHT_ENABLED
+                )
+            ),
+            "query_preflight_row_limit": self.cleaned_data.get(
+                "query_preflight_row_limit"
+            )
+            or existing_parameters.get("query_preflight_row_limit")
+            or DEFAULT_PREFLIGHT_ROW_LIMIT,
+            "query_diagnostics_enabled": bool(
+                self.cleaned_data.get(
+                    "query_diagnostics_enabled", DEFAULT_QUERY_DIAGNOSTICS_ENABLED
+                )
+            ),
+            "pushdown_fallback_warn_rate": (
+                self.cleaned_data.get("pushdown_fallback_warn_rate")
+                if self.cleaned_data.get("pushdown_fallback_warn_rate") is not None
+                else (
+                    existing_parameters.get("pushdown_fallback_warn_rate")
+                    if existing_parameters.get("pushdown_fallback_warn_rate")
+                    not in ("", None)
+                    else DEFAULT_PUSHDOWN_FALLBACK_WARN_RATE
+                )
+            ),
+            "pushdown_runtime_fallback_warn_share": (
+                self.cleaned_data.get("pushdown_runtime_fallback_warn_share")
+                if self.cleaned_data.get("pushdown_runtime_fallback_warn_share")
+                is not None
+                else (
+                    existing_parameters.get("pushdown_runtime_fallback_warn_share")
+                    if existing_parameters.get("pushdown_runtime_fallback_warn_share")
+                    not in ("", None)
+                    else DEFAULT_PUSHDOWN_RUNTIME_FALLBACK_WARN_SHARE
+                )
+            ),
+            "pushdown_diff_warn_ratio": (
+                self.cleaned_data.get("pushdown_diff_warn_ratio")
+                if self.cleaned_data.get("pushdown_diff_warn_ratio") is not None
+                else (
+                    existing_parameters.get("pushdown_diff_warn_ratio")
+                    if existing_parameters.get("pushdown_diff_warn_ratio")
+                    not in ("", None)
+                    else DEFAULT_PUSHDOWN_DIFF_WARN_RATIO
+                )
+            ),
             "network_id": self.cleaned_data.get("network_id") or "",
             "device_tag_include_tags": include_tags,
             "device_tag_exclude_tags": exclude_tags,
@@ -657,6 +907,36 @@ class ForwardSyncForm(NetBoxModelForm):
         label="Max changes per branch",
         help_text="Maximum planned changes per native Branching shard.",
     )
+    enable_bulk_orm = forms.BooleanField(
+        required=False,
+        label="Use safe bulk ORM models",
+        help_text=(
+            "Use the parity-tested bulk ORM apply engine for eligible low-risk "
+            "models. Models with dependency, relationship, IPAM hierarchy, or "
+            "plugin-specific contracts remain on the adapter path."
+        ),
+    )
+    scheduler_overlap = forms.BooleanField(
+        required=False,
+        label="Stage next shard during merge",
+        help_text=(
+            "Experimental Branching speedup. When auto merge is enabled, pre-stage "
+            "one eligible shard while the current shard is merging; merges remain "
+            "serialized by the execution ledger."
+        ),
+    )
+    diff_fallback_mode = forms.ChoiceField(
+        choices=tuple(
+            (value, label)
+            for value, label, _color in ForwardDiffFallbackModeChoices.CHOICES
+        ),
+        required=False,
+        label="Diff fallback mode",
+        help_text=(
+            "Allow full-query fallback when diff execution cannot run, or require "
+            "diff-only execution once a baseline exists."
+        ),
+    )
     snapshot_id = forms.ChoiceField(
         required=False,
         label="Snapshot",
@@ -708,6 +988,18 @@ class ForwardSyncForm(NetBoxModelForm):
             "max_changes_per_branch",
             DEFAULT_MAX_CHANGES_PER_BRANCH,
         )
+        self.fields["enable_bulk_orm"].initial = parameters.get(
+            "enable_bulk_orm",
+            DEFAULT_ENABLE_BULK_ORM_FOR_NEW_SYNCS,
+        )
+        self.fields["scheduler_overlap"].initial = parameters.get(
+            "scheduler_overlap",
+            False,
+        )
+        self.fields["diff_fallback_mode"].initial = parameters.get(
+            "diff_fallback_mode",
+            ForwardDiffFallbackModeChoices.ALLOW_FALLBACK,
+        )
         selected_snapshot_id = (
             self.data.get("snapshot_id")
             if self.is_bound
@@ -739,6 +1031,9 @@ class ForwardSyncForm(NetBoxModelForm):
                 "execution_backend",
                 "max_changes_per_branch",
                 "auto_merge",
+                "enable_bulk_orm",
+                "scheduler_overlap",
+                "diff_fallback_mode",
                 "scheduled",
                 "interval",
                 name="Execution",
@@ -783,12 +1078,16 @@ class ForwardSyncForm(NetBoxModelForm):
             "max_changes_per_branch": cleaned.get("max_changes_per_branch")
             or DEFAULT_MAX_CHANGES_PER_BRANCH,
             "snapshot_id": snapshot_id,
-            "enable_bulk_orm": bool(
-                (self.instance.parameters or {}).get("enable_bulk_orm", False)
-            ),
+            "enable_bulk_orm": bool(cleaned.get("enable_bulk_orm", False)),
             "bulk_orm_models": list(
                 (self.instance.parameters or {}).get("bulk_orm_models") or []
             ),
+            "scheduler_overlap": bool(
+                cleaned.get("scheduler_overlap", False)
+                and cleaned.get("auto_merge", False)
+            ),
+            "diff_fallback_mode": cleaned.get("diff_fallback_mode")
+            or ForwardDiffFallbackModeChoices.ALLOW_FALLBACK,
         }
         for model_string in forward_configured_models():
             parameters[model_string] = cleaned.get(model_string, False)
@@ -806,12 +1105,16 @@ class ForwardSyncForm(NetBoxModelForm):
             or DEFAULT_MAX_CHANGES_PER_BRANCH,
             "snapshot_id": self.cleaned_data.get("snapshot_id")
             or LATEST_PROCESSED_SNAPSHOT,
-            "enable_bulk_orm": bool(
-                (self.instance.parameters or {}).get("enable_bulk_orm", False)
-            ),
+            "enable_bulk_orm": bool(self.cleaned_data.get("enable_bulk_orm", False)),
             "bulk_orm_models": list(
                 (self.instance.parameters or {}).get("bulk_orm_models") or []
             ),
+            "scheduler_overlap": bool(
+                self.cleaned_data.get("scheduler_overlap", False)
+                and self.cleaned_data.get("auto_merge", False)
+            ),
+            "diff_fallback_mode": self.cleaned_data.get("diff_fallback_mode")
+            or ForwardDiffFallbackModeChoices.ALLOW_FALLBACK,
         }
         for model_string in forward_configured_models():
             parameters[model_string] = self.cleaned_data.get(model_string, False)

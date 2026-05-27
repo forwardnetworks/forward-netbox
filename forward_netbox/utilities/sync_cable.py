@@ -2,6 +2,7 @@ from django.core.exceptions import ObjectDoesNotExist
 
 from ..exceptions import ForwardDependencySkipError
 from ..exceptions import ForwardSyncDataError
+from .sync_primitives import forget_lookup_object
 
 
 def lookup_cable_between(runner, interface, remote_interface):
@@ -17,12 +18,8 @@ def interface_is_lag(interface):
 
 
 def delete_dcim_cable(runner, row):
-    from dcim.models import Device
-
-    device = Device.objects.filter(name=row.get("device")).order_by("pk").first()
-    remote_device = (
-        Device.objects.filter(name=row.get("remote_device")).order_by("pk").first()
-    )
+    device = runner._lookup_device_by_name(row.get("device"))
+    remote_device = runner._lookup_device_by_name(row.get("remote_device"))
     if device is None or remote_device is None:
         return False
     interface = runner._lookup_interface(device, row.get("interface"))
@@ -35,15 +32,16 @@ def delete_dcim_cable(runner, row):
     if cable is None:
         return False
     cable.delete()
+    forget_lookup_object(runner, interface)
+    forget_lookup_object(runner, remote_interface)
     return True
 
 
 def apply_dcim_cable(runner, row):
     from dcim.models import Cable
-    from dcim.models import Device
 
     try:
-        device = Device.objects.get(name=row["device"])
+        device = runner._get_device_by_name(row["device"])
     except ObjectDoesNotExist as exc:
         key = (row["device"],)
         if runner._dependency_failed("dcim.device", key):
@@ -66,7 +64,7 @@ def apply_dcim_cable(runner, row):
         return False
 
     try:
-        remote_device = Device.objects.get(name=row["remote_device"])
+        remote_device = runner._get_device_by_name(row["remote_device"])
     except ObjectDoesNotExist as exc:
         key = (row["remote_device"],)
         if runner._dependency_failed("dcim.device", key):
@@ -177,3 +175,5 @@ def apply_dcim_cable(runner, row):
     )
     cable.full_clean()
     cable.save()
+    forget_lookup_object(runner, interface)
+    forget_lookup_object(runner, remote_interface)

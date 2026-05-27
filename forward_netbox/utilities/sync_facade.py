@@ -4,6 +4,7 @@ from django.utils.module_loading import import_string
 
 from ..choices import forward_configured_models
 from ..choices import FORWARD_OPTIONAL_MODELS
+from ..choices import ForwardDiffFallbackModeChoices
 from ..choices import ForwardExecutionBackendChoices
 from ..choices import ForwardSyncStatusChoices
 from ..exceptions import ForwardSyncError
@@ -13,12 +14,21 @@ from .resumable_branching import enqueue_branch_stage_job
 from .sync_state import get_max_changes_per_branch as get_state_max_changes_per_branch
 
 
+DEFAULT_ENABLE_BULK_ORM_FOR_NEW_SYNCS = True
+
+
 def normalize_forward_sync(sync):
     parameters = dict(sync.parameters or {})
     parameters["execution_backend"] = parameters.get(
         "execution_backend",
         ForwardExecutionBackendChoices.BRANCHING,
     )
+    parameters["diff_fallback_mode"] = parameters.get(
+        "diff_fallback_mode",
+        ForwardDiffFallbackModeChoices.ALLOW_FALLBACK,
+    )
+    if "enable_bulk_orm" not in parameters:
+        parameters["enable_bulk_orm"] = DEFAULT_ENABLE_BULK_ORM_FOR_NEW_SYNCS
     parameters["multi_branch"] = True
     max_changes_per_branch = get_state_max_changes_per_branch(
         sync,

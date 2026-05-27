@@ -18,8 +18,14 @@ DEFAULT_FORWARD_API_RETRIES = 2
 DEFAULT_FORWARD_API_RETRY_BACKOFF_SECONDS = 2
 MAX_NQE_PAGE_SIZE = 10000
 DEFAULT_NQE_PAGE_SIZE = 10000
-DEFAULT_QUERY_FETCH_CONCURRENCY = 6
+DEFAULT_NQE_FETCH_ALL_MAX_PAGES = 5000
+MAX_NQE_FETCH_ALL_MAX_PAGES = 200000
+DEFAULT_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT = 25
+MAX_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT = 1000
+DEFAULT_QUERY_FETCH_CONCURRENCY = 10
 MAX_QUERY_FETCH_CONCURRENCY = 16
+DEFAULT_QUERY_PREFLIGHT_ENABLED = True
+DEFAULT_QUERY_DIAGNOSTICS_ENABLED = True
 TRANSIENT_FORWARD_HTTP_STATUS_CODES = {408, 429, 502, 503, 504}
 NQE_QUERY_REPOSITORIES = {"org", "fwd"}
 
@@ -87,6 +93,14 @@ class ForwardClient:
         self.retries = self._coerce_retry_count(params.get("retries"))
         self.verify = params.get("verify", True)
         self.nqe_page_size = self._coerce_nqe_page_size(params.get("nqe_page_size"))
+        self.nqe_fetch_all_max_pages = self._coerce_nqe_fetch_all_max_pages(
+            params.get("nqe_fetch_all_max_pages")
+        )
+        self.nqe_identical_full_page_streak_limit = (
+            self._coerce_nqe_identical_full_page_streak_limit(
+                params.get("nqe_identical_full_page_streak_limit")
+            )
+        )
         self.base_url = source.url.rstrip("/")
         self.username = params.get("username")
         self.password = params.get("password")
@@ -108,6 +122,35 @@ class ForwardClient:
         except (TypeError, ValueError):
             return DEFAULT_FORWARD_API_RETRIES
         return max(0, min(retries, 5))
+
+    def _coerce_nqe_fetch_all_max_pages(self, value):
+        if value is None:
+            return DEFAULT_NQE_FETCH_ALL_MAX_PAGES
+        try:
+            pages = int(value)
+        except (TypeError, ValueError):
+            return DEFAULT_NQE_FETCH_ALL_MAX_PAGES
+        return max(1, min(pages, MAX_NQE_FETCH_ALL_MAX_PAGES))
+
+    def _coerce_nqe_identical_full_page_streak_limit(self, value):
+        if value is None:
+            return DEFAULT_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT
+        try:
+            streak = int(value)
+        except (TypeError, ValueError):
+            return DEFAULT_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT
+        return max(1, min(streak, MAX_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT))
+
+    def _page_signature(self, rows):
+        if not rows:
+            return None
+        first = rows[0]
+        last = rows[-1]
+        return (
+            len(rows),
+            json.dumps(first, sort_keys=True, default=str),
+            json.dumps(last, sort_keys=True, default=str),
+        )
 
     def _api_url(self, path):
         base_url = self.base_url
@@ -518,18 +561,52 @@ class ForwardClient:
         all_records = list(records)
         expected_total = int(total_num_items) if total_num_items is not None else None
         last_page_size = len(records)
+        fetched_pages = 1
+        identical_full_page_streak = 0
+        previous_full_page_signature = (
+            self._page_signature(records)
+            if expected_total is None and len(records) == limit
+            else None
+        )
 
         while True:
             if expected_total is not None and len(all_records) >= expected_total:
                 return all_records
             if expected_total is None and last_page_size < limit:
                 return all_records
+            if fetched_pages >= self.nqe_fetch_all_max_pages:
+                raise ForwardClientError(
+                    "Forward NQE pagination exceeded "
+                    f"{self.nqe_fetch_all_max_pages} page(s) while fetching "
+                    f"`{query_id or '<raw-query>'}`."
+                )
 
             next_offset = offset + len(all_records)
             page_records, page_total = fetch_page(next_offset)
+            fetched_pages += 1
             if expected_total is None and page_total is not None:
                 expected_total = int(page_total)
             last_page_size = len(page_records)
+            if expected_total is None and last_page_size == limit and page_records:
+                signature = self._page_signature(page_records)
+                if signature == previous_full_page_signature:
+                    identical_full_page_streak += 1
+                else:
+                    identical_full_page_streak = 0
+                previous_full_page_signature = signature
+                if (
+                    identical_full_page_streak
+                    >= self.nqe_identical_full_page_streak_limit
+                ):
+                    raise ForwardClientError(
+                        "Forward NQE pagination did not advance; received "
+                        f"{identical_full_page_streak + 1} identical full page(s) "
+                        f"for `{query_id or '<raw-query>'}`. "
+                        "Verify Forward API pagination for this query."
+                    )
+            else:
+                identical_full_page_streak = 0
+                previous_full_page_signature = None
             if not page_records:
                 if expected_total is not None and len(all_records) < expected_total:
                     raise ForwardClientError(
@@ -594,18 +671,51 @@ class ForwardClient:
         all_rows = list(rows)
         expected_total = int(total_num_rows) if total_num_rows is not None else None
         last_page_size = len(rows)
+        fetched_pages = 1
+        identical_full_page_streak = 0
+        previous_full_page_signature = (
+            self._page_signature(rows)
+            if expected_total is None and len(rows) == limit
+            else None
+        )
 
         while True:
             if expected_total is not None and len(all_rows) >= expected_total:
                 return all_rows
             if expected_total is None and last_page_size < limit:
                 return all_rows
+            if fetched_pages >= self.nqe_fetch_all_max_pages:
+                raise ForwardClientError(
+                    "Forward NQE diff pagination exceeded "
+                    f"{self.nqe_fetch_all_max_pages} page(s) while fetching "
+                    f"`{query_id}`."
+                )
 
             next_offset = offset + len(all_rows)
             page_rows, page_total = fetch_page(next_offset)
+            fetched_pages += 1
             if expected_total is None and page_total is not None:
                 expected_total = int(page_total)
             last_page_size = len(page_rows)
+            if expected_total is None and last_page_size == limit and page_rows:
+                signature = self._page_signature(page_rows)
+                if signature == previous_full_page_signature:
+                    identical_full_page_streak += 1
+                else:
+                    identical_full_page_streak = 0
+                previous_full_page_signature = signature
+                if (
+                    identical_full_page_streak
+                    >= self.nqe_identical_full_page_streak_limit
+                ):
+                    raise ForwardClientError(
+                        "Forward NQE diff pagination did not advance; received "
+                        f"{identical_full_page_streak + 1} identical full page(s) "
+                        f"for `{query_id}`. Verify Forward API pagination for this query."
+                    )
+            else:
+                identical_full_page_streak = 0
+                previous_full_page_signature = None
             if not page_rows:
                 if expected_total is not None and len(all_rows) < expected_total:
                     raise ForwardClientError(

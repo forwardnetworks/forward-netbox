@@ -55,7 +55,7 @@ def apply_dcim_virtualchassis(runner, row):
     )
     if row.get("device"):
         try:
-            device = Device.objects.get(name=row["device"])
+            device = runner._get_device_by_name(row["device"])
         except ObjectDoesNotExist as exc:
             key = (row["device"],)
             if runner._dependency_failed("dcim.device", key):

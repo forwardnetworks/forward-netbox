@@ -1,4 +1,5 @@
 from contextlib import nullcontext
+from unittest.mock import MagicMock
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -18,6 +19,9 @@ from forward_netbox.models import ForwardIngestion
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
+from forward_netbox.utilities.ingestion_merge import (
+    AUTO_MERGE_STALE_MERGE_REQUEUE_LIMIT,
+)
 from forward_netbox.utilities.ingestion_merge import enqueue_merge_job
 from forward_netbox.utilities.ingestion_merge import maybe_enqueue_next_branch_stage
 from forward_netbox.utilities.ingestion_merge import record_change_totals
@@ -126,6 +130,41 @@ class ForwardIngestionMergeHelperTest(TestCase):
 
         self.assertTrue(ingestion.can_queue_merge)
 
+    def test_can_queue_merge_ignores_stale_compatibility_state_when_ledger_history_exists(
+        self,
+    ):
+        branch = Branch.objects.create(
+            name=f"ledger-stale-merge-{uuid4().hex[:12]}",
+            schema_id=f"ledger_stale_merge_{uuid4().hex[:12]}",
+        )
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-ledger-stale-merge",
+            branch=branch,
+        )
+        ForwardExecutionRun.objects.create(
+            sync=self.sync,
+            source=self.source,
+            backend="branching",
+            status=ForwardExecutionRunStatusChoices.COMPLETED,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-ledger-stale-merge",
+            total_steps=1,
+            next_step_index=2,
+        )
+        self.sync.set_branch_run_state(
+            {
+                "awaiting_merge": True,
+                "pending_ingestion_id": ingestion.pk,
+                "pending_plan_index": 1,
+            }
+        )
+        self.sync.status = ForwardSyncStatusChoices.COMPLETED
+        self.sync.save(update_fields=["status"])
+
+        self.assertFalse(ingestion.can_queue_merge)
+
     def test_sync_merge_ingestion_updates_ledger_without_branch_state(self):
         branch = Branch.objects.create(
             name=f"ledger-merge-{uuid4().hex[:12]}",
@@ -231,6 +270,73 @@ class ForwardIngestionMergeHelperTest(TestCase):
         self.assertTrue(ingestion.baseline_ready)
         self.assertEqual(self.sync.get_branch_run_state(), {})
 
+    def test_sync_merge_ingestion_does_not_complete_out_of_order_final_step(self):
+        branch = Branch.objects.create(
+            name=f"ledger-final-gap-{uuid4().hex[:12]}",
+            schema_id=f"ledger_final_gap_{uuid4().hex[:12]}",
+        )
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-ledger-final-gap",
+            branch=branch,
+        )
+        run = ForwardExecutionRun.objects.create(
+            sync=self.sync,
+            source=self.source,
+            backend="branching",
+            status=ForwardExecutionRunStatusChoices.WAITING,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-ledger-final-gap",
+            total_steps=3,
+            next_step_index=3,
+            auto_merge=True,
+        )
+        ForwardExecutionStep.objects.create(
+            run=run,
+            index=1,
+            status=ForwardExecutionStepStatusChoices.MERGED,
+            model_string="dcim.site",
+        )
+        pending_step = ForwardExecutionStep.objects.create(
+            run=run,
+            index=2,
+            status=ForwardExecutionStepStatusChoices.PENDING,
+            model_string="dcim.device",
+        )
+        final_step = ForwardExecutionStep.objects.create(
+            run=run,
+            index=3,
+            status=ForwardExecutionStepStatusChoices.STAGED,
+            model_string="dcim.interface",
+            ingestion=ingestion,
+            branch=branch,
+        )
+        self.sync.clear_branch_run_state()
+
+        with (
+            patch("forward_netbox.utilities.merge.merge_branch"),
+            patch(
+                "forward_netbox.utilities.ingestion_merge.suppress_branch_merge_side_effect_signals",
+                return_value=nullcontext(),
+            ),
+        ):
+            sync_merge_ingestion(ingestion, remove_branch=False)
+
+        final_step.refresh_from_db()
+        pending_step.refresh_from_db()
+        run.refresh_from_db()
+        ingestion.refresh_from_db()
+        self.sync.refresh_from_db()
+
+        self.assertEqual(final_step.status, ForwardExecutionStepStatusChoices.MERGED)
+        self.assertEqual(pending_step.status, ForwardExecutionStepStatusChoices.PENDING)
+        self.assertEqual(run.status, ForwardExecutionRunStatusChoices.RUNNING)
+        self.assertEqual(run.next_step_index, 2)
+        self.assertFalse(run.baseline_ready)
+        self.assertFalse(ingestion.baseline_ready)
+        self.assertEqual(self.sync.status, ForwardSyncStatusChoices.SYNCING)
+
     def test_maybe_enqueue_next_branch_stage_uses_ledger_without_branch_run_json(self):
         branch = Branch.objects.create(
             name=f"ledger-next-{uuid4().hex[:12]}",
@@ -302,6 +408,331 @@ class ForwardIngestionMergeHelperTest(TestCase):
         self.assertEqual(run.phase, "queued")
         self.assertEqual(run.next_step_index, 2)
 
+    def test_maybe_enqueue_next_branch_stage_queues_merge_for_prestaged_step(self):
+        previous_branch = Branch.objects.create(
+            name=f"ledger-overlap-prev-{uuid4().hex[:12]}",
+            schema_id=f"ledger_overlap_prev_{uuid4().hex[:12]}",
+        )
+        previous_ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-ledger-overlap",
+            branch=previous_branch,
+        )
+        staged_branch = Branch.objects.create(
+            name=f"ledger-overlap-next-{uuid4().hex[:12]}",
+            schema_id=f"ledger_overlap_next_{uuid4().hex[:12]}",
+        )
+        staged_ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-ledger-overlap",
+            branch=staged_branch,
+        )
+        run = ForwardExecutionRun.objects.create(
+            sync=self.sync,
+            source=self.source,
+            backend="branching",
+            status=ForwardExecutionRunStatusChoices.RUNNING,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-ledger-overlap",
+            auto_merge=True,
+            total_steps=2,
+            next_step_index=2,
+        )
+        ForwardExecutionStep.objects.create(
+            run=run,
+            index=1,
+            status=ForwardExecutionStepStatusChoices.MERGED,
+            model_string="dcim.site",
+            ingestion=previous_ingestion,
+            branch=previous_branch,
+            branch_name=previous_branch.name,
+        )
+        staged_step = ForwardExecutionStep.objects.create(
+            run=run,
+            index=2,
+            status=ForwardExecutionStepStatusChoices.STAGED,
+            model_string="dcim.device",
+            ingestion=staged_ingestion,
+            branch=staged_branch,
+            branch_name=staged_branch.name,
+        )
+        queued_job = Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardIngestion),
+            object_id=staged_ingestion.pk,
+            name="ledger overlap staged merge",
+            user=None,
+            status=JobStatusChoices.STATUS_PENDING,
+            job_id=uuid4(),
+            created=timezone.now(),
+            data={},
+        )
+
+        with patch(
+            "forward_netbox.utilities.ingestion_merge.Job.enqueue",
+            return_value=queued_job,
+        ) as mock_enqueue:
+            job = maybe_enqueue_next_branch_stage(previous_ingestion, user=None)
+
+        self.assertEqual(job.pk, queued_job.pk)
+        mock_enqueue.assert_called_once()
+        staged_ingestion.refresh_from_db()
+        staged_step.refresh_from_db()
+        run.refresh_from_db()
+        self.sync.refresh_from_db()
+        self.assertEqual(staged_ingestion.merge_job_id, queued_job.pk)
+        self.assertEqual(
+            staged_step.status,
+            ForwardExecutionStepStatusChoices.MERGE_QUEUED,
+        )
+        self.assertEqual(run.status, ForwardExecutionRunStatusChoices.RUNNING)
+        self.assertEqual(self.sync.status, ForwardSyncStatusChoices.QUEUED)
+        self.assertEqual(staged_step.merge_job_id, queued_job.pk)
+
+    def test_maybe_enqueue_next_branch_stage_queues_merge_when_run_waiting(self):
+        previous_branch = Branch.objects.create(
+            name=f"ledger-waiting-prev-{uuid4().hex[:12]}",
+            schema_id=f"ledger_waiting_prev_{uuid4().hex[:12]}",
+        )
+        previous_ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-ledger-waiting",
+            branch=previous_branch,
+        )
+        staged_branch = Branch.objects.create(
+            name=f"ledger-waiting-next-{uuid4().hex[:12]}",
+            schema_id=f"ledger_waiting_next_{uuid4().hex[:12]}",
+        )
+        staged_ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-ledger-waiting",
+            branch=staged_branch,
+        )
+        run = ForwardExecutionRun.objects.create(
+            sync=self.sync,
+            source=self.source,
+            backend="branching",
+            status=ForwardExecutionRunStatusChoices.WAITING,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-ledger-waiting",
+            auto_merge=True,
+            total_steps=2,
+            next_step_index=2,
+        )
+        ForwardExecutionStep.objects.create(
+            run=run,
+            index=1,
+            status=ForwardExecutionStepStatusChoices.MERGED,
+            model_string="dcim.site",
+            ingestion=previous_ingestion,
+            branch=previous_branch,
+            branch_name=previous_branch.name,
+        )
+        staged_step = ForwardExecutionStep.objects.create(
+            run=run,
+            index=2,
+            status=ForwardExecutionStepStatusChoices.STAGED,
+            model_string="dcim.device",
+            ingestion=staged_ingestion,
+            branch=staged_branch,
+            branch_name=staged_branch.name,
+        )
+        queued_job = Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardIngestion),
+            object_id=staged_ingestion.pk,
+            name="ledger waiting staged merge",
+            user=None,
+            status=JobStatusChoices.STATUS_PENDING,
+            job_id=uuid4(),
+            created=timezone.now(),
+            data={},
+        )
+
+        with patch(
+            "forward_netbox.utilities.ingestion_merge.Job.enqueue",
+            return_value=queued_job,
+        ) as mock_enqueue:
+            job = maybe_enqueue_next_branch_stage(previous_ingestion, user=None)
+
+        self.assertEqual(job.pk, queued_job.pk)
+        mock_enqueue.assert_called_once()
+        staged_ingestion.refresh_from_db()
+        staged_step.refresh_from_db()
+        run.refresh_from_db()
+        self.sync.refresh_from_db()
+        self.assertEqual(staged_ingestion.merge_job_id, queued_job.pk)
+        self.assertEqual(
+            staged_step.status,
+            ForwardExecutionStepStatusChoices.MERGE_QUEUED,
+        )
+        self.assertEqual(run.status, ForwardExecutionRunStatusChoices.RUNNING)
+        self.assertEqual(self.sync.status, ForwardSyncStatusChoices.QUEUED)
+        self.assertEqual(staged_step.merge_job_id, queued_job.pk)
+
+    def test_maybe_enqueue_next_branch_stage_requires_opt_in_for_failed_run_recovery(
+        self,
+    ):
+        previous_branch = Branch.objects.create(
+            name=f"ledger-failed-prev-{uuid4().hex[:12]}",
+            schema_id=f"ledger_failed_prev_{uuid4().hex[:12]}",
+        )
+        previous_ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-ledger-failed",
+            branch=previous_branch,
+        )
+        staged_branch = Branch.objects.create(
+            name=f"ledger-failed-next-{uuid4().hex[:12]}",
+            schema_id=f"ledger_failed_next_{uuid4().hex[:12]}",
+        )
+        staged_ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-ledger-failed",
+            branch=staged_branch,
+        )
+        run = ForwardExecutionRun.objects.create(
+            sync=self.sync,
+            source=self.source,
+            backend="branching",
+            status=ForwardExecutionRunStatusChoices.FAILED,
+            phase="failed",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-ledger-failed",
+            auto_merge=True,
+            total_steps=2,
+            next_step_index=2,
+        )
+        ForwardExecutionStep.objects.create(
+            run=run,
+            index=1,
+            status=ForwardExecutionStepStatusChoices.MERGED,
+            model_string="dcim.site",
+            ingestion=previous_ingestion,
+            branch=previous_branch,
+            branch_name=previous_branch.name,
+        )
+        staged_step = ForwardExecutionStep.objects.create(
+            run=run,
+            index=2,
+            status=ForwardExecutionStepStatusChoices.STAGED,
+            model_string="dcim.device",
+            ingestion=staged_ingestion,
+            branch=staged_branch,
+            branch_name=staged_branch.name,
+        )
+        queued_job = Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardIngestion),
+            object_id=staged_ingestion.pk,
+            name="failed run staged merge",
+            user=None,
+            status=JobStatusChoices.STATUS_PENDING,
+            job_id=uuid4(),
+            created=timezone.now(),
+            data={},
+        )
+
+        with patch(
+            "forward_netbox.utilities.ingestion_merge.Job.enqueue",
+            return_value=queued_job,
+        ) as mock_enqueue:
+            self.assertIsNone(
+                maybe_enqueue_next_branch_stage(previous_ingestion, user=None)
+            )
+            job = maybe_enqueue_next_branch_stage(
+                previous_ingestion,
+                user=None,
+                allow_failed_recovery=True,
+            )
+
+        self.assertEqual(job.pk, queued_job.pk)
+        mock_enqueue.assert_called_once()
+        staged_ingestion.refresh_from_db()
+        staged_step.refresh_from_db()
+        self.assertEqual(staged_ingestion.merge_job_id, queued_job.pk)
+        self.assertEqual(
+            staged_step.status,
+            ForwardExecutionStepStatusChoices.MERGE_QUEUED,
+        )
+
+    def test_maybe_enqueue_next_branch_stage_retries_pending_step_for_failed_run(self):
+        branch = Branch.objects.create(
+            name=f"ledger-failed-step-{uuid4().hex[:12]}",
+            schema_id=f"ledger_failed_step_{uuid4().hex[:12]}",
+        )
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-ledger-failed-step",
+            branch=branch,
+        )
+        run = ForwardExecutionRun.objects.create(
+            sync=self.sync,
+            source=self.source,
+            backend="branching",
+            status=ForwardExecutionRunStatusChoices.FAILED,
+            phase="failed",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-ledger-failed-step",
+            auto_merge=True,
+            total_steps=2,
+            next_step_index=2,
+        )
+        ForwardExecutionStep.objects.create(
+            run=run,
+            index=1,
+            status=ForwardExecutionStepStatusChoices.MERGED,
+            model_string="dcim.site",
+            ingestion=ingestion,
+            branch=branch,
+            branch_name=branch.name,
+        )
+        step = ForwardExecutionStep.objects.create(
+            run=run,
+            index=2,
+            status=ForwardExecutionStepStatusChoices.PENDING,
+            model_string="dcim.device",
+            label="dcim.device failed shard",
+            query_name="Forward Devices",
+            execution_mode="query_id",
+            execution_value="query-device",
+            shard_keys=["device:one"],
+        )
+        queued_job = Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=self.sync.pk,
+            name="failed run stage retry",
+            user=None,
+            status=JobStatusChoices.STATUS_PENDING,
+            job_id=uuid4(),
+            created=timezone.now(),
+            data={},
+        )
+
+        with patch(
+            "forward_netbox.utilities.resumable_branching.Job.enqueue",
+            return_value=queued_job,
+        ) as mock_enqueue:
+            job = maybe_enqueue_next_branch_stage(
+                ingestion,
+                user=None,
+                allow_failed_recovery=True,
+            )
+
+        self.assertEqual(job.pk, queued_job.pk)
+        mock_enqueue.assert_called_once()
+        step.refresh_from_db()
+        run.refresh_from_db()
+        self.sync.refresh_from_db()
+        self.assertEqual(step.status, ForwardExecutionStepStatusChoices.QUEUED)
+        self.assertEqual(step.job_id, queued_job.pk)
+        self.assertEqual(run.status, ForwardExecutionRunStatusChoices.RUNNING)
+        self.assertEqual(self.sync.status, ForwardSyncStatusChoices.QUEUED)
+
     def test_maybe_enqueue_next_branch_stage_falls_back_without_ingestion_step_link(
         self,
     ):
@@ -368,6 +799,216 @@ class ForwardIngestionMergeHelperTest(TestCase):
         step.refresh_from_db()
         self.assertEqual(step.status, ForwardExecutionStepStatusChoices.QUEUED)
         self.assertEqual(step.job_id, queued_job.pk)
+
+    def test_maybe_enqueue_next_branch_stage_prefers_ledger_when_compat_state_is_stale(
+        self,
+    ):
+        branch = Branch.objects.create(
+            name=f"ledger-stale-state-{uuid4().hex[:12]}",
+            schema_id=f"ledger_stale_state_{uuid4().hex[:12]}",
+        )
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-ledger-stale-state",
+            branch=branch,
+        )
+        run = ForwardExecutionRun.objects.create(
+            sync=self.sync,
+            source=self.source,
+            backend="branching",
+            status=ForwardExecutionRunStatusChoices.RUNNING,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-ledger-stale-state",
+            auto_merge=True,
+            total_steps=2,
+            next_step_index=2,
+        )
+        step = ForwardExecutionStep.objects.create(
+            run=run,
+            index=2,
+            status=ForwardExecutionStepStatusChoices.PENDING,
+            model_string="dcim.device",
+            label="dcim.device shard",
+            query_name="Forward Devices",
+            execution_mode="query_id",
+            execution_value="query-device",
+            shard_keys=["device:one"],
+        )
+        self.sync.set_branch_run_state(
+            {
+                "auto_merge": False,
+                "next_plan_index": 1,
+                "total_plan_items": 1,
+                "pending_ingestion_id": ingestion.pk,
+            }
+        )
+        queued_job = Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=self.sync.pk,
+            name="ledger stale-state stage",
+            user=None,
+            status=JobStatusChoices.STATUS_PENDING,
+            job_id=uuid4(),
+            created=timezone.now(),
+            data={},
+        )
+
+        with patch(
+            "forward_netbox.utilities.resumable_branching.Job.enqueue",
+            return_value=queued_job,
+        ) as mock_enqueue:
+            job = maybe_enqueue_next_branch_stage(ingestion, user=None)
+
+        self.assertEqual(job.pk, queued_job.pk)
+        mock_enqueue.assert_called_once()
+        step.refresh_from_db()
+        self.assertEqual(step.status, ForwardExecutionStepStatusChoices.QUEUED)
+        self.assertEqual(step.job_id, queued_job.pk)
+
+    def test_maybe_enqueue_next_branch_stage_skips_completed_history_stale_compat(
+        self,
+    ):
+        branch = Branch.objects.create(
+            name=f"ledger-stale-{uuid4().hex[:12]}",
+            schema_id=f"ledger_stale_{uuid4().hex[:12]}",
+        )
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-ledger-stale",
+            branch=branch,
+        )
+        ForwardExecutionRun.objects.create(
+            sync=self.sync,
+            source=self.source,
+            backend="branching",
+            status=ForwardExecutionRunStatusChoices.COMPLETED,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-ledger-stale",
+            auto_merge=True,
+            total_steps=1,
+            next_step_index=2,
+        )
+        self.sync.set_branch_run_state(
+            {
+                "auto_merge": True,
+                "next_plan_index": 1,
+                "total_plan_items": 1,
+                "plan_items": [{"index": 1, "status": "queued"}],
+            }
+        )
+
+        with patch(
+            "forward_netbox.utilities.resumable_branching.Job.enqueue"
+        ) as mock_enqueue:
+            job = maybe_enqueue_next_branch_stage(ingestion, user=None)
+
+        self.assertIsNone(job)
+        mock_enqueue.assert_not_called()
+
+    def test_maybe_enqueue_next_branch_stage_auto_requeues_merge_timeout_within_budget(
+        self,
+    ):
+        branch = Branch.objects.create(
+            name=f"ledger-merge-timeout-{uuid4().hex[:12]}",
+            schema_id=f"ledger_merge_timeout_{uuid4().hex[:12]}",
+        )
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-ledger-merge-timeout",
+            branch=branch,
+        )
+        run = ForwardExecutionRun.objects.create(
+            sync=self.sync,
+            source=self.source,
+            backend="branching",
+            status=ForwardExecutionRunStatusChoices.RUNNING,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-ledger-merge-timeout",
+            auto_merge=True,
+            total_steps=1,
+            next_step_index=1,
+        )
+        step = ForwardExecutionStep.objects.create(
+            run=run,
+            index=1,
+            status=ForwardExecutionStepStatusChoices.MERGE_TIMEOUT,
+            model_string="dcim.site",
+            ingestion=ingestion,
+            branch=branch,
+            retry_count=max(0, AUTO_MERGE_STALE_MERGE_REQUEUE_LIMIT - 1),
+        )
+        self.sync.clear_branch_run_state()
+        queued_job = Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardIngestion),
+            object_id=ingestion.pk,
+            name="ledger merge-timeout auto-requeue",
+            user=None,
+            status=JobStatusChoices.STATUS_PENDING,
+            job_id=uuid4(),
+            created=timezone.now(),
+            data={},
+        )
+
+        with patch(
+            "forward_netbox.utilities.ingestion_merge.Job.enqueue",
+            return_value=queued_job,
+        ) as mock_enqueue:
+            job = maybe_enqueue_next_branch_stage(ingestion, user=None)
+
+        self.assertEqual(job.pk, queued_job.pk)
+        mock_enqueue.assert_called_once()
+        ingestion.refresh_from_db()
+        step.refresh_from_db()
+        self.assertEqual(ingestion.merge_job_id, queued_job.pk)
+        self.assertEqual(step.status, ForwardExecutionStepStatusChoices.MERGE_TIMEOUT)
+
+    def test_maybe_enqueue_next_branch_stage_skips_merge_timeout_auto_requeue_over_budget(
+        self,
+    ):
+        branch = Branch.objects.create(
+            name=f"ledger-merge-timeout-over-{uuid4().hex[:12]}",
+            schema_id=f"ledger_merge_timeout_over_{uuid4().hex[:12]}",
+        )
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-ledger-merge-timeout-over",
+            branch=branch,
+        )
+        run = ForwardExecutionRun.objects.create(
+            sync=self.sync,
+            source=self.source,
+            backend="branching",
+            status=ForwardExecutionRunStatusChoices.RUNNING,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-ledger-merge-timeout-over",
+            auto_merge=True,
+            total_steps=1,
+            next_step_index=2,
+        )
+        step = ForwardExecutionStep.objects.create(
+            run=run,
+            index=1,
+            status=ForwardExecutionStepStatusChoices.MERGE_TIMEOUT,
+            model_string="dcim.site",
+            ingestion=ingestion,
+            branch=branch,
+            retry_count=AUTO_MERGE_STALE_MERGE_REQUEUE_LIMIT + 1,
+        )
+        self.sync.clear_branch_run_state()
+
+        with patch(
+            "forward_netbox.utilities.ingestion_merge.Job.enqueue"
+        ) as mock_enqueue:
+            job = maybe_enqueue_next_branch_stage(ingestion, user=None)
+
+        self.assertIsNone(job)
+        mock_enqueue.assert_not_called()
+        step.refresh_from_db()
+        self.assertEqual(step.status, ForwardExecutionStepStatusChoices.MERGE_TIMEOUT)
 
     def test_sync_merge_ingestion_keeps_syncing_when_pending_ledger_steps_exist(self):
         branch = Branch.objects.create(
@@ -481,3 +1122,73 @@ class ForwardIngestionMergeHelperTest(TestCase):
         self.assertEqual(ingestion.created_change_count, 4)
         self.assertEqual(ingestion.updated_change_count, 5)
         self.assertEqual(ingestion.deleted_change_count, 6)
+
+    def test_merge_progress_updates_ledger_heartbeat_and_sparse_log(self):
+        from forward_netbox.utilities.merge import _report_merge_progress
+
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-merge-progress",
+        )
+        sync_logger = MagicMock()
+
+        with (
+            patch(
+                "forward_netbox.utilities.execution_ledger.touch_execution_step_progress"
+            ) as mock_touch_progress,
+            patch("forward_netbox.utilities.merge.time.monotonic", return_value=101.0),
+        ):
+            heartbeat_at, log_at = _report_merge_progress(
+                ingestion,
+                sync_logger=sync_logger,
+                model_string="ipam.prefix",
+                step_index=47,
+                processed=5000,
+                total_changes=9295,
+                last_heartbeat_at=100.0,
+                last_log_at=100.0,
+            )
+
+        mock_touch_progress.assert_called_once_with(
+            self.sync,
+            model_string="ipam.prefix",
+            shard_index=47,
+        )
+        sync_logger.log_info.assert_called_once_with(
+            "Merged 5000/9295 branch changes (current model `ipam.prefix`)."
+        )
+        self.assertEqual(heartbeat_at, 101.0)
+        self.assertEqual(log_at, 101.0)
+
+    def test_merge_progress_skips_noisy_updates_between_intervals(self):
+        from forward_netbox.utilities.merge import _report_merge_progress
+
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-merge-progress-quiet",
+        )
+        sync_logger = MagicMock()
+
+        with (
+            patch(
+                "forward_netbox.utilities.execution_ledger.touch_execution_step_progress"
+            ) as mock_touch_progress,
+            patch("forward_netbox.utilities.merge.time.monotonic", return_value=101.0),
+        ):
+            heartbeat_at, log_at = _report_merge_progress(
+                ingestion,
+                sync_logger=sync_logger,
+                model_string="ipam.prefix",
+                step_index=47,
+                processed=999,
+                total_changes=9295,
+                last_heartbeat_at=100.0,
+                last_log_at=100.0,
+            )
+
+        mock_touch_progress.assert_not_called()
+        sync_logger.log_info.assert_not_called()
+        self.assertEqual(heartbeat_at, 100.0)
+        self.assertEqual(log_at, 100.0)

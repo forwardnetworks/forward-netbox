@@ -20,6 +20,8 @@ These models are parity-tested for the current `bulk_orm` path:
 - `dcim.devicerole`
 - `dcim.platform`
 - `dcim.devicetype`
+- `dcim.macaddress`
+- `dcim.virtualchassis`
 - `ipam.vlan`
 - `ipam.vrf`
 
@@ -31,9 +33,7 @@ These models remain adapter-required with explicit blocker codes:
 - `dcim.device` | `dependency_resolution`
 - `dcim.interface` | `relationship_side_effects`
 - `dcim.inventoryitem` | `dependency_resolution`
-- `dcim.macaddress` | `relationship_side_effects`
 - `dcim.module` | `dependency_resolution`
-- `dcim.virtualchassis` | `optional_contract_guarding`
 - `extras.taggeditem` | `generic_foreign_key_relations`
 - `ipam.ipaddress` | `ipam_parent_prefix_semantics`
 - `ipam.prefix` | `ipam_hierarchy_semantics`

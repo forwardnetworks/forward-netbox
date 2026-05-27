@@ -13,8 +13,11 @@
           <a class="btn btn-sm btn-outline-primary" href="{% url 'plugins:forward_netbox:forwardsync_source_health' pk=object.pk %}">
             {% trans "Export Live Source Check" %}
           </a>
+          <a class="btn btn-sm btn-outline-primary ms-2" href="{% url 'plugins:forward_netbox:forwardsync_pushdown_trends' pk=object.pk %}?limit=180">
+            {% trans "Export Pushdown Trends" %}
+          </a>
           <span class="text-muted ms-2">
-            {% trans "Calls Forward with this source and exports reachability diagnostics." %}
+            {% trans "Export source reachability diagnostics and long-window pushdown trend history." %}
           </span>
         </div>
         <table class="table table-hover attr-table">
@@ -49,6 +52,16 @@
           <tr>
             <th scope="row">{% trans "Worker timeout" %}</th>
             <td>{{ health.runtime.rq_default_timeout_seconds|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Pushdown alert thresholds" %}</th>
+            <td>
+              {% with thresholds=health.runtime.pushdown_alert_thresholds %}
+                fallback={{ thresholds.fallback_warn_rate|placeholder }},
+                runtime={{ thresholds.runtime_fallback_warn_share|placeholder }},
+                diff={{ thresholds.diff_warn_ratio|placeholder }}
+              {% endwith %}
+            </td>
           </tr>
           <tr>
             <th scope="row">{% trans "Snapshot selection" %}</th>
@@ -203,6 +216,34 @@
             <th scope="row">{% trans "Fallback reasons" %}</th>
             <td>{{ health.apply_engines.fallback_reasons }}</td>
           </tr>
+          <tr>
+            <th scope="row">{% trans "Bulk ORM expansion" %}</th>
+            <td>{{ health.apply_engines.bulk_orm_expansion.status }} - {{ health.apply_engines.bulk_orm_expansion.message }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Blocked models" %}</th>
+            <td>{{ health.apply_engines.bulk_orm_expansion.blocked_model_count }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Parity gates" %}</th>
+            <td>{{ health.apply_engines.bulk_orm_expansion.parity_gates|length }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Next parity target" %}</th>
+            <td>
+              {% with candidate=health.apply_engines.bulk_orm_expansion.parity_plan.candidates.0 %}
+                {% if candidate %}
+                  {{ candidate.model }} - {{ candidate.promotion_lane }} ({{ candidate.lane_gate }})
+                {% else %}
+                  {% trans "No blocked candidates" %}
+                {% endif %}
+              {% endwith %}
+            </td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Parity plan" %}</th>
+            <td>{{ health.apply_engines.bulk_orm_expansion.parity_plan.status }} - {{ health.apply_engines.bulk_orm_expansion.parity_plan.next_action }}</td>
+          </tr>
         </table>
       </div>
     </div>
@@ -222,6 +263,217 @@
             <th scope="row">{% trans "Model-fetch fallbacks" %}</th>
             <td>{{ health.fetch_contracts.model_fallback_count }}</td>
           </tr>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <h5 class="card-header">{% trans "Query Runtime & Pushdown" %}</h5>
+      <div class="card-body">
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">{% trans "Summary" %}</th>
+            <td>{{ health.query_pushdown.message }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Stage steps profiled" %}</th>
+            <td>{{ health.query_pushdown.total_stage_steps|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Fetch modes observed" %}</th>
+            <td>{{ health.query_pushdown.fetch_mode_counts }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Fallback steps" %}</th>
+            <td>{{ health.query_pushdown.fallback_step_count|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Fallback reasons" %}</th>
+            <td>{{ health.query_pushdown.fallback_reasons|default:"[]" }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Pushdown rate" %}</th>
+            <td>{{ health.query_pushdown.efficiency.pushdown_rate|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Fallback rate" %}</th>
+            <td>{{ health.query_pushdown.efficiency.fallback_rate|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Efficiency advisory" %}</th>
+            <td>{{ health.query_pushdown.efficiency.message|default:"" }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Fallback runtime share" %}</th>
+            <td>{{ health.query_pushdown.runtime_share.fallback_runtime_share|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Full-fallback runtime share" %}</th>
+            <td>{{ health.query_pushdown.runtime_share.full_fallback_runtime_share|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Diff actual ratio" %}</th>
+            <td>{{ health.query_pushdown.diff_utilization.diff_actual_ratio|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Baseline to diff" %}</th>
+            <td>{{ health.query_pushdown.diff_baseline_transition.message|default:"" }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Tuning guidance" %}</th>
+            <td>
+              {% if health.query_pushdown.tuning_guidance %}
+                <ul class="mb-0 ps-3">
+                  {% for item in health.query_pushdown.tuning_guidance %}
+                    <li>{{ item.message }}</li>
+                  {% endfor %}
+                </ul>
+              {% else %}
+                <span class="text-muted">{% trans "No tuning guidance emitted for this run." %}</span>
+              {% endif %}
+            </td>
+          </tr>
+        </table>
+      </div>
+      <div class="table-responsive">
+        <table class="table table-hover">
+          <thead>
+            <tr>
+              <th>{% trans "Model" %}</th>
+              <th>{% trans "Query runtime (ms)" %}</th>
+              <th>{% trans "Fetched rows" %}</th>
+              <th>{% trans "Steps" %}</th>
+              <th>{% trans "Fallback steps" %}</th>
+              <th>{% trans "Fetch modes" %}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in health.query_pushdown.slow_models %}
+              <tr>
+                <td>{{ item.model }}</td>
+                <td>{{ item.query_runtime_ms|placeholder }}</td>
+                <td>{{ item.fetched_row_count|placeholder }}</td>
+                <td>{{ item.steps|placeholder }}</td>
+                <td>{{ item.fallback_steps|placeholder }}</td>
+                <td>{{ item.fetch_modes }}</td>
+              </tr>
+            {% empty %}
+              <tr>
+                <td colspan="6" class="text-muted">{% trans "No stage query runtime samples are available yet" %}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div class="table-responsive">
+        <table class="table table-hover">
+          <thead>
+            <tr>
+              <th>{% trans "Run" %}</th>
+              <th>{% trans "Status" %}</th>
+              <th>{% trans "Fallback rate" %}</th>
+              <th>{% trans "Full-fallback runtime share" %}</th>
+              <th>{% trans "Diff actual ratio" %}</th>
+              <th>{% trans "Diff baseline correlation" %}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in health.query_pushdown.trend_snapshots %}
+              <tr>
+                <td>{{ item.run_id }}</td>
+                <td>{{ item.status }}</td>
+                <td>{{ item.fallback_rate|placeholder }}</td>
+                <td>{{ item.full_fallback_runtime_share|placeholder }}</td>
+                <td>{{ item.diff_actual_ratio|placeholder }}</td>
+                <td>{{ item.baseline_reason_summary|default:"" }}</td>
+              </tr>
+            {% empty %}
+              <tr>
+                <td colspan="6" class="text-muted">{% trans "No pushdown trend snapshots are available yet" %}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <h5 class="card-header">{% trans "Compatibility Cache" %}</h5>
+      <div class="card-body">
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">{% trans "Summary" %}</th>
+            <td>{{ health.compatibility_cache.message }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Ledger history exists" %}</th>
+            <td>{{ health.compatibility_cache.ledger_history|yesno:"Yes,No" }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Active execution run" %}</th>
+            <td>{{ health.compatibility_cache.active_execution_run|yesno:"Yes,No" }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Compatibility payload present" %}</th>
+            <td>{{ health.compatibility_cache.compatibility_state_present|yesno:"Yes,No" }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Compatibility payload keys" %}</th>
+            <td>{{ health.compatibility_cache.compatibility_state_size|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Prune recommended" %}</th>
+            <td>{{ health.compatibility_cache.prune_recommended|yesno:"Yes,No" }}</td>
+          </tr>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <h5 class="card-header">{% trans "Density Learning" %}</h5>
+      <div class="card-body">
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">{% trans "Tracked models" %}</th>
+            <td>{{ health.density_learning.model_count|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "High confidence models" %}</th>
+            <td>{{ health.density_learning.high_confidence_count|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Medium confidence models" %}</th>
+            <td>{{ health.density_learning.medium_confidence_count|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Low confidence models" %}</th>
+            <td>{{ health.density_learning.low_confidence_count|placeholder }}</td>
+          </tr>
+        </table>
+      </div>
+      <div class="table-responsive">
+        <table class="table table-hover">
+          <thead>
+            <tr>
+              <th>{% trans "Model" %}</th>
+              <th>{% trans "Learned density" %}</th>
+              <th>{% trans "Default density" %}</th>
+              <th>{% trans "Samples" %}</th>
+              <th>{% trans "Confidence" %}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in health.density_learning.models %}
+              <tr>
+                <td>{{ item.model }}</td>
+                <td>{{ item.learned_density|placeholder }}</td>
+                <td>{{ item.default_density|placeholder }}</td>
+                <td>{{ item.sample_count|placeholder }}</td>
+                <td>{{ item.confidence|placeholder }}</td>
+              </tr>
+            {% empty %}
+              <tr>
+                <td colspan="5" class="text-muted">{% trans "No density learning samples are available yet" %}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
         </table>
       </div>
     </div>
@@ -266,6 +518,47 @@
                 {{ health.latest_execution_run.recovery_recommendation.message }}
               {% else %}
                 {{ ""|placeholder }}
+              {% endif %}
+            </td>
+          </tr>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <h5 class="card-header">{% trans "Large Run Tuning" %}</h5>
+      <div class="card-body">
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">{% trans "Status" %}</th>
+            <td>{{ health.large_run_tuning.status|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Summary" %}</th>
+            <td>{{ health.large_run_tuning.message }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Query fetch concurrency" %}</th>
+            <td>{{ health.large_run_tuning.query_fetch_concurrency|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Worker timeout seconds" %}</th>
+            <td>{{ health.large_run_tuning.worker_timeout_seconds|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Backend advice" %}</th>
+            <td>{{ health.large_run_tuning.execution_backend_advice.message|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "First actions" %}</th>
+            <td>
+              {% if health.large_run_tuning.first_order_actions %}
+                <ul class="mb-0 ps-3">
+                  {% for item in health.large_run_tuning.first_order_actions %}
+                    <li>{{ item.message }}</li>
+                  {% endfor %}
+                </ul>
+              {% else %}
+                <span class="text-muted">{% trans "No large-run tuning actions are available yet." %}</span>
               {% endif %}
             </td>
           </tr>

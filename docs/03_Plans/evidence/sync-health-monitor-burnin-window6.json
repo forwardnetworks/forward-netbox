@@ -1,0 +1,174 @@
+{
+  "generated_at": "2026-05-26T16:52:05.170154+00:00",
+  "sync_ids": [
+    50,
+    51
+  ],
+  "max_polls": 8,
+  "interval_seconds": 10,
+  "allow_nonterminal": true,
+  "include_all_ingestions": true,
+  "completed": true,
+  "samples": [
+    {
+      "sampled_at": "2026-05-26T16:40:22.388416+00:00",
+      "poll": 1,
+      "sync_id": 50,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-26T16:40:22.388416+00:00",
+      "poll": 1,
+      "sync_id": 51,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-26T16:41:51.808477+00:00",
+      "poll": 2,
+      "sync_id": 50,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-26T16:41:51.808477+00:00",
+      "poll": 2,
+      "sync_id": 51,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-26T16:43:20.779516+00:00",
+      "poll": 3,
+      "sync_id": 50,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-26T16:43:20.779516+00:00",
+      "poll": 3,
+      "sync_id": 51,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-26T16:44:50.740529+00:00",
+      "poll": 4,
+      "sync_id": 50,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-26T16:44:50.740529+00:00",
+      "poll": 4,
+      "sync_id": 51,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-26T16:46:18.889568+00:00",
+      "poll": 5,
+      "sync_id": 50,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-26T16:46:18.889568+00:00",
+      "poll": 5,
+      "sync_id": 51,
+      "sync_status": "merging",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-26T16:47:48.257971+00:00",
+      "poll": 6,
+      "sync_id": 50,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-26T16:47:48.257971+00:00",
+      "poll": 6,
+      "sync_id": 51,
+      "sync_status": "merging",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-26T16:49:17.911096+00:00",
+      "poll": 7,
+      "sync_id": 50,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-26T16:49:17.911096+00:00",
+      "poll": 7,
+      "sync_id": 51,
+      "sync_status": "merging",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-26T16:50:46.969224+00:00",
+      "poll": 8,
+      "sync_id": 50,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-26T16:50:46.969224+00:00",
+      "poll": 8,
+      "sync_id": 51,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "errors": 0
+    }
+  ]
+}

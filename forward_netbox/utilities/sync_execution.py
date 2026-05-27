@@ -4,9 +4,9 @@ from ..exceptions import ForwardConnectivityError
 from ..exceptions import ForwardQueryError
 from ..exceptions import ForwardSyncDataError
 from .apply_engine import select_apply_engine
+from .model_contracts import architecture_default_coalesce_fields_for_model
 from .query_registry import get_query_specs
 from .query_registry import resolve_query_specs_for_client
-from .sync_contracts import default_coalesce_fields_for_model
 from .sync_contracts import validate_row_shape_for_model
 
 
@@ -95,10 +95,10 @@ def run_sync_stage(runner):
             if specs:
                 runner._model_coalesce_fields[model_string] = [
                     list(field_set) for field_set in specs[0].coalesce_fields
-                ] or default_coalesce_fields_for_model(model_string)
+                ] or architecture_default_coalesce_fields_for_model(model_string)
             else:
                 runner._model_coalesce_fields[model_string] = (
-                    default_coalesce_fields_for_model(model_string)
+                    architecture_default_coalesce_fields_for_model(model_string)
                 )
             runner.logger.init_statistics(model_string, 0)
             model_delete_rows = pending_deletes.setdefault(model_string, [])
@@ -115,7 +115,7 @@ def run_sync_stage(runner):
                 and latest_baseline.snapshot_id == snapshot_id
                 and any(spec.run_query_id for spec in specs)
             ):
-                runner.logger.log_warning(
+                runner.logger.log_info(
                     f"Forward diffs require a newer processed snapshot than the latest baseline; "
                     f"baseline ingestion `{latest_baseline.pk}` already matches snapshot `{snapshot_id}`, "
                     f"so running full query execution for {model_string} instead.",

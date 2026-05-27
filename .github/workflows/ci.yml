@@ -8,8 +8,17 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 jobs:
   validate:
+    name: Validate NetBox ${{ matrix.netbox-version }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        netbox-version:
+          - v4.5.9
+          - v4.6.0
+    env:
+      NETBOX_VER: ${{ matrix.netbox-version }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
