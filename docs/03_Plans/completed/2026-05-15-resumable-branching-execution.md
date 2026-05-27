@@ -226,7 +226,7 @@ Additional local validation:
   N; verify resume starts at shard N rather than shard 1.
 - Run a synthetic merge failure and verify `Export Logs` contains both sync and
   merge job details.
-- Run the ORG-sized dataset or equivalent live smoke with a deliberately low
+- Run a field-scale dataset or equivalent live smoke with a deliberately low
   worker timeout to prove the run is recoverable.
 
 ## Rollback

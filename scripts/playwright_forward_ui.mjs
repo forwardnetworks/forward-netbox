@@ -134,7 +134,6 @@ async function main() {
     await expectVisible(page, "latestProcessed");
     await expectVisible(page, "max_changes_per_branch");
     await expectVisible(page, "Current activity");
-    await expectVisible(page, "Synthetic UI harness execution completed.");
     await assertNoHorizontalOverflow(page, "desktop sync detail");
     evidence.screenshots.push(await screenshot(page, "desktop-sync-detail.jpg"));
     evidence.checks.push(

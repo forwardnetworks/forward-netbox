@@ -14,6 +14,7 @@ from forward_netbox.models import ForwardExecutionStep
 from forward_netbox.models import ForwardIngestion
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
+from forward_netbox.utilities.branch_budget import BRANCH_RUN_STATE_PARAMETER
 from forward_netbox.utilities.execution_ledger import active_execution_run
 
 
@@ -134,6 +135,16 @@ class ForwardIngestionLogExportViewTest(TestCase):
             execution_mode="query_id",
             execution_value="query-1",
             query_parameters={"forward_netbox_shard_keys": ["device-1"]},
+            fetch_parameters={
+                "partition_retry_summary": {
+                    "operation": "full",
+                    "partition_count": 1,
+                    "split_retry_count": 0,
+                    "split_retry_success_count": 0,
+                    "alternate_operator_retry_count": 1,
+                    "alternate_operator_success_count": 1,
+                }
+            },
             ingestion=cls.ingestion,
             job=cls.job,
             merge_job=cls.merge_job,
@@ -230,6 +241,25 @@ class ForwardIngestionLogExportViewTest(TestCase):
 
         data = json.loads(response.content)
         self.assertEqual(data["run"]["id"], self.execution_run.pk)
+        self.assertIn("compatibility_cache", data)
+        self.assertTrue(data["compatibility_cache"]["ledger_history"])
+        self.assertTrue(data["compatibility_cache"]["active_execution_run"])
+        self.assertEqual(
+            data["compatibility_cache"]["active_execution_run_id"],
+            self.execution_run.pk,
+        )
+        self.assertFalse(data["compatibility_cache"]["stale_payload_present"])
+        self.assertIn("recovery_policy_summary", data)
+        self.assertIn("auto_policy_event_count", data["recovery_policy_summary"])
+        self.assertIn("auto_policy_reasons", data["recovery_policy_summary"])
+        self.assertIn("escalation_event_count", data["recovery_policy_summary"])
+        self.assertIn("escalation_reasons", data["recovery_policy_summary"])
+        self.assertIn("escalation_threshold", data["recovery_policy_summary"])
+        self.assertIn("escalation_required", data["recovery_policy_summary"])
+        self.assertIn("watchdog_event_count", data["recovery_policy_summary"])
+        self.assertIn("watchdog_reason", data["recovery_policy_summary"])
+        self.assertIn("watchdog_threshold", data["recovery_policy_summary"])
+        self.assertIn("watchdog_required", data["recovery_policy_summary"])
         self.assertEqual(data["steps"][0]["id"], self.execution_step.pk)
         self.assertEqual(
             data["steps"][0]["query_parameters"],
@@ -240,6 +270,94 @@ class ForwardIngestionLogExportViewTest(TestCase):
             data["steps"][0]["ingestion_detail"]["id"],
             self.ingestion.pk,
         )
+        self.assertEqual(
+            data["metrics"]["fetch_mode_counts_by_model"].get("dcim.site", {}),
+            {"model": 1},
+        )
+        self.assertEqual(
+            data["metrics"]["fetched_row_count_by_model"].get("dcim.site"),
+            0,
+        )
+        self.assertEqual(
+            data["metrics"]["pushdown_efficiency"]["status"],
+            "info",
+        )
+        self.assertIn(
+            "model_fallback_guardrails",
+            data["metrics"]["pushdown_efficiency"],
+        )
+        self.assertIn(
+            "fallback_budget_exceeded_count",
+            data["metrics"]["pushdown_efficiency"],
+        )
+        self.assertIn(
+            "fallback_budget_threshold",
+            data["metrics"]["pushdown_efficiency"],
+        )
+        self.assertIn(
+            "fallback_budget_min_steps",
+            data["metrics"]["pushdown_efficiency"],
+        )
+        self.assertIn("diff_utilization", data["metrics"])
+        self.assertIn("pushdown_runtime", data["metrics"])
+        self.assertIn("fallback_reason_summary", data["metrics"])
+        self.assertEqual(
+            data["metrics"]["fallback_reason_summary"]["top_reasons"][0]["reason"],
+            "model_fetch_contract_fallback",
+        )
+        self.assertEqual(
+            data["metrics"]["fallback_reason_summary"]["top_reasons"][0]["remediation"][
+                "code"
+            ],
+            "add_or_enable_shard_fetch_contract",
+        )
+        self.assertEqual(
+            data["metrics"]["fallback_reason_summary"]["remediation_actions"][0][
+                "code"
+            ],
+            "add_or_enable_shard_fetch_contract",
+        )
+        self.assertEqual(
+            data["metrics"]["partition_retry_summary"][
+                "alternate_operator_success_count"
+            ],
+            1,
+        )
+        self.assertEqual(
+            data["metrics"]["partition_retry_summary"]["avoided_fallback_retry_count"],
+            1,
+        )
+        self.assertIn("throughput_smoothing", data["metrics"])
+        self.assertIn(
+            "scheduler_overlap_readiness",
+            data["metrics"]["throughput_smoothing"],
+        )
+        self.assertIn("operator_tuning_summary", data["metrics"])
+        action_codes = {
+            item["code"]
+            for item in data["metrics"]["operator_tuning_summary"][
+                "first_order_actions"
+            ]
+        }
+        self.assertIn("reduce_fallback_fetch", action_codes)
+        self.assertIn("stage_queue_seconds", data["metrics"]["steps"][0])
+        self.assertIn("merge_wait_seconds", data["metrics"]["steps"][0])
+        self.assertIn("pushdown_alert_thresholds", data["metrics"])
+        self.assertIn("trend_snapshots", data["metrics"])
+        self.assertIn("tuning_guidance", data["metrics"])
+        self.assertGreaterEqual(len(data["metrics"]["tuning_guidance"]), 1)
+        tuning_codes = {item["code"] for item in data["metrics"]["tuning_guidance"]}
+        self.assertIn("partition_retry_avoided_fallback", tuning_codes)
+        self.assertIn("non_diff_reason_counts", data["metrics"]["diff_utilization"])
+        self.assertEqual(
+            data["metrics"]["diff_baseline_transition"]["code"],
+            "missing_or_ineligible_diff_baseline",
+        )
+        self.assertEqual(
+            data["metrics"]["diff_baseline_transition"]["action_code"],
+            "complete_baseline_then_use_newer_snapshot",
+        )
+        self.assertIn("baseline_reason_summary", data["metrics"]["trend_snapshots"][0])
 
     def test_sync_support_bundle_downloads_json_bundle(self):
         self.client.force_login(self.user)
@@ -326,6 +444,10 @@ class ForwardIngestionLogExportViewTest(TestCase):
             later_run.pk,
         )
         self.assertEqual(data["execution_run"]["run"]["id"], later_run.pk)
+        self.assertTrue(data["execution_run"]["compatibility_cache"]["ledger_history"])
+        self.assertFalse(
+            data["execution_run"]["compatibility_cache"]["stale_payload_present"]
+        )
 
     def test_sync_support_bundle_survives_old_branch_upgrade_cleanup_and_later_run(
         self,
@@ -406,3 +528,30 @@ class ForwardIngestionLogExportViewTest(TestCase):
             later_run.pk,
         )
         self.assertEqual(data["execution_run"]["run"]["id"], later_run.pk)
+
+    def test_execution_run_support_bundle_reports_stale_compatibility_payload(self):
+        self.execution_run.status = "completed"
+        self.execution_run.completed = timezone.now()
+        self.execution_run.save(update_fields=["status", "completed"])
+
+        parameters = dict(self.sync.parameters or {})
+        parameters[BRANCH_RUN_STATE_PARAMETER] = {
+            "phase": "planning",
+            "execution_run_id": self.execution_run.pk,
+        }
+        self.sync.parameters = parameters
+        self.sync.save(update_fields=["parameters"])
+
+        self.client.force_login(self.user)
+        response = self.client.get(
+            reverse(
+                "plugins:forward_netbox:forwardexecutionrun_export_bundle",
+                kwargs={"pk": self.execution_run.pk},
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = json.loads(response.content)
+        self.assertTrue(data["compatibility_cache"]["compatibility_state_present"])
+        self.assertTrue(data["compatibility_cache"]["stale_payload_present"])
+        self.assertTrue(data["compatibility_cache"]["prune_recommended"])

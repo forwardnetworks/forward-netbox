@@ -1,0 +1,62 @@
+{
+  "enqueued_job": {
+    "id": 867,
+    "name": "warn-fix-prefix-221958 - shard 30/47",
+    "status": "pending"
+  },
+  "next_step": {
+    "actual_changes": 0,
+    "applied_row_count": 0,
+    "attempted_row_count": 0,
+    "branch": null,
+    "estimated_changes": 7346,
+    "failed_row_count": 0,
+    "fetch_column_filter_count": 1,
+    "fetch_mode": "nqe_column_filter",
+    "id": 1726,
+    "index": 30,
+    "ingestion": null,
+    "job": 867,
+    "kind": "stage",
+    "last_error_length": 92,
+    "last_error_present": true,
+    "merge_job": null,
+    "model": "ipam.prefix",
+    "retry_count": 1,
+    "shard_key_count": 7346,
+    "skipped_row_count": 0,
+    "status": "queued"
+  },
+  "reconcile": {
+    "messages": [],
+    "skipped": false,
+    "updated_run": true,
+    "updated_steps": 0
+  },
+  "recovery_recommendation": {
+    "action": "wait",
+    "message": "Wait for the active execution step to finish.",
+    "model": "ipam.prefix",
+    "severity": "info",
+    "step_id": 1726,
+    "step_index": 30,
+    "step_status": "queued"
+  },
+  "run": {
+    "auto_merge": true,
+    "backend": "branching",
+    "baseline_ready": false,
+    "completed": null,
+    "id": 170,
+    "last_error_length": 77,
+    "last_error_present": true,
+    "latest_heartbeat": "2026-05-26T18:10:54.874843+00:00",
+    "next_step_index": 30,
+    "phase": "queued",
+    "reconciliation_event_count": 2,
+    "source": 1,
+    "status": "running",
+    "sync": 46,
+    "total_steps": 47
+  }
+}

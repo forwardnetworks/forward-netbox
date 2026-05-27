@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 from django.core.management.base import BaseCommand
@@ -6,16 +7,26 @@ from django.core.management.base import CommandError
 
 from forward_netbox.choices import FORWARD_SUPPORTED_MODELS
 from forward_netbox.models import ForwardSync
-from forward_netbox.utilities.apply_engine import ADAPTER_MODEL_BLOCKERS
-from forward_netbox.utilities.apply_engine import ADAPTER_MODELS_WITHOUT_BLOCKER
-from forward_netbox.utilities.apply_engine import ADAPTER_REQUIRED_MODELS
 from forward_netbox.utilities.apply_engine import apply_engine_decision_for
-from forward_netbox.utilities.apply_engine import BULK_ORM_ENABLED_MODELS
-from forward_netbox.utilities.apply_engine import BULK_ORM_ENABLED_MODELS_WITHOUT_SPECS
-from forward_netbox.utilities.apply_engine import UNCLASSIFIED_SUPPORTED_MODELS
-from forward_netbox.utilities.branch_budget import shard_fetch_capability_for_model
+from forward_netbox.utilities.apply_engine import bulk_orm_expansion_summary
 from forward_netbox.utilities.execution_ledger import latest_execution_run
 from forward_netbox.utilities.health import sync_health_summary
+from forward_netbox.utilities.model_contracts import architecture_adapter_blockers
+from forward_netbox.utilities.model_contracts import (
+    architecture_adapter_models_without_blocker,
+)
+from forward_netbox.utilities.model_contracts import (
+    architecture_adapter_required_models,
+)
+from forward_netbox.utilities.model_contracts import architecture_bulk_orm_safe_models
+from forward_netbox.utilities.model_contracts import (
+    architecture_bulk_orm_safe_models_without_specs,
+)
+from forward_netbox.utilities.model_contracts import architecture_contract_summary
+from forward_netbox.utilities.model_contracts import architecture_fetch_contracts
+from forward_netbox.utilities.model_contracts import (
+    architecture_unclassified_supported_models,
+)
 
 
 class Command(BaseCommand):
@@ -65,8 +76,13 @@ class Command(BaseCommand):
 
         output_path = (options.get("output_json") or "").strip()
         if output_path:
-            with open(output_path, "w", encoding="utf-8") as handle:
+            output_file = Path(output_path)
+            if not output_file.is_absolute():
+                output_file = Path(__file__).resolve().parents[3] / output_file
+            output_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(output_file, "w", encoding="utf-8") as handle:
                 handle.write(rendered + "\n")
+            output_file.chmod(0o666)
             self.stdout.write(
                 self.style.SUCCESS(f"Wrote architecture audit report to {output_path}")
             )
@@ -80,6 +96,9 @@ class Command(BaseCommand):
     def _apply_engine_matrix(self):
         model_eligibility = self._model_eligibility()
         fetch_contracts = self._fetch_contracts()
+        model_contract_registry = architecture_contract_summary(
+            FORWARD_SUPPORTED_MODELS
+        )
         decision_fallback_models = sorted(
             model_string
             for model_string, decisions in model_eligibility.items()
@@ -101,24 +120,34 @@ class Command(BaseCommand):
             or "bucket_strategy" not in contract
         )
         return {
-            "bulk_orm_safe_models": sorted(BULK_ORM_ENABLED_MODELS),
-            "adapter_required_models": sorted(ADAPTER_REQUIRED_MODELS),
-            "adapter_blockers": {
-                model_string: ADAPTER_MODEL_BLOCKERS[model_string]["blocker_code"]
-                for model_string in sorted(ADAPTER_MODEL_BLOCKERS)
-            },
+            "bulk_orm_safe_models": architecture_bulk_orm_safe_models(
+                FORWARD_SUPPORTED_MODELS
+            ),
+            "adapter_required_models": architecture_adapter_required_models(
+                FORWARD_SUPPORTED_MODELS
+            ),
+            "adapter_blockers": architecture_adapter_blockers(FORWARD_SUPPORTED_MODELS),
+            "bulk_orm_expansion": bulk_orm_expansion_summary(FORWARD_SUPPORTED_MODELS),
+            "model_contract_registry": model_contract_registry,
             "model_eligibility": model_eligibility,
             "fetch_contracts": fetch_contracts,
             "classification_gaps": {
-                "unclassified_supported_models": sorted(UNCLASSIFIED_SUPPORTED_MODELS),
-                "adapter_models_without_blocker": sorted(
-                    ADAPTER_MODELS_WITHOUT_BLOCKER
+                "unclassified_supported_models": (
+                    architecture_unclassified_supported_models(FORWARD_SUPPORTED_MODELS)
                 ),
-                "bulk_orm_enabled_models_without_specs": sorted(
-                    BULK_ORM_ENABLED_MODELS_WITHOUT_SPECS
+                "adapter_models_without_blocker": (
+                    architecture_adapter_models_without_blocker(
+                        FORWARD_SUPPORTED_MODELS
+                    )
+                ),
+                "bulk_orm_enabled_models_without_specs": (
+                    architecture_bulk_orm_safe_models_without_specs(
+                        FORWARD_SUPPORTED_MODELS
+                    )
                 ),
                 "decision_unclassified_fallback_models": decision_fallback_models,
                 "fetch_contract_coverage_gaps": fetch_contract_coverage_gaps,
+                "model_contract_registry_gaps": model_contract_registry["gaps"],
             },
         }
 
@@ -158,10 +187,7 @@ class Command(BaseCommand):
         return decisions
 
     def _fetch_contracts(self):
-        contracts = {}
-        for model_string in sorted(FORWARD_SUPPORTED_MODELS):
-            contracts[model_string] = shard_fetch_capability_for_model(model_string)
-        return contracts
+        return architecture_fetch_contracts(FORWARD_SUPPORTED_MODELS)
 
     def _sync_evidence(self, sync):
         run = latest_execution_run(sync)

@@ -46,6 +46,7 @@ pushdown profile report and attach it to release notes:
 ```bash
 invoke pushdown-profile --sync-name "ui-harness-sync" --model "dcim.interface" --output-json /tmp/pushdown-dcim-interface.json
 invoke pushdown-profile --sync-name "ui-harness-sync" --top-slow-models 5 --output-json /tmp/pushdown-top-slow-models.json
+invoke scale-benchmark --sync-name "ui-harness-sync" --output-json docs/03_Plans/evidence/scale-benchmark.json
 ```
 
 For operational scale runs, keep source-level query concurrency conservative by

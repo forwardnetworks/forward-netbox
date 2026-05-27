@@ -1,0 +1,114 @@
+{
+  "generated_at": "2026-05-26T21:18:59.717541+00:00",
+  "sync_ids": [
+    46,
+    50,
+    51
+  ],
+  "max_polls": 3,
+  "interval_seconds": 20,
+  "allow_nonterminal": true,
+  "include_all_ingestions": false,
+  "completed": true,
+  "samples": [
+    {
+      "sampled_at": "2026-05-26T21:12:28.904691+00:00",
+      "poll": 1,
+      "sync_id": 46,
+      "sync_status": "merging",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "suppressed_warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-26T21:12:28.904691+00:00",
+      "poll": 1,
+      "sync_id": 50,
+      "sync_status": "merging",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "suppressed_warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-26T21:12:28.904691+00:00",
+      "poll": 1,
+      "sync_id": 51,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "suppressed_warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-26T21:14:48.240797+00:00",
+      "poll": 2,
+      "sync_id": 46,
+      "sync_status": "merging",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "suppressed_warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-26T21:14:48.240797+00:00",
+      "poll": 2,
+      "sync_id": 50,
+      "sync_status": "merging",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "suppressed_warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-26T21:14:48.240797+00:00",
+      "poll": 2,
+      "sync_id": 51,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "suppressed_warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-26T21:17:03.677894+00:00",
+      "poll": 3,
+      "sync_id": 46,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "suppressed_warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-26T21:17:03.677894+00:00",
+      "poll": 3,
+      "sync_id": 50,
+      "sync_status": "merging",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "suppressed_warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-26T21:17:03.677894+00:00",
+      "poll": 3,
+      "sync_id": 51,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "suppressed_warnings": 0,
+      "errors": 0
+    }
+  ]
+}

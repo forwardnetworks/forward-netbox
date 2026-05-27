@@ -3,12 +3,13 @@ from core.models import ObjectType
 from netbox.context import current_request
 from netbox.context_managers import event_tracking
 
-from ..choices import FORWARD_OPTIONAL_MODELS
 from ..choices import ForwardExecutionBackendChoices
 from .apply_engine import select_apply_engine
+from .branch_budget import dependency_phased_workloads
 from .branching import build_branch_request
 from .direct_changes import action_counts_for_request
 from .direct_changes import any_object_changes_for_request
+from .ingestion_issues import blocking_issues_queryset
 from .multi_branch_lifecycle import create_noop_ingestion
 from .multi_branch_lifecycle import set_runtime_phase
 from .query_fetch import ForwardQueryFetcher
@@ -39,6 +40,16 @@ class ForwardFastBootstrapExecutor:
             next_plan_index=next_plan_index,
             total_plan_items=total_plan_items,
         )
+
+    def _query_preflight_enabled(self) -> bool:
+        source = getattr(self.sync, "source", None)
+        parameters = dict(getattr(source, "parameters", {}) or {})
+        configured = parameters.get("query_preflight_enabled")
+        if configured is None:
+            return True
+        if isinstance(configured, str):
+            return configured.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(configured)
 
     def _create_ingestion(self, context, *, change_request_id=None):
         from ..models import ForwardIngestion
@@ -97,11 +108,12 @@ class ForwardFastBootstrapExecutor:
         if not ingestion.issues.exists():
             return False
         self._record_change_totals(ingestion, request_id=request_id)
-        blocking_issues = ingestion.issues.exclude(model__in=FORWARD_OPTIONAL_MODELS)
+        blocking_issues = blocking_issues_queryset(ingestion)
         if not blocking_issues.exists():
-            self.logger.log_warning(
-                "Forward fast bootstrap completed with non-blocking optional-model issues; "
-                "review ingestion issues for skipped beta/optional rows.",
+            self.logger.log_info(
+                "Forward fast bootstrap completed with non-blocking issues "
+                "(optional-model and/or dependency-skip rows); "
+                "review ingestion issues for details.",
                 obj=ingestion,
             )
             return True
@@ -119,7 +131,8 @@ class ForwardFastBootstrapExecutor:
             "Resolving snapshot, running query preflight, and building fast bootstrap workload.",
             next_plan_index=1,
         )
-        fetcher.run_preflight(context)
+        if self._query_preflight_enabled():
+            fetcher.run_preflight(context)
         workloads = fetcher.fetch_workloads(context)
         self.last_model_results = [result.as_dict() for result in fetcher.model_results]
         self._set_runtime_phase(
@@ -153,20 +166,23 @@ class ForwardFastBootstrapExecutor:
             client=self.client,
             logger_=self.logger,
         )
-        pending_deletes = {}
         initialized_models = set()
-        total_workloads = len(workloads)
+        ordered_workloads = dependency_phased_workloads(workloads)
+        apply_workloads = [
+            workload for workload in ordered_workloads if workload.upsert_rows
+        ]
+        delete_workloads = [
+            workload for workload in ordered_workloads if workload.delete_rows
+        ]
+        total_workloads = len(ordered_workloads)
         request_token = None
         if current_request.get() is None:
             request_token = current_request.set(request)
         try:
             with event_tracking(request):
-                for index, workload in enumerate(workloads, start=1):
+                for index, workload in enumerate(apply_workloads, start=1):
                     runner._model_coalesce_fields[workload.model_string] = (
                         workload.coalesce_fields
-                    )
-                    pending_deletes.setdefault(workload.model_string, []).extend(
-                        workload.delete_rows
                     )
                     self._set_runtime_phase(
                         "executing",
@@ -191,21 +207,26 @@ class ForwardFastBootstrapExecutor:
                     )
                     self._record_change_totals(ingestion, request_id=request.id)
 
-                for model_string in reversed(self.sync.get_model_strings()):
-                    delete_rows = pending_deletes.get(model_string, [])
-                    if not delete_rows:
-                        continue
+                for offset, workload in enumerate(delete_workloads, start=1):
+                    runner._model_coalesce_fields[workload.model_string] = (
+                        workload.coalesce_fields
+                    )
                     self._set_runtime_phase(
                         "executing",
-                        f"Fast bootstrap deleting {model_string}.",
+                        f"Fast bootstrap deleting {workload.model_string}.",
+                        next_plan_index=len(apply_workloads) + offset,
                         total_plan_items=total_workloads,
                     )
                     engine = select_apply_engine(
                         sync=self.sync,
-                        model_string=model_string,
+                        model_string=workload.model_string,
                         backend=ForwardExecutionBackendChoices.FAST_BOOTSTRAP,
                     )
-                    engine.apply_deletes(runner, model_string, delete_rows)
+                    engine.apply_deletes(
+                        runner,
+                        workload.model_string,
+                        workload.delete_rows,
+                    )
                     self._record_change_totals(ingestion, request_id=request.id)
 
                 self._raise_if_blocking_issues_exist(ingestion, request_id=request.id)
