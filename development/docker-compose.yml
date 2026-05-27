@@ -4,10 +4,13 @@ services:
       - postgres
       - redis
     ports:
-      - "8000:8000"
+      - "${FORWARD_NETBOX_HOST_PORT:-8000}:8000"
     env_file: env/netbox.env
     environment:
       NETBOX_VER: "${NETBOX_VER}"
+      FORWARD_NETBOX_FETCH_ARTIFACT_DIR: "/fetch-artifacts"
+      FORWARD_NETBOX_FETCH_ARTIFACT_TTL_SECONDS: "86400"
+      FORWARD_NETBOX_FETCH_ARTIFACT_MAX_BYTES: "536870912"
     healthcheck:
       start_period: 5s
       timeout: 3s
@@ -20,6 +23,9 @@ services:
       - ./configuration:/etc/netbox/config:ro
       - ../:/source
       - ./logs:/var/log/netbox
+      - type: bind
+        source: ${FORWARD_NETBOX_FETCH_ARTIFACT_HOST_PATH:-./fetch-artifacts}
+        target: /fetch-artifacts
     build:
       context: ../
       dockerfile: development/Dockerfile
@@ -32,15 +38,17 @@ services:
         condition: service_healthy
     ports: []
     command:
-      - /opt/netbox/venv/bin/watchmedo
-      - auto-restart
-      - --directory=/source
-      - --pattern=*.py
-      - --recursive
-      - --
-      - /opt/netbox/venv/bin/python
-      - /opt/netbox/netbox/manage.py
-      - rqworker
+      - sh
+      - -lc
+      - |
+        if [ "${FORWARD_NETBOX_WORKER_AUTORELOAD:-1}" = "1" ]; then
+          exec /opt/netbox/venv/bin/watchmedo auto-restart \
+            --directory=/source \
+            --pattern='*.py' \
+            --recursive \
+            -- /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py rqworker
+        fi
+        exec /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py rqworker
     deploy:
       mode: replicated
       replicas: 2

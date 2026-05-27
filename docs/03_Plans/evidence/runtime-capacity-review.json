@@ -1,0 +1,52 @@
+{
+  "generated_at": "2026-05-24T16:42:12.780311+00:00",
+  "host": {
+    "cpu_count": 32,
+    "memory_gib": 125
+  },
+  "postgres": {
+    "recommended_settings": {
+      "checkpoint_timeout": "15min",
+      "effective_cache_size": "93GB",
+      "maintenance_work_mem": "2000MB",
+      "max_parallel_workers": "16",
+      "max_parallel_workers_per_gather": "4",
+      "max_wal_size": "16GB",
+      "max_worker_processes": "16",
+      "random_page_cost": "1.1",
+      "shared_buffers": "16GB",
+      "work_mem": "32MB"
+    }
+  },
+  "scheduler_overlap_capacity_review": {
+    "message": "Capacity review is present; scheduler overlap still requires a completed large-run benchmark.",
+    "required_before_scheduler_overlap": [
+      "Run a completed field-scale benchmark.",
+      "Keep branch budget and dependency order enforced by the execution ledger.",
+      "Confirm worker and database headroom under load."
+    ],
+    "status": "pass"
+  },
+  "source": {
+    "available": true,
+    "nqe_page_size": 10000,
+    "query_fetch_concurrency": 16,
+    "source_name": "ui-harness-source",
+    "timeout": 1200
+  },
+  "storage": {
+    "docker_root_dir": "/mnt/fwd-vmstore/docker-data",
+    "fetch_artifact_dir": "",
+    "message": "Postgres data is on configured local container storage.",
+    "postgres_data_destination": "/var/lib/postgresql/data",
+    "postgres_data_source": "/mnt/fwd-vmstore/docker-data/volumes/forward-netbox_netbox-postgres-data/_data",
+    "postgres_data_type": "volume",
+    "status": "pass"
+  },
+  "workers": {
+    "current": 32,
+    "message": "Worker count is sufficient for capacity review.",
+    "recommended": 32,
+    "status": "pass"
+  }
+}

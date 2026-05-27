@@ -1,4 +1,8 @@
+from .branch_budget import branch_budget_density_policy_summary
 from .branch_budget import build_branch_budget_hints
+from .branch_budget import DEFAULT_MODEL_CHANGE_DENSITY
+from .branch_budget import delete_dependency_plan_summary
+from .density_learning import density_profile_summary
 
 
 def _coerce_int(value):
@@ -21,6 +25,17 @@ def build_plan_preview(plan, *, max_changes_per_branch):
             "planned_shards": 0,
             "estimated_changes": 0,
             "model_count": 0,
+            "delete_dependency_plan": {
+                "status": "none",
+                "delete_rows": 0,
+                "delete_shards": 0,
+                "delete_model_count": 0,
+                "delete_share": 0.0,
+                "max_delete_shard_changes": 0,
+                "execution_order": [],
+                "models": {},
+                "warnings": [],
+            },
             "retry_risk": "low",
             "slowest_model": {},
             "models": {},
@@ -60,6 +75,10 @@ def build_plan_preview(plan, *, max_changes_per_branch):
         "planned_shards": len(plan),
         "estimated_changes": sum(item.estimated_changes for item in plan),
         "model_count": len(model_totals),
+        "delete_dependency_plan": delete_dependency_plan_summary(
+            plan,
+            max_changes_per_branch=max_changes_per_branch,
+        ),
         "retry_risk": retry_risk,
         "slowest_model": {
             "model": slowest_model.model_string,
@@ -163,18 +182,30 @@ def build_sync_execution_summary(
     enabled_models,
     max_changes_per_branch,
     model_change_density,
+    model_change_density_profile,
     branch_run_state,
     latest_ingestion_summary,
 ):
     summary = {
         "max_changes_per_branch": max_changes_per_branch,
         "model_change_density": dict(model_change_density or {}),
+        "model_change_density_profile": density_profile_summary(
+            density_map=model_change_density,
+            density_profile=model_change_density_profile,
+            default_density_map=DEFAULT_MODEL_CHANGE_DENSITY,
+        ),
         "enabled_models": list(enabled_models or []),
     }
     summary["branch_budget_hints"] = build_branch_budget_hints(
         summary["enabled_models"],
         max_changes_per_branch=max_changes_per_branch,
         model_change_density=model_change_density,
+        model_change_density_profile=model_change_density_profile,
+    )
+    summary["branch_budget_density_policy"] = branch_budget_density_policy_summary(
+        summary["enabled_models"],
+        model_change_density=model_change_density,
+        model_change_density_profile=model_change_density_profile,
     )
     if branch_run_state:
         summary["branch_run"] = build_branch_run_summary(branch_run_state)

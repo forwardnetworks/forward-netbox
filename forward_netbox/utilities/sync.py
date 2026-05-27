@@ -46,7 +46,9 @@ from .sync_primitives import coalesce_update_or_create as sync_coalesce_update_o
 from .sync_primitives import coalesce_upsert as sync_coalesce_upsert
 from .sync_primitives import content_type_for as sync_content_type_for
 from .sync_primitives import delete_by_coalesce as sync_delete_by_coalesce
+from .sync_primitives import get_device_by_name as sync_get_device_by_name
 from .sync_primitives import get_unique_or_raise as sync_get_unique_or_raise
+from .sync_primitives import lookup_device_by_name as sync_lookup_device_by_name
 from .sync_primitives import lookup_interface as sync_lookup_interface
 from .sync_primitives import lookup_module_bay as sync_lookup_module_bay
 from .sync_primitives import model_field_values as sync_model_field_values
@@ -174,7 +176,9 @@ _SYNC_RUNNER_IMPORT_ANCHORS = (
     sync_coalesce_upsert,
     sync_content_type_for,
     sync_delete_by_coalesce,
+    sync_get_device_by_name,
     sync_get_unique_or_raise,
+    sync_lookup_device_by_name,
     sync_lookup_interface,
     sync_lookup_module_bay,
     sync_model_field_values,
@@ -278,6 +282,20 @@ class ForwardSyncRunner(ForwardSyncRunnerContractMixin, ForwardSyncRunnerAdapter
         self.client = client
         self.logger = logger_
         self._content_types = {}
+        self._device_by_name_cache: dict[str, object] = {}
+        self._missing_device_by_name_cache: set[str] = set()
+        self._interface_by_device_name_cache: dict[tuple[int, str], object] = {}
+        self._missing_interface_by_device_name_cache: set[tuple[int, str]] = set()
+        self._module_bay_by_device_name_cache: dict[tuple[int, str], object] = {}
+        self._missing_module_bay_by_device_name_cache: set[tuple[int, str]] = set()
+        self._vrf_by_name_cache: dict[str, object] = {}
+        self._vrf_by_rd_cache: dict[str, object] = {}
+        self._tag_by_slug_cache: dict[str, object] = {}
+        self._tag_by_name_cache: dict[str, object] = {}
+        self._device_tag_ids_cache: dict[int, set[int]] = {}
+        self._asn_by_number_cache: dict[int, object] = {}
+        self._unique_lookup_cache: dict[tuple, object] = {}
+        self._primed_missing_unique_lookup_keys: set[tuple] = set()
         self._model_coalesce_fields: dict[str, list[list[str]]] = {}
         self._recorded_issue_ids: set[tuple] = set()
         self._failed_dependencies: dict[str, set[tuple]] = {}

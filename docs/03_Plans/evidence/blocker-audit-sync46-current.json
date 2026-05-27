@@ -1,0 +1,18 @@
+🧬 loaded config '/etc/netbox/config/configuration.py'
+🧬 loaded config '/etc/netbox/config/logging.py'
+🧬 loaded config '/etc/netbox/config/plugins.py'
+{
+  "ingestion_id": 755,
+  "sync_id": 46,
+  "sync_name": "warn-fix-prefix-221958",
+  "snapshot_id": "<redacted>",
+  "sync_mode": "full",
+  "baseline_ready": false,
+  "counts": {
+    "total": 0,
+    "blocking": 0,
+    "non_blocking": 0
+  },
+  "blocking_samples": [],
+  "non_blocking_samples": []
+}

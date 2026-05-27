@@ -29,15 +29,47 @@ class ForwardArchitectureCompletionAuditCommandTest(TestCase):
             "completed",
         )
         self.assertEqual(
+            checks["model_contract_registry_complete"]["status"],
+            "completed",
+        )
+        self.assertEqual(
             checks["bulk_orm_safe_set_present"]["status"],
             "completed",
         )
         self.assertEqual(
-            checks["adp_scale_runtime_matrix_verified"]["status"],
+            checks["bulk_orm_parity_plan_present"]["status"],
+            "completed",
+        )
+        self.assertEqual(
+            checks["bulk_orm_candidate_parity_tests_complete"]["status"],
+            "completed",
+        )
+        self.assertEqual(
+            checks["compatibility_cache_prune_task_present"]["status"],
+            "completed",
+        )
+        self.assertEqual(
+            checks["validation_docs_include_compatibility_prune_evidence"]["status"],
+            "completed",
+        )
+        self.assertEqual(
+            checks["support_bundle_reports_compatibility_cache_status"]["status"],
+            "completed",
+        )
+        self.assertEqual(
+            checks["field_scale_runtime_matrix_verified"]["status"],
             "needs_external_evidence",
         )
         self.assertEqual(
             checks["destructive_runtime_worker_kill_evidence_verified"]["status"],
+            "needs_external_evidence",
+        )
+        self.assertEqual(
+            checks["runtime_fallback_reduction_evidence_verified"]["status"],
+            "needs_external_evidence",
+        )
+        self.assertEqual(
+            checks["scheduler_overlap_readiness_evidence_verified"]["status"],
             "needs_external_evidence",
         )
 
@@ -70,13 +102,21 @@ class ForwardArchitectureCompletionAuditCommandTest(TestCase):
                     {
                         "generated_at": "2099-01-01T00:00:00+00:00",
                         "checks": {
-                            "adp_scale_runtime_matrix_verified": {
+                            "field_scale_runtime_matrix_verified": {
                                 "status": "passed",
                                 "evidence": {"run_matrix": "ok"},
                             },
                             "destructive_runtime_worker_kill_evidence_verified": {
                                 "status": "passed",
                                 "evidence": {"chaos": "ok"},
+                            },
+                            "runtime_fallback_reduction_verified": {
+                                "status": "passed",
+                                "evidence": {"fallback": "ok"},
+                            },
+                            "scheduler_overlap_readiness_verified": {
+                                "status": "passed",
+                                "evidence": {"scheduler": "ok"},
                             },
                         },
                     }
@@ -99,10 +139,38 @@ class ForwardArchitectureCompletionAuditCommandTest(TestCase):
 
         checks = {item["id"]: item for item in payload["checks"]}
         self.assertEqual(
-            checks["adp_scale_runtime_matrix_verified"]["status"],
+            checks["field_scale_runtime_matrix_verified"]["status"],
             "completed",
         )
         self.assertEqual(
             checks["destructive_runtime_worker_kill_evidence_verified"]["status"],
             "completed",
         )
+        self.assertEqual(
+            checks["runtime_fallback_reduction_evidence_verified"]["status"],
+            "completed",
+        )
+        self.assertEqual(
+            checks["scheduler_overlap_readiness_evidence_verified"]["status"],
+            "completed",
+        )
+
+    def test_completion_audit_writes_relative_output_under_repo_root(self):
+        repo_root = Path(__file__).resolve().parents[2]
+        rel_path = "docs/03_Plans/evidence/test-completion-audit-output.json"
+        output_path = repo_root / rel_path
+        output_path.unlink(missing_ok=True)
+        try:
+            call_command(
+                "forward_architecture_completion_audit",
+                "--runtime-evidence",
+                "docs/03_Plans/evidence/does-not-exist.json",
+                "--output-json",
+                rel_path,
+            )
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+        finally:
+            output_path.unlink(missing_ok=True)
+
+        self.assertIn("checks", payload)
+        self.assertEqual(payload["summary"]["failed"], 0)

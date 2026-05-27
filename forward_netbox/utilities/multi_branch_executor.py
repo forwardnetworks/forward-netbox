@@ -1,12 +1,14 @@
 from core.exceptions import SyncError
 
 from ..choices import ForwardSyncStatusChoices
+from .branch_budget import BranchPlanItem
 from .branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
 from .execution_ledger import active_execution_run
 from .execution_ledger import branch_run_state_from_execution_run
 from .execution_ledger import ensure_branch_execution_run
 from .execution_ledger import mark_run_completed
 from .execution_telemetry import build_plan_preview
+from .ingestion_issues import has_blocking_issues
 from .multi_branch_lifecycle import cleanup_overflow_branch
 from .multi_branch_lifecycle import create_noop_ingestion
 from .multi_branch_lifecycle import record_model_density
@@ -23,6 +25,7 @@ from .resumable_branching import resumable_branching_enabled
 from .resumable_branching import update_plan_item_state
 from .runtime_guidance import log_branch_plan_capacity_guidance
 from .runtime_guidance import log_branch_plan_timeout_guidance
+from .sync_state import get_branch_run_display_state
 from .sync_state import is_waiting_for_branch_merge
 from .validation import ForwardValidationRunner
 
@@ -50,6 +53,8 @@ class ForwardMultiBranchExecutor:
         self.current_ingestion = None
         self.last_model_results = []
         self.last_validation_run = None
+        self.model_change_density = {}
+        self.model_change_density_profile = {}
 
     def plan(
         self,
@@ -57,6 +62,7 @@ class ForwardMultiBranchExecutor:
         max_changes_per_branch=DEFAULT_MAX_CHANGES_PER_BRANCH,
         run_preflight=True,
         model_change_density=None,
+        model_change_density_profile=None,
         model_strings=None,
         shard_scope=None,
         branch_run_state=None,
@@ -65,12 +71,17 @@ class ForwardMultiBranchExecutor:
             self.sync,
             self.client,
             self.logger,
-            branch_run_state=branch_run_state or self.sync.get_branch_run_state(),
+            branch_run_state=(
+                get_branch_run_display_state(self.sync)
+                if branch_run_state is None
+                else branch_run_state
+            ),
         )
         context, plan = planner.build_plan(
             max_changes_per_branch=max_changes_per_branch,
             run_preflight=run_preflight,
             model_change_density=model_change_density,
+            model_change_density_profile=model_change_density_profile,
             model_strings=model_strings,
             shard_scope=shard_scope,
         )
@@ -84,18 +95,28 @@ class ForwardMultiBranchExecutor:
         model_strings=None,
         shard_scope=None,
     ):
-        run_state = self.sync.get_branch_run_state()
-        if not run_state:
-            active_run = active_execution_run(self.sync)
-            if active_run is not None:
-                run_state = branch_run_state_from_execution_run(active_run)
+        active_run = active_execution_run(self.sync)
+        if active_run is not None:
+            run_state = branch_run_state_from_execution_run(active_run)
+        else:
+            run_state = get_branch_run_display_state(self.sync)
         persisted_density = self.sync.get_model_change_density()
+        persisted_density_profile = self.sync.get_model_change_density_profile()
         run_state_density = run_state.get("model_change_density") or {}
         model_change_density = {
             **persisted_density,
             **{
                 key: value
                 for key, value in run_state_density.items()
+                if isinstance(key, str)
+            },
+        }
+        run_state_density_profile = run_state.get("model_change_density_profile") or {}
+        model_change_density_profile = {
+            **persisted_density_profile,
+            **{
+                key: value
+                for key, value in run_state_density_profile.items()
                 if isinstance(key, str)
             },
         }
@@ -114,6 +135,7 @@ class ForwardMultiBranchExecutor:
             max_changes_per_branch=max_changes_per_branch,
             run_preflight=next_plan_index <= 1 and not has_persisted_plan,
             model_change_density=model_change_density,
+            model_change_density_profile=model_change_density_profile,
             model_strings=model_strings,
             shard_scope=shard_scope,
             branch_run_state=run_state,
@@ -142,7 +164,14 @@ class ForwardMultiBranchExecutor:
             )
         else:
             self.last_validation_run = validation_run_from_state(run_state)
-        return context, plan, plan_preview, next_plan_index, model_change_density
+        return (
+            context,
+            plan,
+            plan_preview,
+            next_plan_index,
+            model_change_density,
+            model_change_density_profile,
+        )
 
     def _create_planning_ingestion(self, context):
         from ..models import ForwardIngestion
@@ -247,7 +276,7 @@ class ForwardMultiBranchExecutor:
                 continue
 
             ingestions.append(ingestion)
-            if ingestion.issues.exists():
+            if has_blocking_issues(ingestion):
                 run_has_issues = True
             if not self.sync.auto_merge:
                 return ingestions
@@ -259,10 +288,16 @@ class ForwardMultiBranchExecutor:
     def run(self, *, max_changes_per_branch=DEFAULT_MAX_CHANGES_PER_BRANCH):
         self.max_changes_per_branch = max_changes_per_branch
         self._set_runtime_phase("initializing", "Starting sync preflight.")
-        context, plan, plan_preview, next_plan_index, model_change_density = (
-            self._load_execution_context(max_changes_per_branch=max_changes_per_branch)
-        )
+        (
+            context,
+            plan,
+            plan_preview,
+            next_plan_index,
+            model_change_density,
+            model_change_density_profile,
+        ) = self._load_execution_context(max_changes_per_branch=max_changes_per_branch)
         self.model_change_density = model_change_density
+        self.model_change_density_profile = model_change_density_profile
 
         if not plan:
             self.logger.log_info("No Forward changes were returned for this run.")
@@ -323,12 +358,14 @@ class ForwardMultiBranchExecutor:
         *,
         max_changes_per_branch=DEFAULT_MAX_CHANGES_PER_BRANCH,
         expected_plan_index=None,
+        overlap_stage=False,
     ):
         self.max_changes_per_branch = max_changes_per_branch
-        state = self.sync.get_branch_run_state()
         run = active_execution_run(self.sync)
-        if not state and run is not None:
+        if run is not None:
             state = branch_run_state_from_execution_run(run)
+        else:
+            state = get_branch_run_display_state(self.sync)
         state_next_plan_index = int(
             state.get("next_plan_index")
             or (run.next_step_index if run is not None else 1)
@@ -338,7 +375,7 @@ class ForwardMultiBranchExecutor:
         if expected_plan_index is not None and int(expected_plan_index) != int(
             state_next_plan_index
         ):
-            self.logger.log_warning(
+            self.logger.log_info(
                 (
                     "Claimed shard index does not match run state; "
                     f"executing claimed shard {int(expected_plan_index)} "
@@ -352,18 +389,23 @@ class ForwardMultiBranchExecutor:
             if persisted_item and persisted_item.get("model")
             else None
         )
-        context, plan, plan_preview, loaded_plan_index, model_change_density = (
-            self._load_execution_context(
-                max_changes_per_branch=max_changes_per_branch,
-                model_strings=model_strings,
-                shard_scope=persisted_item,
-            )
+        (
+            context,
+            plan,
+            plan_preview,
+            loaded_plan_index,
+            model_change_density,
+            model_change_density_profile,
+        ) = self._load_execution_context(
+            max_changes_per_branch=max_changes_per_branch,
+            model_strings=model_strings,
+            shard_scope=persisted_item,
         )
         next_plan_index = int(loaded_plan_index or next_plan_index or 1)
         if expected_plan_index is not None and int(expected_plan_index) != int(
             next_plan_index
         ):
-            self.logger.log_warning(
+            self.logger.log_info(
                 (
                     "Execution context returned a different shard index than claimed; "
                     f"executing claimed shard {int(expected_plan_index)} "
@@ -373,6 +415,7 @@ class ForwardMultiBranchExecutor:
             )
             next_plan_index = int(expected_plan_index)
         self.model_change_density = model_change_density
+        self.model_change_density_profile = model_change_density_profile
         total_plan_items = int(state.get("total_plan_items") or len(plan))
         full_plan_preview = state.get("plan_preview") or plan_preview
         item = self._select_plan_item(plan, persisted_item, next_plan_index)
@@ -414,6 +457,7 @@ class ForwardMultiBranchExecutor:
                 total_plan_items=total_plan_items,
                 plan_preview=full_plan_preview,
                 automated_merge=self.sync.auto_merge,
+                defer_automated_merge=bool(overlap_stage),
             )
         except BranchBudgetExceeded as exc:
             plan = self._handle_branch_budget_exceeded(exc, plan, 0)
@@ -477,12 +521,84 @@ class ForwardMultiBranchExecutor:
                     return item
         if len(candidates) == 1:
             return candidates[0]
+        if shard_keys and candidates:
+            subset_candidates = [
+                item
+                for item in candidates
+                if item.shard_keys and set(item.shard_keys or ()).issubset(shard_keys)
+            ]
+            if subset_candidates:
+                return self._combine_persisted_plan_candidates(
+                    persisted_item,
+                    subset_candidates,
+                    index,
+                )
         for item in candidates:
             if int(item.estimated_changes) == int(
                 persisted_item.get("estimated_changes") or 0
             ):
                 return item
         return None
+
+    def _combine_persisted_plan_candidates(self, persisted_item, candidates, index):
+        first = candidates[0]
+        upsert_rows = []
+        delete_rows = []
+        shard_keys = set()
+        query_runtime_ms = 0.0
+        has_runtime = False
+        for item in candidates:
+            upsert_rows.extend(item.upsert_rows)
+            delete_rows.extend(item.delete_rows)
+            shard_keys.update(item.shard_keys or ())
+            if item.query_runtime_ms is not None:
+                query_runtime_ms += float(item.query_runtime_ms)
+                has_runtime = True
+        estimated_changes = int(
+            persisted_item.get("estimated_changes")
+            or len(upsert_rows) + len(delete_rows)
+        )
+        return BranchPlanItem(
+            index=int(index),
+            model_string=first.model_string,
+            label=persisted_item.get("label") or first.label,
+            estimated_changes=estimated_changes,
+            upsert_rows=upsert_rows,
+            delete_rows=delete_rows,
+            sync_mode=persisted_item.get("sync_mode") or first.sync_mode,
+            coalesce_fields=first.coalesce_fields,
+            shard_keys=tuple(sorted(shard_keys)),
+            query_name=persisted_item.get("query_name") or first.query_name,
+            execution_mode=(
+                persisted_item.get("execution_mode") or first.execution_mode
+            ),
+            execution_value=(
+                persisted_item.get("execution_value") or first.execution_value
+            ),
+            query_runtime_ms=(
+                query_runtime_ms if has_runtime else first.query_runtime_ms
+            ),
+            baseline_snapshot_id=(
+                persisted_item.get("baseline_snapshot_id") or first.baseline_snapshot_id
+            ),
+            apply_engine=persisted_item.get("apply_engine") or first.apply_engine,
+            apply_engine_reason=first.apply_engine_reason,
+            apply_engine_decision=first.apply_engine_decision,
+            fetch_mode=persisted_item.get("fetch_mode") or first.fetch_mode,
+            fetch_key_family=(
+                persisted_item.get("fetch_key_family") or first.fetch_key_family
+            ),
+            fetch_parameters=(
+                persisted_item.get("fetch_parameters") or first.fetch_parameters
+            ),
+            query_parameters=(
+                persisted_item.get("query_parameters") or first.query_parameters
+            ),
+            fetch_column_filters=(
+                persisted_item.get("fetch_column_filters") or first.fetch_column_filters
+            ),
+            operation=persisted_item.get("operation") or first.operation,
+        )
 
     def _with_global_index(self, item, index):
         if int(item.index) == int(index):
@@ -532,6 +648,7 @@ class ForwardMultiBranchExecutor:
         total_plan_items,
         plan_preview,
         automated_merge=False,
+        defer_automated_merge=False,
     ):
         return run_plan_item(
             self,
@@ -542,6 +659,7 @@ class ForwardMultiBranchExecutor:
             total_plan_items=total_plan_items,
             plan_preview=plan_preview,
             automated_merge=automated_merge,
+            defer_automated_merge=defer_automated_merge,
         )
 
     def _validation_run_from_state(self, run_state):

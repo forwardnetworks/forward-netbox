@@ -1,0 +1,18 @@
+🧬 loaded config '/etc/netbox/config/configuration.py'
+🧬 loaded config '/etc/netbox/config/logging.py'
+🧬 loaded config '/etc/netbox/config/plugins.py'
+{
+  "ingestion_id": 754,
+  "sync_id": 51,
+  "sync_name": "warn-proof-ipam-232909",
+  "snapshot_id": "<redacted>",
+  "sync_mode": "full",
+  "baseline_ready": false,
+  "counts": {
+    "total": 0,
+    "blocking": 0,
+    "non_blocking": 0
+  },
+  "blocking_samples": [],
+  "non_blocking_samples": []
+}

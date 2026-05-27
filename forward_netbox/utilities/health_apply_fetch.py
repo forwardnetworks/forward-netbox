@@ -3,7 +3,9 @@ from collections import Counter
 from ..choices import FORWARD_OPTIONAL_MODELS
 from ..choices import FORWARD_SUPPORTED_MODELS
 from .apply_engine import apply_engine_decision_summary
-from .branch_budget import shard_fetch_capability_for_model
+from .apply_engine import bulk_orm_expansion_summary
+from .model_contracts import architecture_contract_summary
+from .model_contracts import architecture_fetch_contract_for_model
 
 
 def model_summary(sync, maps):
@@ -69,13 +71,16 @@ def apply_engine_summary(sync, model_strings):
         "global_fallback_reasons": dict(global_fallback_reasons),
         "global_blocker_codes": dict(global_adapter_blockers),
         "global_decisions": global_matrix,
+        "bulk_orm_expansion": bulk_orm_expansion_summary(model_strings),
     }
 
 
 def fetch_contract_summary(model_strings):
     contracts = [
-        shard_fetch_capability_for_model(model_string) for model_string in model_strings
+        architecture_fetch_contract_for_model(model_string)
+        for model_string in model_strings
     ]
+    registry = architecture_contract_summary(model_strings)
     modes = Counter(item["fetch_mode"] for item in contracts)
     reasons = Counter(item["reason_code"] for item in contracts)
     bucket_supported = sum(
@@ -87,5 +92,7 @@ def fetch_contract_summary(model_strings):
         "shard_safe_count": sum(1 for item in contracts if item["shard_safe"]),
         "model_fallback_count": sum(1 for item in contracts if not item["shard_safe"]),
         "bucket_supported_count": bucket_supported,
+        "contract_registry_status": registry["status"],
+        "contract_registry_gap_count": len(registry["gaps"]),
         "contracts": contracts,
     }

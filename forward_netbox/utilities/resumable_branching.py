@@ -8,10 +8,19 @@ from .branch_budget import shard_fetch_contract
 from .execution_ledger import active_execution_run
 from .execution_ledger import branch_run_state_from_execution_run
 from .execution_ledger import latest_execution_run
+from .execution_ledger import reconcile_execution_run
 from .execution_ledger import update_step_from_plan_item
+from .execution_ledger import upgrade_branch_run_state_to_execution_run
+from .sync_state import get_branch_run_display_state
+from .sync_state import prune_stale_branch_run_state
 
 
 RESUMABLE_BRANCHING_PARAMETER = "resumable_branching"
+SCHEDULER_OVERLAP_PARAMETER = "scheduler_overlap"
+RESUMABLE_LEDGER_FALLBACK_STATUSES = {
+    ForwardExecutionRunStatusChoices.FAILED,
+    ForwardExecutionRunStatusChoices.TIMEOUT,
+}
 
 
 def resumable_branching_enabled(sync):
@@ -21,9 +30,33 @@ def resumable_branching_enabled(sync):
     return True
 
 
+def scheduler_overlap_enabled(sync):
+    parameters = sync.parameters or {}
+    auto_merge = bool(parameters.get("auto_merge", sync.auto_merge))
+    if not auto_merge:
+        return False
+    if SCHEDULER_OVERLAP_PARAMETER in parameters:
+        return bool(parameters.get(SCHEDULER_OVERLAP_PARAMETER))
+    backend = str(parameters.get("execution_backend") or "").strip().lower()
+    return backend == "branching"
+
+
 def plan_item_snapshot(item, *, status="pending", existing=None):
     existing = dict(existing or {})
     fetch_contract = shard_fetch_contract(item.model_string, item.shard_keys)
+    fetch_mode = item.fetch_mode or fetch_contract.get("fetch_mode") or "model"
+    fetch_key_family = (
+        item.fetch_key_family or fetch_contract.get("fetch_key_family") or ""
+    )
+    fetch_parameters = (
+        item.fetch_parameters or fetch_contract.get("fetch_parameters") or {}
+    )
+    query_parameters = (
+        item.query_parameters or fetch_contract.get("query_parameters") or {}
+    )
+    fetch_column_filters = (
+        item.fetch_column_filters or fetch_contract.get("fetch_column_filters") or []
+    )
     snapshot = {
         "index": int(item.index),
         "model": item.model_string,
@@ -39,7 +72,11 @@ def plan_item_snapshot(item, *, status="pending", existing=None):
         "apply_engine": item.apply_engine,
         "apply_engine_reason": item.apply_engine_reason,
         "apply_engine_decision": item.apply_engine_decision,
-        **fetch_contract,
+        "fetch_mode": fetch_mode,
+        "fetch_key_family": fetch_key_family,
+        "fetch_parameters": fetch_parameters,
+        "query_parameters": query_parameters,
+        "fetch_column_filters": fetch_column_filters,
         "status": existing.get("status") or status,
         "ingestion_id": existing.get("ingestion_id"),
         "branch_name": existing.get("branch_name") or "",
@@ -69,14 +106,12 @@ def plan_items_snapshot(plan, *, existing_items=None):
 
 
 def get_plan_items(sync):
-    state = sync.get_branch_run_state()
-    items = state.get("plan_items") or []
-    if isinstance(items, list) and items:
-        return items
     run = active_execution_run(sync)
-    if run is None:
-        return []
-    state = branch_run_state_from_execution_run(run)
+    if run is not None:
+        state = branch_run_state_from_execution_run(run)
+        items = state.get("plan_items") or []
+        return items if isinstance(items, list) else []
+    state = get_branch_run_display_state(sync)
     items = state.get("plan_items") or []
     return items if isinstance(items, list) else []
 
@@ -85,36 +120,47 @@ def update_plan_item_state(sync, index, **updates):
     run = active_execution_run(sync)
     if run is not None:
         return update_step_from_plan_item(sync, index, **updates)
-    state = sync.get_branch_run_state()
-    items = get_plan_items(sync)
-    now = timezone.now().isoformat()
-    updated = False
-    for item in items:
-        if int(item.get("index") or 0) != int(index):
-            continue
-        item.update(updates)
-        item["updated_at"] = now
-        updated = True
-        break
-    if updated:
-        state["plan_items"] = items
-        sync.set_branch_run_state(state)
-        update_step_from_plan_item(sync, index, **updates)
-        return True
+    # Compatibility cache is read-through only after ledger migration.
     return False
 
 
-def enqueue_branch_stage_job(sync, *, user=None, adhoc=True):
+def enqueue_branch_stage_job(sync, *, user=None, adhoc=True, overlap_stage=False):
     run = active_execution_run(sync)
     if run is None:
-        run = latest_execution_run(sync)
-    state = (
-        branch_run_state_from_execution_run(run)
-        if run is not None
-        else sync.get_branch_run_state()
+        latest_run = latest_execution_run(sync)
+        if (
+            latest_run is not None
+            and latest_run.status in RESUMABLE_LEDGER_FALLBACK_STATUSES
+        ):
+            run = latest_run
+    if run is None and getattr(sync, "pk", None):
+        # Do not enqueue from stale compatibility state once ledger history
+        # exists and no resumable run is active.
+        if sync.execution_runs.exists():
+            prune_stale_branch_run_state(sync)
+            return None
+        run = upgrade_branch_run_state_to_execution_run(sync)
+    state = branch_run_state_from_execution_run(run) if run is not None else {}
+    if not state:
+        return None
+    if run is not None:
+        reconcile_execution_run(run)
+        run.refresh_from_db()
+        state = branch_run_state_from_execution_run(run)
+        if not state:
+            return None
+    if overlap_stage and run is None:
+        return None
+    next_plan_index = (
+        _next_overlap_stage_index(run)
+        if overlap_stage
+        else int(state.get("next_plan_index") or 1)
     )
-    next_plan_index = int(state.get("next_plan_index") or 1)
+    if next_plan_index is None:
+        return None
     total_plan_items = int(state.get("total_plan_items") or 0)
+    if total_plan_items and next_plan_index > total_plan_items:
+        return None
     if run is not None:
         from ..choices import ForwardExecutionStepStatusChoices
 
@@ -136,6 +182,8 @@ def enqueue_branch_stage_job(sync, *, user=None, adhoc=True):
                 status__in=[
                     ForwardExecutionStepStatusChoices.QUEUED,
                     ForwardExecutionStepStatusChoices.RUNNING,
+                    ForwardExecutionStepStatusChoices.STAGED,
+                    ForwardExecutionStepStatusChoices.MERGE_QUEUED,
                 ],
             )
             .order_by("index")
@@ -143,7 +191,9 @@ def enqueue_branch_stage_job(sync, *, user=None, adhoc=True):
         )
         if existing_inflight is not None:
             # Avoid duplicate queue jobs for same index.
-            return getattr(existing_inflight, "job", None)
+            return getattr(existing_inflight, "job", None) or getattr(
+                existing_inflight, "merge_job", None
+            )
     sync.status = ForwardSyncStatusChoices.QUEUED
     sync.__class__.objects.filter(pk=sync.pk).update(status=sync.status)
     job = Job.enqueue(
@@ -156,6 +206,7 @@ def enqueue_branch_stage_job(sync, *, user=None, adhoc=True):
             else f"{sync.name} - shard"
         ),
         adhoc=adhoc,
+        overlap_stage=bool(overlap_stage),
     )
     state["phase"] = "queued"
     state["phase_message"] = (
@@ -164,32 +215,65 @@ def enqueue_branch_stage_job(sync, *, user=None, adhoc=True):
         else "Queued next Branching shard."
     )
     state["last_stage_job_id"] = job.pk
-    if run is None:
-        update_plan_item_state(
-            sync,
-            next_plan_index,
-            status="queued",
-            stage_job_id=job.pk,
-        )
-    else:
-        update_step_from_plan_item(
-            sync,
-            next_plan_index,
-            status="queued",
-            stage_job_id=job.pk,
-        )
-        run.status = ForwardExecutionRunStatusChoices.RUNNING
-        run.phase = "queued"
-        run.phase_message = state["phase_message"]
-        run.next_step_index = next_plan_index
-        run.latest_heartbeat = timezone.now()
-        run.save(
-            update_fields=[
-                "status",
-                "phase",
-                "phase_message",
-                "next_step_index",
-                "latest_heartbeat",
-            ]
-        )
+    update_step_from_plan_item(
+        sync,
+        next_plan_index,
+        status="queued",
+        stage_job_id=job.pk,
+    )
+    run.status = ForwardExecutionRunStatusChoices.RUNNING
+    run.phase = "queued"
+    run.phase_message = state["phase_message"]
+    run.next_step_index = next_plan_index
+    run.latest_heartbeat = timezone.now()
+    run.save(
+        update_fields=[
+            "status",
+            "phase",
+            "phase_message",
+            "next_step_index",
+            "latest_heartbeat",
+        ]
+    )
     return job
+
+
+def _next_overlap_stage_index(run):
+    from ..choices import ForwardExecutionStepStatusChoices
+
+    current_merge_step = (
+        run.steps.filter(
+            kind="stage",
+            status=ForwardExecutionStepStatusChoices.MERGE_QUEUED,
+        )
+        .order_by("index")
+        .first()
+    )
+    if current_merge_step is None:
+        return None
+    existing_ahead = (
+        run.steps.filter(
+            kind="stage",
+            index__gt=current_merge_step.index,
+            status__in=[
+                ForwardExecutionStepStatusChoices.QUEUED,
+                ForwardExecutionStepStatusChoices.RUNNING,
+                ForwardExecutionStepStatusChoices.STAGED,
+                ForwardExecutionStepStatusChoices.MERGE_QUEUED,
+            ],
+        )
+        .order_by("index")
+        .first()
+    )
+    if existing_ahead is not None:
+        return None
+    pending_step = (
+        run.steps.filter(
+            kind="stage",
+            index__gt=current_merge_step.index,
+            status=ForwardExecutionStepStatusChoices.PENDING,
+        )
+        .order_by("index")
+        .first()
+    )
+    return int(pending_step.index) if pending_step is not None else None

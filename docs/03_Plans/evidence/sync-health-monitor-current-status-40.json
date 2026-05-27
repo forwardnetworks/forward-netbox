@@ -1,0 +1,279 @@
+{
+  "generated_at": "2026-05-27T07:15:20.489127+00:00",
+  "sync_ids": [
+    46,
+    50,
+    51
+  ],
+  "max_polls": 8,
+  "interval_seconds": 10,
+  "allow_nonterminal": true,
+  "include_all_ingestions": false,
+  "completed": true,
+  "samples": [
+    {
+      "sampled_at": "2026-05-27T06:58:49.776216+00:00",
+      "poll": 1,
+      "sync_id": 46,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "suppressed_warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-27T06:58:49.776216+00:00",
+      "poll": 1,
+      "sync_id": 50,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "suppressed_warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-27T06:58:49.776216+00:00",
+      "poll": 1,
+      "sync_id": 51,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "suppressed_warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-27T07:00:55.068610+00:00",
+      "poll": 2,
+      "sync_id": 46,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "suppressed_warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-27T07:00:55.068610+00:00",
+      "poll": 2,
+      "sync_id": 50,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "suppressed_warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-27T07:00:55.068610+00:00",
+      "poll": 2,
+      "sync_id": 51,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "suppressed_warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-27T07:02:59.825267+00:00",
+      "poll": 3,
+      "sync_id": 46,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "suppressed_warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-27T07:02:59.825267+00:00",
+      "poll": 3,
+      "sync_id": 50,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "suppressed_warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-27T07:02:59.825267+00:00",
+      "poll": 3,
+      "sync_id": 51,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "suppressed_warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-27T07:05:05.667697+00:00",
+      "poll": 4,
+      "sync_id": 46,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "suppressed_warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-27T07:05:05.667697+00:00",
+      "poll": 4,
+      "sync_id": 50,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "suppressed_warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-27T07:05:05.667697+00:00",
+      "poll": 4,
+      "sync_id": 51,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "suppressed_warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-27T07:07:10.355250+00:00",
+      "poll": 5,
+      "sync_id": 46,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "suppressed_warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-27T07:07:10.355250+00:00",
+      "poll": 5,
+      "sync_id": 50,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "suppressed_warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-27T07:07:10.355250+00:00",
+      "poll": 5,
+      "sync_id": 51,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "suppressed_warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-27T07:09:15.748768+00:00",
+      "poll": 6,
+      "sync_id": 46,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "suppressed_warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-27T07:09:15.748768+00:00",
+      "poll": 6,
+      "sync_id": 50,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "suppressed_warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-27T07:09:15.748768+00:00",
+      "poll": 6,
+      "sync_id": 51,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "suppressed_warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-27T07:11:22.449557+00:00",
+      "poll": 7,
+      "sync_id": 46,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "suppressed_warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-27T07:11:22.449557+00:00",
+      "poll": 7,
+      "sync_id": 50,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "suppressed_warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-27T07:11:22.449557+00:00",
+      "poll": 7,
+      "sync_id": 51,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "suppressed_warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-27T07:13:25.662592+00:00",
+      "poll": 8,
+      "sync_id": 46,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "suppressed_warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-27T07:13:25.662592+00:00",
+      "poll": 8,
+      "sync_id": 50,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "suppressed_warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-27T07:13:25.662592+00:00",
+      "poll": 8,
+      "sync_id": 51,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "suppressed_warnings": 0,
+      "errors": 0
+    }
+  ]
+}
