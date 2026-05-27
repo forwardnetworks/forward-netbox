@@ -17,10 +17,12 @@ ADAPTER_MODEL_BLOCKERS = _decision_mod.ADAPTER_MODEL_BLOCKERS
 ADAPTER_MODELS_WITHOUT_BLOCKER = _decision_mod.ADAPTER_MODELS_WITHOUT_BLOCKER
 ADAPTER_REQUIRED_MODELS = _decision_mod.ADAPTER_REQUIRED_MODELS
 APPLY_ENGINE_MODEL_CLASSIFICATIONS = _decision_mod.APPLY_ENGINE_MODEL_CLASSIFICATIONS
+BLOCKER_PROMOTION_LANES = _decision_mod.BLOCKER_PROMOTION_LANES
 BULK_ORM_ENABLED_MODELS = _decision_mod.BULK_ORM_ENABLED_MODELS
 BULK_ORM_ENABLED_MODELS_WITHOUT_SPECS = (
     _decision_mod.BULK_ORM_ENABLED_MODELS_WITHOUT_SPECS
 )
+BULK_ORM_PARITY_GATES = _decision_mod.BULK_ORM_PARITY_GATES
 BULK_ORM_SPEC_MODELS = _decision_mod.BULK_ORM_SPEC_MODELS
 EXPERIMENTAL_BULK_ORM_MODELS = _decision_mod.EXPERIMENTAL_BULK_ORM_MODELS
 ForwardApplyEngineDecision = _decision_mod.ForwardApplyEngineDecision
@@ -101,6 +103,10 @@ def apply_engine_decision_summary(*, sync, model_string, backend):
         model_string=model_string,
         backend=backend,
     ).as_dict()
+
+
+def bulk_orm_expansion_summary(model_strings=None):
+    return _decision_mod.bulk_orm_expansion_summary(model_strings)
 
 
 def _sync_backend(sync):

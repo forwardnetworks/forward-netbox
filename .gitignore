@@ -145,3 +145,4 @@ test-results/
 
 # Local generated operator reports
 .forward-netbox-reports/
+development/fetch-artifacts/

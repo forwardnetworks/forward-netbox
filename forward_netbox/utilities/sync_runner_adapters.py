@@ -43,7 +43,9 @@ from .sync_primitives import coalesce_update_or_create as sync_coalesce_update_o
 from .sync_primitives import coalesce_upsert as sync_coalesce_upsert
 from .sync_primitives import content_type_for as sync_content_type_for
 from .sync_primitives import delete_by_coalesce as sync_delete_by_coalesce
+from .sync_primitives import get_device_by_name as sync_get_device_by_name
 from .sync_primitives import get_unique_or_raise as sync_get_unique_or_raise
+from .sync_primitives import lookup_device_by_name as sync_lookup_device_by_name
 from .sync_primitives import lookup_interface as sync_lookup_interface
 from .sync_primitives import lookup_module_bay as sync_lookup_module_bay
 from .sync_primitives import model_field_values as sync_model_field_values
@@ -118,6 +120,7 @@ class ForwardSyncRunnerAdapterMixin:
         exception=None,
         context=None,
         defaults=None,
+        log_level="failure",
     ):
         return sync_record_issue(
             self,
@@ -127,6 +130,7 @@ class ForwardSyncRunnerAdapterMixin:
             exception=exception,
             context=context,
             defaults=defaults,
+            log_level=log_level,
         )
 
     def _dependency_key(self, model_string, row):
@@ -176,6 +180,12 @@ class ForwardSyncRunnerAdapterMixin:
 
     def _get_unique_or_raise(self, model, lookup):
         return sync_get_unique_or_raise(self, model, lookup)
+
+    def _get_device_by_name(self, device_name):
+        return sync_get_device_by_name(self, device_name)
+
+    def _lookup_device_by_name(self, device_name):
+        return sync_lookup_device_by_name(self, device_name)
 
     def _coalesce_lookup(self, row, *fields):
         return sync_coalesce_lookup(row, *fields)
@@ -356,16 +366,49 @@ class ForwardSyncRunnerAdapterMixin:
                     lookup[field_name] = row[field_name]
             if lookup:
                 coalesce_lookups.append(lookup)
+        if slug:
+            coalesce_lookups.insert(0, {"manufacturer": manufacturer, "slug": slug})
+        if model:
+            coalesce_lookups.insert(1, {"manufacturer": manufacturer, "model": model})
+        deduped_lookups = []
+        seen_signatures = set()
+        for lookup in coalesce_lookups:
+            signature = tuple(
+                sorted(
+                    (
+                        field_name,
+                        getattr(field_value, "pk", field_value),
+                    )
+                    for field_name, field_value in lookup.items()
+                )
+            )
+            if signature in seen_signatures:
+                continue
+            seen_signatures.add(signature)
+            deduped_lookups.append(lookup)
+        coalesce_lookups = deduped_lookups
         if not coalesce_lookups:
             raise ForwardQueryError(
                 "No usable coalesce lookups were configured for dcim.devicetype."
             )
-        device_type_by_model = (
-            DeviceType.objects.filter(**coalesce_lookups[1]).order_by("pk").first()
+        device_type_by_slug = self._get_unique_or_raise(
+            DeviceType, {"manufacturer": manufacturer, "slug": slug}
         )
-        device_type_by_slug = (
-            DeviceType.objects.filter(**coalesce_lookups[0]).order_by("pk").first()
-        )
+        device_type_by_model = None
+        if device_type_by_slug is not None:
+            if (
+                device_type_by_slug.manufacturer_id == manufacturer.pk
+                and device_type_by_slug.model == model
+            ):
+                device_type_by_model = device_type_by_slug
+            else:
+                device_type_by_model = self._get_unique_or_raise(
+                    DeviceType, {"manufacturer": manufacturer, "model": model}
+                )
+        else:
+            device_type_by_model = self._get_unique_or_raise(
+                DeviceType, {"manufacturer": manufacturer, "model": model}
+            )
 
         if (
             device_type_by_model is not None
@@ -461,6 +504,7 @@ class ForwardSyncRunnerAdapterMixin:
         asn = ASN(asn=asn_number, rir=rir)
         asn.full_clean()
         asn.save()
+        self._asn_by_number_cache[asn.asn] = asn
         return asn
 
     def _bgp_vrf(self, row):
@@ -610,7 +654,7 @@ class ForwardSyncRunnerAdapterMixin:
         return module_type
 
     def _lookup_module_bay(self, device, module_bay_name):
-        return sync_lookup_module_bay(device, module_bay_name)
+        return sync_lookup_module_bay(self, device, module_bay_name)
 
     def _ensure_module_bay(self, device, row):
         module_bay = self._lookup_module_bay(device, row["module_bay"])
@@ -627,13 +671,15 @@ class ForwardSyncRunnerAdapterMixin:
             field.name == "enabled" for field in device.modulebays.model._meta.fields
         ):
             values["enabled"] = True
-        return device.modulebays.create(**values)
+        module_bay = device.modulebays.create(**values)
+        self._module_bay_by_device_name_cache[(device.pk, module_bay.name)] = module_bay
+        return module_bay
 
     def _content_type_for(self, model):
         return sync_content_type_for(self, model)
 
     def _lookup_interface(self, device, interface_name):
-        return sync_lookup_interface(device, interface_name)
+        return sync_lookup_interface(self, device, interface_name)
 
     def _delete_by_coalesce(self, model, lookups):
         return sync_delete_by_coalesce(self, model, lookups)

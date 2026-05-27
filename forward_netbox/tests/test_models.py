@@ -14,6 +14,7 @@ from django.utils import timezone
 
 from forward_netbox.choices import FORWARD_BGP_MODELS
 from forward_netbox.choices import forward_configured_models
+from forward_netbox.choices import ForwardDiffFallbackModeChoices
 from forward_netbox.choices import ForwardDriftPolicyBaselineChoices
 from forward_netbox.choices import ForwardExecutionBackendChoices
 from forward_netbox.choices import ForwardExecutionStepStatusChoices
@@ -106,6 +107,140 @@ class ForwardSyncModelTest(TestCase):
             "`nqe_page_size` must be between 1 and 10000.", str(ctx.exception)
         )
 
+    def test_source_rejects_invalid_nqe_fetch_all_max_pages(self):
+        source = ForwardSource(
+            name="source-invalid-fetch-page-cap",
+            type="saas",
+            url="https://fwd.app",
+            parameters={
+                "username": "user@example.com",
+                "password": "secret",
+                "verify": True,
+                "timeout": 1200,
+                "network_id": "test-network",
+                "nqe_fetch_all_max_pages": 200001,
+            },
+        )
+
+        with self.assertRaises(ValidationError) as ctx:
+            source.clean()
+
+        self.assertIn(
+            "`nqe_fetch_all_max_pages` must be between 1 and 200000.",
+            str(ctx.exception),
+        )
+
+    def test_source_rejects_invalid_identical_full_page_streak_limit(self):
+        source = ForwardSource(
+            name="source-invalid-identical-streak-cap",
+            type="saas",
+            url="https://fwd.app",
+            parameters={
+                "username": "user@example.com",
+                "password": "secret",
+                "verify": True,
+                "timeout": 1200,
+                "network_id": "test-network",
+                "nqe_identical_full_page_streak_limit": 0,
+            },
+        )
+
+        with self.assertRaises(ValidationError) as ctx:
+            source.clean()
+
+        self.assertIn(
+            "`nqe_identical_full_page_streak_limit` must be between 1 and 1000.",
+            str(ctx.exception),
+        )
+
+    def test_source_rejects_invalid_pushdown_alert_threshold(self):
+        source = ForwardSource(
+            name="source-invalid-pushdown-threshold",
+            type="saas",
+            url="https://fwd.app",
+            parameters={
+                "username": "user@example.com",
+                "password": "secret",
+                "verify": True,
+                "timeout": 1200,
+                "network_id": "test-network",
+                "pushdown_fallback_warn_rate": 1.2,
+            },
+        )
+
+        with self.assertRaises(ValidationError) as ctx:
+            source.clean()
+
+        self.assertIn(
+            "`pushdown_fallback_warn_rate` must be between 0 and 1", str(ctx.exception)
+        )
+
+    def test_source_rejects_non_boolean_query_preflight_enabled(self):
+        source = ForwardSource(
+            name="source-invalid-preflight-toggle",
+            type="saas",
+            url="https://fwd.app",
+            parameters={
+                "username": "user@example.com",
+                "password": "secret",
+                "verify": True,
+                "timeout": 1200,
+                "network_id": "test-network",
+                "query_preflight_enabled": "yes",
+            },
+        )
+
+        with self.assertRaises(ValidationError) as ctx:
+            source.clean()
+
+        self.assertIn("`query_preflight_enabled` must be a boolean", str(ctx.exception))
+
+    def test_source_rejects_invalid_query_preflight_row_limit(self):
+        source = ForwardSource(
+            name="source-invalid-preflight-row-limit",
+            type="saas",
+            url="https://fwd.app",
+            parameters={
+                "username": "user@example.com",
+                "password": "secret",
+                "verify": True,
+                "timeout": 1200,
+                "network_id": "test-network",
+                "query_preflight_row_limit": 0,
+            },
+        )
+
+        with self.assertRaises(ValidationError) as ctx:
+            source.clean()
+
+        self.assertIn(
+            "`query_preflight_row_limit` must be between 1 and 100.",
+            str(ctx.exception),
+        )
+
+    def test_source_rejects_non_boolean_query_diagnostics_enabled(self):
+        source = ForwardSource(
+            name="source-invalid-diagnostic-toggle",
+            type="saas",
+            url="https://fwd.app",
+            parameters={
+                "username": "user@example.com",
+                "password": "secret",
+                "verify": True,
+                "timeout": 1200,
+                "network_id": "test-network",
+                "query_diagnostics_enabled": "yes",
+            },
+        )
+
+        with self.assertRaises(ValidationError) as ctx:
+            source.clean()
+
+        self.assertIn(
+            "`query_diagnostics_enabled` must be a boolean",
+            str(ctx.exception),
+        )
+
     @patch("forward_netbox.models.ForwardSource.get_client")
     def test_source_tag_scope_preview_reports_counts(self, mock_get_client):
         self.source.parameters.update(
@@ -174,6 +309,39 @@ class ForwardSyncModelTest(TestCase):
 
         self.assertIn("Unsupported Forward sync keys", str(ctx.exception))
 
+    def test_sync_rejects_invalid_diff_fallback_mode(self):
+        sync = ForwardSync(
+            name="sync-invalid-diff-fallback",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+                "diff_fallback_mode": "invalid-mode",
+            },
+        )
+
+        with self.assertRaises(ValidationError) as ctx:
+            sync.clean()
+
+        self.assertIn("`diff_fallback_mode` is not supported", str(ctx.exception))
+
+    def test_sync_accepts_required_diff_fallback_mode(self):
+        sync = ForwardSync(
+            name="sync-required-diff-fallback",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+                "diff_fallback_mode": ForwardDiffFallbackModeChoices.REQUIRE_DIFF,
+            },
+        )
+
+        sync.clean()
+        self.assertEqual(
+            sync.parameters["diff_fallback_mode"],
+            ForwardDiffFallbackModeChoices.REQUIRE_DIFF,
+        )
+
     def test_sync_accepts_fast_bootstrap_execution_backend(self):
         sync = ForwardSync(
             name="sync-fast-bootstrap",
@@ -191,6 +359,20 @@ class ForwardSyncModelTest(TestCase):
             sync.parameters["execution_backend"],
             ForwardExecutionBackendChoices.FAST_BOOTSTRAP,
         )
+
+    def test_new_sync_validation_defaults_safe_bulk_orm_enabled(self):
+        sync = ForwardSync(
+            name="sync-new-bulk-orm-default",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+            },
+        )
+
+        sync.clean()
+
+        self.assertTrue(sync.parameters["enable_bulk_orm"])
 
     def test_sync_display_parameters_include_execution_backend(self):
         sync = ForwardSync.objects.create(
@@ -569,12 +751,14 @@ class ForwardSyncModelTest(TestCase):
             enabled_models=["dcim.cable"],
             max_changes_per_branch=10000,
             model_change_density={"dcim.cable": 2.0},
+            model_change_density_profile={},
             branch_run_state={"plan_preview": plan_preview},
             latest_ingestion_summary=ingestion_summary,
         )
         self.assertEqual(sync_summary["branch_budget_hints"]["dcim.cable"], 2500)
         self.assertEqual(sync_summary["pre_run_estimate"]["planned_shards"], 0)
         self.assertEqual(sync_summary["latest_ingestion"]["retry_count"], 0)
+        self.assertIn("model_change_density_profile", sync_summary)
 
     def test_execution_summary_includes_latest_ingestion_telemetry(self):
         sync = ForwardSync.objects.create(
@@ -1629,32 +1813,43 @@ class ForwardIngestionSnapshotSummaryTest(TestCase):
             snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
             snapshot_id="snapshot-before",
         )
-        self.sync.set_branch_run_state(
-            {
-                "snapshot_selector": LATEST_PROCESSED_SNAPSHOT,
-                "snapshot_id": "snapshot-before",
-                "max_changes_per_branch": DEFAULT_MAX_CHANGES_PER_BRANCH,
-                "next_plan_index": 2,
-                "total_plan_items": 3,
-                "auto_merge": True,
-                "awaiting_merge": False,
-                "pending_ingestion_id": ingestion.pk,
-                "pending_plan_index": 1,
-                "pending_is_final": False,
-                "plan_items": [
-                    {"index": 1, "status": "merge_queued"},
-                    {"index": 2, "status": "pending"},
-                ],
-            }
+        execution_run = ForwardExecutionRun.objects.create(
+            sync=self.sync,
+            source=self.source,
+            backend=ForwardExecutionBackendChoices.BRANCHING,
+            status="running",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-before",
+            max_changes_per_branch=DEFAULT_MAX_CHANGES_PER_BRANCH,
+            total_steps=3,
+            next_step_index=2,
+            auto_merge=True,
+        )
+        ForwardExecutionStep.objects.create(
+            run=execution_run,
+            index=1,
+            kind="stage",
+            status=ForwardExecutionStepStatusChoices.MERGE_QUEUED,
+            model_string="dcim.site",
+            ingestion=ingestion,
+        )
+        ForwardExecutionStep.objects.create(
+            run=execution_run,
+            index=2,
+            kind="stage",
+            status=ForwardExecutionStepStatusChoices.PENDING,
+            model_string="dcim.device",
         )
 
         with patch("forward_netbox.utilities.merge.merge_branch"):
             ingestion.sync_merge()
 
         self.sync.refresh_from_db()
+        execution_run.refresh_from_db()
         state = get_branch_run_display_state(self.sync)
         self.assertEqual(state["plan_items"][0]["status"], "merged")
         self.assertEqual(state["next_plan_index"], 2)
+        self.assertEqual(execution_run.next_step_index, 2)
 
     def test_sync_merge_clears_gated_branch_run_after_final_merge(self):
         ingestion = ForwardIngestion.objects.create(

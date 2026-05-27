@@ -87,6 +87,9 @@ from .utilities.sync_facade import uses_multi_branch as uses_forward_multi_branc
 from .utilities.sync_state import clear_branch_run_state as clear_sync_branch_run_state
 from .utilities.sync_state import get_advisory_summary as build_sync_advisory_summary
 from .utilities.sync_state import get_analysis_summary as build_sync_analysis_summary
+from .utilities.sync_state import (
+    get_branch_run_display_state as get_sync_branch_run_display_state,
+)
 from .utilities.sync_state import get_branch_run_state as get_sync_branch_run_state
 from .utilities.sync_state import (
     get_display_parameters as build_sync_display_parameters,
@@ -101,6 +104,9 @@ from .utilities.sync_state import (
 from .utilities.sync_state import (
     get_model_change_density as get_sync_model_change_density,
 )
+from .utilities.sync_state import (
+    get_model_change_density_profile as get_sync_model_change_density_profile,
+)
 from .utilities.sync_state import get_sync_activity as build_sync_activity
 from .utilities.sync_state import get_workload_summary as build_sync_workload_summary
 from .utilities.sync_state import has_pending_branch_run as has_pending_sync_branch_run
@@ -114,6 +120,9 @@ from .utilities.sync_state import (
 from .utilities.sync_state import set_branch_run_state as set_sync_branch_run_state
 from .utilities.sync_state import (
     set_model_change_density as set_sync_model_change_density,
+)
+from .utilities.sync_state import (
+    set_model_change_density_profile as set_sync_model_change_density_profile,
 )
 from .utilities.validation import force_allow_validation_run
 
@@ -185,6 +194,13 @@ class ForwardSource(ForwardPluginModelDocsMixin, JobsMixin, PrimaryModel):
             "network_id",
             "nqe_page_size",
             "query_fetch_concurrency",
+            "nqe_fetch_all_max_pages",
+            "nqe_identical_full_page_streak_limit",
+            "query_preflight_enabled",
+            "query_diagnostics_enabled",
+            "pushdown_fallback_warn_rate",
+            "pushdown_runtime_fallback_warn_share",
+            "pushdown_diff_warn_ratio",
             "device_tag_include",
             "device_tag_exclude",
             "device_tag_include_tags",
@@ -518,6 +534,9 @@ class ForwardSync(ForwardPluginModelDocsMixin, JobsMixin, TagsMixin, ChangeLogge
     def get_model_change_density(self):
         return get_sync_model_change_density(self)
 
+    def get_model_change_density_profile(self):
+        return get_sync_model_change_density_profile(self)
+
     @property
     def has_pending_branch_run(self):
         return has_pending_sync_branch_run(self)
@@ -538,6 +557,9 @@ class ForwardSync(ForwardPluginModelDocsMixin, JobsMixin, TagsMixin, ChangeLogge
 
     def set_model_change_density(self, model_change_density):
         set_sync_model_change_density(self, model_change_density)
+
+    def set_model_change_density_profile(self, model_change_density_profile):
+        set_sync_model_change_density_profile(self, model_change_density_profile)
 
     def get_max_changes_per_branch(self):
         return get_state_max_changes_per_branch(
@@ -1034,6 +1056,7 @@ class ForwardIngestion(ForwardPluginModelDocsMixin, JobsMixin, models.Model):
         if not self.branch or getattr(self.branch, "status", "") == "merged":
             return False
         from .utilities.execution_ledger import (
+            ingestion_has_mergeable_execution_step,
             ingestion_has_requeueable_merge_timeout_step,
         )
 
@@ -1041,16 +1064,9 @@ class ForwardIngestion(ForwardPluginModelDocsMixin, JobsMixin, models.Model):
             return True
         if self.merge_job and not self.merge_job.completed:
             return False
-        state = self.sync.get_branch_run_state()
-        if not (
-            self.sync.status == ForwardSyncStatusChoices.READY_TO_MERGE
-            or state.get("pending_ingestion_id") == self.pk
-        ):
-            from .utilities.execution_ledger import (
-                ingestion_has_mergeable_execution_step,
-            )
-
-            return ingestion_has_mergeable_execution_step(self)
+        if ingestion_has_mergeable_execution_step(self):
+            return True
+        state = get_sync_branch_run_display_state(self.sync)
         return bool(
             self.sync.status == ForwardSyncStatusChoices.READY_TO_MERGE
             or state.get("pending_ingestion_id") == self.pk

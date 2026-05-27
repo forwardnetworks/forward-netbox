@@ -2,27 +2,55 @@ from django.core.exceptions import ObjectDoesNotExist
 
 from ..exceptions import ForwardDependencySkipError
 from ..exceptions import ForwardSearchError
+from .sync_primitives import forget_lookup_object
 
 
-def delete_extras_taggeditem(runner, row):
-    from dcim.models import Device
-    from extras.models import Tag
+def _device_tag_ids(runner, device):
+    cached = runner._device_tag_ids_cache.get(device.pk)
+    if cached is None:
+        cached = set(device.tags.values_list("pk", flat=True))
+        runner._device_tag_ids_cache[device.pk] = cached
+    return cached
 
-    device = Device.objects.filter(name=row.get("device")).order_by("pk").first()
-    tag = Tag.objects.filter(slug=row.get("tag_slug")).order_by("pk").first()
-    if device is None or tag is None:
+
+def _device_has_tag(runner, device, tag):
+    return tag.pk in _device_tag_ids(runner, device)
+
+
+def _device_add_tag(runner, device, tag):
+    if _device_has_tag(runner, device, tag):
         return False
-    if tag not in device.tags.all():
-        return False
-    device.tags.remove(tag)
+    device.tags.add(tag)
+    runner._device_tag_ids_cache.setdefault(device.pk, set()).add(tag.pk)
     return True
 
 
+def _device_remove_tag(runner, device, tag):
+    if not _device_has_tag(runner, device, tag):
+        return False
+    device.tags.remove(tag)
+    runner._device_tag_ids_cache.setdefault(device.pk, set()).discard(tag.pk)
+    return True
+
+
+def delete_extras_taggeditem(runner, row):
+    from extras.models import Tag
+
+    device = runner._lookup_device_by_name(row.get("device"))
+    tag = None
+    if row.get("tag_slug"):
+        tag = runner._get_unique_or_raise(Tag, {"slug": row.get("tag_slug")})
+    if tag is None and row.get("tag"):
+        tag = runner._get_unique_or_raise(Tag, {"name": row.get("tag")})
+    if device is None or tag is None:
+        return False
+    return _device_remove_tag(runner, device, tag)
+
+
 def delete_dcim_interface(runner, row):
-    from dcim.models import Device
     from dcim.models import Interface
 
-    device = Device.objects.filter(name=row.get("device")).order_by("pk").first()
+    device = runner._lookup_device_by_name(row.get("device"))
     if device is None or not row.get("name"):
         return False
     return runner._delete_by_coalesce(
@@ -44,11 +72,10 @@ def delete_dcim_macaddress(runner, row):
 
 
 def apply_extras_taggeditem(runner, row):
-    from dcim.models import Device
     from extras.models import Tag
 
     try:
-        device = Device.objects.get(name=row["device"])
+        device = runner._get_device_by_name(row["device"])
     except ObjectDoesNotExist as exc:
         key = (row["device"],)
         if runner._dependency_failed("dcim.device", key):
@@ -75,16 +102,15 @@ def apply_extras_taggeditem(runner, row):
         },
         coalesce_sets=[("slug",)],
     )
-    device.tags.add(tag)
+    _device_add_tag(runner, device, tag)
 
 
 def apply_dcim_macaddress(runner, row):
-    from dcim.models import Device
     from dcim.models import Interface
     from dcim.models import MACAddress
 
     try:
-        device = Device.objects.get(name=row["device"])
+        device = runner._get_device_by_name(row["device"])
     except ObjectDoesNotExist as exc:
         key = (row["device"],)
         if runner._dependency_failed("dcim.device", key):
@@ -113,12 +139,15 @@ def apply_dcim_macaddress(runner, row):
                 context={"device": device.name, "interface": row["interface"]},
                 data=row,
             )
-        raise ForwardSearchError(
-            f"Unable to find interface {row['interface']} on device {device.name} for MAC assignment.",
+        runner._record_aggregated_skip_warning(
             model_string="dcim.macaddress",
-            context={"device": device.name, "interface": row["interface"]},
-            data=row,
+            reason="missing-interface",
+            warning_message=(
+                f"Skipping MAC address `{row['mac']}` on `{device.name}` "
+                f"`{row['interface']}` because the target interface was not imported."
+            ),
         )
+        return False
     runner._upsert_values_from_defaults(
         "dcim.macaddress",
         MACAddress,
@@ -135,11 +164,10 @@ def apply_dcim_macaddress(runner, row):
 
 
 def apply_dcim_interface(runner, row):
-    from dcim.models import Device
     from dcim.models import Interface
 
     try:
-        device = Device.objects.get(name=row["device"])
+        device = runner._get_device_by_name(row["device"])
     except ObjectDoesNotExist as exc:
         key = (row["device"],)
         if runner._dependency_failed("dcim.device", key):
@@ -173,6 +201,7 @@ def apply_dcim_interface(runner, row):
                 obj=runner.sync,
             )
             existing_cable.delete()
+            forget_lookup_object(runner, existing_interface)
     if row.get("lag"):
         if row["lag"] == row["name"]:
             raise ForwardSearchError(

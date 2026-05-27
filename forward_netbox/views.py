@@ -78,6 +78,7 @@ from .utilities.execution_ledger import execution_run_recovery_recommendation
 from .utilities.execution_ledger import execution_run_support_bundle
 from .utilities.execution_ledger import prepare_stage_step_retry
 from .utilities.execution_ledger import reconcile_execution_run
+from .utilities.execution_ledger_metrics import pushdown_trend_history_for_sync
 from .utilities.health import live_data_file_health_check
 from .utilities.health import live_source_health_check
 from .utilities.health import sync_health_summary
@@ -658,6 +659,35 @@ class ForwardSyncDataFileHealthView(BaseObjectView):
             "data_file_health": live_data_file_health_check(sync),
         }
         filename = f"forward-sync-{sync.pk}-live-data-file-health.json"
+        return _download_json_response(json_safe_value(payload), filename)
+
+
+@register_model_view(ForwardSync, "pushdown_trends", path="pushdown-trends")
+class ForwardSyncPushdownTrendsView(BaseObjectView):
+    queryset = ForwardSync.objects.all()
+
+    def get_required_permission(self):
+        return "forward_netbox.view_forwardsync"
+
+    def get(self, request, pk):
+        sync = get_object_or_404(self.queryset, pk=pk)
+        limit_raw = request.GET.get("limit")
+        try:
+            selected_limit = int(limit_raw) if limit_raw not in ("", None) else 180
+        except (TypeError, ValueError):
+            selected_limit = 180
+        selected_limit = max(1, min(1000, selected_limit))
+        history = pushdown_trend_history_for_sync(sync, limit=selected_limit)
+        payload = {
+            "exported_at": timezone.now().isoformat(),
+            "sync": {
+                "pk": sync.pk,
+                "name": sync.name,
+                "source": sync.source_id,
+            },
+            "history": history,
+        }
+        filename = f"forward-sync-{sync.pk}-pushdown-trends.json"
         return _download_json_response(json_safe_value(payload), filename)
 
 

@@ -1,0 +1,2 @@
+sync-health-gate poll 1/1 sync_id=50 status=syncing run_status=running blocking=0 warnings=0 errors=0
+sync-health-gate passed: audits are clean on non-terminal run state.

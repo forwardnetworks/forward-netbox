@@ -1,6 +1,11 @@
 from datetime import timedelta
 from unittest.mock import Mock
+from unittest.mock import patch
+from uuid import uuid4
 
+from core.choices import JobStatusChoices
+from core.models import Job
+from django.contrib.contenttypes.models import ContentType
 from django.test import TestCase
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
@@ -28,6 +33,7 @@ from forward_netbox.utilities.sync_state import mark_branch_run_failed
 from forward_netbox.utilities.sync_state import ready_to_continue_sync
 from forward_netbox.utilities.sync_state import set_branch_run_state
 from forward_netbox.utilities.sync_state import set_model_change_density
+from forward_netbox.utilities.sync_state import set_model_change_density_profile
 from forward_netbox.utilities.sync_state import touch_branch_run_progress
 
 
@@ -60,6 +66,18 @@ class ForwardSyncStateHelperTest(TestCase):
         clear_branch_run_state(self.sync)
         self.assertEqual(get_branch_run_state(self.sync), {})
 
+    def test_pending_branch_run_uses_legacy_compatibility_state_without_ledger(self):
+        self.sync.set_branch_run_state(
+            {
+                "phase": "executing",
+                "next_plan_index": 1,
+                "total_plan_items": 1,
+                "awaiting_merge": False,
+            }
+        )
+
+        self.assertTrue(has_pending_branch_run(self.sync))
+
     def test_set_branch_run_state_is_suppressed_when_execution_run_exists(self):
         ForwardExecutionRun.objects.create(
             sync=self.sync,
@@ -86,6 +104,31 @@ class ForwardSyncStateHelperTest(TestCase):
         self.assertFalse(wrote)
         self.assertEqual(get_branch_run_state(self.sync), {})
 
+    def test_set_branch_run_state_linkage_is_suppressed_when_execution_run_exists(self):
+        execution_run = ForwardExecutionRun.objects.create(
+            sync=self.sync,
+            source=self.source,
+            backend="branching",
+            status=ForwardExecutionRunStatusChoices.RUNNING,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-ledger",
+            total_steps=1,
+            next_step_index=1,
+        )
+
+        wrote = set_branch_run_state(
+            self.sync,
+            {
+                "execution_run_id": execution_run.pk,
+                "next_plan_index": 1,
+                "total_plan_items": 1,
+            },
+        )
+
+        self.sync.refresh_from_db()
+        self.assertFalse(wrote)
+        self.assertEqual(get_branch_run_state(self.sync), {})
+
     def test_set_branch_run_state_writes_when_no_execution_run_exists(self):
         wrote = set_branch_run_state(
             self.sync,
@@ -100,6 +143,32 @@ class ForwardSyncStateHelperTest(TestCase):
         self.sync.refresh_from_db()
         self.assertTrue(wrote)
         self.assertEqual(get_branch_run_state(self.sync)["phase"], "planning")
+
+    def test_set_branch_run_state_is_suppressed_when_ledger_history_exists(self):
+        ForwardExecutionRun.objects.create(
+            sync=self.sync,
+            source=self.source,
+            backend="branching",
+            status=ForwardExecutionRunStatusChoices.COMPLETED,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-complete",
+            total_steps=1,
+            next_step_index=2,
+        )
+
+        wrote = set_branch_run_state(
+            self.sync,
+            {
+                "phase": "planning",
+                "phase_message": "stale compatibility write should be suppressed",
+                "next_plan_index": 1,
+                "total_plan_items": 1,
+            },
+        )
+
+        self.sync.refresh_from_db()
+        self.assertFalse(wrote)
+        self.assertEqual(get_branch_run_state(self.sync), {})
 
     def test_pending_branch_run_falls_back_to_execution_ledger(self):
         execution_run = ForwardExecutionRun.objects.create(
@@ -143,6 +212,34 @@ class ForwardSyncStateHelperTest(TestCase):
         )
 
         self.assertFalse(has_pending_branch_run(self.sync))
+
+    def test_terminal_execution_run_suppresses_stale_compatibility_state(self):
+        ForwardExecutionRun.objects.create(
+            sync=self.sync,
+            source=self.source,
+            backend="branching",
+            status="completed",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-complete",
+            total_steps=1,
+            next_step_index=2,
+        )
+        self.sync.set_branch_run_state(
+            {
+                "awaiting_merge": True,
+                "phase": "executing",
+                "phase_message": "stale compatibility payload",
+                "next_plan_index": 1,
+                "total_plan_items": 1,
+            }
+        )
+
+        self.assertEqual(get_branch_run_display_state(self.sync), {})
+        self.sync.refresh_from_db()
+        self.assertEqual(get_branch_run_state(self.sync), {})
+        self.assertFalse(is_waiting_for_branch_merge(self.sync))
+        self.assertFalse(has_pending_branch_run(self.sync))
+        self.assertEqual(get_sync_activity(self.sync), "")
 
     def test_ready_to_continue_sync_uses_execution_ledger_without_json(self):
         execution_run = ForwardExecutionRun.objects.create(
@@ -294,6 +391,40 @@ class ForwardSyncStateHelperTest(TestCase):
         self.assertTrue(second.baseline_ready)
         self.assertEqual(second.completed, first_completed)
 
+    def test_mark_run_completed_does_not_complete_when_stage_steps_unfinished(self):
+        execution_run = ForwardExecutionRun.objects.create(
+            sync=self.sync,
+            source=self.source,
+            backend="branching",
+            status="running",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-active",
+            total_steps=2,
+            next_step_index=1,
+        )
+        ForwardExecutionStep.objects.create(
+            run=execution_run,
+            index=1,
+            kind="stage",
+            status=ForwardExecutionStepStatusChoices.MERGED,
+            model_string="dcim.site",
+        )
+        ForwardExecutionStep.objects.create(
+            run=execution_run,
+            index=2,
+            kind="stage",
+            status=ForwardExecutionStepStatusChoices.RUNNING,
+            model_string="dcim.device",
+        )
+
+        result = mark_run_completed(self.sync, baseline_ready=True)
+
+        self.assertEqual(result, execution_run)
+        execution_run.refresh_from_db()
+        self.assertEqual(execution_run.status, "running")
+        self.assertFalse(execution_run.baseline_ready)
+        self.assertNotEqual(execution_run.phase, "completed")
+
     def test_waiting_for_branch_merge_falls_back_to_execution_ledger(self):
         execution_run = ForwardExecutionRun.objects.create(
             sync=self.sync,
@@ -318,6 +449,22 @@ class ForwardSyncStateHelperTest(TestCase):
 
     def test_display_parameters_include_density_and_branch_hints(self):
         set_model_change_density(self.sync, {"dcim.device": 2.0})
+        set_model_change_density_profile(
+            self.sync,
+            {
+                "dcim.device": {
+                    "density": 2.0,
+                    "sample_count": 4,
+                    "accepted_observations": 4,
+                    "rejected_observations": 1,
+                    "mean": 2.1,
+                    "m2": 0.2,
+                    "variance": 0.066666,
+                    "stddev": 0.258198,
+                    "last_updated_at": timezone.now().isoformat(),
+                }
+            },
+        )
 
         params = get_display_parameters(
             self.sync,
@@ -325,8 +472,16 @@ class ForwardSyncStateHelperTest(TestCase):
         )
 
         self.assertEqual(params["model_change_density"]["dcim.device"], 2.0)
+        self.assertEqual(
+            params["model_change_density_profile"]["model_count"],
+            1,
+        )
         self.assertIn("branch_budget_hints", params)
-        self.assertEqual(params["branch_budget_hints"]["dcim.device"], 3500)
+        self.assertEqual(params["branch_budget_hints"]["dcim.device"], 4666)
+        self.assertEqual(
+            params["branch_budget_density_policy"]["dcim.device"]["policy"],
+            "medium_confidence_blended_density",
+        )
 
     def test_display_state_uses_execution_ledger_without_branch_run_json(self):
         execution_run = ForwardExecutionRun.objects.create(
@@ -499,6 +654,57 @@ class ForwardSyncStateHelperTest(TestCase):
         self.assertIn("No shard progress reported", activity)
         self.assertIn("dcim.interface", activity)
 
+    def test_sync_activity_reconciles_dead_running_stage_job(self):
+        self.sync.status = "syncing"
+        self.sync.save(update_fields=["status"])
+        run = ForwardExecutionRun.objects.create(
+            sync=self.sync,
+            source=self.source,
+            backend="branching",
+            status=ForwardExecutionRunStatusChoices.RUNNING,
+            phase="staging",
+            phase_message="Applying shard 1/1.",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-activity-dead-job",
+            total_steps=1,
+            next_step_index=1,
+            latest_heartbeat=timezone.now(),
+        )
+        dead_job = Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=self.sync.pk,
+            name="dead-stage-job",
+            user=None,
+            status=JobStatusChoices.STATUS_RUNNING,
+            job_id=uuid4(),
+            created=timezone.now(),
+            started=timezone.now() - timedelta(minutes=5),
+            completed=None,
+            data={},
+        )
+        ForwardExecutionStep.objects.create(
+            run=run,
+            index=1,
+            kind="stage",
+            status=ForwardExecutionStepStatusChoices.RUNNING,
+            model_string="dcim.interface",
+            job=dead_job,
+            heartbeat=timezone.now(),
+        )
+
+        with (
+            patch(
+                "forward_netbox.utilities.sync_state.job_has_live_execution",
+                return_value=False,
+            ),
+            patch(
+                "forward_netbox.utilities.execution_ledger.reconcile_execution_run"
+            ) as reconcile,
+        ):
+            get_sync_activity(self.sync)
+
+        reconcile.assert_called_once()
+
     def test_touch_branch_run_progress_updates_state(self):
         execution_run = ForwardExecutionRun.objects.create(
             sync=self.sync,
@@ -651,6 +857,137 @@ class ForwardSyncStateHelperTest(TestCase):
             "Applying planned shard changes.",
         )
         self.assertEqual(execution_run.next_step_index, 1)
+
+    def test_update_run_from_branch_state_keeps_running_when_step_inflight(self):
+        execution_run = ForwardExecutionRun.objects.create(
+            sync=self.sync,
+            source=self.source,
+            backend="branching",
+            status=ForwardExecutionRunStatusChoices.RUNNING,
+            phase="staging",
+            phase_message="Applying shard 1/2.",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-ledger-running",
+            total_steps=2,
+            next_step_index=1,
+        )
+        ForwardExecutionStep.objects.create(
+            run=execution_run,
+            index=1,
+            kind="stage",
+            status=ForwardExecutionStepStatusChoices.MERGE_QUEUED,
+            model_string="ipam.prefix",
+        )
+        ForwardExecutionStep.objects.create(
+            run=execution_run,
+            index=2,
+            kind="stage",
+            status=ForwardExecutionStepStatusChoices.PENDING,
+            model_string="ipam.ipaddress",
+        )
+        self.sync.status = "failed"
+        self.sync.save(update_fields=["status"])
+
+        refreshed = update_run_from_branch_state(self.sync)
+
+        self.assertIsNotNone(refreshed)
+        execution_run.refresh_from_db()
+        self.assertEqual(
+            execution_run.status,
+            ForwardExecutionRunStatusChoices.RUNNING,
+        )
+
+    def test_update_run_from_branch_state_uses_waiting_status_for_staged_step(self):
+        execution_run = ForwardExecutionRun.objects.create(
+            sync=self.sync,
+            source=self.source,
+            backend="branching",
+            status=ForwardExecutionRunStatusChoices.RUNNING,
+            phase="staging",
+            phase_message="Applying shard 1/1.",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-ledger-staged",
+            total_steps=1,
+            next_step_index=1,
+        )
+        ForwardExecutionStep.objects.create(
+            run=execution_run,
+            index=1,
+            kind="stage",
+            status=ForwardExecutionStepStatusChoices.STAGED,
+            model_string="ipam.prefix",
+        )
+        self.sync.status = "failed"
+        self.sync.save(update_fields=["status"])
+
+        refreshed = update_run_from_branch_state(self.sync)
+
+        self.assertIsNotNone(refreshed)
+        execution_run.refresh_from_db()
+        self.assertEqual(
+            execution_run.status,
+            ForwardExecutionRunStatusChoices.WAITING,
+        )
+
+    def test_update_run_from_branch_state_aligns_phase_with_active_step(self):
+        execution_run = ForwardExecutionRun.objects.create(
+            sync=self.sync,
+            source=self.source,
+            backend="branching",
+            status=ForwardExecutionRunStatusChoices.RUNNING,
+            phase="planning",
+            phase_message="Resolving snapshot.",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-ledger-phase-align",
+            total_steps=3,
+            next_step_index=2,
+        )
+        ForwardExecutionStep.objects.create(
+            run=execution_run,
+            index=2,
+            kind="stage",
+            status=ForwardExecutionStepStatusChoices.RUNNING,
+            model_string="ipam.prefix",
+        )
+
+        refreshed = update_run_from_branch_state(self.sync)
+
+        self.assertIsNotNone(refreshed)
+        execution_run.refresh_from_db()
+        self.assertEqual(execution_run.phase, "staging")
+        self.assertEqual(execution_run.phase_message, "Applying shard 2/3.")
+
+    def test_update_run_from_branch_state_keeps_pending_step_run_running(self):
+        execution_run = ForwardExecutionRun.objects.create(
+            sync=self.sync,
+            source=self.source,
+            backend="branching",
+            status=ForwardExecutionRunStatusChoices.RUNNING,
+            phase="queued",
+            phase_message="Queued shard 1/2 for Branching execution.",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-ledger-pending",
+            total_steps=2,
+            next_step_index=1,
+        )
+        ForwardExecutionStep.objects.create(
+            run=execution_run,
+            index=1,
+            kind="stage",
+            status=ForwardExecutionStepStatusChoices.PENDING,
+            model_string="ipam.prefix",
+        )
+        self.sync.status = "timeout"
+        self.sync.save(update_fields=["status"])
+
+        refreshed = update_run_from_branch_state(self.sync)
+
+        self.assertIsNotNone(refreshed)
+        execution_run.refresh_from_db()
+        self.assertEqual(
+            execution_run.status,
+            ForwardExecutionRunStatusChoices.RUNNING,
+        )
 
     def test_set_runtime_phase_clears_previous_row_progress(self):
         execution_run = ForwardExecutionRun.objects.create(

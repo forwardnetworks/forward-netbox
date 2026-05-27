@@ -54,6 +54,15 @@ Create a `Forward Source` for each Forward deployment or tenant you want to sync
   - Maximum concurrent NQE map fetch jobs during preflight/workload fetch.
   - Defaults to `6`; valid range is `1..16`.
   - Increase gradually only when NetBox worker and database telemetry show headroom.
+- `Query Preflight`
+  - Runs the sample preflight query phase before full workload fetch.
+  - Defaults to enabled.
+  - Disable on very large runs when you need faster startup and can accept that
+    query issues are first surfaced during workload fetch instead of preflight.
+- `Query Diagnostics`
+  - Runs additional diagnostics queries for importability summaries (IP/routing diagnostics).
+  - Defaults to enabled.
+  - Disable on very large runs to reduce query overhead during ingestion.
 - `Verify`
   - Only shown for custom deployments.
   - Leave enabled unless the custom deployment uses a self-signed certificate.
@@ -75,7 +84,12 @@ For large first-time imports, start with a conservative, NetBox-native baseline:
 
 - `timeout`: `1200`
 - `nqe_page_size`: `10000`
-- `query_fetch_concurrency`: `6` to `12` (increase only when workers and Postgres have headroom)
+- `query_fetch_concurrency`: default `10` for Branching; `Fast bootstrap` uses a higher default when unset (bounded by plugin max). Typical tuning range `6` to `12`; increase only when workers and Postgres have headroom.
+- `nqe_fetch_all_max_pages`: default `5000` (hard stop for runaway paginated NQE fetches where Forward keeps returning full pages)
+- `nqe_identical_full_page_streak_limit`: default `25` (fails fast when fetch-all receives repeated identical full pages with no observed pagination progress)
+- `query_preflight_enabled`: `true` for safer rollout, `false` for faster large-run startup
+- `query_preflight_row_limit`: `5` by default (lower values reduce startup sampling cost; higher values increase preflight coverage at higher query cost)
+- `query_diagnostics_enabled`: `true` for richer diagnostics, `false` for faster large-run execution
 - `max_changes_per_branch`: keep near your Branching guidance (typically `10000`)
 
 Recommended workflow:
@@ -340,6 +354,21 @@ both:
 - Ensure NetBox workers and Postgres have enough capacity for the selected
   concurrency and the number of simultaneous syncs.
 
+Use these profiles as starting points, then tune from Sync Health and support
+bundle evidence rather than from row count alone:
+
+| Profile | Typical use | Backend guidance | Starting knobs | Watch first |
+| --- | --- | --- | --- | --- |
+| Small | Low-change validation or narrow model syncs | `Branching` | `query_fetch_concurrency=2-4`, default page size, ordinary worker timeout | Query/map validation failures |
+| Medium | Reviewable baselines or steady-state diffs with moderate shard counts | `Branching` with repository-backed `query_path` or `query_id` maps | `query_fetch_concurrency=4-8`, `nqe_page_size=5000-10000`, worker timeout above source timeout | Diff eligibility, fallback rate, shard duration |
+| Large | High-volume baselines that still need Branching review | `Branching` with native multi-branch shards; `Auto merge` only when review policy allows | `query_fetch_concurrency=6-12`, `nqe_page_size=10000`, long worker timeout, dedicated worker capacity | Branch budget pressure, merge wait, Postgres headroom |
+| Very large trusted baseline | First load is too large to review shard-by-shard | `Fast bootstrap` for the first trusted baseline, then switch back to `Branching` for diff runs | `query_fetch_concurrency=8-16`, `nqe_page_size=10000`, long worker timeout, Postgres tuned for bulk object changes | Validation issues, object-change statistics, first Branching diff after baseline |
+
+Treat these as capacity profiles, not correctness modes. NQE remains the source
+of truth, row validation stays shared, and the execution backend only changes
+whether NetBox stages review branches or writes a trusted first baseline
+directly.
+
 For local Docker performance runs, use the built-in runtime optimizer before
 running smoke or scale tests:
 
@@ -365,6 +394,50 @@ Recommended rollout for large baselines:
 3. Keep `Max changes per branch` near operator guidance (commonly 10k).
 4. For trusted very large first loads, use `Fast bootstrap`, then switch back to
    `Branching` for steady-state diff runs.
+5. Use Sync Health `Large Run Tuning` before reruns. Its `Backend advice`
+   field separates timeout-risk baselines that may need Fast bootstrap from
+   steady-state Branching runs where diff/pushdown fixes should come first.
+
+Shard-scoped Branching retries can reuse temporary run-local fetch artifacts
+instead of repeating the same Forward query. This is an internal retry/resume
+optimization; NQE and the selected snapshot remain the source of truth, and
+support bundles include only artifact status/count/size metadata. Optional
+environment variables:
+
+When a scoped shard fetch falls back to full model execution, later shards in
+the same run can reuse a run-local full-model artifact and then apply the normal
+local shard filter. This avoids repeatedly running the same full NQE fallback
+without changing row shape, coalesce behavior, or NetBox write semantics.
+
+- `FORWARD_NETBOX_FETCH_ARTIFACT_DIR`: runtime artifact directory. Defaults to
+  the system temporary directory under `forward_netbox_fetch_artifacts`.
+- `FORWARD_NETBOX_FETCH_ARTIFACT_TTL_SECONDS`: artifact TTL. Defaults to
+  `86400`.
+- `FORWARD_NETBOX_FETCH_ARTIFACT_MAX_BYTES`: maximum serialized artifact size.
+  Defaults to `52428800`.
+
+For large local performance tests, point `FORWARD_NETBOX_FETCH_ARTIFACT_DIR` at
+fast local storage. Do not point it at durable shared storage; artifacts contain
+temporary row payloads and are pruned when runs complete or fail through the
+current ledger paths.
+
+The repository's local Docker compose setup mounts a scratch artifact directory
+into NetBox and workers automatically. Set
+`FORWARD_NETBOX_FETCH_ARTIFACT_HOST_PATH` in `development/.env` when the host has
+a dedicated fast scratch device. The compose default artifact size cap is
+`536870912` bytes so large local fallback artifacts can be reused during scale
+tests without changing production defaults.
+
+Live smoke syncs created through `invoke smoke-sync` also enable the safe
+bulk-ORM set by default. Pass `--enable-bulk-orm=False` when you intentionally
+need adapter-only comparison evidence.
+
+Filtered syncs that prune out-of-scope rows can create large delete waves. The
+Branching plan preview includes a `delete_dependency_plan` section with delete
+row counts, delete shard counts, dependency-ordered model execution, and warning
+codes for delete waves, near-budget delete shards, and dependency-anchor models
+that may hit reference blockers. Review this summary before merging destructive
+branches, especially after changing device tag filters.
 
 Branching runs are staged as resumable NetBox jobs. The initial sync job records
 the snapshot, validation result, branch plan, and next shard in the sync state.
@@ -396,6 +469,9 @@ so later `latestProcessed` runs can use Forward `nqe-diffs`.
 `max_changes_per_branch` is an operational guideline, not a hard fail cutoff:
 small overruns (up to 5%) are accepted and merged, while larger overruns still
 trigger automatic shard splitting and retry.
+For later runs, high-confidence density learning can pack more source rows into
+one shard when prior evidence shows those rows produce fewer actual NetBox
+changes. Delete-heavy shards remain conservatively capped.
 
 ```bash
 invoke forward_netbox.smoke-sync --max-changes-per-branch 10000
@@ -443,6 +519,12 @@ Create a `Forward Sync` to bind a source, a NetBox model selection, and the inge
   - Defaults to `10000`.
   - Keep this aligned with local NetBox Branching operational guidance.
   - Applies to the `Branching` backend only.
+- `Use safe bulk ORM models`
+  - Enabled by default when the sync has no explicit `enable_bulk_orm` override.
+  - Uses the plugin's current parity-tested bulk ORM safe set for eligible models.
+  - `Branching` and `Fast bootstrap` both auto-enable the same safe set when unset; set this explicitly to `false` to force adapter-only behavior.
+  - Models with dependency, relationship, IPAM hierarchy, or plugin-specific contracts remain on the adapter path even when this is enabled.
+  - Current safe set: `dcim.site`, `dcim.manufacturer`, `dcim.devicerole`, `dcim.platform`, `dcim.devicetype`, `dcim.macaddress`, `dcim.virtualchassis`, `ipam.vlan`, and `ipam.vrf`.
 - `bulk_orm_models` (advanced parameter)
   - Optional sync parameter list that narrows the safe bulk-ORM model set for this sync.
   - Leave this unset to use the plugin's current parity-tested safe set.
@@ -453,6 +535,17 @@ Create a `Forward Sync` to bind a source, a NetBox model selection, and the inge
   - When disabled, the sync stages one shard, pauses for review, and continues only after the user merges that shard and clicks `Continue Ingestion`.
   - Only the final successful shard is marked as the incremental diff baseline.
   - Applies to the `Branching` backend only.
+- `Stage next shard during merge`
+  - Optional experimental Branching speedup.
+  - Requires `Auto merge`.
+  - If unset, Branching + Auto merge defaults this on to reduce stage-queue idle time; set it explicitly off to disable overlap.
+  - When enabled, the execution ledger may pre-stage one eligible next shard while the current shard is merging.
+  - Merges remain serialized. The plugin does not run multiple branch merges at the same time.
+  - Leave disabled unless support evidence shows merge/queue wait is the bottleneck and the NetBox workers/database have capacity headroom.
+- `Diff fallback mode`
+  - `Allow full fallback` (default) keeps runs moving when a diff-eligible map cannot run as a diff and must temporarily fall back to full query execution.
+  - `Require diff` enforces diff-only execution once a baseline exists.
+  - Use `Require diff` for steady-state speed and strictness when all enabled maps are correctly bound to diff-capable query IDs/paths and you want fast failure instead of full-query fallback.
 - `Schedule at` / `Recurs every`
   - Optional scheduled execution controls.
 
@@ -464,6 +557,10 @@ Create a `Forward Sync` to bind a source, a NetBox model selection, and the inge
 - `Branching` syncs use native multi-branch execution.
 - Each Branching shard is a native NetBox Branching branch.
 - `Auto merge` controls whether Branching shards advance automatically or pause for review after each shard.
+- `Stage next shard during merge` can reduce scheduler idle time for auto-merged Branching runs by pre-staging one next shard, but it does not reduce native Branching merge cost.
+- `Diff fallback mode` controls what happens when a model would otherwise fall back from diff to full query execution:
+  - `Allow full fallback` continues with full query execution.
+  - `Require diff` fails that model/run path instead of broadening query scope.
 - `Fast bootstrap` syncs create a branchless ingestion and write rows directly through the same NetBox adapters after validation.
 - Each ingestion records both the selected snapshot mode and the resolved snapshot ID used for the run.
 - Snapshot metrics returned by Forward are stored on the ingestion for later review.

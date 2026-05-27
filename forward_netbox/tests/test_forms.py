@@ -7,6 +7,7 @@ from django.test import override_settings
 from django.test import TestCase
 
 from forward_netbox.choices import FORWARD_BGP_MODELS
+from forward_netbox.choices import ForwardDiffFallbackModeChoices
 from forward_netbox.choices import ForwardExecutionBackendChoices
 from forward_netbox.choices import ForwardSourceDeploymentChoices
 from forward_netbox.exceptions import ForwardConnectivityError
@@ -18,6 +19,7 @@ from forward_netbox.forms import ForwardSourceForm
 from forward_netbox.forms import ForwardSyncForm
 from forward_netbox.models import ForwardNQEMap
 from forward_netbox.models import ForwardSource
+from forward_netbox.models import ForwardSync
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 
 
@@ -113,6 +115,26 @@ class ForwardSyncFormTest(TestCase):
 
         self.assertFalse(form.fields["dcim.module"].initial)
 
+    def test_safe_bulk_orm_defaults_enabled_for_new_syncs(self):
+        form = ForwardSyncForm()
+
+        self.assertTrue(form.fields["enable_bulk_orm"].initial)
+
+    def test_safe_bulk_orm_defaults_enabled_for_existing_sync_without_setting(self):
+        sync = ForwardSync.objects.create(
+            name="sync-existing-no-bulk-flag",
+            source=self.source,
+            parameters={"snapshot_id": LATEST_PROCESSED_SNAPSHOT},
+        )
+        ForwardSync.objects.filter(pk=sync.pk).update(
+            parameters={"snapshot_id": LATEST_PROCESSED_SNAPSHOT}
+        )
+        sync.refresh_from_db()
+
+        form = ForwardSyncForm(instance=sync)
+
+        self.assertTrue(form.fields["enable_bulk_orm"].initial)
+
     @override_settings(PLUGINS_CONFIG=BGP_DISABLED_PLUGIN_CONFIG)
     def test_bgp_models_are_hidden_without_feature_flag(self):
         form = ForwardSyncForm()
@@ -137,6 +159,7 @@ class ForwardSyncFormTest(TestCase):
                 "execution_backend": ForwardExecutionBackendChoices.BRANCHING,
                 "dcim.device": "on",
                 "auto_merge": "",
+                "scheduler_overlap": "on",
                 "max_changes_per_branch": "10000",
             }
         )
@@ -145,10 +168,84 @@ class ForwardSyncFormTest(TestCase):
         self.assertTrue(form.instance.parameters["multi_branch"])
         self.assertFalse(form.instance.parameters["auto_merge"])
         self.assertFalse(form.instance.auto_merge)
+        self.assertFalse(form.instance.parameters["scheduler_overlap"])
         self.assertEqual(form.instance.parameters["max_changes_per_branch"], 10000)
         self.assertEqual(
             form.instance.parameters["execution_backend"],
             ForwardExecutionBackendChoices.BRANCHING,
+        )
+
+    def test_form_persists_scheduler_overlap_with_auto_merge(self):
+        form = ForwardSyncForm(
+            data={
+                "name": "sync-overlap",
+                "source": self.source.pk,
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "execution_backend": ForwardExecutionBackendChoices.BRANCHING,
+                "dcim.device": "on",
+                "auto_merge": "on",
+                "scheduler_overlap": "on",
+                "max_changes_per_branch": "10000",
+            }
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertTrue(form.instance.parameters["scheduler_overlap"])
+
+    def test_form_persists_safe_bulk_orm_option(self):
+        form = ForwardSyncForm(
+            data={
+                "name": "sync-bulk-orm",
+                "source": self.source.pk,
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "execution_backend": ForwardExecutionBackendChoices.BRANCHING,
+                "dcim.device": "on",
+                "auto_merge": "on",
+                "enable_bulk_orm": "on",
+                "max_changes_per_branch": "10000",
+            }
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertTrue(form.instance.parameters["enable_bulk_orm"])
+
+    def test_form_defaults_diff_fallback_mode_to_allow_fallback(self):
+        form = ForwardSyncForm(
+            data={
+                "name": "sync-diff-fallback-default",
+                "source": self.source.pk,
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "execution_backend": ForwardExecutionBackendChoices.BRANCHING,
+                "dcim.device": "on",
+                "auto_merge": "on",
+                "max_changes_per_branch": "10000",
+            }
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(
+            form.instance.parameters["diff_fallback_mode"],
+            ForwardDiffFallbackModeChoices.ALLOW_FALLBACK,
+        )
+
+    def test_form_persists_required_diff_fallback_mode(self):
+        form = ForwardSyncForm(
+            data={
+                "name": "sync-diff-required",
+                "source": self.source.pk,
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "execution_backend": ForwardExecutionBackendChoices.BRANCHING,
+                "dcim.device": "on",
+                "auto_merge": "on",
+                "diff_fallback_mode": ForwardDiffFallbackModeChoices.REQUIRE_DIFF,
+                "max_changes_per_branch": "10000",
+            }
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(
+            form.instance.parameters["diff_fallback_mode"],
+            ForwardDiffFallbackModeChoices.REQUIRE_DIFF,
         )
 
     def test_form_persists_fast_bootstrap_backend(self):
@@ -181,6 +278,8 @@ class ForwardSyncFormTest(TestCase):
                 "network_id": "test-network",
                 "timeout": 1200,
                 "nqe_page_size": 10000,
+                "nqe_fetch_all_max_pages": 6000,
+                "nqe_identical_full_page_streak_limit": 30,
                 "verify": True,
             }
         )
@@ -188,6 +287,11 @@ class ForwardSyncFormTest(TestCase):
         self.assertTrue(form.is_valid(), form.errors)
         source = form.save()
         self.assertEqual(source.parameters["nqe_page_size"], 10000)
+        self.assertEqual(source.parameters["nqe_fetch_all_max_pages"], 6000)
+        self.assertEqual(
+            source.parameters["nqe_identical_full_page_streak_limit"],
+            30,
+        )
 
     @patch("forward_netbox.forms.ForwardSource.validate_connection")
     def test_source_form_persists_device_tag_scope(self, _mock_validate_connection):
@@ -273,6 +377,101 @@ class ForwardSyncFormTest(TestCase):
         source = form.save()
         self.assertEqual(source.parameters["device_tag_include_tags"], ["N.Patel"])
         self.assertEqual(source.parameters["device_tag_exclude_tags"], ["Branch"])
+
+    @patch("forward_netbox.forms.ForwardSource.validate_connection")
+    def test_source_form_persists_pushdown_alert_thresholds(
+        self, _mock_validate_connection
+    ):
+        form = ForwardSourceForm(
+            data={
+                "name": "source-6",
+                "type": ForwardSourceDeploymentChoices.SAAS,
+                "username": "user@example.com",
+                "password": "secret",
+                "network_id": "test-network",
+                "timeout": 1200,
+                "nqe_page_size": 10000,
+                "verify": True,
+                "pushdown_fallback_warn_rate": 0.35,
+                "pushdown_runtime_fallback_warn_share": 0.65,
+                "pushdown_diff_warn_ratio": 0.25,
+            }
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+        source = form.save()
+        self.assertEqual(source.parameters["pushdown_fallback_warn_rate"], 0.35)
+        self.assertEqual(
+            source.parameters["pushdown_runtime_fallback_warn_share"],
+            0.65,
+        )
+        self.assertEqual(source.parameters["pushdown_diff_warn_ratio"], 0.25)
+
+    @patch("forward_netbox.forms.ForwardSource.validate_connection")
+    def test_source_form_persists_query_preflight_toggle(
+        self, _mock_validate_connection
+    ):
+        form = ForwardSourceForm(
+            data={
+                "name": "source-preflight-toggle",
+                "type": ForwardSourceDeploymentChoices.SAAS,
+                "username": "user@example.com",
+                "password": "secret",
+                "network_id": "test-network",
+                "timeout": 1200,
+                "nqe_page_size": 10000,
+                "verify": True,
+                "query_preflight_enabled": "",
+            }
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+        source = form.save()
+        self.assertFalse(source.parameters["query_preflight_enabled"])
+
+    @patch("forward_netbox.forms.ForwardSource.validate_connection")
+    def test_source_form_persists_query_preflight_row_limit(
+        self, _mock_validate_connection
+    ):
+        form = ForwardSourceForm(
+            data={
+                "name": "source-preflight-row-limit",
+                "type": ForwardSourceDeploymentChoices.SAAS,
+                "username": "user@example.com",
+                "password": "secret",
+                "network_id": "test-network",
+                "timeout": 1200,
+                "nqe_page_size": 10000,
+                "verify": True,
+                "query_preflight_row_limit": 2,
+            }
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+        source = form.save()
+        self.assertEqual(source.parameters["query_preflight_row_limit"], 2)
+
+    @patch("forward_netbox.forms.ForwardSource.validate_connection")
+    def test_source_form_persists_query_diagnostics_toggle(
+        self, _mock_validate_connection
+    ):
+        form = ForwardSourceForm(
+            data={
+                "name": "source-diagnostics-toggle",
+                "type": ForwardSourceDeploymentChoices.SAAS,
+                "username": "user@example.com",
+                "password": "secret",
+                "network_id": "test-network",
+                "timeout": 1200,
+                "nqe_page_size": 10000,
+                "verify": True,
+                "query_diagnostics_enabled": "",
+            }
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+        source = form.save()
+        self.assertFalse(source.parameters["query_diagnostics_enabled"])
 
 
 class ForwardNQEMapFormTest(TestCase):

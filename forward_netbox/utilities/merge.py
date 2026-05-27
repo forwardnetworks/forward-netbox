@@ -9,6 +9,7 @@ This preserves the existing branch-backed merge workflow closely:
 """
 
 import logging
+import time
 import traceback
 from collections import Counter
 from functools import partial
@@ -39,6 +40,11 @@ if TYPE_CHECKING:
     from ..utilities.logging import SyncLogging
 
 logger = logging.getLogger("forward_netbox.merge")
+
+MERGE_HEARTBEAT_ROW_INTERVAL = 1000
+MERGE_HEARTBEAT_SECONDS = 60
+MERGE_LOG_ROW_INTERVAL = 5000
+MERGE_LOG_SECONDS = 300
 
 
 def merge_branch(
@@ -81,8 +87,14 @@ def merge_branch(
     models_touched = set()
     failed = 0
 
+    processed = 0
+    last_heartbeat_at = time.monotonic()
+    last_log_at = last_heartbeat_at
+    step_index = _merge_step_index(ingestion)
+
     try:
         for change in changes:
+            processed += 1
             model_class = change.changed_object_type.model_class()
             app_label, model_name = change.changed_object_type.natural_key()
             model_string = f"{app_label}.{model_name}"
@@ -115,6 +127,16 @@ def merge_branch(
                     exception=exc.__class__.__name__,
                     raw_data={"traceback": traceback.format_exc()},
                 )
+            last_heartbeat_at, last_log_at = _report_merge_progress(
+                ingestion,
+                sync_logger=sync_logger,
+                model_string=model_string,
+                step_index=step_index,
+                processed=processed,
+                total_changes=total_changes,
+                last_heartbeat_at=last_heartbeat_at,
+                last_log_at=last_log_at,
+            )
     finally:
         post_save.disconnect(handler, sender=ObjectChange_)
 
@@ -148,3 +170,60 @@ def merge_branch(
     logger.info(summary)
     if sync_logger:
         sync_logger.log_info(summary)
+
+
+def _report_merge_progress(
+    ingestion: "ForwardIngestion",
+    *,
+    sync_logger: "SyncLogging | None",
+    model_string: str,
+    step_index: int | None,
+    processed: int,
+    total_changes: int,
+    last_heartbeat_at: float,
+    last_log_at: float,
+) -> tuple[float, float]:
+    now = time.monotonic()
+    heartbeat_due = (
+        processed == total_changes
+        or processed % MERGE_HEARTBEAT_ROW_INTERVAL == 0
+        or now - last_heartbeat_at >= MERGE_HEARTBEAT_SECONDS
+    )
+    log_due = (
+        processed == total_changes
+        or processed % MERGE_LOG_ROW_INTERVAL == 0
+        or now - last_log_at >= MERGE_LOG_SECONDS
+    )
+
+    if heartbeat_due:
+        try:
+            from .execution_ledger import touch_execution_step_progress
+
+            touch_execution_step_progress(
+                ingestion.sync,
+                model_string=model_string,
+                shard_index=step_index,
+            )
+        except Exception:
+            logger.debug("Unable to update merge progress heartbeat.", exc_info=True)
+        last_heartbeat_at = now
+
+    if sync_logger and log_due:
+        sync_logger.log_info(
+            f"Merged {processed}/{total_changes} branch changes "
+            f"(current model `{model_string}`)."
+        )
+        last_log_at = now
+
+    return last_heartbeat_at, last_log_at
+
+
+def _merge_step_index(ingestion: "ForwardIngestion") -> int | None:
+    try:
+        from .execution_ledger import execution_step_for_ingestion
+
+        step = execution_step_for_ingestion(ingestion)
+    except Exception:
+        logger.debug("Unable to resolve merge execution step.", exc_info=True)
+        return None
+    return getattr(step, "index", None)

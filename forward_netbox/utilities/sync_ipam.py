@@ -40,7 +40,7 @@ def delete_ipam_prefix(runner, row):
 
     vrf = None
     if row.get("vrf"):
-        vrf = VRF.objects.filter(name=row["vrf"]).order_by("pk").first()
+        vrf = runner._get_unique_or_raise(VRF, {"name": row["vrf"]})
     lookups = []
     if row.get("prefix") and vrf is not None:
         lookups.append({"prefix": row["prefix"], "vrf": vrf})
@@ -55,7 +55,7 @@ def delete_ipam_ipaddress(runner, row):
 
     vrf = None
     if row.get("vrf"):
-        vrf = VRF.objects.filter(name=row["vrf"]).order_by("pk").first()
+        vrf = runner._get_unique_or_raise(VRF, {"name": row["vrf"]})
     lookups = []
     if row.get("address") and vrf is not None:
         lookups.append({"address": row["address"], "vrf": vrf})
@@ -113,12 +113,11 @@ def apply_ipam_prefix(runner, row):
 
 
 def apply_ipam_ipaddress(runner, row):
-    from dcim.models import Device
     from dcim.models import Interface
     from ipam.models import IPAddress
 
     try:
-        device = Device.objects.get(name=row["device"])
+        device = runner._get_device_by_name(row["device"])
     except ObjectDoesNotExist as exc:
         key = (row["device"],)
         if runner._dependency_failed("dcim.device", key):
@@ -202,20 +201,25 @@ def apply_ipam_ipaddress(runner, row):
             existing.full_clean()
             existing.save()
             return True
-        existing.address = row["address"]
-        existing.vrf = None
-        existing.status = row["status"]
-        existing.assigned_object_type = runner._content_type_for(Interface)
-        existing.assigned_object_id = interface.pk
-        existing.save(
-            update_fields=[
-                "address",
-                "vrf",
-                "status",
-                "assigned_object_type",
-                "assigned_object_id",
-            ]
-        )
+        desired_assigned_object_type = runner._content_type_for(Interface)
+        update_fields = []
+        if str(existing.address) != str(row["address"]):
+            existing.address = row["address"]
+            update_fields.append("address")
+        if existing.vrf_id is not None:
+            existing.vrf = None
+            update_fields.append("vrf")
+        if existing.status != row["status"]:
+            existing.status = row["status"]
+            update_fields.append("status")
+        if existing.assigned_object_type_id != desired_assigned_object_type.pk:
+            existing.assigned_object_type = desired_assigned_object_type
+            update_fields.append("assigned_object_type")
+        if existing.assigned_object_id != interface.pk:
+            existing.assigned_object_id = interface.pk
+            update_fields.append("assigned_object_id")
+        if update_fields:
+            existing.save(update_fields=update_fields)
         return True
     runner._upsert_values_from_defaults(
         "ipam.ipaddress",

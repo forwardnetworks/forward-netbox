@@ -2,6 +2,7 @@ from unittest.mock import Mock
 
 from django.test import TestCase
 
+from forward_netbox.choices import ForwardDiffFallbackModeChoices
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
@@ -42,6 +43,29 @@ class ForwardSyncFacadeHelperTest(TestCase):
         self.assertTrue(sync.parameters["multi_branch"])
         self.assertEqual(sync.parameters["max_changes_per_branch"], 1)
         self.assertTrue(sync.auto_merge)
+        self.assertTrue(sync.parameters["enable_bulk_orm"])
+        self.assertEqual(
+            sync.parameters["diff_fallback_mode"],
+            ForwardDiffFallbackModeChoices.ALLOW_FALLBACK,
+        )
+
+    def test_normalize_forward_sync_sets_missing_bulk_orm_default(self):
+        sync = ForwardSync.objects.create(
+            name="sync-normalize-existing",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+            },
+        )
+        parameters = dict(sync.parameters)
+        parameters.pop("enable_bulk_orm", None)
+        sync.parameters = parameters
+        sync.save()
+
+        normalize_forward_sync(sync)
+
+        self.assertTrue(sync.parameters["enable_bulk_orm"])
 
     def test_resolve_snapshot_id_uses_latest_processed_snapshot_lookup(self):
         sync = ForwardSync.objects.create(
