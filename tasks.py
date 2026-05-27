@@ -206,13 +206,14 @@ def _run_tests_in_isolated_runtime(
     keep_runtime=False,
 ):
     isolated = _compose_project_context(context, project_name)
+    docker_compose(isolated, "down --remove-orphans -v")
     docker_compose(isolated, "up -d postgres redis")
     try:
         docker_compose(
             isolated,
             (
                 "run --rm -T netbox bash -lc "
-                f"{shlex.quote('cd /opt/netbox/netbox && python manage.py test --noinput ' + str(test_label))}"
+                f"{shlex.quote('cd /opt/netbox/netbox && python manage.py test --keepdb --noinput ' + str(test_label))}"
             ),
         )
     finally:
