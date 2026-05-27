@@ -1,5 +1,6 @@
 import json
 from io import StringIO
+from pathlib import Path
 from unittest.mock import patch
 
 from django.core.management import call_command
@@ -38,6 +39,13 @@ class ForwardArchitectureAuditCommandTest(TestCase):
         self.assertIn("dcim.site", matrix["bulk_orm_safe_models"])
         self.assertIn("dcim.devicerole", matrix["bulk_orm_safe_models"])
         self.assertIn("dcim.platform", matrix["bulk_orm_safe_models"])
+        self.assertIn("dcim.virtualchassis", matrix["bulk_orm_safe_models"])
+        self.assertIn("dcim.interface", matrix["adapter_required_models"])
+        self.assertNotIn("dcim.virtualchassis", matrix["adapter_required_models"])
+        self.assertEqual(
+            matrix["adapter_blockers"]["dcim.interface"],
+            "relationship_side_effects",
+        )
         self.assertEqual(
             matrix["classification_gaps"]["unclassified_supported_models"],
             [],
@@ -57,6 +65,69 @@ class ForwardArchitectureAuditCommandTest(TestCase):
         self.assertEqual(
             matrix["classification_gaps"]["fetch_contract_coverage_gaps"],
             [],
+        )
+        self.assertEqual(
+            matrix["classification_gaps"]["model_contract_registry_gaps"],
+            [],
+        )
+        self.assertEqual(matrix["model_contract_registry"]["status"], "pass")
+        self.assertIn("dcim.interface", matrix["model_contract_registry"]["contracts"])
+        interface_contract = matrix["model_contract_registry"]["contracts"][
+            "dcim.interface"
+        ]
+        self.assertEqual(interface_contract["model"], "dcim.interface")
+        self.assertEqual(
+            interface_contract["fetch_contract"]["fetch_mode"],
+            "nqe_column_filter",
+        )
+        self.assertEqual(
+            interface_contract["apply_engine_classification"],
+            "adapter_required",
+        )
+        self.assertEqual(
+            interface_contract["apply_engine_blocker_code"],
+            "relationship_side_effects",
+        )
+        self.assertIsNotNone(interface_contract["delete_dependency_rank"])
+        self.assertIn("device", interface_contract["support_diagnostic_fields"])
+        self.assertIn("name", interface_contract["support_diagnostic_fields"])
+        self.assertEqual(
+            matrix["bulk_orm_expansion"]["status"],
+            "blocked_pending_parity",
+        )
+        self.assertGreaterEqual(
+            len(matrix["bulk_orm_expansion"]["parity_gates"]),
+            5,
+        )
+        self.assertGreater(
+            matrix["bulk_orm_expansion"]["blocked_model_count"],
+            0,
+        )
+        self.assertEqual(
+            matrix["bulk_orm_expansion"]["promotion_lanes"][0]["lane"],
+            "dependency_anchored_models",
+        )
+        self.assertEqual(
+            matrix["bulk_orm_expansion"]["recommended_next_models"][0]["model"],
+            "dcim.device",
+        )
+        self.assertEqual(
+            matrix["bulk_orm_expansion"]["parity_plan"]["status"],
+            "pending_candidate_parity",
+        )
+        self.assertEqual(
+            matrix["bulk_orm_expansion"]["parity_plan"]["candidates"][0]["model"],
+            "dcim.device",
+        )
+        self.assertIn(
+            "ForwardApplyEngineParityTest.test_dcim_device_create_parity",
+            matrix["bulk_orm_expansion"]["parity_plan"]["candidates"][0][
+                "required_test_ids"
+            ],
+        )
+        self.assertEqual(
+            matrix["bulk_orm_expansion"]["high_impact_blocked_models"][0]["model"],
+            "dcim.device",
         )
         self.assertEqual(
             matrix["fetch_contracts"]["dcim.interface"]["fetch_mode"],
@@ -100,10 +171,24 @@ class ForwardArchitectureAuditCommandTest(TestCase):
             payload["sync_evidence"],
         )
 
+    def test_architecture_audit_writes_relative_output_under_repo_root(self):
+        repo_root = Path(__file__).resolve().parents[2]
+        rel_path = "docs/03_Plans/evidence/test-architecture-audit-output.json"
+        output_path = repo_root / rel_path
+        output_path.unlink(missing_ok=True)
+        try:
+            call_command("forward_architecture_audit", "--output-json", rel_path)
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+        finally:
+            output_path.unlink(missing_ok=True)
+
+        self.assertIn("apply_engine_matrix", payload)
+        self.assertIsNone(payload["sync_evidence"])
+
     def test_architecture_audit_fail_on_gap_raises_command_error(self):
         with patch(
-            "forward_netbox.management.commands.forward_architecture_audit.UNCLASSIFIED_SUPPORTED_MODELS",
-            ("dcim.site",),
+            "forward_netbox.management.commands.forward_architecture_audit.architecture_unclassified_supported_models",
+            return_value=["dcim.site"],
         ):
             with self.assertRaises(CommandError):
                 call_command("forward_architecture_audit", "--fail-on-gap")
@@ -138,8 +223,28 @@ class ForwardArchitectureAuditCommandTest(TestCase):
 
     def test_architecture_audit_fail_on_gap_raises_on_fetch_contract_gap(self):
         with patch(
-            "forward_netbox.management.commands.forward_architecture_audit.shard_fetch_capability_for_model",
-            return_value={},
+            "forward_netbox.management.commands.forward_architecture_audit.architecture_fetch_contracts",
+            return_value={"dcim.site": {}},
+        ):
+            with self.assertRaises(CommandError):
+                call_command("forward_architecture_audit", "--fail-on-gap")
+
+    def test_architecture_audit_fail_on_gap_raises_on_model_contract_gap(self):
+        with patch(
+            "forward_netbox.management.commands.forward_architecture_audit.architecture_contract_summary",
+            return_value={
+                "status": "fail",
+                "contract_count": 1,
+                "models": ["dcim.site"],
+                "contracts": {},
+                "gaps": [
+                    {
+                        "model": "dcim.site",
+                        "code": "missing_delete_dependency_rank",
+                        "message": "missing rank",
+                    }
+                ],
+            },
         ):
             with self.assertRaises(CommandError):
                 call_command("forward_architecture_audit", "--fail-on-gap")

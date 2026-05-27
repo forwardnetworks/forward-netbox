@@ -1,0 +1,30 @@
+🧬 loaded config '/etc/netbox/config/configuration.py'
+🧬 loaded config '/etc/netbox/config/logging.py'
+🧬 loaded config '/etc/netbox/config/plugins.py'
+{
+  "error_count": 0,
+  "execution_run_job_ids": [
+    877,
+    882
+  ],
+  "ingestion_ids": [
+    754
+  ],
+  "job_ids": [
+    873,
+    877,
+    882
+  ],
+  "levels": {
+    "info": 47
+  },
+  "raw_warning_count": 0,
+  "suppressed_warning_count": 0,
+  "sync_id": 51,
+  "sync_job_ids": [],
+  "sync_name": "warn-proof-ipam-232909",
+  "top_errors": [],
+  "top_suppressed_warnings": [],
+  "top_warnings": [],
+  "warning_count": 0
+}

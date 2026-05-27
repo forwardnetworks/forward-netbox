@@ -21,9 +21,21 @@ from .health_checks import validation_check_message as _validation_check_message
 from .health_checks import validation_check_status as _validation_check_status_impl
 from .health_summary_blocks import capacity_message as _capacity_message_impl
 from .health_summary_blocks import capacity_summary as _capacity_summary_impl
+from .health_summary_blocks import (
+    compatibility_cache_summary as _compatibility_cache_summary_impl,
+)
+from .health_summary_blocks import (
+    density_learning_summary as _density_learning_summary_impl,
+)
 from .health_summary_blocks import execution_run_summary as _execution_run_summary_impl
 from .health_summary_blocks import ingestion_summary as _ingestion_summary_impl
+from .health_summary_blocks import (
+    large_run_tuning_summary as _large_run_tuning_summary_impl,
+)
 from .health_summary_blocks import query_map_summary as _query_map_summary_impl
+from .health_summary_blocks import (
+    query_pushdown_summary as _query_pushdown_summary_impl,
+)
 from .health_summary_blocks import runtime_summary as _runtime_summary_impl
 from .health_summary_blocks import source_summary as _source_summary_impl
 from .health_summary_blocks import step_duration_seconds as _step_duration_seconds_impl
@@ -80,6 +92,14 @@ def sync_health_summary(sync):
     model_summary = _model_summary(sync, maps)
     apply_engines = _apply_engine_summary(sync, model_summary["enabled_models"])
     fetch_contracts = _fetch_contract_summary(model_summary["enabled_models"])
+    query_pushdown = _query_pushdown_summary(execution_run)
+    large_run_tuning = _large_run_tuning_summary_impl(
+        sync,
+        capacity=capacity_summary,
+        query_pushdown=query_pushdown,
+    )
+    compatibility_cache = _compatibility_cache_summary(sync, execution_run)
+    density_learning = _density_learning_summary(sync)
     query_drift = [local_query_binding_drift(query_map) for query_map in maps]
     next_run = _next_run_expectation(sync, maps, raw_maps)
     checks = _health_checks(
@@ -93,6 +113,9 @@ def sync_health_summary(sync):
         latest_ingestion=latest_ingestion,
         execution_run=execution_run,
         capacity_summary=capacity_summary,
+        query_pushdown=query_pushdown,
+        large_run_tuning=large_run_tuning,
+        compatibility_cache=compatibility_cache,
         next_run=next_run,
     )
 
@@ -102,6 +125,10 @@ def sync_health_summary(sync):
         "models": model_summary,
         "apply_engines": apply_engines,
         "fetch_contracts": fetch_contracts,
+        "query_pushdown": query_pushdown,
+        "large_run_tuning": large_run_tuning,
+        "compatibility_cache": compatibility_cache,
+        "density_learning": density_learning,
         "query_modes": {
             "query": query_mode_counts.get("query", 0),
             "query_id": query_mode_counts.get("query_id", 0),
@@ -396,6 +423,18 @@ def _fetch_contract_summary(model_strings):
     return _fetch_contract_summary_impl(model_strings)
 
 
+def _compatibility_cache_summary(sync, run=None):
+    return _compatibility_cache_summary_impl(sync, run)
+
+
+def _density_learning_summary(sync):
+    return _density_learning_summary_impl(sync)
+
+
+def _query_pushdown_summary(run):
+    return _query_pushdown_summary_impl(run)
+
+
 def _query_map_summary(query_map):
     return _query_map_summary_impl(query_map)
 
@@ -517,6 +556,9 @@ def _health_checks(
     latest_ingestion,
     execution_run,
     capacity_summary,
+    query_pushdown,
+    large_run_tuning,
+    compatibility_cache,
     next_run,
 ):
     return _health_checks_impl(
@@ -530,6 +572,9 @@ def _health_checks(
         latest_ingestion=latest_ingestion,
         execution_run=execution_run,
         capacity_summary=capacity_summary,
+        query_pushdown=query_pushdown,
+        large_run_tuning=large_run_tuning,
+        compatibility_cache=compatibility_cache,
         next_run=next_run,
         branching_available_fn=_branching_available,
     )

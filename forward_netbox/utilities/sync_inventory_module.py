@@ -5,10 +5,9 @@ from ..exceptions import ForwardSearchError
 
 
 def delete_dcim_inventoryitem(runner, row):
-    from dcim.models import Device
     from dcim.models import InventoryItem
 
-    device = Device.objects.filter(name=row.get("device")).order_by("pk").first()
+    device = runner._lookup_device_by_name(row.get("device"))
     if device is None or not row.get("name"):
         return False
     return runner._delete_by_coalesce(
@@ -31,10 +30,9 @@ def delete_dcim_inventoryitem(runner, row):
 
 
 def delete_dcim_module(runner, row):
-    from dcim.models import Device
     from dcim.models import Module
 
-    device = Device.objects.filter(name=row.get("device")).order_by("pk").first()
+    device = runner._lookup_device_by_name(row.get("device"))
     if device is None or not row.get("module_bay"):
         return False
     module_bay = runner._lookup_module_bay(device, row["module_bay"])
@@ -47,11 +45,10 @@ def delete_dcim_module(runner, row):
 
 
 def apply_dcim_inventoryitem(runner, row):
-    from dcim.models import Device
     from dcim.models import InventoryItem
 
     try:
-        device = Device.objects.get(name=row["device"])
+        device = runner._get_device_by_name(row["device"])
     except ObjectDoesNotExist as exc:
         key = (row["device"],)
         if runner._dependency_failed("dcim.device", key):
@@ -105,11 +102,10 @@ def apply_dcim_inventoryitem(runner, row):
 
 
 def apply_dcim_module(runner, row):
-    from dcim.models import Device
     from dcim.models import Module
 
     try:
-        device = Device.objects.get(name=row["device"])
+        device = runner._get_device_by_name(row["device"])
     except ObjectDoesNotExist as exc:
         key = (row["device"],)
         if runner._dependency_failed("dcim.device", key):

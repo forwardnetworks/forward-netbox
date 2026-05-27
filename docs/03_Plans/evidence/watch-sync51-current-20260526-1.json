@@ -1,0 +1,63 @@
+🧬 loaded config '/etc/netbox/config/configuration.py'
+🧬 loaded config '/etc/netbox/config/logging.py'
+🧬 loaded config '/etc/netbox/config/plugins.py'
+{
+  "poll_count": 1,
+  "sync_id": 51,
+  "sync_name": "warn-proof-ipam-232909",
+  "sync_status": "syncing",
+  "last_synced": "2026-05-27 00:56:25.184608+00:00",
+  "execution_run": {
+    "id": 175,
+    "status": "running",
+    "phase": "planning",
+    "phase_message": "Resolving snapshot, running query preflight, and building shard plan.",
+    "next_step_index": 41,
+    "total_steps": 49,
+    "latest_heartbeat": "2026-05-27 01:23:04.428599+00:00",
+    "latest_heartbeat_age_seconds": 18.380545,
+    "active_step": {
+      "id": 2237,
+      "index": 41,
+      "status": "running",
+      "model": "ipam.prefix",
+      "created": "2026-05-26 04:29:59.117036+00:00",
+      "created_age_seconds": 75203.692118,
+      "started": "2026-05-27 00:56:32.651872+00:00",
+      "started_age_seconds": 1610.157284,
+      "job_id": 914,
+      "job_live": true,
+      "heartbeat": "2026-05-27 01:23:04.428599+00:00",
+      "heartbeat_age_seconds": 18.380553,
+      "fetched_row_count": 7346,
+      "attempted_row_count": 0,
+      "applied_row_count": 0,
+      "last_error": ""
+    }
+  },
+  "job": {
+    "id": 914,
+    "status": "running",
+    "started": "2026-05-27 00:56:29.871598+00:00",
+    "completed": null,
+    "latest_log": {
+      "level": "info",
+      "message": "Shard 41 for ipam.prefix is still running; heartbeat refreshed.",
+      "timestamp": "2026-05-27 01:22:04.317000+00:00"
+    },
+    "latest_log_age_seconds": 78.49511
+  },
+  "ingestion": {
+    "id": 771,
+    "sync_mode": "full",
+    "snapshot_id": "<redacted>",
+    "baseline_ready": false,
+    "applied": 7346,
+    "created": 0,
+    "updated": 7346,
+    "deleted": 0,
+    "failed": 0,
+    "issue_count": 0,
+    "blocking_issue_count": 0
+  }
+}

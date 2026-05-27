@@ -80,6 +80,105 @@ Remaining architecture work is tracked below: shard-scoped fetch, richer
 stale-job reconciliation actions, UI/API surfaces for execution runs, and future
 bulk apply engines.
 
+### Tranche Update (2026-05-23)
+
+This tranche closed several high-risk stability gaps in ledger-first orchestration
+and recovery evidence:
+
+- Stage claim/dispatch now derives run state from active execution-ledger records
+  before consulting compatibility JSON, preventing stale `_branch_run` payloads
+  from selecting the wrong shard index.
+- Planner, runtime phase updates, and resumable plan-item helpers now consume
+  display-state synthesis (ledger first, compatibility only when no ledger
+  history exists), so stale compatibility payloads cannot steer new runs once
+  execution-run history exists.
+- Execution-run creation now ignores stale compatibility `execution_run_id`
+  values that reference terminal runs, preventing completed historical runs
+  from being resurrected as active orchestration state.
+- Execution-run creation is now transaction-guarded with a sync row lock and
+  in-lock active-run recheck, preventing duplicate active runs when multiple
+  workers race to initialize the same Branching execution.
+- Legacy compatibility pending-state behavior is preserved only for true
+  pre-ledger syncs (no execution-run history), so upgrade/read-through
+  scenarios continue to resume without reintroducing stale-state orchestration.
+- Planner input now treats an explicit empty branch-run state as authoritative
+  and does not silently fall back to persisted compatibility state.
+- Merge eligibility now checks mergeable execution-step evidence first, then
+  compatibility state as fallback.
+- Query context resolution now prefers ingestion linkage from the active
+  execution run/step chain before compatibility state.
+- Chaos kill validation now verifies run-bundle structure and scenario-aligned
+  recovery evidence (action type plus expected step state) before reporting
+  pass.
+- Live sync state now renders from active execution runs only. When only
+  terminal run history exists, stale compatibility `_branch_run` payloads are
+  suppressed from `branch_run` display/activity and merge/pending state checks.
+- Stage execution now explicitly no-ops if no active execution run is claimable
+  and ledger history exists, preventing stale queue replay.
+- Stage enqueue and merge follow-on enqueue now avoid compatibility-only
+  continuation once ledger history exists; resume fallback is allowed only for
+  failed/timeout runs.
+
+Validation evidence for this tranche:
+
+- `python -m unittest discover -s scripts/tests -p 'test_*.py'`
+- `invoke check`
+- `invoke scenario-test`
+- `invoke harness-test`
+- `invoke test`
+- `invoke ci`
+
+### Remaining Control-Plane Audit (2026-05-23)
+
+Follow-up audit after the ledger race/stale-state fixes confirms the active
+Branching control plane is now ledger-first:
+
+- Live runtime display, pending/awaiting checks, and progress/failure mutation
+  paths now prefer active `ForwardExecutionRun` / `ForwardExecutionStep` state.
+- Compatibility `_branch_run` writes are now suppressed once execution-run
+  history exists, preserving compatibility JSON as read-through upgrade data
+  instead of mutable active-runtime state.
+- Stage-worker dispatch refuses compatibility-only continuation when execution
+  run history exists but no claimable active run is present.
+- Execution-run initialization is guarded by sync-row locking and ignores stale
+  compatibility `execution_run_id` pointers to terminal runs.
+- Ingestion merge queue fallback now uses synthesized display state (ledger
+  first, compatibility only for pre-ledger syncs), so stale compatibility
+  `pending_ingestion_id` values cannot re-open merge actions.
+- Runtime no-op paths that skip stage execution/enqueue because no active run
+  is claimable now prune stale compatibility `_branch_run` payloads, reducing
+  lingering ambiguous runtime state after terminal ledger runs.
+- Execution-run initialization also prunes stale compatibility `_branch_run`
+  payloads when only terminal ledger history exists before starting a new run.
+- Sync Health now reports latest execution-step query runtime/pushdown profiling
+  (fetch-mode counts, fallback-step counts/reasons, and slowest models) so
+  query-pushdown gaps are visible directly in native NetBox operator surfaces.
+- Sync Health now reports compatibility-cache retirement status
+  (ledger-history presence, stale `_branch_run` payload detection, and prune
+  recommendation), making lingering legacy compatibility JSON visible from the
+  native NetBox health surface.
+- Added a native maintenance command (`forward_prune_compatibility_cache`) and
+  invoke wrapper (`invoke prune-compat-cache`) to prune stale compatibility
+  `_branch_run` payloads once ledger history exists and no run is active,
+  with dry-run and JSON evidence output for release artifacts.
+- Execution-run support bundle exports now include compatibility-cache evidence
+  (legacy payload presence, active-run linkage, stale-payload detection, and
+  prune recommendation), so exported artifacts directly prove retirement status
+  without requiring separate health-page snapshots.
+- Ledger display-state synthesis now prunes stale compatibility `_branch_run`
+  payloads during read paths when only terminal run history exists, making
+  compatibility-state retirement progress visible in normal UI/API flow.
+
+Remaining compatibility behavior is intentionally constrained to pre-ledger
+upgrade/read-through and does not steer active runs when ledger history exists.
+Deferred long-term work remains:
+
+- full retirement of compatibility `_branch_run` writes after the compatibility
+  window
+- deeper live query-pushdown proof from Forward runtime evidence
+- broader apply-engine acceleration beyond the parity-safe model set
+- destructive worker-kill chaos harnessing as an opt-in gate
+
 ### 1. Promote Branch State To An Execution Ledger
 
 The current resumable Branching implementation stores plan state in

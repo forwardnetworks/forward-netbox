@@ -376,6 +376,81 @@ class ForwardClientTest(TestCase):
                 [{"column": "name", "operator": "contains", "value": "sw"}],
             )
 
+    def test_run_nqe_query_fetch_all_raises_when_page_limit_exceeded(self):
+        self.client.nqe_fetch_all_max_pages = 2
+        self.client._request = Mock(
+            side_effect=[
+                self._response(
+                    {
+                        "items": [
+                            {"fields": {"n": 1}},
+                        ],
+                    }
+                ),
+                self._response(
+                    {
+                        "items": [
+                            {"fields": {"n": 2}},
+                        ],
+                    }
+                ),
+            ]
+        )
+
+        with self.assertRaisesRegex(
+            ForwardClientError,
+            "Forward NQE pagination exceeded 2 page\\(s\\)",
+        ):
+            self.client.run_nqe_query(
+                query_id="Q_devices",
+                limit=1,
+                fetch_all=True,
+            )
+        self.assertEqual(self.client._request.call_count, 2)
+
+    def test_run_nqe_query_fetch_all_raises_on_identical_full_pages(self):
+        self.client.nqe_fetch_all_max_pages = 10
+        self.client.nqe_identical_full_page_streak_limit = 2
+        self.client._request = Mock(
+            side_effect=[
+                self._response(
+                    {
+                        "items": [
+                            {"fields": {"n": 1}},
+                            {"fields": {"n": 2}},
+                        ],
+                    }
+                ),
+                self._response(
+                    {
+                        "items": [
+                            {"fields": {"n": 1}},
+                            {"fields": {"n": 2}},
+                        ],
+                    }
+                ),
+                self._response(
+                    {
+                        "items": [
+                            {"fields": {"n": 1}},
+                            {"fields": {"n": 2}},
+                        ],
+                    }
+                ),
+            ]
+        )
+
+        with self.assertRaisesRegex(
+            ForwardClientError,
+            "Forward NQE pagination did not advance",
+        ):
+            self.client.run_nqe_query(
+                query_id="Q_devices",
+                limit=2,
+                fetch_all=True,
+            )
+        self.assertEqual(self.client._request.call_count, 3)
+
     def test_get_org_nqe_queries_normalizes_directory(self):
         self.client._request = Mock(
             return_value=self._response(
@@ -763,6 +838,68 @@ class ForwardClientTest(TestCase):
                 call.kwargs["json_body"]["options"]["columnFilters"],
                 [{"column": "site", "operator": "eq", "value": "core"}],
             )
+
+    def test_run_nqe_diff_fetch_all_raises_when_page_limit_exceeded(self):
+        self.client.nqe_fetch_all_max_pages = 2
+        self.client._request = Mock(
+            side_effect=[
+                self._response(
+                    {
+                        "rows": [
+                            {"type": "ADDED", "before": None, "after": {"n": 1}},
+                        ],
+                    }
+                ),
+                self._response(
+                    {
+                        "rows": [
+                            {"type": "ADDED", "before": None, "after": {"n": 2}},
+                        ],
+                    }
+                ),
+            ]
+        )
+
+        with self.assertRaisesRegex(
+            ForwardClientError,
+            "Forward NQE diff pagination exceeded 2 page\\(s\\)",
+        ):
+            self.client.run_nqe_diff(
+                query_id="Q_sites",
+                before_snapshot_id="snapshot-before",
+                after_snapshot_id="snapshot-after",
+                limit=1,
+                fetch_all=True,
+            )
+        self.assertEqual(self.client._request.call_count, 2)
+
+    def test_run_nqe_diff_fetch_all_raises_on_identical_full_pages(self):
+        self.client.nqe_fetch_all_max_pages = 10
+        self.client.nqe_identical_full_page_streak_limit = 2
+        repeated_page = [
+            {"type": "ADDED", "before": None, "after": {"n": 1}},
+            {"type": "DELETED", "before": {"n": 2}, "after": None},
+        ]
+        self.client._request = Mock(
+            side_effect=[
+                self._response({"rows": repeated_page}),
+                self._response({"rows": repeated_page}),
+                self._response({"rows": repeated_page}),
+            ]
+        )
+
+        with self.assertRaisesRegex(
+            ForwardClientError,
+            "Forward NQE diff pagination did not advance",
+        ):
+            self.client.run_nqe_diff(
+                query_id="Q_sites",
+                before_snapshot_id="snapshot-before",
+                after_snapshot_id="snapshot-after",
+                limit=2,
+                fetch_all=True,
+            )
+        self.assertEqual(self.client._request.call_count, 3)
 
     def test_run_nqe_diff_includes_parameters_when_supplied(self):
         self.client._request = Mock(

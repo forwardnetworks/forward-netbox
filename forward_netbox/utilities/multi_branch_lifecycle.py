@@ -8,6 +8,7 @@ from netbox_branching.models import Branch
 
 from ..choices import ForwardExecutionBackendChoices
 from ..choices import ForwardExecutionRunStatusChoices
+from ..choices import ForwardExecutionStepStatusChoices
 from ..choices import ForwardIngestionPhaseChoices
 from ..choices import ForwardSyncStatusChoices
 from ..exceptions import ForwardQueryError
@@ -19,10 +20,14 @@ from .branch_budget import soft_budget_limit
 from .branch_budget import split_workload
 from .branching import build_branch_name
 from .branching import build_branch_request
+from .density_learning import update_density_learning
+from .ingestion_issues import has_blocking_issues
 from .query_fetch import plan_item_model_result
+from .resumable_branching import enqueue_branch_stage_job
+from .resumable_branching import scheduler_overlap_enabled
 from .resumable_branching import update_plan_item_state
 from .sync import ForwardSyncRunner
-from .sync_state import clear_branch_run_progress_fields
+from .sync_state import get_branch_run_display_state
 from .sync_state import touch_branch_run_progress
 
 AUTO_SPLIT_MIN_ROWS_PER_BRANCH = 1
@@ -55,21 +60,11 @@ def set_runtime_phase(
         )
         executor.logger.log_info(message, obj=executor.sync)
         return
-    state = executor.sync.get_branch_run_state()
-    if not state:
-        executor.logger.log_info(message, obj=executor.sync)
-        return
-    if state.get("phase") != str(phase) or state.get("phase_message") != str(message):
-        clear_branch_run_progress_fields(state)
-    if next_plan_index is not None:
-        state["next_plan_index"] = int(next_plan_index)
-    if total_plan_items is not None:
-        state["total_plan_items"] = int(total_plan_items)
-    if state.get("phase") != str(phase):
-        state["phase_started"] = timezone.now().isoformat()
-    state["phase"] = str(phase)
-    state["phase_message"] = str(message)
-    executor.sync.set_branch_run_state(state)
+    state = get_branch_run_display_state(executor.sync)
+    if state and state.get("state_source") == "execution_ledger":
+        # Display state is synthesized from the execution ledger and must remain
+        # read-only. Runtime phase mutations are persisted only on real runs.
+        pass
     executor.logger.log_info(message, obj=executor.sync)
 
 
@@ -104,6 +99,7 @@ def run_plan_item(
     total_plan_items,
     plan_preview,
     automated_merge=False,
+    defer_automated_merge=False,
 ):
     from ..models import ForwardIngestion
 
@@ -151,12 +147,19 @@ def run_plan_item(
     update_plan_item_state(executor.sync, item.index, **row_counts)
     if ingestion.issues.exists():
         messages = list(ingestion.issues.values_list("message", flat=True)[:5])
-        executor.logger.log_warning(
-            "Forward multi-branch shard completed with row issues and will "
-            "continue with later shards: " + "; ".join(messages),
-            obj=ingestion,
-        )
-        mark_baseline_ready = False
+        if has_blocking_issues(ingestion):
+            executor.logger.log_warning(
+                "Forward multi-branch shard completed with blocking row issues and will "
+                "continue with later shards: " + "; ".join(messages),
+                obj=ingestion,
+            )
+            mark_baseline_ready = False
+        else:
+            executor.logger.log_info(
+                "Forward multi-branch shard completed with non-blocking row issues "
+                "(optional-model and/or dependency-skip rows): " + "; ".join(messages),
+                obj=ingestion,
+            )
 
     actual_changes = branch.get_unmerged_changes().count()
     record_model_density(
@@ -193,11 +196,22 @@ def run_plan_item(
             )
 
     if not merge:
-        phase = "queued_merge" if automated_merge else "awaiting_merge"
+        phase = (
+            "overlap_staged"
+            if automated_merge and defer_automated_merge
+            else "queued_merge" if automated_merge else "awaiting_merge"
+        )
         phase_message = (
-            f"Queued merge for shard {item.index}/{total_plan_items}."
-            if automated_merge
-            else f"Forward sync paused after shard {item.index}/{total_plan_items}; merge the branch to continue."
+            (
+                f"Pre-staged shard {item.index}/{total_plan_items}; merge will "
+                "queue after the prior shard merge completes."
+            )
+            if automated_merge and defer_automated_merge
+            else (
+                f"Queued merge for shard {item.index}/{total_plan_items}."
+                if automated_merge
+                else f"Forward sync paused after shard {item.index}/{total_plan_items}; merge the branch to continue."
+            )
         )
         update_plan_item_state(
             executor.sync,
@@ -209,9 +223,13 @@ def run_plan_item(
             **row_counts,
         )
         executor.sync.status = (
-            ForwardSyncStatusChoices.QUEUED
-            if automated_merge
-            else ForwardSyncStatusChoices.READY_TO_MERGE
+            ForwardSyncStatusChoices.SYNCING
+            if automated_merge and defer_automated_merge
+            else (
+                ForwardSyncStatusChoices.QUEUED
+                if automated_merge
+                else ForwardSyncStatusChoices.READY_TO_MERGE
+            )
         )
         executor.sync.__class__.objects.filter(pk=executor.sync.pk).update(
             status=executor.sync.status,
@@ -220,10 +238,18 @@ def run_plan_item(
 
         run = active_execution_run(executor.sync)
         if run is not None:
-            run.status = ForwardExecutionRunStatusChoices.WAITING
+            run.status = (
+                ForwardExecutionRunStatusChoices.RUNNING
+                if automated_merge and defer_automated_merge
+                else ForwardExecutionRunStatusChoices.WAITING
+            )
             run.phase = phase
             run.phase_message = phase_message
-            run.next_step_index = item.index + 1
+            run.next_step_index = (
+                item.index
+                if automated_merge and defer_automated_merge
+                else item.index + 1
+            )
             run.total_steps = total_plan_items
             run.auto_merge = bool(automated_merge)
             run.latest_heartbeat = timezone.now()
@@ -238,29 +264,12 @@ def run_plan_item(
                     "latest_heartbeat",
                 ]
             )
-        else:
-            executor.sync.set_branch_run_state(
-                {
-                    "snapshot_selector": context["snapshot_selector"],
-                    "snapshot_id": context["snapshot_id"],
-                    "max_changes_per_branch": executor.max_changes_per_branch,
-                    "next_plan_index": item.index + 1,
-                    "total_plan_items": total_plan_items,
-                    "auto_merge": True,
-                    "awaiting_merge": False,
-                    "model_change_density": executor.model_change_density,
-                    "validation_run_id": getattr(
-                        executor.last_validation_run,
-                        "pk",
-                        None,
-                    ),
-                    "plan_preview": plan_preview,
-                }
-            )
         executor.logger.log_info(
             phase_message,
             obj=ingestion,
         )
+        if automated_merge and defer_automated_merge:
+            return ingestion
         if automated_merge:
             merge_job = ingestion.enqueue_merge_job(
                 user=executor.user,
@@ -271,6 +280,11 @@ def run_plan_item(
                 item.index,
                 status="merge_queued",
                 merge_job_id=merge_job.pk,
+            )
+            maybe_enqueue_overlap_stage(
+                executor,
+                item,
+                total_plan_items=total_plan_items,
             )
         return ingestion
 
@@ -286,30 +300,52 @@ def run_plan_item(
     ingestion.sync_merge(mark_baseline_ready=mark_baseline_ready)
     if mark_baseline_ready:
         executor.sync.clear_branch_run_state()
-    else:
-        from .execution_ledger import active_execution_run
-
-        run = active_execution_run(executor.sync)
-        if run is None:
-            executor.sync.set_branch_run_state(
-                {
-                    "snapshot_selector": context["snapshot_selector"],
-                    "snapshot_id": context["snapshot_id"],
-                    "max_changes_per_branch": executor.max_changes_per_branch,
-                    "next_plan_index": item.index + 1,
-                    "total_plan_items": total_plan_items,
-                    "auto_merge": True,
-                    "awaiting_merge": False,
-                    "model_change_density": executor.model_change_density,
-                    "validation_run_id": getattr(
-                        executor.last_validation_run,
-                        "pk",
-                        None,
-                    ),
-                    "plan_preview": plan_preview,
-                }
-            )
     return ingestion
+
+
+def maybe_enqueue_overlap_stage(executor, item, *, total_plan_items):
+    if not scheduler_overlap_enabled(executor.sync):
+        return None
+    if int(item.index) >= int(total_plan_items or 0):
+        return None
+
+    from .execution_ledger import active_execution_run
+
+    run = active_execution_run(executor.sync)
+    if run is None or not run.auto_merge:
+        return None
+    next_index = int(item.index) + 1
+    next_step = (
+        run.steps.filter(kind="stage", index=next_index).order_by("index").first()
+    )
+    if (
+        next_step is None
+        or next_step.status != ForwardExecutionStepStatusChoices.PENDING
+    ):
+        return None
+    if run.steps.filter(
+        kind="stage",
+        index__gt=int(item.index),
+        status__in=[
+            ForwardExecutionStepStatusChoices.QUEUED,
+            ForwardExecutionStepStatusChoices.RUNNING,
+            ForwardExecutionStepStatusChoices.STAGED,
+            ForwardExecutionStepStatusChoices.MERGE_QUEUED,
+        ],
+    ).exists():
+        return None
+    job = enqueue_branch_stage_job(
+        executor.sync,
+        user=executor.user,
+        adhoc=True,
+        overlap_stage=True,
+    )
+    if job is not None:
+        executor.logger.log_info(
+            f"Queued overlap staging for shard {next_index}/{total_plan_items}; merge remains serialized.",
+            obj=executor.sync,
+        )
+    return job
 
 
 def validation_run_from_state(run_state):
@@ -394,14 +430,29 @@ def run_item_in_branch(executor, item, context, ingestion, branch, *, total_plan
 def record_model_density(executor, model_string, *, estimated_changes, actual_changes):
     if estimated_changes <= 0 or actual_changes <= 0:
         return
-    current_density = executor.model_change_density.get(model_string)
     observed_density = float(actual_changes) / float(estimated_changes)
-    if current_density is None:
-        updated_density = observed_density
-    else:
-        updated_density = (0.7 * float(current_density)) + (0.3 * observed_density)
-    executor.model_change_density[model_string] = max(0.01, updated_density)
+    model_change_density, model_change_density_profile, result = (
+        update_density_learning(
+            executor.model_change_density,
+            getattr(executor, "model_change_density_profile", {}),
+            model_string=model_string,
+            observed_density=observed_density,
+        )
+    )
+    executor.model_change_density = model_change_density
+    executor.model_change_density_profile = model_change_density_profile
     executor.sync.set_model_change_density(executor.model_change_density)
+    executor.sync.set_model_change_density_profile(
+        executor.model_change_density_profile
+    )
+    if not result.get("accepted"):
+        executor.logger.log_info(
+            (
+                "Skipped anomalous density observation for "
+                f"{model_string}: {result.get('reason', 'rejected')}."
+            ),
+            obj=executor.sync,
+        )
 
 
 def model_row_counters(logger_, model_string):
@@ -443,6 +494,7 @@ def split_overflow_item(executor, item):
         workload,
         max_changes_per_branch=executor.max_changes_per_branch,
         model_change_density=executor.model_change_density,
+        model_change_density_profile=executor.model_change_density_profile,
         safety_factor=DEFAULT_DENSITY_SAFETY_FACTOR,
     )
     row_budget = max(AUTO_SPLIT_MIN_ROWS_PER_BRANCH, row_budget)
@@ -477,12 +529,18 @@ def resplit_future_items_for_model(executor, plan, *, start_index, model_string)
             apply_engine=item.apply_engine,
             apply_engine_reason=item.apply_engine_reason,
             apply_engine_decision=item.apply_engine_decision,
+            fetch_mode=item.fetch_mode,
+            fetch_key_family=item.fetch_key_family,
+            fetch_parameters=item.fetch_parameters,
+            query_parameters=item.query_parameters,
+            fetch_column_filters=item.fetch_column_filters,
             operation=item.operation,
         )
         row_budget = effective_workload_row_budget(
             item_workload,
             max_changes_per_branch=executor.max_changes_per_branch,
             model_change_density=executor.model_change_density,
+            model_change_density_profile=executor.model_change_density_profile,
             safety_factor=DEFAULT_DENSITY_SAFETY_FACTOR,
         )
         row_budget = max(AUTO_SPLIT_MIN_ROWS_PER_BRANCH, row_budget)

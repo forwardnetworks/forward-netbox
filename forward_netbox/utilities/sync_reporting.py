@@ -13,6 +13,7 @@ from ..exceptions import ForwardSearchError
 from ..exceptions import ForwardSyncDataError
 from .execution_ledger import touch_execution_step_progress
 from .json_safe import json_safe_value
+from .sync_primitives import prime_dependency_lookup_caches
 from .sync_state import get_branch_run_display_state
 from .sync_state import touch_branch_run_progress
 
@@ -232,7 +233,9 @@ def record_issue(
     runner._recorded_issue_ids.add(issue_key)
     if exception is not None and hasattr(exception, "issue_id"):
         exception.issue_id = issue.pk
-    if log_level == "warning":
+    if log_level == "info":
+        runner.logger.log_info(f"{model_string}: {message}", obj=runner.ingestion)
+    elif log_level == "warning":
         runner.logger.log_warning(f"{model_string}: {message}", obj=runner.ingestion)
     else:
         runner.logger.log_failure(f"{model_string}: {message}", obj=runner.ingestion)
@@ -240,6 +243,7 @@ def record_issue(
 
 
 def apply_model_rows(runner, model_string, rows):
+    rows = list(rows)
     if model_string == "dcim.interface":
         rows = sorted(rows, key=lambda row: bool(row.get("lag")))
     handler_name = f"_apply_{model_string.replace('.', '_')}"
@@ -254,6 +258,7 @@ def apply_model_rows(runner, model_string, rows):
         f"Applying {len(rows)} rows for {model_string}.",
         obj=runner.sync,
     )
+    prime_dependency_lookup_caches(runner, model_string, rows)
     state = get_branch_run_display_state(runner.sync)
     last_emit_at = 0.0
     processed_rows = 0
@@ -278,7 +283,7 @@ def apply_model_rows(runner, model_string, rows):
                 exception=exc,
                 context=exc.context,
                 defaults=exc.defaults,
-                log_level="warning",
+                log_level="info",
             )
         except (ForwardSearchError, ForwardQueryError, ForwardSyncDataError) as exc:
             logger.exception("Failed applying %s row", model_string)
@@ -334,6 +339,7 @@ def apply_model_rows(runner, model_string, rows):
 
 
 def delete_model_rows(runner, model_string, rows):
+    rows = list(rows)
     handler_name = f"_delete_{model_string.replace('.', '_')}"
     handler = getattr(runner, handler_name, None)
     if handler is None:
@@ -346,6 +352,7 @@ def delete_model_rows(runner, model_string, rows):
         f"Deleting {len(rows)} rows for {model_string}.",
         obj=runner.sync,
     )
+    prime_dependency_lookup_caches(runner, model_string, rows)
     state = get_branch_run_display_state(runner.sync)
     last_emit_at = 0.0
     processed_rows = 0
@@ -370,7 +377,7 @@ def delete_model_rows(runner, model_string, rows):
                 exception=exc,
                 context=exc.context,
                 defaults=exc.defaults,
-                log_level="warning",
+                log_level="info",
             )
         except (ForwardSearchError, ForwardQueryError) as exc:
             logger.exception("Failed deleting %s row", model_string)

@@ -1,0 +1,58 @@
+{
+  "enqueued_job": null,
+  "next_step": {
+    "actual_changes": 7346,
+    "applied_row_count": 7346,
+    "attempted_row_count": 7346,
+    "branch": null,
+    "estimated_changes": 7346,
+    "failed_row_count": 0,
+    "fetch_column_filter_count": 1,
+    "fetch_mode": "nqe_column_filter",
+    "id": 1725,
+    "index": 29,
+    "ingestion": 699,
+    "job": null,
+    "kind": "stage",
+    "last_error_length": 0,
+    "last_error_present": false,
+    "merge_job": null,
+    "model": "ipam.prefix",
+    "retry_count": 0,
+    "shard_key_count": 7346,
+    "skipped_row_count": 0,
+    "status": "staged"
+  },
+  "reconcile": {
+    "messages": [],
+    "skipped": false,
+    "updated_run": false,
+    "updated_steps": 0
+  },
+  "recovery_recommendation": {
+    "action": "requeue_merge",
+    "message": "Requeue merge for the staged shard branch.",
+    "model": "ipam.prefix",
+    "severity": "warning",
+    "step_id": 1725,
+    "step_index": 29,
+    "step_status": "staged"
+  },
+  "run": {
+    "auto_merge": true,
+    "backend": "branching",
+    "baseline_ready": false,
+    "completed": null,
+    "id": 170,
+    "last_error_length": 77,
+    "last_error_present": true,
+    "latest_heartbeat": "2026-05-26T09:26:05.665638+00:00",
+    "next_step_index": 29,
+    "phase": "failed",
+    "reconciliation_event_count": 0,
+    "source": 1,
+    "status": "failed",
+    "sync": 46,
+    "total_steps": 47
+  }
+}

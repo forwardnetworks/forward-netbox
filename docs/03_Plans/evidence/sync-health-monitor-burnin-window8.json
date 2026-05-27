@@ -1,0 +1,254 @@
+{
+  "generated_at": "2026-05-26T17:27:39.513742+00:00",
+  "sync_ids": [
+    50,
+    51
+  ],
+  "max_polls": 12,
+  "interval_seconds": 10,
+  "allow_nonterminal": true,
+  "include_all_ingestions": true,
+  "completed": true,
+  "samples": [
+    {
+      "sampled_at": "2026-05-26T17:09:38.849234+00:00",
+      "poll": 1,
+      "sync_id": 50,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-26T17:09:38.849234+00:00",
+      "poll": 1,
+      "sync_id": 51,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-26T17:11:09.248359+00:00",
+      "poll": 2,
+      "sync_id": 50,
+      "sync_status": "queued",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-26T17:11:09.248359+00:00",
+      "poll": 2,
+      "sync_id": 51,
+      "sync_status": "queued",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-26T17:12:40.656942+00:00",
+      "poll": 3,
+      "sync_id": 50,
+      "sync_status": "queued",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-26T17:12:40.656942+00:00",
+      "poll": 3,
+      "sync_id": 51,
+      "sync_status": "queued",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-26T17:14:12.957426+00:00",
+      "poll": 4,
+      "sync_id": 50,
+      "sync_status": "queued",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-26T17:14:12.957426+00:00",
+      "poll": 4,
+      "sync_id": 51,
+      "sync_status": "queued",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-26T17:15:46.851122+00:00",
+      "poll": 5,
+      "sync_id": 50,
+      "sync_status": "queued",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-26T17:15:46.851122+00:00",
+      "poll": 5,
+      "sync_id": 51,
+      "sync_status": "queued",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-26T17:17:18.295092+00:00",
+      "poll": 6,
+      "sync_id": 50,
+      "sync_status": "queued",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-26T17:17:18.295092+00:00",
+      "poll": 6,
+      "sync_id": 51,
+      "sync_status": "queued",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-26T17:18:50.666583+00:00",
+      "poll": 7,
+      "sync_id": 50,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-26T17:18:50.666583+00:00",
+      "poll": 7,
+      "sync_id": 51,
+      "sync_status": "queued",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-26T17:20:17.964025+00:00",
+      "poll": 8,
+      "sync_id": 50,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-26T17:20:17.964025+00:00",
+      "poll": 8,
+      "sync_id": 51,
+      "sync_status": "queued",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-26T17:21:48.840981+00:00",
+      "poll": 9,
+      "sync_id": 50,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-26T17:21:48.840981+00:00",
+      "poll": 9,
+      "sync_id": 51,
+      "sync_status": "queued",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-26T17:23:19.669826+00:00",
+      "poll": 10,
+      "sync_id": 50,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-26T17:23:19.669826+00:00",
+      "poll": 10,
+      "sync_id": 51,
+      "sync_status": "queued",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-26T17:24:50.979484+00:00",
+      "poll": 11,
+      "sync_id": 50,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-26T17:24:50.979484+00:00",
+      "poll": 11,
+      "sync_id": 51,
+      "sync_status": "queued",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-26T17:26:18.020645+00:00",
+      "poll": 12,
+      "sync_id": 50,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "errors": 0
+    },
+    {
+      "sampled_at": "2026-05-26T17:26:18.020645+00:00",
+      "poll": 12,
+      "sync_id": 51,
+      "sync_status": "syncing",
+      "execution_run_status": "running",
+      "blocking": 0,
+      "warnings": 0,
+      "errors": 0
+    }
+  ]
+}

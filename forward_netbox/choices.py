@@ -114,6 +114,16 @@ class ForwardExecutionBackendChoices(ChoiceSet):
     )
 
 
+class ForwardDiffFallbackModeChoices(ChoiceSet):
+    ALLOW_FALLBACK = "allow_fallback"
+    REQUIRE_DIFF = "require_diff"
+
+    CHOICES = (
+        (ALLOW_FALLBACK, _("Allow full fallback"), "blue"),
+        (REQUIRE_DIFF, _("Require diff"), "orange"),
+    )
+
+
 class ForwardApplyEngineChoices(ChoiceSet):
     ADAPTER = "adapter"
     BULK_ORM = "bulk_orm"
