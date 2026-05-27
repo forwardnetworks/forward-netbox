@@ -1,3 +1,5 @@
+from ..choices import ForwardExecutionRunStatusChoices
+from .branch_budget import BRANCH_RUN_STATE_PARAMETER
 from .execution_ledger_metrics import apply_engine_decision
 from .execution_ledger_metrics import execution_run_metrics
 from .execution_ledger_metrics import fetch_explanation
@@ -12,7 +14,9 @@ def execution_run_support_bundle(run, *, recommendation_fn):
     return {
         "run": run.as_support_summary(),
         "run_job": job_summary(run.job),
+        "compatibility_cache": _compatibility_cache_evidence(run),
         "recovery_recommendation": recommendation_fn(run),
+        "recovery_policy_summary": _recovery_policy_summary(run),
         "metrics": execution_run_metrics(run, step_list),
         "steps": [
             {
@@ -25,6 +29,66 @@ def execution_run_support_bundle(run, *, recommendation_fn):
             }
             for step in step_list
         ],
+    }
+
+
+def _recovery_policy_summary(run):
+    events = (
+        run.reconciliation_events if isinstance(run.reconciliation_events, list) else []
+    )
+    auto_policy_reasons = {
+        "failed_stage_with_live_job_auto_restore",
+        "queued_stage_without_job_auto_reset",
+        "stale_queued_without_branch_auto_reset",
+        "stale_stage_without_branch_auto_requeue",
+    }
+    escalation_reasons = {
+        "stale_stage_with_branch",
+        "stale_merge_job",
+    }
+    watchdog_reason = "stale_run_no_progress_watchdog"
+    escalation_threshold = 3
+    watchdog_threshold = 2
+    policy_events = [
+        event
+        for event in events
+        if isinstance(event, dict) and event.get("reason") in auto_policy_reasons
+    ]
+    escalation_events = [
+        event
+        for event in events
+        if isinstance(event, dict) and event.get("reason") in escalation_reasons
+    ]
+    watchdog_events = [
+        event
+        for event in events
+        if isinstance(event, dict) and event.get("reason") == watchdog_reason
+    ]
+    by_reason = {}
+    for event in policy_events:
+        reason = str(event.get("reason") or "unknown")
+        by_reason[reason] = int(by_reason.get(reason, 0)) + 1
+    escalation_by_reason = {}
+    for event in escalation_events:
+        reason = str(event.get("reason") or "unknown")
+        escalation_by_reason[reason] = int(escalation_by_reason.get(reason, 0)) + 1
+    latest_event = policy_events[-1] if policy_events else None
+    escalation_required = any(
+        count >= escalation_threshold for count in escalation_by_reason.values()
+    )
+    watchdog_required = len(watchdog_events) >= watchdog_threshold
+    return {
+        "auto_policy_event_count": len(policy_events),
+        "auto_policy_reasons": by_reason,
+        "last_auto_policy_event": latest_event,
+        "escalation_event_count": len(escalation_events),
+        "escalation_reasons": escalation_by_reason,
+        "escalation_threshold": escalation_threshold,
+        "escalation_required": escalation_required,
+        "watchdog_event_count": len(watchdog_events),
+        "watchdog_reason": watchdog_reason,
+        "watchdog_threshold": watchdog_threshold,
+        "watchdog_required": watchdog_required,
     }
 
 
@@ -58,4 +122,49 @@ def ingestion_support_summary(ingestion):
             }
             for issue in issues
         ],
+    }
+
+
+def _compatibility_cache_evidence(run):
+    sync = run.sync
+    parameters = sync.parameters or {}
+    compatibility_state = parameters.get(BRANCH_RUN_STATE_PARAMETER)
+    compatibility_present = BRANCH_RUN_STATE_PARAMETER in parameters
+    compatibility_is_dict = isinstance(compatibility_state, dict)
+    compatibility_size = len(compatibility_state) if compatibility_is_dict else 0
+    compatibility_keys = (
+        sorted(str(key) for key in compatibility_state.keys())[:10]
+        if compatibility_is_dict
+        else []
+    )
+    compatibility_execution_run_id = None
+    if compatibility_is_dict:
+        compatibility_execution_run_id = compatibility_state.get("execution_run_id")
+
+    terminal_statuses = {
+        ForwardExecutionRunStatusChoices.COMPLETED,
+        ForwardExecutionRunStatusChoices.FAILED,
+        ForwardExecutionRunStatusChoices.TIMEOUT,
+        ForwardExecutionRunStatusChoices.CANCELLED,
+    }
+    active_run = (
+        sync.execution_runs.exclude(status__in=terminal_statuses)
+        .order_by("-pk")
+        .first()
+    )
+    latest_run = sync.execution_runs.order_by("-pk").first()
+    stale_payload_present = bool(
+        latest_run is not None and active_run is None and compatibility_present
+    )
+
+    return {
+        "ledger_history": bool(latest_run is not None),
+        "active_execution_run": bool(active_run is not None),
+        "active_execution_run_id": active_run.pk if active_run else None,
+        "compatibility_state_present": bool(compatibility_present),
+        "compatibility_state_size": compatibility_size,
+        "compatibility_state_keys": compatibility_keys,
+        "compatibility_execution_run_id": compatibility_execution_run_id,
+        "stale_payload_present": stale_payload_present,
+        "prune_recommended": bool(stale_payload_present),
     }

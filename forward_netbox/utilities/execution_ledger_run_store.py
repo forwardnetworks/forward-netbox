@@ -25,61 +25,94 @@ def ensure_branch_execution_run(
     next_plan_index=None,
 ):
     from ..models import ForwardExecutionRun
+    from .sync_state import get_branch_run_display_state
+    from .sync_state import prune_stale_branch_run_state
 
-    run = None
-    state = sync.get_branch_run_state()
-    run_id = state.get("execution_run_id")
-    if run_id:
-        run = ForwardExecutionRun.objects.filter(pk=run_id, sync=sync).first()
-    if run is None:
-        run = active_execution_run(sync)
-    if run is None:
-        run = ForwardExecutionRun.objects.create(
-            sync=sync,
-            source=sync.source,
-            job=job if isinstance(job, Job) else None,
-            validation_run=validation_run,
-            backend=ForwardExecutionBackendChoices.BRANCHING,
-            status=ForwardExecutionRunStatusChoices.RUNNING,
-            phase="executing",
-            phase_message="Applying planned shard changes.",
-            snapshot_selector=context["snapshot_selector"],
-            snapshot_id=context["snapshot_id"],
-            max_changes_per_branch=max_changes_per_branch,
-            auto_merge=bool(auto_merge),
-            total_steps=len(plan),
-            next_step_index=int(next_plan_index or state.get("next_plan_index") or 1),
-            plan_preview=plan_preview or {},
-            model_change_density=dict(model_change_density or {}),
-            latest_heartbeat=timezone.now(),
+    terminal_statuses = {
+        ForwardExecutionRunStatusChoices.COMPLETED,
+        ForwardExecutionRunStatusChoices.FAILED,
+        ForwardExecutionRunStatusChoices.TIMEOUT,
+        ForwardExecutionRunStatusChoices.CANCELLED,
+    }
+    with transaction.atomic():
+        locked_sync = (
+            sync.__class__.objects.select_for_update()
+            .select_related("source")
+            .get(pk=sync.pk)
         )
-    else:
-        phase = state.get("phase") or run.phase or "executing"
-        phase_message = (
-            state.get("phase_message")
-            or run.phase_message
-            or "Applying planned shard changes."
-        )
-        run.source = sync.source
-        if isinstance(job, Job):
-            run.job = job
-        run.validation_run = validation_run or run.validation_run
-        run.backend = ForwardExecutionBackendChoices.BRANCHING
-        run.status = ForwardExecutionRunStatusChoices.RUNNING
-        run.phase = phase
-        run.phase_message = phase_message
-        run.snapshot_selector = context["snapshot_selector"]
-        run.snapshot_id = context["snapshot_id"]
-        run.max_changes_per_branch = max_changes_per_branch
-        run.auto_merge = bool(auto_merge)
-        run.total_steps = len(plan)
-        run.next_step_index = int(next_plan_index or state.get("next_plan_index") or 1)
-        run.plan_preview = plan_preview or {}
-        run.model_change_density = dict(model_change_density or {})
-        run.latest_heartbeat = timezone.now()
-        run.save()
+        run = None
+        state = get_branch_run_display_state(locked_sync)
+        run_id = state.get("execution_run_id")
+        if run_id:
+            candidate = (
+                ForwardExecutionRun.objects.select_for_update()
+                .filter(pk=run_id, sync=locked_sync)
+                .first()
+            )
+            if candidate is not None and candidate.status not in terminal_statuses:
+                run = candidate
+        if run is None:
+            run = (
+                ForwardExecutionRun.objects.select_for_update()
+                .filter(sync=locked_sync)
+                .exclude(status__in=terminal_statuses)
+                .order_by("-pk")
+                .first()
+            )
+        if run is None:
+            prune_stale_branch_run_state(locked_sync)
+            state = get_branch_run_display_state(locked_sync)
+        if run is None:
+            run = ForwardExecutionRun.objects.create(
+                sync=locked_sync,
+                source=locked_sync.source,
+                job=job if isinstance(job, Job) else None,
+                validation_run=validation_run,
+                backend=ForwardExecutionBackendChoices.BRANCHING,
+                status=ForwardExecutionRunStatusChoices.RUNNING,
+                phase="executing",
+                phase_message="Applying planned shard changes.",
+                snapshot_selector=context["snapshot_selector"],
+                snapshot_id=context["snapshot_id"],
+                max_changes_per_branch=max_changes_per_branch,
+                auto_merge=bool(auto_merge),
+                total_steps=len(plan),
+                next_step_index=int(
+                    next_plan_index or state.get("next_plan_index") or 1
+                ),
+                plan_preview=plan_preview or {},
+                model_change_density=dict(model_change_density or {}),
+                latest_heartbeat=timezone.now(),
+            )
+        else:
+            phase = state.get("phase") or run.phase or "executing"
+            phase_message = (
+                state.get("phase_message")
+                or run.phase_message
+                or "Applying planned shard changes."
+            )
+            run.source = locked_sync.source
+            if isinstance(job, Job):
+                run.job = job
+            run.validation_run = validation_run or run.validation_run
+            run.backend = ForwardExecutionBackendChoices.BRANCHING
+            run.status = ForwardExecutionRunStatusChoices.RUNNING
+            run.phase = phase
+            run.phase_message = phase_message
+            run.snapshot_selector = context["snapshot_selector"]
+            run.snapshot_id = context["snapshot_id"]
+            run.max_changes_per_branch = max_changes_per_branch
+            run.auto_merge = bool(auto_merge)
+            run.total_steps = len(plan)
+            run.next_step_index = int(
+                next_plan_index or state.get("next_plan_index") or 1
+            )
+            run.plan_preview = plan_preview or {}
+            run.model_change_density = dict(model_change_density or {})
+            run.latest_heartbeat = timezone.now()
+            run.save()
 
-    sync_steps_from_plan(run, plan)
+        sync_steps_from_plan(run, plan)
     return run
 
 
@@ -111,7 +144,19 @@ def sync_steps_from_plan(run, plan):
             "query_runtime_ms": item.query_runtime_ms,
             "shard_keys": list(item.shard_keys or ()),
             "apply_engine": item.apply_engine,
-            **fetch_contract,
+            "fetch_mode": item.fetch_mode or fetch_contract["fetch_mode"],
+            "fetch_key_family": (
+                item.fetch_key_family or fetch_contract["fetch_key_family"]
+            ),
+            "fetch_parameters": (
+                item.fetch_parameters or fetch_contract["fetch_parameters"]
+            ),
+            "query_parameters": (
+                item.query_parameters or fetch_contract.get("query_parameters") or {}
+            ),
+            "fetch_column_filters": (
+                item.fetch_column_filters or fetch_contract["fetch_column_filters"]
+            ),
         }
         step = existing_steps.get(int(item.index))
         if step is None:
@@ -372,7 +417,13 @@ def mark_ingestion_step_merged(ingestion, *, baseline_ready=False, merge_job=Non
         step.heartbeat = now
         step.save()
 
-        run.next_step_index = max(int(run.next_step_index or 1), int(step.index) + 1)
+        next_incomplete_index = _next_incomplete_stage_index(run)
+        if next_incomplete_index is not None:
+            run.next_step_index = next_incomplete_index
+        else:
+            run.next_step_index = max(
+                int(run.next_step_index or 1), int(step.index) + 1
+            )
         run.latest_heartbeat = now
         if _step_is_final_success(step):
             run.status = ForwardExecutionRunStatusChoices.COMPLETED
@@ -403,10 +454,19 @@ def update_run_from_branch_state(sync):
     from .sync_state import get_branch_run_display_state
 
     state = get_branch_run_display_state(sync)
-    status = _run_status_from_sync(sync)
+    status = _run_status_from_steps(
+        run,
+        fallback_status=_run_status_from_sync(sync),
+    )
+    phase, phase_message = _run_phase_from_steps(
+        run,
+        status=status,
+        fallback_phase=(state.get("phase") or run.phase),
+        fallback_message=(state.get("phase_message") or run.phase_message),
+    )
     run.status = status
-    run.phase = state.get("phase") or run.phase
-    run.phase_message = state.get("phase_message") or run.phase_message
+    run.phase = phase
+    run.phase_message = phase_message
     run.next_step_index = int(state.get("next_plan_index") or run.next_step_index or 1)
     run.total_steps = int(state.get("total_plan_items") or run.total_steps or 0)
     run.plan_preview = state.get("plan_preview") or run.plan_preview or {}
@@ -416,6 +476,100 @@ def update_run_from_branch_state(sync):
     run.latest_heartbeat = timezone.now()
     run.save()
     return run
+
+
+def _run_status_from_steps(run, *, fallback_status):
+    stage_steps = run.steps.filter(kind=ForwardExecutionStepKindChoices.STAGE)
+    if not stage_steps.exists():
+        return fallback_status
+
+    if stage_steps.filter(
+        status__in=[
+            ForwardExecutionStepStatusChoices.QUEUED,
+            ForwardExecutionStepStatusChoices.RUNNING,
+            ForwardExecutionStepStatusChoices.MERGE_QUEUED,
+        ]
+    ).exists():
+        return ForwardExecutionRunStatusChoices.RUNNING
+
+    if stage_steps.filter(status=ForwardExecutionStepStatusChoices.STAGED).exists():
+        return ForwardExecutionRunStatusChoices.WAITING
+
+    if stage_steps.filter(status=ForwardExecutionStepStatusChoices.PENDING).exists():
+        return ForwardExecutionRunStatusChoices.RUNNING
+
+    if stage_steps.filter(
+        status__in=[
+            ForwardExecutionStepStatusChoices.TIMEOUT,
+            ForwardExecutionStepStatusChoices.MERGE_TIMEOUT,
+        ]
+    ).exists():
+        return ForwardExecutionRunStatusChoices.TIMEOUT
+
+    if stage_steps.filter(status=ForwardExecutionStepStatusChoices.FAILED).exists():
+        return ForwardExecutionRunStatusChoices.FAILED
+
+    if not stage_steps.exclude(
+        status__in=[
+            ForwardExecutionStepStatusChoices.MERGED,
+            ForwardExecutionStepStatusChoices.SKIPPED,
+            ForwardExecutionStepStatusChoices.CANCELLED,
+        ]
+    ).exists():
+        return ForwardExecutionRunStatusChoices.COMPLETED
+
+    return fallback_status
+
+
+def _run_phase_from_steps(
+    run,
+    *,
+    status,
+    fallback_phase,
+    fallback_message,
+):
+    stage_steps = run.steps.filter(kind=ForwardExecutionStepKindChoices.STAGE)
+    total_steps = int(run.total_steps or 0)
+    active_step = (
+        stage_steps.filter(
+            status__in=[
+                ForwardExecutionStepStatusChoices.RUNNING,
+                ForwardExecutionStepStatusChoices.QUEUED,
+                ForwardExecutionStepStatusChoices.MERGE_QUEUED,
+            ]
+        )
+        .order_by("index")
+        .first()
+    )
+    if active_step is not None:
+        shard_text = (
+            f"{int(active_step.index)}/{total_steps}"
+            if total_steps
+            else str(int(active_step.index))
+        )
+        if active_step.status == ForwardExecutionStepStatusChoices.MERGE_QUEUED:
+            return (
+                "queued_merge",
+                f"Queued merge for shard {shard_text}.",
+            )
+        if active_step.status == ForwardExecutionStepStatusChoices.RUNNING:
+            return ("staging", f"Applying shard {shard_text}.")
+        return ("queued", f"Queued shard {shard_text} for Branching execution.")
+
+    if status == ForwardExecutionRunStatusChoices.WAITING:
+        staged_step = (
+            stage_steps.filter(status=ForwardExecutionStepStatusChoices.STAGED)
+            .order_by("index")
+            .first()
+        )
+        if staged_step is not None:
+            shard_text = (
+                f"{int(staged_step.index)}/{total_steps}"
+                if total_steps
+                else str(int(staged_step.index))
+            )
+            return ("waiting_merge", f"Waiting for merge of shard {shard_text}.")
+    return fallback_phase, fallback_message
 
 
 def update_step_from_plan_item(
@@ -574,6 +728,8 @@ def mark_run_completed(
         run = ForwardExecutionRun.objects.select_for_update().get(pk=candidate.pk)
         if run.status == ForwardExecutionRunStatusChoices.COMPLETED:
             return run
+        if not _run_can_complete(run):
+            return run
         run.status = ForwardExecutionRunStatusChoices.COMPLETED
         run.phase = "completed"
         run.phase_message = "Forward execution completed."
@@ -586,15 +742,67 @@ def mark_run_completed(
 
 def _step_is_final_success(step):
     run = step.run
-    if run.total_steps:
-        return int(step.index) >= int(run.total_steps)
-    return not run.steps.exclude(
-        status__in=[
-            ForwardExecutionStepStatusChoices.MERGED,
-            ForwardExecutionStepStatusChoices.SKIPPED,
-            ForwardExecutionStepStatusChoices.CANCELLED,
-        ]
-    ).exists()
+    if run.total_steps and int(step.index) < int(run.total_steps):
+        return False
+    return _run_can_complete(run)
+
+
+def _next_incomplete_stage_index(run):
+    index = (
+        run.steps.filter(kind=ForwardExecutionStepKindChoices.STAGE)
+        .exclude(
+            status__in=[
+                ForwardExecutionStepStatusChoices.MERGED,
+                ForwardExecutionStepStatusChoices.SKIPPED,
+                ForwardExecutionStepStatusChoices.CANCELLED,
+            ]
+        )
+        .order_by("index")
+        .values_list("index", flat=True)
+        .first()
+    )
+    if index is not None:
+        return int(index)
+    total_steps = int(run.total_steps or 0)
+    if not total_steps:
+        return None
+    existing_indexes = set(
+        run.steps.filter(kind=ForwardExecutionStepKindChoices.STAGE).values_list(
+            "index",
+            flat=True,
+        )
+    )
+    for candidate in range(1, total_steps + 1):
+        if candidate not in existing_indexes:
+            return candidate
+    return None
+
+
+def _stage_steps_successfully_terminal(run):
+    return (
+        not run.steps.filter(kind=ForwardExecutionStepKindChoices.STAGE)
+        .exclude(
+            status__in=[
+                ForwardExecutionStepStatusChoices.MERGED,
+                ForwardExecutionStepStatusChoices.SKIPPED,
+                ForwardExecutionStepStatusChoices.CANCELLED,
+            ]
+        )
+        .exists()
+    )
+
+
+def _run_can_complete(run):
+    stage_steps = run.steps.filter(kind=ForwardExecutionStepKindChoices.STAGE)
+    if stage_steps.exists():
+        if not _stage_steps_successfully_terminal(run):
+            return False
+        if run.total_steps:
+            return stage_steps.count() >= int(run.total_steps)
+        return True
+    # Keep backward compatibility for no-step runs (for example, pre-queued
+    # completion calls that never materialized stage rows).
+    return True
 
 
 def _run_status_from_sync(sync):
@@ -656,6 +864,16 @@ def _step_updates(updates):
         mapped["apply_engine"] = (
             updates.get("apply_engine") or ForwardApplyEngineChoices.ADAPTER
         )
+    if "fetch_mode" in updates:
+        mapped["fetch_mode"] = updates.get("fetch_mode") or "model"
+    if "fetch_key_family" in updates:
+        mapped["fetch_key_family"] = updates.get("fetch_key_family") or ""
+    if "fetch_parameters" in updates:
+        mapped["fetch_parameters"] = dict(updates.get("fetch_parameters") or {})
+    if "query_parameters" in updates:
+        mapped["query_parameters"] = dict(updates.get("query_parameters") or {})
+    if "fetch_column_filters" in updates:
+        mapped["fetch_column_filters"] = list(updates.get("fetch_column_filters") or [])
     return mapped
 
 
@@ -701,6 +919,9 @@ def _execution_step_kwargs_from_plan_item(item):
         ),
         "fetch_parameters": (
             item.get("fetch_parameters") or fetch_contract["fetch_parameters"]
+        ),
+        "query_parameters": (
+            item.get("query_parameters") or fetch_contract.get("query_parameters") or {}
         ),
         "fetch_column_filters": (
             item.get("fetch_column_filters") or fetch_contract["fetch_column_filters"]

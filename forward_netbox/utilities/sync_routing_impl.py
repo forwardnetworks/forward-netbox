@@ -6,6 +6,8 @@ from django.db.models.deletion import ProtectedError
 from ..exceptions import ForwardDependencySkipError
 from ..exceptions import ForwardQueryError
 from ..exceptions import ForwardSearchError
+from .sync_primitives import forget_lookup_object
+from .sync_primitives import remember_lookup_object
 
 
 def delete_netbox_peering_manager_peeringsession(runner, row):
@@ -26,8 +28,9 @@ def delete_netbox_routing_bgppeer(runner, row):
         return False
     scope = getattr(peer, "scope", None)
     router = getattr(scope, "router", None) if scope is not None else None
+    forget_lookup_object(runner, peer)
     peer.delete()
-    delete_bgp_scope_tree_if_unreferenced(scope=scope, router=router)
+    delete_bgp_scope_tree_if_unreferenced(runner=runner, scope=scope, router=router)
     return True
 
 
@@ -35,6 +38,7 @@ def delete_netbox_routing_bgpaddressfamily(runner, row):
     address_family = runner._resolve_bgp_address_family_for_delete(row)
     if address_family is None:
         return False
+    forget_lookup_object(runner, address_family)
     address_family.delete()
     return True
 
@@ -63,29 +67,29 @@ def delete_netbox_routing_bgppeeraddressfamily(runner, row):
     )
 
 
-def delete_bgp_scope_tree_if_unreferenced(*, scope, router):
+def delete_bgp_scope_tree_if_unreferenced(*, runner, scope, router):
     for obj in (scope, router):
         if obj is None or getattr(obj, "pk", None) is None:
             continue
         try:
+            forget_lookup_object(runner, obj)
             obj.delete()
         except ProtectedError:
             continue
 
 
 def delete_netbox_routing_ospfinstance(runner, row):
-    from dcim.models import Device
     from ipam.models import VRF
 
     OSPFInstance = runner._optional_model(
         "netbox_routing", "OSPFInstance", "netbox_routing.ospfinstance"
     )
-    device = Device.objects.filter(name=row.get("device")).order_by("pk").first()
+    device = runner._lookup_device_by_name(row.get("device"))
     if device is None:
         return False
     vrf = None
     if row.get("vrf"):
-        vrf = VRF.objects.filter(name=row["vrf"]).order_by("pk").first()
+        vrf = runner._get_unique_or_raise(VRF, {"name": row["vrf"]})
         if vrf is None:
             return False
     process_id, _ = runner._ospf_process_values(row)
@@ -106,15 +110,15 @@ def delete_netbox_routing_ospfarea(runner, row):
 
 
 def delete_netbox_routing_ospfinterface(runner, row):
-    from dcim.models import Device
-
     OSPFInterface = runner._optional_model(
         "netbox_routing", "OSPFInterface", "netbox_routing.ospfinterface"
     )
-    device = Device.objects.filter(name=row.get("device")).order_by("pk").first()
+    device = runner._lookup_device_by_name(row.get("device"))
     if device is None:
         return False
-    interface = runner._lookup_interface(device, row.get("local_interface"))
+    interface = lookup_routing_interface_name(
+        runner, device, row.get("local_interface")
+    )
     if interface is None:
         return False
     return runner._delete_by_coalesce(OSPFInterface, [{"interface": interface}])
@@ -185,10 +189,8 @@ def routing_vrf(runner, row):
 
 
 def lookup_device_for_routing(runner, row, model_string, object_label):
-    from dcim.models import Device
-
     try:
-        return Device.objects.get(name=row["device"])
+        return runner._get_device_by_name(row["device"])
     except ObjectDoesNotExist as exc:
         key = (row["device"],)
         if runner._dependency_failed("dcim.device", key):
@@ -616,17 +618,19 @@ def ensure_ospf_interface(runner, row):
     device = lookup_device_for_routing(
         runner, row, "netbox_routing.ospfinterface", "OSPF interface"
     )
-    interface = runner._lookup_interface(device, row.get("local_interface"))
+    interface = lookup_routing_interface_name(
+        runner, device, row.get("local_interface")
+    )
     if interface is None:
-        raise ForwardSearchError(
-            f"Unable to find interface `{row.get('local_interface')}` on `{device.name}` for OSPF interface.",
+        runner._record_aggregated_skip_warning(
             model_string="netbox_routing.ospfinterface",
-            context={
-                "device": device.name,
-                "local_interface": row.get("local_interface"),
-            },
-            data=row,
+            reason="missing-interface",
+            warning_message=(
+                f"Skipping OSPF interface row on `{device.name}` because "
+                f"local interface `{row.get('local_interface')}` was not imported."
+            ),
         )
+        return False
     instance = ensure_ospf_instance(runner, row)
     area = ensure_ospf_area(runner, row)
     values = runner._model_field_values(
@@ -646,6 +650,64 @@ def ensure_ospf_interface(runner, row):
         coalesce_sets=[("interface",)],
     )
     return ospf_interface
+
+
+ROUTING_INTERFACE_PREFIX_ALIASES = (
+    ("gigabitethernet", "GigabitEthernet"),
+    ("gi", "GigabitEthernet"),
+    ("tengigabitethernet", "TenGigabitEthernet"),
+    ("te", "TenGigabitEthernet"),
+    ("fastethernet", "FastEthernet"),
+    ("fa", "FastEthernet"),
+    ("hundredgige", "HundredGigE"),
+    ("hu", "HundredGigE"),
+    ("ethernet", "Ethernet"),
+    ("eth", "Ethernet"),
+    ("port-channel", "Port-channel"),
+    ("portchannel", "Port-channel"),
+    ("po", "Port-channel"),
+    ("loopback", "Loopback"),
+    ("lo", "Loopback"),
+)
+
+
+def routing_interface_lookup_candidates(interface_name):
+    raw = str(interface_name or "").strip()
+    if not raw:
+        return []
+    candidates = [raw]
+    lowered = raw.lower()
+    for alias, canonical in ROUTING_INTERFACE_PREFIX_ALIASES:
+        if not lowered.startswith(alias):
+            continue
+        remainder = raw[len(alias) :]
+        candidate = f"{canonical}{remainder}"
+        if candidate not in candidates:
+            candidates.append(candidate)
+    return candidates
+
+
+def lookup_routing_interface_name(runner, device, interface_name):
+    from dcim.models import Interface
+
+    if device is None:
+        return None
+    candidates = routing_interface_lookup_candidates(interface_name)
+    for candidate in candidates:
+        interface = runner._lookup_interface(device, candidate)
+        if interface is not None:
+            return interface
+    for candidate in candidates:
+        interface = (
+            Interface.objects.filter(device=device, name__iexact=candidate)
+            .order_by("pk")
+            .first()
+        )
+        if interface is None:
+            continue
+        remember_lookup_object(runner, interface)
+        return interface
+    return None
 
 
 def ensure_peering_relationship(runner, row):
@@ -693,15 +755,15 @@ def resolve_bgp_peer_for_delete(runner, row):
         "netbox_routing", "BGPPeer", "netbox_routing.bgppeer"
     )
 
-    device = Device.objects.filter(name=row.get("device")).order_by("pk").first()
+    device = runner._lookup_device_by_name(row.get("device"))
     if device is None:
         return None
-    local_asn = ASN.objects.filter(asn=row.get("local_asn")).order_by("pk").first()
+    local_asn = runner._get_unique_or_raise(ASN, {"asn": row.get("local_asn")})
     if local_asn is None:
         return None
     vrf = None
     if row.get("vrf"):
-        vrf = VRF.objects.filter(name=row["vrf"]).order_by("pk").first()
+        vrf = runner._get_unique_or_raise(VRF, {"name": row["vrf"]})
         if vrf is None:
             return None
     router = BGPRouter.objects.filter(
@@ -739,15 +801,15 @@ def resolve_bgp_scope_for_delete(runner, row):
     BGPScope = runner._optional_model(
         "netbox_routing", "BGPScope", "netbox_routing.bgppeer"
     )
-    device = Device.objects.filter(name=row.get("device")).order_by("pk").first()
+    device = runner._lookup_device_by_name(row.get("device"))
     if device is None:
         return None
-    local_asn = ASN.objects.filter(asn=row.get("local_asn")).order_by("pk").first()
+    local_asn = runner._get_unique_or_raise(ASN, {"asn": row.get("local_asn")})
     if local_asn is None:
         return None
     vrf = None
     if row.get("vrf"):
-        vrf = VRF.objects.filter(name=row["vrf"]).order_by("pk").first()
+        vrf = runner._get_unique_or_raise(VRF, {"name": row["vrf"]})
         if vrf is None:
             return None
     router = BGPRouter.objects.filter(

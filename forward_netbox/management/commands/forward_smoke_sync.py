@@ -12,6 +12,7 @@ from forward_netbox.choices import ForwardSyncStatusChoices
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.utilities.branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
+from forward_netbox.utilities.ingestion_issues import blocking_issues_queryset
 from forward_netbox.utilities.multi_branch import ForwardMultiBranchExecutor
 from forward_netbox.utilities.query_fetch import ForwardQueryFetcher
 
@@ -100,11 +101,29 @@ class Command(BaseCommand):
         parser.add_argument(
             "--enable-bulk-orm",
             action="store_true",
-            default=os.getenv("FORWARD_SMOKE_ENABLE_BULK_ORM", "").lower()
+            default=None,
+            help=(
+                "Enable the bulk ORM apply engine for the parity-tested safe "
+                "model set. Adapter-required models remain on the adapter path."
+            ),
+        )
+        parser.add_argument(
+            "--disable-bulk-orm",
+            action="store_true",
+            help=(
+                "Disable the bulk ORM apply engine for adapter-only comparison "
+                "runs. By default, smoke syncs use the safe bulk ORM model set."
+            ),
+        )
+        parser.add_argument(
+            "--scheduler-overlap",
+            action="store_true",
+            default=os.getenv("FORWARD_SMOKE_SCHEDULER_OVERLAP", "").lower()
             in ("1", "true", "yes", "on"),
             help=(
-                "Enable the experimental bulk ORM apply engine for the narrow "
-                "model set with parity coverage. Defaults to the adapter path."
+                "For auto-merged Branching runs, pre-stage one eligible next "
+                "shard while the current shard is merging. Native Branching "
+                "merges remain serialized."
             ),
         )
 
@@ -166,7 +185,8 @@ class Command(BaseCommand):
             selected_models=selected_models,
             auto_merge=not options["no_auto_merge"],
             execution_backend=options["execution_backend"],
-            enable_bulk_orm=options["enable_bulk_orm"],
+            enable_bulk_orm=self._enable_bulk_orm(options),
+            scheduler_overlap=options["scheduler_overlap"],
         )
 
         if options["validate_only"]:
@@ -203,15 +223,34 @@ class Command(BaseCommand):
             raise CommandError(f"Smoke sync did not finish cleanly: {sync.status}")
 
         issue_count = ingestion.issues.count()
-        if issue_count:
-            messages = list(ingestion.issues.values_list("message", flat=True)[:5])
+        blocking_issues = blocking_issues_queryset(ingestion)
+        if blocking_issues.exists():
+            messages = list(blocking_issues.values_list("message", flat=True)[:5])
+            blocking_count = blocking_issues.count()
             raise CommandError(
-                "Smoke sync completed with issues: "
+                "Smoke sync completed with blocking issues: "
                 + "; ".join(messages)
-                + ("" if issue_count <= 5 else f" (+{issue_count - 5} more)")
+                + ("" if blocking_count <= 5 else f" (+{blocking_count - 5} more)")
+            )
+        if issue_count:
+            self.stdout.write(
+                self.style.WARNING(
+                    "Smoke sync completed with non-blocking issues "
+                    "(optional-model and/or dependency-skip rows)."
+                )
             )
 
         self.stdout.write(self.style.SUCCESS("Forward smoke sync completed cleanly."))
+
+    def _enable_bulk_orm(self, options):
+        if options.get("disable_bulk_orm"):
+            return False
+        if options.get("enable_bulk_orm") is True:
+            return True
+        env_value = os.getenv("FORWARD_SMOKE_ENABLE_BULK_ORM")
+        if env_value is None or env_value == "":
+            return True
+        return str(env_value).strip().lower() in ("1", "true", "yes", "on")
 
     def _run_plan_only(self, sync, *, max_changes_per_branch):
         executor = ForwardMultiBranchExecutor(
@@ -255,17 +294,22 @@ class Command(BaseCommand):
         password,
         network_id,
     ):
+        existing_source = ForwardSource.objects.filter(name=source_name).first()
+        parameters = dict(getattr(existing_source, "parameters", {}) or {})
+        parameters.update(
+            {
+                "username": username,
+                "password": password,
+                "verify": True,
+                "network_id": network_id,
+            }
+        )
         source, _ = ForwardSource.objects.update_or_create(
             name=source_name,
             defaults={
                 "type": source_type,
                 "url": url,
-                "parameters": {
-                    "username": username,
-                    "password": password,
-                    "verify": True,
-                    "network_id": network_id,
-                },
+                "parameters": parameters,
             },
         )
         source.full_clean()
@@ -283,13 +327,19 @@ class Command(BaseCommand):
         auto_merge,
         execution_backend,
         enable_bulk_orm,
+        scheduler_overlap,
     ):
-        sync_parameters = {
-            "snapshot_id": snapshot_id,
-            "auto_merge": auto_merge,
-            "execution_backend": execution_backend,
-            "enable_bulk_orm": enable_bulk_orm,
-        }
+        existing_sync = ForwardSync.objects.filter(name=sync_name).first()
+        sync_parameters = dict(getattr(existing_sync, "parameters", {}) or {})
+        sync_parameters.update(
+            {
+                "snapshot_id": snapshot_id,
+                "auto_merge": auto_merge,
+                "execution_backend": execution_backend,
+                "enable_bulk_orm": enable_bulk_orm,
+                "scheduler_overlap": bool(scheduler_overlap and auto_merge),
+            }
+        )
         for model_string in forward_configured_models():
             sync_parameters[model_string] = model_string in selected_models
 

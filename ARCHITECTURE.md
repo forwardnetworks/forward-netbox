@@ -162,6 +162,10 @@ ledger state alone.
   shard-scoped refetch for retries, NQE-side coalescing, bounded page sizes, and
   optional bulk apply engines. Do not hide large Branching workloads by raising
   branch budgets above local operational guidance.
+- Scheduler overlap must remain bounded and ledger-native. The only supported
+  overlap shape is to pre-stage one eligible next shard while the current shard
+  is already queued for merge; merge jobs remain serialized, and an already
+  staged shard is merged by the next ledger handoff rather than staged again.
 
 ## Query And Shard Fetch Direction
 
@@ -183,6 +187,101 @@ The target fetch layer should support shard-scoped execution:
   where possible.
 - The support bundle should state whether each step used shard-scoped fetch,
   model-scoped fetch, full fallback, or bulk engine execution.
+
+Current implementation status:
+
+- Query fetch now records effective per-step fetch metadata (mode, key family,
+  fetch/query parameters, and column filters) from query execution through
+  workload planning into `ForwardExecutionStep`.
+- Partitioned shard-scoped fetches now run concurrently (bounded by
+  `query_fetch_concurrency`) for both full and diff query paths, while results
+  are merged back in partition order for deterministic downstream apply/delete
+  behavior.
+- When shard-scoped fetch falls back (for example, scoped NQE fetch failure or
+  diff fallback), the effective fetch mode is recorded (`full_fallback` or
+  `diff_fallback`) and the fallback reason is retained in fetch metadata for
+  support export.
+- Recovery recommendations now explicitly detect stale active step heartbeat and
+  stale run heartbeat and steer operators to `reconcile` instead of indefinite
+  wait/monitor guidance.
+- Run finalization now requires ledger evidence that stage steps are terminal;
+  completion is refused while pending/running/staged stage steps still exist.
+- Compatibility `_branch_run` writes are now fully suppressed while an active
+  execution run exists; the ledger remains the only writable orchestration
+  state during active Branching execution.
+- Compatibility `_branch_run` writes are now also suppressed once any
+  execution-run history exists, keeping compatibility JSON as read-through
+  upgrade data rather than a mutable runtime control plane.
+- Merge continuation now prefers execution-ledger run/step state over
+  compatibility JSON so stale `_branch_run` flags cannot block auto-merge shard
+  enqueue decisions.
+- Plan-item lookup and execution context loading now prefer active ledger state
+  over compatibility JSON when both are present, preventing stale `_branch_run`
+  payloads from overriding current shard index or merge-wait status.
+- Stage-worker claim and shard dispatch now synthesize state from the active
+  execution run before reading compatibility JSON, so stale `_branch_run`
+  payloads cannot misdirect shard claim index selection.
+- Planner invocation now treats an explicit empty `branch_run_state` as
+  authoritative input instead of falling back to stored compatibility JSON.
+- Planner/runtime resumption paths now use branch-run display synthesis
+  (active ledger first, compatibility fallback only when there is no ledger
+  history), so stale `_branch_run` payloads cannot steer new runs once a sync
+  has execution-run history.
+- Live sync-state rendering now uses active execution runs only; when ledger
+  run history exists but no run is active, stale compatibility `_branch_run`
+  payloads are suppressed from activity/branch-run display and state-gating
+  helpers.
+- Sync Health now includes a query-runtime/pushdown profile from latest
+  execution-step evidence (fetch-mode counts, fallback-step count/reasons, and
+  slowest query models), so operators can identify pushdown gaps from native
+  NetBox surfaces before collecting deeper support bundles.
+- Sync Health now also includes compatibility-cache retirement diagnostics
+  (ledger-history presence, stale `_branch_run` payload detection, and prune
+  recommendation) so operators can verify whether a sync is truly ledger-only
+  or still carrying legacy compatibility JSON.
+- A native maintenance command (`forward_prune_compatibility_cache`) and task
+  (`invoke prune-compat-cache`) can now prune stale compatibility `_branch_run`
+  payloads in bulk once ledger history exists and no run is active, with
+  dry-run and JSON report output for support/release evidence.
+- Execution-run support bundle exports now include explicit compatibility-cache
+  evidence (legacy payload presence, active-run linkage, stale-payload
+  detection, and prune recommendation), so support artifacts can prove whether
+  a run is operating ledger-only or still carrying legacy state.
+- Ledger display-state synthesis now also prunes stale compatibility
+  `_branch_run` payloads during read paths when only terminal run history
+  remains, so legacy JSON state is actively retired as the UI/API reads
+  execution state.
+- Stage job dispatch now refuses to execute when no active execution run is
+  claimable and ledger history already exists, preventing stale queued jobs
+  from replaying completed runs.
+- When stage dispatch or stage enqueue refuse execution due to completed ledger
+  history, stale compatibility `_branch_run` payloads are now pruned from sync
+  parameters so historical JSON cannot linger as ambiguous runtime state.
+- Stage enqueue continuation now accepts ledger fallback only for failed/timeout
+  resumable runs and suppresses stale compatibility `_branch_run` requeue when
+  only terminal completed/cancelled run history exists.
+- Execution-run initialization now ignores stale compatibility
+  `execution_run_id` references to terminal runs, preventing historical
+  completed/failed runs from being reused as active run state.
+- Execution-run initialization now claims a sync-row lock and rechecks active
+  nonterminal runs under that lock before creating a new run, preventing
+  duplicate active ledger runs under concurrent worker startup.
+- Execution-run initialization now also prunes stale compatibility `_branch_run`
+  payloads when only terminal ledger history exists before creating a new run.
+- Merge follow-on stage enqueue now requires an active ledger run (or the
+  ingestion-linked run) and refuses compatibility-only continuation once ledger
+  history exists.
+- Merge queue eligibility fallback now uses synthesized branch-run display
+  state (ledger first, compatibility only for true pre-ledger syncs), so stale
+  compatibility `pending_ingestion_id` values cannot re-open merge actions.
+- Legacy compatibility pending-state checks are still honored only for true
+  pre-ledger syncs (no execution-run history), preserving upgrade/read-through
+  behavior without reintroducing stale compatibility-state orchestration.
+- Destructive `docker-chaos-kill` evidence capture now verifies that the
+  exported execution-run bundle is present and contains run metadata, step
+  details, and a recognized scenario-aligned recovery action before reporting
+  success. Scenario-specific step evidence is also required (branch linkage,
+  row-progress counters, or merge-job linkage depending on scenario).
 
 ## Operator Observability Target
 

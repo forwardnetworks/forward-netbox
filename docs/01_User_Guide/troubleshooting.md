@@ -90,7 +90,14 @@ Checks:
   rows for the required Forward NQE data files. When execution-step timing is
   available, `Capacity Projection` estimates remaining shard time from completed
   ledger steps and warns when observed shard duration approaches the configured
-  worker timeout.
+  worker timeout. `Compatibility Cache` also reports whether the sync still has
+  legacy `_branch_run` payload state after execution-ledger history exists.
+  If it reports stale payloads, prune them with:
+
+  ```bash
+  invoke prune-compat-cache --sync-name "<sync_name>" --dry-run=True
+  invoke prune-compat-cache --sync-name "<sync_name>" --dry-run=False
+  ```
 - If the selected model is `dcim.module`, confirm the optional beta module path
   is still enabled in the plugin and that the `Forward Modules` NQE Map remains
   turned on.
@@ -146,7 +153,9 @@ Checks:
   ingestion page. For multi-shard Branching
   runs, the export includes the execution run/step bundle with shard statuses,
   linked stage/merge jobs, retry counts, branch names, health summary, and last
-  errors.
+  errors. Execution-run support bundles now also include compatibility-cache
+  retirement evidence (legacy payload presence, active-run linkage, stale
+  payload detection, and prune recommendation).
 - Review `core/jobs` plus ingestion issues for the matching timestamp window
   when the exported bundle points to a specific failed job.
 
@@ -171,6 +180,28 @@ Checks:
 
 - Confirm the run is actually progressing:
   `Sync` detail `Execution` summary, latest ingestion `Logs`, and execution-step heartbeat.
+- Open the sync `Health` tab and review `Large Run Tuning`. It ranks the first
+  action the plugin can infer from ledger metrics: restore diff utilization,
+  reduce fallback fetches, tune timeout/capacity, inspect worker/database
+  headroom, adjust query fetch concurrency, or choose the right execution
+  backend for the current run.
+- In `Large Run Tuning`, check `Backend advice` before changing worker or query
+  settings. If a Branching baseline is projected near worker timeout, use Fast
+  bootstrap only for a trusted first baseline. If Fast bootstrap is active,
+  complete the baseline and switch back to Branching for steady-state diff
+  review.
+- In `Query Runtime & Pushdown`, check `Baseline to diff`. This explains
+  whether the run is using API diffs, is still creating a Fast bootstrap
+  baseline, is missing a compatible prior baseline, is using non-diff-capable
+  raw query maps, or requested diffs but fell back to full execution.
+- For steady-state diff runs where speed is the priority, set sync `Diff fallback mode` to
+  `Require diff` so maps fail fast instead of silently broadening to full-query execution.
+- Export the sync support bundle when asking for help. The execution-run
+  metrics include `operator_tuning_summary`, `throughput_smoothing`,
+  `fallback_reason_summary`, `diff_baseline_transition`, and pushdown/diff
+  signals needed to identify whether the run is query-bound, apply-bound,
+  merge-bound, waiting on scheduling/merge handoff, or missing the expected API
+  diff path.
 - Verify source runtime knobs:
   `query_fetch_concurrency` and `nqe_page_size` on the active `Forward Source`.
 - Verify NetBox worker replica count and Postgres capacity for the same window.
@@ -182,6 +213,8 @@ Large-ingestion triage order:
 1. Confirm execution mode and intent:
    - First baseline: `Fast bootstrap` for trusted high-volume imports.
    - Steady state: `Branching` with repository `query_path`/`query_id` maps for diff eligibility.
+   - Use the Sync Health `Backend advice` field as the first local signal when
+     timeout or baseline size makes the backend choice unclear.
 2. Confirm workers/database are not under-sized relative to host capacity.
 3. Confirm `query_fetch_concurrency` is not too low for preflight volume.
 4. Confirm shard sizing is conservative (`max_changes_per_branch` near guidance) instead of oversized branches.
@@ -205,7 +238,7 @@ Operational notes:
 What to collect when opening a tuning issue:
 
 - `Export Support Bundle` from the Sync page.
-- Source runtime parameters (`timeout`, `nqe_page_size`, `query_fetch_concurrency`).
+- Source runtime parameters (`timeout`, `nqe_page_size`, `query_fetch_concurrency`, `nqe_fetch_all_max_pages`, `nqe_identical_full_page_streak_limit`).
 - Sync mode (`Fast bootstrap` or `Branching`) and `max_changes_per_branch`.
 - NetBox worker count and worker timeout (`RQ_DEFAULT_TIMEOUT`).
 
@@ -399,6 +432,69 @@ curl -sS -H "Authorization: Token ${NETBOX_TOKEN}" \
 curl -sS -H "Authorization: Token ${NETBOX_TOKEN}" \
   "${NETBOX_URL}/api/plugins/forward/ingestion-issues/?model=dcim.devicerole&limit=0"
 ```
+
+### 4b) Classify blocking vs non-blocking issues quickly
+
+Run this in the NetBox runtime container/host:
+
+```bash
+# Audit one ingestion directly
+python manage.py forward_blocker_audit --ingestion-id <ingestion-id>
+
+# Audit latest ingestion for one sync name
+python manage.py forward_blocker_audit --sync-name "<sync-name>"
+
+# Exit non-zero if blocking issues are present
+python manage.py forward_blocker_audit --ingestion-id <ingestion-id> --fail-on-blocking
+```
+
+This command classifies issues into:
+
+- **blocking**: rows that should prevent baseline readiness
+- **non-blocking**: optional-model and dependency-skip rows (`ForwardDependencySkipError`)
+
+### 4c) Watch a sync until terminal state
+
+```bash
+# Poll by sync name until completed/failed/ready_to_merge
+python manage.py forward_watch_sync --sync-name "<sync-name>"
+
+# Poll by id and fail the command if blocking issues are present at completion
+python manage.py forward_watch_sync --sync-id <sync-id> --fail-on-blocking
+
+# Bound polling for automation
+python manage.py forward_watch_sync --sync-id <sync-id> --max-polls 120 --interval-seconds 30
+
+# Bound polling for long-running jobs without treating non-terminal status as failure
+python manage.py forward_watch_sync --sync-id <sync-id> --max-polls 120 --interval-seconds 30 --allow-nonterminal
+```
+
+Each poll now includes `execution_run` state (active shard, shard job id,
+run/step heartbeat age) in addition to the initial sync job log entry. Use this
+to distinguish:
+
+- a queued planning job that already finished, versus
+- an active shard stage still running under the execution ledger.
+
+### 4d) Audit warning/error volume for regression checks
+
+```bash
+# Audit latest ingestion job logs for one sync
+python manage.py forward_warning_audit --sync-name "<sync-name>"
+
+# Aggregate across all ingestions for one sync
+python manage.py forward_warning_audit --sync-id <sync-id> --all-ingestions --top 20
+
+# Exit non-zero if any errors are present in sync job logs
+python manage.py forward_warning_audit --sync-id <sync-id> --all-ingestions --fail-on-error
+```
+
+Use this command after upgrades to confirm warning noise is stable and to surface
+new high-volume warnings that may indicate a regression. The audit includes:
+
+- ingestion and merge jobs, and
+- active execution-run shard/merge jobs (including live `job.log_entries` before
+  final `job.data["logs"]` serialization).
 
 ### 5) Validate Forward connectivity from the NetBox runtime
 

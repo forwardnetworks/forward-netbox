@@ -1,7 +1,7 @@
 services:
   netbox:
     ports:
-      - "8000:8000"
+      - "${FORWARD_NETBOX_HOST_PORT:-8000}:8000"
     environment:
       LOGLEVEL: "INFO"
   netbox-worker:

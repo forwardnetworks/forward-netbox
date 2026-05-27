@@ -46,7 +46,7 @@ Use a staged risk-first execution model:
 
 1. Prove compatibility-window safety for compatibility branch-state cache while preserving upgrade
    behavior.
-2. Gather ORG `0.9.1` real-run evidence before making deeper architectural moves.
+2. Gather field-scale `0.9.1` real-run evidence before making deeper architectural moves.
 3. Add live pushdown profiling evidence on selected maps.
 4. Add opt-in destructive worker-kill harnessing.
 5. Gate any `bulk_orm` implementation behind strict parity evidence.
@@ -54,7 +54,7 @@ Use a staged risk-first execution model:
 ## Sequencing
 
 1. compatibility branch-state cache compatibility-window proof and removal plan
-2. `0.9.1` ORG dataset stability validation (real-run evidence baseline)
+2. `0.9.1` field-scale dataset stability validation (real-run evidence baseline)
 3. live pushdown profiling and proof on selected high-volume maps
 4. destructive worker-kill harness and recovery proof
 5. `bulk_orm` parity spike for one simple model family (or explicit deferral)
@@ -83,11 +83,11 @@ run exists, then define the exact compatibility removal gate.
 - Compatibility writes are isolated to upgrade/no-ledger fallback.
 - Release note-ready removal checklist exists.
 
-## Workstream 2: ORG `0.9.1` Real-Run Validation
+## Workstream 2: Field-Scale `0.9.1` Real-Run Validation
 
 ### Objective
 
-Collect real stability/performance evidence on the ORG dataset before deeper
+Collect real stability/performance evidence on a field-scale dataset before deeper
 architecture changes.
 
 ### Run Matrix
@@ -202,8 +202,8 @@ Before release candidate:
 invoke ci
 ```
 
-For this deferred-risk tranche, ORG real-run evidence is required in addition to
-local CI.
+For this deferred-risk tranche, field-scale real-run evidence is required in
+addition to local CI.
 
 ## Rollback
 
@@ -219,8 +219,8 @@ local CI.
 
 - Chosen: run deferred risks as a dedicated tranche so implementation and
   evidence stay ordered and auditable.
-- Chosen: require ORG real-run validation before claiming stability improvements
-  from deferred architecture work.
+- Chosen: require field-scale real-run validation before claiming stability
+  improvements from deferred architecture work.
 - Chosen: keep destructive worker-kill tests opt-in and outside default CI.
 - Chosen: keep `bulk_orm` on an explicit deferred gate until native NetBox
   parity and row-level issue accounting can be proven beyond synthetic coverage.
