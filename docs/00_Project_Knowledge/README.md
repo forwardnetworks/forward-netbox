@@ -17,6 +17,7 @@ This section is the operator and agent harness for `forward-netbox`. It exists t
 - [Code Boundary Map](code-boundary-map.md)
 - [Validation Matrix](validation-matrix.md)
 - [Release Playbook](release-playbook.md)
+- [Runtime Tuning Runbook (Generic)](runtime-tuning-runbook.md)
 - [Local Docker Workflow](local-docker-workflow.md)
 - [Quality Score](quality-score.md)
 - [Active Implementation Plans](../03_Plans/active/README.md)
