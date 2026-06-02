@@ -1,0 +1,77 @@
+{
+  "generated_at": "2026-06-02T03:15:00Z",
+  "status": "passed",
+  "dataset_label": "blake",
+  "sanitized": true,
+  "source_runtime_knobs": {
+    "api_requests_per_minute": 1800,
+    "nqe_page_size": 5000,
+    "query_fetch_concurrency": 2
+  },
+  "matrix_artifact": "docs/03_Plans/evidence/field-scale-runtime-matrix.json",
+  "matrix_summary": {
+    "run_a_branching_validate_only_ms": 14132,
+    "run_b_branching_plan_only_ms": 352533,
+    "run_c_fast_bootstrap_validate_only_ms": 11618,
+    "resume": false,
+    "status": "passed"
+  },
+  "model_timing_improvements_ms": [
+    {
+      "model": "dcim.cable",
+      "previous_ms": 36283.5,
+      "current_ms": 7331.9
+    },
+    {
+      "model": "dcim.macaddress",
+      "previous_ms": 801631.2,
+      "current_ms": 117256.4
+    },
+    {
+      "model": "ipam.prefix.ipv4",
+      "previous_ms": 156953.8,
+      "current_ms": 23748.9
+    },
+    {
+      "model": "ipam.prefix.ipv6",
+      "previous_ms": 367282.9,
+      "current_ms": 59017.6
+    },
+    {
+      "model": "ipam.ipaddress",
+      "previous_ms": 82879.0,
+      "current_ms": 12913.7
+    },
+    {
+      "model": "dcim.inventoryitem",
+      "previous_ms": 167511.1,
+      "current_ms": 27735.7
+    }
+  ],
+  "interface_focused_proof": {
+    "model": "dcim.interface",
+    "new_query_shape": "single device/interface pass",
+    "plan_only_fetch_ms": 324687.1,
+    "planned_shards": 74,
+    "status": "passed"
+  },
+  "adp_org_prefix_queries": {
+    "paths": [
+      "/forward_netbox_validation/forward_prefixes_ipv4",
+      "/forward_netbox_validation/forward_prefixes_ipv6"
+    ],
+    "source_sha_matches_local_compiled_query": true,
+    "uses_forward_netbox_shard_keys_parameter": true
+  },
+  "observed_failures": {
+    "forward_429": false,
+    "timeouts": false,
+    "tracebacks": false,
+    "fatal_errors": false,
+    "partition_retry_storm": false
+  },
+  "notes": [
+    "No credentials, customer identifiers, network IDs, snapshot IDs, raw rows, or query IDs are stored in this artifact.",
+    "Previous timing observations came from the stopped page-size-500 Partner matrix attempt. Current matrix evidence came from the page-size-5000 run."
+  ]
+}

@@ -317,6 +317,15 @@ class ForwardIngestionLogExportViewTest(TestCase):
             ],
             "add_or_enable_shard_fetch_contract",
         )
+        self.assertIn("fallback_pressure", data["metrics"])
+        self.assertEqual(
+            data["metrics"]["fallback_pressure"]["ranked_models"][0]["model"],
+            "dcim.site",
+        )
+        self.assertIn(
+            "dcim.site",
+            data["metrics"]["fallback_pressure"]["no_shard_safe_filter_models"],
+        )
         self.assertEqual(
             data["metrics"]["partition_retry_summary"][
                 "alternate_operator_success_count"

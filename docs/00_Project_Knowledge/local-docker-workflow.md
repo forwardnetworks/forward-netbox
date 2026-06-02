@@ -50,11 +50,18 @@ For field-scale runs, treat the local stack as a dedicated ingestion runtime:
 Do not run Django test tasks against this same shared runtime while a Forward
 execution run is queued, running, or waiting. The test suite can touch RQ
 registries and test database state; sharing it with a live ingestion can move a
-real job into failed/abandoned state. `invoke test`, `invoke scenario-test`,
-`invoke ingestion-delete-regression`, and `invoke scale-chaos-test` now fail fast
-when active execution runs are detected. Set
-`FORWARD_NETBOX_ALLOW_SHARED_RUNTIME_TESTS=1` only when you intentionally want to
-bypass that guard.
+real job into failed/abandoned state. `invoke test`, `invoke scenario-test`, and
+`invoke ingestion-delete-regression` fail fast when active execution runs are
+detected. Set `FORWARD_NETBOX_ALLOW_SHARED_RUNTIME_TESTS=1` only when you
+intentionally want to bypass that guard.
+
+CI-style gates such as `invoke test-ci`, `invoke scenario-test-ci`, and
+`invoke scale-chaos-test` use the shared runtime only when the active-run guard
+can inspect it and finds no active run. `invoke playwright-test` uses the same
+guard for the deterministic UI harness. If the guard detects an active run or
+cannot inspect the shared runtime, for example because local Postgres is already
+at its connection limit, the task runs against an isolated compose project
+instead of bypassing the shared-runtime safety check.
 
 Use the isolated test runtime when a live ingestion is active or when you want a
 repeatable full regression lane that does not share RQ, Redis, or Postgres with
@@ -155,12 +162,26 @@ and writes timestamped evidence to JSON. Use it when two lanes are running in
 parallel (for example, an A/B or recovery replay) and you need continuous proof
 that no blocker/warning/error findings appeared during the soak window.
 
+For `1.1.x` release readiness on Partner's dataset, label and enforce the
+field-scale artifact:
+
+```bash
+export FORWARD_SMOKE_DATASET_LABEL=blake
+invoke release-runtime-preflight --dataset-label=blake
+invoke field-scale-runtime-matrix --resume=False
+invoke release-dataset-gate --dataset-label=blake
+invoke release-readiness-audit --dataset-label=blake
+```
+
 Use `invoke playwright-test` for the deterministic UI harness. It applies pending
 Django migrations, seeds synthetic Forward records in the Docker NetBox container,
 logs in through the browser, visits the sync and ingestion workflow pages, and
 writes local screenshots plus a JSON summary under `.playwright-artifacts/`.
 Set `PLAYWRIGHT_SKIP_MIGRATE=true` only when the target database has already been
 migrated by the caller, as in GitHub CI.
+When the shared runtime has an active execution run or cannot be inspected, the
+task brings up the temporary `forward-netbox-ui-test` compose project on port
+`18080`; override the port with `FORWARD_NETBOX_PLAYWRIGHT_HOST_PORT` if needed.
 
 ```bash
 npm ci

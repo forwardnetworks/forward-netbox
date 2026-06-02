@@ -128,15 +128,29 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        existing_source = ForwardSource.objects.filter(
+            name=options["source_name"]
+        ).first()
+        existing_parameters = dict(getattr(existing_source, "parameters", {}) or {})
         username = options["username"]
         password = options["password"]
         network_id = options["network_id"]
+        if existing_source is not None:
+            username = username or existing_parameters.get("username")
+            password = password or existing_parameters.get("password")
+            network_id = network_id or existing_parameters.get("network_id")
         if not username:
-            raise CommandError("Set --username or FORWARD_SMOKE_USERNAME.")
+            raise CommandError(
+                "Set --username or FORWARD_SMOKE_USERNAME, or provide an existing source."
+            )
         if not password:
-            raise CommandError("Set --password or FORWARD_SMOKE_PASSWORD.")
+            raise CommandError(
+                "Set --password or FORWARD_SMOKE_PASSWORD, or provide an existing source."
+            )
         if not network_id:
-            raise CommandError("Set --network-id or FORWARD_SMOKE_NETWORK_ID.")
+            raise CommandError(
+                "Set --network-id or FORWARD_SMOKE_NETWORK_ID, or provide an existing source."
+            )
         if options["query_limit"] < 1:
             raise CommandError("--query-limit must be at least 1.")
         if options["max_changes_per_branch"] < 1:
@@ -158,7 +172,7 @@ class Command(BaseCommand):
                 "Create a NetBox superuser before running the smoke sync."
             )
 
-        url = options["url"].rstrip("/")
+        url = (getattr(existing_source, "url", "") or options["url"]).rstrip("/")
         source_type = (
             ForwardSourceDeploymentChoices.SAAS
             if url == "https://fwd.app"
@@ -185,6 +199,7 @@ class Command(BaseCommand):
             selected_models=selected_models,
             auto_merge=not options["no_auto_merge"],
             execution_backend=options["execution_backend"],
+            max_changes_per_branch=options["max_changes_per_branch"],
             enable_bulk_orm=self._enable_bulk_orm(options),
             scheduler_overlap=options["scheduler_overlap"],
         )
@@ -328,14 +343,19 @@ class Command(BaseCommand):
         execution_backend,
         enable_bulk_orm,
         scheduler_overlap,
+        max_changes_per_branch=None,
     ):
         existing_sync = ForwardSync.objects.filter(name=sync_name).first()
         sync_parameters = dict(getattr(existing_sync, "parameters", {}) or {})
+        if max_changes_per_branch is None:
+            max_changes_per_branch = sync_parameters.get("max_changes_per_branch")
         sync_parameters.update(
             {
                 "snapshot_id": snapshot_id,
                 "auto_merge": auto_merge,
                 "execution_backend": execution_backend,
+                "max_changes_per_branch": max_changes_per_branch
+                or DEFAULT_MAX_CHANGES_PER_BRANCH,
                 "enable_bulk_orm": enable_bulk_orm,
                 "scheduler_overlap": bool(scheduler_overlap and auto_merge),
             }

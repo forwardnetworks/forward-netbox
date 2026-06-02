@@ -3,6 +3,7 @@ from datetime import timedelta
 from unittest.mock import Mock
 from unittest.mock import patch
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
 from django.test import override_settings
@@ -10,6 +11,7 @@ from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
+from forward_netbox.choices import forward_configured_models
 from forward_netbox.choices import ForwardSourceStatusChoices
 from forward_netbox.models import ForwardExecutionRun
 from forward_netbox.models import ForwardExecutionStep
@@ -26,6 +28,15 @@ from forward_netbox.utilities.health_checks import ingestion_check_message
 from forward_netbox.utilities.health_checks import ingestion_check_status
 from forward_netbox.utilities.health_summary_blocks import large_run_tuning_summary
 from forward_netbox.utilities.query_registry import read_compiled_builtin_query_source
+
+
+BGP_PLUGIN_CONFIG = {
+    **settings.PLUGINS_CONFIG,
+    "forward_netbox": {
+        **settings.PLUGINS_CONFIG.get("forward_netbox", {}),
+        "enable_bgp_sync": True,
+    },
+}
 
 
 class ForwardSyncHealthTest(TestCase):
@@ -188,6 +199,16 @@ class ForwardSyncHealthTest(TestCase):
         self.assertEqual(summary["capacity"]["completed_steps"], 1)
         self.assertEqual(summary["capacity"]["remaining_steps"], 1)
         self.assertEqual(summary["capacity"]["average_completed_step_seconds"], 20.0)
+        self.assertEqual(summary["throughput"]["completed_shards"], 1)
+        self.assertEqual(summary["throughput"]["remaining_shards"], 0)
+        self.assertEqual(summary["throughput"]["shards_per_hour_1h"], 1.0)
+        self.assertEqual(summary["throughput"]["apply_time_seconds_average"], 20.0)
+        self.assertEqual(summary["throughput"]["bottleneck_phase"], "apply")
+        self.assertEqual(
+            summary["throughput"]["query_fetch_concurrency"],
+            summary["runtime"]["query_fetch_concurrency"],
+        )
+        self.assertEqual(summary["throughput"]["nqe_page_size"], 10000)
         self.assertIn("adapter", summary["apply_engines"]["selected"])
         self.assertIn("bulk_orm", summary["apply_engines"]["selected"])
         self.assertIn(
@@ -381,9 +402,15 @@ class ForwardSyncHealthTest(TestCase):
             summary["large_run_tuning"]["signals"]["fallback_rate"],
             1.0,
         )
+        self.assertEqual(
+            summary["large_run_tuning"]["adaptive_capacity"]["decision"],
+            "hold_reduce_fallback_first",
+        )
         check_names = {item["name"] for item in summary["checks"]}
         self.assertIn("Pushdown efficiency", check_names)
         self.assertIn("Large-run tuning", check_names)
+        self.assertIn("Adaptive capacity", check_names)
+        self.assertIn("Run throughput", check_names)
         pushdown_check = next(
             item for item in summary["checks"] if item["name"] == "Pushdown efficiency"
         )
@@ -409,6 +436,197 @@ class ForwardSyncHealthTest(TestCase):
         self.assertEqual(
             summary["density_learning"]["models"][0]["model"], "dcim.cable"
         )
+
+    @override_settings(PLUGINS_CONFIG=BGP_PLUGIN_CONFIG)
+    def test_dependency_preflight_warns_for_interface_without_bgp_models(self):
+        sync = self._sync_with_enabled_models(
+            "health-sync-interface-no-bgp",
+            ["dcim.interface", "ipam.ipaddress"],
+        )
+        ForwardIngestion.objects.create(
+            sync=sync,
+            snapshot_selector="latestProcessed",
+            snapshot_id="snapshot-dependency",
+            baseline_ready=True,
+        )
+
+        summary = sync_health_summary(sync)
+        preflight = summary["dependency_preflight"]
+
+        self.assertEqual(preflight["status"], "warn")
+        self.assertTrue(preflight["delete_or_prune_possible"])
+        self.assertIn(
+            "baseline_ready_for_diff_deletes",
+            preflight["delete_or_prune_evidence"],
+        )
+        interface_warning = next(
+            item
+            for item in preflight["warnings"]
+            if item["selected_model"] == "dcim.interface"
+        )
+        self.assertEqual(
+            interface_warning["omitted_models"],
+            [
+                "netbox_routing.bgppeer",
+                "netbox_routing.bgppeeraddressfamily",
+                "netbox_peering_manager.peeringsession",
+            ],
+        )
+        self.assertIn(
+            "netbox_routing.bgppeer",
+            interface_warning["suggested_models"],
+        )
+        self.assertIsNotNone(interface_warning["delete_dependency_rank"])
+        dependency_check = next(
+            item
+            for item in summary["checks"]
+            if item["name"] == "Scoped dependency preflight"
+        )
+        self.assertEqual(dependency_check["status"], "warn")
+        self.assertIn("netbox_routing.bgppeer", dependency_check["message"])
+
+    @override_settings(PLUGINS_CONFIG=BGP_PLUGIN_CONFIG)
+    def test_dependency_preflight_passes_when_routing_models_are_enabled(self):
+        sync = self._sync_with_enabled_models(
+            "health-sync-interface-with-bgp",
+            [
+                "dcim.interface",
+                "ipam.ipaddress",
+                "netbox_routing.bgppeer",
+                "netbox_routing.bgppeeraddressfamily",
+                "netbox_peering_manager.peeringsession",
+            ],
+        )
+
+        summary = sync_health_summary(sync)
+
+        self.assertEqual(summary["dependency_preflight"]["status"], "pass")
+        self.assertEqual(summary["dependency_preflight"]["warnings"], [])
+        dependency_check = next(
+            item
+            for item in summary["checks"]
+            if item["name"] == "Scoped dependency preflight"
+        )
+        self.assertEqual(dependency_check["status"], "pass")
+
+    def test_delete_wave_summary_reports_planned_deletes_and_dependency_skips(self):
+        sync = self._sync_with_enabled_models(
+            "health-sync-delete-wave",
+            ["dcim.device", "dcim.interface"],
+        )
+        ingestion = ForwardIngestion.objects.create(
+            sync=sync,
+            snapshot_selector="latestProcessed",
+            snapshot_id="snapshot-delete-wave",
+            baseline_ready=True,
+            deleted_change_count=1,
+        )
+        ingestion.issues.create(
+            model="dcim.interface",
+            message="Skipping delete for `dcim.interface` due to protected dependencies.",
+            exception="ForwardDependencySkipError",
+        )
+        run = ForwardExecutionRun.objects.create(
+            sync=sync,
+            source=self.source,
+            backend="branching",
+            status="running",
+            snapshot_selector="latestProcessed",
+            snapshot_id="snapshot-delete-wave",
+            total_steps=2,
+            next_step_index=1,
+            plan_preview={
+                "delete_dependency_plan": {
+                    "status": "high",
+                    "delete_rows": 1250,
+                    "delete_shards": 2,
+                    "delete_model_count": 2,
+                    "delete_share": 0.62,
+                    "max_delete_shard_changes": 9000,
+                    "execution_order": ["dcim.interface", "dcim.device"],
+                    "models": {
+                        "dcim.interface": {
+                            "delete_rows": 50,
+                            "delete_shards": 1,
+                            "reference_blocker_risk": "medium",
+                        },
+                        "dcim.device": {
+                            "delete_rows": 1200,
+                            "delete_shards": 1,
+                            "reference_blocker_risk": "high",
+                        },
+                    },
+                    "warnings": [
+                        {
+                            "code": "delete_wave",
+                            "severity": "warning",
+                            "message": "Delete work is a material share of this plan.",
+                        }
+                    ],
+                }
+            },
+        )
+        ForwardExecutionStep.objects.create(
+            run=run,
+            index=1,
+            kind="stage",
+            status="running",
+            model_string="dcim.interface",
+            operation="apply",
+            estimated_changes=100,
+        )
+        ForwardExecutionStep.objects.create(
+            run=run,
+            index=2,
+            kind="stage",
+            status="pending",
+            model_string="dcim.device",
+            operation="delete",
+            estimated_changes=9000,
+        )
+
+        summary = sync_health_summary(sync)
+        delete_wave = summary["delete_wave"]
+
+        self.assertEqual(delete_wave["status"], "warn")
+        self.assertEqual(delete_wave["phase"], "apply_before_delete")
+        self.assertEqual(delete_wave["plan"]["delete_rows"], 1250)
+        self.assertEqual(delete_wave["plan"]["execution_order"][0], "dcim.interface")
+        self.assertEqual(delete_wave["steps"]["delete_step_count"], 1)
+        self.assertEqual(delete_wave["steps"]["pending_apply_step_count"], 1)
+        self.assertEqual(
+            delete_wave["latest_ingestion"]["dependency_skip_issues"]["count"],
+            1,
+        )
+        delete_check = next(
+            item for item in summary["checks"] if item["name"] == "Delete wave"
+        )
+        self.assertEqual(delete_check["status"], "warn")
+        self.assertIn("planned after earlier apply shards", delete_check["message"])
+
+    @override_settings(PLUGINS_CONFIG=BGP_PLUGIN_CONFIG)
+    def test_sync_health_view_renders_dependency_preflight_warning(self):
+        sync = self._sync_with_enabled_models(
+            "health-sync-dependency-view",
+            ["dcim.interface"],
+        )
+        ForwardIngestion.objects.create(
+            sync=sync,
+            snapshot_selector="latestProcessed",
+            snapshot_id="snapshot-dependency-view",
+            baseline_ready=True,
+        )
+        self.client.force_login(self.user)
+
+        response = self.client.get(
+            reverse(
+                "plugins:forward_netbox:forwardsync_health",
+                kwargs={"pk": sync.pk},
+            )
+        )
+
+        self.assertContains(response, "Scoped dependency preflight")
+        self.assertContains(response, "netbox_routing.bgppeer")
 
     def test_sync_health_summary_reports_stale_compatibility_payload(self):
         stale_sync = ForwardSync.objects.create(
@@ -527,6 +745,153 @@ class ForwardSyncHealthTest(TestCase):
             "complete_fast_bootstrap_then_branching",
         )
 
+    def test_adaptive_capacity_recommends_one_tuning_batch(self):
+        sync = self._sync_with_source_parameters(
+            "health-sync-adaptive-recommend",
+            {
+                "timeout": 1200,
+                "query_fetch_concurrency": 8,
+                "nqe_page_size": 8000,
+                "runtime_capacity_evidence": {
+                    "active_worker_count": 12,
+                    "database_headroom": "available",
+                    "worker_headroom": "available",
+                    "queue_backlog_depth": 3,
+                },
+            },
+        )
+
+        summary = large_run_tuning_summary(
+            sync,
+            capacity={"available": True, "total_steps": 80, "remaining_steps": 70},
+            query_pushdown={
+                "available": True,
+                "efficiency": {"fallback_steps": 0, "fallback_rate": 0.0},
+                "runtime_share": {},
+                "diff_utilization": {},
+                "tuning_guidance": [],
+            },
+            throughput={
+                "available": True,
+                "shards_per_hour_1h": 2.0,
+                "shards_per_hour_6h": 2.0,
+                "issue_rate_per_hour": 0.5,
+                "bottleneck_phase": "fetch",
+            },
+        )
+
+        adaptive = summary["adaptive_capacity"]
+        batch = adaptive["next_tuning_batch"]
+
+        self.assertEqual(adaptive["status"], "warn")
+        self.assertEqual(adaptive["decision"], "recommend_tuning_batch")
+        self.assertEqual(batch["worker_count"]["recommended"], 18)
+        self.assertEqual(batch["query_fetch_concurrency"]["recommended"], 10)
+        self.assertEqual(batch["nqe_page_size"]["recommended"], 9600)
+        self.assertEqual(batch["restart_scope"], "restart_workers_only")
+        self.assertEqual(batch["hold_minutes"], 60)
+
+    def test_adaptive_capacity_holds_when_throughput_is_healthy(self):
+        sync = self._sync_with_source_parameters(
+            "health-sync-adaptive-hold",
+            {
+                "runtime_capacity_evidence": {
+                    "active_worker_count": 12,
+                    "database_headroom": "available",
+                },
+            },
+        )
+
+        summary = large_run_tuning_summary(
+            sync,
+            capacity={"available": True, "total_steps": 20, "remaining_steps": 10},
+            query_pushdown={
+                "available": True,
+                "efficiency": {"fallback_steps": 0, "fallback_rate": 0.0},
+                "runtime_share": {},
+                "diff_utilization": {},
+                "tuning_guidance": [],
+            },
+            throughput={
+                "available": True,
+                "shards_per_hour_1h": 6.0,
+                "shards_per_hour_6h": 5.5,
+                "issue_rate_per_hour": 0.0,
+                "bottleneck_phase": "apply",
+            },
+        )
+
+        adaptive = summary["adaptive_capacity"]
+
+        self.assertEqual(adaptive["status"], "pass")
+        self.assertEqual(adaptive["decision"], "hold_current_settings")
+
+    def test_adaptive_capacity_rolls_back_on_issue_spike(self):
+        sync = self._sync_with_source_parameters(
+            "health-sync-adaptive-rollback",
+            {
+                "runtime_capacity_evidence": {
+                    "active_worker_count": 12,
+                    "database_headroom": "available",
+                },
+            },
+        )
+
+        summary = large_run_tuning_summary(
+            sync,
+            capacity={"available": True, "total_steps": 20, "remaining_steps": 10},
+            query_pushdown={
+                "available": True,
+                "efficiency": {"fallback_steps": 0, "fallback_rate": 0.0},
+                "runtime_share": {},
+                "diff_utilization": {},
+                "tuning_guidance": [],
+            },
+            throughput={
+                "available": True,
+                "shards_per_hour_1h": 2.0,
+                "shards_per_hour_6h": 2.0,
+                "issue_rate_per_hour": 3.0,
+                "bottleneck_phase": "apply",
+            },
+        )
+
+        adaptive = summary["adaptive_capacity"]
+
+        self.assertEqual(adaptive["status"], "warn")
+        self.assertEqual(adaptive["decision"], "rollback_latest_tuning_batch")
+
+    def test_adaptive_capacity_requires_worker_and_database_evidence(self):
+        sync = self._sync_with_source_parameters(
+            "health-sync-adaptive-insufficient",
+            {"query_fetch_concurrency": 8, "nqe_page_size": 8000},
+        )
+
+        summary = large_run_tuning_summary(
+            sync,
+            capacity={"available": True, "total_steps": 80, "remaining_steps": 70},
+            query_pushdown={
+                "available": True,
+                "efficiency": {"fallback_steps": 0, "fallback_rate": 0.0},
+                "runtime_share": {},
+                "diff_utilization": {},
+                "tuning_guidance": [],
+            },
+            throughput={
+                "available": True,
+                "shards_per_hour_1h": 2.0,
+                "shards_per_hour_6h": 2.0,
+                "issue_rate_per_hour": 0.5,
+                "bottleneck_phase": "fetch",
+            },
+        )
+
+        adaptive = summary["adaptive_capacity"]
+
+        self.assertEqual(adaptive["status"], "info")
+        self.assertEqual(adaptive["decision"], "insufficient_evidence")
+        self.assertEqual(adaptive["capacity_evidence"]["status"], "unknown")
+
     def test_sync_health_summary_has_no_experimental_bulk_orm_allowlist_gap(self):
         self.sync.parameters["enable_bulk_orm"] = True
         self.sync.save(update_fields=["parameters"])
@@ -622,11 +987,13 @@ class ForwardSyncHealthTest(TestCase):
         self.assertContains(response, "Large Run Tuning")
         self.assertContains(response, "First actions")
         self.assertContains(response, "Backend advice")
+        self.assertContains(response, "Delete Wave")
         self.assertContains(response, "Compatibility Cache")
         self.assertContains(response, "Compatibility payload present")
         self.assertContains(response, "Density Learning")
         self.assertContains(response, "High confidence models")
-        self.assertContains(response, "Capacity Projection")
+        self.assertContains(response, "Run Throughput")
+        self.assertContains(response, "Throughput summary")
         self.assertContains(response, "Export Live Source Check")
         self.assertContains(response, "Export Live Query Drift Check")
         self.assertContains(response, "Export Live Data File Check")
@@ -834,3 +1201,37 @@ class ForwardSyncHealthTest(TestCase):
 
         self.assertEqual(ingestion_check_status(ingestion), "warn")
         self.assertIn("including blocking rows", ingestion_check_message(ingestion))
+
+    def _sync_with_enabled_models(self, name, enabled_models):
+        enabled_models = set(enabled_models)
+        return ForwardSync.objects.create(
+            name=name,
+            source=self.source,
+            parameters={
+                "snapshot_id": "latestProcessed",
+                **{
+                    model_string: model_string in enabled_models
+                    for model_string in forward_configured_models()
+                },
+            },
+        )
+
+    def _sync_with_source_parameters(self, name, source_parameters):
+        source = ForwardSource.objects.create(
+            name=f"{name}-source",
+            type="saas",
+            url="https://fwd.app",
+            status=ForwardSourceStatusChoices.READY,
+            parameters={
+                "username": "user@example.com",
+                "password": "secret",
+                "verify": True,
+                "network_id": "test-network",
+                **dict(source_parameters or {}),
+            },
+        )
+        return ForwardSync.objects.create(
+            name=name,
+            source=source,
+            parameters={"snapshot_id": "latestProcessed"},
+        )

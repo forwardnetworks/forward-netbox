@@ -1,41 +1,49 @@
 {
-  "generated_at": "2026-05-24T03:40:37.125667+00:00",
+  "generated_at": "2026-06-02T03:58:09.479301+00:00",
   "metadata": {
+    "dataset_label": "blake",
+    "max_changes_per_branch": 10000,
     "models": "default_required_models",
     "query_limit": 10,
-    "resume": true,
-    "selected_step": "run_b_branching_plan_only",
+    "resume": false,
+    "selected_step": "",
     "step_count": 3,
-    "step_timeout_seconds": 900
+    "step_timeout_seconds": 7200
   },
   "note": "Sanitized field-scale smoke evidence. Commands intentionally omit credentials, network IDs, snapshot IDs, and raw command output.",
   "runs": [
     {
       "command": "forward_smoke_sync --validate-only --query-limit 10",
-      "elapsed_ms": 15775,
+      "elapsed_ms": 17471,
       "exit_code": 0,
+      "failure_code": "",
+      "failure_hint": "",
       "name": "run_a_branching_validate_only",
       "ok": true,
       "timed_out": false,
-      "timeout_seconds": 900
+      "timeout_seconds": 7200
     },
     {
       "command": "forward_smoke_sync --plan-only --max-changes-per-branch 10000",
-      "elapsed_ms": 179964,
+      "elapsed_ms": 326740,
       "exit_code": 0,
+      "failure_code": "",
+      "failure_hint": "",
       "name": "run_b_branching_plan_only",
       "ok": true,
       "timed_out": false,
-      "timeout_seconds": 900
+      "timeout_seconds": 7200
     },
     {
       "command": "forward_smoke_sync --validate-only --query-limit 10 --execution-backend fast_bootstrap",
-      "elapsed_ms": 17038,
+      "elapsed_ms": 12402,
       "exit_code": 0,
+      "failure_code": "",
+      "failure_hint": "",
       "name": "run_c_fast_bootstrap_validate_only",
       "ok": true,
       "timed_out": false,
-      "timeout_seconds": 900
+      "timeout_seconds": 7200
     }
   ],
   "status": "passed"

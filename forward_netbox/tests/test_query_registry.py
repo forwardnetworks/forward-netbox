@@ -300,15 +300,15 @@ class QueryRegistryTest(TestCase):
             if spec.query_name == "Forward Interfaces"
         )
 
-        self.assertIn("let ethernet_by_speed_mbps = [", spec.query)
+        self.assertIn("ethernet_by_speed_mbps = [", spec.query)
         self.assertIn("where profile.mbps == speed_mbps", spec.query)
         self.assertIn(
-            'type: if isPresent(interface_type) then interface_type else "other"',
+            'then if isPresent(interface_type) then interface_type else "other"',
             spec.query,
         )
         self.assertIn("interface.ethernet.aggregateId", spec.query)
         self.assertIn("IfaceType.IF_AGGREGATE", spec.query)
-        self.assertIn('then "lag" else "other"', spec.query)
+        self.assertIn('then "lag"', spec.query)
         self.assertIn(
             "speed: if isPresent(speed_mbps) then speed_mbps * 1000 else null : Integer",
             spec.query,
@@ -367,6 +367,18 @@ class QueryRegistryTest(TestCase):
             self.assertEqual(rows[query_name]["parameters"], {})
 
         self.assertEqual(rows["Forward Locations"]["parameters"], {})
+
+    def test_prefix_builtin_queries_seed_empty_shard_parameter(self):
+        rows = {row["name"]: row for row in builtin_nqe_map_rows()}
+
+        self.assertEqual(
+            rows["Forward IPv4 Prefixes"]["parameters"],
+            {"forward_netbox_shard_keys": []},
+        )
+        self.assertEqual(
+            rows["Forward IPv6 Prefixes"]["parameters"],
+            {"forward_netbox_shard_keys": []},
+        )
 
     def test_builtin_queries_do_not_reference_unregistered_shard_parameters(self):
         filenames = {
@@ -650,9 +662,10 @@ class QueryRegistryTest(TestCase):
         )
 
     def test_seed_builtin_maps_enables_existing_optional_routing_map_defaults(self):
-        netbox_model = ContentType.objects.get(
+        netbox_model, _ = ContentType.objects.get_or_create(
             app_label="netbox_routing", model="bgppeer"
         )
+        seed_builtin_nqe_maps(type("Sender", (), {"label": "forward_netbox"}))
         query_map = ForwardNQEMap.objects.get(
             name="Forward BGP Peers",
             netbox_model=netbox_model,
@@ -718,10 +731,10 @@ class QueryRegistryTest(TestCase):
             if spec.query_name == "Forward Interfaces"
         )
 
-        self.assertIn("loopback_interfaces =", spec.query)
+        self.assertIn("foreach interface in device.interfaces", spec.query)
         self.assertIn("interface.interfaceType == IfaceType.IF_LOOPBACK", spec.query)
-        self.assertIn('type: "virtual"', spec.query)
-        self.assertIn("ethernet_interfaces + loopback_interfaces", spec.query)
+        self.assertIn('then "virtual"', spec.query)
+        self.assertNotIn("ethernet_interfaces + loopback_interfaces", spec.query)
 
     def test_inferred_interface_cable_query_uses_resolved_interface_links(self):
         spec = next(
@@ -860,6 +873,16 @@ class QueryRegistryTest(TestCase):
         self.assertIn('ipAddress("0.0.0.0")', ipv4_spec.query)
         self.assertIn('ipAddress("127.0.0.0")', ipv4_spec.query)
         self.assertIn("where length(entry.prefix) < 128", ipv6_spec.query)
+        for spec in (ipv4_spec, ipv6_spec):
+            self.assertEqual(spec.parameters, {"forward_netbox_shard_keys": []})
+            self.assertIn(
+                "@query f(forward_netbox_shard_keys: List<String>)",
+                spec.query,
+            )
+            self.assertIn(
+                "toString(prefix) in forward_netbox_shard_keys",
+                spec.query,
+            )
 
     def test_ipaddress_query_excludes_unassignable_interface_addresses(self):
         ip_spec = next(spec for spec in BUILTIN_QUERY_SPECS["ipam.ipaddress"])
