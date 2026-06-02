@@ -72,3 +72,25 @@ class SyncLoggingTest(TestCase):
 
         self.assertEqual(len(job.log_entries), 0)
         mock_cache_set.assert_called_once()
+
+    @patch("forward_netbox.utilities.logging.cache.set")
+    def test_set_api_usage_summary_persists_counter_payload(self, mock_cache_set):
+        logger = SyncLogging(job=52)
+
+        logger.set_api_usage_summary(
+            {
+                "http_attempts": 5,
+                "http_429_failures": 1,
+                "nqe_pages": 3,
+            }
+        )
+
+        self.assertEqual(
+            logger.log_data["forward_api_usage"],
+            {
+                "http_attempts": 5,
+                "http_429_failures": 1,
+                "nqe_pages": 3,
+            },
+        )
+        mock_cache_set.assert_called_once()

@@ -152,3 +152,8 @@ class SyncLogging:
             )
             stats["total"] += amount
             cache.set(self.cache_key, self.log_data, self.cache_timeout)
+
+    def set_api_usage_summary(self, summary: dict) -> None:
+        with self._lock:
+            self.log_data["forward_api_usage"] = dict(summary or {})
+            cache.set(self.cache_key, self.log_data, self.cache_timeout)
