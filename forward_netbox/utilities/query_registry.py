@@ -94,10 +94,10 @@ ROUTING_IMPORT_DIAGNOSTIC_QUERY_NAME = "Forward Routing Import Diagnostics"
 ROUTING_IMPORT_DIAGNOSTIC_QUERY_FILE = "forward_routing_import_diagnostics.nqe"
 SHARD_QUERY_PARAMETER_NAME = "forward_netbox_shard_keys"
 SHARD_QUERY_PARAMETER_DEFAULT = {SHARD_QUERY_PARAMETER_NAME: []}
-# Query-side shard parameters stay disabled until each built-in map is converted
-# to a live-validated `@query` declaration. Shard retries still use Forward
-# column filters plus local safety filtering.
-SHARD_PARAMETER_QUERY_FILES = set()
+SHARD_PARAMETER_QUERY_FILES = {
+    "forward_prefixes_ipv4.nqe",
+    "forward_prefixes_ipv6.nqe",
+}
 
 
 def _read_query_source(filename: str) -> str:
@@ -110,6 +110,12 @@ def _default_query_parameters(filename: str) -> dict[str, Any]:
         if SHARD_QUERY_PARAMETER_NAME in source:
             return dict(SHARD_QUERY_PARAMETER_DEFAULT)
     return {}
+
+
+def _query_map_parameters(query_default: dict[str, Any], query_map) -> dict[str, Any]:
+    parameters = _default_query_parameters(query_default["filename"])
+    parameters.update(query_map.parameters or {})
+    return parameters
 
 
 def read_builtin_query_source(filename: str) -> str:
@@ -446,7 +452,7 @@ def _build_query_spec_from_map(query_map) -> QuerySpec:
                     query_name=query_map.name,
                     query_id=query_map.query_id,
                     commit_id=query_map.commit_id or None,
-                    parameters=query_map.parameters or {},
+                    parameters=_query_map_parameters(query_default, query_map),
                     coalesce_fields=tuple(
                         tuple(field_set) for field_set in normalized_coalesce
                     ),
@@ -459,7 +465,7 @@ def _build_query_spec_from_map(query_map) -> QuerySpec:
                     query_repository=query_map.query_repository or "org",
                     query_path=query_map.query_path,
                     commit_id=query_map.commit_id or None,
-                    parameters=query_map.parameters or {},
+                    parameters=_query_map_parameters(query_default, query_map),
                     coalesce_fields=tuple(
                         tuple(field_set) for field_set in normalized_coalesce
                     ),
@@ -469,7 +475,7 @@ def _build_query_spec_from_map(query_map) -> QuerySpec:
                 model_string=query_map.model_string,
                 query_name=query_map.name,
                 query=_read_query(query_default["filename"]),
-                parameters=query_map.parameters or {},
+                parameters=_query_map_parameters(query_default, query_map),
                 coalesce_fields=tuple(
                     tuple(field_set) for field_set in normalized_coalesce
                 ),

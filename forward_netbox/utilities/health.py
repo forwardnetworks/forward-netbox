@@ -24,8 +24,12 @@ from .health_summary_blocks import capacity_summary as _capacity_summary_impl
 from .health_summary_blocks import (
     compatibility_cache_summary as _compatibility_cache_summary_impl,
 )
+from .health_summary_blocks import delete_wave_summary as _delete_wave_summary_impl
 from .health_summary_blocks import (
     density_learning_summary as _density_learning_summary_impl,
+)
+from .health_summary_blocks import (
+    dependency_preflight_summary as _dependency_preflight_summary_impl,
 )
 from .health_summary_blocks import execution_run_summary as _execution_run_summary_impl
 from .health_summary_blocks import ingestion_summary as _ingestion_summary_impl
@@ -39,6 +43,7 @@ from .health_summary_blocks import (
 from .health_summary_blocks import runtime_summary as _runtime_summary_impl
 from .health_summary_blocks import source_summary as _source_summary_impl
 from .health_summary_blocks import step_duration_seconds as _step_duration_seconds_impl
+from .health_summary_blocks import throughput_summary as _throughput_summary_impl
 from .health_summary_blocks import validation_summary as _validation_summary_impl
 from .query_binding import local_query_binding_drift
 from .sync_facade import resolve_snapshot_id
@@ -93,10 +98,17 @@ def sync_health_summary(sync):
     apply_engines = _apply_engine_summary(sync, model_summary["enabled_models"])
     fetch_contracts = _fetch_contract_summary(model_summary["enabled_models"])
     query_pushdown = _query_pushdown_summary(execution_run)
+    delete_wave = _delete_wave_summary(execution_run, latest_ingestion)
+    throughput = _throughput_summary(sync, execution_run, latest_ingestion)
     large_run_tuning = _large_run_tuning_summary_impl(
         sync,
         capacity=capacity_summary,
         query_pushdown=query_pushdown,
+        throughput=throughput,
+    )
+    dependency_preflight = _dependency_preflight_summary(
+        sync,
+        model_summary["enabled_models"],
     )
     compatibility_cache = _compatibility_cache_summary(sync, execution_run)
     density_learning = _density_learning_summary(sync)
@@ -115,6 +127,9 @@ def sync_health_summary(sync):
         capacity_summary=capacity_summary,
         query_pushdown=query_pushdown,
         large_run_tuning=large_run_tuning,
+        dependency_preflight=dependency_preflight,
+        delete_wave=delete_wave,
+        throughput=throughput,
         compatibility_cache=compatibility_cache,
         next_run=next_run,
     )
@@ -127,6 +142,9 @@ def sync_health_summary(sync):
         "fetch_contracts": fetch_contracts,
         "query_pushdown": query_pushdown,
         "large_run_tuning": large_run_tuning,
+        "dependency_preflight": dependency_preflight,
+        "delete_wave": delete_wave,
+        "throughput": throughput,
         "compatibility_cache": compatibility_cache,
         "density_learning": density_learning,
         "query_modes": {
@@ -431,6 +449,18 @@ def _density_learning_summary(sync):
     return _density_learning_summary_impl(sync)
 
 
+def _dependency_preflight_summary(sync, enabled_models):
+    return _dependency_preflight_summary_impl(sync, enabled_models)
+
+
+def _delete_wave_summary(run, latest_ingestion=None):
+    return _delete_wave_summary_impl(run, latest_ingestion)
+
+
+def _throughput_summary(sync, run, latest_ingestion=None):
+    return _throughput_summary_impl(sync, run, latest_ingestion)
+
+
 def _query_pushdown_summary(run):
     return _query_pushdown_summary_impl(run)
 
@@ -558,6 +588,9 @@ def _health_checks(
     capacity_summary,
     query_pushdown,
     large_run_tuning,
+    dependency_preflight,
+    delete_wave,
+    throughput,
     compatibility_cache,
     next_run,
 ):
@@ -574,6 +607,9 @@ def _health_checks(
         capacity_summary=capacity_summary,
         query_pushdown=query_pushdown,
         large_run_tuning=large_run_tuning,
+        dependency_preflight=dependency_preflight,
+        delete_wave=delete_wave,
+        throughput=throughput,
         compatibility_cache=compatibility_cache,
         next_run=next_run,
         branching_available_fn=_branching_available,

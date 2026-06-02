@@ -23,12 +23,14 @@ def scale_benchmark_report(bundle, *, thresholds=None):
     run = bundle.get("run") or {}
     metrics = bundle.get("metrics") or {}
     steps = bundle.get("steps") or []
+    fallback_pressure = _fallback_pressure(metrics, steps)
     checks = [
         _support_bundle_shape_check(bundle),
         _run_completion_check(run, steps),
         _row_failure_check(metrics, thresholds=thresholds),
         _pushdown_efficiency_check(metrics, thresholds=thresholds),
         _pushdown_runtime_check(metrics, thresholds=thresholds),
+        _fallback_pressure_check(fallback_pressure, thresholds=thresholds),
         _diff_utilization_check(metrics, thresholds=thresholds),
         _diff_baseline_transition_check(metrics),
         _partition_retry_check(metrics),
@@ -62,6 +64,7 @@ def scale_benchmark_report(bundle, *, thresholds=None):
             "fetch_modes": list(metrics.get("fetch_modes") or []),
             "apply_engines": list(metrics.get("apply_engines") or []),
         },
+        "fallback_pressure": fallback_pressure,
         "checks": checks,
         "first_order_actions": _first_order_actions(metrics, checks),
     }
@@ -239,6 +242,207 @@ def _pushdown_runtime_check(metrics, *, thresholds):
             "total_query_runtime_ms": _optional_float(
                 runtime.get("total_query_runtime_ms")
             ),
+        },
+    }
+
+
+def _fallback_pressure(metrics, steps):
+    pressure = (metrics or {}).get("fallback_pressure") or {}
+    if pressure:
+        return pressure
+    return _fallback_pressure_from_step_dicts(steps)
+
+
+def _fallback_pressure_from_step_dicts(steps):
+    fallback_modes = {"model", "full_fallback", "diff_fallback"}
+    by_model = {}
+    reason_counts = {}
+    total_steps = 0
+    fallback_steps = 0
+    total_query_runtime_ms = 0.0
+    fallback_query_runtime_ms = 0.0
+    full_model_refetch_after_retry_count = 0
+    shard_scoped_fetch_failed_count = 0
+    partition_retry_count = 0
+    for step in steps or []:
+        if str(step.get("kind") or "stage") != "stage":
+            continue
+        total_steps += 1
+        model = str(step.get("model") or step.get("model_string") or "unknown")
+        mode = str(step.get("fetch_mode") or "")
+        fetch_parameters = step.get("fetch_parameters") or {}
+        retry_summary = fetch_parameters.get("partition_retry_summary") or {}
+        step_retry_count = _partition_retry_attempt_count_from_dict(retry_summary)
+        partition_retry_count += step_retry_count
+        entry = by_model.setdefault(
+            model,
+            {
+                "model": model,
+                "total_steps": 0,
+                "fallback_steps": 0,
+                "fallback_query_runtime_ms": 0.0,
+                "query_runtime_ms": 0.0,
+                "reason_counts": {},
+                "no_shard_safe_filter": False,
+                "shard_scoped_fetch_failed_count": 0,
+                "full_model_refetch_after_retry_count": 0,
+                "partition_retry_count": 0,
+            },
+        )
+        entry["total_steps"] += 1
+        entry["partition_retry_count"] += step_retry_count
+        query_runtime_ms = _optional_float(step.get("query_runtime_ms")) or 0.0
+        total_query_runtime_ms += query_runtime_ms
+        entry["query_runtime_ms"] = round(
+            entry["query_runtime_ms"] + query_runtime_ms, 3
+        )
+        if mode not in fallback_modes:
+            continue
+        fallback_steps += 1
+        fallback_query_runtime_ms += query_runtime_ms
+        reason = str(
+            fetch_parameters.get("fallback_reason")
+            or _default_fallback_reason_for_mode(mode)
+        )
+        reason_counts[reason] = int(reason_counts.get(reason, 0)) + 1
+        entry["reason_counts"][reason] = int(entry["reason_counts"].get(reason, 0)) + 1
+        entry["fallback_steps"] += 1
+        entry["fallback_query_runtime_ms"] = round(
+            entry["fallback_query_runtime_ms"] + query_runtime_ms,
+            3,
+        )
+        if reason == "model_fetch_contract_fallback" or mode == "model":
+            entry["no_shard_safe_filter"] = True
+        if mode in {"full_fallback", "diff_fallback"}:
+            entry["shard_scoped_fetch_failed_count"] += 1
+            shard_scoped_fetch_failed_count += 1
+        if mode in {"full_fallback", "diff_fallback"} and step_retry_count:
+            entry["full_model_refetch_after_retry_count"] += 1
+            full_model_refetch_after_retry_count += 1
+
+    ranked = []
+    for entry in by_model.values():
+        entry["fallback_rate"] = (
+            round(entry["fallback_steps"] / float(entry["total_steps"]), 4)
+            if entry["total_steps"]
+            else None
+        )
+        entry["fallback_runtime_share"] = (
+            round(entry["fallback_query_runtime_ms"] / entry["query_runtime_ms"], 4)
+            if entry["query_runtime_ms"]
+            else None
+        )
+        entry["reasons"] = [
+            {"reason": reason, "count": count}
+            for reason, count in sorted(
+                entry.pop("reason_counts").items(),
+                key=lambda item: (-int(item[1]), str(item[0])),
+            )
+        ]
+        ranked.append(entry)
+    ranked = sorted(
+        ranked,
+        key=lambda item: (-int(item["fallback_steps"]), str(item["model"])),
+    )
+    fallback_rate = (
+        round(fallback_steps / float(total_steps), 4) if total_steps else None
+    )
+    fallback_runtime_share = (
+        round(fallback_query_runtime_ms / float(total_query_runtime_ms), 4)
+        if total_query_runtime_ms
+        else None
+    )
+    return {
+        "status": "warn" if fallback_steps else "pass",
+        "message": (
+            f"{fallback_steps}/{total_steps} stage step(s) used fallback fetch."
+            if total_steps
+            else "No stage steps are available for fallback pressure analysis."
+        ),
+        "total_steps": total_steps,
+        "fallback_steps": fallback_steps,
+        "fallback_rate": fallback_rate,
+        "fallback_query_runtime_ms": round(fallback_query_runtime_ms, 3),
+        "total_query_runtime_ms": round(total_query_runtime_ms, 3),
+        "fallback_runtime_share": fallback_runtime_share,
+        "partition_retry_count": partition_retry_count,
+        "full_model_refetch_after_retry_count": full_model_refetch_after_retry_count,
+        "shard_scoped_fetch_failed_count": shard_scoped_fetch_failed_count,
+        "top_reasons": [
+            {"reason": reason, "count": count}
+            for reason, count in sorted(
+                reason_counts.items(),
+                key=lambda item: (-int(item[1]), str(item[0])),
+            )
+        ],
+        "ranked_models": ranked[:10],
+        "no_shard_safe_filter_models": [
+            item["model"] for item in ranked if item["no_shard_safe_filter"]
+        ],
+        "shard_scoped_fetch_failed_models": [
+            item["model"]
+            for item in ranked
+            if int(item["shard_scoped_fetch_failed_count"]) > 0
+        ],
+    }
+
+
+def _partition_retry_attempt_count_from_dict(retry_summary):
+    retry_summary = retry_summary or {}
+    return int(retry_summary.get("split_retry_count") or 0) + int(
+        retry_summary.get("alternate_operator_retry_count") or 0
+    )
+
+
+def _default_fallback_reason_for_mode(mode):
+    if mode == "model":
+        return "model_fetch_contract_fallback"
+    if mode == "full_fallback":
+        return "shard_pushdown_failed_full_fallback"
+    if mode == "diff_fallback":
+        return "diff_pushdown_failed_full_fallback"
+    return "unknown_fallback_reason"
+
+
+def _fallback_pressure_check(fallback_pressure, *, thresholds):
+    fallback_rate = _optional_float((fallback_pressure or {}).get("fallback_rate"))
+    fallback_steps = int((fallback_pressure or {}).get("fallback_steps") or 0)
+    ranked_models = list((fallback_pressure or {}).get("ranked_models") or [])
+    if fallback_rate is not None and fallback_rate >= float(
+        thresholds["fallback_fail_rate"]
+    ):
+        status = "fail"
+        message = "Fallback pressure exceeds the scale benchmark fail threshold."
+    elif fallback_rate is not None and fallback_rate >= float(
+        thresholds["fallback_warn_rate"]
+    ):
+        status = "warn"
+        message = "Fallback pressure is high enough to prioritize fetch-contract work."
+    elif fallback_steps:
+        status = "info"
+        message = "Fallback pressure exists but is below warning threshold."
+    else:
+        status = "pass"
+        message = "No fallback pressure was reported."
+    return {
+        "code": "fallback_pressure",
+        "status": status,
+        "message": message,
+        "evidence": {
+            "fallback_steps": fallback_steps,
+            "fallback_rate": fallback_rate,
+            "top_models": ranked_models[:5],
+            "top_reasons": list((fallback_pressure or {}).get("top_reasons") or [])[:5],
+            "full_model_refetch_after_retry_count": int(
+                (fallback_pressure or {}).get("full_model_refetch_after_retry_count")
+                or 0
+            ),
+            "no_shard_safe_filter_models": list(
+                (fallback_pressure or {}).get("no_shard_safe_filter_models") or []
+            )[:10],
+            "shard_scoped_fetch_failed_models": list(
+                (fallback_pressure or {}).get("shard_scoped_fetch_failed_models") or []
+            )[:10],
         },
     }
 

@@ -11,146 +11,116 @@
     {
       "code": "run_completion",
       "evidence": {
-        "next_step_index": 103,
-        "non_terminal_step_count": 64,
-        "run_status": "running",
-        "sample_non_terminal_steps": [
-          {
-            "index": 103,
-            "status": "running"
-          },
-          {
-            "index": 104,
-            "status": "pending"
-          },
-          {
-            "index": 105,
-            "status": "pending"
-          },
-          {
-            "index": 106,
-            "status": "pending"
-          },
-          {
-            "index": 107,
-            "status": "pending"
-          },
-          {
-            "index": 108,
-            "status": "pending"
-          },
-          {
-            "index": 109,
-            "status": "pending"
-          },
-          {
-            "index": 110,
-            "status": "pending"
-          },
-          {
-            "index": 111,
-            "status": "pending"
-          },
-          {
-            "index": 112,
-            "status": "pending"
-          }
-        ],
-        "total_steps": 166
+        "next_step_index": 32,
+        "non_terminal_step_count": 0,
+        "run_status": "completed",
+        "sample_non_terminal_steps": [],
+        "total_steps": 31
       },
-      "message": "Execution run is not complete yet (`running`).",
-      "status": "warn"
+      "message": "Execution run completed.",
+      "status": "pass"
     },
     {
       "code": "row_failures",
       "evidence": {
-        "attempted_row_count": 746973,
-        "failed_row_count": 38678,
-        "failed_row_rate": 0.0518
+        "attempted_row_count": 151,
+        "failed_row_count": 0,
+        "failed_row_rate": 0.0
       },
-      "message": "Row failure rate exceeds the scale benchmark fail threshold.",
-      "status": "fail"
+      "message": "No row failures were reported.",
+      "status": "pass"
     },
     {
       "code": "pushdown_efficiency",
       "evidence": {
-        "fallback_rate": 0.1687,
-        "fallback_steps": 28,
-        "hotspot_models": [
-          {
-            "fallback_rate": 1.0,
-            "fallback_steps": 19,
-            "model": "dcim.cable",
-            "total_steps": 19
-          },
-          {
-            "fallback_rate": 1.0,
-            "fallback_steps": 2,
-            "model": "dcim.device",
-            "total_steps": 2
-          }
-        ],
-        "model_fallback_guardrails": [
-          {
-            "fallback_budget_threshold": 0.5,
-            "fallback_rate": 1.0,
-            "fallback_steps": 19,
-            "model": "dcim.cable",
-            "total_steps": 19
-          },
-          {
-            "fallback_budget_threshold": 0.5,
-            "fallback_rate": 1.0,
-            "fallback_steps": 2,
-            "model": "dcim.device",
-            "total_steps": 2
-          }
-        ],
-        "total_steps": 166
+        "fallback_rate": 0.0,
+        "fallback_steps": 0,
+        "hotspot_models": [],
+        "model_fallback_guardrails": [],
+        "total_steps": 31
       },
-      "message": "Fallback fetch occurred but is below warning threshold.",
-      "status": "info"
+      "message": "No fallback fetch steps were reported.",
+      "status": "pass"
     },
     {
       "code": "pushdown_runtime",
       "evidence": {
-        "fallback_query_runtime_ms": 55849.4,
-        "fallback_runtime_share": 0.0054,
+        "fallback_query_runtime_ms": 0.0,
+        "fallback_runtime_share": 0.0,
         "full_fallback_runtime_share": 0.0,
-        "total_query_runtime_ms": 10390661.3
+        "total_query_runtime_ms": 13919.7
       },
-      "message": "Fallback fetch accounts for part of query runtime.",
-      "status": "info"
+      "message": "No fallback query runtime share was reported.",
+      "status": "pass"
+    },
+    {
+      "code": "fallback_pressure",
+      "evidence": {
+        "fallback_rate": 0.0,
+        "fallback_steps": 0,
+        "full_model_refetch_after_retry_count": 0,
+        "no_shard_safe_filter_models": [],
+        "shard_scoped_fetch_failed_models": [],
+        "top_models": [
+          {
+            "fallback_query_runtime_ms": 0.0,
+            "fallback_rate": 0.0,
+            "fallback_runtime_share": 0.0,
+            "fallback_steps": 0,
+            "full_model_refetch_after_retry_count": 0,
+            "model": "dcim.devicetype",
+            "no_shard_safe_filter": false,
+            "partition_retry_count": 0,
+            "query_runtime_ms": 12507.6,
+            "reasons": [],
+            "shard_scoped_fetch_failed_count": 0,
+            "total_steps": 28
+          },
+          {
+            "fallback_query_runtime_ms": 0.0,
+            "fallback_rate": 0.0,
+            "fallback_runtime_share": 0.0,
+            "fallback_steps": 0,
+            "full_model_refetch_after_retry_count": 0,
+            "model": "dcim.platform",
+            "no_shard_safe_filter": false,
+            "partition_retry_count": 0,
+            "query_runtime_ms": 1412.1,
+            "reasons": [],
+            "shard_scoped_fetch_failed_count": 0,
+            "total_steps": 3
+          }
+        ],
+        "top_reasons": []
+      },
+      "message": "No fallback pressure was reported.",
+      "status": "pass"
     },
     {
       "code": "diff_utilization",
       "evidence": {
-        "diff_actual_ratio": 0.0,
+        "diff_actual_ratio": null,
         "diff_steps": 0,
-        "eligible_steps": 166,
-        "non_diff_reason_counts": {
-          "missing_or_ineligible_diff_baseline": 166
-        }
+        "eligible_steps": 0,
+        "non_diff_reason_counts": {}
       },
-      "message": "Diff utilization is below the benchmark warning threshold.",
-      "status": "warn"
+      "message": "No diff-eligible query-id/query-path steps were reported.",
+      "status": "info"
     },
     {
       "code": "diff_baseline_transition",
       "evidence": {
-        "action_code": "complete_baseline_then_use_newer_snapshot",
+        "action_code": "use_query_id_or_query_path_maps",
         "backend": "branching",
         "baseline_snapshot_ids": [],
-        "diff_capable_step_count": 166,
+        "diff_capable_step_count": 0,
         "diff_step_count": 0,
-        "non_diff_reason_counts": {
-          "missing_or_ineligible_diff_baseline": 166
-        },
-        "raw_or_non_diff_capable_step_count": 0,
-        "run_baseline_ready": false,
-        "transition_code": "missing_or_ineligible_diff_baseline"
+        "non_diff_reason_counts": {},
+        "raw_or_non_diff_capable_step_count": 31,
+        "run_baseline_ready": true,
+        "transition_code": "no_diff_capable_query_identity"
       },
-      "message": "Diff-capable query identity exists, but no eligible prior baseline was available for at least one step.",
+      "message": "No stage steps used query_id/query_path identity, so API diffs cannot be used for this run.",
       "status": "warn"
     },
     {
@@ -168,19 +138,34 @@
       "code": "throughput_smoothing",
       "evidence": {
         "scheduler_overlap_readiness": {
+          "blocking_reasons": [
+            "capacity_evidence_missing"
+          ],
+          "capacity_evidence": {
+            "active_worker_count": null,
+            "database_headroom": "unknown",
+            "message": "Worker count or database headroom evidence is missing.",
+            "status": "unknown",
+            "worker_headroom": "unknown"
+          },
           "dominant_wait_component": "stage_queue",
-          "message": "Queue/merge wait is material; scheduler overlap is a candidate only after worker and database headroom are checked.",
-          "ready": true,
+          "message": "Queue/merge wait is material, but scheduler overlap is blocked until worker and database headroom are proven.",
+          "ready": false,
           "required_before_enablement": [
             "Confirm NetBox worker and database headroom.",
             "Keep branch budget and dependency order enforced by execution-ledger state.",
             "Limit overlap to the next eligible shard; do not add non-ledger side queues."
           ],
-          "status": "candidate_after_capacity_review"
+          "status": "blocked",
+          "supported_overlap_shape": {
+            "ledger_handoff_required": true,
+            "merge_serialized": true,
+            "stage_next_eligible_shard_only": true
+          }
         },
-        "total_observed_seconds": 192303.041,
-        "wait_seconds": 87255.866,
-        "wait_share": 0.4537
+        "total_observed_seconds": 2122.369,
+        "wait_seconds": 1997.254,
+        "wait_share": 0.941
       },
       "message": "Queue or merge wait is a material share of runtime.",
       "status": "warn"
@@ -190,67 +175,103 @@
       "evidence": {
         "apply_engines": [
           "adapter"
-        ]
+        ],
+        "step_count": 31
       },
-      "message": "Apply-engine evidence is present.",
-      "status": "pass"
+      "message": "Large-run evidence did not exercise the safe bulk ORM apply path; enable it before using this benchmark as optimized-runtime proof.",
+      "status": "warn"
     }
   ],
+  "fallback_pressure": {
+    "fallback_query_runtime_ms": 0.0,
+    "fallback_rate": 0.0,
+    "fallback_runtime_share": 0.0,
+    "fallback_steps": 0,
+    "full_model_refetch_after_retry_count": 0,
+    "message": "0/31 stage step(s) used fallback fetch.",
+    "no_shard_safe_filter_models": [],
+    "partition_retry_count": 0,
+    "ranked_models": [
+      {
+        "fallback_query_runtime_ms": 0.0,
+        "fallback_rate": 0.0,
+        "fallback_runtime_share": 0.0,
+        "fallback_steps": 0,
+        "full_model_refetch_after_retry_count": 0,
+        "model": "dcim.devicetype",
+        "no_shard_safe_filter": false,
+        "partition_retry_count": 0,
+        "query_runtime_ms": 12507.6,
+        "reasons": [],
+        "shard_scoped_fetch_failed_count": 0,
+        "total_steps": 28
+      },
+      {
+        "fallback_query_runtime_ms": 0.0,
+        "fallback_rate": 0.0,
+        "fallback_runtime_share": 0.0,
+        "fallback_steps": 0,
+        "full_model_refetch_after_retry_count": 0,
+        "model": "dcim.platform",
+        "no_shard_safe_filter": false,
+        "partition_retry_count": 0,
+        "query_runtime_ms": 1412.1,
+        "reasons": [],
+        "shard_scoped_fetch_failed_count": 0,
+        "total_steps": 3
+      }
+    ],
+    "shard_scoped_fetch_failed_count": 0,
+    "shard_scoped_fetch_failed_models": [],
+    "status": "pass",
+    "top_reasons": [],
+    "total_query_runtime_ms": 13919.7,
+    "total_steps": 31
+  },
   "first_order_actions": [
     {
-      "code": "review_run_completion",
-      "message": "Execution run is not complete yet (`running`).",
-      "severity": "warn"
-    },
-    {
-      "code": "review_row_failures",
-      "message": "Row failure rate exceeds the scale benchmark fail threshold.",
-      "severity": "fail"
-    },
-    {
-      "code": "review_diff_utilization",
-      "message": "Diff utilization is below the benchmark warning threshold.",
-      "severity": "warn"
-    },
-    {
       "code": "review_diff_baseline_transition",
-      "message": "Diff-capable query identity exists, but no eligible prior baseline was available for at least one step.",
+      "message": "No stage steps used query_id/query_path identity, so API diffs cannot be used for this run.",
       "severity": "warn"
     },
     {
       "code": "review_throughput_smoothing",
       "message": "Queue or merge wait is a material share of runtime.",
       "severity": "warn"
+    },
+    {
+      "code": "review_apply_engine_coverage",
+      "message": "Large-run evidence did not exercise the safe bulk ORM apply path; enable it before using this benchmark as optimized-runtime proof.",
+      "severity": "warn"
     }
   ],
-  "message": "Scale benchmark found release-blocking evidence.",
+  "message": "Scale benchmark found warnings that need review before release.",
   "run": {
     "backend": "branching",
-    "baseline_ready": false,
-    "id": 119,
-    "next_step_index": 103,
-    "status": "running",
-    "total_steps": 166
+    "baseline_ready": true,
+    "id": 4,
+    "next_step_index": 32,
+    "status": "completed",
+    "total_steps": 31
   },
-  "status": "fail",
+  "status": "warn",
   "summary": {
-    "actual_changes": 359460,
-    "applied_row_count": 458378,
+    "actual_changes": 151,
+    "applied_row_count": 151,
     "apply_engines": [
       "adapter"
     ],
-    "attempted_row_count": 746973,
-    "estimated_changes": 1383826,
-    "failed_row_count": 38678,
+    "attempted_row_count": 151,
+    "estimated_changes": 151,
+    "failed_row_count": 0,
     "fetch_modes": [
-      "model",
       "nqe_column_filter"
     ],
-    "fetched_row_count": 1383826,
-    "query_runtime_ms": 10390661.3,
-    "retry_count": 8,
-    "skipped_row_count": 249917,
-    "step_count": 166
+    "fetched_row_count": 151,
+    "query_runtime_ms": 13919.7,
+    "retry_count": 0,
+    "skipped_row_count": 0,
+    "step_count": 31
   },
   "thresholds": {
     "diff_warn_ratio": 0.8,

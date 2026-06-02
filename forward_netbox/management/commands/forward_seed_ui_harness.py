@@ -413,6 +413,7 @@ class Command(BaseCommand):
             created=now,
             started=now,
             completed=now,
+            notifications=[],
             data={
                 "statistics": {
                     "dcim.site": {"current": 1, "total": 1},

@@ -13,12 +13,16 @@ const artifactDir = path.resolve(
 const baseURL = (process.env.NETBOX_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
 const username = process.env.NETBOX_USERNAME || "admin";
 const password = process.env.NETBOX_PASSWORD || "admin";
+const dockerProjectName =
+  process.env.PLAYWRIGHT_DOCKER_PROJECT_NAME || "forward-netbox";
+const dockerProjectDirectory =
+  process.env.PLAYWRIGHT_DOCKER_PROJECT_DIRECTORY || "development";
 
 const dockerComposeArgs = [
   "--project-name",
-  "forward-netbox",
+  dockerProjectName,
   "--project-directory",
-  "development",
+  dockerProjectDirectory,
   "exec",
   "-T",
   "netbox",
@@ -147,8 +151,10 @@ async function main() {
     await expectVisible(page, "Local Query Drift");
     await expectVisible(page, "Export Live Query Drift Check");
     await expectVisible(page, "Export Live Data File Check");
-    await expectVisible(page, "Capacity Projection");
-    await expectVisible(page, "Diff eligibility");
+    await expectVisible(page, "Large Run Tuning");
+    await expectVisible(page, "Adaptive capacity");
+    await expectVisible(page, "Next tuning batch");
+    await expectVisible(page, "Diff-capable maps");
     await expectVisible(page, "Next run");
     await expectVisible(page, "Health Details");
     await assertNoHorizontalOverflow(page, "desktop sync health");
