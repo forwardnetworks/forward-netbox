@@ -206,6 +206,29 @@ def _build_shard_fetch_model_contracts():
                     "reason": "Device shard keys can be bucketed deterministically.",
                 },
             }
+        elif model_string == "ipam.prefix":
+            contracts[model_string] = {
+                "model": model_string,
+                "fetch_mode": "nqe_parameters",
+                "key_family": "prefix",
+                "shard_safe": True,
+                "local_safety_filter": True,
+                "schema_contract": "same_nqe_row_shape",
+                "reason_code": "ipam_prefix_query_parameter",
+                "reason": (
+                    "Prefix rows can be fetched with the built-in query-side "
+                    "shard parameter and still receive local shard safety filtering."
+                ),
+                "bucket_strategy": {
+                    "supported": True,
+                    "key_family": "prefix",
+                    "reason_code": "query_parameter_bucket_available",
+                    "reason": (
+                        "Prefix shard keys can be passed to the built-in NQE as "
+                        "a deterministic shard-key list."
+                    ),
+                },
+            }
         elif model_string in STRUCTURED_SHARD_FILTER_FIELDS:
             contracts[model_string] = {
                 "model": model_string,
@@ -454,14 +477,16 @@ def _structured_column_filter_contract(model_string, shard_keys):
         if len(values) != len(parsed_keys):
             continue
         unique_values = sorted(set(values))
-        fetch_mode = "nqe_column_filter"
-        filters = [
-            {
-                "operator": "EQUALS_ANY",
-                "columnName": field_name,
-                "values": list(unique_values),
+        if model_string == "ipam.prefix" and field_name == "prefix":
+            return {
+                "fetch_key_family": field_name,
+                "fetch_parameters": {
+                    SHARD_FETCH_PARAMETER_KEYS: list(unique_values),
+                },
+                "query_parameters": {},
+                "fetch_mode": "nqe_parameters",
+                "fetch_column_filters": [],
             }
-        ]
         return {
             "fetch_key_family": field_name,
             "fetch_parameters": {
@@ -470,8 +495,14 @@ def _structured_column_filter_contract(model_string, shard_keys):
                 SHARD_FETCH_PARAMETER_BUCKET: 0,
                 SHARD_FETCH_PARAMETER_BUCKET_COUNT: 1,
             },
-            "fetch_mode": fetch_mode,
-            "fetch_column_filters": filters,
+            "fetch_mode": "nqe_column_filter",
+            "fetch_column_filters": [
+                {
+                    "operator": "EQUALS_ANY",
+                    "columnName": field_name,
+                    "values": list(unique_values),
+                }
+            ],
         }
     return {}
 

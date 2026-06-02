@@ -92,6 +92,7 @@ from forward_netbox.utilities.multi_branch import BranchBudgetExceeded
 from forward_netbox.utilities.multi_branch import DEFAULT_PREFLIGHT_ROW_LIMIT
 from forward_netbox.utilities.multi_branch import ForwardMultiBranchExecutor
 from forward_netbox.utilities.multi_branch import ForwardMultiBranchPlanner
+from forward_netbox.utilities.multi_branch_lifecycle import maybe_enqueue_overlap_stage
 from forward_netbox.utilities.multi_branch_lifecycle import soft_budget_limit
 from forward_netbox.utilities.query_diagnostics import (
     summarize_ipaddress_parent_prefix_rows,
@@ -342,17 +343,15 @@ class ForwardBranchBudgetPlanTest(TestCase):
             ],
         )
 
-        self.assertEqual(contract["fetch_mode"], "nqe_column_filter")
+        self.assertEqual(contract["fetch_mode"], "nqe_parameters")
         self.assertEqual(contract["fetch_key_family"], "prefix")
         self.assertEqual(
+            contract["fetch_parameters"],
+            {"forward_netbox_shard_keys": ["10.0.0.0/24", "2001:db8::/64"]},
+        )
+        self.assertEqual(
             contract["fetch_column_filters"],
-            [
-                {
-                    "operator": "EQUALS_ANY",
-                    "columnName": "prefix",
-                    "values": ["10.0.0.0/24", "2001:db8::/64"],
-                }
-            ],
+            [],
         )
 
     def test_ipam_vlan_shard_fetch_contract_filters_by_vid_column(self):
@@ -440,7 +439,7 @@ class ForwardBranchBudgetPlanTest(TestCase):
         self.assertEqual(device_contract["fetch_mode"], "nqe_column_filter")
         self.assertEqual(device_contract["reason_code"], "device_column_filter")
         self.assertTrue(device_contract["shard_safe"])
-        self.assertEqual(prefix_contract["reason_code"], "ipam_column_filter")
+        self.assertEqual(prefix_contract["reason_code"], "ipam_prefix_query_parameter")
         self.assertTrue(prefix_contract["shard_safe"])
         self.assertEqual(site_contract["fetch_mode"], "nqe_column_filter")
         self.assertEqual(site_contract["reason_code"], "structured_column_filter")
@@ -457,7 +456,7 @@ class ForwardBranchBudgetPlanTest(TestCase):
             self.assertEqual(contract["model"], model_string)
             self.assertIn(
                 contract["fetch_mode"],
-                {"nqe_column_filter", "nqe_query_parameter", "model"},
+                {"nqe_column_filter", "nqe_parameters", "model"},
             )
             self.assertIn(
                 contract["schema_contract"],
@@ -2355,15 +2354,10 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
             {"prefix", "vrf", "status", "extra_debug"},
         )
         self.assertEqual(
-            shard_client.run_nqe_query.call_args.kwargs["column_filters"],
-            [
-                {
-                    "operator": "EQUALS_ANY",
-                    "columnName": "prefix",
-                    "values": ["10.0.0.0/24"],
-                }
-            ],
+            shard_client.run_nqe_query.call_args.kwargs["parameters"],
+            {"forward_netbox_shard_keys": ["10.0.0.0/24"]},
         )
+        self.assertIsNone(shard_client.run_nqe_query.call_args.kwargs["column_filters"])
 
     @patch("forward_netbox.utilities.query_fetch_execution.get_query_specs")
     def test_build_plan_preserves_fallback_model_row_shape_during_shard_fetch(
@@ -2526,7 +2520,7 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
                 self.assertEqual(shard_rows, [target_row])
 
     @patch("forward_netbox.utilities.query_fetch_execution.get_query_specs")
-    def test_build_plan_uses_shard_scoped_column_filter_for_ipam_prefix(
+    def test_build_plan_uses_shard_scoped_query_parameters_for_ipam_prefix(
         self,
         mock_specs,
     ):
@@ -2573,15 +2567,10 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
         )
 
         self.assertEqual(
-            client.run_nqe_query.call_args.kwargs["column_filters"],
-            [
-                {
-                    "operator": "EQUALS_ANY",
-                    "columnName": "prefix",
-                    "values": ["10.0.0.0/24"],
-                }
-            ],
+            client.run_nqe_query.call_args.kwargs["parameters"],
+            {"forward_netbox_shard_keys": ["10.0.0.0/24"]},
         )
+        self.assertIsNone(client.run_nqe_query.call_args.kwargs["column_filters"])
         self.assertEqual(len(plan), 1)
         self.assertEqual(plan[0].upsert_rows, [client.run_nqe_query.return_value[0]])
 
@@ -8689,6 +8678,76 @@ class ForwardSyncRunnerTest(TestCase):
             ],
         )
 
+    def test_fetch_spec_rows_passes_prefix_shard_keys_as_nqe_parameters(self):
+        client = Mock()
+        logger = Mock()
+        fetcher = ForwardQueryFetcher(
+            sync=self.sync,
+            client=client,
+            logger_=logger,
+        )
+        context = ForwardQueryContext(
+            network_id="test-network",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-before",
+        )
+        spec = QuerySpec(
+            model_string="ipam.prefix",
+            query_name="Forward IPv6 Prefixes",
+            query="@query f(forward_netbox_shard_keys: List<String>) = []",
+            parameters={"forward_netbox_shard_keys": []},
+        )
+        shard_scope = {
+            "shard_keys": [
+                "prefix=2400:9500::/32",
+                "prefix=2401:e800:7100::/40",
+            ],
+            **shard_fetch_contract(
+                "ipam.prefix",
+                [
+                    "prefix=2400:9500::/32",
+                    "prefix=2401:e800:7100::/40",
+                ],
+            ),
+        }
+        client.run_nqe_query.return_value = [
+            {"prefix": "2400:9500::/32", "status": "active"},
+            {"prefix": "2401:e800:7100::/40", "status": "active"},
+        ]
+
+        rows, delete_rows, sync_mode, fetch_meta = fetcher._fetch_spec_rows(
+            "ipam.prefix",
+            spec,
+            baseline=None,
+            context=context,
+            coalesce_fields=[["prefix"]],
+            shard_scope=shard_scope,
+            return_fetch_meta=True,
+        )
+
+        self.assertEqual(sync_mode, "full")
+        self.assertEqual(delete_rows, [])
+        self.assertEqual(
+            rows,
+            [
+                {"prefix": "2400:9500::/32", "status": "active"},
+                {"prefix": "2401:e800:7100::/40", "status": "active"},
+            ],
+        )
+        self.assertEqual(fetch_meta["fetch_mode"], "nqe_parameters")
+        self.assertEqual(fetch_meta["fetch_column_filters"], [])
+        client.run_nqe_query.assert_called_once()
+        self.assertIsNone(client.run_nqe_query.call_args.kwargs["column_filters"])
+        self.assertEqual(
+            client.run_nqe_query.call_args.kwargs["parameters"],
+            {
+                "forward_netbox_shard_keys": [
+                    "2400:9500::/32",
+                    "2401:e800:7100::/40",
+                ]
+            },
+        )
+
     def test_fetch_spec_rows_partitions_large_column_filter_diff_batches(self):
         baseline = Mock(snapshot_id="snapshot-before")
         client = Mock()
@@ -8963,17 +9022,21 @@ class ForwardSyncRunnerTest(TestCase):
             "query_parameters": {},
             "shard_keys": ["device:device-1", "device:device-2", "device:device-3"],
         }
-        fetcher._run_nqe_query_with_parameter_fallback = Mock(
-            side_effect=[
-                ForwardClientError(
+
+        def _query_side_effect(*, column_filters, **kwargs):
+            filter_item = dict((column_filters or [{}])[0])
+            operator = str(filter_item.get("operator") or "")
+            if operator == "EQUALS_ANY":
+                raise ForwardClientError(
                     "Forward API request failed with HTTP 400: {'value' is required}"
-                ),
-                [{"device": "device-1", "name": "Ethernet1/1"}],
-                [
-                    {"device": "device-2", "name": "Ethernet1/1"},
-                    {"device": "device-3", "name": "Ethernet1/1"},
-                ],
-            ]
+                )
+            if operator == "DEFAULT":
+                value = str(filter_item.get("value") or "")
+                return [{"device": value, "name": "Ethernet1/1"}]
+            raise AssertionError(f"Unexpected column filter shape: {filter_item!r}")
+
+        fetcher._run_nqe_query_with_parameter_fallback = Mock(
+            side_effect=_query_side_effect
         )
 
         rows, delete_rows, sync_mode, fetch_meta = fetcher._fetch_spec_rows(
@@ -8993,16 +9056,30 @@ class ForwardSyncRunnerTest(TestCase):
             [row["device"] for row in rows],
             ["device-1", "device-2", "device-3"],
         )
-        self.assertEqual(fetcher._run_nqe_query_with_parameter_fallback.call_count, 3)
+        self.assertEqual(fetcher._run_nqe_query_with_parameter_fallback.call_count, 4)
+        first_filter = fetcher._run_nqe_query_with_parameter_fallback.call_args_list[
+            0
+        ].kwargs["column_filters"][0]
+        self.assertEqual(first_filter["operator"], "EQUALS_ANY")
+        self.assertEqual(first_filter["values"], ["device-1", "device-2", "device-3"])
+        self.assertEqual(
+            [
+                call.kwargs["column_filters"][0]["value"]
+                for call in fetcher._run_nqe_query_with_parameter_fallback.call_args_list[
+                    1:
+                ]
+            ],
+            ["device-1", "device-2", "device-3"],
+        )
         self.assertEqual(
             fetch_meta["fetch_parameters"]["partition_retry_summary"],
             {
                 "operation": "full",
                 "partition_count": 1,
-                "split_retry_count": 2,
-                "split_retry_success_count": 1,
-                "alternate_operator_retry_count": 0,
-                "alternate_operator_success_count": 0,
+                "split_retry_count": 0,
+                "split_retry_success_count": 0,
+                "alternate_operator_retry_count": 3,
+                "alternate_operator_success_count": 1,
             },
         )
 
@@ -9301,7 +9378,7 @@ class ForwardSyncRunnerTest(TestCase):
                 for message in info_messages
             )
         )
-        self.assertTrue(
+        self.assertFalse(
             any("smaller split partitions" in message for message in info_messages)
         )
 
@@ -10489,7 +10566,7 @@ class ForwardSyncRunnerTest(TestCase):
             self.assertEqual(rows, [{"device": "core-1", "name": "Ethernet1"}])
             self.assertEqual(retry_rows, [{"device": "core-2", "name": "Ethernet2"}])
             self.assertEqual(
-                fetcher._run_nqe_query_with_parameter_fallback.call_count, 5
+                fetcher._run_nqe_query_with_parameter_fallback.call_count, 3
             )
             self.assertEqual(
                 fetch_meta["fetch_parameters"]["model_fetch_artifact"]["status"],
@@ -10615,7 +10692,7 @@ class ForwardSyncRunnerTest(TestCase):
                 "hit",
             )
             self.assertEqual(
-                retry_fetcher._run_nqe_query_with_parameter_fallback.call_count, 2
+                retry_fetcher._run_nqe_query_with_parameter_fallback.call_count, 0
             )
 
     def test_fetch_artifacts_are_pruned_when_execution_run_completes(self):
@@ -11983,6 +12060,41 @@ class QueryParameterCompatibilityTest(TestCase):
 
 
 class SchedulerOverlapPolicyTest(TestCase):
+    def _sync_with_run(self, *, scheduler_overlap=True, auto_merge=True):
+        source = ForwardSource.objects.create(
+            name="scheduler-overlap-source",
+            type="saas",
+            url="https://fwd.app",
+            parameters={
+                "username": "user@example.com",
+                "password": "secret",
+                "verify": True,
+                "network_id": "test-network",
+            },
+        )
+        sync = ForwardSync.objects.create(
+            name="scheduler-overlap-sync",
+            source=source,
+            auto_merge=auto_merge,
+            parameters={
+                "snapshot_id": "latestProcessed",
+                "execution_backend": "branching",
+                "scheduler_overlap": scheduler_overlap,
+            },
+        )
+        run = ForwardExecutionRun.objects.create(
+            sync=sync,
+            source=source,
+            backend="branching",
+            status="running",
+            auto_merge=auto_merge,
+            snapshot_selector="latestProcessed",
+            snapshot_id="snapshot-overlap",
+            total_steps=3,
+            next_step_index=1,
+        )
+        return sync, run
+
     def test_scheduler_overlap_defaults_on_for_branching_auto_merge_when_unset(self):
         sync = Mock(
             auto_merge=True,
@@ -12006,3 +12118,89 @@ class SchedulerOverlapPolicyTest(TestCase):
             parameters={"execution_backend": "branching"},
         )
         self.assertFalse(scheduler_overlap_enabled(sync))
+
+    def test_scheduler_overlap_enqueue_noops_when_disabled(self):
+        sync, run = self._sync_with_run(scheduler_overlap=False)
+        ForwardExecutionStep.objects.create(
+            run=run,
+            index=2,
+            status=ForwardExecutionStepStatusChoices.PENDING,
+            model_string="dcim.site",
+        )
+        executor = Mock(sync=sync, user=None, logger=Mock())
+
+        with patch(
+            "forward_netbox.utilities.multi_branch_lifecycle.enqueue_branch_stage_job"
+        ) as enqueue:
+            result = maybe_enqueue_overlap_stage(
+                executor,
+                Mock(index=1),
+                total_plan_items=3,
+            )
+
+        self.assertIsNone(result)
+        enqueue.assert_not_called()
+
+    def test_scheduler_overlap_avoids_duplicate_future_stage_worker(self):
+        sync, run = self._sync_with_run(scheduler_overlap=True)
+        ForwardExecutionStep.objects.create(
+            run=run,
+            index=2,
+            status=ForwardExecutionStepStatusChoices.PENDING,
+            model_string="dcim.site",
+        )
+        ForwardExecutionStep.objects.create(
+            run=run,
+            index=3,
+            status=ForwardExecutionStepStatusChoices.QUEUED,
+            model_string="dcim.device",
+        )
+        executor = Mock(sync=sync, user=None, logger=Mock())
+
+        with patch(
+            "forward_netbox.utilities.multi_branch_lifecycle.enqueue_branch_stage_job"
+        ) as enqueue:
+            result = maybe_enqueue_overlap_stage(
+                executor,
+                Mock(index=1),
+                total_plan_items=3,
+            )
+
+        self.assertIsNone(result)
+        enqueue.assert_not_called()
+
+    def test_scheduler_overlap_enqueues_only_next_stage_and_keeps_merge_serialized(
+        self,
+    ):
+        sync, run = self._sync_with_run(scheduler_overlap=True)
+        ForwardExecutionStep.objects.create(
+            run=run,
+            index=2,
+            status=ForwardExecutionStepStatusChoices.PENDING,
+            model_string="dcim.site",
+        )
+        executor = Mock(sync=sync, user=None, logger=Mock())
+        queued_job = Mock()
+
+        with patch(
+            "forward_netbox.utilities.multi_branch_lifecycle.enqueue_branch_stage_job",
+            return_value=queued_job,
+        ) as enqueue:
+            result = maybe_enqueue_overlap_stage(
+                executor,
+                Mock(index=1),
+                total_plan_items=3,
+            )
+
+        self.assertEqual(result, queued_job)
+        enqueue.assert_called_once_with(
+            sync,
+            user=None,
+            adhoc=True,
+            overlap_stage=True,
+        )
+        executor.logger.log_info.assert_called_once()
+        self.assertIn(
+            "merge remains serialized",
+            executor.logger.log_info.call_args.args[0],
+        )

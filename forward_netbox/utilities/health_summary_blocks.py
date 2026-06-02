@@ -1,6 +1,12 @@
+from collections import Counter
+from datetime import timedelta
+from math import ceil
+
 from django.conf import settings
+from django.utils import timezone
 
 from .. import NetboxForwardConfig
+from ..choices import forward_configured_models
 from ..choices import ForwardDiffFallbackModeChoices
 from ..choices import ForwardExecutionBackendChoices
 from ..choices import ForwardExecutionStepKindChoices
@@ -19,10 +25,81 @@ from .execution_ledger_metrics import pushdown_efficiency_summary
 from .execution_ledger_metrics import pushdown_runtime_summary
 from .execution_ledger_metrics import pushdown_tuning_guidance
 from .execution_ledger_metrics import recent_pushdown_trend_snapshots
+from .forward_api import DEFAULT_NQE_PAGE_SIZE
+from .forward_api import MAX_NQE_PAGE_SIZE
+from .forward_api import MAX_QUERY_FETCH_CONCURRENCY
+from .model_contracts import architecture_contract_for_model
 from .runtime_guidance import configured_rq_default_timeout
 from .runtime_guidance import source_pushdown_alert_thresholds
 from .runtime_guidance import source_query_fetch_concurrency
 from .runtime_guidance import source_timeout_seconds
+
+
+DEPENDENCY_PREFLIGHT_RULES = (
+    {
+        "code": "interface_routing_dependency_omitted",
+        "selected_model": "dcim.interface",
+        "omitted_models": (
+            "netbox_routing.bgppeer",
+            "netbox_routing.bgppeeraddressfamily",
+            "netbox_peering_manager.peeringsession",
+        ),
+        "message": (
+            "dcim.interface delete/prune rows can be blocked by protected "
+            "routing or peering references when these models are omitted."
+        ),
+    },
+    {
+        "code": "ipaddress_routing_dependency_omitted",
+        "selected_model": "ipam.ipaddress",
+        "omitted_models": (
+            "netbox_routing.bgppeer",
+            "netbox_routing.bgppeeraddressfamily",
+            "netbox_peering_manager.peeringsession",
+        ),
+        "message": (
+            "ipam.ipaddress delete/prune rows can be blocked by protected "
+            "routing or peering references when these models are omitted."
+        ),
+    },
+    {
+        "code": "device_child_dependency_omitted",
+        "selected_model": "dcim.device",
+        "omitted_models": (
+            "dcim.interface",
+            "dcim.cable",
+            "dcim.module",
+            "dcim.inventoryitem",
+            "ipam.ipaddress",
+            "ipam.prefix",
+            "netbox_routing.bgppeer",
+            "netbox_routing.bgppeeraddressfamily",
+            "netbox_peering_manager.peeringsession",
+        ),
+        "message": (
+            "dcim.device delete/prune rows can be blocked by child, IPAM, "
+            "routing, or peering references when these models are omitted."
+        ),
+    },
+)
+
+DELETE_TERMINAL_STEP_STATUSES = {
+    ForwardExecutionStepStatusChoices.STAGED,
+    ForwardExecutionStepStatusChoices.MERGED,
+    ForwardExecutionStepStatusChoices.SKIPPED,
+    ForwardExecutionStepStatusChoices.CANCELLED,
+    ForwardExecutionStepStatusChoices.FAILED,
+    ForwardExecutionStepStatusChoices.TIMEOUT,
+    ForwardExecutionStepStatusChoices.MERGE_TIMEOUT,
+}
+DELETE_ACTIVE_STEP_STATUSES = {
+    ForwardExecutionStepStatusChoices.QUEUED,
+    ForwardExecutionStepStatusChoices.RUNNING,
+    ForwardExecutionStepStatusChoices.MERGE_QUEUED,
+}
+ADAPTIVE_CAPACITY_TARGET_SHARDS_PER_HOUR = 5.0
+ADAPTIVE_CAPACITY_MAX_ISSUES_PER_HOUR = 2.0
+ADAPTIVE_CAPACITY_HOLD_MINUTES = 60
 
 
 def source_summary(sync):
@@ -210,9 +287,10 @@ def capacity_message(run, *, average_seconds, max_seconds, remaining_steps):
     )
 
 
-def large_run_tuning_summary(sync, *, capacity, query_pushdown):
+def large_run_tuning_summary(sync, *, capacity, query_pushdown, throughput=None):
     capacity = capacity or {}
     query_pushdown = query_pushdown or {}
+    throughput = throughput or {}
     runtime = runtime_summary(sync)
     efficiency = query_pushdown.get("efficiency") or {}
     runtime_share = query_pushdown.get("runtime_share") or {}
@@ -223,6 +301,12 @@ def large_run_tuning_summary(sync, *, capacity, query_pushdown):
         capacity=capacity,
         efficiency=efficiency,
         diff_utilization=diff_utilization,
+    )
+    adaptive_capacity = adaptive_capacity_summary(
+        sync,
+        capacity=capacity,
+        query_pushdown=query_pushdown,
+        throughput=throughput,
     )
 
     actions = []
@@ -332,6 +416,7 @@ def large_run_tuning_summary(sync, *, capacity, query_pushdown):
         warning_guidance
         or any(item["code"] == "runtime_exceeds_worker_timeout" for item in actions)
         or backend_advice.get("status") == "warn"
+        or adaptive_capacity.get("status") == "warn"
     ):
         status = "warn"
     elif actions:
@@ -343,6 +428,11 @@ def large_run_tuning_summary(sync, *, capacity, query_pushdown):
 
     if actions:
         message = actions[0]["message"]
+    elif adaptive_capacity.get("decision") in {
+        "recommend_tuning_batch",
+        "rollback_latest_tuning_batch",
+    }:
+        message = adaptive_capacity["message"]
     elif status == "pass":
         message = "No immediate large-run tuning action is indicated by current health signals."
     else:
@@ -364,8 +454,836 @@ def large_run_tuning_summary(sync, *, capacity, query_pushdown):
             "diff_actual_ratio": diff_utilization.get("diff_actual_ratio"),
             "projected_remaining_seconds": projected_remaining,
         },
+        "adaptive_capacity": adaptive_capacity,
         "first_order_actions": actions[:6],
     }
+
+
+def adaptive_capacity_summary(sync, *, capacity, query_pushdown, throughput):
+    capacity = capacity or {}
+    query_pushdown = query_pushdown or {}
+    throughput = throughput or {}
+    evidence = _adaptive_capacity_evidence(sync, throughput=throughput)
+    batch = _adaptive_tuning_batch(sync, evidence=evidence)
+    issue_rate = _optional_float(throughput.get("issue_rate_per_hour"))
+    one_hour_rate = _optional_float(throughput.get("shards_per_hour_1h"))
+    six_hour_rate = _optional_float(throughput.get("shards_per_hour_6h"))
+    sustained_rate = six_hour_rate if six_hour_rate is not None else one_hour_rate
+    efficiency = query_pushdown.get("efficiency") or {}
+    diff_utilization = query_pushdown.get("diff_utilization") or {}
+    fallback_steps = int(efficiency.get("fallback_steps") or 0)
+    diff_ratio = _optional_float(diff_utilization.get("diff_actual_ratio"))
+
+    base = {
+        "target_shards_per_hour": ADAPTIVE_CAPACITY_TARGET_SHARDS_PER_HOUR,
+        "max_safe_issue_rate_per_hour": ADAPTIVE_CAPACITY_MAX_ISSUES_PER_HOUR,
+        "hold_minutes": ADAPTIVE_CAPACITY_HOLD_MINUTES,
+        "issue_rate_per_hour": issue_rate,
+        "shards_per_hour_1h": one_hour_rate,
+        "shards_per_hour_6h": six_hour_rate,
+        "sustained_shards_per_hour": sustained_rate,
+        "capacity_evidence": evidence,
+        "next_tuning_batch": batch,
+    }
+
+    if not throughput.get("available") or one_hour_rate is None:
+        return {
+            **base,
+            "status": "info",
+            "decision": "insufficient_evidence",
+            "message": (
+                "Adaptive capacity needs at least one hourly throughput checkpoint "
+                "before recommending a tuning batch."
+            ),
+        }
+
+    if issue_rate is None:
+        return {
+            **base,
+            "status": "info",
+            "decision": "insufficient_evidence",
+            "message": (
+                "Adaptive capacity needs an issue-rate checkpoint before tuning "
+                "worker, query, or page-size settings."
+            ),
+        }
+
+    if issue_rate > ADAPTIVE_CAPACITY_MAX_ISSUES_PER_HOUR:
+        return {
+            **base,
+            "status": "warn",
+            "decision": "rollback_latest_tuning_batch",
+            "message": (
+                "Issue rate is above the safe tuning threshold; roll back only the "
+                "latest capacity increment, restart workers only, and hold for "
+                f"{ADAPTIVE_CAPACITY_HOLD_MINUTES} minutes."
+            ),
+        }
+
+    if fallback_steps > 0:
+        return {
+            **base,
+            "status": "info",
+            "decision": "hold_reduce_fallback_first",
+            "message": (
+                "Hold capacity steady and reduce fallback-heavy model fetches before "
+                "increasing workers, query concurrency, or page size."
+            ),
+        }
+
+    if diff_ratio is not None and diff_ratio < 1.0:
+        return {
+            **base,
+            "status": "info",
+            "decision": "hold_restore_diff_first",
+            "message": (
+                "Hold capacity steady and restore diff execution before tuning "
+                "worker or database capacity."
+            ),
+        }
+
+    low_throughput = one_hour_rate < ADAPTIVE_CAPACITY_TARGET_SHARDS_PER_HOUR and (
+        six_hour_rate is None
+        or six_hour_rate < ADAPTIVE_CAPACITY_TARGET_SHARDS_PER_HOUR
+    )
+    if not low_throughput:
+        return {
+            **base,
+            "status": "pass",
+            "decision": "hold_current_settings",
+            "message": (
+                "Throughput is at or above the tuning target; hold current settings "
+                f"for {ADAPTIVE_CAPACITY_HOLD_MINUTES} minutes and continue hourly "
+                "checks."
+            ),
+        }
+
+    if evidence["status"] == "blocked":
+        return {
+            **base,
+            "status": "warn",
+            "decision": "capacity_blocked",
+            "message": (
+                "Throughput is below target, but worker/database capacity evidence "
+                "shows no headroom. Do not increase concurrency until that bottleneck "
+                "is resolved."
+            ),
+        }
+
+    if evidence["status"] != "available":
+        return {
+            **base,
+            "status": "info",
+            "decision": "insufficient_evidence",
+            "message": (
+                "Throughput is below target and issue rate is safe, but worker count "
+                "or database headroom evidence is missing. Capture active worker "
+                "count and database headroom before applying the next tuning batch."
+            ),
+        }
+
+    return {
+        **base,
+        "status": "warn",
+        "decision": "recommend_tuning_batch",
+        "message": (
+            "Throughput is below target and issue rate is safe; apply one tuning "
+            "batch, restart workers only, then hold for "
+            f"{ADAPTIVE_CAPACITY_HOLD_MINUTES} minutes."
+        ),
+    }
+
+
+def _adaptive_capacity_evidence(sync, *, throughput):
+    parameters = {}
+    source_parameters = getattr(getattr(sync, "source", None), "parameters", None) or {}
+    sync_parameters = getattr(sync, "parameters", None) or {}
+    for candidate in (
+        sync_parameters.get("runtime_capacity_evidence"),
+        sync_parameters.get("capacity_evidence"),
+        source_parameters.get("runtime_capacity_evidence"),
+        source_parameters.get("capacity_evidence"),
+    ):
+        if isinstance(candidate, dict):
+            parameters.update(candidate)
+    for key in (
+        "active_worker_count",
+        "worker_count",
+        "netbox_worker_count",
+        "worker_replicas",
+        "database_headroom",
+        "db_headroom",
+        "worker_headroom",
+        "queue_backlog_depth",
+    ):
+        if key in source_parameters and key not in parameters:
+            parameters[key] = source_parameters[key]
+        if key in sync_parameters and key not in parameters:
+            parameters[key] = sync_parameters[key]
+
+    worker_count = _optional_int(
+        parameters.get("active_worker_count")
+        or parameters.get("worker_count")
+        or parameters.get("netbox_worker_count")
+        or parameters.get("worker_replicas")
+    )
+    queue_backlog_depth = _optional_int(parameters.get("queue_backlog_depth"))
+    database_headroom = _headroom_status(
+        parameters.get("database_headroom") or parameters.get("db_headroom")
+    )
+    worker_headroom = _headroom_status(parameters.get("worker_headroom"))
+    bottleneck_phase = str((throughput or {}).get("bottleneck_phase") or "unknown")
+
+    if database_headroom == "blocked" or worker_headroom == "blocked":
+        status = "blocked"
+        message = "Worker or database headroom evidence shows a capacity bottleneck."
+    elif worker_count is not None and database_headroom == "available":
+        status = "available"
+        message = "Worker count and database headroom evidence are available."
+    else:
+        status = "unknown"
+        message = "Worker count or database headroom evidence is missing."
+
+    return {
+        "status": status,
+        "message": message,
+        "active_worker_count": worker_count,
+        "queue_backlog_depth": queue_backlog_depth,
+        "database_headroom": database_headroom,
+        "worker_headroom": worker_headroom,
+        "bottleneck_phase": bottleneck_phase,
+    }
+
+
+def _adaptive_tuning_batch(sync, *, evidence):
+    current_workers = (evidence or {}).get("active_worker_count")
+    current_concurrency = source_query_fetch_concurrency(sync)
+    current_page_size = _source_nqe_page_size(sync)
+    recommended_workers = (
+        max(int(current_workers) + 1, ceil(int(current_workers) * 1.5))
+        if current_workers is not None
+        else None
+    )
+    recommended_concurrency = min(
+        MAX_QUERY_FETCH_CONCURRENCY,
+        max(current_concurrency, ceil(current_concurrency * 1.25)),
+    )
+    recommended_page_size = min(
+        MAX_NQE_PAGE_SIZE,
+        max(current_page_size, ceil(current_page_size * 1.2)),
+    )
+    return {
+        "code": "one_capacity_tuning_batch",
+        "worker_count": {
+            "current": current_workers,
+            "recommended": recommended_workers,
+            "change": "+50% round up" if current_workers is not None else "unknown",
+        },
+        "query_fetch_concurrency": {
+            "current": current_concurrency,
+            "recommended": recommended_concurrency,
+            "change": f"+25% round up, cap {MAX_QUERY_FETCH_CONCURRENCY}",
+        },
+        "nqe_page_size": {
+            "current": current_page_size,
+            "recommended": recommended_page_size,
+            "change": f"+20% round up, cap {MAX_NQE_PAGE_SIZE}",
+        },
+        "restart_scope": "restart_workers_only",
+        "hold_minutes": ADAPTIVE_CAPACITY_HOLD_MINUTES,
+        "message": (
+            "Increase workers by 50% round up, query_fetch_concurrency by 25% "
+            f"cap {MAX_QUERY_FETCH_CONCURRENCY}, nqe_page_size by 20% cap "
+            f"{MAX_NQE_PAGE_SIZE}; restart workers only, then hold "
+            f"{ADAPTIVE_CAPACITY_HOLD_MINUTES} minutes."
+        ),
+    }
+
+
+def _headroom_status(value):
+    if value in ("", None):
+        return "unknown"
+    if isinstance(value, bool):
+        return "available" if value else "blocked"
+    normalized = str(value).strip().lower()
+    if normalized in {"available", "ok", "pass", "sufficient", "headroom", "true"}:
+        return "available"
+    if normalized in {
+        "blocked",
+        "limited",
+        "none",
+        "fail",
+        "false",
+        "contended",
+        "saturated",
+    }:
+        return "blocked"
+    return "unknown"
+
+
+def _optional_float(value):
+    if value in ("", None):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_int(value):
+    if value in ("", None):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def dependency_preflight_summary(sync, enabled_models):
+    enabled_models = sorted(str(model) for model in (enabled_models or []) if model)
+    enabled_model_set = set(enabled_models)
+    configured_models = set(forward_configured_models())
+    delete_or_prune = _delete_or_prune_evidence(sync)
+    warnings = []
+
+    for rule in DEPENDENCY_PREFLIGHT_RULES:
+        selected_model = rule["selected_model"]
+        if selected_model not in enabled_model_set:
+            continue
+        omitted_models = [
+            model
+            for model in rule["omitted_models"]
+            if model in configured_models and model not in enabled_model_set
+        ]
+        if not omitted_models:
+            continue
+        warnings.append(
+            {
+                "code": rule["code"],
+                "status": "warn",
+                "selected_model": selected_model,
+                "omitted_models": omitted_models,
+                "suggested_models": omitted_models,
+                "message": (
+                    f"{rule['message']} Omitted model(s): "
+                    f"{', '.join(omitted_models)}."
+                ),
+                "delete_dependency_rank": _delete_dependency_rank(selected_model),
+                "omitted_delete_dependency_ranks": {
+                    model: _delete_dependency_rank(model) for model in omitted_models
+                },
+            }
+        )
+
+    if warnings:
+        return {
+            "status": "warn",
+            "message": (
+                f"{len(warnings)} scoped dependency warning(s) found; include the "
+                "suggested models or expect protected delete skips to remain "
+                "non-blocking row issues."
+            ),
+            "enabled_models": enabled_models,
+            "delete_or_prune_possible": bool(delete_or_prune),
+            "delete_or_prune_evidence": delete_or_prune,
+            "warnings": warnings,
+        }
+
+    return {
+        "status": "pass",
+        "message": "No scoped dependency warnings were found for enabled models.",
+        "enabled_models": enabled_models,
+        "delete_or_prune_possible": bool(delete_or_prune),
+        "delete_or_prune_evidence": delete_or_prune,
+        "warnings": [],
+    }
+
+
+def _delete_or_prune_evidence(sync):
+    evidence = []
+    source_parameters = getattr(getattr(sync, "source", None), "parameters", {}) or {}
+    if source_parameters.get("device_tag_prune_out_of_scope"):
+        evidence.append("device_tag_prune_out_of_scope")
+
+    latest_ingestion = getattr(sync, "last_ingestion", None)
+    if latest_ingestion is not None and getattr(
+        latest_ingestion, "baseline_ready", False
+    ):
+        evidence.append("baseline_ready_for_diff_deletes")
+
+    return sorted(set(evidence))
+
+
+def _delete_dependency_rank(model_string):
+    try:
+        return architecture_contract_for_model(model_string).delete_dependency_rank
+    except Exception:
+        return None
+
+
+def delete_wave_summary(run, latest_ingestion=None):
+    if run is None:
+        return {
+            "available": False,
+            "status": "info",
+            "phase": "unavailable",
+            "message": "No execution run is available for delete-wave visibility.",
+            "plan": _empty_delete_dependency_plan(),
+            "steps": _delete_wave_step_summary([]),
+            "latest_ingestion": _delete_wave_ingestion_summary(latest_ingestion),
+        }
+
+    plan = dict((run.plan_preview or {}).get("delete_dependency_plan") or {})
+    if not plan:
+        plan = _empty_delete_dependency_plan()
+    steps = list(
+        run.steps.filter(kind=ForwardExecutionStepKindChoices.STAGE).order_by(
+            "index",
+            "pk",
+        )
+    )
+    step_summary = _delete_wave_step_summary(steps)
+    phase, message = _delete_wave_phase_message(plan, step_summary)
+    latest_ingestion_summary = _delete_wave_ingestion_summary(latest_ingestion)
+    dependency_skip_count = int(
+        latest_ingestion_summary["dependency_skip_issues"]["count"]
+    )
+    warnings = list(plan.get("warnings") or [])
+
+    if warnings or dependency_skip_count:
+        status = "warn"
+    elif int(plan.get("delete_rows") or 0) > 0:
+        status = "info" if phase not in {"complete", "no_deletes"} else "pass"
+    else:
+        status = "pass"
+
+    if dependency_skip_count:
+        message = (
+            f"{message} Latest ingestion has {dependency_skip_count} protected "
+            "dependency skip issue(s); these are expected non-blocking delete rows."
+        )
+
+    return {
+        "available": True,
+        "status": status,
+        "phase": phase,
+        "message": message,
+        "plan": plan,
+        "steps": step_summary,
+        "latest_ingestion": latest_ingestion_summary,
+    }
+
+
+def _empty_delete_dependency_plan():
+    return {
+        "status": "none",
+        "delete_rows": 0,
+        "delete_shards": 0,
+        "delete_model_count": 0,
+        "delete_share": 0.0,
+        "max_delete_shard_changes": 0,
+        "execution_order": [],
+        "models": {},
+        "warnings": [],
+    }
+
+
+def _delete_wave_step_summary(steps):
+    delete_steps = [step for step in steps if step.operation == "delete"]
+    active_delete_steps = [
+        step for step in delete_steps if step.status in DELETE_ACTIVE_STEP_STATUSES
+    ]
+    completed_delete_steps = [
+        step for step in delete_steps if step.status in DELETE_TERMINAL_STEP_STATUSES
+    ]
+    apply_steps = [step for step in steps if step.operation != "delete"]
+    pending_apply_steps = [
+        step for step in apply_steps if step.status not in DELETE_TERMINAL_STEP_STATUSES
+    ]
+    status_counts = Counter(step.status for step in delete_steps)
+    return {
+        "stage_step_count": len(steps),
+        "delete_step_count": len(delete_steps),
+        "active_delete_step_count": len(active_delete_steps),
+        "completed_delete_step_count": len(completed_delete_steps),
+        "pending_apply_step_count": len(pending_apply_steps),
+        "status_counts": dict(status_counts),
+        "current_delete_step": (
+            _delete_step_summary(active_delete_steps[0]) if active_delete_steps else {}
+        ),
+    }
+
+
+def _delete_step_summary(step):
+    return {
+        "id": step.pk,
+        "index": step.index,
+        "status": step.status,
+        "model": step.model_string,
+        "estimated_changes": step.estimated_changes,
+        "actual_changes": step.actual_changes,
+    }
+
+
+def _delete_wave_phase_message(plan, step_summary):
+    delete_rows = int(plan.get("delete_rows") or 0)
+    delete_shards = int(plan.get("delete_shards") or 0)
+    delete_step_count = int(step_summary.get("delete_step_count") or 0)
+    completed_delete_steps = int(step_summary.get("completed_delete_step_count") or 0)
+    active_delete_steps = int(step_summary.get("active_delete_step_count") or 0)
+    pending_apply_steps = int(step_summary.get("pending_apply_step_count") or 0)
+
+    if not delete_rows:
+        return "no_deletes", "No delete wave is planned for the latest execution run."
+    if active_delete_steps:
+        current = step_summary.get("current_delete_step") or {}
+        return (
+            "delete",
+            (
+                "Delete wave is active on "
+                f"{current.get('model') or 'unknown model'} step "
+                f"{current.get('index') or '?'}."
+            ),
+        )
+    if delete_step_count and completed_delete_steps >= delete_step_count:
+        return "complete", "All planned delete-wave stage steps are terminal."
+    if pending_apply_steps:
+        return (
+            "apply_before_delete",
+            (
+                f"{delete_rows} delete row(s) across {delete_shards} shard(s) are "
+                "planned after earlier apply shards complete."
+            ),
+        )
+    if delete_step_count:
+        return (
+            "delete_pending",
+            (
+                f"{delete_rows} delete row(s) across {delete_shards} shard(s) are "
+                "planned and waiting for delete stage execution."
+            ),
+        )
+    return (
+        "planned",
+        (
+            f"{delete_rows} delete row(s) across {delete_shards} shard(s) are "
+            "planned, but execution steps have not been materialized yet."
+        ),
+    )
+
+
+def _delete_wave_ingestion_summary(ingestion):
+    if ingestion is None:
+        return {
+            "id": None,
+            "deleted_change_count": 0,
+            "dependency_skip_issues": {"count": 0, "models": {}},
+        }
+    issues = ingestion.issues.filter(exception="ForwardDependencySkipError")
+    issue_models = Counter(
+        model or "unknown" for model in issues.values_list("model", flat=True)
+    )
+    return {
+        "id": ingestion.pk,
+        "deleted_change_count": int(ingestion.deleted_change_count or 0),
+        "dependency_skip_issues": {
+            "count": sum(issue_models.values()),
+            "models": dict(issue_models),
+        },
+    }
+
+
+def throughput_summary(sync, run, latest_ingestion=None, *, now=None):
+    if run is None:
+        return {
+            "available": False,
+            "status": "info",
+            "message": "No execution run is available for throughput projection.",
+            "current_shard_index": None,
+            "total_shards": 0,
+            "completed_shards": 0,
+            "remaining_shards": 0,
+            "shards_per_hour_1h": None,
+            "shards_per_hour_6h": None,
+            "eta_seconds_low": None,
+            "eta_seconds_high": None,
+            "current_model": "",
+            "active_step_status": "",
+            "active_step_age_seconds": None,
+            "issue_rate_per_hour": None,
+            "queue_wait_seconds_average": None,
+            "fetch_time_seconds_average": None,
+            "apply_time_seconds_average": None,
+            "merge_time_seconds_average": None,
+            "fallback_step_count": 0,
+            "bottleneck_phase": "unknown",
+            "worker_timeout_seconds": configured_rq_default_timeout(),
+            "query_fetch_concurrency": source_query_fetch_concurrency(sync),
+            "nqe_page_size": _source_nqe_page_size(sync),
+        }
+
+    now = now or timezone.now()
+    steps = list(run.steps.order_by("index", "kind", "pk"))
+    stage_steps = [
+        step for step in steps if step.kind == ForwardExecutionStepKindChoices.STAGE
+    ]
+    merge_steps = [
+        step for step in steps if step.kind == ForwardExecutionStepKindChoices.MERGE
+    ]
+    completed_stage_steps = [
+        step for step in stage_steps if step.status in DELETE_TERMINAL_STEP_STATUSES
+    ]
+    active_step = _active_execution_step(steps)
+    total_shards = int(len(stage_steps) or run.total_steps)
+    completed_shards = len(completed_stage_steps)
+    remaining_shards = max(0, total_shards - completed_shards)
+    durations = [
+        step_duration_seconds(step)
+        for step in completed_stage_steps
+        if step_duration_seconds(step) is not None
+    ]
+    average_stage_seconds = sum(durations) / len(durations) if durations else None
+    eta_low = None
+    eta_high = None
+    if average_stage_seconds is not None:
+        eta_low = round(average_stage_seconds * remaining_shards * 0.8, 3)
+        eta_high = round(average_stage_seconds * remaining_shards * 1.25, 3)
+
+    queue_waits = [
+        _seconds_between(step.created, step.started)
+        for step in stage_steps
+        if _seconds_between(step.created, step.started) is not None
+    ]
+    fetch_times = [
+        float(step.query_runtime_ms) / 1000.0
+        for step in completed_stage_steps
+        if step.query_runtime_ms is not None
+    ]
+    apply_times = []
+    for step in completed_stage_steps:
+        duration = step_duration_seconds(step)
+        if duration is None:
+            continue
+        fetch_seconds = (
+            float(step.query_runtime_ms) / 1000.0
+            if step.query_runtime_ms is not None
+            else 0.0
+        )
+        apply_times.append(max(0.0, duration - fetch_seconds))
+    merge_times = [
+        step_duration_seconds(step)
+        for step in merge_steps
+        if step_duration_seconds(step) is not None
+    ]
+    fallback_step_count = len(
+        [
+            step
+            for step in stage_steps
+            if str(step.fetch_mode or "model")
+            in {"model", "full_fallback", "diff_fallback"}
+        ]
+    )
+
+    message = _throughput_message(
+        completed_shards=completed_shards,
+        total_shards=total_shards,
+        remaining_shards=remaining_shards,
+        eta_low=eta_low,
+        eta_high=eta_high,
+        active_step=active_step,
+    )
+    status = _throughput_status(
+        active_step=active_step,
+        active_step_age_seconds=_active_step_age_seconds(active_step, now),
+        worker_timeout_seconds=configured_rq_default_timeout(),
+        completed_shards=completed_shards,
+        total_shards=total_shards,
+    )
+    current_shard_index = (
+        active_step.index
+        if active_step
+        else min(int(run.next_step_index or total_shards), total_shards or 0) or None
+    )
+
+    return {
+        "available": True,
+        "status": status,
+        "message": message,
+        "current_shard_index": current_shard_index,
+        "total_shards": total_shards,
+        "completed_shards": completed_shards,
+        "remaining_shards": remaining_shards,
+        "shards_per_hour_1h": _completed_steps_per_hour(
+            completed_stage_steps,
+            now=now,
+            hours=1,
+        ),
+        "shards_per_hour_6h": _completed_steps_per_hour(
+            completed_stage_steps,
+            now=now,
+            hours=6,
+        ),
+        "eta_seconds_low": eta_low,
+        "eta_seconds_high": eta_high,
+        "current_model": active_step.model_string if active_step else "",
+        "active_step_status": active_step.status if active_step else "",
+        "active_step_age_seconds": _active_step_age_seconds(active_step, now),
+        "issue_rate_per_hour": _issue_rate_per_hour(latest_ingestion, now=now),
+        "queue_wait_seconds_average": _average(queue_waits),
+        "fetch_time_seconds_average": _average(fetch_times),
+        "apply_time_seconds_average": _average(apply_times),
+        "merge_time_seconds_average": _average(merge_times),
+        "fallback_step_count": fallback_step_count,
+        "bottleneck_phase": _bottleneck_phase(
+            queue_wait_seconds=_average(queue_waits),
+            fetch_seconds=_average(fetch_times),
+            apply_seconds=_average(apply_times),
+            merge_seconds=_average(merge_times),
+        ),
+        "worker_timeout_seconds": configured_rq_default_timeout(),
+        "query_fetch_concurrency": source_query_fetch_concurrency(sync),
+        "nqe_page_size": _source_nqe_page_size(sync),
+    }
+
+
+def _active_execution_step(steps):
+    for status in (
+        ForwardExecutionStepStatusChoices.RUNNING,
+        ForwardExecutionStepStatusChoices.QUEUED,
+        ForwardExecutionStepStatusChoices.MERGE_QUEUED,
+        ForwardExecutionStepStatusChoices.PENDING,
+    ):
+        for step in steps:
+            if step.status == status:
+                return step
+    return None
+
+
+def _throughput_message(
+    *,
+    completed_shards,
+    total_shards,
+    remaining_shards,
+    eta_low,
+    eta_high,
+    active_step,
+):
+    if total_shards <= 0:
+        return "Execution-run throughput is unavailable until steps are planned."
+    if remaining_shards <= 0:
+        return f"All {total_shards} planned shard step(s) are terminal."
+    eta = "unknown"
+    if eta_low is not None and eta_high is not None:
+        eta = f"{eta_low:.1f}s to {eta_high:.1f}s"
+    if active_step is None:
+        return (
+            f"{completed_shards}/{total_shards} shard step(s) are terminal; "
+            f"{remaining_shards} remain. ETA: {eta}."
+        )
+    return (
+        f"{completed_shards}/{total_shards} shard step(s) are terminal; "
+        f"{remaining_shards} remain. Active step {active_step.index} "
+        f"{active_step.model_string or 'unknown model'} is {active_step.status}. "
+        f"ETA: {eta}."
+    )
+
+
+def _throughput_status(
+    *,
+    active_step,
+    active_step_age_seconds,
+    worker_timeout_seconds,
+    completed_shards,
+    total_shards,
+):
+    if total_shards and completed_shards >= total_shards:
+        return "pass"
+    if (
+        active_step is not None
+        and worker_timeout_seconds
+        and active_step_age_seconds
+        and active_step_age_seconds >= worker_timeout_seconds
+    ):
+        return "warn"
+    if completed_shards:
+        return "pass"
+    return "info"
+
+
+def _completed_steps_per_hour(steps, *, now, hours):
+    if not steps:
+        return None
+    cutoff = now - timedelta(hours=hours)
+    count = len([step for step in steps if step.completed and step.completed >= cutoff])
+    return round(count / float(hours), 3)
+
+
+def _active_step_age_seconds(step, now):
+    if step is None:
+        return None
+    started = step.started or step.created
+    return _seconds_between(started, now)
+
+
+def _seconds_between(started, completed):
+    if not started or not completed:
+        return None
+    try:
+        return round(max(0.0, (completed - started).total_seconds()), 3)
+    except (TypeError, ValueError):
+        return None
+
+
+def _issue_rate_per_hour(ingestion, *, now):
+    if ingestion is None:
+        return None
+    issue_count = ingestion.issues.count()
+    if not issue_count:
+        return 0.0
+    elapsed_seconds = _seconds_between(ingestion.created, now)
+    if not elapsed_seconds:
+        return None
+    return round(issue_count / max(elapsed_seconds / 3600.0, 1 / 3600.0), 3)
+
+
+def _average(values):
+    values = [value for value in values if value is not None]
+    if not values:
+        return None
+    return round(sum(values) / len(values), 3)
+
+
+def _bottleneck_phase(
+    *,
+    queue_wait_seconds,
+    fetch_seconds,
+    apply_seconds,
+    merge_seconds,
+):
+    candidates = {
+        "queue": queue_wait_seconds,
+        "fetch": fetch_seconds,
+        "apply": apply_seconds,
+        "merge": merge_seconds,
+    }
+    candidates = {
+        phase: seconds for phase, seconds in candidates.items() if seconds is not None
+    }
+    if not candidates:
+        return "unknown"
+    return max(candidates.items(), key=lambda item: item[1])[0]
+
+
+def _source_nqe_page_size(sync):
+    parameters = getattr(getattr(sync, "source", None), "parameters", None) or {}
+    value = parameters.get("nqe_page_size")
+    if value in ("", None):
+        return DEFAULT_NQE_PAGE_SIZE
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_NQE_PAGE_SIZE
 
 
 def execution_backend_advice(*, runtime, capacity, efficiency, diff_utilization):

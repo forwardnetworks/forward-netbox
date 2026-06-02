@@ -79,7 +79,12 @@ def execution_run_metrics(run, steps):
         }
         for step in steps
     ]
-    throughput = throughput_smoothing_summary(step_metrics)
+    throughput = throughput_smoothing_summary(
+        step_metrics,
+        capacity_evidence=scheduler_overlap_capacity_evidence(
+            getattr(run, "sync", None)
+        ),
+    )
     pushdown_runtime = pushdown_runtime_summary(
         steps, alert_thresholds=alert_thresholds
     )
@@ -96,6 +101,7 @@ def execution_run_metrics(run, steps):
         alert_thresholds=alert_thresholds,
     )
     partition_retries = partition_retry_summary(steps)
+    fallback_pressure = fallback_pressure_summary(steps)
     tuning_guidance = pushdown_tuning_guidance(
         efficiency=pushdown_efficiency,
         runtime_share=pushdown_runtime,
@@ -144,6 +150,7 @@ def execution_run_metrics(run, steps):
         "pushdown_efficiency": pushdown_efficiency,
         "pushdown_runtime": pushdown_runtime,
         "fallback_reason_summary": fallback_reason_summary(steps),
+        "fallback_pressure": fallback_pressure,
         "partition_retry_summary": partition_retries,
         "diff_utilization": diff_utilization,
         "diff_baseline_transition": diff_transition,
@@ -410,6 +417,168 @@ def fallback_reason_summary(steps):
     }
 
 
+def fallback_pressure_summary(steps):
+    fallback_modes = {"model", "full_fallback", "diff_fallback"}
+    stage_steps = [step for step in steps or [] if str(step.kind or "") == "stage"]
+    models = {}
+    reason_totals = {}
+    total_query_runtime_ms = 0.0
+    total_fallback_runtime_ms = 0.0
+    total_fallback_steps = 0
+    total_partition_retry_count = 0
+    full_refetch_after_retry_count = 0
+    shard_scoped_fetch_failed_count = 0
+
+    for step in stage_steps:
+        model = str(getattr(step, "model_string", "") or "unknown")
+        mode = str(getattr(step, "fetch_mode", "") or "model")
+        query_runtime_ms = _float(getattr(step, "query_runtime_ms", None))
+        fetch_parameters = getattr(step, "fetch_parameters", None) or {}
+        retry_summary = fetch_parameters.get("partition_retry_summary") or {}
+        step_partition_retry_count = _partition_retry_attempt_count(retry_summary)
+        model_entry = models.setdefault(
+            model,
+            {
+                "model": model,
+                "total_steps": 0,
+                "fallback_steps": 0,
+                "query_runtime_ms": 0.0,
+                "fallback_query_runtime_ms": 0.0,
+                "reason_counts": {},
+                "partition_retry_count": 0,
+                "full_model_refetch_after_retry_count": 0,
+                "shard_scoped_fetch_failed_count": 0,
+                "no_shard_safe_filter": False,
+            },
+        )
+        model_entry["total_steps"] += 1
+        model_entry["query_runtime_ms"] = round(
+            float(model_entry["query_runtime_ms"]) + query_runtime_ms,
+            3,
+        )
+        model_entry["partition_retry_count"] += step_partition_retry_count
+        total_partition_retry_count += step_partition_retry_count
+        total_query_runtime_ms += query_runtime_ms
+
+        if mode not in fallback_modes:
+            continue
+
+        reason = str(
+            fetch_parameters.get("fallback_reason")
+            or _default_fallback_reason_for_mode(mode)
+        ).strip()
+        if not reason:
+            reason = "unknown_fallback_reason"
+        total_fallback_steps += 1
+        total_fallback_runtime_ms += query_runtime_ms
+        reason_totals[reason] = int(reason_totals.get(reason, 0)) + 1
+        model_entry["fallback_steps"] += 1
+        model_entry["fallback_query_runtime_ms"] = round(
+            float(model_entry["fallback_query_runtime_ms"]) + query_runtime_ms,
+            3,
+        )
+        model_entry["reason_counts"][reason] = (
+            int(model_entry["reason_counts"].get(reason, 0)) + 1
+        )
+        if reason == "model_fetch_contract_fallback" or mode == "model":
+            model_entry["no_shard_safe_filter"] = True
+        if reason in {
+            "shard_pushdown_failed_full_fallback",
+            "diff_pushdown_failed_full_fallback",
+        } or mode in {"full_fallback", "diff_fallback"}:
+            model_entry["shard_scoped_fetch_failed_count"] += 1
+            shard_scoped_fetch_failed_count += 1
+        if mode in {"full_fallback", "diff_fallback"} and step_partition_retry_count:
+            model_entry["full_model_refetch_after_retry_count"] += 1
+            full_refetch_after_retry_count += 1
+
+    total_stage_steps = len(stage_steps)
+    fallback_rate = (
+        round(total_fallback_steps / float(total_stage_steps), 4)
+        if total_stage_steps
+        else None
+    )
+    fallback_runtime_share = (
+        round(total_fallback_runtime_ms / float(total_query_runtime_ms), 4)
+        if total_query_runtime_ms
+        else None
+    )
+    ranked_models = []
+    for entry in models.values():
+        fallback_steps = int(entry["fallback_steps"])
+        total_steps = int(entry["total_steps"])
+        query_runtime_ms = float(entry["query_runtime_ms"])
+        fallback_runtime_ms = float(entry["fallback_query_runtime_ms"])
+        entry["fallback_rate"] = (
+            round(fallback_steps / float(total_steps), 4) if total_steps else None
+        )
+        entry["fallback_runtime_share"] = (
+            round(fallback_runtime_ms / query_runtime_ms, 4)
+            if query_runtime_ms
+            else None
+        )
+        entry["reasons"] = [
+            {
+                "reason": reason,
+                "count": count,
+                "remediation": _fallback_reason_remediation(reason),
+            }
+            for reason, count in sorted(
+                entry.pop("reason_counts").items(),
+                key=lambda item: (-int(item[1]), str(item[0])),
+            )
+        ]
+        ranked_models.append(entry)
+
+    ranked_models = sorted(
+        ranked_models,
+        key=lambda item: (
+            -int(item["fallback_steps"]),
+            -float(item.get("fallback_runtime_share") or 0.0),
+            str(item["model"]),
+        ),
+    )
+    status = "warn" if total_fallback_steps else "pass"
+    message = (
+        f"{total_fallback_steps}/{total_stage_steps} stage step(s) used fallback fetch."
+        if total_stage_steps
+        else "No stage steps are available for fallback pressure analysis."
+    )
+    return {
+        "status": status,
+        "message": message,
+        "total_steps": total_stage_steps,
+        "fallback_steps": total_fallback_steps,
+        "fallback_rate": fallback_rate,
+        "fallback_query_runtime_ms": round(total_fallback_runtime_ms, 3),
+        "total_query_runtime_ms": round(total_query_runtime_ms, 3),
+        "fallback_runtime_share": fallback_runtime_share,
+        "partition_retry_count": total_partition_retry_count,
+        "full_model_refetch_after_retry_count": full_refetch_after_retry_count,
+        "shard_scoped_fetch_failed_count": shard_scoped_fetch_failed_count,
+        "top_reasons": [
+            {
+                "reason": reason,
+                "count": count,
+                "remediation": _fallback_reason_remediation(reason),
+            }
+            for reason, count in sorted(
+                reason_totals.items(),
+                key=lambda item: (-int(item[1]), str(item[0])),
+            )[:10]
+        ],
+        "ranked_models": ranked_models[:10],
+        "no_shard_safe_filter_models": [
+            item["model"] for item in ranked_models if item["no_shard_safe_filter"]
+        ],
+        "shard_scoped_fetch_failed_models": [
+            item["model"]
+            for item in ranked_models
+            if int(item["shard_scoped_fetch_failed_count"]) > 0
+        ],
+    }
+
+
 def partition_retry_summary(steps):
     totals = {
         "partition_retry_step_count": 0,
@@ -501,6 +670,51 @@ def _empty_partition_retry_stats(name):
         "alternate_operator_retry_count": 0,
         "alternate_operator_success_count": 0,
     }
+
+
+def _partition_retry_attempt_count(retry_summary):
+    retry_summary = retry_summary or {}
+    return int(retry_summary.get("split_retry_count") or 0) + int(
+        retry_summary.get("alternate_operator_retry_count") or 0
+    )
+
+
+def _float(value):
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _optional_int(value):
+    if value in ("", None):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _headroom_status(value):
+    if value in ("", None):
+        return "unknown"
+    if isinstance(value, bool):
+        return "available" if value else "blocked"
+    normalized = str(value).strip().lower()
+    if normalized in {"available", "ok", "pass", "sufficient", "headroom", "true"}:
+        return "available"
+    if normalized in {
+        "blocked",
+        "limited",
+        "none",
+        "fail",
+        "false",
+        "contended",
+        "saturated",
+    }:
+        return "blocked"
+    return "unknown"
 
 
 def _fallback_remediation_actions(by_reason):
@@ -1183,7 +1397,7 @@ def operator_tuning_summary(
     }
 
 
-def throughput_smoothing_summary(step_metrics):
+def throughput_smoothing_summary(step_metrics, *, capacity_evidence=None):
     per_model = {}
     totals = {
         "stage_queue_seconds": 0.0,
@@ -1230,6 +1444,7 @@ def throughput_smoothing_summary(step_metrics):
                 observed=observed,
                 wait_share=None,
                 hotspot_models=[],
+                capacity_evidence=capacity_evidence,
             ),
         }
 
@@ -1297,16 +1512,30 @@ def throughput_smoothing_summary(step_metrics):
             observed=observed,
             wait_share=wait_share,
             hotspot_models=hotspot_models,
+            capacity_evidence=capacity_evidence,
         ),
     }
 
 
-def scheduler_overlap_readiness(*, totals, observed, wait_share, hotspot_models):
+def scheduler_overlap_readiness(
+    *,
+    totals,
+    observed,
+    wait_share,
+    hotspot_models,
+    capacity_evidence=None,
+):
+    capacity_evidence = capacity_evidence or {
+        "status": "unknown",
+        "message": "Worker/database capacity evidence is not available.",
+    }
     if wait_share is None:
         return {
-            "status": "insufficient_evidence",
+            "status": "unknown",
             "ready": False,
             "dominant_wait_component": "",
+            "capacity_evidence": capacity_evidence,
+            "blocking_reasons": ["timing_evidence_missing"],
             "message": (
                 "Scheduler overlap is not assessable until queue, stage, and merge "
                 "timing evidence exists."
@@ -1336,9 +1565,11 @@ def scheduler_overlap_readiness(*, totals, observed, wait_share, hotspot_models)
     )
     if float(wait_share) < 0.25:
         return {
-            "status": "not_indicated",
+            "status": "not_warranted",
             "ready": False,
             "dominant_wait_component": dominant_component,
+            "capacity_evidence": capacity_evidence,
+            "blocking_reasons": ["wait_share_below_threshold"],
             "message": (
                 "Measured wait share is below the scheduler-overlap threshold; "
                 "do not add execution overlap for this run profile."
@@ -1348,25 +1579,128 @@ def scheduler_overlap_readiness(*, totals, observed, wait_share, hotspot_models)
             ],
         }
 
-    status = "candidate_after_capacity_review"
-    ready = observed_wait_count >= 3 and bool(hotspot_models)
-    if not ready:
-        status = "needs_more_runtime_evidence"
+    enough_timing_evidence = observed_wait_count >= 3 and bool(hotspot_models)
+    if not enough_timing_evidence:
+        return {
+            "status": "unknown",
+            "ready": False,
+            "dominant_wait_component": dominant_component,
+            "capacity_evidence": capacity_evidence,
+            "blocking_reasons": ["repeated_timing_evidence_missing"],
+            "message": (
+                "Queue/merge wait is material, but more repeated timing evidence is "
+                "needed before scheduler overlap can be classified."
+            ),
+            "required_before_enablement": [
+                "Collect repeated support-bundle throughput_smoothing evidence.",
+                "Keep branch budget and dependency order enforced by execution-ledger state.",
+                "Limit overlap to the next eligible shard; do not add non-ledger side queues.",
+            ],
+        }
+
+    capacity_status = str((capacity_evidence or {}).get("status") or "unknown")
+    if capacity_status == "available":
+        status = "candidate"
+        ready = True
+        blocking_reasons = []
+        message = (
+            "Queue/merge wait is material and worker/database headroom evidence is "
+            "available; scheduler overlap is a candidate."
+        )
+    else:
+        status = "blocked"
+        ready = False
+        blocking_reasons = [
+            (
+                "capacity_evidence_blocked"
+                if capacity_status == "blocked"
+                else "capacity_evidence_missing"
+            )
+        ]
+        message = (
+            "Queue/merge wait is material, but scheduler overlap is blocked until "
+            "worker and database headroom are proven."
+        )
     return {
         "status": status,
         "ready": bool(ready),
         "dominant_wait_component": dominant_component,
-        "message": (
-            "Queue/merge wait is material; scheduler overlap is a candidate only "
-            "after worker and database headroom are checked."
-            if ready
-            else "Queue/merge wait is material, but more repeated timing evidence is needed before implementing scheduler overlap."
-        ),
+        "capacity_evidence": capacity_evidence,
+        "blocking_reasons": blocking_reasons,
+        "message": message,
+        "supported_overlap_shape": {
+            "stage_next_eligible_shard_only": True,
+            "merge_serialized": True,
+            "ledger_handoff_required": True,
+        },
         "required_before_enablement": [
             "Confirm NetBox worker and database headroom.",
             "Keep branch budget and dependency order enforced by execution-ledger state.",
             "Limit overlap to the next eligible shard; do not add non-ledger side queues.",
         ],
+    }
+
+
+def scheduler_overlap_capacity_evidence(sync):
+    if sync is None:
+        return {
+            "status": "unknown",
+            "message": "No sync is available for scheduler capacity evidence.",
+            "active_worker_count": None,
+            "database_headroom": "unknown",
+            "worker_headroom": "unknown",
+        }
+    source_parameters = getattr(getattr(sync, "source", None), "parameters", None) or {}
+    sync_parameters = getattr(sync, "parameters", None) or {}
+    parameters = {}
+    for candidate in (
+        sync_parameters.get("runtime_capacity_evidence"),
+        sync_parameters.get("capacity_evidence"),
+        source_parameters.get("runtime_capacity_evidence"),
+        source_parameters.get("capacity_evidence"),
+    ):
+        if isinstance(candidate, dict):
+            parameters.update(candidate)
+    for key in (
+        "active_worker_count",
+        "worker_count",
+        "netbox_worker_count",
+        "worker_replicas",
+        "database_headroom",
+        "db_headroom",
+        "worker_headroom",
+    ):
+        if key in source_parameters and key not in parameters:
+            parameters[key] = source_parameters[key]
+        if key in sync_parameters and key not in parameters:
+            parameters[key] = sync_parameters[key]
+
+    active_worker_count = _optional_int(
+        parameters.get("active_worker_count")
+        or parameters.get("worker_count")
+        or parameters.get("netbox_worker_count")
+        or parameters.get("worker_replicas")
+    )
+    database_headroom = _headroom_status(
+        parameters.get("database_headroom") or parameters.get("db_headroom")
+    )
+    worker_headroom = _headroom_status(parameters.get("worker_headroom"))
+    if database_headroom == "blocked" or worker_headroom == "blocked":
+        status = "blocked"
+        message = "Worker or database headroom evidence blocks scheduler overlap."
+    elif active_worker_count is not None and database_headroom == "available":
+        status = "available"
+        message = "Worker count and database headroom evidence are available."
+    else:
+        status = "unknown"
+        message = "Worker count or database headroom evidence is missing."
+
+    return {
+        "status": status,
+        "message": message,
+        "active_worker_count": active_worker_count,
+        "database_headroom": database_headroom,
+        "worker_headroom": worker_headroom,
     }
 
 

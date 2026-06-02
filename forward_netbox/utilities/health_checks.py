@@ -21,6 +21,9 @@ def health_checks(
     capacity_summary,
     query_pushdown,
     large_run_tuning,
+    dependency_preflight,
+    delete_wave,
+    throughput,
     compatibility_cache,
     next_run,
     branching_available_fn,
@@ -121,6 +124,30 @@ def health_checks(
             name="Large-run tuning",
             status=large_run_tuning_check_status(large_run_tuning),
             message=large_run_tuning_check_message(large_run_tuning),
+        ),
+        check(
+            name="Adaptive capacity",
+            status=adaptive_capacity_check_status(
+                (large_run_tuning or {}).get("adaptive_capacity")
+            ),
+            message=adaptive_capacity_check_message(
+                (large_run_tuning or {}).get("adaptive_capacity")
+            ),
+        ),
+        check(
+            name="Scoped dependency preflight",
+            status=dependency_preflight_check_status(dependency_preflight),
+            message=dependency_preflight_check_message(dependency_preflight),
+        ),
+        check(
+            name="Delete wave",
+            status=delete_wave_check_status(delete_wave),
+            message=delete_wave_check_message(delete_wave),
+        ),
+        check(
+            name="Run throughput",
+            status=throughput_check_status(throughput),
+            message=throughput_check_message(throughput),
         ),
     ]
     if execution_run is not None:
@@ -274,6 +301,83 @@ def large_run_tuning_check_message(large_run_tuning):
     if message and preview and preview not in message:
         return f"{message} Next: {preview}"
     return message or preview or "Large-run tuning diagnostics are unavailable."
+
+
+def adaptive_capacity_check_status(adaptive_capacity):
+    status = str((adaptive_capacity or {}).get("status") or "info").strip().lower()
+    if status in {"fail", "warn", "pass"}:
+        return status
+    return "info"
+
+
+def adaptive_capacity_check_message(adaptive_capacity):
+    if not adaptive_capacity:
+        return "Adaptive capacity diagnostics are unavailable."
+    message = str(adaptive_capacity.get("message") or "").strip()
+    return message or "Adaptive capacity diagnostics are unavailable."
+
+
+def dependency_preflight_check_status(dependency_preflight):
+    status = str((dependency_preflight or {}).get("status") or "info").strip().lower()
+    if status in {"fail", "warn", "pass"}:
+        return status
+    return "info"
+
+
+def dependency_preflight_check_message(dependency_preflight):
+    if not dependency_preflight:
+        return "Scoped dependency preflight diagnostics are unavailable."
+    message = str(dependency_preflight.get("message") or "").strip()
+    warnings = list(dependency_preflight.get("warnings") or [])
+    preview = "; ".join(
+        str(item.get("message") or "").strip()
+        for item in warnings[:2]
+        if str(item.get("message") or "").strip()
+    )
+    if message and preview:
+        return f"{message} {preview}"
+    return (
+        message or preview or "Scoped dependency preflight diagnostics are unavailable."
+    )
+
+
+def delete_wave_check_status(delete_wave):
+    status = str((delete_wave or {}).get("status") or "info").strip().lower()
+    if status in {"fail", "warn", "pass"}:
+        return status
+    return "info"
+
+
+def delete_wave_check_message(delete_wave):
+    if not delete_wave:
+        return "Delete-wave diagnostics are unavailable."
+    message = str(delete_wave.get("message") or "").strip()
+    plan = (delete_wave or {}).get("plan") or {}
+    warnings = list(plan.get("warnings") or [])
+    warning_preview = "; ".join(
+        str(item.get("message") or "").strip()
+        for item in warnings[:2]
+        if str(item.get("message") or "").strip()
+    )
+    if warning_preview:
+        return f"{message} Warning: {warning_preview}"
+    return message or "Delete-wave diagnostics are unavailable."
+
+
+def throughput_check_status(throughput):
+    status = str((throughput or {}).get("status") or "info").strip().lower()
+    if status in {"fail", "warn", "pass"}:
+        return status
+    return "info"
+
+
+def throughput_check_message(throughput):
+    if not throughput:
+        return "Run-throughput diagnostics are unavailable."
+    return (
+        str(throughput.get("message") or "").strip()
+        or "Run-throughput diagnostics are unavailable."
+    )
 
 
 def query_drift_check_status(query_drift):
