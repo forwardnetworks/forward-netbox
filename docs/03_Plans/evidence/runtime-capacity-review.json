@@ -31,7 +31,7 @@
     "available": true,
     "nqe_page_size": 5000,
     "query_fetch_concurrency": 2,
-    "source_name": "smoke-source-redacted-20260601",
+    "source_name": "smoke-source-release-smoke-20260601",
     "timeout": 1200
   },
   "storage": {
