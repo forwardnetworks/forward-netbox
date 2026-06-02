@@ -1508,7 +1508,7 @@ def field_scale_runtime_matrix(context, step="", resume=True, fail_on_error=True
 @task(name="release-dataset-gate")
 def release_dataset_gate(
     context,
-    dataset_label="blake",
+    dataset_label="release-smoke",
     max_age_days=7,
     artifact_path="",
     allow_resumed_artifact=False,
@@ -1530,8 +1530,8 @@ def release_dataset_gate(
 
 
 @task(name="release-runtime-preflight")
-def release_runtime_preflight(context, dataset_label="blake"):
-    """Fail fast when runtime prerequisites for Partner release evidence are missing."""
+def release_runtime_preflight(context, dataset_label="release-smoke"):
+    """Fail fast when runtime prerequisites for release evidence are missing."""
     evidence = _collect_release_runtime_preflight_evidence(
         context=context,
         dataset_label=dataset_label,
@@ -1548,7 +1548,7 @@ def release_runtime_preflight(context, dataset_label="blake"):
 @task(name="release-readiness-audit")
 def release_readiness_audit(
     context,
-    dataset_label="blake",
+    dataset_label="release-smoke",
     max_age_days=7,
     artifact_path="",
     output_json="docs/03_Plans/evidence/release-readiness-audit.json",
@@ -1580,7 +1580,7 @@ def release_readiness_audit(
 def _collect_release_readiness_audit(
     *,
     context,
-    dataset_label="blake",
+    dataset_label="release-smoke",
     max_age_days=7,
     artifact_path="",
 ):
@@ -1656,7 +1656,7 @@ def _collect_architecture_completion_gate(context):
     }
 
 
-def _collect_release_runtime_preflight_evidence(*, context, dataset_label="blake"):
+def _collect_release_runtime_preflight_evidence(*, context, dataset_label="release-smoke"):
     credential_env = (
         "FORWARD_SMOKE_USERNAME",
         "FORWARD_SMOKE_PASSWORD",
@@ -1716,7 +1716,7 @@ def _collect_release_runtime_preflight_evidence(*, context, dataset_label="blake
 
 def _collect_release_dataset_gate_evidence(
     *,
-    dataset_label="blake",
+    dataset_label="release-smoke",
     max_age_days=7,
     artifact_path="",
     allow_resumed_artifact=False,

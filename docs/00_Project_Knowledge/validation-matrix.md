@@ -25,7 +25,7 @@ invoke scenario-test
 invoke scale-chaos-test
 invoke test
 invoke playwright-test
-invoke release-dataset-gate --dataset-label=blake
+invoke release-dataset-gate --dataset-label=release-smoke
 invoke docs
 invoke package
 invoke ci
@@ -105,10 +105,10 @@ invoke architecture-audit --fail-on-gap
 invoke architecture-audit-check
 invoke architecture-runtime-evidence
 invoke architecture-completion-audit --output-json /tmp/architecture-completion-audit.json
-invoke release-runtime-preflight --dataset-label=blake
+invoke release-runtime-preflight --dataset-label=release-smoke
 invoke field-scale-runtime-matrix --resume=False
-invoke release-dataset-gate --dataset-label=blake
-invoke release-readiness-audit --dataset-label=blake
+invoke release-dataset-gate --dataset-label=release-smoke
+invoke release-readiness-audit --dataset-label=release-smoke
 invoke execution-run-recovery --sync-name "ui-harness-sync" --skip-reconcile=True
 invoke prune-compat-cache --dry-run=True --output-json docs/03_Plans/evidence/compat-cache-prune.json
 invoke runtime-capacity-review --source-name "ui-harness-source"
@@ -138,7 +138,7 @@ invoke sync-autorecover-monitor --sync-ids 50,51 --max-polls 6 --interval-second
   It also writes incremental sanitized step evidence to
   `docs/03_Plans/evidence/field-scale-runtime-matrix.json` by default. Override
   with `FORWARD_FIELD_SCALE_EVIDENCE_PATH` for local scratch runs.
-  Set `FORWARD_SMOKE_DATASET_LABEL=blake` before `field-scale-runtime-matrix`
+  Set `FORWARD_SMOKE_DATASET_LABEL=release-smoke` before `field-scale-runtime-matrix`
   when capturing `1.1.x` release evidence so the dataset gate can enforce the
   expected dataset lineage.
   When `--run-field-scale` is omitted, runtime evidence reuses this artifact if
@@ -205,15 +205,15 @@ invoke sync-autorecover-monitor --sync-ids 50,51 --max-polls 6 --interval-second
 - `invoke sync-autorecover-monitor --fail-on-recovery` is the strict burn-in
   gate for release readiness: it fails when any auto-recovery action was
   required, even if blocker/warning/error counts stayed at zero.
-- `invoke release-dataset-gate --dataset-label=blake` is the strict `1.1.x`
+- `invoke release-dataset-gate --dataset-label=release-smoke` is the strict `1.1.x`
   dataset gate: it fails when field-scale evidence is stale, not `passed`, not
-  labeled with Partner's dataset, missing required matrix steps, or generated
+  labeled with the release-validation dataset, missing required matrix steps, or generated
   with `resume=True` (unless explicitly overridden with
   `--allow-resumed-artifact=True`).
-- `invoke release-runtime-preflight --dataset-label=blake` checks runtime
+- `invoke release-runtime-preflight --dataset-label=release-smoke` checks runtime
   prerequisites before the matrix starts: required smoke env vars, expected
   dataset label, and Docker reachability.
-- `invoke release-readiness-audit --dataset-label=blake` aggregates preflight,
+- `invoke release-readiness-audit --dataset-label=release-smoke` aggregates preflight,
   dataset gate, and architecture-completion gate in one JSON artifact for
   release sign-off evidence.
   Failed run entries now include `failure_code` / `failure_hint` so environment

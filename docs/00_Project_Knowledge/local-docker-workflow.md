@@ -162,15 +162,15 @@ and writes timestamped evidence to JSON. Use it when two lanes are running in
 parallel (for example, an A/B or recovery replay) and you need continuous proof
 that no blocker/warning/error findings appeared during the soak window.
 
-For `1.1.x` release readiness on Partner's dataset, label and enforce the
+For `1.1.x` release readiness on the release-validation dataset, label and enforce the
 field-scale artifact:
 
 ```bash
-export FORWARD_SMOKE_DATASET_LABEL=blake
-invoke release-runtime-preflight --dataset-label=blake
+export FORWARD_SMOKE_DATASET_LABEL=release-smoke
+invoke release-runtime-preflight --dataset-label=release-smoke
 invoke field-scale-runtime-matrix --resume=False
-invoke release-dataset-gate --dataset-label=blake
-invoke release-readiness-audit --dataset-label=blake
+invoke release-dataset-gate --dataset-label=release-smoke
+invoke release-readiness-audit --dataset-label=release-smoke
 ```
 
 Use `invoke playwright-test` for the deterministic UI harness. It applies pending
