@@ -110,15 +110,10 @@ REQUIRED_TEXT = {
     ".github/workflows/ci.yml": [
         "actions/checkout@v6",
         "actions/setup-python@v6",
-        "actions/setup-node@v6",
         "FORCE_JAVASCRIPT_ACTIONS_TO_NODE24",
         "contents: read",
-        "npm ci",
-        "timeout 20m npx playwright install chromium",
         "Run harness tests",
-        "Run Playwright UI harness",
         "Run NetBox database migrations",
-        "PLAYWRIGHT_SKIP_MIGRATE",
         "Run synthetic scenario tests",
     ],
 }

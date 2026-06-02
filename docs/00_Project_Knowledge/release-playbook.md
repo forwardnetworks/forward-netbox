@@ -31,6 +31,12 @@ For full parity with CI:
 invoke ci
 ```
 
+GitHub-hosted CI intentionally skips the Playwright browser install and UI
+harness because hosted runner browser setup has been slower than the product
+checks it protects. Keep browser validation in the local release gate with
+`invoke playwright-test` or `invoke ci`, and record that evidence before
+publishing.
+
 For Branching recovery or orchestration changes, also run the opt-in destructive
 worker-kill harness and capture support-bundle evidence:
 
@@ -91,7 +97,8 @@ the three smoke steps.
 1. Commit with a lore-style message that includes `Tested:` and `Not-tested:` trailers.
 2. Push `main`.
 3. Create and push an annotated tag, for example `v0.3.0.1`.
-4. Wait for GitHub CI on both `main` and the tag.
+4. Wait for GitHub CI on both `main` and the tag. Treat GitHub CI as the
+   non-browser hosted gate; the Playwright UI harness is proven locally.
 5. Build artifacts from the tagged commit.
 6. Create the GitHub Release using a notes file or carefully quoted notes.
 7. Upload the same artifacts to PyPI with `twine`.
