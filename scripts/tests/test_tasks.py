@@ -2339,9 +2339,9 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
                 patch.dict(
                     os.environ,
                     {
-                        "FORWARD_SMOKE_SOURCE_NAME": "smoke-source-blake-20260601",
-                        "FORWARD_SMOKE_SYNC_NAME": "smoke-sync-blake-20260601",
-                        "FORWARD_SMOKE_DATASET_LABEL": "blake",
+                        "FORWARD_SMOKE_SOURCE_NAME": "smoke-source-release-smoke-20260601",
+                        "FORWARD_SMOKE_SYNC_NAME": "smoke-sync-release-smoke-20260601",
+                        "FORWARD_SMOKE_DATASET_LABEL": "release-smoke",
                         "FORWARD_SMOKE_MAX_CHANGES_PER_BRANCH": "42",
                         "FORWARD_FIELD_SCALE_EVIDENCE_PATH": str(artifact_path),
                     },
@@ -2357,7 +2357,7 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
         self.assertEqual(status, "completed")
         self.assertEqual(evidence["status"], "passed")
         self.assertEqual(payload["status"], "passed")
-        self.assertEqual(payload["metadata"]["dataset_label"], "blake")
+        self.assertEqual(payload["metadata"]["dataset_label"], "release-smoke")
         self.assertEqual(payload["metadata"]["max_changes_per_branch"], 42)
         commands = [call.args[1] for call in manage_py.call_args_list]
         self.assertTrue(
@@ -2365,7 +2365,7 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
         )
         self.assertTrue(
             all(
-                "--source-name smoke-source-blake-20260601" in command
+                "--source-name smoke-source-release-smoke-20260601" in command
                 for command in commands
             )
         )
@@ -2436,7 +2436,7 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
                         "FORWARD_SMOKE_USERNAME": "user",
                         "FORWARD_SMOKE_PASSWORD": "secret",
                         "FORWARD_SMOKE_NETWORK_ID": "123",
-                        "FORWARD_SMOKE_DATASET_LABEL": "Blake-Prod",
+                        "FORWARD_SMOKE_DATASET_LABEL": "release-smoke-prod",
                         "FORWARD_FIELD_SCALE_EVIDENCE_PATH": str(artifact_path),
                     },
                     clear=True,
@@ -2448,7 +2448,7 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
 
         self.assertEqual(status, "completed")
         self.assertEqual(evidence["status"], "passed")
-        self.assertEqual(payload["metadata"]["dataset_label"], "Blake-Prod")
+        self.assertEqual(payload["metadata"]["dataset_label"], "release-smoke-prod")
 
     def test_run_field_scale_runtime_matrix_records_step_timeout(self):
         context = self._context()
@@ -2750,7 +2750,7 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
                     {
                         "generated_at": datetime.now(timezone.utc).isoformat(),
                         "status": "passed",
-                        "metadata": {"dataset_label": "blake", "resume": False},
+                        "metadata": {"dataset_label": "release-smoke", "resume": False},
                         "runs": [
                             {
                                 "name": "run_a_branching_validate_only",
@@ -2777,7 +2777,7 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
                 {"FORWARD_FIELD_SCALE_EVIDENCE_PATH": str(artifact_path)},
                 clear=True,
             ):
-                tasks.release_dataset_gate.body(context, dataset_label="blake")
+                tasks.release_dataset_gate.body(context, dataset_label="release-smoke")
 
     def test_release_dataset_gate_fails_when_label_mismatches(self):
         context = self._context()
@@ -2788,7 +2788,7 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
                     {
                         "generated_at": datetime.now(timezone.utc).isoformat(),
                         "status": "passed",
-                        "metadata": {"dataset_label": "adp-staging", "resume": False},
+                        "metadata": {"dataset_label": "release-staging", "resume": False},
                         "runs": [
                             {
                                 "name": "run_a_branching_validate_only",
@@ -2816,7 +2816,7 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
                 clear=True,
             ):
                 with self.assertRaises(Exit) as raised:
-                    tasks.release_dataset_gate.body(context, dataset_label="blake")
+                    tasks.release_dataset_gate.body(context, dataset_label="release-smoke")
 
         self.assertEqual(raised.exception.code, 1)
         self.assertIn("dataset label", str(raised.exception))
@@ -2830,7 +2830,7 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
                     {
                         "generated_at": datetime.now(timezone.utc).isoformat(),
                         "status": "passed",
-                        "metadata": {"dataset_label": "blake", "resume": True},
+                        "metadata": {"dataset_label": "release-smoke", "resume": True},
                         "runs": [
                             {
                                 "name": "run_a_branching_validate_only",
@@ -2858,7 +2858,7 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
                 clear=True,
             ):
                 with self.assertRaises(Exit) as raised:
-                    tasks.release_dataset_gate.body(context, dataset_label="blake")
+                    tasks.release_dataset_gate.body(context, dataset_label="release-smoke")
 
         self.assertEqual(raised.exception.code, 1)
         self.assertIn("regenerate field-scale evidence", str(raised.exception))
@@ -2872,7 +2872,7 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
                     {
                         "generated_at": datetime.now(timezone.utc).isoformat(),
                         "status": "passed",
-                        "metadata": {"dataset_label": "blake", "resume": True},
+                        "metadata": {"dataset_label": "release-smoke", "resume": True},
                         "runs": [
                             {
                                 "name": "run_a_branching_validate_only",
@@ -2901,7 +2901,7 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
             ):
                 tasks.release_dataset_gate.body(
                     context,
-                    dataset_label="blake",
+                    dataset_label="release-smoke",
                     allow_resumed_artifact=True,
                 )
 
@@ -2914,7 +2914,7 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
                     {
                         "generated_at": datetime.now(timezone.utc).isoformat(),
                         "status": "passed",
-                        "metadata": {"dataset_label": "blake", "resume": False},
+                        "metadata": {"dataset_label": "release-smoke", "resume": False},
                         "runs": [
                             {
                                 "name": "run_a_branching_validate_only",
@@ -2937,7 +2937,7 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
                 clear=True,
             ):
                 with self.assertRaises(Exit) as raised:
-                    tasks.release_dataset_gate.body(context, dataset_label="blake")
+                    tasks.release_dataset_gate.body(context, dataset_label="release-smoke")
 
         self.assertEqual(raised.exception.code, 1)
         self.assertIn("regenerate field-scale evidence", str(raised.exception))
@@ -2950,7 +2950,7 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
                     {
                         "generated_at": datetime.now(timezone.utc).isoformat(),
                         "status": "failed",
-                        "metadata": {"dataset_label": "blake", "resume": False},
+                        "metadata": {"dataset_label": "release-smoke", "resume": False},
                         "runs": [
                             {
                                 "name": "run_a_branching_validate_only",
@@ -2976,7 +2976,7 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
                 encoding="utf-8",
             )
             evidence = tasks._collect_release_dataset_gate_evidence(
-                dataset_label="blake",
+                dataset_label="release-smoke",
                 max_age_days=7,
                 allow_resumed_artifact=False,
                 artifact_path=str(artifact_path),
@@ -2999,13 +2999,13 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
                 "FORWARD_SMOKE_USERNAME": "user",
                 "FORWARD_SMOKE_PASSWORD": "secret",
                 "FORWARD_SMOKE_NETWORK_ID": "123",
-                "FORWARD_SMOKE_DATASET_LABEL": "blake",
+                "FORWARD_SMOKE_DATASET_LABEL": "release-smoke",
             },
             clear=True,
         ):
             evidence = tasks._collect_release_runtime_preflight_evidence(
                 context=context,
-                dataset_label="blake",
+                dataset_label="release-smoke",
             )
         self.assertEqual(evidence["status"], "passed")
         self.assertEqual(evidence["evidence"]["missing_env"], [])
@@ -3016,14 +3016,14 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
         with patch.dict(
             os.environ,
             {
-                "FORWARD_SMOKE_SOURCE_NAME": "smoke-source-blake-20260601",
-                "FORWARD_SMOKE_DATASET_LABEL": "blake",
+                "FORWARD_SMOKE_SOURCE_NAME": "smoke-source-release-smoke-20260601",
+                "FORWARD_SMOKE_DATASET_LABEL": "release-smoke",
             },
             clear=True,
         ):
             evidence = tasks._collect_release_runtime_preflight_evidence(
                 context=context,
-                dataset_label="blake",
+                dataset_label="release-smoke",
             )
         self.assertEqual(evidence["status"], "passed")
         self.assertEqual(evidence["evidence"]["missing_env"], [])
@@ -3036,7 +3036,7 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
                 os.environ,
                 {
                     "FORWARD_SMOKE_USERNAME": "user",
-                    "FORWARD_SMOKE_DATASET_LABEL": "adp2",
+                    "FORWARD_SMOKE_DATASET_LABEL": "release-staging",
                 },
                 clear=True,
             ),
@@ -3053,7 +3053,7 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
         ):
             evidence = tasks._collect_release_runtime_preflight_evidence(
                 context=context,
-                dataset_label="blake",
+                dataset_label="release-smoke",
             )
         self.assertEqual(evidence["status"], "failed")
         self.assertIn("FORWARD_SMOKE_PASSWORD", evidence["evidence"]["missing_env"])
@@ -3076,7 +3076,7 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
             ),
         ):
             with self.assertRaises(Exit) as raised:
-                tasks.release_runtime_preflight.body(context, dataset_label="blake")
+                tasks.release_runtime_preflight.body(context, dataset_label="release-smoke")
         self.assertEqual(raised.exception.code, 1)
 
     def test_release_readiness_audit_passes_when_all_checks_pass(self):
@@ -3106,7 +3106,7 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
         ):
             audit = tasks._collect_release_readiness_audit(
                 context=context,
-                dataset_label="blake",
+                dataset_label="release-smoke",
             )
 
         self.assertEqual(audit["status"], "passed")
@@ -3145,7 +3145,7 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
         ):
             audit = tasks._collect_release_readiness_audit(
                 context=context,
-                dataset_label="blake",
+                dataset_label="release-smoke",
             )
 
         self.assertEqual(audit["status"], "failed")
@@ -3165,7 +3165,7 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
             return_value={"status": "failed", "checks": {}, "failed_checks": ["x"]},
         ):
             with self.assertRaises(Exit) as raised:
-                tasks.release_readiness_audit.body(context, dataset_label="blake")
+                tasks.release_readiness_audit.body(context, dataset_label="release-smoke")
         self.assertEqual(raised.exception.code, 1)
 
     def test_collect_compatibility_cache_evidence_reports_passed_when_no_stale(self):

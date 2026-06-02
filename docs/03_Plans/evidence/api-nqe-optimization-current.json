@@ -1,7 +1,7 @@
 {
   "generated_at": "2026-06-02T03:15:00Z",
   "status": "passed",
-  "dataset_label": "blake",
+  "dataset_label": "release-smoke",
   "sanitized": true,
   "source_runtime_knobs": {
     "api_requests_per_minute": 1800,
@@ -72,6 +72,6 @@
   },
   "notes": [
     "No credentials, customer identifiers, network IDs, snapshot IDs, raw rows, or query IDs are stored in this artifact.",
-    "Previous timing observations came from the stopped page-size-500 Blake matrix attempt. Current matrix evidence came from the page-size-5000 run."
+    "Previous timing observations came from the stopped page-size-500 customer matrix attempt. Current matrix evidence came from the page-size-5000 run."
   ]
 }
