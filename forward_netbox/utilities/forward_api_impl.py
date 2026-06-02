@@ -1,4 +1,6 @@
+import hashlib
 import json
+import threading
 import time
 from urllib.parse import quote
 
@@ -12,6 +14,11 @@ try:
 except ImportError:  # pragma: no cover - NetBox always provides this at runtime.
     resolve_proxies = None
 
+try:
+    from django.core.cache import cache as django_cache
+except Exception:  # pragma: no cover - Django is always present in NetBox.
+    django_cache = None
+
 LATEST_PROCESSED_SNAPSHOT = "latestProcessed"
 DEFAULT_FORWARD_API_TIMEOUT_SECONDS = 1200
 DEFAULT_FORWARD_API_RETRIES = 2
@@ -24,10 +31,22 @@ DEFAULT_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT = 25
 MAX_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT = 1000
 DEFAULT_QUERY_FETCH_CONCURRENCY = 10
 MAX_QUERY_FETCH_CONCURRENCY = 16
+DEFAULT_FORWARD_API_REQUESTS_PER_MINUTE = 0
+DEFAULT_FORWARD_SAAS_API_REQUESTS_PER_MINUTE = 1800
+FORWARD_SAAS_API_HARD_BLOCK_REQUESTS_PER_MINUTE = 2000
+MAX_FORWARD_API_REQUESTS_PER_MINUTE = 60000
+FORWARD_API_RATE_LIMIT_CACHE_TIMEOUT_SECONDS = 120
+FORWARD_API_RATE_LIMIT_LOCK_TIMEOUT_SECONDS = 5
 DEFAULT_QUERY_PREFLIGHT_ENABLED = True
 DEFAULT_QUERY_DIAGNOSTICS_ENABLED = True
 TRANSIENT_FORWARD_HTTP_STATUS_CODES = {408, 429, 502, 503, 504}
 NQE_QUERY_REPOSITORIES = {"org", "fwd"}
+_RATE_LIMIT_LOCK = threading.Lock()
+_RATE_LIMIT_LAST_REQUEST_AT = {}
+
+
+def _shared_rate_limit_cache():
+    return django_cache
 
 
 def _normalize_nqe_directory(directory):
@@ -104,6 +123,13 @@ class ForwardClient:
         self.base_url = source.url.rstrip("/")
         self.username = params.get("username")
         self.password = params.get("password")
+        self.api_requests_per_minute = self._coerce_api_requests_per_minute(
+            params.get("api_requests_per_minute")
+        )
+        if self.api_requests_per_minute:
+            self._api_request_min_interval = 60.0 / self.api_requests_per_minute
+        else:
+            self._api_request_min_interval = 0.0
 
     def _coerce_nqe_page_size(self, value):
         if value is None:
@@ -141,6 +167,24 @@ class ForwardClient:
             return DEFAULT_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT
         return max(1, min(streak, MAX_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT))
 
+    def _coerce_api_requests_per_minute(self, value):
+        if value in (None, ""):
+            return self._default_api_requests_per_minute()
+        try:
+            requests_per_minute = int(value)
+        except (TypeError, ValueError):
+            return self._default_api_requests_per_minute()
+        return max(
+            0,
+            min(requests_per_minute, MAX_FORWARD_API_REQUESTS_PER_MINUTE),
+        )
+
+    def _default_api_requests_per_minute(self):
+        source_type = str(getattr(self.source, "type", "") or "").lower()
+        if source_type == "saas" or self.base_url == "https://fwd.app":
+            return DEFAULT_FORWARD_SAAS_API_REQUESTS_PER_MINUTE
+        return DEFAULT_FORWARD_API_REQUESTS_PER_MINUTE
+
     def _page_signature(self, rows):
         if not rows:
             return None
@@ -169,6 +213,62 @@ class ForwardClient:
         if self.username and self.password:
             return (self.username, self.password)
         return None
+
+    def _rate_limit_key(self):
+        scope = f"{self.base_url}\0{self.username or ''}"
+        digest = hashlib.sha256(scope.encode("utf-8")).hexdigest()
+        return f"forward-netbox:forward-api-rate-limit:{digest}"
+
+    def _sleep_for_rate_limit(self, last_request_at, now):
+        if last_request_at is None:
+            return now
+        wait_seconds = self._api_request_min_interval - (now - float(last_request_at))
+        if wait_seconds > 0:
+            time.sleep(wait_seconds)
+            return time.time()
+        return now
+
+    def _throttle_with_shared_cache(self, key, cache):
+        lock_key = f"{key}:lock"
+        token = f"{id(self)}:{time.time_ns()}"
+        while not cache.add(
+            lock_key,
+            token,
+            timeout=FORWARD_API_RATE_LIMIT_LOCK_TIMEOUT_SECONDS,
+        ):
+            time.sleep(min(self._api_request_min_interval, 0.25))
+        try:
+            now = time.time()
+            last_request_at = cache.get(key)
+            now = self._sleep_for_rate_limit(last_request_at, now)
+            cache.set(
+                key,
+                now,
+                timeout=FORWARD_API_RATE_LIMIT_CACHE_TIMEOUT_SECONDS,
+            )
+        finally:
+            if cache.get(lock_key) == token:
+                cache.delete(lock_key)
+
+    def _throttle_in_process(self, key):
+        with _RATE_LIMIT_LOCK:
+            now = time.time()
+            last_request_at = _RATE_LIMIT_LAST_REQUEST_AT.get(key)
+            now = self._sleep_for_rate_limit(last_request_at, now)
+            _RATE_LIMIT_LAST_REQUEST_AT[key] = now
+
+    def _throttle_request(self):
+        if not self._api_request_min_interval:
+            return
+        key = self._rate_limit_key()
+        cache = _shared_rate_limit_cache()
+        if cache is None:
+            self._throttle_in_process(key)
+            return
+        try:
+            self._throttle_with_shared_cache(key, cache)
+        except Exception:
+            self._throttle_in_process(key)
 
     def _proxy_mounts(self, url):
         if resolve_proxies is None:
@@ -201,6 +301,7 @@ class ForwardClient:
                     verify=self.verify,
                     mounts=self._proxy_mounts(url),
                 ) as client:
+                    self._throttle_request()
                     response = client.request(
                         method,
                         url,

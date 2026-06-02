@@ -3,6 +3,7 @@
  * @description Raw NQE for NetBox IPv4 prefixes derived from Forward network instance routes.
  */
 
+@query f(forward_netbox_shard_keys: List<String>) =
 foreach device in network.devices
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
@@ -15,10 +16,12 @@ where !(toNumber(networkAddress(entry.prefix)) >= toNumber(ipAddress("0.0.0.0"))
   && toNumber(networkAddress(entry.prefix)) <= toNumber(ipAddress("0.255.255.255")))
 where !(toNumber(networkAddress(entry.prefix)) >= toNumber(ipAddress("127.0.0.0"))
   && toNumber(networkAddress(entry.prefix)) <= toNumber(ipAddress("127.255.255.255")))
+let prefix = ipSubnet(networkAddress(entry.prefix), length(entry.prefix))
+where length(forward_netbox_shard_keys) == 0 || toString(prefix) in forward_netbox_shard_keys
 select distinct {
   vrf: if ni.name != "default"
     then if toString(ni.instanceType) != "NetworkInstanceType.DEFAULT_INSTANCE" then ni.name else null : String
     else null : String,
-  prefix: ipSubnet(networkAddress(entry.prefix), length(entry.prefix)),
+  prefix: prefix,
   status: "active"
-}
+};

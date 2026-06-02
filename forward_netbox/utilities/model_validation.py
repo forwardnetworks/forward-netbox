@@ -7,12 +7,16 @@ from ..choices import FORWARD_SUPPORTED_MODELS
 from ..choices import ForwardDiffFallbackModeChoices
 from ..choices import ForwardExecutionBackendChoices
 from ..choices import ForwardSourceDeploymentChoices
+from ..utilities.forward_api import DEFAULT_FORWARD_SAAS_API_REQUESTS_PER_MINUTE
 from ..utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
+from ..utilities.forward_api import MAX_FORWARD_API_REQUESTS_PER_MINUTE
 from ..utilities.forward_api import MAX_NQE_FETCH_ALL_MAX_PAGES
 from ..utilities.forward_api import MAX_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT
 from ..utilities.forward_api import MAX_NQE_PAGE_SIZE
 from ..utilities.forward_api import MAX_QUERY_FETCH_CONCURRENCY
 from ..utilities.query_fetch import MAX_PREFLIGHT_ROW_LIMIT
+from .branch_budget import MODEL_CHANGE_DENSITY_PARAMETER
+from .branch_budget import MODEL_CHANGE_DENSITY_PROFILE_PARAMETER
 from .sync_contracts import normalize_coalesce_fields
 from .sync_contracts import validate_query_shape_for_model
 from .sync_facade import DEFAULT_ENABLE_BULK_ORM_FOR_NEW_SYNCS
@@ -29,6 +33,7 @@ def clean_forward_source(source):
             "verify",
             "timeout",
             "retries",
+            "api_requests_per_minute",
             "network_id",
             "nqe_page_size",
             "query_fetch_concurrency",
@@ -54,6 +59,10 @@ def clean_forward_source(source):
     if source.type == ForwardSourceDeploymentChoices.SAAS:
         source.url = "https://fwd.app"
         parameters["verify"] = True
+        parameters.setdefault(
+            "api_requests_per_minute",
+            DEFAULT_FORWARD_SAAS_API_REQUESTS_PER_MINUTE,
+        )
     if not (parameters.get("username") and parameters.get("password")):
         raise ValidationError(_("Provide a Forward username and password."))
     if not isinstance(parameters.get("verify", True), bool):
@@ -116,6 +125,24 @@ def clean_forward_source(source):
                 )
             )
         parameters["query_fetch_concurrency"] = query_fetch_concurrency
+    if parameters.get("api_requests_per_minute") is not None:
+        try:
+            api_requests_per_minute = int(parameters.get("api_requests_per_minute"))
+        except (TypeError, ValueError) as exc:
+            raise ValidationError(
+                _("`api_requests_per_minute` must be an integer.")
+            ) from exc
+        if (
+            api_requests_per_minute < 0
+            or api_requests_per_minute > MAX_FORWARD_API_REQUESTS_PER_MINUTE
+        ):
+            raise ValidationError(
+                _(
+                    "`api_requests_per_minute` must be between 0 and "
+                    f"{MAX_FORWARD_API_REQUESTS_PER_MINUTE}."
+                )
+            )
+        parameters["api_requests_per_minute"] = api_requests_per_minute
     if parameters.get("nqe_fetch_all_max_pages") is not None:
         try:
             nqe_fetch_all_max_pages = int(parameters.get("nqe_fetch_all_max_pages"))
@@ -253,6 +280,8 @@ def clean_forward_sync(sync):
             "bulk_orm_models",
             "scheduler_overlap",
             "diff_fallback_mode",
+            MODEL_CHANGE_DENSITY_PARAMETER,
+            MODEL_CHANGE_DENSITY_PROFILE_PARAMETER,
             *FORWARD_SUPPORTED_MODELS,
         }
     )

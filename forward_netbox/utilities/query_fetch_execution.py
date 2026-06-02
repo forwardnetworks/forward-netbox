@@ -8,6 +8,10 @@ from dataclasses import replace
 from threading import Lock
 from typing import Any
 
+from django.db import close_old_connections
+from django.db import connection
+from django.db import connections
+
 from ..choices import FORWARD_OPTIONAL_MODELS
 from ..choices import ForwardApplyEngineChoices
 from ..choices import ForwardDiffFallbackModeChoices
@@ -260,6 +264,29 @@ def _alternate_single_value_column_filter_partition(partition):
         alternate_filter["value"] = values[0]
         return [alternate_filter]
     return []
+
+
+def _default_column_filter_partitions_for_equals_any(partition):
+    if not partition or len(partition) != 1:
+        return []
+    filter_item = dict(partition[0] or {})
+    if filter_item.get("operator") != "EQUALS_ANY":
+        return []
+    values = [
+        value
+        for value in list(filter_item.get("values") or [])
+        if value not in ("", None)
+    ]
+    if len(values) <= 1:
+        return []
+    partitions = []
+    for value in values:
+        default_filter = dict(filter_item)
+        default_filter.pop("values", None)
+        default_filter["operator"] = "DEFAULT"
+        default_filter["value"] = value
+        partitions.append([default_filter])
+    return partitions
 
 
 def _partition_error_allows_split_retry(exc: Exception) -> bool:
@@ -593,8 +620,8 @@ class ForwardQueryFetcher:
         max_workers = self._query_fetch_worker_count(len(jobs))
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             for model_string, spec, preflight_rows, error in executor.map(
-                self._run_preflight_job,
-                ((context, row_limit, job) for job in jobs),
+                self._run_thread_job,
+                ((self._run_preflight_job, (context, row_limit, job)) for job in jobs),
             ):
                 if error is not None:
                     self._record_model_failure(
@@ -717,6 +744,7 @@ class ForwardQueryFetcher:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {
                 executor.submit(
+                    self._run_thread_job,
                     self._run_workload_job,
                     (context, validate_rows, job),
                 ): index
@@ -891,7 +919,11 @@ class ForwardQueryFetcher:
         ] * len(unresolved_models)
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {
-                executor.submit(resolve_model_specs, model_string): index
+                executor.submit(
+                    self._run_thread_job,
+                    resolve_model_specs,
+                    model_string,
+                ): index
                 for index, model_string in enumerate(unresolved_models)
             }
             for future in as_completed(futures):
@@ -1334,8 +1366,8 @@ class ForwardQueryFetcher:
         max_workers = self._query_fetch_worker_count(len(jobs))
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             for result in executor.map(
-                self._run_sample_job,
-                ((context, row_limit, job) for job in jobs),
+                self._run_thread_job,
+                ((self._run_sample_job, (context, row_limit, job)) for job in jobs),
             ):
                 self.model_results.append(result)
         self._append_ipaddress_diagnostics(context)
@@ -1576,6 +1608,43 @@ class ForwardQueryFetcher:
                     cached_metadata,
                 )
 
+        if shard_scope and shard_scope.get("fetch_mode") != "model":
+            model_artifact_rows, model_artifact_meta = _load_model_fetch_artifact()
+            if model_artifact_rows is not None:
+                rows = list(model_artifact_rows)
+                rows, _ = self._filter_rows_to_shard(
+                    model_string,
+                    rows,
+                    [],
+                    coalesce_fields,
+                    shard_scope,
+                )
+                filtered_rows, removed_rows = self._apply_device_tag_scope(
+                    model_string,
+                    rows,
+                    context,
+                )
+                fallback_parameters = dict(fetch_parameters)
+                fallback_parameters["fallback_reason"] = "reused_model_fetch_artifact"
+                fallback_parameters["model_fetch_artifact"] = (
+                    sanitize_fetch_artifact_metadata(model_artifact_meta)
+                )
+                delete_rows = (
+                    removed_rows if context.device_tag_prune_out_of_scope else []
+                )
+                return _return(
+                    filtered_rows,
+                    delete_rows,
+                    "full",
+                    {
+                        "fetch_mode": "full_fallback",
+                        "fetch_key_family": fetch_key_family,
+                        "fetch_parameters": fallback_parameters,
+                        "query_parameters": query_parameters,
+                        "fetch_column_filters": fetch_column_filters,
+                    },
+                )
+
         if (
             baseline is not None
             and spec.run_query_id
@@ -1703,6 +1772,10 @@ class ForwardQueryFetcher:
                     parameters=parameters,
                     column_filters=partition,
                     fetch_all=True,
+                    allow_parameter_fallback=(
+                        not shard_scope
+                        or shard_scope.get("fetch_mode") != "nqe_parameters"
+                    ),
                 ),
             )
         except (ForwardClientError, ForwardConnectivityError) as exc:
@@ -1951,6 +2024,21 @@ class ForwardQueryFetcher:
                 ForwardConnectivityError,
                 ForwardQueryError,
             ) as exc:
+                default_partitions = []
+                if _is_value_required_filter_error(exc):
+                    default_partitions = (
+                        _default_column_filter_partitions_for_equals_any(partition)
+                    )
+                if default_partitions:
+                    record_retry_stat(
+                        "alternate_operator_retry_count", len(default_partitions)
+                    )
+                    log_value_required_retry_once("alternate")
+                    rows = []
+                    for default_partition in default_partitions:
+                        rows.extend(fetch_partition_with_retry(default_partition))
+                    record_retry_stat("alternate_operator_success_count")
+                    return rows
                 split_partitions = _split_column_filter_partition(partition)
                 if not split_partitions:
                     alternate_partition = (
@@ -2024,7 +2112,11 @@ class ForwardQueryFetcher:
         indexed_rows: list[list[dict[str, Any]] | None] = [None] * len(partition_list)
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {
-                executor.submit(fetch_partition_with_retry, partition): index
+                executor.submit(
+                    self._run_thread_job,
+                    fetch_partition_with_retry,
+                    partition,
+                ): index
                 for index, partition in enumerate(partition_list)
             }
             for future in as_completed(futures):
@@ -2035,6 +2127,16 @@ class ForwardQueryFetcher:
         for partition_rows in indexed_rows:
             rows.extend(partition_rows or [])
         return rows
+
+    def _run_thread_job(self, func, payload=None):
+        if payload is None:
+            func, payload = func
+        close_old_connections()
+        try:
+            return func(payload)
+        finally:
+            connection.close()
+            connections.close_all()
 
     def _fetch_parameters_with_retry_summary(self, fetch_parameters, retry_summary):
         parameters = dict(fetch_parameters or {})
@@ -2144,6 +2246,7 @@ class ForwardQueryFetcher:
         limit: int | None = None,
         column_filters=None,
         fetch_all: bool = False,
+        allow_parameter_fallback: bool = True,
     ):
         try:
             return self.client.run_nqe_query(
@@ -2158,7 +2261,11 @@ class ForwardQueryFetcher:
                 fetch_all=fetch_all,
             )
         except (ForwardClientError, ForwardConnectivityError) as exc:
-            if not parameters or not self._supports_parameter_fallback_error(exc):
+            if (
+                not allow_parameter_fallback
+                or not parameters
+                or not self._supports_parameter_fallback_error(exc)
+            ):
                 raise
             fallback_key = (
                 str(getattr(spec, "query_name", "") or ""),
