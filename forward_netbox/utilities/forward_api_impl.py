@@ -130,6 +130,58 @@ class ForwardClient:
             self._api_request_min_interval = 60.0 / self.api_requests_per_minute
         else:
             self._api_request_min_interval = 0.0
+        self._api_usage_lock = threading.Lock()
+        self._api_usage = self._empty_api_usage()
+
+    def _empty_api_usage(self):
+        return {
+            "api_requests_per_minute": self.api_requests_per_minute,
+            "http_attempts": 0,
+            "http_successes": 0,
+            "http_failures": 0,
+            "http_timeout_failures": 0,
+            "http_transport_failures": 0,
+            "http_status_failures": 0,
+            "http_transient_status_failures": 0,
+            "http_nontransient_status_failures": 0,
+            "http_429_failures": 0,
+            "http_retries": 0,
+            "http_status_classes": {},
+            "throttle_sleep_seconds": 0.0,
+            "nqe_query_calls": 0,
+            "nqe_diff_calls": 0,
+            "nqe_pages": 0,
+            "nqe_query_pages": 0,
+            "nqe_diff_pages": 0,
+        }
+
+    def _record_api_usage(self, key, amount=1):
+        with self._api_usage_lock:
+            self._api_usage[key] = self._api_usage.get(key, 0) + amount
+
+    def _record_http_status_class(self, status_code):
+        if not isinstance(status_code, int):
+            return
+        class_name = f"{status_code // 100}xx"
+        with self._api_usage_lock:
+            classes = self._api_usage.setdefault("http_status_classes", {})
+            classes[class_name] = classes.get(class_name, 0) + 1
+
+    def api_usage_summary(self):
+        with self._api_usage_lock:
+            summary = dict(self._api_usage)
+            summary["http_status_classes"] = dict(
+                self._api_usage.get("http_status_classes") or {}
+            )
+        summary["throttle_sleep_seconds"] = round(
+            float(summary.get("throttle_sleep_seconds") or 0.0),
+            6,
+        )
+        return summary
+
+    def reset_api_usage_summary(self):
+        with self._api_usage_lock:
+            self._api_usage = self._empty_api_usage()
 
     def _coerce_nqe_page_size(self, value):
         if value is None:
@@ -224,6 +276,7 @@ class ForwardClient:
             return now
         wait_seconds = self._api_request_min_interval - (now - float(last_request_at))
         if wait_seconds > 0:
+            self._record_api_usage("throttle_sleep_seconds", wait_seconds)
             time.sleep(wait_seconds)
             return time.time()
         return now
@@ -302,6 +355,7 @@ class ForwardClient:
                     mounts=self._proxy_mounts(url),
                 ) as client:
                     self._throttle_request()
+                    self._record_api_usage("http_attempts")
                     response = client.request(
                         method,
                         url,
@@ -311,33 +365,49 @@ class ForwardClient:
                         auth=self._auth(),
                     )
                 response.raise_for_status()
+                self._record_api_usage("http_successes")
+                self._record_http_status_class(getattr(response, "status_code", None))
                 return response
             except httpx.TimeoutException as exc:
+                self._record_api_usage("http_failures")
+                self._record_api_usage("http_timeout_failures")
                 last_connectivity_error = ForwardConnectivityError(
                     "Forward API request timed out while connecting to Forward."
                 )
                 last_connectivity_error.__cause__ = exc
             except httpx.RequestError as exc:
+                self._record_api_usage("http_failures")
+                self._record_api_usage("http_transport_failures")
                 last_connectivity_error = ForwardConnectivityError(
                     f"Could not connect to Forward API endpoint: {exc}"
                 )
                 last_connectivity_error.__cause__ = exc
             except httpx.HTTPStatusError as exc:
                 status_code = exc.response.status_code
+                self._record_api_usage("http_failures")
+                self._record_api_usage("http_status_failures")
+                self._record_http_status_class(status_code)
                 if status_code in TRANSIENT_FORWARD_HTTP_STATUS_CODES:
+                    self._record_api_usage("http_transient_status_failures")
+                    if status_code == 429:
+                        self._record_api_usage("http_429_failures")
                     last_connectivity_error = ForwardConnectivityError(
                         "Forward API request returned transient HTTP "
                         f"{status_code}; retry attempts were exhausted."
                     )
                     last_connectivity_error.__cause__ = exc
                 else:
+                    self._record_api_usage("http_nontransient_status_failures")
                     raise ForwardClientError(
                         "Forward API request failed with HTTP "
                         f"{status_code}: {exc.response.text}"
                     ) from exc
             except httpx.HTTPError as exc:
+                self._record_api_usage("http_failures")
+                self._record_api_usage("http_transport_failures")
                 raise ForwardClientError(f"Forward API request failed: {exc}") from exc
             if attempt < self.retries:
+                self._record_api_usage("http_retries")
                 time.sleep(DEFAULT_FORWARD_API_RETRY_BACKOFF_SECONDS * (attempt + 1))
         raise last_connectivity_error
 
@@ -624,6 +694,8 @@ class ForwardClient:
             raise ForwardClientError("`limit` must be at least 1.")
 
         def fetch_page(page_offset):
+            self._record_api_usage("nqe_pages")
+            self._record_api_usage("nqe_query_pages")
             payload = {
                 "parameters": parameters or {},
                 "queryOptions": {
@@ -655,6 +727,7 @@ class ForwardClient:
 
             return self._parse_nqe_records(response.json() or {})
 
+        self._record_api_usage("nqe_query_calls")
         records, total_num_items = fetch_page(offset)
         if not fetch_all:
             return records
@@ -743,6 +816,8 @@ class ForwardClient:
             raise ForwardClientError("`limit` must be at least 1.")
 
         def fetch_page(page_offset):
+            self._record_api_usage("nqe_pages")
+            self._record_api_usage("nqe_diff_pages")
             payload = {
                 "queryId": query_id,
                 "options": {
@@ -765,6 +840,7 @@ class ForwardClient:
             )
             return self._parse_nqe_diff_rows(response.json() or {})
 
+        self._record_api_usage("nqe_diff_calls")
         rows, total_num_rows = fetch_page(offset)
         if not fetch_all:
             return rows
