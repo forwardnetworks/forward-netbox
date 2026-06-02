@@ -2788,7 +2788,10 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
                     {
                         "generated_at": datetime.now(timezone.utc).isoformat(),
                         "status": "passed",
-                        "metadata": {"dataset_label": "release-staging", "resume": False},
+                        "metadata": {
+                            "dataset_label": "release-staging",
+                            "resume": False,
+                        },
                         "runs": [
                             {
                                 "name": "run_a_branching_validate_only",
@@ -2816,7 +2819,9 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
                 clear=True,
             ):
                 with self.assertRaises(Exit) as raised:
-                    tasks.release_dataset_gate.body(context, dataset_label="release-smoke")
+                    tasks.release_dataset_gate.body(
+                        context, dataset_label="release-smoke"
+                    )
 
         self.assertEqual(raised.exception.code, 1)
         self.assertIn("dataset label", str(raised.exception))
@@ -2858,7 +2863,9 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
                 clear=True,
             ):
                 with self.assertRaises(Exit) as raised:
-                    tasks.release_dataset_gate.body(context, dataset_label="release-smoke")
+                    tasks.release_dataset_gate.body(
+                        context, dataset_label="release-smoke"
+                    )
 
         self.assertEqual(raised.exception.code, 1)
         self.assertIn("regenerate field-scale evidence", str(raised.exception))
@@ -2937,7 +2944,9 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
                 clear=True,
             ):
                 with self.assertRaises(Exit) as raised:
-                    tasks.release_dataset_gate.body(context, dataset_label="release-smoke")
+                    tasks.release_dataset_gate.body(
+                        context, dataset_label="release-smoke"
+                    )
 
         self.assertEqual(raised.exception.code, 1)
         self.assertIn("regenerate field-scale evidence", str(raised.exception))
@@ -3076,7 +3085,9 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
             ),
         ):
             with self.assertRaises(Exit) as raised:
-                tasks.release_runtime_preflight.body(context, dataset_label="release-smoke")
+                tasks.release_runtime_preflight.body(
+                    context, dataset_label="release-smoke"
+                )
         self.assertEqual(raised.exception.code, 1)
 
     def test_release_readiness_audit_passes_when_all_checks_pass(self):
@@ -3165,7 +3176,9 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
             return_value={"status": "failed", "checks": {}, "failed_checks": ["x"]},
         ):
             with self.assertRaises(Exit) as raised:
-                tasks.release_readiness_audit.body(context, dataset_label="release-smoke")
+                tasks.release_readiness_audit.body(
+                    context, dataset_label="release-smoke"
+                )
         self.assertEqual(raised.exception.code, 1)
 
     def test_collect_compatibility_cache_evidence_reports_passed_when_no_stale(self):
@@ -3907,9 +3920,12 @@ class SharedRuntimeTestGuardTaskTest(unittest.TestCase):
             compose_calls[1], ("forward-netbox-test", "up -d postgres redis")
         )
         self.assertEqual(compose_calls[2][0], "forward-netbox-test")
-        self.assertIn("run --rm -T netbox", compose_calls[2][1])
-        self.assertIn("forward_netbox.tests.test_sync", compose_calls[2][1])
-        self.assertEqual(len(compose_calls), 3)
+        self.assertIn("exec -T postgres", compose_calls[2][1])
+        self.assertIn("pg_isready", compose_calls[2][1])
+        self.assertEqual(compose_calls[3][0], "forward-netbox-test")
+        self.assertIn("run --rm -T netbox", compose_calls[3][1])
+        self.assertIn("forward_netbox.tests.test_sync", compose_calls[3][1])
+        self.assertEqual(len(compose_calls), 4)
 
     def test_test_isolated_can_remove_runtime_volume(self):
         context = self._context()

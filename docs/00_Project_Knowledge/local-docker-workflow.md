@@ -76,7 +76,7 @@ invoke test-isolated --test-label forward_netbox.tests.test_sync
 NetBox tests through a one-off container, so it does not publish the web port or
 touch the primary `forward-netbox` runtime. It keeps the isolated Postgres volume
 by default so later `--keepdb` test runs are faster. Add
-`--keep-runtime=False` to remove the isolated containers and volumes after the
+`--no-keep-runtime` to remove the isolated containers and volumes after the
 run.
 
 The Docker build context is intentionally pruned by `.dockerignore`. Keep large

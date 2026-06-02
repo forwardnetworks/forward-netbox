@@ -263,6 +263,7 @@ def _run_tests_in_isolated_runtime(
     docker_compose(isolated, "down --remove-orphans -v")
     docker_compose(isolated, "up -d postgres redis")
     try:
+        _wait_for_isolated_postgres(isolated)
         docker_compose(
             isolated,
             (
@@ -273,6 +274,26 @@ def _run_tests_in_isolated_runtime(
     finally:
         if not _truthy_arg(keep_runtime):
             docker_compose(isolated, "down --remove-orphans -v")
+
+
+def _wait_for_isolated_postgres(context, *, timeout_seconds=120):
+    timeout_seconds = max(1, int(timeout_seconds))
+    docker_compose(
+        context,
+        (
+            "exec -T postgres sh -lc "
+            + shlex.quote(
+                (
+                    f"for i in $(seq 1 {timeout_seconds}); do "
+                    'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" && exit 0; '
+                    "sleep 1; "
+                    "done; "
+                    f'echo "Timed out waiting {timeout_seconds}s for isolated PostgreSQL readiness." >&2; '
+                    "exit 1"
+                )
+            )
+        ),
+    )
 
 
 def _run_tests_with_shared_runtime_fallback(context, *, test_label):
@@ -1656,7 +1677,9 @@ def _collect_architecture_completion_gate(context):
     }
 
 
-def _collect_release_runtime_preflight_evidence(*, context, dataset_label="release-smoke"):
+def _collect_release_runtime_preflight_evidence(
+    *, context, dataset_label="release-smoke"
+):
     credential_env = (
         "FORWARD_SMOKE_USERNAME",
         "FORWARD_SMOKE_PASSWORD",

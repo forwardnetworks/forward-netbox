@@ -55,7 +55,7 @@
     "planned_shards": 74,
     "status": "passed"
   },
-  "adp_org_prefix_queries": {
+  "field_validation_org_prefix_queries": {
     "paths": [
       "/forward_netbox_validation/forward_prefixes_ipv4",
       "/forward_netbox_validation/forward_prefixes_ipv6"
@@ -72,6 +72,6 @@
   },
   "notes": [
     "No credentials, customer identifiers, network IDs, snapshot IDs, raw rows, or query IDs are stored in this artifact.",
-    "Previous timing observations came from the stopped page-size-500 customer matrix attempt. Current matrix evidence came from the page-size-5000 run."
+    "Previous timing observations came from the stopped page-size-500 release-validation matrix attempt. Current matrix evidence came from the page-size-5000 run."
   ]
 }

@@ -59,6 +59,7 @@ from forward_netbox.models import ForwardNQEMap
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.models import ForwardValidationRun
+from forward_netbox.signals import seed_builtin_nqe_maps
 from forward_netbox.utilities.apply_engine import ADAPTER_MODELS_WITHOUT_BLOCKER
 from forward_netbox.utilities.apply_engine import ADAPTER_REQUIRED_MODELS
 from forward_netbox.utilities.apply_engine import apply_engine_decision_for
@@ -8300,6 +8301,54 @@ class ForwardSyncRunnerTest(TestCase):
             fetch_all=True,
         )
 
+    def test_run_prefix_only_fresh_sync_imports_prefix_rows(self):
+        seed_builtin_nqe_maps(type("Sender", (), {"label": "forward_netbox"}))
+        parameters = {
+            "snapshot_id": "snapshot-prefix",
+            "enable_bulk_orm": False,
+            **{model_string: False for model_string in FORWARD_SUPPORTED_MODELS},
+            "ipam.prefix": True,
+        }
+        self.sync.parameters = parameters
+        self.sync.save(update_fields=["parameters"])
+        self.assertEqual(self.sync.get_model_strings(), ["ipam.prefix"])
+
+        ingestion = ForwardIngestion.objects.create(sync=self.sync)
+        client = Mock()
+        client.get_snapshots.return_value = [
+            {
+                "id": "snapshot-prefix",
+                "state": "PROCESSED",
+                "created_at": "",
+                "processed_at": "2026-06-02T04:52:00Z",
+            }
+        ]
+        client.get_snapshot_metrics.return_value = {}
+        client.run_nqe_query.side_effect = [
+            [{"prefix": "10.0.0.0/24", "vrf": "", "status": "active"}],
+            [{"prefix": "2001:db8::/64", "vrf": "", "status": "active"}],
+        ]
+        runner = ForwardSyncRunner(
+            sync=self.sync,
+            ingestion=ingestion,
+            client=client,
+            logger_=Mock(),
+        )
+
+        runner.run()
+        ingestion.refresh_from_db()
+
+        self.assertEqual(ingestion.sync_mode, "full")
+        self.assertTrue(Prefix.objects.filter(prefix="10.0.0.0/24").exists())
+        self.assertTrue(Prefix.objects.filter(prefix="2001:db8::/64").exists())
+        self.assertEqual(client.run_nqe_query.call_count, 2)
+        called_queries = {
+            call.kwargs["query"] for call in client.run_nqe_query.call_args_list
+        }
+        self.assertTrue(
+            all("forward_netbox_shard_keys" in query for query in called_queries)
+        )
+
     def test_run_passes_query_rows_through_to_apply_and_statistics(self):
         ingestion = ForwardIngestion.objects.create(sync=self.sync)
         client = Mock()
@@ -8423,6 +8472,142 @@ class ForwardSyncRunnerTest(TestCase):
             "dcim.site",
             [{"name": "site-1", "slug": "site-1"}],
         )
+        ingestion.refresh_from_db()
+        self.assertEqual(ingestion.sync_mode, "diff")
+
+    def test_run_updates_existing_rows_from_nqe_diff_modifications(self):
+        Site.objects.create(name="site-before", slug="site-update", status="active")
+
+        baseline = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-before",
+            baseline_ready=True,
+        )
+        ingestion = ForwardIngestion.objects.create(sync=self.sync)
+        client = Mock()
+        client.get_latest_processed_snapshot.return_value = {
+            "id": "snapshot-after",
+            "processedAt": "2026-03-31T12:15:00Z",
+        }
+        client.get_snapshot_metrics.return_value = {}
+        client.run_nqe_diff.return_value = [
+            {
+                "type": "MODIFIED",
+                "before": {"name": "site-before", "slug": "site-update"},
+                "after": {"name": "site-after", "slug": "site-update"},
+            },
+        ]
+        logger = Mock()
+        runner = ForwardSyncRunner(
+            sync=self.sync,
+            ingestion=ingestion,
+            client=client,
+            logger_=logger,
+        )
+        self.sync.get_model_strings = lambda: ["dcim.site"]
+        self.sync.resolve_snapshot_id = lambda client=None: "snapshot-after"
+        self.sync.incremental_diff_baseline = Mock(
+            return_value=Mock(snapshot_id="snapshot-before")
+        )
+
+        with patch(
+            "forward_netbox.utilities.sync_execution.get_query_specs",
+            return_value=[
+                QuerySpec(
+                    model_string="dcim.site",
+                    query_name="Forward Sites",
+                    query_id="Q_sites",
+                )
+            ],
+        ):
+            runner.run()
+
+        client.run_nqe_diff.assert_called_once_with(
+            query_id="Q_sites",
+            commit_id=None,
+            parameters={},
+            before_snapshot_id=baseline.snapshot_id,
+            after_snapshot_id="snapshot-after",
+            fetch_all=True,
+        )
+        client.run_nqe_query.assert_not_called()
+
+        site = Site.objects.get(slug="site-update")
+        self.assertEqual(site.name, "site-after")
+        self.assertEqual(site.status, "active")
+        ingestion.refresh_from_db()
+        self.assertEqual(ingestion.sync_mode, "diff")
+        self.assertEqual(Site.objects.filter(slug="site-update").count(), 1)
+
+    def test_run_updates_existing_rows_when_diff_changing_identity_key(self):
+        original_site = Site.objects.create(
+            name="site-before",
+            slug="site-before",
+            status="active",
+        )
+
+        baseline = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-before",
+            baseline_ready=True,
+        )
+        ingestion = ForwardIngestion.objects.create(sync=self.sync)
+        client = Mock()
+        client.get_latest_processed_snapshot.return_value = {
+            "id": "snapshot-after",
+            "processedAt": "2026-03-31T12:15:00Z",
+        }
+        client.get_snapshot_metrics.return_value = {}
+        client.run_nqe_diff.return_value = [
+            {
+                "type": "MODIFIED",
+                "before": {"name": "site-before", "slug": "site-before"},
+                "after": {"name": "site-after", "slug": "site-after"},
+            },
+        ]
+        logger = Mock()
+        runner = ForwardSyncRunner(
+            sync=self.sync,
+            ingestion=ingestion,
+            client=client,
+            logger_=logger,
+        )
+        self.sync.get_model_strings = lambda: ["dcim.site"]
+        self.sync.resolve_snapshot_id = lambda client=None: "snapshot-after"
+        self.sync.incremental_diff_baseline = Mock(
+            return_value=Mock(snapshot_id="snapshot-before")
+        )
+
+        with patch(
+            "forward_netbox.utilities.sync_execution.get_query_specs",
+            return_value=[
+                QuerySpec(
+                    model_string="dcim.site",
+                    query_name="Forward Sites",
+                    query_id="Q_sites",
+                )
+            ],
+        ):
+            runner.run()
+
+        client.run_nqe_diff.assert_called_once_with(
+            query_id="Q_sites",
+            commit_id=None,
+            parameters={},
+            before_snapshot_id=baseline.snapshot_id,
+            after_snapshot_id="snapshot-after",
+            fetch_all=True,
+        )
+        client.run_nqe_query.assert_not_called()
+
+        site_by_old_slug = Site.objects.filter(slug="site-before").first()
+        updated_site = Site.objects.get(slug="site-after")
+        self.assertIsNone(site_by_old_slug)
+        self.assertNotEqual(original_site.pk, updated_site.pk)
+        self.assertEqual(updated_site.name, "site-after")
+        self.assertEqual(updated_site.status, "active")
         ingestion.refresh_from_db()
         self.assertEqual(ingestion.sync_mode, "diff")
 
