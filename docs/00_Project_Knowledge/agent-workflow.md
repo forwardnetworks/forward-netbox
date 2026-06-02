@@ -10,7 +10,7 @@ Use this workflow before changing the repository.
 | Query or NQE map change | Update query, tests, built-in NQE reference, and validation matrix if needed |
 | Sync behavior change | Create active plan, update tests first, run NetBox checks and tests |
 | UI/API behavior change | Create active plan, update tests, run `invoke playwright-test`, and update screenshots/docs when visible behavior changes |
-| Release | Follow the release playbook and verify GitHub CI on branch and tag |
+| Release | Follow the release playbook, verify GitHub CI on branch and tag, and keep Playwright proof in the local release gate |
 
 ## Before Editing
 
