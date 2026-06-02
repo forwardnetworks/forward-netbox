@@ -229,7 +229,7 @@ Target state:
   increase worker/runtime capacity, check database headroom, or tune query
   concurrency.
 - troubleshooting docs explain how to interpret those actions.
-- support bundles contain enough evidence to debug REDACTED-style field failures
+- support bundles contain enough evidence to debug customer-style field failures
   without screenshots as the primary artifact.
 
 Avoid:
