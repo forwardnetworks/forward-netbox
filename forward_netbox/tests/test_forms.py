@@ -278,6 +278,7 @@ class ForwardSyncFormTest(TestCase):
                 "network_id": "test-network",
                 "timeout": 1200,
                 "nqe_page_size": 10000,
+                "api_requests_per_minute": 1800,
                 "nqe_fetch_all_max_pages": 6000,
                 "nqe_identical_full_page_streak_limit": 30,
                 "verify": True,
@@ -287,11 +288,33 @@ class ForwardSyncFormTest(TestCase):
         self.assertTrue(form.is_valid(), form.errors)
         source = form.save()
         self.assertEqual(source.parameters["nqe_page_size"], 10000)
+        self.assertEqual(source.parameters["api_requests_per_minute"], 1800)
         self.assertEqual(source.parameters["nqe_fetch_all_max_pages"], 6000)
         self.assertEqual(
             source.parameters["nqe_identical_full_page_streak_limit"],
             30,
         )
+
+    @patch("forward_netbox.forms.ForwardSource.validate_connection")
+    def test_source_form_defaults_saas_api_requests_per_minute(
+        self, _mock_validate_connection
+    ):
+        form = ForwardSourceForm(
+            data={
+                "name": "source-saas-default-rpm",
+                "type": ForwardSourceDeploymentChoices.SAAS,
+                "username": "user@example.com",
+                "password": "secret",
+                "network_id": "test-network",
+                "timeout": 1200,
+                "nqe_page_size": 10000,
+                "verify": True,
+            }
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+        source = form.save()
+        self.assertEqual(source.parameters["api_requests_per_minute"], 1800)
 
     @patch("forward_netbox.forms.ForwardSource.validate_connection")
     def test_source_form_persists_device_tag_scope(self, _mock_validate_connection):

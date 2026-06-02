@@ -1,0 +1,20 @@
+{
+  "active_step_id": 11,
+  "active_step_index": 1,
+  "active_step_job_id": 12,
+  "active_step_kind": "stage",
+  "active_step_status": "running",
+  "branch_id": null,
+  "branch_name": "",
+  "execution_run_id": 6,
+  "generated_at": "2026-05-30T22:51:45.849068+00:00",
+  "killed_worker_id": "5f2786cfefc310d183a6dca0acf8f9eab88be27e823e3415fd46e0d1af2befae",
+  "recovery_action": "monitor",
+  "recovery_severity": "info",
+  "recovery_step_index": 1,
+  "restored_worker_replicas": 2,
+  "scenario": "stage-before-branch",
+  "support_bundle": "/Users/captainpacket/src/forward-netbox/docs/03_Plans/evidence/chaos/chaos-stage-before-branch-run-6.json",
+  "support_bundle_recovery_verified": true,
+  "sync_name": "ui-harness-sync"
+}

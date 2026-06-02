@@ -686,3 +686,20 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
         self.assertEqual(updated.parameters["max_changes_per_branch"], 12000)
         self.assertTrue(updated.parameters["dcim.site"])
         self.assertEqual(updated.parameters["execution_backend"], "fast_bootstrap")
+
+    def test_smoke_sync_build_sync_persists_max_changes_per_branch(self):
+        sync = SmokeSyncCommand()._build_sync(
+            sync_name="max-shard-smoke-sync",
+            source=self.source,
+            user=None,
+            snapshot_id="latestProcessed",
+            selected_models={"dcim.site"},
+            auto_merge=True,
+            execution_backend="branching",
+            max_changes_per_branch=42,
+            enable_bulk_orm=True,
+            scheduler_overlap=False,
+        )
+
+        self.assertEqual(sync.parameters["max_changes_per_branch"], 42)
+        self.assertEqual(sync.get_max_changes_per_branch(), 42)

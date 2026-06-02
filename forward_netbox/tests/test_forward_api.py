@@ -7,6 +7,7 @@ import httpx
 
 from forward_netbox.exceptions import ForwardClientError
 from forward_netbox.exceptions import ForwardConnectivityError
+from forward_netbox.utilities import forward_api_impl
 from forward_netbox.utilities.forward_api import ForwardClient
 
 
@@ -28,6 +29,138 @@ class ForwardClientTest(TestCase):
         response = Mock()
         response.json.return_value = data
         return response
+
+    def test_api_request_rate_limit_defaults_for_forward_saas(self):
+        self.assertEqual(self.client.api_requests_per_minute, 1800)
+        self.assertAlmostEqual(self.client._api_request_min_interval, 1 / 30)
+
+    def test_api_request_rate_limit_defaults_disabled_for_custom_sources(self):
+        client = ForwardClient(
+            SimpleNamespace(
+                type="custom",
+                url="https://forward.example.com",
+                parameters={
+                    "username": "user@example.com",
+                    "password": "secret",
+                },
+            )
+        )
+
+        self.assertEqual(client.api_requests_per_minute, 0)
+        self.assertEqual(client._api_request_min_interval, 0.0)
+
+    def test_api_request_rate_limit_explicit_zero_disables(self):
+        client = ForwardClient(
+            SimpleNamespace(
+                type="saas",
+                url="https://fwd.app",
+                parameters={
+                    "username": "user@example.com",
+                    "password": "secret",
+                    "api_requests_per_minute": 0,
+                },
+            )
+        )
+
+        self.assertEqual(client.api_requests_per_minute, 0)
+        self.assertEqual(client._api_request_min_interval, 0.0)
+
+    def test_api_request_rate_limit_spaces_requests_in_process(self):
+        forward_api_impl._RATE_LIMIT_LAST_REQUEST_AT.clear()
+        client = ForwardClient(
+            SimpleNamespace(
+                url="https://fwd.app",
+                parameters={
+                    "username": "rate-limit@example.com",
+                    "password": "secret",
+                    "api_requests_per_minute": 60,
+                },
+            )
+        )
+
+        with (
+            patch(
+                "forward_netbox.utilities.forward_api_impl._shared_rate_limit_cache",
+                return_value=None,
+            ),
+            patch(
+                "forward_netbox.utilities.forward_api_impl.time.time",
+                side_effect=[100.0, 100.2, 101.0],
+            ),
+            patch("forward_netbox.utilities.forward_api_impl.time.sleep") as sleep,
+        ):
+            client._throttle_request()
+            client._throttle_request()
+
+        sleep.assert_called_once()
+        self.assertAlmostEqual(sleep.call_args.args[0], 0.8)
+
+    def test_api_request_rate_limit_key_does_not_expose_username(self):
+        client = ForwardClient(
+            SimpleNamespace(
+                url="https://fwd.app",
+                parameters={
+                    "username": "rate-limit@example.com",
+                    "password": "secret",
+                    "api_requests_per_minute": 120,
+                },
+            )
+        )
+
+        key = client._rate_limit_key()
+
+        self.assertNotIn("rate-limit@example.com", key)
+        self.assertIn("forward-api-rate-limit", key)
+
+    def test_request_throttles_each_forward_http_attempt(self):
+        response = Mock()
+        client = Mock()
+        client.request.return_value = response
+        client_context = Mock()
+        client_context.__enter__ = Mock(return_value=client)
+        client_context.__exit__ = Mock(return_value=None)
+
+        with (
+            patch(
+                "forward_netbox.utilities.forward_api_impl.httpx.Client",
+                return_value=client_context,
+            ),
+            patch.object(self.client, "_throttle_request") as throttle,
+        ):
+            result = self.client._request("GET", "/networks")
+
+        self.assertEqual(result, response)
+        throttle.assert_called_once_with()
+        client.request.assert_called_once()
+
+    def test_request_throttles_retried_forward_http_attempts(self):
+        self.client.retries = 1
+        response = Mock()
+        first_client = Mock()
+        first_client.request.side_effect = httpx.RemoteProtocolError(
+            "Server disconnected without sending a response."
+        )
+        second_client = Mock()
+        second_client.request.return_value = response
+        first_context = Mock()
+        first_context.__enter__ = Mock(return_value=first_client)
+        first_context.__exit__ = Mock(return_value=None)
+        second_context = Mock()
+        second_context.__enter__ = Mock(return_value=second_client)
+        second_context.__exit__ = Mock(return_value=None)
+
+        with (
+            patch(
+                "forward_netbox.utilities.forward_api_impl.httpx.Client",
+                side_effect=[first_context, second_context],
+            ),
+            patch.object(self.client, "_throttle_request") as throttle,
+            patch("forward_netbox.utilities.forward_api_impl.time.sleep"),
+        ):
+            result = self.client._request("GET", "/networks")
+
+        self.assertEqual(result, response)
+        self.assertEqual(throttle.call_count, 2)
 
     def test_request_uses_netbox_proxy_routers(self):
         response = Mock()
@@ -106,7 +239,7 @@ class ForwardClientTest(TestCase):
             result = self.client._request("POST", "/nqe", json_body={"query": "q"})
 
         self.assertEqual(result, response)
-        sleep.assert_called_once_with(2)
+        sleep.assert_any_call(2)
         response.raise_for_status.assert_called_once()
 
     def test_request_retries_transient_http_status_errors(self):
@@ -138,7 +271,7 @@ class ForwardClientTest(TestCase):
             result = self.client._request("POST", "/nqe", json_body={"query": "q"})
 
         self.assertEqual(result, response_ok)
-        sleep.assert_called_once_with(2)
+        sleep.assert_any_call(2)
         response_ok.raise_for_status.assert_called_once()
 
     def test_request_raises_connectivity_error_after_transient_http_status_retries(

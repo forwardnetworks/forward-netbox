@@ -128,12 +128,22 @@
     {% plugin_left_page object %}
   </div>
   <div class="col col-md-6">
-    {% with guidance=object.get_workload_summary.branching_guidance %}
-      {% if guidance.message %}
-        <div class="alert alert-warning" role="alert">
-          {{ guidance.message }}
-        </div>
-      {% endif %}
+    {% with workload=object.get_workload_summary %}
+      {% with lane=workload.initial_baseline_lane %}
+        {% if lane.message %}
+          <div class="alert alert-{% if lane.severity == 'warning' %}warning{% elif lane.severity == 'success' %}success{% else %}info{% endif %}" role="alert">
+            <strong>{{ lane.recommendation_label }}</strong>
+            <div>{{ lane.message }}</div>
+            {% if lane.fast_bootstrap_confirmation %}
+              <ul class="mb-0 ps-3">
+                {% for item in lane.fast_bootstrap_confirmation %}
+                  <li>{{ item }}</li>
+                {% endfor %}
+              </ul>
+            {% endif %}
+          </div>
+        {% endif %}
+      {% endwith %}
     {% endwith %}
     <div class="card">
       <h5 class="card-header">{% trans "Enabled Models" %}</h5>

@@ -153,6 +153,66 @@ class ForwardSyncModelTest(TestCase):
             str(ctx.exception),
         )
 
+    def test_source_preserves_api_requests_per_minute(self):
+        source = ForwardSource(
+            name="source-api-rpm",
+            type="saas",
+            url="https://fwd.app",
+            parameters={
+                "username": "user@example.com",
+                "password": "secret",
+                "verify": True,
+                "timeout": 1200,
+                "network_id": "test-network",
+                "api_requests_per_minute": "1800",
+            },
+        )
+
+        source.clean()
+
+        self.assertEqual(source.parameters["api_requests_per_minute"], 1800)
+
+    def test_source_defaults_saas_api_requests_per_minute(self):
+        source = ForwardSource(
+            name="source-api-rpm-default",
+            type="saas",
+            url="https://fwd.app",
+            parameters={
+                "username": "user@example.com",
+                "password": "secret",
+                "verify": True,
+                "timeout": 1200,
+                "network_id": "test-network",
+            },
+        )
+
+        source.clean()
+
+        self.assertEqual(source.parameters["api_requests_per_minute"], 1800)
+
+    def test_source_rejects_invalid_api_requests_per_minute(self):
+        source = ForwardSource(
+            name="source-invalid-api-rpm",
+            type="saas",
+            url="https://fwd.app",
+            parameters={
+                "username": "user@example.com",
+                "password": "secret",
+                "verify": True,
+                "timeout": 1200,
+                "network_id": "test-network",
+                "api_requests_per_minute": -1,
+            },
+        )
+
+        with self.assertRaises(ValidationError) as ctx:
+            source.clean()
+
+        self.assertIn(
+            "`api_requests_per_minute` must be between 0 and 60000.",
+            str(ctx.exception),
+        )
+
     def test_source_rejects_invalid_pushdown_alert_threshold(self):
         source = ForwardSource(
             name="source-invalid-pushdown-threshold",
@@ -518,9 +578,190 @@ class ForwardSyncModelTest(TestCase):
         )
 
         guidance = sync.get_workload_summary()["branching_guidance"]
+        lane = sync.get_workload_summary()["initial_baseline_lane"]
 
         self.assertEqual(guidance["severity"], "warning")
         self.assertIn("Fast bootstrap", guidance["message"])
+        self.assertEqual(
+            lane["recommendation"],
+            "use_fast_bootstrap_for_trusted_baseline",
+        )
+        self.assertEqual(lane["recommended_backend"], "fast_bootstrap")
+        self.assertEqual(lane["lane_risk"], "high")
+        self.assertEqual(lane["runtime_class"], "hours")
+        self.assertEqual(
+            lane["fast_bootstrap_confirmation"][0],
+            "Use only for a trusted initial baseline.",
+        )
+
+    def test_workload_summary_recommends_branching_for_bounded_projection(self):
+        sync = ForwardSync.objects.create(
+            name="sync-bounded-branching-guidance",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.site": True,
+                "max_changes_per_branch": 10000,
+            },
+        )
+        sync.set_branch_run_state(
+            {
+                "snapshot_id": "snapshot-2",
+                "plan_preview": {
+                    "planned_shards": 2,
+                    "estimated_changes": 5000,
+                    "model_count": 1,
+                    "retry_risk": "low",
+                },
+            }
+        )
+
+        lane = sync.get_workload_summary()["initial_baseline_lane"]
+
+        self.assertEqual(lane["recommendation"], "branching_bounded_review")
+        self.assertEqual(lane["recommended_backend"], "branching")
+        self.assertEqual(lane["status"], "pass")
+        self.assertEqual(lane["lane_risk"], "low")
+
+    def test_workload_summary_recommends_branching_with_tuning_after_baseline(self):
+        sync = ForwardSync.objects.create(
+            name="sync-large-diff-guidance",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+                "max_changes_per_branch": 10000,
+            },
+        )
+        ForwardIngestion.objects.create(
+            sync=sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-baseline",
+            baseline_ready=True,
+        )
+        sync.set_branch_run_state(
+            {
+                "snapshot_id": "snapshot-3",
+                "plan_preview": {
+                    "planned_shards": 25,
+                    "estimated_changes": 250000,
+                    "model_count": 1,
+                    "retry_risk": "medium",
+                    "delete_dependency_plan": {
+                        "models": {
+                            "dcim.device": {
+                                "delete_rows": 200,
+                                "delete_shards": 2,
+                                "reference_blocker_risk": "high",
+                            }
+                        }
+                    },
+                },
+            }
+        )
+
+        lane = sync.get_workload_summary()["initial_baseline_lane"]
+
+        self.assertEqual(lane["recommendation"], "branching_with_tuning")
+        self.assertEqual(lane["recommended_backend"], "branching")
+        self.assertFalse(lane["first_baseline"])
+        self.assertEqual(lane["lane_risk"], "medium")
+        self.assertEqual(
+            lane["estimate"]["delete_heavy_models"][0]["model"], "dcim.device"
+        )
+
+    def test_workload_summary_projects_days_from_recent_shard_runtime(self):
+        sync = ForwardSync.objects.create(
+            name="sync-runtime-projection-guidance",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+                "max_changes_per_branch": 10000,
+            },
+        )
+        run = ForwardExecutionRun.objects.create(
+            sync=sync,
+            source=self.source,
+            backend="branching",
+            status="running",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-runtime",
+            total_steps=50,
+            next_step_index=2,
+            plan_preview={
+                "planned_shards": 50,
+                "estimated_changes": 500000,
+                "model_count": 1,
+            },
+        )
+        now = timezone.now()
+        ForwardExecutionStep.objects.create(
+            run=run,
+            index=1,
+            status=ForwardExecutionStepStatusChoices.MERGED,
+            model_string="dcim.device",
+            started=now - timedelta(hours=1),
+            completed=now,
+        )
+
+        lane = sync.get_workload_summary()["initial_baseline_lane"]
+
+        self.assertEqual(lane["runtime_class"], "days")
+        self.assertEqual(lane["confidence"], "medium")
+        self.assertEqual(lane["projected_seconds"], 180000.0)
+
+    def test_fast_bootstrap_backend_surfaces_confirmation_text(self):
+        sync = ForwardSync.objects.create(
+            name="sync-fast-bootstrap-guidance",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "execution_backend": ForwardExecutionBackendChoices.FAST_BOOTSTRAP,
+                "dcim.device": True,
+            },
+        )
+
+        lane = sync.get_workload_summary()["initial_baseline_lane"]
+
+        self.assertEqual(lane["recommendation"], "fast_bootstrap_active")
+        self.assertEqual(lane["current_backend"], "fast_bootstrap")
+        self.assertIn(
+            "Fast bootstrap skips Branching review",
+            lane["fast_bootstrap_confirmation"][1],
+        )
+
+    def test_sync_detail_renders_initial_baseline_lane_advisory(self):
+        user = get_user_model().objects.create_superuser(
+            username="sync-detail-admin",
+            password="TestPassword123!",
+            email="sync-detail-admin@example.com",
+        )
+        sync = ForwardSync.objects.create(
+            name="sync-detail-lane-guidance",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+                "max_changes_per_branch": 10000,
+            },
+        )
+        sync.set_branch_run_state(
+            {
+                "snapshot_id": "snapshot-detail",
+                "plan_preview": {
+                    "planned_shards": 12,
+                    "estimated_changes": 120000,
+                },
+            }
+        )
+        self.client.force_login(user)
+
+        response = self.client.get(sync.get_absolute_url())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Use Fast bootstrap for trusted baseline")
+        self.assertContains(response, "Use only for a trusted initial baseline.")
 
     def test_display_parameters_include_branch_budget_hints(self):
         sync = ForwardSync.objects.create(
@@ -706,6 +947,7 @@ class ForwardSyncModelTest(TestCase):
             sync.get_model_change_density(),
             {"dcim.device": 9.9, "dcim.interface": 4.2},
         )
+        sync.full_clean()
 
     def test_shared_telemetry_helpers_build_consistent_shapes(self):
         plan_preview = build_plan_preview([], max_changes_per_branch=10000)
