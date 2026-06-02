@@ -19,14 +19,14 @@
         "allow_resumed_artifact": false,
         "artifact_path": "docs/03_Plans/evidence/field-scale-runtime-matrix.json",
         "artifact_status": "passed",
-        "dataset_label": "blake",
+        "dataset_label": "release-smoke",
         "failed_step_codes": {},
         "failed_steps": [],
         "fresh": true,
         "generated_at": "2026-06-02T03:58:09.479301+00:00",
         "max_age_days": 7,
         "metadata": {
-          "dataset_label": "blake",
+          "dataset_label": "release-smoke",
           "max_changes_per_branch": 10000,
           "models": "default_required_models",
           "query_limit": 10,
@@ -37,7 +37,7 @@
         },
         "missing_steps": [],
         "reason": "",
-        "required_dataset_label": "blake",
+        "required_dataset_label": "release-smoke",
         "required_steps": [
           "run_a_branching_validate_only",
           "run_b_branching_plan_only",
@@ -54,14 +54,14 @@
           "FORWARD_SMOKE_PASSWORD",
           "FORWARD_SMOKE_NETWORK_ID"
         ],
-        "dataset_label": "blake",
+        "dataset_label": "release-smoke",
         "dataset_label_matches": true,
         "docker_preflight": {
           "ok": true
         },
         "missing_env": [],
         "reason": "",
-        "required_dataset_label": "blake",
+        "required_dataset_label": "release-smoke",
         "required_env": [
           "FORWARD_SMOKE_USERNAME",
           "FORWARD_SMOKE_PASSWORD",
@@ -70,12 +70,12 @@
           "FORWARD_SMOKE_DATASET_LABEL"
         ],
         "source_backed": true,
-        "source_name": "smoke-source-blake-20260601"
+        "source_name": "smoke-source-release-smoke-20260601"
       },
       "status": "passed"
     }
   },
-  "dataset_label": "blake",
+  "dataset_label": "release-smoke",
   "failed_checks": [],
   "generated_at": "2026-06-02T04:16:28.373915+00:00",
   "status": "passed"

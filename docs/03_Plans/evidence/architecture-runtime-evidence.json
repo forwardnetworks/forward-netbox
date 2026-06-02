@@ -62,7 +62,7 @@
         "fresh": true,
         "generated_at": "2026-06-02T03:15:00.337363+00:00",
         "metadata": {
-          "dataset_label": "blake",
+          "dataset_label": "release-smoke",
           "models": "default_required_models",
           "query_limit": 10,
           "resume": false,
@@ -129,7 +129,7 @@
           "available": true,
           "nqe_page_size": 5000,
           "query_fetch_concurrency": 2,
-          "source_name": "smoke-source-blake-20260601",
+          "source_name": "smoke-source-release-smoke-20260601",
           "timeout": 1200
         },
         "workers": {
@@ -259,7 +259,7 @@
               "available": true,
               "nqe_page_size": 5000,
               "query_fetch_concurrency": 2,
-              "source_name": "smoke-source-blake-20260601",
+              "source_name": "smoke-source-release-smoke-20260601",
               "timeout": 1200
             },
             "workers": {
@@ -378,14 +378,14 @@
   "notes": {
     "capacity_nqe_page_size": 5000,
     "capacity_query_fetch_concurrency": 2,
-    "capacity_source_name": "smoke-source-blake-20260601",
+    "capacity_source_name": "smoke-source-release-smoke-20260601",
     "capacity_source_tuning_applied": true,
     "capacity_worker_replicas": 0,
     "field_scale_status": "artifact-passed",
     "scale_input_json": "",
     "scale_reconcile": false,
     "scale_run_id": "",
-    "scale_sync_name": "smoke-sync-blake-scalegate-sharded-20260602",
+    "scale_sync_name": "smoke-sync-release-smoke-scalegate-sharded-20260602",
     "skip_chaos": true,
     "sync_name": "ui-harness-sync"
   },

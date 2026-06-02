@@ -391,7 +391,7 @@ Completed in the first implementation slice:
 - Scoped-sync dependency preflight now runs from the Health summary/check path.
   It warns when selected delete-capable models omit known protected dependency
   models, including the `dcim.interface` plus BGP/peering case that produced
-  `ForwardDependencySkipError` rows during Partner's run.
+  `ForwardDependencySkipError` rows during a customer run.
 - Delete-wave visibility now appears in Health with planned delete rows,
   delete shards, execution order, delete phase, delete-step progress, and
   latest protected dependency skip counts.
@@ -518,7 +518,7 @@ Ship in this order:
 
 Reasoning:
 
-- Items 1 and 2 address Partner's current confusion directly.
+- Items 1 and 2 address a customer's current confusion directly.
 - Item 3 turns long runs into measurable operations instead of watch-and-wait.
 - Item 4 prevents the next 9-day initial sync surprise.
 - Item 5 identifies the best speed fix before TurboBulk.
