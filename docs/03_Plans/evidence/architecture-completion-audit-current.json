@@ -88,7 +88,7 @@
         "fresh": true,
         "generated_at": "2026-06-01T15:11:09.091655+00:00",
         "metadata": {
-          "dataset_label": "redacted",
+          "dataset_label": "release-smoke",
           "models": "default_required_models",
           "query_limit": 10,
           "resume": false,
@@ -313,7 +313,7 @@
             "available": true,
             "nqe_page_size": null,
             "query_fetch_concurrency": null,
-            "source_name": "smoke-source-redacted-20260601",
+            "source_name": "smoke-source-release-smoke-20260601",
             "timeout": null
           },
           "workers": {
@@ -476,7 +476,7 @@
       "fresh": true,
       "generated_at": "2026-06-01T15:11:09.091655+00:00",
       "metadata": {
-        "dataset_label": "redacted",
+        "dataset_label": "release-smoke",
         "models": "default_required_models",
         "query_limit": 10,
         "resume": false,
@@ -649,7 +649,7 @@
           "available": true,
           "nqe_page_size": null,
           "query_fetch_concurrency": null,
-          "source_name": "smoke-source-redacted-20260601",
+          "source_name": "smoke-source-release-smoke-20260601",
           "timeout": null
         },
         "workers": {

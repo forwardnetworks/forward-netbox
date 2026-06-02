@@ -1,7 +1,7 @@
 {
   "enqueued_job": {
     "id": 14,
-    "name": "smoke-sync-redacted-20260601 - shard 11/216",
+    "name": "smoke-sync-release-smoke-20260601 - shard 11/216",
     "status": "pending"
   },
   "next_step": {
