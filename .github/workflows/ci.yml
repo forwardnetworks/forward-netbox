@@ -51,7 +51,7 @@ jobs:
       - name: Install browser validation dependencies
         run: |
           npm ci
-          timeout 10m npx playwright install chromium
+          timeout 20m npx playwright install chromium
       - name: Run pre-commit
         run: pre-commit run --all-files
       - name: Check repository harness
