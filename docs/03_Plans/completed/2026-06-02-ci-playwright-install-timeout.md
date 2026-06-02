@@ -28,12 +28,12 @@ Playwright browser install step before repository checks execute.
 ## Approach
 
 - Replace `npx playwright install --with-deps chromium` with
-  `timeout 10m npx playwright install chromium` in CI.
+  `timeout 20m npx playwright install chromium` in CI.
 - Update the repository harness expectation to match the CI command.
 
 ## Implementation
 
-- CI now installs the pinned Chromium browser with a 10-minute shell timeout.
+- CI now installs the pinned Chromium browser with a 20-minute shell timeout.
 - The harness check now requires the same bounded install command.
 
 ## Validation
