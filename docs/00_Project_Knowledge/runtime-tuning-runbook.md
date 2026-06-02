@@ -55,6 +55,31 @@ Examples:
 
 If already at caps (`query_fetch_concurrency=16`, `nqe_page_size=10000`), tune workers first and re-measure before any other major runtime changes.
 
+## Sync Health Adaptive Capacity
+
+The Sync Health `Large Run Tuning` section includes an adaptive capacity
+decision:
+
+- `recommend_tuning_batch`: throughput is below target, issue rate is safe,
+  and worker/database headroom evidence is available. Apply exactly one tuning
+  batch.
+- `hold_current_settings`: throughput is at or above target. Keep the current
+  settings and continue hourly checks.
+- `rollback_latest_tuning_batch`: issue rate is above the safe threshold.
+  Revert only the most recent tuning increment, restart workers only, then hold
+  for 60 minutes.
+- `insufficient_evidence`: throughput or issue-rate data is missing, or worker
+  count/database headroom is not observable from the deployment evidence.
+- `capacity_blocked`: the deployment evidence shows worker or database
+  saturation. Fix that bottleneck before increasing concurrency.
+
+When Health reports insufficient capacity evidence, collect the same hourly
+fields from the operator message template, plus:
+
+- active NetBox worker count
+- queue backlog depth or trend
+- database headroom for the same time window
+
 ## Restart Scope
 
 After applying one tuning batch:
@@ -67,6 +92,20 @@ The exact restart command depends on deployment type:
 - Kubernetes: rollout restart worker deployment/statefulset only
 - VM/systemd: restart only worker services
 - Docker Compose: recreate/scale worker service only
+
+Examples:
+
+```bash
+# Kubernetes
+kubectl scale deployment/netbox-worker --replicas <new-worker-count>
+kubectl rollout restart deployment/netbox-worker
+
+# VM/systemd
+sudo systemctl restart netbox-rq-worker
+
+# Docker Compose
+docker compose up -d --scale netbox-worker=<new-worker-count> netbox-worker
+```
 
 ## Post-Change Validation (60-Minute Hold)
 

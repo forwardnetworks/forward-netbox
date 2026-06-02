@@ -85,6 +85,7 @@ For large first-time imports, start with a conservative, NetBox-native baseline:
 - `timeout`: `1200`
 - `nqe_page_size`: `10000`
 - `query_fetch_concurrency`: default `10` for Branching; `Fast bootstrap` uses a higher default when unset (bounded by plugin max). Typical tuning range `6` to `12`; increase only when workers and Postgres have headroom.
+- `api_requests_per_minute`: Forward SaaS sources default to `1800` requests/minute to stay below the SaaS hard-block threshold of `2000` requests/minute per user. Exceeding the SaaS threshold can return HTTP `429 Too Many Requests` and block the user account for 5 minutes. Custom/on-prem sources default to `0` (disabled); on-prem rollout is planned for a future release.
 - `nqe_fetch_all_max_pages`: default `5000` (hard stop for runaway paginated NQE fetches where Forward keeps returning full pages)
 - `nqe_identical_full_page_streak_limit`: default `25` (fails fast when fetch-all receives repeated identical full pages with no observed pagination progress)
 - `query_preflight_enabled`: `true` for safer rollout, `false` for faster large-run startup
@@ -102,6 +103,7 @@ Recommended workflow:
 Capacity notes:
 
 - Raising `query_fetch_concurrency` helps preflight/query fetch only; it does not remove Branching merge serialization.
+- Lower `api_requests_per_minute` before increasing concurrency when the same Forward user is also used by other test jobs or integrations. The cap is a SaaS protection guardrail, not a capacity SLA.
 - Increasing `max_changes_per_branch` can reduce shard count but make each shard/merge slower and riskier.
 - Keep one source of truth for row shaping in NQE; avoid Python-side normalization for performance tuning.
 
@@ -313,6 +315,14 @@ native Branching branches.
 | Small or reviewable baseline | `Branching` | Stages the baseline in native NetBox Branching shards using `Max changes per branch`. | Review or auto-merge the shards, then keep using `Branching` for steady-state diffs. |
 | Large but still reviewable baseline | `Branching` with `Auto merge` | Creates and merges one bounded Branching shard at a time. | Let the final successful shard become the diff baseline. |
 | Very large trusted baseline that is impractical to review shard-by-shard | `Fast bootstrap` | Runs validation first, then writes directly to NetBox without creating Branching branches. | Inspect validation, ingestion issues, model results, and NetBox state; then switch the sync back to `Branching` for reviewable steady-state diffs. |
+
+The sync detail page shows an initial-baseline lane advisory when planning or
+execution evidence is available. Its `initial_baseline_lane` workload field
+reports the current backend, recommended backend, planned shard count,
+estimated changes, runtime class, delete-heavy models, risk level, and any
+Fast bootstrap confirmation text. Treat this as advisory evidence: use
+`Fast bootstrap` only for a trusted first baseline, and use `Branching` when
+reviewable diffs are required or the projected shard count is bounded.
 
 `Fast bootstrap` is intended only for trusted initial baseline loads. It does
 not provide a Branching diff for review, and `Auto merge` / `Max changes per

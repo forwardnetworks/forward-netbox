@@ -549,6 +549,27 @@
             <td>{{ health.large_run_tuning.execution_backend_advice.message|placeholder }}</td>
           </tr>
           <tr>
+            <th scope="row">{% trans "Adaptive capacity" %}</th>
+            <td>{{ health.large_run_tuning.adaptive_capacity.message|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Next tuning batch" %}</th>
+            <td>
+              {% with batch=health.large_run_tuning.adaptive_capacity.next_tuning_batch %}
+                {% if batch %}
+                  <ul class="mb-0 ps-3">
+                    <li>{% trans "Workers" %}: {{ batch.worker_count.current|placeholder }} -> {{ batch.worker_count.recommended|placeholder }}</li>
+                    <li>{% trans "Query fetch concurrency" %}: {{ batch.query_fetch_concurrency.current|placeholder }} -> {{ batch.query_fetch_concurrency.recommended|placeholder }}</li>
+                    <li>{% trans "NQE page size" %}: {{ batch.nqe_page_size.current|placeholder }} -> {{ batch.nqe_page_size.recommended|placeholder }}</li>
+                    <li>{{ batch.restart_scope }}; {% trans "hold minutes" %}: {{ batch.hold_minutes }}</li>
+                  </ul>
+                {% else %}
+                  <span class="text-muted">{% trans "No adaptive capacity batch is available yet." %}</span>
+                {% endif %}
+              {% endwith %}
+            </td>
+          </tr>
+          <tr>
             <th scope="row">{% trans "First actions" %}</th>
             <td>
               {% if health.large_run_tuning.first_order_actions %}
@@ -566,9 +587,86 @@
       </div>
     </div>
     <div class="card">
-      <h5 class="card-header">{% trans "Capacity Projection" %}</h5>
+      <h5 class="card-header">{% trans "Delete Wave" %}</h5>
       <div class="card-body">
         <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">{% trans "Phase" %}</th>
+            <td>{{ health.delete_wave.phase|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Summary" %}</th>
+            <td>{{ health.delete_wave.message }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Planned delete rows" %}</th>
+            <td>{{ health.delete_wave.plan.delete_rows|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Delete shards" %}</th>
+            <td>{{ health.delete_wave.plan.delete_shards|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Delete execution order" %}</th>
+            <td>{{ health.delete_wave.plan.execution_order|join:", "|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Dependency skip issues" %}</th>
+            <td>{{ health.delete_wave.latest_ingestion.dependency_skip_issues.count|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Delete step status" %}</th>
+            <td>
+              {{ health.delete_wave.steps.completed_delete_step_count|placeholder }}/{{ health.delete_wave.steps.delete_step_count|placeholder }}
+              {% trans "terminal" %}
+            </td>
+          </tr>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <h5 class="card-header">{% trans "Run Throughput & Capacity" %}</h5>
+      <div class="card-body">
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">{% trans "Throughput summary" %}</th>
+            <td>{{ health.throughput.message }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Current shard" %}</th>
+            <td>{{ health.throughput.current_shard_index|placeholder }}/{{ health.throughput.total_shards|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Shards per hour" %}</th>
+            <td>
+              1h={{ health.throughput.shards_per_hour_1h|placeholder }},
+              6h={{ health.throughput.shards_per_hour_6h|placeholder }}
+            </td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "ETA range" %}</th>
+            <td>{{ health.throughput.eta_seconds_low|placeholder }} - {{ health.throughput.eta_seconds_high|placeholder }} seconds</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Active step age" %}</th>
+            <td>{{ health.throughput.active_step_age_seconds|placeholder }} seconds</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Issue rate" %}</th>
+            <td>{{ health.throughput.issue_rate_per_hour|placeholder }} / hour</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Bottleneck phase" %}</th>
+            <td>{{ health.throughput.bottleneck_phase|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Runtime knobs" %}</th>
+            <td>
+              query_fetch_concurrency={{ health.throughput.query_fetch_concurrency|placeholder }},
+              nqe_page_size={{ health.throughput.nqe_page_size|placeholder }},
+              worker_timeout={{ health.throughput.worker_timeout_seconds|placeholder }}
+            </td>
+          </tr>
           <tr>
             <th scope="row">{% trans "Completed steps" %}</th>
             <td>{{ health.capacity.completed_steps|placeholder }}</td>

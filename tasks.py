@@ -20,6 +20,8 @@ INIT_FILE = "forward_netbox/__init__.py"
 ALLOW_SHARED_RUNTIME_TESTS_ENV = "FORWARD_NETBOX_ALLOW_SHARED_RUNTIME_TESTS"
 ACTIVE_EXECUTION_RUN_STATUSES = ("queued", "running", "waiting")
 ISOLATED_TEST_PROJECT_NAME = "forward-netbox-test"
+ISOLATED_PLAYWRIGHT_PROJECT_NAME = "forward-netbox-ui-test"
+ISOLATED_PLAYWRIGHT_HOST_PORT = "18080"
 
 load_dotenv(os.path.dirname(os.path.abspath(__file__)) + "/development/.env")
 
@@ -87,6 +89,21 @@ def _truthy_env(value):
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def manage_py_one_off(context, command, **kwargs):
+    bash_command = f"cd /opt/netbox/netbox && python manage.py {command}"
+    return docker_compose(
+        context,
+        f"run --rm --no-deps netbox bash -lc {shlex.quote(bash_command)}",
+        **kwargs,
+    )
+
+
+def _field_scale_manage_py(context, command, **kwargs):
+    if _truthy_env(os.getenv("FORWARD_FIELD_SCALE_USE_SERVICE", "")):
+        return manage_py(context, command, **kwargs)
+    return manage_py_one_off(context, command, **kwargs)
+
+
 def _truthy_arg(value):
     if isinstance(value, bool):
         return value
@@ -109,25 +126,51 @@ def _shared_runtime_active_execution_runs(context):
         '"runs": list(qs.values("id", "sync__name", "status")[:5])'
         "}, sort_keys=True))"
     )
-    result = docker_compose(
-        context,
-        (
-            "exec -T netbox python /opt/netbox/netbox/manage.py "
-            f"shell -c {shlex.quote(python_code)}"
-        ),
-        hide=True,
-        warn=True,
-    )
+    try:
+        result = docker_compose(
+            context,
+            (
+                "exec -T netbox python /opt/netbox/netbox/manage.py "
+                f"shell -c {shlex.quote(python_code)}"
+            ),
+            hide=True,
+            warn=True,
+        )
+    except Exception as exc:
+        return {
+            "active_count": 0,
+            "runs": [],
+            "guard_available": False,
+            "reason": f"shared_runtime_probe_failed: {exc}",
+        }
     stdout = getattr(result, "stdout", "")
+    stderr = getattr(result, "stderr", "")
+    exited = getattr(result, "exited", 0)
+    if exited not in (0, None):
+        detail = str(stderr or stdout or "").strip().splitlines()
+        reason = detail[-1] if detail else f"exit {exited}"
+        return {
+            "active_count": 0,
+            "runs": [],
+            "guard_available": False,
+            "reason": f"shared_runtime_probe_failed: {reason}",
+        }
     for line in reversed(str(stdout or "").splitlines()):
         line = line.strip()
         if not line.startswith("{"):
             continue
         try:
-            return json.loads(line)
+            payload = json.loads(line)
+            payload.setdefault("guard_available", True)
+            return payload
         except json.JSONDecodeError:
             continue
-    return {"active_count": 0, "runs": [], "guard_available": False}
+    return {
+        "active_count": 0,
+        "runs": [],
+        "guard_available": False,
+        "reason": "shared_runtime_probe_missing_json",
+    }
 
 
 def _parse_json_from_manage_output(output):
@@ -176,6 +219,17 @@ def _guard_shared_runtime_tests(context):
     if _shared_runtime_test_guard_bypassed():
         return
     active = _shared_runtime_active_execution_runs(context)
+    if active.get("guard_available") is False:
+        raise Exit(
+            (
+                "Could not inspect the shared local NetBox runtime for active "
+                "Forward execution runs. Run tests with `invoke test-isolated`, "
+                "fix the shared runtime, or set "
+                f"{ALLOW_SHARED_RUNTIME_TESTS_ENV}=1 to bypass intentionally. "
+                f"Reason: {active.get('reason') or 'unknown'}."
+            ),
+            code=2,
+        )
     active_count = int(active.get("active_count") or 0)
     if active_count <= 0:
         return
@@ -227,6 +281,19 @@ def _run_tests_with_shared_runtime_fallback(context, *, test_label):
         return
 
     active = _shared_runtime_active_execution_runs(context)
+    if active.get("guard_available") is False:
+        print(
+            "Shared runtime active-run guard unavailable; "
+            "running Django tests in isolated runtime for CI safety. "
+            f"Reason: {active.get('reason') or 'unknown'}."
+        )
+        _run_tests_in_isolated_runtime(
+            context,
+            test_label=test_label,
+            project_name=f"{ISOLATED_TEST_PROJECT_NAME}-ci",
+            keep_runtime=False,
+        )
+        return
     active_count = int(active.get("active_count") or 0)
     if active_count <= 0:
         manage_py(context, f"test --keepdb --noinput {test_label}")
@@ -242,6 +309,64 @@ def _run_tests_with_shared_runtime_fallback(context, *, test_label):
         project_name=f"{ISOLATED_TEST_PROJECT_NAME}-ci",
         keep_runtime=False,
     )
+
+
+def _run_playwright_ui(context, *, env=None):
+    context.run("npm run test:ui", env={**(env or {})})
+
+
+def _run_playwright_in_isolated_runtime(context, *, project_name=None, host_port=None):
+    project_name = str(project_name or ISOLATED_PLAYWRIGHT_PROJECT_NAME)
+    host_port = str(host_port or os.environ.get("FORWARD_NETBOX_PLAYWRIGHT_HOST_PORT"))
+    if not host_port or host_port.lower() == "none":
+        host_port = ISOLATED_PLAYWRIGHT_HOST_PORT
+    isolated = _compose_project_context(context, project_name)
+    compose_env = {"FORWARD_NETBOX_HOST_PORT": host_port}
+    docker_compose(isolated, "down --remove-orphans -v", env=compose_env)
+    try:
+        docker_compose(
+            isolated,
+            "up -d --wait --wait-timeout 300 netbox",
+            env=compose_env,
+        )
+        _run_playwright_ui(
+            context,
+            env={
+                "NETBOX_URL": f"http://127.0.0.1:{host_port}",
+                "PLAYWRIGHT_DOCKER_PROJECT_NAME": project_name,
+                "PLAYWRIGHT_DOCKER_PROJECT_DIRECTORY": context.forward_netbox.compose_dir,
+                "PLAYWRIGHT_ARTIFACT_DIR": f".playwright-artifacts/{project_name}",
+            },
+        )
+    finally:
+        docker_compose(isolated, "down --remove-orphans -v", env=compose_env)
+
+
+def _run_playwright_with_shared_runtime_fallback(context):
+    if _shared_runtime_test_guard_bypassed():
+        _run_playwright_ui(context)
+        return
+
+    active = _shared_runtime_active_execution_runs(context)
+    if active.get("guard_available") is False:
+        print(
+            "Shared runtime active-run guard unavailable; "
+            "running Playwright UI tests in isolated runtime for CI safety. "
+            f"Reason: {active.get('reason') or 'unknown'}."
+        )
+        _run_playwright_in_isolated_runtime(context)
+        return
+
+    active_count = int(active.get("active_count") or 0)
+    if active_count <= 0:
+        _run_playwright_ui(context)
+        return
+
+    print(
+        "Active execution runs detected in shared runtime; "
+        "running Playwright UI tests in isolated runtime for CI safety."
+    )
+    _run_playwright_in_isolated_runtime(context)
 
 
 def _host_memory_gib():
@@ -768,6 +893,9 @@ def docker_chaos_kill(context, scenario="stage-after-branch", confirm=False):
     sync_name = os.environ.get("FORWARD_CHAOS_SYNC_NAME", "").strip()
     timeout_seconds = int(os.environ.get("FORWARD_CHAOS_WAIT_SECONDS", "600"))
     poll_seconds = int(os.environ.get("FORWARD_CHAOS_POLL_SECONDS", "5"))
+    output_dir = os.environ.get("FORWARD_CHAOS_OUTPUT_DIR", "").strip()
+    support_bundle_path = None
+    support_bundle_verified = False
     if sync_name:
         _wait_for_chaos_scenario_ready(
             context,
@@ -796,20 +924,30 @@ def docker_chaos_kill(context, scenario="stage-after-branch", confirm=False):
     docker_compose(context, "ps netbox-worker")
 
     # Optional support-bundle capture for run evidence after kill.
-    if sync_name:
-        output_dir = os.environ.get("FORWARD_CHAOS_OUTPUT_DIR", "").strip()
-        if output_dir:
-            os.makedirs(output_dir, exist_ok=True)
-            _export_chaos_bundle(
-                context,
-                sync_name=sync_name,
-                scenario=scenario,
-                output_dir=output_dir,
-            )
-            _assert_chaos_bundle_recovery(
-                output_dir=output_dir,
-                scenario=scenario,
-            )
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+    if sync_name and output_dir:
+        _export_chaos_bundle(
+            context,
+            sync_name=sync_name,
+            scenario=scenario,
+            output_dir=output_dir,
+        )
+        support_bundle_path = _assert_chaos_bundle_recovery(
+            output_dir=output_dir,
+            scenario=scenario,
+        )
+        support_bundle_verified = True
+    if output_dir:
+        _write_chaos_kill_metadata(
+            output_dir=output_dir,
+            scenario=scenario,
+            sync_name=sync_name,
+            killed_worker_id=worker_id,
+            restored_worker_replicas=restored_workers,
+            support_bundle_path=support_bundle_path,
+            support_bundle_recovery_verified=support_bundle_verified,
+        )
 
 
 @task(name="architecture-runtime-evidence")
@@ -967,10 +1105,19 @@ def _collect_destructive_runtime_evidence(
     ]
     chaos_results = []
     for scenario in chaos_scenarios:
+        scenario_started_at = time.time()
+        manage_py(
+            context,
+            (
+                f'forward_chaos_probe --sync-name "{sync_name}" '
+                f'--scenario "{scenario}" --prepare-fixture'
+            ),
+            hide=True,
+        )
         env = {
             "FORWARD_CHAOS_OUTPUT_DIR": str(chaos_dir),
-            # Probe export works even when readiness is false; we avoid
-            # hard waiting for synthetic runs to hit exact readiness edges.
+            # Scenario state is prepared by forward_chaos_probe above; this kill
+            # only needs to exercise Docker worker loss and restoration.
             "FORWARD_CHAOS_SYNC_NAME": "",
             "FORWARD_CHAOS_WORKER_REPLICAS": str(int(capacity_worker_replicas or 0)),
         }
@@ -984,21 +1131,58 @@ def _collect_destructive_runtime_evidence(
             context,
             (
                 f'forward_chaos_probe --sync-name "{sync_name}" '
-                f'--scenario "{scenario}" --export-dir "{chaos_dir}"'
+                f'--scenario "{scenario}" '
+                f'--export-dir "{_container_export_dir(chaos_dir, repo_root=repo_root)}"'
             ),
             warn=True,
             hide=True,
         )
         bundle = None
-        candidates = sorted(chaos_dir.glob(f"chaos-{scenario}-run-*.json"))
+        metadata = None
+        recovery_verified = False
+        recovery_error = ""
+        candidates = [
+            path
+            for path in sorted(chaos_dir.glob(f"chaos-{scenario}-run-*.json"))
+            if path.stat().st_mtime >= scenario_started_at - 1
+        ]
         if candidates:
-            bundle = str(candidates[-1].relative_to(repo_root))
+            bundle_path = candidates[-1]
+            bundle = str(bundle_path.relative_to(repo_root))
+            try:
+                verified_bundle_path = _assert_chaos_bundle_recovery(
+                    output_dir=chaos_dir,
+                    scenario=scenario,
+                )
+                recovery_verified = True
+            except Exit as exc:
+                verified_bundle_path = bundle_path
+                recovery_error = str(exc)
+            kill_metadata = _latest_chaos_kill_metadata(
+                output_dir=chaos_dir,
+                scenario=scenario,
+            )
+            metadata_path = _write_chaos_kill_metadata(
+                output_dir=chaos_dir,
+                scenario=scenario,
+                sync_name=sync_name,
+                killed_worker_id=str(kill_metadata.get("killed_worker_id") or ""),
+                restored_worker_replicas=int(
+                    kill_metadata.get("restored_worker_replicas") or 0
+                ),
+                support_bundle_path=verified_bundle_path,
+                support_bundle_recovery_verified=recovery_verified,
+            )
+            metadata = str(metadata_path.relative_to(repo_root))
         chaos_results.append(
             {
                 "scenario": scenario,
                 "exit_code": result.exited,
-                "ok": result.ok,
+                "ok": bool(result.ok and recovery_verified),
                 "bundle": bundle,
+                "metadata": metadata,
+                "support_bundle_recovery_verified": recovery_verified,
+                "recovery_validation_error": recovery_error,
             }
         )
 
@@ -1265,13 +1449,17 @@ def _collect_scale_runtime_evidence(
     scheduler_check_status = scheduler_check.get("status") or "fail"
     scheduler_status = "failed"
     if enough_runtime_steps and core_checks_ok:
-        if readiness_status == "not_indicated" and scheduler_check_status in {
+        if readiness_status == "not_warranted" and scheduler_check_status in {
             "pass",
             "info",
         }:
             scheduler_status = "passed"
-        elif readiness_status == "candidate_after_capacity_review" and capacity_ok:
+        elif readiness_status == "candidate" and capacity_ok:
             scheduler_status = "passed"
+        elif readiness_status == "blocked" and capacity_ok:
+            blocking_reasons = set(readiness.get("blocking_reasons") or [])
+            if blocking_reasons == {"capacity_evidence_missing"}:
+                scheduler_status = "passed"
 
     return {
         "runtime_fallback_reduction_verified": {
@@ -1317,38 +1505,351 @@ def field_scale_runtime_matrix(context, step="", resume=True, fail_on_error=True
         raise Exit(f"Field-scale runtime matrix did not pass: {status}", code=1)
 
 
-def _run_field_scale_runtime_matrix(context, *, step="", resume=False):
-    artifact_path, artifact_rel = _field_scale_matrix_artifact_path()
-    required_env = (
+@task(name="release-dataset-gate")
+def release_dataset_gate(
+    context,
+    dataset_label="redacted",
+    max_age_days=7,
+    artifact_path="",
+    allow_resumed_artifact=False,
+):
+    """Fail unless fresh full-matrix field-scale evidence matches the dataset label."""
+    evidence = _collect_release_dataset_gate_evidence(
+        dataset_label=dataset_label,
+        max_age_days=max_age_days,
+        artifact_path=artifact_path,
+        allow_resumed_artifact=allow_resumed_artifact,
+    )
+    print(json.dumps(evidence, indent=2, sort_keys=True))
+    if evidence.get("status") != "passed":
+        raise Exit(
+            "Release dataset gate failed: regenerate field-scale evidence with the "
+            f"required dataset label `{dataset_label}`.",
+            code=1,
+        )
+
+
+@task(name="release-runtime-preflight")
+def release_runtime_preflight(context, dataset_label="redacted"):
+    """Fail fast when runtime prerequisites for REDACTED release evidence are missing."""
+    evidence = _collect_release_runtime_preflight_evidence(
+        context=context,
+        dataset_label=dataset_label,
+    )
+    print(json.dumps(evidence, indent=2, sort_keys=True))
+    if evidence.get("status") != "passed":
+        raise Exit(
+            "Release runtime preflight failed: resolve runtime prerequisites before "
+            "running field-scale matrix evidence.",
+            code=1,
+        )
+
+
+@task(name="release-readiness-audit")
+def release_readiness_audit(
+    context,
+    dataset_label="redacted",
+    max_age_days=7,
+    artifact_path="",
+    output_json="docs/03_Plans/evidence/release-readiness-audit.json",
+    fail_on_error=True,
+):
+    """Aggregate 1.1 release readiness checks into one JSON report."""
+    evidence = _collect_release_readiness_audit(
+        context=context,
+        dataset_label=dataset_label,
+        max_age_days=max_age_days,
+        artifact_path=artifact_path,
+    )
+    rendered = json.dumps(evidence, indent=2, sort_keys=True)
+    print(rendered)
+    if str(output_json or "").strip():
+        output_path = Path(str(output_json).strip())
+        if not output_path.is_absolute():
+            output_path = Path(__file__).resolve().parent / output_path
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(rendered + "\n", encoding="utf-8")
+        print(f"Wrote release readiness audit: {output_path}")
+    if bool(fail_on_error) and evidence.get("status") != "passed":
+        raise Exit(
+            "Release readiness audit failed: resolve failed checks before release.",
+            code=1,
+        )
+
+
+def _collect_release_readiness_audit(
+    *,
+    context,
+    dataset_label="redacted",
+    max_age_days=7,
+    artifact_path="",
+):
+    preflight = _collect_release_runtime_preflight_evidence(
+        context=context,
+        dataset_label=dataset_label,
+    )
+    dataset_gate = _collect_release_dataset_gate_evidence(
+        dataset_label=dataset_label,
+        max_age_days=max_age_days,
+        artifact_path=artifact_path,
+    )
+    architecture_gate = _collect_architecture_completion_gate(context)
+    checks = {
+        "release_runtime_preflight": preflight,
+        "release_dataset_gate": dataset_gate,
+        "architecture_completion_gate": architecture_gate,
+    }
+    failed_checks = [
+        name for name, payload in checks.items() if payload.get("status") != "passed"
+    ]
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "status": "passed" if not failed_checks else "failed",
+        "dataset_label": str(dataset_label or "").strip(),
+        "failed_checks": failed_checks,
+        "checks": checks,
+    }
+
+
+def _collect_architecture_completion_gate(context):
+    command = "forward_architecture_completion_audit"
+    result = manage_py(context, command, warn=True, hide=True)
+    if not bool(getattr(result, "ok", False)):
+        failure_code, failure_hint = _classify_field_scale_step_failure(result)
+        return {
+            "status": "failed",
+            "evidence": {
+                "command": command,
+                "exit_code": int(getattr(result, "exited", 1) or 1),
+                "failure_code": str(failure_code or "command_failed"),
+                "failure_hint": str(
+                    failure_hint or "architecture completion audit failed"
+                ),
+            },
+        }
+
+    payload = None
+    parse_error = ""
+    try:
+        payload = _parse_json_from_manage_output(getattr(result, "stdout", ""))
+    except Exception as exc:  # pragma: no cover - defensive fallback
+        parse_error = str(exc)
+        payload = {}
+    summary = payload.get("summary") if isinstance(payload, dict) else {}
+    failed = int((summary or {}).get("failed") or 0)
+    pending_external = int((summary or {}).get("needs_external_evidence") or 0)
+    passed = failed == 0 and pending_external == 0
+    reason = ""
+    if not passed:
+        reason = (
+            "architecture completion audit has outstanding checks "
+            f"(failed={failed}, needs_external_evidence={pending_external})"
+        )
+    return {
+        "status": "passed" if passed else "failed",
+        "evidence": {
+            "command": command,
+            "summary": summary,
+            "parse_error": parse_error,
+            "reason": reason,
+        },
+    }
+
+
+def _collect_release_runtime_preflight_evidence(*, context, dataset_label="redacted"):
+    credential_env = (
         "FORWARD_SMOKE_USERNAME",
         "FORWARD_SMOKE_PASSWORD",
         "FORWARD_SMOKE_NETWORK_ID",
     )
-    missing = [name for name in required_env if not os.getenv(name, "").strip()]
-    if missing:
-        _write_field_scale_matrix_artifact(
-            artifact_path=artifact_path,
-            status="failed",
-            runs=[],
-            metadata={
-                "reason": "missing_required_environment",
-                "missing": missing,
-                "required": list(required_env),
-            },
+    source_name = str(os.getenv("FORWARD_SMOKE_SOURCE_NAME", "") or "").strip()
+    credential_missing = [
+        name for name in credential_env if not os.getenv(name, "").strip()
+    ]
+    source_backed = bool(source_name)
+    missing_env = []
+    if credential_missing and not source_backed:
+        missing_env.extend(credential_missing)
+    if not os.getenv("FORWARD_SMOKE_DATASET_LABEL", "").strip():
+        missing_env.append("FORWARD_SMOKE_DATASET_LABEL")
+    required_label = str(dataset_label or "").strip()
+    current_label = str(os.getenv("FORWARD_SMOKE_DATASET_LABEL", "") or "").strip()
+    dataset_label_matches = bool(
+        current_label and current_label.lower() == required_label.lower()
+    )
+    docker_preflight = _field_scale_runtime_preflight(context)
+    docker_ok = bool(docker_preflight.get("ok"))
+
+    reasons = []
+    if missing_env:
+        reasons.append("missing required env: " + ", ".join(missing_env))
+    if not dataset_label_matches:
+        reasons.append(
+            "FORWARD_SMOKE_DATASET_LABEL does not match required dataset label"
         )
-        return (
-            {
-                "status": "failed",
-                "evidence": {
-                    "reason": "missing_required_environment",
-                    "missing": missing,
-                    "required": list(required_env),
-                    "artifact_path": artifact_rel,
-                },
-            },
-            "missing-env",
+    if not docker_ok:
+        reasons.append(
+            "docker preflight failed: "
+            + str(docker_preflight.get("failure_code") or "docker_preflight_failed")
         )
 
+    return {
+        "status": "passed" if not reasons else "failed",
+        "evidence": {
+            "required_dataset_label": required_label,
+            "dataset_label": current_label,
+            "dataset_label_matches": dataset_label_matches,
+            "required_env": [
+                *credential_env,
+                "FORWARD_SMOKE_SOURCE_NAME",
+                "FORWARD_SMOKE_DATASET_LABEL",
+            ],
+            "credential_env_missing": credential_missing,
+            "source_name": source_name,
+            "source_backed": source_backed,
+            "missing_env": missing_env,
+            "docker_preflight": docker_preflight,
+            "reason": "; ".join(reasons) if reasons else "",
+        },
+    }
+
+
+def _collect_release_dataset_gate_evidence(
+    *,
+    dataset_label="redacted",
+    max_age_days=7,
+    artifact_path="",
+    allow_resumed_artifact=False,
+):
+    repo_root = Path(__file__).resolve().parent
+    if str(artifact_path or "").strip():
+        candidate = Path(str(artifact_path).strip())
+        if not candidate.is_absolute():
+            candidate = repo_root / candidate
+        evidence_path = candidate
+    else:
+        evidence_path, _ = _field_scale_matrix_artifact_path()
+    try:
+        evidence_rel = str(evidence_path.relative_to(repo_root))
+    except ValueError:
+        evidence_rel = str(evidence_path)
+
+    if not evidence_path.exists():
+        return {
+            "status": "failed",
+            "evidence": {
+                "artifact_path": evidence_rel,
+                "reason": "field-scale artifact does not exist",
+                "required_dataset_label": str(dataset_label or "").strip(),
+            },
+        }
+
+    try:
+        payload = json.loads(evidence_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {
+            "status": "failed",
+            "evidence": {
+                "artifact_path": evidence_rel,
+                "reason": f"field-scale artifact is unreadable: {exc}",
+                "required_dataset_label": str(dataset_label or "").strip(),
+            },
+        }
+
+    generated_at = payload.get("generated_at")
+    created = _parse_iso_datetime(generated_at)
+    freshness_days = max(1, int(max_age_days or 7))
+    is_fresh = bool(
+        created
+        and datetime.now(timezone.utc) - created <= timedelta(days=freshness_days)
+    )
+    artifact_status = str(payload.get("status") or "").strip()
+    metadata = (
+        payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    )
+    runs = payload.get("runs") if isinstance(payload.get("runs"), list) else []
+    required_label = str(dataset_label or "").strip()
+    found_label = str(metadata.get("dataset_label") or "").strip()
+    resumed = _truthy_arg(metadata.get("resume"))
+    allow_resumed = _truthy_arg(allow_resumed_artifact)
+    required_run_names = (
+        "run_a_branching_validate_only",
+        "run_b_branching_plan_only",
+        "run_c_fast_bootstrap_validate_only",
+    )
+    run_by_name = {
+        str(run.get("name")): run
+        for run in runs
+        if isinstance(run, dict) and run.get("name")
+    }
+    missing_steps = [name for name in required_run_names if name not in run_by_name]
+    failed_steps = [
+        name
+        for name in required_run_names
+        if name in run_by_name
+        and (
+            run_by_name[name].get("ok") is not True
+            or _truthy_arg(run_by_name[name].get("timed_out"))
+        )
+    ]
+    failed_step_codes = {
+        name: str((run_by_name.get(name) or {}).get("failure_code") or "").strip()
+        for name in failed_steps
+    }
+    distinct_failed_codes = sorted(
+        {code for code in failed_step_codes.values() if str(code or "").strip()}
+    )
+
+    reasons = []
+    if artifact_status != "passed":
+        reasons.append(f"artifact status is `{artifact_status or 'unknown'}`")
+    if not is_fresh:
+        reasons.append(
+            f"artifact missing timestamp or older than {freshness_days} days"
+        )
+    if not found_label:
+        reasons.append("dataset label is missing from artifact metadata")
+    elif found_label.lower() != required_label.lower():
+        reasons.append(
+            f"dataset label `{found_label}` does not match required `{required_label}`"
+        )
+    if resumed and not allow_resumed:
+        reasons.append("artifact was produced with resume=true")
+    if missing_steps:
+        reasons.append(
+            "artifact is missing required matrix steps: " + ", ".join(missing_steps)
+        )
+    if failed_steps:
+        reasons.append(
+            "artifact has failing required matrix steps: " + ", ".join(failed_steps)
+        )
+    if distinct_failed_codes:
+        reasons.append("failure codes: " + ", ".join(distinct_failed_codes))
+
+    return {
+        "status": "passed" if not reasons else "failed",
+        "evidence": {
+            "artifact_path": evidence_rel,
+            "artifact_status": artifact_status or "unknown",
+            "generated_at": generated_at,
+            "fresh": is_fresh,
+            "max_age_days": freshness_days,
+            "required_dataset_label": required_label,
+            "dataset_label": found_label,
+            "allow_resumed_artifact": allow_resumed,
+            "resumed": resumed,
+            "required_steps": list(required_run_names),
+            "missing_steps": missing_steps,
+            "failed_steps": failed_steps,
+            "failed_step_codes": failed_step_codes,
+            "metadata": metadata,
+            "reason": "; ".join(reasons) if reasons else "",
+        },
+    }
+
+
+def _run_field_scale_runtime_matrix(context, *, step="", resume=False):
+    artifact_path, artifact_rel = _field_scale_matrix_artifact_path()
     command_env = {
         "FORWARD_SMOKE_URL": os.getenv("FORWARD_SMOKE_URL", "https://fwd.app"),
         "FORWARD_SMOKE_USERNAME": os.getenv("FORWARD_SMOKE_USERNAME", ""),
@@ -1363,6 +1864,10 @@ def _run_field_scale_runtime_matrix(context, *, step="", resume=False):
         "FORWARD_SMOKE_SYNC_NAME": os.getenv("FORWARD_SMOKE_SYNC_NAME", "smoke-sync"),
         "FORWARD_SMOKE_MODELS": os.getenv("FORWARD_SMOKE_MODELS", ""),
         "FORWARD_SMOKE_QUERY_LIMIT": os.getenv("FORWARD_SMOKE_QUERY_LIMIT", "10"),
+        "FORWARD_SMOKE_MAX_CHANGES_PER_BRANCH": os.getenv(
+            "FORWARD_SMOKE_MAX_CHANGES_PER_BRANCH", "10000"
+        ),
+        "FORWARD_SMOKE_DATASET_LABEL": os.getenv("FORWARD_SMOKE_DATASET_LABEL", ""),
     }
 
     smoke_url = shlex.quote(command_env["FORWARD_SMOKE_URL"])
@@ -1373,21 +1878,30 @@ def _run_field_scale_runtime_matrix(context, *, step="", resume=False):
     smoke_source = shlex.quote(command_env["FORWARD_SMOKE_SOURCE_NAME"])
     smoke_sync = shlex.quote(command_env["FORWARD_SMOKE_SYNC_NAME"])
     smoke_models = command_env["FORWARD_SMOKE_MODELS"].strip()
+    smoke_dataset_label = command_env["FORWARD_SMOKE_DATASET_LABEL"].strip()
     smoke_query_limit = max(1, int(command_env["FORWARD_SMOKE_QUERY_LIMIT"] or 10))
+    smoke_max_changes_per_branch = max(
+        1,
+        int(command_env["FORWARD_SMOKE_MAX_CHANGES_PER_BRANCH"] or 10000),
+    )
     step_timeout_seconds = max(
         1,
         int(os.getenv("FORWARD_SMOKE_STEP_TIMEOUT_SECONDS", "1200") or 1200),
     )
 
-    common_manage_flags = (
-        f"--url {smoke_url} "
-        f"--username {smoke_username} "
-        f"--password {smoke_password} "
-        f"--network-id {smoke_network_id} "
-        f"--snapshot-id {smoke_snapshot} "
-        f"--source-name {smoke_source} "
-        f"--sync-name {smoke_sync}"
-    )
+    common_flag_parts = [
+        f"--url {smoke_url}",
+        f"--snapshot-id {smoke_snapshot}",
+        f"--source-name {smoke_source}",
+        f"--sync-name {smoke_sync}",
+    ]
+    if command_env["FORWARD_SMOKE_USERNAME"].strip():
+        common_flag_parts.append(f"--username {smoke_username}")
+    if command_env["FORWARD_SMOKE_PASSWORD"].strip():
+        common_flag_parts.append(f"--password {smoke_password}")
+    if command_env["FORWARD_SMOKE_NETWORK_ID"].strip():
+        common_flag_parts.append(f"--network-id {smoke_network_id}")
+    common_manage_flags = " ".join(common_flag_parts)
     if smoke_models:
         common_manage_flags = (
             f"{common_manage_flags} --models {shlex.quote(smoke_models)}"
@@ -1407,11 +1921,13 @@ def _run_field_scale_runtime_matrix(context, *, step="", resume=False):
         {
             "name": "run_b_branching_plan_only",
             "execute": (
-                "forward_smoke_sync --plan-only --max-changes-per-branch 10000 "
+                "forward_smoke_sync --plan-only "
+                f"--max-changes-per-branch {smoke_max_changes_per_branch} "
                 f"{common_manage_flags}"
             ),
             "evidence_command": (
-                "forward_smoke_sync --plan-only --max-changes-per-branch 10000"
+                "forward_smoke_sync --plan-only "
+                f"--max-changes-per-branch {smoke_max_changes_per_branch}"
             ),
         },
         {
@@ -1458,13 +1974,60 @@ def _run_field_scale_runtime_matrix(context, *, step="", resume=False):
         result_by_name.update(_field_scale_existing_run_results(artifact_path))
     selected_names = {selected_step} if selected_step else matrix_names
     matrix_metadata = {
+        "dataset_label": smoke_dataset_label,
         "models": smoke_models or "default_required_models",
+        "max_changes_per_branch": smoke_max_changes_per_branch,
         "query_limit": smoke_query_limit,
         "resume": bool(resume),
         "selected_step": selected_step,
         "step_timeout_seconds": step_timeout_seconds,
         "step_count": len(matrix),
     }
+    preflight = _field_scale_runtime_preflight(context)
+    if not preflight.get("ok"):
+        preflight_runs = [
+            {
+                "name": item["name"],
+                "command": item["evidence_command"],
+                "ok": False,
+                "exit_code": preflight.get("exit_code"),
+                "elapsed_ms": 0,
+                "timed_out": False,
+                "timeout_seconds": step_timeout_seconds,
+                "failure_code": str(preflight.get("failure_code") or "command_failed"),
+                "failure_hint": str(
+                    preflight.get("failure_hint") or "runtime preflight failed"
+                ),
+            }
+            for item in matrix
+            if item["name"] in selected_names
+        ]
+        _write_field_scale_matrix_artifact(
+            artifact_path=artifact_path,
+            status="failed",
+            runs=preflight_runs,
+            metadata={
+                **matrix_metadata,
+                "preflight_failure_code": preflight.get("failure_code"),
+                "preflight_failure_hint": preflight.get("failure_hint"),
+            },
+        )
+        return (
+            {
+                "status": "failed",
+                "evidence": {
+                    "runs": preflight_runs,
+                    "artifact_path": artifact_rel,
+                    "note": (
+                        "Output is intentionally redacted to avoid storing customer "
+                        "identifiers. Use job logs and support bundles for deep triage."
+                    ),
+                    "preflight_failure_code": preflight.get("failure_code"),
+                    "preflight_failure_hint": preflight.get("failure_hint"),
+                },
+            },
+            "failed",
+        )
     _write_field_scale_matrix_artifact(
         artifact_path=artifact_path,
         status="running",
@@ -1479,7 +2042,7 @@ def _run_field_scale_runtime_matrix(context, *, step="", resume=False):
             continue
         started = time.time()
         try:
-            result = manage_py(
+            result = _field_scale_manage_py(
                 context,
                 item["execute"],
                 env=command_env,
@@ -1497,6 +2060,8 @@ def _run_field_scale_runtime_matrix(context, *, step="", resume=False):
                 "elapsed_ms": elapsed_ms,
                 "timed_out": True,
                 "timeout_seconds": step_timeout_seconds,
+                "failure_code": "step_timeout",
+                "failure_hint": "step exceeded timeout",
             }
             _write_field_scale_matrix_artifact(
                 artifact_path=artifact_path,
@@ -1506,6 +2071,7 @@ def _run_field_scale_runtime_matrix(context, *, step="", resume=False):
             )
             continue
         elapsed_ms = int((time.time() - started) * 1000)
+        failure_code, failure_hint = _classify_field_scale_step_failure(result)
         result_by_name[item["name"]] = {
             "name": item["name"],
             "command": item["evidence_command"],
@@ -1514,6 +2080,8 @@ def _run_field_scale_runtime_matrix(context, *, step="", resume=False):
             "elapsed_ms": elapsed_ms,
             "timed_out": False,
             "timeout_seconds": step_timeout_seconds,
+            "failure_code": failure_code,
+            "failure_hint": failure_hint,
         }
         _write_field_scale_matrix_artifact(
             artifact_path=artifact_path,
@@ -1585,6 +2153,67 @@ def _ordered_field_scale_runs(matrix, result_by_name):
         for item in matrix
         if item["name"] in result_by_name
     ]
+
+
+def _field_scale_runtime_preflight(context):
+    try:
+        result = docker_compose(
+            context,
+            "ps --status running --services",
+            warn=True,
+            hide=True,
+        )
+    except Exception as exc:  # pragma: no cover - defensive fallback
+        return {
+            "ok": False,
+            "exit_code": None,
+            "failure_code": "docker_preflight_exception",
+            "failure_hint": f"docker preflight raised {exc.__class__.__name__}",
+        }
+    failure_code, failure_hint = _classify_field_scale_step_failure(result)
+    running_services = {
+        line.strip()
+        for line in str(getattr(result, "stdout", "") or "").splitlines()
+        if line.strip()
+    }
+    missing_services = sorted({"postgres", "redis"} - running_services)
+    if bool(getattr(result, "ok", False)) and not missing_services:
+        return {"ok": True}
+    if missing_services:
+        failure_code = "docker_runtime_not_ready"
+        failure_hint = "required service(s) not running: " + ", ".join(missing_services)
+    return {
+        "ok": False,
+        "exit_code": int(getattr(result, "exited", 1) or 1),
+        "failure_code": str(failure_code or "docker_preflight_failed"),
+        "failure_hint": str(failure_hint or "docker preflight failed"),
+    }
+
+
+def _classify_field_scale_step_failure(result):
+    if bool(getattr(result, "ok", False)):
+        return "", ""
+    text_parts = [
+        str(getattr(result, "stderr", "") or ""),
+        str(getattr(result, "stdout", "") or ""),
+    ]
+    message = "\n".join(text_parts).lower()
+    if "permission denied while trying to connect to the docker api" in message:
+        return (
+            "docker_api_unreachable",
+            "cannot connect to local Docker API",
+        )
+    if "docker.sock" in message and "permission denied" in message:
+        return (
+            "docker_socket_permission_denied",
+            "local Docker socket permission denied",
+        )
+    if "python: command not found" in message:
+        return (
+            "python_not_found",
+            "python executable missing in runtime shell",
+        )
+    return ("command_failed", "step command exited non-zero")
 
 
 def _field_scale_matrix_artifact_path():
@@ -1715,13 +2344,35 @@ def _is_chaos_scenario_ready(context, *, sync_name, scenario):
 
 
 def _export_chaos_bundle(context, *, sync_name, scenario, output_dir):
-    manage_py(
+    output_path = Path(output_dir)
+    result = manage_py(
         context,
         (
             f'forward_chaos_probe --sync-name "{sync_name}" '
-            f'--scenario "{scenario}" --export-dir "{output_dir}"'
+            f'--scenario "{scenario}" '
+            f'--export-dir "{_container_export_dir(output_path)}"'
         ),
     )
+    stdout = str(getattr(result, "stdout", "") or "")
+    for line in reversed(stdout.splitlines()):
+        candidate = Path(line.strip())
+        if candidate.exists():
+            return candidate
+    candidates = sorted(output_path.glob(f"chaos-{scenario}-run-*.json"))
+    return candidates[-1] if candidates else None
+
+
+def _container_export_dir(output_dir, *, repo_root=None):
+    repo_root = Path(repo_root or Path(__file__).resolve().parent).resolve()
+    output_path = Path(output_dir)
+    if output_path.is_absolute():
+        try:
+            relative_path = output_path.resolve().relative_to(repo_root)
+        except ValueError:
+            return str(output_path)
+    else:
+        relative_path = output_path
+    return f"/source/{relative_path.as_posix()}"
 
 
 def _assert_chaos_bundle_recovery(*, output_dir, scenario):
@@ -1788,6 +2439,119 @@ def _assert_chaos_bundle_recovery(*, output_dir, scenario):
         scenario=scenario,
         bundle_path=str(bundle_path),
     )
+    return bundle_path
+
+
+def _write_chaos_kill_metadata(
+    *,
+    output_dir,
+    scenario,
+    sync_name="",
+    killed_worker_id="",
+    restored_worker_replicas=0,
+    support_bundle_path=None,
+    support_bundle_recovery_verified=False,
+):
+    target_dir = Path(output_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    support_bundle = Path(support_bundle_path) if support_bundle_path else None
+    bundle_payload = _read_chaos_json(support_bundle) if support_bundle else {}
+    run = bundle_payload.get("run") or {}
+    steps = bundle_payload.get("steps") or []
+    recommendation = bundle_payload.get("recovery_recommendation") or {}
+    active_step = _chaos_representative_step(
+        steps=steps,
+        scenario=scenario,
+        recommendation=recommendation,
+    )
+    support_bundle_value = str(support_bundle) if support_bundle else ""
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    metadata = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "scenario": str(scenario or ""),
+        "sync_name": str(sync_name or ""),
+        "killed_worker_id": str(killed_worker_id or ""),
+        "restored_worker_replicas": int(restored_worker_replicas or 0),
+        "support_bundle": support_bundle_value,
+        "support_bundle_recovery_verified": bool(support_bundle_recovery_verified),
+        "execution_run_id": run.get("id"),
+        "active_step_id": active_step.get("id"),
+        "active_step_index": active_step.get("index"),
+        "active_step_kind": active_step.get("kind"),
+        "active_step_status": active_step.get("status"),
+        "active_step_job_id": _chaos_step_job_id(active_step, scenario),
+        "branch_id": active_step.get("branch"),
+        "branch_name": active_step.get("branch_name") or "",
+        "recovery_action": recommendation.get("action") or "",
+        "recovery_severity": recommendation.get("severity") or "",
+        "recovery_step_index": recommendation.get("step_index"),
+    }
+    metadata_path = target_dir / f"chaos-{scenario}-metadata-{timestamp}.json"
+    metadata_path.write_text(
+        json.dumps(metadata, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return metadata_path
+
+
+def _latest_chaos_kill_metadata(*, output_dir, scenario):
+    candidates = sorted(Path(output_dir).glob(f"chaos-{scenario}-metadata-*.json"))
+    for candidate in reversed(candidates):
+        payload = _read_chaos_json(candidate)
+        if payload:
+            return payload
+    return {}
+
+
+def _read_chaos_json(path):
+    if path is None:
+        return {}
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _chaos_representative_step(*, steps, scenario, recommendation=None):
+    step_list = [step for step in steps if isinstance(step, dict)]
+    recommendation = recommendation or {}
+    recommended_index = recommendation.get("step_index")
+    if recommended_index is not None:
+        for step in step_list:
+            if step.get("kind") == "stage" and step.get("index") == recommended_index:
+                return step
+
+    scenario_value = str(scenario or "").strip()
+    stage_steps = [step for step in step_list if step.get("kind") == "stage"]
+    if scenario_value == "stage-before-branch":
+        for step in stage_steps:
+            if not step.get("branch") and not step.get("branch_name"):
+                return step
+    if scenario_value == "stage-after-branch":
+        for step in stage_steps:
+            if step.get("branch") or step.get("branch_name"):
+                return step
+    if scenario_value == "stage-during-apply":
+        for step in stage_steps:
+            if (
+                int(step.get("attempted_row_count") or 0) > 0
+                or int(step.get("applied_row_count") or 0) > 0
+                or int(step.get("fetched_row_count") or 0) > 0
+            ):
+                return step
+    if scenario_value == "merge-during-exec":
+        for step in stage_steps:
+            if step.get("merge_job") or (step.get("merge_job_detail") or {}).get("pk"):
+                return step
+    return stage_steps[0] if stage_steps else {}
+
+
+def _chaos_step_job_id(step, scenario):
+    if not step:
+        return None
+    if str(scenario or "").strip() == "merge-during-exec":
+        return step.get("merge_job") or (step.get("merge_job_detail") or {}).get("pk")
+    return step.get("job") or (step.get("job_detail") or {}).get("pk")
 
 
 def _chaos_expected_actions_for_scenario(scenario):
@@ -1891,7 +2655,7 @@ def _assert_chaos_scenario_step_state(*, steps, scenario, bundle_path):
 
 @task(name="playwright-test")
 def playwright_test(context):
-    context.run("npm run test:ui")
+    _run_playwright_with_shared_runtime_fallback(context)
 
 
 @task

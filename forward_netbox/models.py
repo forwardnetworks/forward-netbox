@@ -194,6 +194,7 @@ class ForwardSource(ForwardPluginModelDocsMixin, JobsMixin, PrimaryModel):
             "network_id",
             "nqe_page_size",
             "query_fetch_concurrency",
+            "api_requests_per_minute",
             "nqe_fetch_all_max_pages",
             "nqe_identical_full_page_streak_limit",
             "query_preflight_enabled",

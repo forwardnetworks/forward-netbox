@@ -343,8 +343,8 @@ class Command(BaseCommand):
                 if scheduler_check and scheduler_check.get("evidence")
                 else (
                     f"{freshness_note}; requires repeated large-run support bundles "
-                    "showing whether scheduler overlap is not indicated, still "
-                    "needs evidence, or is a candidate after capacity review."
+                    "showing whether scheduler overlap is not warranted, unknown, "
+                    "blocked, or a candidate with capacity evidence."
                 )
             ),
         }
