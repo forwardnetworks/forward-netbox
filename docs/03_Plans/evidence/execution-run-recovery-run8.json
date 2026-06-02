@@ -1,0 +1,55 @@
+{
+  "enqueued_job": null,
+  "next_step": {
+    "actual_changes": 0,
+    "applied_row_count": 0,
+    "attempted_row_count": 3500,
+    "branch": null,
+    "estimated_changes": 7443,
+    "failed_row_count": 0,
+    "fetch_column_filter_count": 1,
+    "fetch_mode": "nqe_column_filter",
+    "id": 238,
+    "index": 10,
+    "ingestion": null,
+    "job": null,
+    "kind": "stage",
+    "last_error_length": 0,
+    "last_error_present": false,
+    "merge_job": null,
+    "model": "ipam.prefix",
+    "retry_count": 0,
+    "shard_key_count": 7443,
+    "skipped_row_count": 0,
+    "status": "running"
+  },
+  "reconcile": {
+    "skipped": true
+  },
+  "recovery_recommendation": {
+    "action": "wait",
+    "message": "Wait for the active execution step to finish.",
+    "model": "ipam.prefix",
+    "severity": "info",
+    "step_id": 238,
+    "step_index": 10,
+    "step_status": "running"
+  },
+  "run": {
+    "auto_merge": true,
+    "backend": "branching",
+    "baseline_ready": false,
+    "completed": null,
+    "id": 8,
+    "last_error_length": 0,
+    "last_error_present": false,
+    "latest_heartbeat": "2026-06-01T15:19:32.364138+00:00",
+    "next_step_index": 10,
+    "phase": "staging",
+    "reconciliation_event_count": 0,
+    "source": 3,
+    "status": "running",
+    "sync": 3,
+    "total_steps": 216
+  }
+}

@@ -15,10 +15,91 @@ from forward_netbox.models import ForwardExecutionRun
 from forward_netbox.models import ForwardExecutionStep
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
+from forward_netbox.utilities.execution_ledger_metrics import (
+    scheduler_overlap_readiness,
+)
 from forward_netbox.utilities.scale_benchmark import scale_benchmark_report
 
 
 class ScaleBenchmarkReportTest(TestCase):
+    def test_scheduler_overlap_readiness_classifies_unknown_without_timing(self):
+        readiness = scheduler_overlap_readiness(
+            totals={},
+            observed={},
+            wait_share=None,
+            hotspot_models=[],
+        )
+
+        self.assertEqual(readiness["status"], "unknown")
+        self.assertFalse(readiness["ready"])
+        self.assertIn("timing_evidence_missing", readiness["blocking_reasons"])
+
+    def test_scheduler_overlap_readiness_classifies_not_warranted(self):
+        readiness = scheduler_overlap_readiness(
+            totals={
+                "stage_queue_seconds": 1.0,
+                "merge_queue_seconds": 1.0,
+                "merge_wait_seconds": 1.0,
+            },
+            observed={
+                "stage_queue_seconds": 1,
+                "merge_queue_seconds": 1,
+                "merge_wait_seconds": 1,
+            },
+            wait_share=0.1,
+            hotspot_models=[{"model": "dcim.site", "wait_share": 0.1}],
+        )
+
+        self.assertEqual(readiness["status"], "not_warranted")
+        self.assertFalse(readiness["ready"])
+        self.assertIn("wait_share_below_threshold", readiness["blocking_reasons"])
+
+    def test_scheduler_overlap_readiness_classifies_candidate_with_capacity(self):
+        readiness = scheduler_overlap_readiness(
+            totals={
+                "stage_queue_seconds": 10.0,
+                "merge_queue_seconds": 2.0,
+                "merge_wait_seconds": 3.0,
+            },
+            observed={
+                "stage_queue_seconds": 1,
+                "merge_queue_seconds": 1,
+                "merge_wait_seconds": 1,
+            },
+            wait_share=0.5,
+            hotspot_models=[{"model": "dcim.site", "wait_share": 0.5}],
+            capacity_evidence={
+                "status": "available",
+                "active_worker_count": 12,
+                "database_headroom": "available",
+            },
+        )
+
+        self.assertEqual(readiness["status"], "candidate")
+        self.assertTrue(readiness["ready"])
+        self.assertTrue(readiness["supported_overlap_shape"]["merge_serialized"])
+
+    def test_scheduler_overlap_readiness_blocks_without_capacity(self):
+        readiness = scheduler_overlap_readiness(
+            totals={
+                "stage_queue_seconds": 10.0,
+                "merge_queue_seconds": 2.0,
+                "merge_wait_seconds": 3.0,
+            },
+            observed={
+                "stage_queue_seconds": 1,
+                "merge_queue_seconds": 1,
+                "merge_wait_seconds": 1,
+            },
+            wait_share=0.5,
+            hotspot_models=[{"model": "dcim.site", "wait_share": 0.5}],
+            capacity_evidence={"status": "unknown"},
+        )
+
+        self.assertEqual(readiness["status"], "blocked")
+        self.assertFalse(readiness["ready"])
+        self.assertIn("capacity_evidence_missing", readiness["blocking_reasons"])
+
     def test_report_passes_clean_support_bundle(self):
         report = scale_benchmark_report(
             {
@@ -93,6 +174,45 @@ class ScaleBenchmarkReportTest(TestCase):
                         "fallback_rate": 0.75,
                     },
                     "pushdown_runtime": {"fallback_runtime_share": 0.8},
+                    "fallback_pressure": {
+                        "fallback_steps": 3,
+                        "fallback_rate": 0.75,
+                        "ranked_models": [
+                            {
+                                "model": "dcim.device",
+                                "fallback_steps": 2,
+                                "fallback_rate": 1.0,
+                                "fallback_runtime_share": 0.9,
+                                "reasons": [
+                                    {
+                                        "reason": "shard_pushdown_failed_full_fallback",
+                                        "count": 2,
+                                    }
+                                ],
+                            },
+                            {
+                                "model": "dcim.interface",
+                                "fallback_steps": 1,
+                                "fallback_rate": 0.5,
+                                "fallback_runtime_share": 0.4,
+                                "reasons": [
+                                    {
+                                        "reason": "model_fetch_contract_fallback",
+                                        "count": 1,
+                                    }
+                                ],
+                            },
+                        ],
+                        "top_reasons": [
+                            {
+                                "reason": "shard_pushdown_failed_full_fallback",
+                                "count": 2,
+                            }
+                        ],
+                        "full_model_refetch_after_retry_count": 1,
+                        "no_shard_safe_filter_models": ["dcim.interface"],
+                        "shard_scoped_fetch_failed_models": ["dcim.device"],
+                    },
                     "diff_utilization": {
                         "eligible_steps": 4,
                         "diff_steps": 1,
@@ -117,7 +237,71 @@ class ScaleBenchmarkReportTest(TestCase):
         self.assertEqual(report["status"], "fail")
         check_statuses = {item["code"]: item["status"] for item in report["checks"]}
         self.assertEqual(check_statuses["pushdown_efficiency"], "fail")
+        self.assertEqual(check_statuses["fallback_pressure"], "fail")
         self.assertEqual(check_statuses["row_failures"], "fail")
+        self.assertEqual(
+            report["fallback_pressure"]["ranked_models"][0]["model"],
+            "dcim.device",
+        )
+
+    def test_report_derives_fallback_pressure_from_step_evidence(self):
+        report = scale_benchmark_report(
+            {
+                "run": {
+                    "id": 22,
+                    "backend": "branching",
+                    "status": "completed",
+                    "total_steps": 2,
+                    "next_step_index": 3,
+                    "baseline_ready": True,
+                },
+                "metrics": {
+                    "step_count": 2,
+                    "attempted_row_count": 20,
+                    "failed_row_count": 0,
+                    "pushdown_efficiency": {
+                        "fallback_steps": 1,
+                        "total_steps": 2,
+                        "fallback_rate": 0.5,
+                    },
+                    "pushdown_runtime": {"fallback_runtime_share": 0.5},
+                    "diff_utilization": {},
+                    "diff_baseline_transition": {},
+                    "partition_retry_summary": {},
+                    "throughput_smoothing": {"wait_share": 0.0},
+                },
+                "steps": [
+                    {
+                        "index": 1,
+                        "kind": "stage",
+                        "status": "merged",
+                        "model": "dcim.device",
+                        "fetch_mode": "full_fallback",
+                        "query_runtime_ms": 1200,
+                        "fetch_parameters": {
+                            "fallback_reason": "shard_pushdown_failed_full_fallback"
+                        },
+                    },
+                    {
+                        "index": 2,
+                        "kind": "stage",
+                        "status": "merged",
+                        "model": "dcim.site",
+                        "fetch_mode": "nqe_column_filter",
+                        "query_runtime_ms": 100,
+                    },
+                ],
+            }
+        )
+
+        pressure = report["fallback_pressure"]
+
+        self.assertEqual(pressure["fallback_steps"], 1)
+        self.assertEqual(pressure["ranked_models"][0]["model"], "dcim.device")
+        self.assertEqual(
+            pressure["shard_scoped_fetch_failed_models"],
+            ["dcim.device"],
+        )
 
     def test_report_flags_completed_run_with_non_terminal_steps(self):
         report = scale_benchmark_report(

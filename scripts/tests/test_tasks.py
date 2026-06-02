@@ -1272,6 +1272,22 @@ class SyncReleaseGateTaskTest(unittest.TestCase):
 
 
 class DockerChaosKillTaskTest(unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        env_patch = patch.dict(
+            os.environ,
+            {
+                "FORWARD_CHAOS_OUTPUT_DIR": "",
+                "FORWARD_CHAOS_POLL_SECONDS": "5",
+                "FORWARD_CHAOS_SYNC_NAME": "",
+                "FORWARD_CHAOS_WAIT_SECONDS": "600",
+                "FORWARD_CHAOS_WORKER_REPLICAS": "0",
+            },
+            clear=False,
+        )
+        env_patch.start()
+        self.addCleanup(env_patch.stop)
+
     def _context(self):
         context = Mock()
         context.forward_netbox = SimpleNamespace(
@@ -1350,9 +1366,17 @@ class DockerChaosKillTaskTest(unittest.TestCase):
 
         with (
             patch.object(tasks, "docker_compose", side_effect=fake_docker_compose),
+            patch.object(tasks, "_current_worker_replicas", return_value=0),
             patch.object(tasks, "_wait_for_chaos_scenario_ready") as wait_ready,
             patch.object(tasks, "_export_chaos_bundle") as export_bundle,
-            patch.object(tasks, "_assert_chaos_bundle_recovery") as assert_bundle,
+            patch.object(
+                tasks,
+                "_assert_chaos_bundle_recovery",
+                return_value=Path(
+                    "/tmp/chaos-bundles/chaos-merge-during-exec-run-1.json"
+                ),
+            ) as assert_bundle,
+            patch.object(tasks, "_write_chaos_kill_metadata") as write_metadata,
             patch.dict(
                 os.environ,
                 {
@@ -1387,6 +1411,52 @@ class DockerChaosKillTaskTest(unittest.TestCase):
             output_dir="/tmp/chaos-bundles",
             scenario="merge-during-exec",
         )
+        write_metadata.assert_called_once_with(
+            output_dir="/tmp/chaos-bundles",
+            scenario="merge-during-exec",
+            sync_name="ui-harness-sync",
+            killed_worker_id="worker-1",
+            restored_worker_replicas=0,
+            support_bundle_path=Path(
+                "/tmp/chaos-bundles/chaos-merge-during-exec-run-1.json"
+            ),
+            support_bundle_recovery_verified=True,
+        )
+
+    def test_writes_kill_metadata_when_output_dir_is_set_without_sync_name(self):
+        context = self._context()
+
+        def fake_docker_compose(_context, command, **_kwargs):
+            if command == "ps -q netbox-worker":
+                return SimpleNamespace(stdout="worker-9\n")
+            return SimpleNamespace(stdout="")
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with (
+                patch.object(tasks, "docker_compose", side_effect=fake_docker_compose),
+                patch.object(tasks, "_current_worker_replicas", return_value=0),
+                patch.dict(
+                    os.environ,
+                    {"FORWARD_CHAOS_OUTPUT_DIR": tmp_dir},
+                    clear=False,
+                ),
+            ):
+                tasks.docker_chaos_kill.body(
+                    context,
+                    scenario="stage-before-branch",
+                    confirm=True,
+                )
+
+            metadata_files = sorted(
+                Path(tmp_dir).glob("chaos-stage-before-branch-metadata-*.json")
+            )
+            self.assertEqual(len(metadata_files), 1)
+            metadata = json.loads(metadata_files[0].read_text(encoding="utf-8"))
+
+        self.assertEqual(metadata["scenario"], "stage-before-branch")
+        self.assertEqual(metadata["killed_worker_id"], "worker-9")
+        self.assertEqual(metadata["restored_worker_replicas"], 0)
+        self.assertFalse(metadata["support_bundle_recovery_verified"])
 
     def test_fails_when_no_workers_are_present(self):
         context = self._context()
@@ -1432,6 +1502,41 @@ class ChaosProbeHelperTest(unittest.TestCase):
                 )
             )
 
+    def test_container_export_dir_maps_repo_paths_to_source_mount(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            output_dir = repo_root / "docs/03_Plans/evidence/chaos"
+
+            mapped = tasks._container_export_dir(output_dir, repo_root=repo_root)
+
+        self.assertEqual(mapped, "/source/docs/03_Plans/evidence/chaos")
+        self.assertEqual(
+            tasks._container_export_dir("docs/03_Plans/evidence/chaos"),
+            "/source/docs/03_Plans/evidence/chaos",
+        )
+
+    def test_export_chaos_bundle_uses_container_mount_path(self):
+        context = Mock()
+        commands = []
+
+        def fake_manage_py(_context, command):
+            commands.append(command)
+            return SimpleNamespace(stdout="")
+
+        with patch.object(tasks, "manage_py", side_effect=fake_manage_py):
+            result = tasks._export_chaos_bundle(
+                context,
+                sync_name="ui-harness-sync",
+                scenario="stage-after-branch",
+                output_dir="docs/03_Plans/evidence/chaos-test-nonexistent",
+            )
+
+        self.assertIsNone(result)
+        self.assertIn(
+            '--export-dir "/source/docs/03_Plans/evidence/chaos-test-nonexistent"',
+            commands[0],
+        )
+
     def test_assert_chaos_bundle_recovery_accepts_valid_bundle(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             path = Path(tmp_dir) / "chaos-stage-after-branch-run-10.json"
@@ -1445,10 +1550,11 @@ class ChaosProbeHelperTest(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            tasks._assert_chaos_bundle_recovery(
+            result = tasks._assert_chaos_bundle_recovery(
                 output_dir=tmp_dir,
                 scenario="stage-after-branch",
             )
+            self.assertEqual(result, path)
 
     def test_assert_chaos_bundle_recovery_rejects_missing_recommendation_action(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1526,10 +1632,44 @@ class ChaosProbeHelperTest(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            tasks._assert_chaos_bundle_recovery(
+            result = tasks._assert_chaos_bundle_recovery(
                 output_dir=tmp_dir,
                 scenario="merge-during-exec",
             )
+            self.assertEqual(result, path)
+
+    def test_write_chaos_kill_metadata_records_bundle_run_step_and_recovery(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            bundle_path = Path(tmp_dir) / "chaos-stage-after-branch-run-21.json"
+            bundle_path.write_text(
+                (
+                    "{\n"
+                    '  "run": {"id": 21},\n'
+                    '  "steps": [{"id": 33, "index": 1, "kind": "stage", "status": "running", "branch": 44, "branch_name": "branch-44", "job": 55}],\n'
+                    '  "recovery_recommendation": {"action": "reconcile", "severity": "warning", "step_index": 1}\n'
+                    "}\n"
+                ),
+                encoding="utf-8",
+            )
+
+            metadata_path = tasks._write_chaos_kill_metadata(
+                output_dir=tmp_dir,
+                scenario="stage-after-branch",
+                sync_name="ui-harness-sync",
+                killed_worker_id="worker-21",
+                restored_worker_replicas=4,
+                support_bundle_path=bundle_path,
+                support_bundle_recovery_verified=True,
+            )
+
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(metadata["execution_run_id"], 21)
+        self.assertEqual(metadata["active_step_id"], 33)
+        self.assertEqual(metadata["active_step_job_id"], 55)
+        self.assertEqual(metadata["branch_id"], 44)
+        self.assertEqual(metadata["recovery_action"], "reconcile")
+        self.assertTrue(metadata["support_bundle_recovery_verified"])
 
 
 class ArchitectureAuditTaskTest(unittest.TestCase):
@@ -1591,6 +1731,37 @@ class ScaleBenchmarkTaskTest(unittest.TestCase):
 
 
 class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        collector_patch = patch.object(
+            tasks,
+            "_collect_destructive_runtime_evidence",
+            return_value={
+                "status": "passed",
+                "evidence": {
+                    "scenarios": [
+                        {
+                            "scenario": "stage-before-branch",
+                            "ok": True,
+                            "bundle": "docs/03_Plans/evidence/chaos/chaos-stage-before-branch-run-1.json",
+                            "metadata": "docs/03_Plans/evidence/chaos/chaos-stage-before-branch-metadata-unit.json",
+                            "support_bundle_recovery_verified": True,
+                        }
+                    ],
+                    "output_dir": "docs/03_Plans/evidence/chaos",
+                },
+            },
+        )
+        collector_patch.start()
+        self.addCleanup(collector_patch.stop)
+        preflight_patch = patch.object(
+            tasks,
+            "_field_scale_runtime_preflight",
+            return_value={"ok": True},
+        )
+        preflight_patch.start()
+        self.addCleanup(preflight_patch.stop)
+
     def _context(self):
         context = Mock()
         context.forward_netbox = SimpleNamespace(
@@ -1644,7 +1815,7 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
                 )
 
             docker_compose.assert_called_once()
-            self.assertGreaterEqual(manage_py.call_count, 5)
+            self.assertGreaterEqual(manage_py.call_count, 1)
             self.assertTrue(output_abs.exists())
             payload = output_abs.read_text(encoding="utf-8")
             self.assertIn("destructive_runtime_worker_kill_evidence_verified", payload)
@@ -1704,7 +1875,7 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
                                     "status": "pass",
                                     "evidence": {
                                         "scheduler_overlap_readiness": {
-                                            "status": "not_indicated"
+                                            "status": "not_warranted"
                                         }
                                     },
                                 },
@@ -1788,7 +1959,7 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
                                     "status": "pass",
                                     "evidence": {
                                         "scheduler_overlap_readiness": {
-                                            "status": "not_indicated"
+                                            "status": "not_warranted"
                                         }
                                     },
                                 },
@@ -1861,7 +2032,7 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
                                     "status": "pass",
                                     "evidence": {
                                         "scheduler_overlap_readiness": {
-                                            "status": "not_indicated"
+                                            "status": "not_warranted"
                                         }
                                     },
                                 },
@@ -1930,7 +2101,7 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
                                     "status": "pass",
                                     "evidence": {
                                         "scheduler_overlap_readiness": {
-                                            "status": "not_indicated"
+                                            "status": "not_warranted"
                                         }
                                     },
                                 },
@@ -2019,7 +2190,7 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
                                 "status": "pass",
                                 "evidence": {
                                     "scheduler_overlap_readiness": {
-                                        "status": "not_indicated"
+                                        "status": "not_warranted"
                                     }
                                 },
                             },
@@ -2072,7 +2243,7 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
                                 "status": "warn",
                                 "evidence": {
                                     "scheduler_overlap_readiness": {
-                                        "status": "candidate_after_capacity_review"
+                                        "status": "candidate"
                                     }
                                 },
                             },
@@ -2101,24 +2272,106 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
             "passed",
         )
 
-    def test_run_field_scale_runtime_matrix_reports_missing_env(self):
+    def test_collect_scale_runtime_evidence_accepts_capacity_blocked_readiness_with_capacity_review(
+        self,
+    ):
+        context = self._context()
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            report_rel = "docs/03_Plans/evidence/scale-runtime-evidence.json"
+            report_abs = repo_root / report_rel
+            report_abs.parent.mkdir(parents=True, exist_ok=True)
+            report_abs.write_text(
+                json.dumps(
+                    {
+                        "status": "warn",
+                        "summary": {"step_count": 4},
+                        "checks": [
+                            {"code": "support_bundle_shape", "status": "pass"},
+                            {"code": "run_completion", "status": "pass"},
+                            {"code": "row_failures", "status": "pass"},
+                            {"code": "pushdown_efficiency", "status": "pass"},
+                            {"code": "pushdown_runtime", "status": "pass"},
+                            {"code": "partition_retry_pressure", "status": "pass"},
+                            {
+                                "code": "throughput_smoothing",
+                                "status": "warn",
+                                "evidence": {
+                                    "scheduler_overlap_readiness": {
+                                        "status": "blocked",
+                                        "blocking_reasons": [
+                                            "capacity_evidence_missing"
+                                        ],
+                                    }
+                                },
+                            },
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.object(tasks, "manage_py"):
+                evidence = tasks._collect_scale_runtime_evidence(
+                    context=context,
+                    repo_root=repo_root,
+                    sync_name="ui-harness-sync",
+                    capacity_review=self._capacity_review(),
+                )
+
+        self.assertEqual(
+            evidence["scheduler_overlap_readiness_verified"]["status"],
+            "passed",
+        )
+
+    def test_run_field_scale_runtime_matrix_allows_existing_source_without_secret_env(
+        self,
+    ):
+        context = self._context()
+        run_results = [
+            SimpleNamespace(ok=True, exited=0),
+            SimpleNamespace(ok=True, exited=0),
+            SimpleNamespace(ok=True, exited=0),
+        ]
         with tempfile.TemporaryDirectory() as tmp_dir:
             artifact_path = Path(tmp_dir) / "field-scale.json"
-            with patch.dict(
-                os.environ,
-                {"FORWARD_FIELD_SCALE_EVIDENCE_PATH": str(artifact_path)},
-                clear=True,
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "FORWARD_SMOKE_SOURCE_NAME": "smoke-source-blake-20260601",
+                        "FORWARD_SMOKE_SYNC_NAME": "smoke-sync-blake-20260601",
+                        "FORWARD_SMOKE_DATASET_LABEL": "blake",
+                        "FORWARD_SMOKE_MAX_CHANGES_PER_BRANCH": "42",
+                        "FORWARD_FIELD_SCALE_EVIDENCE_PATH": str(artifact_path),
+                    },
+                    clear=True,
+                ),
+                patch.object(
+                    tasks, "_field_scale_manage_py", side_effect=run_results
+                ) as manage_py,
             ):
-                evidence, status = tasks._run_field_scale_runtime_matrix(
-                    self._context()
-                )
+                evidence, status = tasks._run_field_scale_runtime_matrix(context)
             payload = json.loads(artifact_path.read_text(encoding="utf-8"))
 
-        self.assertEqual(status, "missing-env")
-        self.assertEqual(evidence["status"], "failed")
-        self.assertIn("missing", evidence["evidence"])
-        self.assertEqual(payload["status"], "failed")
-        self.assertEqual(payload["metadata"]["reason"], "missing_required_environment")
+        self.assertEqual(status, "completed")
+        self.assertEqual(evidence["status"], "passed")
+        self.assertEqual(payload["status"], "passed")
+        self.assertEqual(payload["metadata"]["dataset_label"], "blake")
+        self.assertEqual(payload["metadata"]["max_changes_per_branch"], 42)
+        commands = [call.args[1] for call in manage_py.call_args_list]
+        self.assertTrue(
+            any("--max-changes-per-branch 42" in command for command in commands)
+        )
+        self.assertTrue(
+            all(
+                "--source-name smoke-source-blake-20260601" in command
+                for command in commands
+            )
+        )
+        self.assertTrue(all("--username" not in command for command in commands))
+        self.assertTrue(all("--password" not in command for command in commands))
+        self.assertTrue(all("--network-id" not in command for command in commands))
 
     def test_run_field_scale_runtime_matrix_collects_sanitized_run_results(self):
         context = self._context()
@@ -2143,7 +2396,9 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
                     },
                     clear=True,
                 ),
-                patch.object(tasks, "manage_py", side_effect=run_results) as manage_py,
+                patch.object(
+                    tasks, "_field_scale_manage_py", side_effect=run_results
+                ) as manage_py,
             ):
                 evidence, status = tasks._run_field_scale_runtime_matrix(context)
             payload = json.loads(artifact_path.read_text(encoding="utf-8"))
@@ -2155,6 +2410,7 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
         self.assertNotIn("secret", str(evidence))
         self.assertNotIn("secret", artifact_text)
         self.assertEqual(payload["status"], "passed")
+        self.assertEqual(payload["metadata"]["dataset_label"], "")
         self.assertEqual(payload["metadata"]["models"], "dcim.site")
         self.assertEqual(len(payload["runs"]), 3)
         commands = [call.args[1] for call in manage_py.call_args_list]
@@ -2163,6 +2419,36 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
         self.assertTrue(
             all(call.kwargs.get("timeout") == 7 for call in manage_py.call_args_list)
         )
+
+    def test_run_field_scale_runtime_matrix_records_dataset_label(self):
+        context = self._context()
+        run_results = [
+            SimpleNamespace(ok=True, exited=0),
+            SimpleNamespace(ok=True, exited=0),
+            SimpleNamespace(ok=True, exited=0),
+        ]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            artifact_path = Path(tmp_dir) / "field-scale.json"
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "FORWARD_SMOKE_USERNAME": "user",
+                        "FORWARD_SMOKE_PASSWORD": "secret",
+                        "FORWARD_SMOKE_NETWORK_ID": "123",
+                        "FORWARD_SMOKE_DATASET_LABEL": "Blake-Prod",
+                        "FORWARD_FIELD_SCALE_EVIDENCE_PATH": str(artifact_path),
+                    },
+                    clear=True,
+                ),
+                patch.object(tasks, "_field_scale_manage_py", side_effect=run_results),
+            ):
+                evidence, status = tasks._run_field_scale_runtime_matrix(context)
+            payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(status, "completed")
+        self.assertEqual(evidence["status"], "passed")
+        self.assertEqual(payload["metadata"]["dataset_label"], "Blake-Prod")
 
     def test_run_field_scale_runtime_matrix_records_step_timeout(self):
         context = self._context()
@@ -2193,7 +2479,9 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
                     },
                     clear=True,
                 ),
-                patch.object(tasks, "manage_py", side_effect=fake_manage_py),
+                patch.object(
+                    tasks, "_field_scale_manage_py", side_effect=fake_manage_py
+                ),
             ):
                 evidence, status = tasks._run_field_scale_runtime_matrix(context)
             payload = json.loads(artifact_path.read_text(encoding="utf-8"))
@@ -2202,8 +2490,94 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
         self.assertEqual(evidence["status"], "failed")
         self.assertTrue(evidence["evidence"]["runs"][0]["timed_out"])
         self.assertEqual(evidence["evidence"]["runs"][0]["timeout_seconds"], 1)
+        self.assertEqual(
+            evidence["evidence"]["runs"][0]["failure_code"], "step_timeout"
+        )
         self.assertEqual(payload["status"], "failed")
         self.assertTrue(payload["runs"][0]["timed_out"])
+        self.assertEqual(payload["runs"][0]["failure_code"], "step_timeout")
+
+    def test_run_field_scale_runtime_matrix_classifies_docker_api_failure(self):
+        context = self._context()
+        run_results = [
+            SimpleNamespace(
+                ok=False,
+                exited=1,
+                stderr=(
+                    "permission denied while trying to connect to the docker API "
+                    "at unix:///Users/captainpacket/.colima/default/docker.sock"
+                ),
+                stdout="",
+            ),
+            SimpleNamespace(ok=True, exited=0, stderr="", stdout=""),
+            SimpleNamespace(ok=True, exited=0, stderr="", stdout=""),
+        ]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            artifact_path = Path(tmp_dir) / "field-scale.json"
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "FORWARD_SMOKE_USERNAME": "user",
+                        "FORWARD_SMOKE_PASSWORD": "secret",
+                        "FORWARD_SMOKE_NETWORK_ID": "123",
+                        "FORWARD_FIELD_SCALE_EVIDENCE_PATH": str(artifact_path),
+                    },
+                    clear=True,
+                ),
+                patch.object(tasks, "_field_scale_manage_py", side_effect=run_results),
+            ):
+                evidence, status = tasks._run_field_scale_runtime_matrix(context)
+            payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(status, "failed")
+        self.assertEqual(evidence["status"], "failed")
+        self.assertEqual(
+            evidence["evidence"]["runs"][0]["failure_code"], "docker_api_unreachable"
+        )
+        self.assertEqual(payload["runs"][0]["failure_code"], "docker_api_unreachable")
+
+    def test_run_field_scale_runtime_matrix_fails_fast_on_preflight(self):
+        context = self._context()
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            artifact_path = Path(tmp_dir) / "field-scale.json"
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "FORWARD_SMOKE_USERNAME": "user",
+                        "FORWARD_SMOKE_PASSWORD": "secret",
+                        "FORWARD_SMOKE_NETWORK_ID": "123",
+                        "FORWARD_FIELD_SCALE_EVIDENCE_PATH": str(artifact_path),
+                    },
+                    clear=True,
+                ),
+                patch.object(
+                    tasks,
+                    "_field_scale_runtime_preflight",
+                    return_value={
+                        "ok": False,
+                        "exit_code": 1,
+                        "failure_code": "docker_api_unreachable",
+                        "failure_hint": "cannot connect to local Docker API",
+                    },
+                ),
+                patch.object(tasks, "_field_scale_manage_py") as manage_py,
+            ):
+                evidence, status = tasks._run_field_scale_runtime_matrix(context)
+            payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(status, "failed")
+        self.assertEqual(evidence["status"], "failed")
+        self.assertEqual(
+            evidence["evidence"]["preflight_failure_code"], "docker_api_unreachable"
+        )
+        self.assertEqual(len(evidence["evidence"]["runs"]), 3)
+        self.assertTrue(all(not run["ok"] for run in evidence["evidence"]["runs"]))
+        self.assertEqual(
+            payload["metadata"]["preflight_failure_code"], "docker_api_unreachable"
+        )
+        manage_py.assert_not_called()
 
     def test_run_field_scale_runtime_matrix_resumes_successful_steps(self):
         context = self._context()
@@ -2216,7 +2590,7 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
             artifact_path.write_text(
                 json.dumps(
                     {
-                        "generated_at": "2026-05-24T00:00:00+00:00",
+                        "generated_at": datetime.now(timezone.utc).isoformat(),
                         "status": "failed",
                         "metadata": {},
                         "runs": [
@@ -2247,7 +2621,9 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
                     },
                     clear=True,
                 ),
-                patch.object(tasks, "manage_py", side_effect=run_results) as manage_py,
+                patch.object(
+                    tasks, "_field_scale_manage_py", side_effect=run_results
+                ) as manage_py,
             ):
                 evidence, status = tasks._run_field_scale_runtime_matrix(
                     context,
@@ -2285,7 +2661,7 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
                 ),
                 patch.object(
                     tasks,
-                    "manage_py",
+                    "_field_scale_manage_py",
                     return_value=SimpleNamespace(ok=True, exited=0),
                 ) as manage_py,
             ):
@@ -2309,7 +2685,7 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
             artifact_path.write_text(
                 json.dumps(
                     {
-                        "generated_at": "2026-05-24T00:00:00+00:00",
+                        "generated_at": datetime.now(timezone.utc).isoformat(),
                         "status": "passed",
                         "metadata": {"models": "default_required_models"},
                         "runs": [
@@ -2364,6 +2740,433 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
         self.assertEqual(status, "artifact-failed")
         self.assertEqual(evidence["status"], "failed")
         self.assertIn("older than 7 days", evidence["evidence"]["reason"])
+
+    def test_release_dataset_gate_passes_with_fresh_matching_label(self):
+        context = self._context()
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            artifact_path = Path(tmp_dir) / "field-scale.json"
+            artifact_path.write_text(
+                json.dumps(
+                    {
+                        "generated_at": datetime.now(timezone.utc).isoformat(),
+                        "status": "passed",
+                        "metadata": {"dataset_label": "blake", "resume": False},
+                        "runs": [
+                            {
+                                "name": "run_a_branching_validate_only",
+                                "ok": True,
+                                "timed_out": False,
+                            },
+                            {
+                                "name": "run_b_branching_plan_only",
+                                "ok": True,
+                                "timed_out": False,
+                            },
+                            {
+                                "name": "run_c_fast_bootstrap_validate_only",
+                                "ok": True,
+                                "timed_out": False,
+                            },
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.dict(
+                os.environ,
+                {"FORWARD_FIELD_SCALE_EVIDENCE_PATH": str(artifact_path)},
+                clear=True,
+            ):
+                tasks.release_dataset_gate.body(context, dataset_label="blake")
+
+    def test_release_dataset_gate_fails_when_label_mismatches(self):
+        context = self._context()
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            artifact_path = Path(tmp_dir) / "field-scale.json"
+            artifact_path.write_text(
+                json.dumps(
+                    {
+                        "generated_at": datetime.now(timezone.utc).isoformat(),
+                        "status": "passed",
+                        "metadata": {"dataset_label": "adp-staging", "resume": False},
+                        "runs": [
+                            {
+                                "name": "run_a_branching_validate_only",
+                                "ok": True,
+                                "timed_out": False,
+                            },
+                            {
+                                "name": "run_b_branching_plan_only",
+                                "ok": True,
+                                "timed_out": False,
+                            },
+                            {
+                                "name": "run_c_fast_bootstrap_validate_only",
+                                "ok": True,
+                                "timed_out": False,
+                            },
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.dict(
+                os.environ,
+                {"FORWARD_FIELD_SCALE_EVIDENCE_PATH": str(artifact_path)},
+                clear=True,
+            ):
+                with self.assertRaises(Exit) as raised:
+                    tasks.release_dataset_gate.body(context, dataset_label="blake")
+
+        self.assertEqual(raised.exception.code, 1)
+        self.assertIn("dataset label", str(raised.exception))
+
+    def test_release_dataset_gate_fails_when_artifact_is_resumed(self):
+        context = self._context()
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            artifact_path = Path(tmp_dir) / "field-scale.json"
+            artifact_path.write_text(
+                json.dumps(
+                    {
+                        "generated_at": datetime.now(timezone.utc).isoformat(),
+                        "status": "passed",
+                        "metadata": {"dataset_label": "blake", "resume": True},
+                        "runs": [
+                            {
+                                "name": "run_a_branching_validate_only",
+                                "ok": True,
+                                "timed_out": False,
+                            },
+                            {
+                                "name": "run_b_branching_plan_only",
+                                "ok": True,
+                                "timed_out": False,
+                            },
+                            {
+                                "name": "run_c_fast_bootstrap_validate_only",
+                                "ok": True,
+                                "timed_out": False,
+                            },
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.dict(
+                os.environ,
+                {"FORWARD_FIELD_SCALE_EVIDENCE_PATH": str(artifact_path)},
+                clear=True,
+            ):
+                with self.assertRaises(Exit) as raised:
+                    tasks.release_dataset_gate.body(context, dataset_label="blake")
+
+        self.assertEqual(raised.exception.code, 1)
+        self.assertIn("regenerate field-scale evidence", str(raised.exception))
+
+    def test_release_dataset_gate_can_allow_resumed_artifact(self):
+        context = self._context()
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            artifact_path = Path(tmp_dir) / "field-scale.json"
+            artifact_path.write_text(
+                json.dumps(
+                    {
+                        "generated_at": datetime.now(timezone.utc).isoformat(),
+                        "status": "passed",
+                        "metadata": {"dataset_label": "blake", "resume": True},
+                        "runs": [
+                            {
+                                "name": "run_a_branching_validate_only",
+                                "ok": True,
+                                "timed_out": False,
+                            },
+                            {
+                                "name": "run_b_branching_plan_only",
+                                "ok": True,
+                                "timed_out": False,
+                            },
+                            {
+                                "name": "run_c_fast_bootstrap_validate_only",
+                                "ok": True,
+                                "timed_out": False,
+                            },
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.dict(
+                os.environ,
+                {"FORWARD_FIELD_SCALE_EVIDENCE_PATH": str(artifact_path)},
+                clear=True,
+            ):
+                tasks.release_dataset_gate.body(
+                    context,
+                    dataset_label="blake",
+                    allow_resumed_artifact=True,
+                )
+
+    def test_release_dataset_gate_fails_when_required_step_missing(self):
+        context = self._context()
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            artifact_path = Path(tmp_dir) / "field-scale.json"
+            artifact_path.write_text(
+                json.dumps(
+                    {
+                        "generated_at": datetime.now(timezone.utc).isoformat(),
+                        "status": "passed",
+                        "metadata": {"dataset_label": "blake", "resume": False},
+                        "runs": [
+                            {
+                                "name": "run_a_branching_validate_only",
+                                "ok": True,
+                                "timed_out": False,
+                            },
+                            {
+                                "name": "run_b_branching_plan_only",
+                                "ok": True,
+                                "timed_out": False,
+                            },
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.dict(
+                os.environ,
+                {"FORWARD_FIELD_SCALE_EVIDENCE_PATH": str(artifact_path)},
+                clear=True,
+            ):
+                with self.assertRaises(Exit) as raised:
+                    tasks.release_dataset_gate.body(context, dataset_label="blake")
+
+        self.assertEqual(raised.exception.code, 1)
+        self.assertIn("regenerate field-scale evidence", str(raised.exception))
+
+    def test_release_dataset_gate_reports_failed_step_codes(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            artifact_path = Path(tmp_dir) / "field-scale.json"
+            artifact_path.write_text(
+                json.dumps(
+                    {
+                        "generated_at": datetime.now(timezone.utc).isoformat(),
+                        "status": "failed",
+                        "metadata": {"dataset_label": "blake", "resume": False},
+                        "runs": [
+                            {
+                                "name": "run_a_branching_validate_only",
+                                "ok": False,
+                                "timed_out": False,
+                                "failure_code": "docker_api_unreachable",
+                            },
+                            {
+                                "name": "run_b_branching_plan_only",
+                                "ok": True,
+                                "timed_out": False,
+                                "failure_code": "",
+                            },
+                            {
+                                "name": "run_c_fast_bootstrap_validate_only",
+                                "ok": False,
+                                "timed_out": False,
+                                "failure_code": "docker_api_unreachable",
+                            },
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            evidence = tasks._collect_release_dataset_gate_evidence(
+                dataset_label="blake",
+                max_age_days=7,
+                allow_resumed_artifact=False,
+                artifact_path=str(artifact_path),
+            )
+
+        self.assertEqual(evidence["status"], "failed")
+        self.assertEqual(
+            evidence["evidence"]["failed_step_codes"]["run_a_branching_validate_only"],
+            "docker_api_unreachable",
+        )
+        self.assertIn(
+            "failure codes: docker_api_unreachable", evidence["evidence"]["reason"]
+        )
+
+    def test_release_runtime_preflight_passes_when_env_and_docker_ready(self):
+        context = self._context()
+        with patch.dict(
+            os.environ,
+            {
+                "FORWARD_SMOKE_USERNAME": "user",
+                "FORWARD_SMOKE_PASSWORD": "secret",
+                "FORWARD_SMOKE_NETWORK_ID": "123",
+                "FORWARD_SMOKE_DATASET_LABEL": "blake",
+            },
+            clear=True,
+        ):
+            evidence = tasks._collect_release_runtime_preflight_evidence(
+                context=context,
+                dataset_label="blake",
+            )
+        self.assertEqual(evidence["status"], "passed")
+        self.assertEqual(evidence["evidence"]["missing_env"], [])
+        self.assertTrue(evidence["evidence"]["dataset_label_matches"])
+
+    def test_release_runtime_preflight_passes_with_existing_source_name(self):
+        context = self._context()
+        with patch.dict(
+            os.environ,
+            {
+                "FORWARD_SMOKE_SOURCE_NAME": "smoke-source-blake-20260601",
+                "FORWARD_SMOKE_DATASET_LABEL": "blake",
+            },
+            clear=True,
+        ):
+            evidence = tasks._collect_release_runtime_preflight_evidence(
+                context=context,
+                dataset_label="blake",
+            )
+        self.assertEqual(evidence["status"], "passed")
+        self.assertEqual(evidence["evidence"]["missing_env"], [])
+        self.assertTrue(evidence["evidence"]["source_backed"])
+
+    def test_release_runtime_preflight_fails_when_env_or_docker_missing(self):
+        context = self._context()
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "FORWARD_SMOKE_USERNAME": "user",
+                    "FORWARD_SMOKE_DATASET_LABEL": "adp2",
+                },
+                clear=True,
+            ),
+            patch.object(
+                tasks,
+                "_field_scale_runtime_preflight",
+                return_value={
+                    "ok": False,
+                    "exit_code": 1,
+                    "failure_code": "docker_api_unreachable",
+                    "failure_hint": "cannot connect to local Docker API",
+                },
+            ),
+        ):
+            evidence = tasks._collect_release_runtime_preflight_evidence(
+                context=context,
+                dataset_label="blake",
+            )
+        self.assertEqual(evidence["status"], "failed")
+        self.assertIn("FORWARD_SMOKE_PASSWORD", evidence["evidence"]["missing_env"])
+        self.assertFalse(evidence["evidence"]["dataset_label_matches"])
+        self.assertIn("docker preflight failed", evidence["evidence"]["reason"])
+
+    def test_release_runtime_preflight_task_raises_on_failure(self):
+        context = self._context()
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch.object(
+                tasks,
+                "_field_scale_runtime_preflight",
+                return_value={
+                    "ok": False,
+                    "exit_code": 1,
+                    "failure_code": "docker_api_unreachable",
+                    "failure_hint": "cannot connect to local Docker API",
+                },
+            ),
+        ):
+            with self.assertRaises(Exit) as raised:
+                tasks.release_runtime_preflight.body(context, dataset_label="blake")
+        self.assertEqual(raised.exception.code, 1)
+
+    def test_release_readiness_audit_passes_when_all_checks_pass(self):
+        context = self._context()
+        completion_payload = {"summary": {"failed": 0, "needs_external_evidence": 0}}
+        with (
+            patch.object(
+                tasks,
+                "_collect_release_runtime_preflight_evidence",
+                return_value={"status": "passed", "evidence": {}},
+            ),
+            patch.object(
+                tasks,
+                "_collect_release_dataset_gate_evidence",
+                return_value={"status": "passed", "evidence": {}},
+            ),
+            patch.object(
+                tasks,
+                "manage_py",
+                return_value=SimpleNamespace(
+                    ok=True,
+                    exited=0,
+                    stdout=json.dumps(completion_payload),
+                    stderr="",
+                ),
+            ),
+        ):
+            audit = tasks._collect_release_readiness_audit(
+                context=context,
+                dataset_label="blake",
+            )
+
+        self.assertEqual(audit["status"], "passed")
+        self.assertEqual(audit["failed_checks"], [])
+        self.assertEqual(
+            audit["checks"]["architecture_completion_gate"]["status"],
+            "passed",
+        )
+
+    def test_release_readiness_audit_fails_when_architecture_command_fails(self):
+        context = self._context()
+        with (
+            patch.object(
+                tasks,
+                "_collect_release_runtime_preflight_evidence",
+                return_value={"status": "failed", "evidence": {"reason": "x"}},
+            ),
+            patch.object(
+                tasks,
+                "_collect_release_dataset_gate_evidence",
+                return_value={"status": "failed", "evidence": {"reason": "y"}},
+            ),
+            patch.object(
+                tasks,
+                "manage_py",
+                return_value=SimpleNamespace(
+                    ok=False,
+                    exited=1,
+                    stdout="",
+                    stderr=(
+                        "permission denied while trying to connect to the docker API "
+                        "at unix:///Users/captainpacket/.colima/default/docker.sock"
+                    ),
+                ),
+            ),
+        ):
+            audit = tasks._collect_release_readiness_audit(
+                context=context,
+                dataset_label="blake",
+            )
+
+        self.assertEqual(audit["status"], "failed")
+        self.assertIn("release_runtime_preflight", audit["failed_checks"])
+        self.assertIn("release_dataset_gate", audit["failed_checks"])
+        self.assertIn("architecture_completion_gate", audit["failed_checks"])
+        self.assertEqual(
+            audit["checks"]["architecture_completion_gate"]["evidence"]["failure_code"],
+            "docker_api_unreachable",
+        )
+
+    def test_release_readiness_audit_task_raises_on_failure(self):
+        context = self._context()
+        with patch.object(
+            tasks,
+            "_collect_release_readiness_audit",
+            return_value={"status": "failed", "checks": {}, "failed_checks": ["x"]},
+        ):
+            with self.assertRaises(Exit) as raised:
+                tasks.release_readiness_audit.body(context, dataset_label="blake")
+        self.assertEqual(raised.exception.code, 1)
 
     def test_collect_compatibility_cache_evidence_reports_passed_when_no_stale(self):
         context = self._context()
@@ -2424,6 +3227,30 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
 
 
 class RuntimeOptimizationTaskTest(unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        collector_patch = patch.object(
+            tasks,
+            "_collect_destructive_runtime_evidence",
+            return_value={
+                "status": "passed",
+                "evidence": {
+                    "scenarios": [
+                        {
+                            "scenario": "stage-before-branch",
+                            "ok": True,
+                            "bundle": "docs/03_Plans/evidence/chaos/chaos-stage-before-branch-run-1.json",
+                            "metadata": "docs/03_Plans/evidence/chaos/chaos-stage-before-branch-metadata-unit.json",
+                            "support_bundle_recovery_verified": True,
+                        }
+                    ],
+                    "output_dir": "docs/03_Plans/evidence/chaos",
+                },
+            },
+        )
+        collector_patch.start()
+        self.addCleanup(collector_patch.stop)
+
     def _context(self):
         context = Mock()
         context.forward_netbox = SimpleNamespace(
@@ -2444,7 +3271,10 @@ class RuntimeOptimizationTaskTest(unittest.TestCase):
 
     def test_ingestion_delete_regression_runs_expected_tests(self):
         context = self._context()
-        with patch.object(tasks, "manage_py") as manage_py:
+        with (
+            patch.object(tasks, "_guard_shared_runtime_tests"),
+            patch.object(tasks, "manage_py") as manage_py,
+        ):
             tasks.ingestion_delete_regression.body(context)
 
         manage_py.assert_called_once()
@@ -2517,7 +3347,7 @@ class RuntimeOptimizationTaskTest(unittest.TestCase):
             return SimpleNamespace(stdout="", ok=True)
 
         with (
-            patch.dict(os.environ, {"FORWARD_CHAOS_WORKER_REPLICAS": "4"}),
+            patch.dict(os.environ, {"FORWARD_CHAOS_WORKER_REPLICAS": "4"}, clear=True),
             patch.object(
                 tasks, "docker_compose", side_effect=fake_docker_compose
             ) as docker_compose,
@@ -2570,7 +3400,7 @@ class RuntimeOptimizationTaskTest(unittest.TestCase):
                                     "status": "pass",
                                     "evidence": {
                                         "scheduler_overlap_readiness": {
-                                            "status": "not_indicated"
+                                            "status": "not_warranted"
                                         }
                                     },
                                 },
@@ -2650,7 +3480,7 @@ class RuntimeOptimizationTaskTest(unittest.TestCase):
                                     "status": "pass",
                                     "evidence": {
                                         "scheduler_overlap_readiness": {
-                                            "status": "not_indicated"
+                                            "status": "not_warranted"
                                         }
                                     },
                                 },
@@ -2808,6 +3638,41 @@ class SharedRuntimeTestGuardTaskTest(unittest.TestCase):
         self.assertIn("run 119", str(raised.exception))
         self.assertIn(tasks.ALLOW_SHARED_RUNTIME_TESTS_ENV, str(raised.exception))
 
+    def test_shared_runtime_probe_reports_unavailable_on_command_failure(self):
+        context = self._context()
+        with patch.object(
+            tasks,
+            "docker_compose",
+            return_value=SimpleNamespace(
+                stdout="",
+                stderr="FATAL:  sorry, too many clients already",
+                exited=2,
+            ),
+        ):
+            payload = tasks._shared_runtime_active_execution_runs(context)
+
+        self.assertFalse(payload["guard_available"])
+        self.assertIn("too many clients", payload["reason"])
+
+    def test_guard_blocks_tests_when_shared_runtime_probe_is_unavailable(self):
+        context = self._context()
+        with patch.object(
+            tasks,
+            "_shared_runtime_active_execution_runs",
+            return_value={
+                "active_count": 0,
+                "runs": [],
+                "guard_available": False,
+                "reason": "shared_runtime_probe_failed",
+            },
+        ):
+            with self.assertRaises(Exit) as raised:
+                tasks._guard_shared_runtime_tests(context)
+
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("Could not inspect", str(raised.exception))
+        self.assertIn("test-isolated", str(raised.exception))
+
     def test_guard_allows_bypass_for_intentional_shared_runtime_tests(self):
         context = self._context()
         with (
@@ -2861,6 +3726,33 @@ class SharedRuntimeTestGuardTaskTest(unittest.TestCase):
         )
         isolated_run.assert_not_called()
 
+    def test_test_ci_uses_isolated_runtime_when_guard_is_unavailable(self):
+        context = self._context()
+        with (
+            patch.object(
+                tasks,
+                "_shared_runtime_active_execution_runs",
+                return_value={
+                    "active_count": 0,
+                    "runs": [],
+                    "guard_available": False,
+                    "reason": "shared_runtime_probe_failed",
+                },
+            ),
+            patch.object(tasks, "manage_py") as manage_py,
+            patch.object(tasks, "_run_tests_in_isolated_runtime") as isolated_run,
+            patch.dict(os.environ, {}, clear=False),
+        ):
+            tasks.test_ci.body(context)
+
+        manage_py.assert_not_called()
+        isolated_run.assert_called_once_with(
+            context,
+            test_label="forward_netbox.tests",
+            project_name=f"{tasks.ISOLATED_TEST_PROJECT_NAME}-ci",
+            keep_runtime=False,
+        )
+
     def test_test_ci_uses_isolated_runtime_when_active_runs_exist(self):
         context = self._context()
         with (
@@ -2881,6 +3773,115 @@ class SharedRuntimeTestGuardTaskTest(unittest.TestCase):
             test_label="forward_netbox.tests",
             project_name=f"{tasks.ISOLATED_TEST_PROJECT_NAME}-ci",
             keep_runtime=False,
+        )
+
+    def test_playwright_test_uses_shared_runtime_when_no_active_runs(self):
+        context = self._context()
+        with (
+            patch.object(
+                tasks,
+                "_shared_runtime_active_execution_runs",
+                return_value={"active_count": 0, "runs": []},
+            ),
+            patch.object(tasks, "_run_playwright_ui") as playwright_run,
+            patch.object(tasks, "_run_playwright_in_isolated_runtime") as isolated_run,
+            patch.dict(os.environ, {}, clear=False),
+        ):
+            tasks.playwright_test.body(context)
+
+        playwright_run.assert_called_once_with(context)
+        isolated_run.assert_not_called()
+
+    def test_playwright_test_uses_isolated_runtime_when_guard_is_unavailable(self):
+        context = self._context()
+        with (
+            patch.object(
+                tasks,
+                "_shared_runtime_active_execution_runs",
+                return_value={
+                    "active_count": 0,
+                    "runs": [],
+                    "guard_available": False,
+                    "reason": "shared_runtime_probe_failed",
+                },
+            ),
+            patch.object(tasks, "_run_playwright_ui") as playwright_run,
+            patch.object(tasks, "_run_playwright_in_isolated_runtime") as isolated_run,
+            patch.dict(os.environ, {}, clear=False),
+        ):
+            tasks.playwright_test.body(context)
+
+        playwright_run.assert_not_called()
+        isolated_run.assert_called_once_with(context)
+
+    def test_playwright_test_uses_isolated_runtime_when_active_runs_exist(self):
+        context = self._context()
+        with (
+            patch.object(
+                tasks,
+                "_shared_runtime_active_execution_runs",
+                return_value={"active_count": 2, "runs": [{"id": 1}, {"id": 2}]},
+            ),
+            patch.object(tasks, "_run_playwright_ui") as playwright_run,
+            patch.object(tasks, "_run_playwright_in_isolated_runtime") as isolated_run,
+            patch.dict(os.environ, {}, clear=False),
+        ):
+            tasks.playwright_test.body(context)
+
+        playwright_run.assert_not_called()
+        isolated_run.assert_called_once_with(context)
+
+    def test_playwright_isolated_runtime_uses_separate_project_and_port(self):
+        context = self._context()
+        compose_calls = []
+
+        def fake_docker_compose(compose_context, command, **kwargs):
+            compose_calls.append(
+                (
+                    compose_context.forward_netbox.project_name,
+                    command,
+                    kwargs.get("env"),
+                )
+            )
+            return SimpleNamespace(stdout="")
+
+        with (
+            patch.object(tasks, "docker_compose", side_effect=fake_docker_compose),
+            patch.object(tasks, "_run_playwright_ui") as playwright_run,
+        ):
+            tasks._run_playwright_in_isolated_runtime(
+                context,
+                project_name="forward-netbox-ui-test",
+                host_port="18081",
+            )
+
+        self.assertEqual(
+            compose_calls[0],
+            (
+                "forward-netbox-ui-test",
+                "down --remove-orphans -v",
+                {"FORWARD_NETBOX_HOST_PORT": "18081"},
+            ),
+        )
+        self.assertEqual(
+            compose_calls[1],
+            (
+                "forward-netbox-ui-test",
+                "up -d --wait --wait-timeout 300 netbox",
+                {"FORWARD_NETBOX_HOST_PORT": "18081"},
+            ),
+        )
+        self.assertEqual(compose_calls[-1][0], "forward-netbox-ui-test")
+        playwright_run.assert_called_once()
+        playwright_env = playwright_run.call_args.kwargs["env"]
+        self.assertEqual(playwright_env["NETBOX_URL"], "http://127.0.0.1:18081")
+        self.assertEqual(
+            playwright_env["PLAYWRIGHT_DOCKER_PROJECT_NAME"],
+            "forward-netbox-ui-test",
+        )
+        self.assertEqual(
+            playwright_env["PLAYWRIGHT_DOCKER_PROJECT_DIRECTORY"],
+            "/tmp/forward-netbox",
         )
 
     def test_test_isolated_uses_separate_compose_project(self):

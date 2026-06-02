@@ -25,23 +25,32 @@ invoke scenario-test
 invoke scale-chaos-test
 invoke test
 invoke playwright-test
+invoke release-dataset-gate --dataset-label=blake
 invoke docs
 invoke package
 invoke ci
 ```
 
 Do not run Django test tasks against the shared local Docker runtime while a
-Forward execution run is active. `invoke test`, `invoke scenario-test`,
-`invoke ingestion-delete-regression`, and `invoke scale-chaos-test` fail fast
-when a queued/running/waiting execution run exists because shared RQ registries
-can disturb live ingestion jobs. Use an isolated stack for tests, finish or stop
-the ingestion first, or set `FORWARD_NETBOX_ALLOW_SHARED_RUNTIME_TESTS=1` only
-for an intentional bypass.
+Forward execution run is active. `invoke test`, `invoke scenario-test`, and
+`invoke ingestion-delete-regression` fail fast when a queued/running/waiting
+execution run exists because shared RQ registries can disturb live ingestion
+jobs. Use an isolated stack for tests, finish or stop the ingestion first, or
+set `FORWARD_NETBOX_ALLOW_SHARED_RUNTIME_TESTS=1` only for an intentional
+bypass.
 
-When the shared runtime has an active ingestion, use `invoke test-isolated` for
-the full Django regression suite. It runs the same tests in the separate
-`forward-netbox-test` compose project and preserves that project's Postgres
-volume by default for faster repeat `--keepdb` runs.
+CI-style tasks such as `invoke test-ci`, `invoke scenario-test-ci`, and
+`invoke scale-chaos-test` run against the shared runtime only when the active-run
+guard can inspect it and finds no active execution runs. `invoke playwright-test`
+uses the same guard for the deterministic UI harness. If the guard detects an
+active run or cannot inspect the shared runtime, for example because local
+Postgres is saturated, these tasks run against an isolated compose project
+instead of bypassing the shared-runtime safety check.
+
+Use `invoke test-isolated` directly when a live ingestion is active or when you
+want the full Django regression suite in the separate `forward-netbox-test`
+compose project. It preserves that project's Postgres volume by default for
+faster repeat `--keepdb` runs.
 
 ## Destructive Chaos Harness (Opt-In)
 
@@ -63,6 +72,10 @@ Optional scenario-aware controls:
   It also verifies scenario-specific step-state evidence (for example branch linkage for
   `stage-after-branch`, row-progress counters for `stage-during-apply`, and merge-job linkage for
   `merge-during-exec`).
+  The same output directory also receives `chaos-<scenario>-metadata-*.json`
+  with the killed worker/container ID, restored worker count, execution run ID,
+  active step ID, active step job ID, branch ID/name when present, recovery
+  action, and whether support-bundle recovery validation passed.
 - `FORWARD_CHAOS_WAIT_SECONDS` / `FORWARD_CHAOS_POLL_SECONDS` tune readiness polling.
 
 ## Live Pushdown Proof (Opt-In)
@@ -92,7 +105,10 @@ invoke architecture-audit --fail-on-gap
 invoke architecture-audit-check
 invoke architecture-runtime-evidence
 invoke architecture-completion-audit --output-json /tmp/architecture-completion-audit.json
-invoke field-scale-runtime-matrix --resume=True
+invoke release-runtime-preflight --dataset-label=blake
+invoke field-scale-runtime-matrix --resume=False
+invoke release-dataset-gate --dataset-label=blake
+invoke release-readiness-audit --dataset-label=blake
 invoke execution-run-recovery --sync-name "ui-harness-sync" --skip-reconcile=True
 invoke prune-compat-cache --dry-run=True --output-json docs/03_Plans/evidence/compat-cache-prune.json
 invoke runtime-capacity-review --source-name "ui-harness-source"
@@ -113,7 +129,7 @@ invoke sync-autorecover-monitor --sync-ids 50,51 --max-polls 6 --interval-second
   `FORWARD_SMOKE_PASSWORD`, and `FORWARD_SMOKE_NETWORK_ID` are set in the
   environment.
   The same matrix can be run independently with
-  `invoke field-scale-runtime-matrix --resume=True`. Use
+  `invoke field-scale-runtime-matrix --resume=False` for release proof. Use
   `--step <matrix-step-name>` to run one long step at a time; the artifact is
   marked `partial` until every required step has passed.
   The matrix records per-step timeout evidence instead of dropping the whole
@@ -122,6 +138,9 @@ invoke sync-autorecover-monitor --sync-ids 50,51 --max-polls 6 --interval-second
   It also writes incremental sanitized step evidence to
   `docs/03_Plans/evidence/field-scale-runtime-matrix.json` by default. Override
   with `FORWARD_FIELD_SCALE_EVIDENCE_PATH` for local scratch runs.
+  Set `FORWARD_SMOKE_DATASET_LABEL=blake` before `field-scale-runtime-matrix`
+  when capturing `1.1.x` release evidence so the dataset gate can enforce the
+  expected dataset lineage.
   When `--run-field-scale` is omitted, runtime evidence reuses this artifact if
   it exists and is fresh, so a completed field-scale matrix can be folded into
   the completion audit without rerunning the matrix.
@@ -186,6 +205,20 @@ invoke sync-autorecover-monitor --sync-ids 50,51 --max-polls 6 --interval-second
 - `invoke sync-autorecover-monitor --fail-on-recovery` is the strict burn-in
   gate for release readiness: it fails when any auto-recovery action was
   required, even if blocker/warning/error counts stayed at zero.
+- `invoke release-dataset-gate --dataset-label=blake` is the strict `1.1.x`
+  dataset gate: it fails when field-scale evidence is stale, not `passed`, not
+  labeled with Blake's dataset, missing required matrix steps, or generated
+  with `resume=True` (unless explicitly overridden with
+  `--allow-resumed-artifact=True`).
+- `invoke release-runtime-preflight --dataset-label=blake` checks runtime
+  prerequisites before the matrix starts: required smoke env vars, expected
+  dataset label, and Docker reachability.
+- `invoke release-readiness-audit --dataset-label=blake` aggregates preflight,
+  dataset gate, and architecture-completion gate in one JSON artifact for
+  release sign-off evidence.
+  Failed run entries now include `failure_code` / `failure_hint` so environment
+  gates such as `docker_api_unreachable` are explicit instead of buried in raw
+  command logs.
 
 Operational default:
 - keep source `query_fetch_concurrency` at `6` initially and raise only with

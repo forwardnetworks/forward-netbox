@@ -93,6 +93,7 @@ class SyntheticSyncScenarioHarnessTest(TestCase):
             started=started,
             completed=completed,
             data={},
+            notifications=[],
         )
 
     def _execution_run(self, *, status="running", next_step_index=1):
@@ -1735,13 +1736,17 @@ class SyntheticSyncScenarioHarnessTest(TestCase):
         self.assertEqual(throughput["hotspot_models"][0]["model"], "dcim.site")
         self.assertEqual(
             throughput["scheduler_overlap_readiness"]["status"],
-            "candidate_after_capacity_review",
+            "blocked",
         )
         self.assertEqual(
             throughput["scheduler_overlap_readiness"]["dominant_wait_component"],
             "stage_queue",
         )
-        self.assertTrue(throughput["scheduler_overlap_readiness"]["ready"])
+        self.assertFalse(throughput["scheduler_overlap_readiness"]["ready"])
+        self.assertIn(
+            "capacity_evidence_missing",
+            throughput["scheduler_overlap_readiness"]["blocking_reasons"],
+        )
         self.assertEqual(
             bundle["metrics"]["bottleneck"]["phase"],
             "queue_or_merge_wait",

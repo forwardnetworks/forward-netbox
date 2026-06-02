@@ -4,7 +4,7 @@ Install the plugin package, enable the required plugins, run the migrations, and
 
 ## Requirements
 
-- NetBox 4.5.9 and 4.6.0 validated; shared branch for NetBox 4.5.x and 4.6.x
+- NetBox 4.5.9 and 4.6.1 validated; shared branch for NetBox 4.5.x and 4.6.x
 - `netboxlabs-netbox-branching`
 
 ## Package Installation
@@ -12,26 +12,27 @@ Install the plugin package, enable the required plugins, run the migrations, and
 Install the wheel from GitHub Releases into the same Python environment as NetBox:
 
 ```bash
-pip install /path/to/forward_netbox-0.9.4.6-py3-none-any.whl
+pip install /path/to/forward_netbox-1.1.0-py3-none-any.whl
 ```
 
 Alternatively, install directly from the GitHub source archive:
 
 ```bash
-pip install /path/to/forward_netbox-0.9.4.6.tar.gz
+pip install /path/to/forward_netbox-1.1.0.tar.gz
 ```
 
 If you mirror the package into a private Python index, pin the same release version:
 
 ```bash
-pip install --pre forward-netbox==0.9.4.6
+pip install --pre forward-netbox==1.1.0
 ```
 
 ## Release Compatibility
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v0.9.4.6` | `4.5.9` and `4.6.0` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Current release; tightens delete-heavy device cleanup shard planning after live evidence showed device deletes still exceeded native Branching change-budget guidance |
+| `v1.1.0` | `4.5.9` and `4.6.1` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Current release; reduces Forward SaaS API/NQE pressure with source-level API pacing, parameterized prefix shard queries, single-pass interface NQE, and Blake dataset release-readiness evidence |
+| `v0.9.4.6` | `4.5.9` and `4.6.1` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v1.1.0`; tightens delete-heavy device cleanup shard planning after live evidence showed device deletes still exceeded native Branching change-budget guidance |
 | `v0.9.4.5` | `4.5.9` and `4.6.0` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v0.9.4.6`; plans delete-heavy device cleanup shards more conservatively so tag-scope prune runs stay closer to native Branching change-budget guidance |
 | `v0.9.4.4` | `4.5.9` and `4.6.0` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v0.9.4.5`; clarifies large branching progress by clamping progress-bar display and surfacing current shard row progress in the ingestion UI |
 | `v0.9.4.3` | `4.5.9` and `4.6.0` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v0.9.4.4`; hardens delete behavior by converting protected-reference delete failures into dependency skips so tag-scope prune/device cleanup runs continue safely |
@@ -70,6 +71,7 @@ pip install --pre forward-netbox==0.9.4.6
 
 | Release | Summary |
 | --- | --- |
+| `v1.1.0` | Adds Forward SaaS API request pacing, parameterized prefix shard execution, single-pass interface NQE, configured max-shard persistence in smoke evidence, and Blake dataset release-readiness gates for API/NQE scale validation. |
 | `v0.9.4.6` | Tightens delete-heavy `dcim.device` cleanup planning to about 500 planned delete rows per 10k branch-change budget after live shard evidence showed the earlier estimate was still too high. |
 | `v0.9.4.5` | Plans delete-heavy `dcim.device` cleanup shards with a conservative row budget so tag-scope prune runs do not pack thousands of cascading device deletes into one Branching shard. |
 | `v0.9.4.4` | Clarifies large branching progress by clamping utilization display to 100% during intermediate accounting overshoots and showing current shard row progress in the ingestion UI. |

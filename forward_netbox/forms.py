@@ -28,14 +28,18 @@ from .models import ForwardNQEMap
 from .models import ForwardSource
 from .models import ForwardSync
 from .utilities.branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
+from .utilities.forward_api import DEFAULT_FORWARD_API_REQUESTS_PER_MINUTE
 from .utilities.forward_api import DEFAULT_FORWARD_API_TIMEOUT_SECONDS
+from .utilities.forward_api import DEFAULT_FORWARD_SAAS_API_REQUESTS_PER_MINUTE
 from .utilities.forward_api import DEFAULT_NQE_FETCH_ALL_MAX_PAGES
 from .utilities.forward_api import DEFAULT_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT
 from .utilities.forward_api import DEFAULT_NQE_PAGE_SIZE
 from .utilities.forward_api import DEFAULT_QUERY_DIAGNOSTICS_ENABLED
 from .utilities.forward_api import DEFAULT_QUERY_FETCH_CONCURRENCY
 from .utilities.forward_api import DEFAULT_QUERY_PREFLIGHT_ENABLED
+from .utilities.forward_api import FORWARD_SAAS_API_HARD_BLOCK_REQUESTS_PER_MINUTE
 from .utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
+from .utilities.forward_api import MAX_FORWARD_API_REQUESTS_PER_MINUTE
 from .utilities.forward_api import MAX_NQE_FETCH_ALL_MAX_PAGES
 from .utilities.forward_api import MAX_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT
 from .utilities.forward_api import MAX_NQE_PAGE_SIZE
@@ -166,6 +170,14 @@ class ForwardSourceForm(NetBoxModelForm):
         raw = self.data.get(field_name) or self.data.get(f"{field_name}[]")
         return self._normalize_tag_values(raw)
 
+    def _default_api_requests_per_minute(self, source_type=None):
+        source_type = source_type or getattr(
+            self, "source_type", ForwardSourceDeploymentChoices.SAAS
+        )
+        if source_type == ForwardSourceDeploymentChoices.SAAS:
+            return DEFAULT_FORWARD_SAAS_API_REQUESTS_PER_MINUTE
+        return DEFAULT_FORWARD_API_REQUESTS_PER_MINUTE
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.source_type = (
@@ -219,6 +231,20 @@ class ForwardSourceForm(NetBoxModelForm):
             help_text=(
                 "Maximum concurrent NQE map fetch jobs per sync preflight/workload "
                 f"phase. Default: {DEFAULT_QUERY_FETCH_CONCURRENCY}."
+            ),
+            widget=forms.NumberInput(attrs={"class": "form-control"}),
+        )
+        self.fields["api_requests_per_minute"] = forms.IntegerField(
+            required=False,
+            min_value=0,
+            max_value=MAX_FORWARD_API_REQUESTS_PER_MINUTE,
+            label="Forward API Requests Per Minute",
+            help_text=(
+                "Optional per-source API request cap for this Forward user. "
+                f"Forward SaaS defaults to {DEFAULT_FORWARD_SAAS_API_REQUESTS_PER_MINUTE} "
+                "to stay below the "
+                f"{FORWARD_SAAS_API_HARD_BLOCK_REQUESTS_PER_MINUTE} requests/minute "
+                "hard-block threshold. Set 0 to disable."
             ),
             widget=forms.NumberInput(attrs={"class": "form-control"}),
         )
@@ -430,6 +456,11 @@ class ForwardSourceForm(NetBoxModelForm):
         self.fields["query_fetch_concurrency"].initial = (
             parameters.get("query_fetch_concurrency") or DEFAULT_QUERY_FETCH_CONCURRENCY
         )
+        self.fields["api_requests_per_minute"].initial = (
+            parameters.get("api_requests_per_minute")
+            if parameters.get("api_requests_per_minute") not in ("", None)
+            else self._default_api_requests_per_minute()
+        )
         self.fields["nqe_fetch_all_max_pages"].initial = (
             parameters.get("nqe_fetch_all_max_pages") or DEFAULT_NQE_FETCH_ALL_MAX_PAGES
         )
@@ -518,6 +549,7 @@ class ForwardSourceForm(NetBoxModelForm):
                     "timeout",
                     "nqe_page_size",
                     "query_fetch_concurrency",
+                    "api_requests_per_minute",
                     "nqe_fetch_all_max_pages",
                     "nqe_identical_full_page_streak_limit",
                     "query_preflight_enabled",
@@ -544,6 +576,7 @@ class ForwardSourceForm(NetBoxModelForm):
                     "timeout",
                     "nqe_page_size",
                     "query_fetch_concurrency",
+                    "api_requests_per_minute",
                     "nqe_fetch_all_max_pages",
                     "nqe_identical_full_page_streak_limit",
                     "query_preflight_enabled",
@@ -615,6 +648,16 @@ class ForwardSourceForm(NetBoxModelForm):
             "query_fetch_concurrency": cleaned.get("query_fetch_concurrency")
             or existing_parameters.get("query_fetch_concurrency")
             or DEFAULT_QUERY_FETCH_CONCURRENCY,
+            "api_requests_per_minute": (
+                cleaned.get("api_requests_per_minute")
+                if cleaned.get("api_requests_per_minute") is not None
+                else (
+                    existing_parameters.get("api_requests_per_minute")
+                    if existing_parameters.get("api_requests_per_minute")
+                    not in ("", None)
+                    else self._default_api_requests_per_minute(source_type)
+                )
+            ),
             "nqe_fetch_all_max_pages": cleaned.get("nqe_fetch_all_max_pages")
             or existing_parameters.get("nqe_fetch_all_max_pages")
             or DEFAULT_NQE_FETCH_ALL_MAX_PAGES,
@@ -766,6 +809,16 @@ class ForwardSourceForm(NetBoxModelForm):
             "query_fetch_concurrency": self.cleaned_data.get("query_fetch_concurrency")
             or existing_parameters.get("query_fetch_concurrency")
             or DEFAULT_QUERY_FETCH_CONCURRENCY,
+            "api_requests_per_minute": (
+                self.cleaned_data.get("api_requests_per_minute")
+                if self.cleaned_data.get("api_requests_per_minute") is not None
+                else (
+                    existing_parameters.get("api_requests_per_minute")
+                    if existing_parameters.get("api_requests_per_minute")
+                    not in ("", None)
+                    else self._default_api_requests_per_minute(source_type)
+                )
+            ),
             "nqe_fetch_all_max_pages": self.cleaned_data.get("nqe_fetch_all_max_pages")
             or existing_parameters.get("nqe_fetch_all_max_pages")
             or DEFAULT_NQE_FETCH_ALL_MAX_PAGES,

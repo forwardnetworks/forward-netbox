@@ -1,20 +1,20 @@
 {
-  "generated_at": "2026-05-24T16:42:12.780311+00:00",
+  "generated_at": "2026-06-02T03:42:12.216354+00:00",
   "host": {
-    "cpu_count": 32,
-    "memory_gib": 125
+    "cpu_count": 12,
+    "memory_gib": 32
   },
   "postgres": {
     "recommended_settings": {
       "checkpoint_timeout": "15min",
-      "effective_cache_size": "93GB",
-      "maintenance_work_mem": "2000MB",
+      "effective_cache_size": "24GB",
+      "maintenance_work_mem": "512MB",
       "max_parallel_workers": "16",
       "max_parallel_workers_per_gather": "4",
       "max_wal_size": "16GB",
       "max_worker_processes": "16",
       "random_page_cost": "1.1",
-      "shared_buffers": "16GB",
+      "shared_buffers": "8GB",
       "work_mem": "32MB"
     }
   },
@@ -29,24 +29,24 @@
   },
   "source": {
     "available": true,
-    "nqe_page_size": 10000,
-    "query_fetch_concurrency": 16,
-    "source_name": "ui-harness-source",
+    "nqe_page_size": 5000,
+    "query_fetch_concurrency": 2,
+    "source_name": "smoke-source-blake-20260601",
     "timeout": 1200
   },
   "storage": {
-    "docker_root_dir": "/mnt/fwd-vmstore/docker-data",
+    "docker_root_dir": "/var/lib/docker",
     "fetch_artifact_dir": "",
-    "message": "Postgres data is on configured local container storage.",
+    "message": "Postgres data is not on a known high-throughput local container storage path; consider using FORWARD_NETBOX_POSTGRES_DATA_PATH for large local ingestion tests.",
     "postgres_data_destination": "/var/lib/postgresql/data",
-    "postgres_data_source": "/mnt/fwd-vmstore/docker-data/volumes/forward-netbox_netbox-postgres-data/_data",
+    "postgres_data_source": "/var/lib/docker/volumes/forward-netbox_netbox-postgres-data/_data",
     "postgres_data_type": "volume",
-    "status": "pass"
+    "status": "warn"
   },
   "workers": {
-    "current": 32,
+    "current": 4,
     "message": "Worker count is sufficient for capacity review.",
-    "recommended": 32,
+    "recommended": 12,
     "status": "pass"
   }
 }
