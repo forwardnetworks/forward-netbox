@@ -112,6 +112,28 @@ def _finalize_forward_sync(sync, job):
         job.save(update_fields=["data"])
 
 
+def _record_forward_api_usage(sync, executor):
+    client = getattr(executor, "client", None)
+    summary_method = getattr(client, "api_usage_summary", None)
+    if not callable(summary_method):
+        return
+    summary = summary_method()
+    if not isinstance(summary, dict):
+        return
+    sync.logger.set_api_usage_summary(summary)
+    sync.logger.log_info(
+        "Forward API usage summary: "
+        f"http_attempts={summary.get('http_attempts', 0)} "
+        f"http_retries={summary.get('http_retries', 0)} "
+        f"http_429_failures={summary.get('http_429_failures', 0)} "
+        f"nqe_query_calls={summary.get('nqe_query_calls', 0)} "
+        f"nqe_diff_calls={summary.get('nqe_diff_calls', 0)} "
+        f"nqe_pages={summary.get('nqe_pages', 0)} "
+        f"throttle_sleep_seconds={summary.get('throttle_sleep_seconds', 0.0)}.",
+        obj=sync,
+    )
+
+
 def run_forward_sync(sync, job=None, *, max_changes_per_branch=None):
     from .fast_bootstrap_executor import ForwardFastBootstrapExecutor
     from .multi_branch import ForwardMultiBranchExecutor
@@ -203,4 +225,5 @@ def run_forward_sync(sync, job=None, *, max_changes_per_branch=None):
             exc,
         )
     finally:
+        _record_forward_api_usage(sync, executor)
         _finalize_forward_sync(sync, job)
