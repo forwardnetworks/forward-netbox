@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from core.choices import JobStatusChoices
@@ -16,6 +17,7 @@ from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from forward_netbox.utilities.logging import SyncLogging
 from forward_netbox.utilities.sync_orchestration import _finalize_forward_sync
 from forward_netbox.utilities.sync_orchestration import _prepare_forward_sync
+from forward_netbox.utilities.sync_orchestration import _record_forward_api_usage
 from forward_netbox.utilities.sync_orchestration import run_forward_sync
 
 
@@ -132,3 +134,27 @@ class ForwardSyncOrchestrationHelperTest(TestCase):
         self.assertEqual(self.sync.status, ForwardSyncStatusChoices.COMPLETED)
         self.assertEqual(self.source.status, ForwardSourceStatusChoices.READY)
         self.assertEqual(job.data, {"logs": [], "statistics": {}})
+
+    def test_record_forward_api_usage_stores_summary_and_log(self):
+        self.sync.logger = SyncLogging()
+        executor = SimpleNamespace(
+            client=SimpleNamespace(
+                api_usage_summary=lambda: {
+                    "http_attempts": 7,
+                    "http_retries": 1,
+                    "http_429_failures": 0,
+                    "nqe_query_calls": 2,
+                    "nqe_diff_calls": 1,
+                    "nqe_pages": 3,
+                    "throttle_sleep_seconds": 1.25,
+                }
+            )
+        )
+
+        _record_forward_api_usage(self.sync, executor)
+
+        self.assertEqual(self.sync.logger.log_data["forward_api_usage"]["nqe_pages"], 3)
+        self.assertIn(
+            "Forward API usage summary: http_attempts=7",
+            self.sync.logger.log_data["logs"][0][4],
+        )
