@@ -1,7 +1,7 @@
 {
   "generated_at": "2026-06-02T03:58:09.479301+00:00",
   "metadata": {
-    "dataset_label": "redacted",
+    "dataset_label": "release-smoke",
     "max_changes_per_branch": 10000,
     "models": "default_required_models",
     "query_limit": 10,
