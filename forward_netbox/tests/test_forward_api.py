@@ -94,6 +94,10 @@ class ForwardClientTest(TestCase):
 
         sleep.assert_called_once()
         self.assertAlmostEqual(sleep.call_args.args[0], 0.8)
+        self.assertAlmostEqual(
+            client.api_usage_summary()["throttle_sleep_seconds"],
+            0.8,
+        )
 
     def test_api_request_rate_limit_key_does_not_expose_username(self):
         client = ForwardClient(
@@ -274,6 +278,95 @@ class ForwardClientTest(TestCase):
         sleep.assert_any_call(2)
         response_ok.raise_for_status.assert_called_once()
 
+    def test_api_usage_summary_counts_http_attempts_retries_and_429s(self):
+        self.client.retries = 1
+        request = httpx.Request("POST", "https://fwd.app/api/nqe")
+        response_429 = httpx.Response(
+            429,
+            request=request,
+            text="too many requests",
+        )
+        response_ok = httpx.Response(
+            200,
+            request=request,
+            json={"ok": True},
+        )
+        first_client = Mock()
+        first_client.request.return_value = response_429
+        second_client = Mock()
+        second_client.request.return_value = response_ok
+        first_context = Mock()
+        first_context.__enter__ = Mock(return_value=first_client)
+        first_context.__exit__ = Mock(return_value=None)
+        second_context = Mock()
+        second_context.__enter__ = Mock(return_value=second_client)
+        second_context.__exit__ = Mock(return_value=None)
+
+        with (
+            patch(
+                "forward_netbox.utilities.forward_api_impl.httpx.Client",
+                side_effect=[first_context, second_context],
+            ),
+            patch.object(self.client, "_throttle_request"),
+            patch("forward_netbox.utilities.forward_api_impl.time.sleep"),
+        ):
+            result = self.client._request("POST", "/nqe", json_body={"query": "q"})
+
+        self.assertEqual(result, response_ok)
+        self.assertEqual(
+            self.client.api_usage_summary(),
+            {
+                "api_requests_per_minute": 1800,
+                "http_attempts": 2,
+                "http_successes": 1,
+                "http_failures": 1,
+                "http_timeout_failures": 0,
+                "http_transport_failures": 0,
+                "http_status_failures": 1,
+                "http_transient_status_failures": 1,
+                "http_nontransient_status_failures": 0,
+                "http_429_failures": 1,
+                "http_retries": 1,
+                "http_status_classes": {"2xx": 1, "4xx": 1},
+                "throttle_sleep_seconds": 0.0,
+                "nqe_query_calls": 0,
+                "nqe_diff_calls": 0,
+                "nqe_pages": 0,
+                "nqe_query_pages": 0,
+                "nqe_diff_pages": 0,
+            },
+        )
+
+    def test_reset_api_usage_summary_preserves_rate_limit_configuration(self):
+        self.client._record_api_usage("http_attempts")
+        self.client._record_api_usage("nqe_pages")
+
+        self.client.reset_api_usage_summary()
+
+        self.assertEqual(
+            self.client.api_usage_summary(),
+            {
+                "api_requests_per_minute": 1800,
+                "http_attempts": 0,
+                "http_successes": 0,
+                "http_failures": 0,
+                "http_timeout_failures": 0,
+                "http_transport_failures": 0,
+                "http_status_failures": 0,
+                "http_transient_status_failures": 0,
+                "http_nontransient_status_failures": 0,
+                "http_429_failures": 0,
+                "http_retries": 0,
+                "http_status_classes": {},
+                "throttle_sleep_seconds": 0.0,
+                "nqe_query_calls": 0,
+                "nqe_diff_calls": 0,
+                "nqe_pages": 0,
+                "nqe_query_pages": 0,
+                "nqe_diff_pages": 0,
+            },
+        )
+
     def test_request_raises_connectivity_error_after_transient_http_status_retries(
         self,
     ):
@@ -409,6 +502,9 @@ class ForwardClientTest(TestCase):
             ],
             [0, 2, 4],
         )
+        self.assertEqual(self.client.api_usage_summary()["nqe_query_calls"], 1)
+        self.assertEqual(self.client.api_usage_summary()["nqe_pages"], 3)
+        self.assertEqual(self.client.api_usage_summary()["nqe_query_pages"], 3)
 
     def test_run_nqe_query_fetch_all_without_total_num_items_stops_on_short_page(self):
         self.client._request = Mock(
@@ -892,6 +988,9 @@ class ForwardClientTest(TestCase):
             ],
             [0, 2],
         )
+        self.assertEqual(self.client.api_usage_summary()["nqe_diff_calls"], 1)
+        self.assertEqual(self.client.api_usage_summary()["nqe_pages"], 2)
+        self.assertEqual(self.client.api_usage_summary()["nqe_diff_pages"], 2)
 
     def test_run_nqe_diff_fetch_all_raises_if_api_ends_early(self):
         self.client._request = Mock(
