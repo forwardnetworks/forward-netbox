@@ -21,7 +21,7 @@ invoke scale-chaos-test
 invoke test
 invoke playwright-test
 invoke docs
-invoke release-dataset-gate --dataset-label=blake
+invoke release-dataset-gate --dataset-label=release-smoke
 python -m build
 ```
 
@@ -68,19 +68,19 @@ For repeated soak execution rehearsal, run:
 invoke scale-soak --runs 3 --execution-backend branching --max-changes-per-branch 10000
 ```
 
-Before any `1.1.x` release, refresh field-scale evidence against Blake's
+Before any `1.1.x` release, refresh field-scale evidence against the release-validation
 dataset and enforce the gate:
 
 ```bash
-export FORWARD_SMOKE_DATASET_LABEL=blake
-invoke release-runtime-preflight --dataset-label=blake
+export FORWARD_SMOKE_DATASET_LABEL=release-smoke
+invoke release-runtime-preflight --dataset-label=release-smoke
 invoke field-scale-runtime-matrix --resume=False
-invoke release-dataset-gate --dataset-label=blake
-invoke release-readiness-audit --dataset-label=blake
+invoke release-dataset-gate --dataset-label=release-smoke
+invoke release-readiness-audit --dataset-label=release-smoke
 ```
 
 `release-dataset-gate` fails when the field-scale artifact is stale, not
-`passed`, not labeled as Blake's dataset, missing required matrix steps, or
+`passed`, not labeled as the release-validation dataset, missing required matrix steps, or
 produced with `resume=True`.
 When local runtime dependencies are unavailable, matrix evidence now records
 `preflight_failure_code` (for example `docker_api_unreachable`) before running
