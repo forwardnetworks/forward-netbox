@@ -114,7 +114,7 @@ REQUIRED_TEXT = {
         "FORCE_JAVASCRIPT_ACTIONS_TO_NODE24",
         "contents: read",
         "npm ci",
-        "npx playwright install --with-deps chromium",
+        "timeout 10m npx playwright install chromium",
         "Run harness tests",
         "Run Playwright UI harness",
         "Run NetBox database migrations",
