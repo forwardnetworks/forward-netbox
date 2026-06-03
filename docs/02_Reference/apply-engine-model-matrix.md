@@ -35,6 +35,7 @@ These models remain adapter-required with explicit blocker codes:
 - `dcim.inventoryitem` | `dependency_resolution`
 - `dcim.module` | `dependency_resolution`
 - `extras.taggeditem` | `generic_foreign_key_relations`
+- `ipam.fhrpgroup` | `generic_foreign_key_relations`
 - `ipam.ipaddress` | `ipam_parent_prefix_semantics`
 - `ipam.prefix` | `ipam_hierarchy_semantics`
 - `netbox_peering_manager.peeringsession` | `plugin_model_dependencies`

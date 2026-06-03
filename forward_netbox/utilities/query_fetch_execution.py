@@ -11,6 +11,7 @@ from typing import Any
 from django.db import close_old_connections
 from django.db import connection
 from django.db import connections
+from django.utils.text import slugify
 
 from ..choices import FORWARD_OPTIONAL_MODELS
 from ..choices import ForwardApplyEngineChoices
@@ -120,6 +121,7 @@ class ForwardQueryContext:
     device_tag_include_match: str = "any"
     device_tag_prune_out_of_scope: bool = False
     scoped_device_names: set[str] = field(default_factory=set)
+    scoped_site_names: set[str] = field(default_factory=set)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -136,6 +138,7 @@ class ForwardQueryContext:
             "device_tag_include_match": self.device_tag_include_match,
             "device_tag_prune_out_of_scope": self.device_tag_prune_out_of_scope,
             "scoped_device_count": len(self.scoped_device_names),
+            "scoped_site_count": len(self.scoped_site_names),
         }
 
 
@@ -196,6 +199,15 @@ def _row_device_names(model_string: str, row: dict[str, Any]) -> set[str]:
             names.update(_extract_device_names(value))
         elif key_lower.endswith("_device"):
             names.update(_extract_device_names(value))
+    return names
+
+
+def _row_site_names(row: dict[str, Any]) -> set[str]:
+    names: set[str] = set()
+    for key in ("site", "site_name", "name", "slug"):
+        value = row.get(key)
+        if isinstance(value, str) and value.strip():
+            names.add(value.strip().lower())
     return names
 
 
@@ -425,7 +437,7 @@ class ForwardQueryFetcher:
                     f"{_safe_exception_summary(exc)}",
                     obj=self.sync,
                 )
-            scoped_device_names = self._resolve_scoped_device_names(
+            scoped_device_names, scoped_site_names = self._resolve_scoped_tag_scope(
                 network_id=network_id,
                 snapshot_id=snapshot_id,
                 include_tags=include_tags,
@@ -437,11 +449,13 @@ class ForwardQueryFetcher:
                 snapshot_info=snapshot_info,
                 snapshot_metrics=snapshot_metrics,
                 scoped_device_names=scoped_device_names,
+                scoped_site_names=scoped_site_names,
             )
         else:
             snapshot_info = dict(cached_context.get("snapshot_info") or {})
             snapshot_metrics = dict(cached_context.get("snapshot_metrics") or {})
             scoped_device_names = set(cached_context.get("scoped_device_names") or [])
+            scoped_site_names = set(cached_context.get("scoped_site_names") or [])
         prune_out_of_scope = bool(
             source_parameters.get("device_tag_prune_out_of_scope")
         )
@@ -460,6 +474,7 @@ class ForwardQueryFetcher:
             device_tag_include_match=include_match,
             device_tag_prune_out_of_scope=prune_out_of_scope,
             scoped_device_names=scoped_device_names,
+            scoped_site_names=scoped_site_names,
         )
 
     def _context_artifact_descriptor(
@@ -477,7 +492,7 @@ class ForwardQueryFetcher:
             return None
         artifact_run_id = f"shared-sync-{getattr(self.sync, 'pk', 'unknown')}"
         payload = {
-            "version": 1,
+            "version": 2,
             "artifact_scope": "query_context",
             "cache_scope": "shared_sync",
             "sync_id": getattr(self.sync, "pk", None),
@@ -511,6 +526,7 @@ class ForwardQueryFetcher:
         snapshot_info: dict[str, Any],
         snapshot_metrics: dict[str, Any],
         scoped_device_names: set[str],
+        scoped_site_names: set[str],
     ) -> None:
         if descriptor is None:
             return
@@ -521,6 +537,7 @@ class ForwardQueryFetcher:
                 "snapshot_info": dict(snapshot_info or {}),
                 "snapshot_metrics": dict(snapshot_metrics or {}),
                 "scoped_device_names": sorted(scoped_device_names or set()),
+                "scoped_site_names": sorted(scoped_site_names or set()),
             },
         )
 
@@ -544,7 +561,7 @@ class ForwardQueryFetcher:
             or branch_run_state.get("current_ingestion_id")
         )
 
-    def _resolve_scoped_device_names(
+    def _resolve_scoped_tag_scope(
         self,
         *,
         network_id: str,
@@ -552,9 +569,9 @@ class ForwardQueryFetcher:
         include_tags: list[str],
         exclude_tags: list[str],
         include_match: str,
-    ) -> set[str]:
+    ) -> tuple[set[str], set[str]]:
         if not include_tags and not exclude_tags:
-            return set()
+            return set(), set()
         where = [
             "where device.snapshotInfo.result == DeviceSnapshotResult.completed",
             "where device.platform.vendor != Vendor.FORWARD_CUSTOM",
@@ -574,7 +591,10 @@ class ForwardQueryFetcher:
             [
                 "foreach device in network.devices",
                 *where,
-                "select {name: device.name}",
+                "select {",
+                "  name: device.name,",
+                '  site: if isPresent(device.locationName) then toLowerCase(device.locationName) else "unknown"',
+                "}",
             ]
         )
         try:
@@ -594,12 +614,21 @@ class ForwardQueryFetcher:
             for row in rows
             if str(row.get("name") or "").strip()
         }
+        sites = set()
+        for row in rows:
+            site = str(row.get("site") or "").strip().lower()
+            if not site:
+                continue
+            sites.add(site)
+            site_slug = slugify(site)
+            if site_slug:
+                sites.add(site_slug)
         self.logger.log_info(
             f"Resolved device tag scope with {len(names)} matched devices "
             f"(include={include_tags or ['-']}, include_match={include_match}, exclude={exclude_tags or ['-']}).",
             obj=self.sync,
         )
-        return names
+        return names, sites
 
     def run_preflight(
         self,
@@ -1565,6 +1594,7 @@ class ForwardQueryFetcher:
                     f"Fetching {model_string} shard using {shard_scope['fetch_mode']} scope.",
                     obj=self.sync,
                 )
+        parameters = self._apply_context_tag_parameters(parameters, context)
         query_parameters = dict(parameters or {})
         fetch_artifact_descriptor = self._fetch_artifact_descriptor(
             model_string=model_string,
@@ -1924,17 +1954,46 @@ class ForwardQueryFetcher:
             "run_id": artifact_run_id,
         }
 
+    def _apply_context_tag_parameters(
+        self, parameters: dict[str, Any], context: ForwardQueryContext
+    ) -> dict[str, Any]:
+        if "device_tag_include_tags" not in parameters:
+            return parameters
+        tag_parameters = {
+            "device_tag_include_tags": list(context.device_tag_include_tags or []),
+            "device_tag_include_match": context.device_tag_include_match or "any",
+            "device_tag_exclude_tags": list(context.device_tag_exclude_tags or []),
+        }
+        return {**parameters, **tag_parameters}
+
     def _apply_device_tag_scope(
         self, model_string: str, rows: list[dict], context: ForwardQueryContext
     ) -> tuple[list[dict], list[dict]]:
         scoped_devices = context.scoped_device_names or set()
+        tag_scope_enabled = bool(
+            context.device_tag_include_tags or context.device_tag_exclude_tags
+        )
         if not scoped_devices:
+            if tag_scope_enabled:
+                if rows:
+                    self.logger.log_info(
+                        f"Applied device-tag scope to {model_string}: kept 0/{len(rows)} rows.",
+                        obj=self.sync,
+                    )
+                return [], list(rows)
             return rows, []
         filtered = []
         removed = []
         for row in rows:
             row_devices = _row_device_names(model_string, row)
             if not row_devices:
+                if model_string == "dcim.site" and context.scoped_site_names:
+                    row_sites = _row_site_names(row)
+                    if row_sites.intersection(context.scoped_site_names):
+                        filtered.append(row)
+                    else:
+                        removed.append(row)
+                    continue
                 filtered.append(row)
                 continue
             if row_devices.intersection(scoped_devices):

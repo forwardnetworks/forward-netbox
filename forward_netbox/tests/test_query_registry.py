@@ -81,6 +81,18 @@ REQUIRED_FIELDS_BY_QUERY_NAME = {
     "Forward IPv4 Prefixes": {"vrf", "prefix", "status"},
     "Forward IPv6 Prefixes": {"vrf", "prefix", "status"},
     "Forward IP Addresses": {"device", "interface", "vrf", "address", "status"},
+    "Forward HSRP Groups": {
+        "protocol",
+        "group_id",
+        "name",
+        "device",
+        "interface",
+        "vrf",
+        "address",
+        "state",
+        "priority",
+        "status",
+    },
     "Forward Inventory Items": {
         "device",
         "manufacturer",
@@ -366,18 +378,35 @@ class QueryRegistryTest(TestCase):
         ):
             self.assertEqual(rows[query_name]["parameters"], {})
 
-        self.assertEqual(rows["Forward Locations"]["parameters"], {})
+        self.assertEqual(
+            rows["Forward Locations"]["parameters"],
+            {
+                "device_tag_include_tags": [],
+                "device_tag_include_match": "any",
+                "device_tag_exclude_tags": [],
+            },
+        )
 
     def test_prefix_builtin_queries_seed_empty_shard_parameter(self):
         rows = {row["name"]: row for row in builtin_nqe_map_rows()}
 
         self.assertEqual(
             rows["Forward IPv4 Prefixes"]["parameters"],
-            {"forward_netbox_shard_keys": []},
+            {
+                "device_tag_include_tags": [],
+                "device_tag_include_match": "any",
+                "device_tag_exclude_tags": [],
+                "forward_netbox_shard_keys": [],
+            },
         )
         self.assertEqual(
             rows["Forward IPv6 Prefixes"]["parameters"],
-            {"forward_netbox_shard_keys": []},
+            {
+                "device_tag_include_tags": [],
+                "device_tag_include_match": "any",
+                "device_tag_exclude_tags": [],
+                "forward_netbox_shard_keys": [],
+            },
         )
 
     def test_builtin_queries_do_not_reference_unregistered_shard_parameters(self):
@@ -874,15 +903,24 @@ class QueryRegistryTest(TestCase):
         self.assertIn('ipAddress("127.0.0.0")', ipv4_spec.query)
         self.assertIn("where length(entry.prefix) < 128", ipv6_spec.query)
         for spec in (ipv4_spec, ipv6_spec):
-            self.assertEqual(spec.parameters, {"forward_netbox_shard_keys": []})
+            self.assertEqual(
+                spec.parameters,
+                {
+                    "device_tag_include_tags": [],
+                    "device_tag_include_match": "any",
+                    "device_tag_exclude_tags": [],
+                    "forward_netbox_shard_keys": [],
+                },
+            )
             self.assertIn(
-                "@query f(forward_netbox_shard_keys: List<String>)",
+                "f(forward_netbox_shard_keys: List<String>, device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>)",
                 spec.query,
             )
             self.assertIn(
                 "toString(prefix) in forward_netbox_shard_keys",
                 spec.query,
             )
+            self.assertIn("tag in device_tag_include_tags", spec.query)
 
     def test_ipaddress_query_excludes_unassignable_interface_addresses(self):
         ip_spec = next(spec for spec in BUILTIN_QUERY_SPECS["ipam.ipaddress"])
