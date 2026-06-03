@@ -358,6 +358,21 @@ class ForwardBranchBudgetPlanTest(TestCase):
             [],
         )
 
+    def test_ipam_prefix_global_shard_key_preserves_parameterized_fetch(self):
+        shard_key = row_shard_key(
+            "ipam.prefix",
+            {"prefix": "10.232.106.0/27", "vrf": None, "status": "active"},
+            [["prefix", "vrf"]],
+        )
+        contract = shard_fetch_contract("ipam.prefix", [shard_key])
+
+        self.assertEqual(shard_key, "prefix=10.232.106.0/27|vrf=<global>")
+        self.assertEqual(contract["fetch_mode"], "nqe_parameters")
+        self.assertEqual(
+            contract["fetch_parameters"],
+            {"forward_netbox_shard_keys": ["10.232.106.0/27"]},
+        )
+
     def test_ipam_vlan_shard_fetch_contract_filters_by_vid_column(self):
         contract = shard_fetch_contract(
             "ipam.vlan",
@@ -7789,7 +7804,7 @@ class ForwardSyncRunnerTest(TestCase):
             [["rd"], ["name"]],
         )
 
-    def test_validate_row_shape_allows_prefix_without_vrf(self):
+    def test_validate_row_shape_allows_prefix_with_null_vrf_identity(self):
         validate_row_shape_for_model(
             "ipam.prefix",
             {
@@ -7797,8 +7812,30 @@ class ForwardSyncRunnerTest(TestCase):
                 "vrf": None,
                 "status": "active",
             },
-            [["prefix", "vrf"], ["prefix"]],
+            [["prefix", "vrf"]],
         )
+
+    def test_validate_row_shape_allows_prefix_with_empty_vrf_identity(self):
+        validate_row_shape_for_model(
+            "ipam.prefix",
+            {
+                "prefix": "10.0.0.0/24",
+                "vrf": "",
+                "status": "active",
+            },
+            [["prefix", "vrf"]],
+        )
+
+    def test_validate_row_shape_rejects_prefix_missing_vrf_identity(self):
+        with self.assertRaises(ForwardQueryError):
+            validate_row_shape_for_model(
+                "ipam.prefix",
+                {
+                    "prefix": "10.0.0.0/24",
+                    "status": "active",
+                },
+                [["prefix", "vrf"]],
+            )
 
     def test_validate_row_shape_allows_ipaddress_without_vrf(self):
         validate_row_shape_for_model(
@@ -7812,6 +7849,58 @@ class ForwardSyncRunnerTest(TestCase):
             },
             [["address", "vrf"], ["address"]],
         )
+
+    def test_apply_ipam_prefix_keeps_global_and_vrf_scoped_rows_distinct(self):
+        global_prefix = Prefix.objects.create(
+            prefix="10.232.106.0/27",
+            vrf=None,
+            status="active",
+        )
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        runner._apply_ipam_prefix(
+            {
+                "prefix": "10.232.106.0/27",
+                "vrf": "blue",
+                "status": "active",
+            }
+        )
+
+        global_prefix.refresh_from_db()
+        scoped_prefix = Prefix.objects.get(
+            prefix="10.232.106.0/27",
+            vrf__name="blue",
+        )
+        self.assertIsNone(global_prefix.vrf)
+        self.assertEqual(scoped_prefix.status, "active")
+        self.assertEqual(Prefix.objects.filter(prefix="10.232.106.0/27").count(), 2)
+
+    def test_apply_ipam_prefix_repeat_sync_does_not_rewrite_vrf(self):
+        vrf = VRF.objects.create(name="blue", rd="64512:106")
+        prefix = Prefix.objects.create(
+            prefix="10.232.106.0/27",
+            vrf=vrf,
+            status="active",
+        )
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "prefix": "10.232.106.0/27",
+            "vrf": "blue",
+            "status": "active",
+        }
+
+        before_count = ObjectChange.objects.count()
+        runner._apply_ipam_prefix(row)
+        runner._apply_ipam_prefix(row)
+
+        prefix.refresh_from_db()
+        self.assertEqual(prefix.vrf, vrf)
+        self.assertEqual(Prefix.objects.filter(prefix="10.232.106.0/27").count(), 1)
+        self.assertEqual(ObjectChange.objects.count(), before_count)
 
     def test_apply_ipam_ipaddress_skips_unassignable_network_and_broadcast_addresses(
         self,
@@ -8821,8 +8910,8 @@ class ForwardSyncRunnerTest(TestCase):
         ]
         client.get_snapshot_metrics.return_value = {}
         client.run_nqe_query.side_effect = [
-            [{"prefix": "10.0.0.0/24", "vrf": "", "status": "active"}],
-            [{"prefix": "2001:db8::/64", "vrf": "", "status": "active"}],
+            [{"prefix": "10.0.0.0/24", "vrf": None, "status": "active"}],
+            [{"prefix": "2001:db8::/64", "vrf": None, "status": "active"}],
         ]
         runner = ForwardSyncRunner(
             sync=self.sync,
