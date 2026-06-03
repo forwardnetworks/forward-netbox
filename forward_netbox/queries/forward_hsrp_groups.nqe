@@ -1,0 +1,98 @@
+/**
+ * @intent Forward HSRP Groups
+ * @description NetBox FHRP group rows derived from Forward native HSRP state.
+ */
+
+subinterface_ipv4 =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  foreach interface in device.interfaces
+  foreach subinterface in interface.subinterfaces
+  where isPresent(subinterface.ipv4?.fhrp?.hsrp?.fhrpGroups)
+  foreach group in subinterface.ipv4.fhrp.hsrp.fhrpGroups
+  select {
+    protocol: "hsrp",
+    group_id: group.virtualRouterId,
+    name: "hsrp",
+    device: device.name,
+    interface: interface.name,
+    vrf: if isPresent(subinterface.networkInstanceName)
+      then if subinterface.networkInstanceName != "default" then subinterface.networkInstanceName else null : String
+      else null : String,
+    address: ipSubnet(group.virtualAddress, 32),
+    state: group.state,
+    priority: 100,
+    status: "active"
+  };
+
+subinterface_ipv6 =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  foreach interface in device.interfaces
+  foreach subinterface in interface.subinterfaces
+  where isPresent(subinterface.ipv6?.fhrp?.hsrp?.fhrpGroups)
+  foreach group in subinterface.ipv6.fhrp.hsrp.fhrpGroups
+  select {
+    protocol: "hsrp",
+    group_id: group.virtualRouterId,
+    name: "hsrp",
+    device: device.name,
+    interface: interface.name,
+    vrf: if isPresent(subinterface.networkInstanceName)
+      then if subinterface.networkInstanceName != "default" then subinterface.networkInstanceName else null : String
+      else null : String,
+    address: ipSubnet(group.virtualAddress, 128),
+    state: group.state,
+    priority: 100,
+    status: "active"
+  };
+
+routed_vlan_ipv4 =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  foreach interface in device.interfaces
+  where isPresent(interface.routedVlan?.ipv4?.fhrp?.hsrp?.fhrpGroups)
+  foreach group in interface.routedVlan.ipv4.fhrp.hsrp.fhrpGroups
+  select {
+    protocol: "hsrp",
+    group_id: group.virtualRouterId,
+    name: "hsrp",
+    device: device.name,
+    interface: interface.name,
+    vrf: if isPresent(interface.routedVlan.networkInstanceName)
+      then if interface.routedVlan.networkInstanceName != "default" then interface.routedVlan.networkInstanceName else null : String
+      else null : String,
+    address: ipSubnet(group.virtualAddress, 32),
+    state: group.state,
+    priority: 100,
+    status: "active"
+  };
+
+routed_vlan_ipv6 =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  foreach interface in device.interfaces
+  where isPresent(interface.routedVlan?.ipv6?.fhrp?.hsrp?.fhrpGroups)
+  foreach group in interface.routedVlan.ipv6.fhrp.hsrp.fhrpGroups
+  select {
+    protocol: "hsrp",
+    group_id: group.virtualRouterId,
+    name: "hsrp",
+    device: device.name,
+    interface: interface.name,
+    vrf: if isPresent(interface.routedVlan.networkInstanceName)
+      then if interface.routedVlan.networkInstanceName != "default" then interface.routedVlan.networkInstanceName else null : String
+      else null : String,
+    address: ipSubnet(group.virtualAddress, 128),
+    state: group.state,
+    priority: 100,
+    status: "active"
+  };
+
+@primaryKey(protocol, group_id, address, device, interface, vrf)
+foreach row in (subinterface_ipv4 + subinterface_ipv6 + routed_vlan_ipv4 + routed_vlan_ipv6)
+select distinct row

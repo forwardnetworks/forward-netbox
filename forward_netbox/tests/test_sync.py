@@ -34,6 +34,8 @@ from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from extras.models import Tag
 from ipam.models import ASN
+from ipam.models import FHRPGroup
+from ipam.models import FHRPGroupAssignment
 from ipam.models import IPAddress
 from ipam.models import Prefix
 from ipam.models import RIR
@@ -1215,6 +1217,31 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
                 "interface": "Ethernet1/1",
                 "address": "10.0.0.1/24",
                 "vrf": "red",
+                "status": "active",
+            }
+        elif model_string == "ipam.fhrpgroup":
+            target = {
+                "protocol": "hsrp",
+                "group_id": 10,
+                "name": "hsrp",
+                "device": "device-1",
+                "interface": "Ethernet1/1",
+                "address": "10.0.0.1/32",
+                "vrf": "blue",
+                "state": "MASTER",
+                "priority": 100,
+                "status": "active",
+            }
+            noise = {
+                "protocol": "hsrp",
+                "group_id": 20,
+                "name": "hsrp",
+                "device": "device-2",
+                "interface": "Ethernet1/1",
+                "address": "10.0.0.1/32",
+                "vrf": "red",
+                "state": "BACKUP",
+                "priority": 100,
                 "status": "active",
             }
         elif model_string == "dcim.inventoryitem":
@@ -7889,6 +7916,313 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertEqual(update_statements, [])
         logger.log_warning.assert_not_called()
 
+    def test_apply_ipam_fhrpgroup_creates_group_assignment_and_vip(self):
+        device = self._create_device("device-1")
+        interface = Interface.objects.create(
+            device=device,
+            name="Vlan100",
+            type="virtual",
+        )
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        runner._apply_ipam_fhrpgroup(
+            {
+                "protocol": "hsrp",
+                "group_id": 10,
+                "name": "hsrp",
+                "device": "device-1",
+                "interface": "Vlan100",
+                "vrf": None,
+                "address": "10.0.0.1/32",
+                "state": "MASTER",
+                "priority": 100,
+                "status": "active",
+            }
+        )
+
+        group = FHRPGroup.objects.get()
+        self.assertEqual(group.protocol, "hsrp")
+        self.assertEqual(group.group_id, 10)
+        self.assertEqual(group.name, "hsrp-10-10.0.0.1")
+        assignment = FHRPGroupAssignment.objects.get()
+        self.assertEqual(assignment.group, group)
+        self.assertEqual(assignment.interface, interface)
+        self.assertEqual(assignment.priority, 100)
+        ip_address = IPAddress.objects.get()
+        self.assertEqual(str(ip_address.address), "10.0.0.1/32")
+        self.assertEqual(ip_address.role, "hsrp")
+        self.assertEqual(ip_address.assigned_object, group)
+
+    def test_apply_ipam_fhrpgroup_is_idempotent_and_updates_priority(self):
+        device = self._create_device("device-1")
+        Interface.objects.create(device=device, name="Vlan100", type="virtual")
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "protocol": "hsrp",
+            "group_id": 10,
+            "name": "hsrp",
+            "device": "device-1",
+            "interface": "Vlan100",
+            "vrf": None,
+            "address": "10.0.0.1/32",
+            "state": "MASTER",
+            "priority": 100,
+            "status": "active",
+        }
+
+        runner._apply_ipam_fhrpgroup(row)
+        runner._apply_ipam_fhrpgroup({**row, "priority": 110, "state": "BACKUP"})
+
+        self.assertEqual(FHRPGroup.objects.count(), 1)
+        self.assertEqual(FHRPGroupAssignment.objects.count(), 1)
+        self.assertEqual(IPAddress.objects.count(), 1)
+        self.assertEqual(FHRPGroupAssignment.objects.get().priority, 110)
+
+    def test_apply_ipam_fhrpgroup_skips_missing_interface_and_continues(self):
+        device = self._create_device("device-1")
+        Interface.objects.create(device=device, name="Vlan100", type="virtual")
+        logger = Mock()
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=logger
+        )
+
+        runner._apply_model_rows(
+            "ipam.fhrpgroup",
+            [
+                {
+                    "protocol": "hsrp",
+                    "group_id": 10,
+                    "name": "hsrp",
+                    "device": "device-1",
+                    "interface": "Vlan999",
+                    "vrf": None,
+                    "address": "10.0.0.1/32",
+                    "state": "MASTER",
+                    "priority": 100,
+                    "status": "active",
+                },
+                {
+                    "protocol": "hsrp",
+                    "group_id": 10,
+                    "name": "hsrp",
+                    "device": "device-1",
+                    "interface": "Vlan100",
+                    "vrf": None,
+                    "address": "10.0.0.1/32",
+                    "state": "BACKUP",
+                    "priority": 100,
+                    "status": "active",
+                },
+            ],
+        )
+
+        self.assertEqual(FHRPGroup.objects.count(), 1)
+        self.assertEqual(FHRPGroupAssignment.objects.count(), 1)
+        warning_messages = [call.args[0] for call in logger.log_warning.call_args_list]
+        self.assertEqual(len(warning_messages), 1)
+        self.assertIn("target interface was not imported", warning_messages[0])
+        logger.increment_statistics.assert_any_call("ipam.fhrpgroup", outcome="skipped")
+        logger.increment_statistics.assert_any_call("ipam.fhrpgroup", outcome="applied")
+
+    def test_delete_ipam_fhrpgroup_removes_last_assignment_group_and_vip(self):
+        device = self._create_device("device-1")
+        Interface.objects.create(device=device, name="Vlan100", type="virtual")
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "protocol": "hsrp",
+            "group_id": 10,
+            "name": "hsrp",
+            "device": "device-1",
+            "interface": "Vlan100",
+            "vrf": None,
+            "address": "10.0.0.1/32",
+            "state": "MASTER",
+            "priority": 100,
+            "status": "active",
+        }
+        runner._apply_ipam_fhrpgroup(row)
+
+        deleted = runner._delete_ipam_fhrpgroup(row)
+
+        self.assertTrue(deleted)
+        self.assertEqual(FHRPGroupAssignment.objects.count(), 0)
+        self.assertEqual(FHRPGroup.objects.count(), 0)
+        self.assertEqual(IPAddress.objects.count(), 0)
+
+    def test_apply_ipam_fhrpgroup_multiple_participants_share_group_and_vip(self):
+        device_1 = self._create_device("device-1")
+        device_2 = self._create_device("device-2")
+        interface_1 = Interface.objects.create(
+            device=device_1,
+            name="Vlan100",
+            type="virtual",
+        )
+        interface_2 = Interface.objects.create(
+            device=device_2,
+            name="Vlan100",
+            type="virtual",
+        )
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "protocol": "hsrp",
+            "group_id": 10,
+            "name": "hsrp",
+            "device": "device-1",
+            "interface": "Vlan100",
+            "vrf": None,
+            "address": "10.0.0.1/32",
+            "state": "MASTER",
+            "priority": 110,
+            "status": "active",
+        }
+
+        runner._apply_ipam_fhrpgroup(row)
+        runner._apply_ipam_fhrpgroup(
+            {**row, "device": "device-2", "state": "BACKUP", "priority": 90}
+        )
+
+        group = FHRPGroup.objects.get()
+        self.assertEqual(FHRPGroupAssignment.objects.count(), 2)
+        self.assertEqual(IPAddress.objects.count(), 1)
+        self.assertEqual(IPAddress.objects.get().assigned_object, group)
+        assignments = {
+            assignment.interface: assignment.priority
+            for assignment in FHRPGroupAssignment.objects.all()
+        }
+        self.assertEqual(assignments, {interface_1: 110, interface_2: 90})
+
+    def test_delete_ipam_fhrpgroup_keeps_shared_group_until_last_assignment(self):
+        device_1 = self._create_device("device-1")
+        device_2 = self._create_device("device-2")
+        Interface.objects.create(device=device_1, name="Vlan100", type="virtual")
+        Interface.objects.create(device=device_2, name="Vlan100", type="virtual")
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "protocol": "hsrp",
+            "group_id": 10,
+            "name": "hsrp",
+            "device": "device-1",
+            "interface": "Vlan100",
+            "vrf": None,
+            "address": "10.0.0.1/32",
+            "state": "MASTER",
+            "priority": 110,
+            "status": "active",
+        }
+        runner._apply_ipam_fhrpgroup(row)
+        runner._apply_ipam_fhrpgroup(
+            {**row, "device": "device-2", "state": "BACKUP", "priority": 90}
+        )
+
+        first_deleted = runner._delete_ipam_fhrpgroup(row)
+
+        self.assertTrue(first_deleted)
+        self.assertEqual(FHRPGroup.objects.count(), 1)
+        self.assertEqual(FHRPGroupAssignment.objects.count(), 1)
+        self.assertEqual(IPAddress.objects.count(), 1)
+
+        second_deleted = runner._delete_ipam_fhrpgroup({**row, "device": "device-2"})
+
+        self.assertTrue(second_deleted)
+        self.assertEqual(FHRPGroup.objects.count(), 0)
+        self.assertEqual(FHRPGroupAssignment.objects.count(), 0)
+        self.assertEqual(IPAddress.objects.count(), 0)
+
+    def test_apply_ipam_fhrpgroup_separates_same_group_and_vip_by_vrf(self):
+        device = self._create_device("device-1")
+        Interface.objects.create(device=device, name="Vlan100", type="virtual")
+        Interface.objects.create(device=device, name="Vlan200", type="virtual")
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "protocol": "hsrp",
+            "group_id": 10,
+            "name": "hsrp",
+            "device": "device-1",
+            "interface": "Vlan100",
+            "vrf": "blue",
+            "address": "10.0.0.1/32",
+            "state": "MASTER",
+            "priority": 100,
+            "status": "active",
+        }
+
+        runner._apply_ipam_fhrpgroup(row)
+        runner._apply_ipam_fhrpgroup({**row, "interface": "Vlan200", "vrf": "red"})
+
+        self.assertEqual(VRF.objects.count(), 2)
+        self.assertEqual(FHRPGroup.objects.count(), 2)
+        self.assertEqual(FHRPGroupAssignment.objects.count(), 2)
+        self.assertEqual(IPAddress.objects.count(), 2)
+        self.assertEqual(
+            set(FHRPGroup.objects.values_list("name", flat=True)),
+            {"hsrp-10-blue-10.0.0.1", "hsrp-10-red-10.0.0.1"},
+        )
+        self.assertEqual(
+            set(IPAddress.objects.values_list("vrf__name", flat=True)),
+            {"blue", "red"},
+        )
+
+    def test_apply_ipam_fhrpgroup_does_not_steal_existing_interface_ip(self):
+        device = self._create_device("device-1")
+        interface = Interface.objects.create(
+            device=device,
+            name="Vlan100",
+            type="virtual",
+        )
+        existing_ip = IPAddress.objects.create(
+            address="10.0.0.1/24",
+            vrf=None,
+            status="active",
+            assigned_object_type=ContentType.objects.get_for_model(Interface),
+            assigned_object_id=interface.pk,
+        )
+        logger = Mock()
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=logger
+        )
+
+        runner._apply_model_rows(
+            "ipam.fhrpgroup",
+            [
+                {
+                    "protocol": "hsrp",
+                    "group_id": 10,
+                    "name": "hsrp",
+                    "device": "device-1",
+                    "interface": "Vlan100",
+                    "vrf": None,
+                    "address": "10.0.0.1/32",
+                    "state": "MASTER",
+                    "priority": 100,
+                    "status": "active",
+                }
+            ],
+        )
+
+        existing_ip.refresh_from_db()
+        self.assertEqual(existing_ip.assigned_object, interface)
+        self.assertEqual(str(existing_ip.address), "10.0.0.1/24")
+        self.assertEqual(FHRPGroup.objects.count(), 0)
+        self.assertEqual(FHRPGroupAssignment.objects.count(), 0)
+        self.assertEqual(IPAddress.objects.count(), 1)
+        warning_messages = [call.args[0] for call in logger.log_warning.call_args_list]
+        self.assertTrue(
+            any("assigned to another object" in msg for msg in warning_messages)
+        )
+        logger.increment_statistics.assert_any_call("ipam.fhrpgroup", outcome="skipped")
+
     def test_validate_row_shape_allows_cable_endpoint_identity(self):
         validate_row_shape_for_model(
             "dcim.cable",
@@ -10113,7 +10447,10 @@ class ForwardSyncRunnerTest(TestCase):
             "id": "snapshot-after",
             "processedAt": "2026-03-31T12:15:00Z",
         }
-        client.run_nqe_query.return_value = [{"name": "core-1"}, {"name": "core-2"}]
+        client.run_nqe_query.return_value = [
+            {"name": "core-1", "site": "main dc"},
+            {"name": "core-2", "site": "main dc"},
+        ]
         fetcher = ForwardQueryFetcher(
             sync=self.sync,
             client=client,
@@ -10131,6 +10468,7 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertEqual(context.device_tag_include_match, "any")
         self.assertEqual(context.device_tag_exclude_tags, ["BRANCH"])
         self.assertEqual(context.scoped_device_names, {"core-1", "core-2"})
+        self.assertEqual(context.scoped_site_names, {"main dc", "main-dc"})
 
     def test_resolve_context_reuses_run_local_context_artifact(self):
         self.source.parameters["device_tag_include_tags"] = ["DATACENTER"]
@@ -10421,6 +10759,53 @@ class ForwardSyncRunnerTest(TestCase):
             ],
         )
         self.assertEqual(removed, [{"device": "branch-1", "name": "Ethernet1"}])
+
+    def test_apply_device_tag_scope_filters_site_rows_by_tagged_device_sites(self):
+        fetcher = ForwardQueryFetcher(
+            sync=self.sync,
+            client=Mock(),
+            logger_=Mock(),
+        )
+        context = ForwardQueryContext(
+            network_id="test-network",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-after",
+            device_tag_include_tags=["Core"],
+            scoped_device_names={"core-1"},
+            scoped_site_names={"main dc", "main-dc"},
+        )
+        rows = [
+            {"name": "main dc", "slug": "main-dc"},
+            {"name": "branch", "slug": "branch"},
+        ]
+
+        filtered, removed = fetcher._apply_device_tag_scope("dcim.site", rows, context)
+
+        self.assertEqual(filtered, [{"name": "main dc", "slug": "main-dc"}])
+        self.assertEqual(removed, [{"name": "branch", "slug": "branch"}])
+
+    def test_apply_device_tag_scope_zero_matches_does_not_keep_broad_rows(self):
+        fetcher = ForwardQueryFetcher(
+            sync=self.sync,
+            client=Mock(),
+            logger_=Mock(),
+        )
+        context = ForwardQueryContext(
+            network_id="test-network",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-after",
+            device_tag_include_tags=["Core"],
+            scoped_device_names=set(),
+        )
+        rows = [
+            {"device": "branch-1", "name": "Ethernet1"},
+            {"name": "branch", "slug": "branch"},
+        ]
+
+        filtered, removed = fetcher._apply_device_tag_scope("dcim.site", rows, context)
+
+        self.assertEqual(filtered, [])
+        self.assertEqual(removed, rows)
 
     def test_apply_device_tag_scope_uses_primary_device_for_routing_rows(self):
         fetcher = ForwardQueryFetcher(
@@ -12156,6 +12541,53 @@ class QueryParameterCompatibilityTest(TestCase):
         )
         logger.log_info.assert_called_once()
         logger.log_warning.assert_not_called()
+
+    def test_query_fetch_pushes_context_tags_to_tag_capable_specs(self):
+        sync = Mock()
+        fetcher = ForwardQueryFetcher(sync=sync, client=Mock(), logger_=Mock())
+        spec = Mock(
+            query="foreach device in network.devices select {name: device.name}",
+            run_query_id="qid-1",
+            commit_id="cid-1",
+            execution_value="qid-1",
+            merged_parameters=Mock(
+                return_value={
+                    "device_tag_include_tags": [],
+                    "device_tag_include_match": "any",
+                    "device_tag_exclude_tags": [],
+                    "forward_netbox_shard_keys": [],
+                }
+            ),
+        )
+        context = ForwardQueryContext(
+            network_id="n1",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="s1",
+            device_tag_include_tags=["Core", "DC"],
+            device_tag_include_match="all",
+            device_tag_exclude_tags=["Branch"],
+        )
+        fetcher._run_nqe_query_with_parameter_fallback = Mock(return_value=[])
+
+        fetcher._fetch_spec_rows(
+            "ipam.prefix",
+            spec,
+            baseline=None,
+            context=context,
+            coalesce_fields=[["prefix", "vrf"]],
+        )
+
+        self.assertEqual(
+            fetcher._run_nqe_query_with_parameter_fallback.call_args.kwargs[
+                "parameters"
+            ],
+            {
+                "device_tag_include_tags": ["Core", "DC"],
+                "device_tag_include_match": "all",
+                "device_tag_exclude_tags": ["Branch"],
+                "forward_netbox_shard_keys": [],
+            },
+        )
 
     def test_query_fetch_parameter_fallback_log_is_deduped_per_query(self):
         sync = Mock()

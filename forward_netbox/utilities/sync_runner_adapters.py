@@ -29,10 +29,12 @@ from .sync_inventory_module import apply_dcim_inventoryitem
 from .sync_inventory_module import apply_dcim_module
 from .sync_inventory_module import delete_dcim_inventoryitem
 from .sync_inventory_module import delete_dcim_module
+from .sync_ipam import apply_ipam_fhrpgroup
 from .sync_ipam import apply_ipam_ipaddress
 from .sync_ipam import apply_ipam_prefix
 from .sync_ipam import apply_ipam_vlan
 from .sync_ipam import apply_ipam_vrf
+from .sync_ipam import delete_ipam_fhrpgroup
 from .sync_ipam import delete_ipam_ipaddress
 from .sync_ipam import delete_ipam_prefix
 from .sync_ipam import delete_ipam_vlan
@@ -729,6 +731,9 @@ class ForwardSyncRunnerAdapterMixin:
     def _delete_ipam_ipaddress(self, row):
         return delete_ipam_ipaddress(self, row)
 
+    def _delete_ipam_fhrpgroup(self, row):
+        return delete_ipam_fhrpgroup(self, row)
+
     def _delete_dcim_inventoryitem(self, row):
         return delete_dcim_inventoryitem(self, row)
 
@@ -809,6 +814,9 @@ class ForwardSyncRunnerAdapterMixin:
 
     def _apply_ipam_ipaddress(self, row):
         return apply_ipam_ipaddress(self, row)
+
+    def _apply_ipam_fhrpgroup(self, row):
+        return apply_ipam_fhrpgroup(self, row)
 
     def _apply_dcim_inventoryitem(self, row):
         return apply_dcim_inventoryitem(self, row)

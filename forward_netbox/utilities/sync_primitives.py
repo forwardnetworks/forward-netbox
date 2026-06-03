@@ -543,6 +543,7 @@ def _dependency_device_names(model_string, rows):
         "dcim.module": ("device",),
         "dcim.virtualchassis": ("device",),
         "extras.taggeditem": ("device",),
+        "ipam.fhrpgroup": ("device",),
         "ipam.ipaddress": ("device",),
         "netbox_peering_manager.peeringsession": ("device",),
         "netbox_routing.bgpaddressfamily": ("device",),
@@ -564,6 +565,7 @@ def _dependency_interface_pairs(model_string, rows):
         "dcim.cable": (("device", "interface"), ("remote_device", "remote_interface")),
         "dcim.interface": (("device", "name"),),
         "dcim.macaddress": (("device", "interface"),),
+        "ipam.fhrpgroup": (("device", "interface"),),
         "ipam.ipaddress": (("device", "interface"),),
         "netbox_routing.ospfinterface": (("device", "local_interface"),),
     }.get(model_string, ())
@@ -922,7 +924,7 @@ def _prime_module_bay_cache(runner, module_bay_pairs):
 
 
 def _prime_ipam_coalesce_identity_cache(runner, model_string, rows):
-    if model_string not in {"ipam.prefix", "ipam.ipaddress"}:
+    if model_string not in {"ipam.prefix", "ipam.ipaddress", "ipam.fhrpgroup"}:
         return
     from ipam.models import IPAddress
     from ipam.models import Prefix

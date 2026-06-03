@@ -94,7 +94,17 @@ ROUTING_IMPORT_DIAGNOSTIC_QUERY_NAME = "Forward Routing Import Diagnostics"
 ROUTING_IMPORT_DIAGNOSTIC_QUERY_FILE = "forward_routing_import_diagnostics.nqe"
 SHARD_QUERY_PARAMETER_NAME = "forward_netbox_shard_keys"
 SHARD_QUERY_PARAMETER_DEFAULT = {SHARD_QUERY_PARAMETER_NAME: []}
+DEVICE_TAG_QUERY_PARAMETER_DEFAULTS = {
+    "device_tag_include_tags": [],
+    "device_tag_include_match": "any",
+    "device_tag_exclude_tags": [],
+}
 SHARD_PARAMETER_QUERY_FILES = {
+    "forward_prefixes_ipv4.nqe",
+    "forward_prefixes_ipv6.nqe",
+}
+DEVICE_TAG_PARAMETER_QUERY_FILES = {
+    "forward_locations.nqe",
     "forward_prefixes_ipv4.nqe",
     "forward_prefixes_ipv6.nqe",
 }
@@ -105,11 +115,16 @@ def _read_query_source(filename: str) -> str:
 
 
 def _default_query_parameters(filename: str) -> dict[str, Any]:
+    parameters = {}
+    if filename in DEVICE_TAG_PARAMETER_QUERY_FILES:
+        source = _read_query(filename)
+        if "device_tag_include_tags" in source:
+            parameters.update(DEVICE_TAG_QUERY_PARAMETER_DEFAULTS)
     if filename in SHARD_PARAMETER_QUERY_FILES:
         source = _read_query(filename)
         if SHARD_QUERY_PARAMETER_NAME in source:
-            return dict(SHARD_QUERY_PARAMETER_DEFAULT)
-    return {}
+            parameters.update(SHARD_QUERY_PARAMETER_DEFAULT)
+    return parameters
 
 
 def _query_map_parameters(query_default: dict[str, Any], query_map) -> dict[str, Any]:
@@ -309,6 +324,11 @@ BUILTIN_QUERY_MAPS = [
         "model_string": "ipam.ipaddress",
         "name": "Forward IP Addresses",
         "filename": "forward_ip_addresses.nqe",
+    },
+    {
+        "model_string": "ipam.fhrpgroup",
+        "name": "Forward HSRP Groups",
+        "filename": "forward_hsrp_groups.nqe",
     },
     {
         "model_string": "dcim.inventoryitem",
