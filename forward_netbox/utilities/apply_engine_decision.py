@@ -225,6 +225,7 @@ ADAPTER_REQUIRED_MODELS = {
     "dcim.inventoryitem",
     "dcim.module",
     "extras.taggeditem",
+    "ipam.fhrpgroup",
     "ipam.ipaddress",
     "ipam.prefix",
     "netbox_peering_manager.peeringsession",
@@ -284,6 +285,13 @@ ADAPTER_MODEL_BLOCKERS = {
         "blocker_reason": (
             "IP address writes require parent-prefix/role checks and conditional "
             "skip logic tied to adapter diagnostics."
+        ),
+    },
+    "ipam.fhrpgroup": {
+        "blocker_code": "generic_foreign_key_relations",
+        "blocker_reason": (
+            "FHRP group writes create group assignments and VIP generic relations "
+            "that require adapter sequencing and row-level dependency handling."
         ),
     },
     "ipam.prefix": {
