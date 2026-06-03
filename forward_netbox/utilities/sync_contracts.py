@@ -105,9 +105,9 @@ MODEL_SYNC_CONTRACTS: dict[str, ModelSyncContract] = {
         default_coalesce_fields=(("rd",), ("name",)),
     ),
     "ipam.prefix": ModelSyncContract(
-        required_fields=("prefix", "status"),
+        required_fields=("prefix", "vrf", "status"),
         allowed_coalesce_fields=("prefix", "vrf"),
-        default_coalesce_fields=(("prefix", "vrf"), ("prefix",)),
+        default_coalesce_fields=(("prefix", "vrf"),),
     ),
     "ipam.ipaddress": ModelSyncContract(
         required_fields=("device", "interface", "address", "status"),
@@ -354,7 +354,7 @@ def validate_row_shape_for_model(
         )
     has_complete_coalesce = any(
         all(
-            field_name in row and row[field_name] not in ("", None)
+            row_coalesce_field_is_complete(model_string, row, field_name)
             for field_name in field_set
         )
         for field_set in coalesce_fields
@@ -363,3 +363,14 @@ def validate_row_shape_for_model(
         raise ForwardQueryError(
             f"Row for `{model_string}` does not satisfy any configured coalesce field set."
         )
+
+
+def row_coalesce_field_is_complete(model_string: str, row: dict, field_name: str):
+    if field_name not in row:
+        return False
+    value = row[field_name]
+    if value == "":
+        return model_string == "ipam.prefix" and field_name == "vrf"
+    if value is None:
+        return model_string == "ipam.prefix" and field_name == "vrf"
+    return True
