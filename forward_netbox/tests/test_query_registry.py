@@ -893,17 +893,18 @@ class QueryRegistryTest(TestCase):
             spec.query,
         )
 
-    def test_builtin_specs_use_vrf_optional_coalesce_fallbacks_for_ip_models(self):
+    def test_builtin_specs_use_exact_prefix_vrf_identity_for_prefix_maps(self):
         prefix_specs = BUILTIN_QUERY_SPECS["ipam.prefix"]
         self.assertEqual(
             prefix_specs[0].coalesce_fields,
-            (("prefix", "vrf"), ("prefix",)),
+            (("prefix", "vrf"),),
         )
         self.assertEqual(
             prefix_specs[1].coalesce_fields,
-            (("prefix", "vrf"), ("prefix",)),
+            (("prefix", "vrf"),),
         )
 
+    def test_builtin_specs_use_vrf_optional_coalesce_fallbacks_for_ip_models(self):
         ip_spec = next(spec for spec in BUILTIN_QUERY_SPECS["ipam.ipaddress"])
         self.assertEqual(
             ip_spec.coalesce_fields,
