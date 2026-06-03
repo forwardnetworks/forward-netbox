@@ -403,18 +403,17 @@ class Command(BaseCommand):
         ensure_core_job_compat_defaults()
         content_type = ContentType.objects.get_for_model(ForwardIngestion)
         now = timezone.now()
-        return Job.objects.create(
-            object_type=content_type,
-            object_id=ingestion.pk,
-            name=f"{ingestion.sync.name} - ui harness",
-            user=user,
-            status=JobStatusChoices.STATUS_COMPLETED,
-            job_id=uuid.uuid4(),
-            created=now,
-            started=now,
-            completed=now,
-            notifications=[],
-            data={
+        values = {
+            "object_type": content_type,
+            "object_id": ingestion.pk,
+            "name": f"{ingestion.sync.name} - ui harness",
+            "user": user,
+            "status": JobStatusChoices.STATUS_COMPLETED,
+            "job_id": uuid.uuid4(),
+            "created": now,
+            "started": now,
+            "completed": now,
+            "data": {
                 "statistics": {
                     "dcim.site": {"current": 1, "total": 1},
                     "dcim.device": {"current": 2, "total": 2},
@@ -430,4 +429,7 @@ class Command(BaseCommand):
                     ]
                 ],
             },
-        )
+        }
+        if any(field.name == "notifications" for field in Job._meta.fields):
+            values["notifications"] = []
+        return Job.objects.create(**values)

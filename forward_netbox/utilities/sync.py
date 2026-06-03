@@ -32,10 +32,12 @@ from .sync_inventory_module import apply_dcim_inventoryitem
 from .sync_inventory_module import apply_dcim_module
 from .sync_inventory_module import delete_dcim_inventoryitem
 from .sync_inventory_module import delete_dcim_module
+from .sync_ipam import apply_ipam_fhrpgroup
 from .sync_ipam import apply_ipam_ipaddress
 from .sync_ipam import apply_ipam_prefix
 from .sync_ipam import apply_ipam_vlan
 from .sync_ipam import apply_ipam_vrf
+from .sync_ipam import delete_ipam_fhrpgroup
 from .sync_ipam import delete_ipam_ipaddress
 from .sync_ipam import delete_ipam_prefix
 from .sync_ipam import delete_ipam_vlan
@@ -162,10 +164,12 @@ _SYNC_RUNNER_IMPORT_ANCHORS = (
     apply_dcim_module,
     delete_dcim_inventoryitem,
     delete_dcim_module,
+    apply_ipam_fhrpgroup,
     apply_ipam_ipaddress,
     apply_ipam_prefix,
     apply_ipam_vlan,
     apply_ipam_vrf,
+    delete_ipam_fhrpgroup,
     delete_ipam_ipaddress,
     delete_ipam_prefix,
     delete_ipam_vlan,
