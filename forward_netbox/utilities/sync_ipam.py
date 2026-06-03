@@ -41,11 +41,13 @@ def delete_ipam_prefix(runner, row):
     vrf = None
     if row.get("vrf"):
         vrf = runner._get_unique_or_raise(VRF, {"name": row["vrf"]})
+        if vrf is None:
+            return False
     lookups = []
     if row.get("prefix") and vrf is not None:
         lookups.append({"prefix": row["prefix"], "vrf": vrf})
-    if row.get("prefix"):
-        lookups.append({"prefix": row["prefix"]})
+    elif row.get("prefix"):
+        lookups.append({"prefix": row["prefix"], "vrf__isnull": True})
     return runner._delete_by_coalesce(Prefix, lookups)
 
 
@@ -137,18 +139,22 @@ def apply_ipam_prefix(runner, row):
         if row.get("vrf")
         else None
     )
-    runner._upsert_values_from_defaults(
+    coalesce_lookups = (
+        [{"prefix": row["prefix"], "vrf": vrf}]
+        if vrf is not None
+        else [{"prefix": row["prefix"], "vrf__isnull": True}]
+    )
+    values = {
+        "prefix": row["prefix"],
+        "vrf": vrf,
+        "status": row["status"],
+    }
+    runner._coalesce_upsert(
         "ipam.prefix",
         Prefix,
-        values={
-            "prefix": row["prefix"],
-            "vrf": vrf,
-            "status": row["status"],
-        },
-        coalesce_sets=runner._coalesce_sets_for(
-            "ipam.prefix",
-            [("prefix", "vrf")],
-        ),
+        coalesce_lookups=coalesce_lookups,
+        create_values=values,
+        update_values=values,
     )
 
 
