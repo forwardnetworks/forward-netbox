@@ -39,6 +39,7 @@ from ipam.models import FHRPGroupAssignment
 from ipam.models import IPAddress
 from ipam.models import Prefix
 from ipam.models import RIR
+from ipam.models import VLAN
 from ipam.models import VRF
 from netbox_branching.models import Branch
 
@@ -6896,6 +6897,86 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertEqual(member.lag, lag)
         self.assertEqual(member.mtu, 9000)
 
+    def test_apply_dcim_interface_sets_access_mode_and_untagged_vlan(self):
+        device = self._create_device("device-1")
+        vlan = VLAN.objects.create(
+            site=device.site,
+            vid=10,
+            name="users",
+            status="active",
+        )
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        runner._apply_model_rows(
+            "dcim.interface",
+            [
+                {
+                    "device": "device-1",
+                    "name": "eth1-1",
+                    "type": "1000base-t",
+                    "lag": None,
+                    "mode": "access",
+                    "untagged_vlan": 10,
+                    "enabled": True,
+                    "mtu": 9000,
+                    "description": "",
+                    "speed": 1000000,
+                },
+            ],
+        )
+
+        interface = Interface.objects.get(device=device, name="eth1-1")
+        self.assertEqual(interface.mode, "access")
+        self.assertEqual(interface.untagged_vlan, vlan)
+
+    def test_apply_dcim_interface_keeps_import_when_untagged_vlan_missing(self):
+        device = self._create_device("device-1")
+        existing_vlan = VLAN.objects.create(
+            site=device.site,
+            vid=20,
+            name="existing",
+            status="active",
+        )
+        Interface.objects.create(
+            device=device,
+            name="eth1-1",
+            type="1000base-t",
+            mode="access",
+            untagged_vlan=existing_vlan,
+        )
+        logger = Mock()
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=logger
+        )
+
+        runner._apply_model_rows(
+            "dcim.interface",
+            [
+                {
+                    "device": "device-1",
+                    "name": "eth1-1",
+                    "type": "1000base-t",
+                    "lag": None,
+                    "mode": "access",
+                    "untagged_vlan": 10,
+                    "enabled": True,
+                    "mtu": 9000,
+                    "description": "",
+                    "speed": 1000000,
+                },
+            ],
+        )
+
+        interface = Interface.objects.get(device__name="device-1", name="eth1-1")
+        self.assertEqual(interface.mode, "access")
+        self.assertEqual(interface.untagged_vlan, existing_vlan)
+        warning_messages = [call.args[0] for call in logger.log_warning.call_args_list]
+        self.assertTrue(
+            any("VLAN was not imported" in message for message in warning_messages)
+        )
+
     def test_apply_dcim_interface_creates_lag_placeholder_across_shards(self):
         self._create_device("device-1")
         runner = ForwardSyncRunner(
@@ -7954,6 +8035,87 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertEqual(str(ip_address.address), "10.0.0.1/32")
         self.assertEqual(ip_address.role, "hsrp")
         self.assertEqual(ip_address.assigned_object, group)
+
+    def test_apply_ipam_fhrpgroup_creates_vrrp_group_assignment_and_vip(self):
+        device = self._create_device("device-1")
+        interface = Interface.objects.create(
+            device=device,
+            name="Vlan100",
+            type="virtual",
+        )
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        runner._apply_ipam_fhrpgroup(
+            {
+                "protocol": "vrrp2",
+                "group_id": 10,
+                "name": "vrrp",
+                "device": "device-1",
+                "interface": "Vlan100",
+                "vrf": None,
+                "address": "10.0.0.1/32",
+                "state": "MASTER",
+                "priority": 100,
+                "status": "active",
+            }
+        )
+
+        group = FHRPGroup.objects.get()
+        self.assertEqual(group.protocol, "vrrp2")
+        self.assertEqual(group.group_id, 10)
+        self.assertEqual(group.name, "vrrp2-10-10.0.0.1")
+        self.assertEqual(group.description, "Forward FHRP group")
+        assignment = FHRPGroupAssignment.objects.get()
+        self.assertEqual(assignment.group, group)
+        self.assertEqual(assignment.interface, interface)
+        ip_address = IPAddress.objects.get()
+        self.assertEqual(str(ip_address.address), "10.0.0.1/32")
+        self.assertEqual(ip_address.role, "vrrp")
+        self.assertEqual(ip_address.assigned_object, group)
+
+    def test_apply_ipam_fhrpgroup_separates_vrrp2_and_vrrp3_protocols(self):
+        device = self._create_device("device-1")
+        Interface.objects.create(device=device, name="Vlan100", type="virtual")
+        Interface.objects.create(device=device, name="Vlan200", type="virtual")
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "protocol": "vrrp2",
+            "group_id": 10,
+            "name": "vrrp",
+            "device": "device-1",
+            "interface": "Vlan100",
+            "vrf": None,
+            "address": "10.0.0.1/32",
+            "state": "MASTER",
+            "priority": 100,
+            "status": "active",
+        }
+
+        runner._apply_ipam_fhrpgroup(row)
+        runner._apply_ipam_fhrpgroup(
+            {
+                **row,
+                "protocol": "vrrp3",
+                "interface": "Vlan200",
+                "address": "2001:db8::1/128",
+            }
+        )
+
+        self.assertEqual(FHRPGroup.objects.count(), 2)
+        self.assertEqual(FHRPGroupAssignment.objects.count(), 2)
+        self.assertEqual(IPAddress.objects.count(), 2)
+        self.assertEqual(
+            set(FHRPGroup.objects.values_list("protocol", flat=True)),
+            {"vrrp2", "vrrp3"},
+        )
+        self.assertEqual(
+            set(IPAddress.objects.values_list("role", flat=True)),
+            {"vrrp"},
+        )
 
     def test_apply_ipam_fhrpgroup_is_idempotent_and_updates_priority(self):
         device = self._create_device("device-1")
