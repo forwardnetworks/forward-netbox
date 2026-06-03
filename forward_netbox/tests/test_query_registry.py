@@ -64,6 +64,8 @@ REQUIRED_FIELDS_BY_QUERY_NAME = {
         "name",
         "type",
         "enabled",
+        "mode",
+        "untagged_vlan",
         "mtu",
         "description",
         "speed",
@@ -321,10 +323,33 @@ class QueryRegistryTest(TestCase):
         self.assertIn("interface.ethernet.aggregateId", spec.query)
         self.assertIn("IfaceType.IF_AGGREGATE", spec.query)
         self.assertIn('then "lag"', spec.query)
+        self.assertIn("interface.ethernet?.switchedVlan?.interfaceMode", spec.query)
+        self.assertIn("VlanModeType.ACCESS", spec.query)
+        self.assertIn("VlanModeType.TRUNK", spec.query)
+        self.assertIn("accessVlan", spec.query)
+        self.assertIn("nativeVlan", spec.query)
         self.assertIn(
             "speed: if isPresent(speed_mbps) then speed_mbps * 1000 else null : Integer",
             spec.query,
         )
+
+    def test_fhrp_query_includes_hsrp_and_vrrp_without_extra_query_maps(self):
+        spec = next(
+            spec
+            for spec in BUILTIN_QUERY_SPECS["ipam.fhrpgroup"]
+            if spec.query_name == "Forward HSRP Groups"
+        )
+
+        self.assertIn("subinterface.ipv4.fhrp.hsrp.fhrpGroups", spec.query)
+        self.assertIn("subinterface.ipv6.fhrp.hsrp.fhrpGroups", spec.query)
+        self.assertIn("interface.routedVlan.ipv4.fhrp.hsrp.fhrpGroups", spec.query)
+        self.assertIn("interface.routedVlan.ipv6.fhrp.hsrp.fhrpGroups", spec.query)
+        self.assertIn("subinterface.ipv4.fhrp.vrrp.fhrpGroups", spec.query)
+        self.assertIn("subinterface.ipv6.fhrp.vrrp.fhrpGroups", spec.query)
+        self.assertIn("interface.routedVlan.ipv4.fhrp.vrrp.fhrpGroups", spec.query)
+        self.assertIn("interface.routedVlan.ipv6.fhrp.vrrp.fhrpGroups", spec.query)
+        self.assertIn('protocol: "vrrp2"', spec.query)
+        self.assertIn('protocol: "vrrp3"', spec.query)
 
     def test_virtual_chassis_query_does_not_map_ha_peers_by_default(self):
         spec = next(

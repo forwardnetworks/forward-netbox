@@ -34,11 +34,25 @@ foreach interface in device.interfaces
     else if interface.interfaceType == IfaceType.IF_AGGREGATE
       then "lag"
     else "other"
+  let vlan_mode =
+    if isPresent(interface.ethernet?.switchedVlan?.interfaceMode)
+      then if interface.ethernet.switchedVlan.interfaceMode == VlanModeType.ACCESS then "access"
+      else if interface.ethernet.switchedVlan.interfaceMode == VlanModeType.TRUNK then "tagged"
+      else null : String
+    else null : String
+  let untagged_vlan =
+    if vlan_mode == "access" && isPresent(interface.ethernet.switchedVlan.accessVlan)
+      then interface.ethernet.switchedVlan.accessVlan
+    else if vlan_mode == "tagged" && isPresent(interface.ethernet.switchedVlan.nativeVlan)
+      then interface.ethernet.switchedVlan.nativeVlan
+    else null : Integer
   select {
     device: device.name,
     name: interface.name,
     type: netbox_type,
     lag: if is_ethernet && isPresent(interface.ethernet.aggregateId) then interface.ethernet.aggregateId else null : String,
+    mode: vlan_mode,
+    untagged_vlan: untagged_vlan,
     enabled: interface.operStatus == OperStatus.UP,
     mtu: interface.mtu,
     description: if isPresent(interface.description) then interface.description else "",
