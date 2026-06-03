@@ -12,6 +12,8 @@ Each entry includes:
 
 All built-in maps are executed against the sync-selected Forward snapshot. The shipped query set includes default maps that require no Forward data file and disabled data-file-aware variants that require the selected snapshot to expose fields such as `network.extensions.netbox_device_type_aliases.value` or `network.extensions.netbox_feature_tag_rules.value`. The examples below are the shipped query source from this repository. Queries that import `netbox_utilities` are flattened by the plugin at execution time for bundled built-ins, but the source modules shown here can also be copied into the Forward Org Repository and tested by `query_id`.
 
+When a sync uses the local device tag filter mode, the plugin now passes the selected include/exclude tags into tag-aware built-in queries for sites and prefixes. This keeps site and prefix collection aligned with the selected device scope at the Forward NQE source instead of fetching broad rows and pruning only after the API call. Custom org queries that do not declare these parameters continue to use the existing local row filter behavior.
+
 ## Summary
 
 | Map | NetBox Model | Query File |
@@ -35,6 +37,7 @@ All built-in maps are executed against the sync-selected Forward snapshot. The s
 | Forward IPv4 Prefixes | `ipam.prefix` | [`forward_prefixes_ipv4.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_prefixes_ipv4.nqe) |
 | Forward IPv6 Prefixes | `ipam.prefix` | [`forward_prefixes_ipv6.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_prefixes_ipv6.nqe) |
 | Forward IP Addresses | `ipam.ipaddress` | [`forward_ip_addresses.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_ip_addresses.nqe) |
+| Forward HSRP Groups | `ipam.fhrpgroup` | [`forward_hsrp_groups.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_hsrp_groups.nqe) |
 | Forward Inventory Items | `dcim.inventoryitem` | [`forward_inventory_items.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_inventory_items.nqe) |
 
 ## Shared Module
@@ -129,12 +132,22 @@ export slugifyNetboxModel(value: String) =
 ```nqe
 import "netbox_utilities";
 
-deviceLocations =
-  foreach d in network.devices
-  select distinct d.locationName;
-
+@query
+f(device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>) =
 foreach location in network.locations
-where location.name in deviceLocations
+where location.name in (
+  foreach d in network.devices
+  where d.snapshotInfo.result == DeviceSnapshotResult.completed
+  where d.platform.vendor != Vendor.FORWARD_CUSTOM
+  where isEmpty(device_tag_include_tags)
+    || (device_tag_include_match == "all"
+      && all(foreach tag in device_tag_include_tags select tag in d.tagNames))
+    || (device_tag_include_match != "all"
+      && any(foreach tag in device_tag_include_tags select tag in d.tagNames))
+  where isEmpty(device_tag_exclude_tags)
+    || !any(foreach tag in device_tag_exclude_tags select tag in d.tagNames)
+  select distinct d.locationName
+)
 let location_name = toLowerCase(location.name)
 let location_slug = slugify(location_name)
 let address = join(", ", [if isPresent(location.city)
@@ -150,7 +163,7 @@ select {
   status: "active",
   physical_address: address,
   comments: "Site added or Updated by Forward Enterprise"
-}
+};
 ```
 
 ## Forward Device Vendors
@@ -714,9 +727,18 @@ select distinct {
 - Query file: [`forward_prefixes_ipv4.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_prefixes_ipv4.nqe)
 
 ```nqe
+@query
+f(forward_netbox_shard_keys: List<String>, device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>) =
 foreach device in network.devices
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
+where isEmpty(device_tag_include_tags)
+  || (device_tag_include_match == "all"
+    && all(foreach tag in device_tag_include_tags select tag in device.tagNames))
+  || (device_tag_include_match != "all"
+    && any(foreach tag in device_tag_include_tags select tag in device.tagNames))
+where isEmpty(device_tag_exclude_tags)
+  || !any(foreach tag in device_tag_exclude_tags select tag in device.tagNames)
 foreach ni in device.networkInstances
 where isPresent(ni.afts?.ipv4Unicast?.ipEntries)
 foreach entry in ni.afts.ipv4Unicast.ipEntries
@@ -726,18 +748,23 @@ where !(toNumber(networkAddress(entry.prefix)) >= toNumber(ipAddress("0.0.0.0"))
   && toNumber(networkAddress(entry.prefix)) <= toNumber(ipAddress("0.255.255.255")))
 where !(toNumber(networkAddress(entry.prefix)) >= toNumber(ipAddress("127.0.0.0"))
   && toNumber(networkAddress(entry.prefix)) <= toNumber(ipAddress("127.255.255.255")))
+let prefix = ipSubnet(networkAddress(entry.prefix), length(entry.prefix))
+where length(forward_netbox_shard_keys) == 0 || toString(prefix) in forward_netbox_shard_keys
 select distinct {
   vrf: if ni.name != "default"
     then if toString(ni.instanceType) != "NetworkInstanceType.DEFAULT_INSTANCE" then ni.name else null : String
     else null : String,
-  prefix: ipSubnet(networkAddress(entry.prefix), length(entry.prefix)),
+  prefix: prefix,
   status: "active"
-}
+};
 ```
 
 The IPv4 prefix map excludes host routes and clearly non-importable route-table
 artifacts in `0.0.0.0/8` and `127.0.0.0/8`. It does not rewrite those rows into
 different prefixes; the query simply leaves them out of the NetBox prefix feed.
+It also accepts the built-in shard key parameter and the selected device tag
+include/exclude parameters so large scoped imports can reduce Forward NQE result
+volume before NetBox branch planning.
 
 ## Forward IPv6 Prefixes
 
@@ -746,22 +773,37 @@ different prefixes; the query simply leaves them out of the NetBox prefix feed.
 - Query file: [`forward_prefixes_ipv6.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_prefixes_ipv6.nqe)
 
 ```nqe
+@query
+f(forward_netbox_shard_keys: List<String>, device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>) =
 foreach device in network.devices
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
+where isEmpty(device_tag_include_tags)
+  || (device_tag_include_match == "all"
+    && all(foreach tag in device_tag_include_tags select tag in device.tagNames))
+  || (device_tag_include_match != "all"
+    && any(foreach tag in device_tag_include_tags select tag in device.tagNames))
+where isEmpty(device_tag_exclude_tags)
+  || !any(foreach tag in device_tag_exclude_tags select tag in device.tagNames)
 foreach ni in device.networkInstances
 where isPresent(ni.afts?.ipv6Unicast?.ipEntries)
 foreach entry in ni.afts.ipv6Unicast.ipEntries
 where length(entry.prefix) > 0
 where length(entry.prefix) < 128
+let prefix = ipSubnet(networkAddress(entry.prefix), length(entry.prefix))
+where length(forward_netbox_shard_keys) == 0 || toString(prefix) in forward_netbox_shard_keys
 select distinct {
   vrf: if ni.name != "default"
     then if toString(ni.instanceType) != "NetworkInstanceType.DEFAULT_INSTANCE" then ni.name else null : String
     else null : String,
-  prefix: ipSubnet(networkAddress(entry.prefix), length(entry.prefix)),
+  prefix: prefix,
   status: "active"
-}
+};
 ```
+
+The IPv6 prefix map accepts the built-in shard key parameter and the selected
+device tag include/exclude parameters so scoped imports avoid collecting
+prefixes from devices outside the selected Forward tag scope.
 
 ## Forward IP Addresses
 
@@ -773,8 +815,9 @@ The shipped query combines rows from subinterfaces, bridge interfaces, tunnels, 
 
 For shard-scoped Branching retries, the plugin applies native Forward column
 filters and then enforces the shard boundary again in NetBox before applying
-rows. Query-side NQE parameters remain deferred until the built-in query is
-converted to a live-validated parameterized `@query` form.
+rows. Prefix maps use live-validated parameterized built-ins for shard keys and
+device tag scope; custom query maps that do not declare these parameters keep
+the existing local enforcement path.
 
 When `ipam.ipaddress` is enabled, the sync also runs an internal read-only diagnostic query that reports how many Forward interface addresses were filtered for this reason and logs capped examples. This diagnostic query is not seeded as a NetBox import map and does not create, update, or delete NetBox objects. See the query file for the complete import text:
 
@@ -785,6 +828,125 @@ for source or query coverage gaps; it does not create parent prefixes or mutate
 the IP address row.
 
 - [`forward_ip_addresses.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_ip_addresses.nqe)
+
+## Forward HSRP Groups
+
+- `NetBox Model`: `ipam.fhrpgroup`
+- Expected fields: `protocol`, `group_id`, `name`, `device`, `interface`, `vrf`, `address`, `state`, `priority`, `status`
+- Query file: [`forward_hsrp_groups.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_hsrp_groups.nqe)
+
+This optional map imports Forward native HSRP group state from subinterfaces and
+routed VLAN interfaces. The sync creates native NetBox `FHRPGroup` rows,
+`FHRPGroupAssignment` rows for participating interfaces, and one VIP
+`IPAddress` assigned to the group. Multiple participants for the same
+protocol/group/address/VRF share one group and VIP. Same group/address values in
+different VRFs remain separate. If a target VIP host already exists in NetBox
+and is assigned to another object, the row is skipped with an aggregated warning
+rather than reassigning the IP address.
+
+The built-in query is a single paged NQE result set and does not add per-device,
+per-interface, or per-group Forward API calls.
+
+```nqe
+/**
+ * @intent Forward HSRP Groups
+ * @description NetBox FHRP group rows derived from Forward native HSRP state.
+ */
+
+subinterface_ipv4 =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  foreach interface in device.interfaces
+  foreach subinterface in interface.subinterfaces
+  where isPresent(subinterface.ipv4?.fhrp?.hsrp?.fhrpGroups)
+  foreach group in subinterface.ipv4.fhrp.hsrp.fhrpGroups
+  select {
+    protocol: "hsrp",
+    group_id: group.virtualRouterId,
+    name: "hsrp",
+    device: device.name,
+    interface: interface.name,
+    vrf: if isPresent(subinterface.networkInstanceName)
+      then if subinterface.networkInstanceName != "default" then subinterface.networkInstanceName else null : String
+      else null : String,
+    address: ipSubnet(group.virtualAddress, 32),
+    state: group.state,
+    priority: 100,
+    status: "active"
+  };
+
+subinterface_ipv6 =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  foreach interface in device.interfaces
+  foreach subinterface in interface.subinterfaces
+  where isPresent(subinterface.ipv6?.fhrp?.hsrp?.fhrpGroups)
+  foreach group in subinterface.ipv6.fhrp.hsrp.fhrpGroups
+  select {
+    protocol: "hsrp",
+    group_id: group.virtualRouterId,
+    name: "hsrp",
+    device: device.name,
+    interface: interface.name,
+    vrf: if isPresent(subinterface.networkInstanceName)
+      then if subinterface.networkInstanceName != "default" then subinterface.networkInstanceName else null : String
+      else null : String,
+    address: ipSubnet(group.virtualAddress, 128),
+    state: group.state,
+    priority: 100,
+    status: "active"
+  };
+
+routed_vlan_ipv4 =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  foreach interface in device.interfaces
+  where isPresent(interface.routedVlan?.ipv4?.fhrp?.hsrp?.fhrpGroups)
+  foreach group in interface.routedVlan.ipv4.fhrp.hsrp.fhrpGroups
+  select {
+    protocol: "hsrp",
+    group_id: group.virtualRouterId,
+    name: "hsrp",
+    device: device.name,
+    interface: interface.name,
+    vrf: if isPresent(interface.routedVlan.networkInstanceName)
+      then if interface.routedVlan.networkInstanceName != "default" then interface.routedVlan.networkInstanceName else null : String
+      else null : String,
+    address: ipSubnet(group.virtualAddress, 32),
+    state: group.state,
+    priority: 100,
+    status: "active"
+  };
+
+routed_vlan_ipv6 =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  foreach interface in device.interfaces
+  where isPresent(interface.routedVlan?.ipv6?.fhrp?.hsrp?.fhrpGroups)
+  foreach group in interface.routedVlan.ipv6.fhrp.hsrp.fhrpGroups
+  select {
+    protocol: "hsrp",
+    group_id: group.virtualRouterId,
+    name: "hsrp",
+    device: device.name,
+    interface: interface.name,
+    vrf: if isPresent(interface.routedVlan.networkInstanceName)
+      then if interface.routedVlan.networkInstanceName != "default" then interface.routedVlan.networkInstanceName else null : String
+      else null : String,
+    address: ipSubnet(group.virtualAddress, 128),
+    state: group.state,
+    priority: 100,
+    status: "active"
+  };
+
+@primaryKey(protocol, group_id, address, device, interface, vrf)
+foreach row in (subinterface_ipv4 + subinterface_ipv6 + routed_vlan_ipv4 + routed_vlan_ipv6)
+select distinct row
+```
 
 ## Forward Inventory Items
 

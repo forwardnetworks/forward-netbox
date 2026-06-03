@@ -6,12 +6,22 @@
 
 import "netbox_utilities";
 
-deviceLocations =
-  foreach d in network.devices
-  select distinct d.locationName;
-
+@query
+f(device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>) =
 foreach location in network.locations
-where location.name in deviceLocations
+where location.name in (
+  foreach d in network.devices
+  where d.snapshotInfo.result == DeviceSnapshotResult.completed
+  where d.platform.vendor != Vendor.FORWARD_CUSTOM
+  where isEmpty(device_tag_include_tags)
+    || (device_tag_include_match == "all"
+      && all(foreach tag in device_tag_include_tags select tag in d.tagNames))
+    || (device_tag_include_match != "all"
+      && any(foreach tag in device_tag_include_tags select tag in d.tagNames))
+  where isEmpty(device_tag_exclude_tags)
+    || !any(foreach tag in device_tag_exclude_tags select tag in d.tagNames)
+  select distinct d.locationName
+)
 let location_name = toLowerCase(location.name)
 let location_slug = slugify(location_name)
 let address = join(", ", [if isPresent(location.city)
@@ -27,4 +37,4 @@ select {
   status: "active",
   physical_address: address,
   comments: "Site added or Updated by Forward Enterprise"
-}
+};

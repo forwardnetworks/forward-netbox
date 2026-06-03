@@ -83,18 +83,20 @@ class SyntheticSyncScenarioHarnessTest(TestCase):
             if completed is not None
             else timezone.now()
         )
-        return Job.objects.create(
-            object_type=ContentType.objects.get_for_model(instance),
-            object_id=instance.pk,
-            name=f"synthetic {instance._meta.model_name} job",
-            status=status,
-            job_id=uuid4(),
-            created=timezone.now(),
-            started=started,
-            completed=completed,
-            data={},
-            notifications=[],
-        )
+        values = {
+            "object_type": ContentType.objects.get_for_model(instance),
+            "object_id": instance.pk,
+            "name": f"synthetic {instance._meta.model_name} job",
+            "status": status,
+            "job_id": uuid4(),
+            "created": timezone.now(),
+            "started": started,
+            "completed": completed,
+            "data": {},
+        }
+        if any(field.name == "notifications" for field in Job._meta.fields):
+            values["notifications"] = []
+        return Job.objects.create(**values)
 
     def _execution_run(self, *, status="running", next_step_index=1):
         run = ForwardExecutionRun.objects.create(
