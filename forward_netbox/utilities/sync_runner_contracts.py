@@ -1,5 +1,6 @@
 from ..exceptions import ForwardQueryError
 from .sync_contracts import canonical_cable_endpoint_identity
+from .sync_contracts import row_coalesce_field_is_complete
 from .sync_reporting import (
     emit_aggregated_conflict_warning_summaries as sync_emit_aggregated_conflict_warning_summaries,
 )
@@ -56,7 +57,12 @@ class ForwardSyncRunnerContractMixin:
     def _first_complete_coalesce_set(self, row, coalesce_sets):
         for field_set in coalesce_sets:
             if all(
-                field in row and row[field] not in ("", None) for field in field_set
+                row_coalesce_field_is_complete(
+                    "",
+                    row,
+                    field,
+                )
+                for field in field_set
             ):
                 return tuple(field_set)
         return None
@@ -66,13 +72,26 @@ class ForwardSyncRunnerContractMixin:
             canonical_identity = canonical_cable_endpoint_identity(row)
             if canonical_identity is not None:
                 return ("canonical_cable_endpoints", canonical_identity)
-        field_set = self._first_complete_coalesce_set(row, coalesce_sets)
+        field_set = self._first_complete_coalesce_set_for_model(
+            model_string,
+            row,
+            coalesce_sets,
+        )
         if field_set is None:
             return None
         return (
             field_set,
             tuple((field, row.get(field)) for field in field_set),
         )
+
+    def _first_complete_coalesce_set_for_model(self, model_string, row, coalesce_sets):
+        for field_set in coalesce_sets:
+            if all(
+                row_coalesce_field_is_complete(model_string, row, field)
+                for field in field_set
+            ):
+                return tuple(field_set)
+        return None
 
     def _split_diff_rows(self, model_string, diff_rows):
         coalesce_sets = self._model_coalesce_fields.get(model_string, [])

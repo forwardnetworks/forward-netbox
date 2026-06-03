@@ -74,7 +74,7 @@ def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str,
             "required": ("prefix", "status"),
             "fields": ("prefix", "vrf", "status"),
             "lookup_fields": ("prefix",),
-            "lookup_sets": (("prefix", "vrf"), ("prefix",)),
+            "lookup_sets": (("prefix", "vrf"),),
         },
     }
     spec = specs.get(model_string)

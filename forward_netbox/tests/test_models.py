@@ -2195,7 +2195,7 @@ class ForwardNQEMapModelTest(TestCase):
 
         self.assertEqual(query_map.coalesce_fields, [["slug"], ["name"]])
 
-    def test_prefix_map_defaults_include_vrf_optional_fallback(self):
+    def test_prefix_map_defaults_use_exact_vrf_identity(self):
         netbox_model = ContentType.objects.get(app_label="ipam", model="prefix")
         query_map = ForwardNQEMap(
             name="Prefix Map",
@@ -2205,7 +2205,7 @@ class ForwardNQEMapModelTest(TestCase):
 
         query_map.clean()
 
-        self.assertEqual(query_map.coalesce_fields, [["prefix", "vrf"], ["prefix"]])
+        self.assertEqual(query_map.coalesce_fields, [["prefix", "vrf"]])
 
     def test_ipaddress_map_defaults_include_vrf_optional_fallback(self):
         netbox_model = ContentType.objects.get(app_label="ipam", model="ipaddress")
@@ -2307,7 +2307,7 @@ class ForwardNQEMapModelTest(TestCase):
             if row["model_string"] == "ipam.prefix"
             and row["name"] == "Forward IPv4 Prefixes"
         )
-        self.assertEqual(query_map.coalesce_fields, [["prefix", "vrf"], ["prefix"]])
+        self.assertEqual(query_map.coalesce_fields, [["prefix", "vrf"]])
         self.assertEqual(query_map.query, expected_row["query"])
 
     def test_seed_builtin_maps_updates_existing_inventory_query(self):
