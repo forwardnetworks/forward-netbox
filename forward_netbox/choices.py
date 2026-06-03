@@ -29,12 +29,14 @@ FORWARD_SUPPORTED_MODELS = (
     "ipam.vrf",
     "ipam.prefix",
     "ipam.ipaddress",
+    "ipam.fhrpgroup",
     "dcim.inventoryitem",
     "dcim.module",
     *FORWARD_BGP_MODELS,
 )
 
 FORWARD_OPTIONAL_MODELS = {
+    "ipam.fhrpgroup",
     "dcim.module",
     *FORWARD_BGP_MODELS,
 }

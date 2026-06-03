@@ -217,7 +217,15 @@ The current built-in map set is:
 - `Forward IPv4 Prefixes`
 - `Forward IPv6 Prefixes`
 - `Forward IP Addresses`
+- `Forward HSRP Groups` (optional `ipam.fhrpgroup`)
 - `Forward Inventory Items`
+
+`Forward HSRP Groups` is optional and disabled unless `ipam.fhrpgroup` is selected
+for a sync. It imports Forward native HSRP group state into NetBox native FHRP
+objects with one paged NQE result set. It does not perform per-device,
+per-interface, or per-group Forward API calls. Existing NetBox IP addresses that
+are assigned to another object are treated as conflicts and skipped instead of
+being reassigned.
 
 The optional beta map set also includes `Forward Modules`, `Forward BGP Peers`, `Forward BGP Address Families`, `Forward BGP Peer Address Families`, `Forward OSPF Instances`, `Forward OSPF Areas`, `Forward OSPF Interfaces`, and `Forward Peering Sessions` when their target ContentTypes exist.
 
@@ -448,6 +456,14 @@ row counts, delete shard counts, dependency-ordered model execution, and warning
 codes for delete waves, near-budget delete shards, and dependency-anchor models
 that may hit reference blockers. Review this summary before merging destructive
 branches, especially after changing device tag filters.
+
+Device tag filters run in local mode by default so existing custom query maps do
+not need to accept extra NQE parameters. For bundled site and prefix maps,
+newer releases also pass the selected include/exclude tags into the shipped
+tag-aware NQE parameters. This prevents sites and prefixes from being collected
+from devices outside the selected Forward tag scope. Custom org queries that
+declare the same parameters receive the same source-side scope; custom queries
+that do not declare them continue to rely on local row filtering.
 
 Branching runs are staged as resumable NetBox jobs. The initial sync job records
 the snapshot, validation result, branch plan, and next shard in the sync state.

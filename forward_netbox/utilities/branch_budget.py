@@ -29,6 +29,7 @@ DEFAULT_MODEL_CHANGE_DENSITY = {
     "netbox_routing.ospfarea": 1.0,
     "netbox_routing.ospfinterface": 3.0,
     "netbox_peering_manager.peeringsession": 2.0,
+    "ipam.fhrpgroup": 3.0,
 }
 DEFAULT_MODEL_DELETE_CHANGE_DENSITY = {
     "dcim.device": 20.0,
@@ -66,6 +67,7 @@ APPLY_DEPENDENCY_MODEL_ORDER = (
     "dcim.module",
     "dcim.inventoryitem",
     "ipam.ipaddress",
+    "ipam.fhrpgroup",
     "dcim.macaddress",
     "dcim.cable",
     "netbox_routing.ospfarea",
@@ -82,6 +84,7 @@ APPLY_DEPENDENCY_MODEL_RANK = {
 }
 DELETE_DEPENDENCY_MODEL_ORDER = (
     "dcim.cable",
+    "ipam.fhrpgroup",
     "ipam.ipaddress",
     "dcim.macaddress",
     "netbox_routing.bgppeeraddressfamily",
@@ -118,6 +121,7 @@ DEVICE_SHARD_MODELS = {
     "dcim.inventoryitem",
     "dcim.module",
     "extras.taggeditem",
+    "ipam.fhrpgroup",
     "ipam.ipaddress",
     "netbox_routing.bgppeer",
     "netbox_routing.bgpaddressfamily",
