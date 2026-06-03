@@ -163,6 +163,40 @@ def apply_dcim_macaddress(runner, row):
     )
 
 
+def _interface_untagged_vlan(runner, device, row):
+    from ipam.models import VLAN
+
+    vid = row.get("untagged_vlan")
+    if vid in (None, ""):
+        return False, None
+    try:
+        vid = int(vid)
+    except (TypeError, ValueError):
+        runner._record_aggregated_skip_warning(
+            model_string="dcim.interface",
+            reason="invalid-untagged-vlan",
+            warning_message=(
+                f"Skipping untagged VLAN assignment for interface `{row.get('name')}` "
+                f"on `{device.name}` because VLAN ID `{row.get('untagged_vlan')}` "
+                "is not a valid integer."
+            ),
+        )
+        return False, None
+    vlan = VLAN.objects.filter(site=device.site, vid=vid).order_by("pk").first()
+    if vlan is None:
+        runner._record_aggregated_skip_warning(
+            model_string="dcim.interface",
+            reason="missing-untagged-vlan",
+            warning_message=(
+                f"Skipping untagged VLAN `{vid}` assignment for interface "
+                f"`{row.get('name')}` on `{device.name}` because the VLAN was not imported "
+                f"for site `{device.site}`."
+            ),
+        )
+        return False, None
+    return True, vlan
+
+
 def apply_dcim_interface(runner, row):
     from dcim.models import Interface
 
@@ -192,6 +226,11 @@ def apply_dcim_interface(runner, row):
         "description": row.get("description") or "",
         "speed": row.get("speed") or None,
     }
+    if row.get("mode") in {"access", "tagged"}:
+        defaults["mode"] = row["mode"]
+        found_vlan, vlan = _interface_untagged_vlan(runner, device, row)
+        if found_vlan:
+            defaults["untagged_vlan"] = vlan
     existing_interface = runner._lookup_interface(device, row["name"])
     if row["type"] == "lag" and existing_interface is not None:
         existing_cable = getattr(existing_interface, "cable", None)
