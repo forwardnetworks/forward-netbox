@@ -540,36 +540,65 @@ The rules-aware query keeps matching on Forward structured protocol state while 
 ## Forward Interfaces
 
 - `NetBox Model`: `dcim.interface`
-- Expected fields: `device`, `name`, `type`, `lag`, `enabled`, `mtu`, `description`, `speed`
+- Expected fields: `device`, `name`, `type`, `lag`, `mode`, `untagged_vlan`, `enabled`, `mtu`, `description`, `speed`
 - Query file: [`forward_interfaces.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_interfaces.nqe)
 
 ```nqe
+/**
+ * @intent Device interfaces collected by Forward
+ * @description It provides a list of device interfaces collected by Forward Networks to be added
+ * in NetBox using POST and PATCH requests to the /api/dcim/interfaces/ REST API endpoint.
+ */
+
+ethernet_by_speed_mbps = [
+  { mbps: 10, type: "other" },
+  { mbps: 100, type: "100base-tx" },
+  { mbps: 1000, type: "1000base-t" },
+  { mbps: 2500, type: "2.5gbase-t" },
+  { mbps: 5000, type: "5gbase-t" },
+  { mbps: 10000, type: "10gbase-t" },
+  { mbps: 25000, type: "25gbase-x-sfp28" },
+  { mbps: 40000, type: "40gbase-x-qsfpp" },
+  { mbps: 50000, type: "50gbase-x-sfp56" },
+  { mbps: 100000, type: "100gbase-x-qsfp28" }
+];
+
 foreach device in network.devices
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
-  foreach interface in device.interfaces
-  where interface.interfaceType == IfaceType.IF_ETHERNET
-  let speed_mbps = interface.ethernet.speedMbps
-  let ethernet_by_speed_mbps = [
-    { mbps: 10, type: "other" },
-    { mbps: 100, type: "100base-tx" },
-    { mbps: 1000, type: "1000base-t" },
-    { mbps: 2500, type: "2.5gbase-t" },
-    { mbps: 5000, type: "5gbase-t" },
-    { mbps: 10000, type: "10gbase-t" },
-    { mbps: 25000, type: "25gbase-x-sfp28" },
-    { mbps: 40000, type: "40gbase-x-qsfpp" },
-    { mbps: 50000, type: "50gbase-x-sfp56" },
-    { mbps: 100000, type: "100gbase-x-qsfp28" }
-  ]
+foreach interface in device.interfaces
+  let is_ethernet = interface.interfaceType == IfaceType.IF_ETHERNET
+  let speed_mbps = if is_ethernet then interface.ethernet.speedMbps else null : Integer
   let interface_type = max(foreach profile in ethernet_by_speed_mbps
     where profile.mbps == speed_mbps
     select profile.type)
+  let netbox_type =
+    if is_ethernet
+      then if isPresent(interface_type) then interface_type else "other"
+    else if interface.interfaceType == IfaceType.IF_LOOPBACK
+      then "virtual"
+    else if interface.interfaceType == IfaceType.IF_AGGREGATE
+      then "lag"
+    else "other"
+  let vlan_mode =
+    if isPresent(interface.ethernet?.switchedVlan?.interfaceMode)
+      then if interface.ethernet.switchedVlan.interfaceMode == VlanModeType.ACCESS then "access"
+      else if interface.ethernet.switchedVlan.interfaceMode == VlanModeType.TRUNK then "tagged"
+      else null : String
+    else null : String
+  let untagged_vlan =
+    if vlan_mode == "access" && isPresent(interface.ethernet.switchedVlan.accessVlan)
+      then interface.ethernet.switchedVlan.accessVlan
+    else if vlan_mode == "tagged" && isPresent(interface.ethernet.switchedVlan.nativeVlan)
+      then interface.ethernet.switchedVlan.nativeVlan
+    else null : Integer
   select {
     device: device.name,
     name: interface.name,
-    type: if isPresent(interface_type) then interface_type else "other",
-    lag: if isPresent(interface.ethernet.aggregateId) then interface.ethernet.aggregateId else null : String,
+    type: netbox_type,
+    lag: if is_ethernet && isPresent(interface.ethernet.aggregateId) then interface.ethernet.aggregateId else null : String,
+    mode: vlan_mode,
+    untagged_vlan: untagged_vlan,
     enabled: interface.operStatus == OperStatus.UP,
     mtu: interface.mtu,
     description: if isPresent(interface.description) then interface.description else "",
@@ -577,7 +606,9 @@ where device.platform.vendor != Vendor.FORWARD_CUSTOM
   }
 ```
 
-The shipped query uses `speedMbps` as the authoritative interface speed and only maps well-known Ethernet rates to NetBox interface types. Unknown physical rates still preserve the actual speed while falling back to interface type `other`. Forward `IF_AGGREGATE` interfaces are emitted as native NetBox LAG interfaces, and physical members attach through the native NetBox `lag` relationship when Forward reports `ethernet.aggregateId`. During sharded imports, a member row can create a minimal native LAG placeholder if its aggregate row is applied by a later branch; the aggregate row updates that placeholder when it is processed. MTU is preserved from Forward `interface.mtu`, which is the normalized L2 MTU value exposed by the NQE data model. A final `select distinct` over the combined interface rows suppresses exact duplicates before NetBox ingestion.
+The shipped query uses `speedMbps` as the authoritative interface speed and only maps well-known Ethernet rates to NetBox interface types. Unknown physical rates still preserve the actual speed while falling back to interface type `other`. Forward `IF_AGGREGATE` interfaces are emitted as native NetBox LAG interfaces, and physical members attach through the native NetBox `lag` relationship when Forward reports `ethernet.aggregateId`. During sharded imports, a member row can create a minimal native LAG placeholder if its aggregate row is applied by a later branch; the aggregate row updates that placeholder when it is processed. MTU is preserved from Forward `interface.mtu`, which is the normalized L2 MTU value exposed by the NQE data model.
+
+Forward switched access mode and trunk native VLANs are mapped to native NetBox `Interface.mode` and `Interface.untagged_vlan`. The interface adapter only attaches a VLAN that already exists for the device site; a missing VLAN logs an aggregated warning and the interface still imports. Tagged trunk VLAN expansion is intentionally not performed by this map because Forward can represent ranges and implicit all-VLAN trunks, which would create unnecessary NetBox relationship volume.
 
 ## Forward Inferred Interface Cables
 
@@ -835,14 +866,17 @@ the IP address row.
 - Expected fields: `protocol`, `group_id`, `name`, `device`, `interface`, `vrf`, `address`, `state`, `priority`, `status`
 - Query file: [`forward_hsrp_groups.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_hsrp_groups.nqe)
 
-This optional map imports Forward native HSRP group state from subinterfaces and
-routed VLAN interfaces. The sync creates native NetBox `FHRPGroup` rows,
+This optional map imports Forward native HSRP and VRRP group state from
+subinterfaces and routed VLAN interfaces. The sync creates native NetBox
+`FHRPGroup` rows,
 `FHRPGroupAssignment` rows for participating interfaces, and one VIP
 `IPAddress` assigned to the group. Multiple participants for the same
-protocol/group/address/VRF share one group and VIP. Same group/address values in
-different VRFs remain separate. If a target VIP host already exists in NetBox
-and is assigned to another object, the row is skipped with an aggregated warning
-rather than reassigning the IP address.
+protocol/group/address/VRF share one group and VIP. IPv4 VRRP rows map to
+NetBox `vrrp2`, IPv6 VRRP rows map to NetBox `vrrp3`, and VIP IP addresses use
+the native `vrrp` role. Same group/address values in different VRFs remain
+separate. If a target VIP host already exists in NetBox and is assigned to
+another object, the row is skipped with an aggregated warning rather than
+reassigning the IP address.
 
 The built-in query is a single paged NQE result set and does not add per-device,
 per-interface, or per-group Forward API calls.
@@ -850,7 +884,7 @@ per-interface, or per-group Forward API calls.
 ```nqe
 /**
  * @intent Forward HSRP Groups
- * @description NetBox FHRP group rows derived from Forward native HSRP state.
+ * @description NetBox FHRP group rows derived from Forward native HSRP and VRRP state.
  */
 
 subinterface_ipv4 =
@@ -943,8 +977,107 @@ routed_vlan_ipv6 =
     status: "active"
   };
 
+subinterface_vrrp_ipv4 =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  foreach interface in device.interfaces
+  foreach subinterface in interface.subinterfaces
+  where isPresent(subinterface.ipv4?.fhrp?.vrrp?.fhrpGroups)
+  foreach group in subinterface.ipv4.fhrp.vrrp.fhrpGroups
+  select {
+    protocol: "vrrp2",
+    group_id: group.virtualRouterId,
+    name: "vrrp",
+    device: device.name,
+    interface: interface.name,
+    vrf: if isPresent(subinterface.networkInstanceName)
+      then if subinterface.networkInstanceName != "default" then subinterface.networkInstanceName else null : String
+      else null : String,
+    address: ipSubnet(group.virtualAddress, 32),
+    state: group.state,
+    priority: 100,
+    status: "active"
+  };
+
+subinterface_vrrp_ipv6 =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  foreach interface in device.interfaces
+  foreach subinterface in interface.subinterfaces
+  where isPresent(subinterface.ipv6?.fhrp?.vrrp?.fhrpGroups)
+  foreach group in subinterface.ipv6.fhrp.vrrp.fhrpGroups
+  select {
+    protocol: "vrrp3",
+    group_id: group.virtualRouterId,
+    name: "vrrp",
+    device: device.name,
+    interface: interface.name,
+    vrf: if isPresent(subinterface.networkInstanceName)
+      then if subinterface.networkInstanceName != "default" then subinterface.networkInstanceName else null : String
+      else null : String,
+    address: ipSubnet(group.virtualAddress, 128),
+    state: group.state,
+    priority: 100,
+    status: "active"
+  };
+
+routed_vlan_vrrp_ipv4 =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  foreach interface in device.interfaces
+  where isPresent(interface.routedVlan?.ipv4?.fhrp?.vrrp?.fhrpGroups)
+  foreach group in interface.routedVlan.ipv4.fhrp.vrrp.fhrpGroups
+  select {
+    protocol: "vrrp2",
+    group_id: group.virtualRouterId,
+    name: "vrrp",
+    device: device.name,
+    interface: interface.name,
+    vrf: if isPresent(interface.routedVlan.networkInstanceName)
+      then if interface.routedVlan.networkInstanceName != "default" then interface.routedVlan.networkInstanceName else null : String
+      else null : String,
+    address: ipSubnet(group.virtualAddress, 32),
+    state: group.state,
+    priority: 100,
+    status: "active"
+  };
+
+routed_vlan_vrrp_ipv6 =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  foreach interface in device.interfaces
+  where isPresent(interface.routedVlan?.ipv6?.fhrp?.vrrp?.fhrpGroups)
+  foreach group in interface.routedVlan.ipv6.fhrp.vrrp.fhrpGroups
+  select {
+    protocol: "vrrp3",
+    group_id: group.virtualRouterId,
+    name: "vrrp",
+    device: device.name,
+    interface: interface.name,
+    vrf: if isPresent(interface.routedVlan.networkInstanceName)
+      then if interface.routedVlan.networkInstanceName != "default" then interface.routedVlan.networkInstanceName else null : String
+      else null : String,
+    address: ipSubnet(group.virtualAddress, 128),
+    state: group.state,
+    priority: 100,
+    status: "active"
+  };
+
 @primaryKey(protocol, group_id, address, device, interface, vrf)
-foreach row in (subinterface_ipv4 + subinterface_ipv6 + routed_vlan_ipv4 + routed_vlan_ipv6)
+foreach row in (
+  subinterface_ipv4
+  + subinterface_ipv6
+  + routed_vlan_ipv4
+  + routed_vlan_ipv6
+  + subinterface_vrrp_ipv4
+  + subinterface_vrrp_ipv6
+  + routed_vlan_vrrp_ipv4
+  + routed_vlan_vrrp_ipv6
+)
 select distinct row
 ```
 
