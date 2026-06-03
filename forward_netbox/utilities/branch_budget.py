@@ -10,6 +10,7 @@ from .density_learning import density_budget_policy
 from .density_learning import normalize_density_profile
 from .sync_contracts import canonical_cable_endpoint_identity
 from .sync_contracts import default_coalesce_fields_for_model
+from .sync_contracts import row_coalesce_field_is_complete
 
 DEFAULT_MAX_CHANGES_PER_BRANCH = 10000
 BRANCH_BUDGET_SOFT_OVERRUN_PERCENT = 0.05
@@ -339,10 +340,17 @@ def row_shard_key(model_string, row, coalesce_fields):
     for field_set in coalesce_fields:
         values = []
         for field_name in field_set:
-            if row.get(field_name) in ("", None):
+            if not row_coalesce_field_is_complete(model_string, row, field_name):
                 values = []
                 break
-            values.append(f"{field_name}={row.get(field_name)}")
+            value = (
+                "<global>"
+                if model_string == "ipam.prefix"
+                and field_name == "vrf"
+                and row.get(field_name) in ("", None)
+                else row.get(field_name)
+            )
+            values.append(f"{field_name}={value}")
         if values:
             return "|".join(values)
 
