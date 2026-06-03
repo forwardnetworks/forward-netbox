@@ -362,7 +362,7 @@ class ForwardSyncFormTest(TestCase):
                 "timeout": 1200,
                 "nqe_page_size": 10000,
                 "verify": True,
-                "device_tag_include_tags": "N.Patel",
+                "device_tag_include_tags": "scope-alpha",
                 "device_tag_include_match": "any",
                 "device_tag_exclude_tags": "Branch",
             }
@@ -370,7 +370,7 @@ class ForwardSyncFormTest(TestCase):
 
         self.assertTrue(form.is_valid(), form.errors)
         source = form.save()
-        self.assertEqual(source.parameters["device_tag_include_tags"], ["N.Patel"])
+        self.assertEqual(source.parameters["device_tag_include_tags"], ["scope-alpha"])
         self.assertEqual(source.parameters["device_tag_exclude_tags"], ["Branch"])
 
     @patch("forward_netbox.forms.ForwardSource.validate_connection")
@@ -391,14 +391,14 @@ class ForwardSyncFormTest(TestCase):
                 "device_tag_include_match": "any",
             }
         )
-        payload.setlist("device_tag_include_tags[]", ["N.Patel"])
+        payload.setlist("device_tag_include_tags[]", ["scope-alpha"])
         payload.setlist("device_tag_exclude_tags[]", ["Branch"])
 
         form = ForwardSourceForm(data=payload)
 
         self.assertTrue(form.is_valid(), form.errors)
         source = form.save()
-        self.assertEqual(source.parameters["device_tag_include_tags"], ["N.Patel"])
+        self.assertEqual(source.parameters["device_tag_include_tags"], ["scope-alpha"])
         self.assertEqual(source.parameters["device_tag_exclude_tags"], ["Branch"])
 
     @patch("forward_netbox.forms.ForwardSource.validate_connection")

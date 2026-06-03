@@ -3,10 +3,18 @@
  * @description Raw NQE for NetBox IPv6 prefixes derived from Forward network instance routes.
  */
 
-@query f(forward_netbox_shard_keys: List<String>) =
+@query
+f(forward_netbox_shard_keys: List<String>, device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>) =
 foreach device in network.devices
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
+where isEmpty(device_tag_include_tags)
+  || (device_tag_include_match == "all"
+    && all(foreach tag in device_tag_include_tags select tag in device.tagNames))
+  || (device_tag_include_match != "all"
+    && any(foreach tag in device_tag_include_tags select tag in device.tagNames))
+where isEmpty(device_tag_exclude_tags)
+  || !any(foreach tag in device_tag_exclude_tags select tag in device.tagNames)
 foreach ni in device.networkInstances
 where isPresent(ni.afts?.ipv6Unicast?.ipEntries)
 foreach entry in ni.afts.ipv6Unicast.ipEntries

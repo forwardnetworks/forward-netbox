@@ -305,7 +305,7 @@ class ForwardSyncModelTest(TestCase):
     def test_source_tag_scope_preview_reports_counts(self, mock_get_client):
         self.source.parameters.update(
             {
-                "device_tag_include_tags": ["N.Patel"],
+                "device_tag_include_tags": ["scope-alpha"],
                 "device_tag_exclude_tags": ["Branch"],
                 "device_tag_include_match": "any",
             }
@@ -338,7 +338,7 @@ class ForwardSyncModelTest(TestCase):
     def test_source_tag_scope_preview_returns_error_when_snapshot_missing(
         self, mock_get_client
     ):
-        self.source.parameters.update({"device_tag_include_tags": ["N.Patel"]})
+        self.source.parameters.update({"device_tag_include_tags": ["scope-alpha"]})
         self.source.save(update_fields=["parameters"])
 
         client = Mock()

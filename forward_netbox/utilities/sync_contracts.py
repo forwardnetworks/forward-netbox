@@ -114,6 +114,22 @@ MODEL_SYNC_CONTRACTS: dict[str, ModelSyncContract] = {
         allowed_coalesce_fields=("address", "vrf"),
         default_coalesce_fields=(("address", "vrf"), ("address",)),
     ),
+    "ipam.fhrpgroup": ModelSyncContract(
+        required_fields=(
+            "protocol",
+            "group_id",
+            "name",
+            "device",
+            "interface",
+            "address",
+            "status",
+        ),
+        allowed_coalesce_fields=("protocol", "group_id", "address", "vrf"),
+        default_coalesce_fields=(
+            ("protocol", "group_id", "address", "vrf"),
+            ("protocol", "group_id", "address"),
+        ),
+    ),
     "dcim.inventoryitem": ModelSyncContract(
         required_fields=(
             "device",
