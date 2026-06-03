@@ -180,6 +180,13 @@ def _fhrp_group_name(row):
     return "-".join(part for part in parts if part)[:100]
 
 
+def _fhrp_vip_role(protocol):
+    protocol = str(protocol or "").strip().lower()
+    if protocol in {"vrrp2", "vrrp3"}:
+        return "vrrp"
+    return protocol or "vip"
+
+
 def _lookup_fhrp_group(runner, row):
     from ipam.models import FHRPGroup
 
@@ -199,6 +206,7 @@ def _ensure_fhrp_vip(runner, row, *, group, vrf, protocol):
 
     desired_assigned_object_type = runner._content_type_for(FHRPGroup)
     desired_assigned_object_id = group.pk
+    desired_role = _fhrp_vip_role(protocol)
     host_ip = str(ip_interface(row["address"]).ip)
     existing = runner._get_unique_or_raise(
         IPAddress,
@@ -209,7 +217,7 @@ def _ensure_fhrp_vip(runner, row, *, group, vrf, protocol):
             address=row["address"],
             vrf=vrf,
             status=row["status"],
-            role=protocol,
+            role=desired_role,
             assigned_object_type=desired_assigned_object_type,
             assigned_object_id=desired_assigned_object_id,
         )
@@ -243,8 +251,8 @@ def _ensure_fhrp_vip(runner, row, *, group, vrf, protocol):
     if existing.status != row["status"]:
         existing.status = row["status"]
         update_fields.append("status")
-    if existing.role != protocol:
-        existing.role = protocol
+    if existing.role != desired_role:
+        existing.role = desired_role
         update_fields.append("role")
     if is_unassigned:
         existing.assigned_object_type = desired_assigned_object_type
@@ -317,11 +325,11 @@ def apply_ipam_fhrpgroup(runner, row):
             "protocol": protocol,
             "group_id": int(row["group_id"]),
             "name": group_name,
-            "description": "Forward HSRP group",
+            "description": "Forward FHRP group",
             "comments": "",
         },
         update_values={
-            "description": "Forward HSRP group",
+            "description": "Forward FHRP group",
             "comments": "",
         },
     )

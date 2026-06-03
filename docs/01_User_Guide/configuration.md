@@ -221,11 +221,12 @@ The current built-in map set is:
 - `Forward Inventory Items`
 
 `Forward HSRP Groups` is optional and disabled unless `ipam.fhrpgroup` is selected
-for a sync. It imports Forward native HSRP group state into NetBox native FHRP
-objects with one paged NQE result set. It does not perform per-device,
-per-interface, or per-group Forward API calls. Existing NetBox IP addresses that
-are assigned to another object are treated as conflicts and skipped instead of
-being reassigned.
+for a sync. It imports Forward native HSRP and VRRP group state into NetBox
+native FHRP objects with one paged NQE result set. It does not perform
+per-device, per-interface, or per-group Forward API calls. IPv4 VRRP rows map to
+NetBox `vrrp2`, IPv6 VRRP rows map to NetBox `vrrp3`, and VIP IP addresses use
+the native `vrrp` role. Existing NetBox IP addresses that are assigned to
+another object are treated as conflicts and skipped instead of being reassigned.
 
 The optional beta map set also includes `Forward Modules`, `Forward BGP Peers`, `Forward BGP Address Families`, `Forward BGP Peer Address Families`, `Forward OSPF Instances`, `Forward OSPF Areas`, `Forward OSPF Interfaces`, and `Forward Peering Sessions` when their target ContentTypes exist.
 
