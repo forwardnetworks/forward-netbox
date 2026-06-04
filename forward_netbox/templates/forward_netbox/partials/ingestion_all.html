@@ -12,6 +12,9 @@
 <div id="ingestion_progress" hx-swap-oob="true">
   {% render_progress_card job statistics active_stage merge_job=merge_job merge_disabled=merge_disabled %}
 </div>
+<div id="change_explainability" hx-swap-oob="true">
+  {% include 'forward_netbox/partials/change_explainability.html' %}
+</div>
 <div id="ingestion_merge_button" hx-swap-oob="true">
   {% include 'forward_netbox/partials/ingestion_merge_button.html' with object=object %}
 </div>
@@ -22,7 +25,7 @@
      hx-trigger="{% if polling_done %}none{% else %}every 5s{% endif %}"
      hx-target="#ingestion_logs"
      hx-select="#ingestion_logs"
-     hx-select-oob="#ingestion_status:innerHTML,#ingestion_progress:innerHTML,#ingestion_statistics:innerHTML,#object_tabs:innerHTML,#ingestion_merge_button:innerHTML"
+     hx-select-oob="#ingestion_status:innerHTML,#ingestion_progress:innerHTML,#ingestion_statistics:innerHTML,#change_explainability:innerHTML,#object_tabs:innerHTML,#ingestion_merge_button:innerHTML"
      hx-swap="innerHTML">
 </div>
 <div id="ingestion_logs">
