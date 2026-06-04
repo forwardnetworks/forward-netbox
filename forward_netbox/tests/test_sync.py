@@ -361,16 +361,16 @@ class ForwardBranchBudgetPlanTest(TestCase):
     def test_ipam_prefix_global_shard_key_preserves_parameterized_fetch(self):
         shard_key = row_shard_key(
             "ipam.prefix",
-            {"prefix": "10.232.106.0/27", "vrf": None, "status": "active"},
+            {"prefix": "192.0.2.0/27", "vrf": None, "status": "active"},
             [["prefix", "vrf"]],
         )
         contract = shard_fetch_contract("ipam.prefix", [shard_key])
 
-        self.assertEqual(shard_key, "prefix=10.232.106.0/27|vrf=<global>")
+        self.assertEqual(shard_key, "prefix=192.0.2.0/27|vrf=<global>")
         self.assertEqual(contract["fetch_mode"], "nqe_parameters")
         self.assertEqual(
             contract["fetch_parameters"],
-            {"forward_netbox_shard_keys": ["10.232.106.0/27"]},
+            {"forward_netbox_shard_keys": ["192.0.2.0/27"]},
         )
 
     def test_ipam_vlan_shard_fetch_contract_filters_by_vid_column(self):
@@ -7911,7 +7911,7 @@ class ForwardSyncRunnerTest(TestCase):
 
     def test_apply_ipam_prefix_keeps_global_and_vrf_scoped_rows_distinct(self):
         global_prefix = Prefix.objects.create(
-            prefix="10.232.106.0/27",
+            prefix="192.0.2.0/27",
             vrf=None,
             status="active",
         )
@@ -7921,7 +7921,7 @@ class ForwardSyncRunnerTest(TestCase):
 
         runner._apply_ipam_prefix(
             {
-                "prefix": "10.232.106.0/27",
+                "prefix": "192.0.2.0/27",
                 "vrf": "blue",
                 "status": "active",
             }
@@ -7929,17 +7929,17 @@ class ForwardSyncRunnerTest(TestCase):
 
         global_prefix.refresh_from_db()
         scoped_prefix = Prefix.objects.get(
-            prefix="10.232.106.0/27",
+            prefix="192.0.2.0/27",
             vrf__name="blue",
         )
         self.assertIsNone(global_prefix.vrf)
         self.assertEqual(scoped_prefix.status, "active")
-        self.assertEqual(Prefix.objects.filter(prefix="10.232.106.0/27").count(), 2)
+        self.assertEqual(Prefix.objects.filter(prefix="192.0.2.0/27").count(), 2)
 
     def test_apply_ipam_prefix_repeat_sync_does_not_rewrite_vrf(self):
         vrf = VRF.objects.create(name="blue", rd="64512:106")
         prefix = Prefix.objects.create(
-            prefix="10.232.106.0/27",
+            prefix="192.0.2.0/27",
             vrf=vrf,
             status="active",
         )
@@ -7947,7 +7947,7 @@ class ForwardSyncRunnerTest(TestCase):
             sync=self.sync, ingestion=None, client=None, logger_=Mock()
         )
         row = {
-            "prefix": "10.232.106.0/27",
+            "prefix": "192.0.2.0/27",
             "vrf": "blue",
             "status": "active",
         }
@@ -7958,7 +7958,7 @@ class ForwardSyncRunnerTest(TestCase):
 
         prefix.refresh_from_db()
         self.assertEqual(prefix.vrf, vrf)
-        self.assertEqual(Prefix.objects.filter(prefix="10.232.106.0/27").count(), 1)
+        self.assertEqual(Prefix.objects.filter(prefix="192.0.2.0/27").count(), 1)
         self.assertEqual(ObjectChange.objects.count(), before_count)
 
     def test_apply_ipam_ipaddress_skips_unassignable_network_and_broadcast_addresses(
@@ -9466,6 +9466,147 @@ class ForwardSyncRunnerTest(TestCase):
             client.run_nqe_query.call_args.kwargs["parameters"],
             {"existing": "value"},
         )
+
+    def test_fetch_spec_rows_prefetches_sibling_shard_column_filters_once(self):
+        client = Mock()
+        logger = Mock()
+        fetcher = ForwardQueryFetcher(
+            sync=self.sync,
+            client=client,
+            logger_=logger,
+        )
+        context = ForwardQueryContext(
+            network_id="test-network",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-before",
+        )
+        spec = QuerySpec(
+            model_string="dcim.interface",
+            query_name="Forward Interfaces",
+            query="foreach interface select {device: interface.device.name}",
+        )
+        run = ForwardExecutionRun.objects.create(
+            sync=self.sync,
+            source=self.source,
+            backend="branching",
+            status="running",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-before",
+            total_steps=2,
+            next_step_index=1,
+        )
+        first_scope = {
+            "fetch_mode": "nqe_column_filter",
+            "fetch_key_family": "device",
+            "fetch_column_filters": [
+                {
+                    "operator": "EQUALS_ANY",
+                    "columnName": "device",
+                    "values": ["device-1"],
+                }
+            ],
+            "shard_keys": ["device:device-1"],
+            "query_parameters": {},
+        }
+        second_scope = {
+            "fetch_mode": "nqe_column_filter",
+            "fetch_key_family": "device",
+            "fetch_column_filters": [
+                {
+                    "operator": "EQUALS_ANY",
+                    "columnName": "device",
+                    "values": ["device-2"],
+                }
+            ],
+            "shard_keys": ["device:device-2"],
+            "query_parameters": {},
+        }
+        ForwardExecutionStep.objects.create(
+            run=run,
+            index=1,
+            kind="stage",
+            status="running",
+            model_string="dcim.interface",
+            query_name=spec.query_name,
+            execution_mode=spec.execution_mode,
+            execution_value=spec.execution_value,
+            shard_keys=first_scope["shard_keys"],
+            fetch_mode=first_scope["fetch_mode"],
+            fetch_key_family=first_scope["fetch_key_family"],
+            fetch_column_filters=first_scope["fetch_column_filters"],
+        )
+        ForwardExecutionStep.objects.create(
+            run=run,
+            index=2,
+            kind="stage",
+            status="pending",
+            model_string="dcim.interface",
+            query_name=spec.query_name,
+            execution_mode=spec.execution_mode,
+            execution_value=spec.execution_value,
+            shard_keys=second_scope["shard_keys"],
+            fetch_mode=second_scope["fetch_mode"],
+            fetch_key_family=second_scope["fetch_key_family"],
+            fetch_column_filters=second_scope["fetch_column_filters"],
+        )
+        client.run_nqe_query.return_value = [
+            {"device": "device-1", "name": "Ethernet1/1"},
+            {"device": "device-2", "name": "Ethernet1/1"},
+        ]
+
+        with tempfile.TemporaryDirectory() as artifact_dir:
+            with patch.dict(
+                os.environ,
+                {"FORWARD_NETBOX_FETCH_ARTIFACT_DIR": artifact_dir},
+            ):
+                rows, delete_rows, sync_mode, fetch_meta = fetcher._fetch_spec_rows(
+                    "dcim.interface",
+                    spec,
+                    baseline=None,
+                    context=context,
+                    coalesce_fields=[["device", "name"]],
+                    shard_scope=first_scope,
+                    return_fetch_meta=True,
+                )
+
+                self.assertEqual(sync_mode, "full")
+                self.assertEqual(delete_rows, [])
+                self.assertEqual(rows, [{"device": "device-1", "name": "Ethernet1/1"}])
+                client.run_nqe_query.assert_called_once()
+                self.assertEqual(
+                    client.run_nqe_query.call_args.kwargs["column_filters"][0][
+                        "values"
+                    ],
+                    ["device-1", "device-2"],
+                )
+                self.assertEqual(
+                    fetch_meta["fetch_column_filters"][0]["values"],
+                    ["device-1"],
+                )
+
+                client.run_nqe_query.reset_mock()
+                rows, delete_rows, sync_mode, fetch_meta = fetcher._fetch_spec_rows(
+                    "dcim.interface",
+                    spec,
+                    baseline=None,
+                    context=context,
+                    coalesce_fields=[["device", "name"]],
+                    shard_scope=second_scope,
+                    return_fetch_meta=True,
+                )
+
+                client.run_nqe_query.assert_not_called()
+                self.assertEqual(sync_mode, "full")
+                self.assertEqual(delete_rows, [])
+                self.assertEqual(rows, [{"device": "device-2", "name": "Ethernet1/1"}])
+                self.assertEqual(
+                    fetch_meta["fetch_parameters"]["fetch_artifact"]["status"],
+                    "hit",
+                )
+                self.assertEqual(
+                    fetch_meta["fetch_parameters"]["prefetch_artifact"]["source"],
+                    "sibling_shard_prefetch",
+                )
 
     def test_fetch_spec_rows_filters_cable_device_pushdown_superset_to_shard(self):
         client = Mock()
