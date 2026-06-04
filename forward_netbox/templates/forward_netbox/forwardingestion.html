@@ -117,6 +117,9 @@
     <div id="ingestion_progress">
       {% render_progress_card object.job statistics active_stage merge_job=merge_job merge_disabled=merge_disabled %}
     </div>
+    <div id="change_explainability">
+      {% include 'forward_netbox/partials/change_explainability.html' %}
+    </div>
     <div class="card">
       <h5 class="card-header">{% trans "Forward Snapshot Metrics" %}</h5>
       <div class="card-body">
@@ -166,7 +169,7 @@
          hx-trigger="{% if job_running %}every 5s{% else %}none{% endif %}"
          hx-target="#ingestion_logs"
          hx-select="#ingestion_logs"
-         hx-select-oob="#ingestion_status:innerHTML,#ingestion_progress:innerHTML,#ingestion_statistics:innerHTML,#object_tabs:innerHTML,#ingestion_merge_button:innerHTML"
+         hx-select-oob="#ingestion_status:innerHTML,#ingestion_progress:innerHTML,#ingestion_statistics:innerHTML,#change_explainability:innerHTML,#object_tabs:innerHTML,#ingestion_merge_button:innerHTML"
          hx-swap="innerHTML">
     </div>
     <div id="ingestion_logs" class="col col-md-12">

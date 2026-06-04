@@ -69,6 +69,7 @@ from .tables import ForwardNQEMapTable
 from .tables import ForwardSourceTable
 from .tables import ForwardSyncTable
 from .tables import ForwardValidationRunTable
+from .utilities.change_explainability import change_explainability_summary
 from .utilities.direct_changes import object_changes_for_ingestion
 from .utilities.execution_ledger import current_discardable_step
 from .utilities.execution_ledger import current_mergeable_step
@@ -206,6 +207,9 @@ def _ingestion_log_export_payload(ingestion, *, active_stage):
             "plan_items": execution_state.get("plan_items") or [],
         },
         "execution_run": json_safe_value(execution_run_bundle_for_sync(ingestion.sync)),
+        "change_explainability": json_safe_value(
+            change_explainability_summary(ingestion)
+        ),
         "job_results": json_safe_value(ingestion.get_job_logs(ingestion.job)),
         "merge_job_results": json_safe_value(
             ingestion.get_job_logs(ingestion.merge_job)
@@ -248,6 +252,9 @@ def _sync_support_bundle_payload(sync):
                 ),
                 "job": _job_export_payload(latest_ingestion.job),
                 "merge_job": _job_export_payload(latest_ingestion.merge_job),
+                "change_explainability": json_safe_value(
+                    change_explainability_summary(latest_ingestion)
+                ),
             }
             if latest_ingestion is not None
             else None
@@ -989,6 +996,7 @@ class ForwardIngestionLogView(LoginRequiredMixin, View):
         data["active_stage"] = active_stage
         data["merge_disabled"] = not ingestion.merge_job
         data["execution_state"] = get_execution_display_state(ingestion.sync)
+        data["change_explainability"] = change_explainability_summary(ingestion)
         data["export_logs_url"] = reverse(
             "plugins:forward_netbox:forwardingestion_export_logs",
             kwargs={"pk": ingestion.pk},
@@ -1057,6 +1065,7 @@ class ForwardIngestionView(generic.ObjectView):
         data["active_stage"] = active_stage
         data["merge_disabled"] = not instance.merge_job
         data["execution_state"] = get_execution_display_state(instance.sync)
+        data["change_explainability"] = change_explainability_summary(instance)
         data["export_logs_url"] = reverse(
             "plugins:forward_netbox:forwardingestion_export_logs",
             kwargs={"pk": instance.pk},

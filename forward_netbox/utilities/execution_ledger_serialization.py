@@ -1,6 +1,7 @@
 from ..choices import ForwardExecutionRunStatusChoices
 from .api_usage import evaluate_forward_api_usage
 from .branch_budget import BRANCH_RUN_STATE_PARAMETER
+from .change_explainability import change_explainability_summary
 from .execution_ledger_metrics import apply_engine_decision
 from .execution_ledger_metrics import execution_run_metrics
 from .execution_ledger_metrics import fetch_explanation
@@ -168,6 +169,7 @@ def ingestion_support_summary(ingestion):
         "created_change_count": int(ingestion.created_change_count or 0),
         "updated_change_count": int(ingestion.updated_change_count or 0),
         "deleted_change_count": int(ingestion.deleted_change_count or 0),
+        "change_explainability": change_explainability_summary(ingestion),
         "issue_count": ingestion.issues.count(),
         "issues": [
             {
