@@ -5,6 +5,8 @@
  * type maps Forward structured features to NetBox device tags.
  */
 
+@query
+f(forward_netbox_shard_keys: List<String>) =
 foreach device in network.devices
 let rules = network.extensions.netbox_feature_tag_rules
 let empty_rules = (foreach x in fromTo(1, 0) select {
@@ -18,6 +20,7 @@ let empty_rules = (foreach x in fromTo(1, 0) select {
 let rule_rows = if isPresent(rules.value) then rules.value else empty_rules
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
+where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
 foreach networkInstance in device.networkInstances
 foreach protocol in networkInstance.protocols
 foreach rule in rule_rows

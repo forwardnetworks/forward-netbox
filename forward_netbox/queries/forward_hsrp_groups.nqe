@@ -3,10 +3,13 @@
  * @description NetBox FHRP group rows derived from Forward native HSRP and VRRP state.
  */
 
+@query
+f(forward_netbox_shard_keys: List<String>) =
 subinterface_ipv4 =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
   foreach interface in device.interfaces
   foreach subinterface in interface.subinterfaces
   where isPresent(subinterface.ipv4?.fhrp?.hsrp?.fhrpGroups)
@@ -30,6 +33,7 @@ subinterface_ipv6 =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
   foreach interface in device.interfaces
   foreach subinterface in interface.subinterfaces
   where isPresent(subinterface.ipv6?.fhrp?.hsrp?.fhrpGroups)
@@ -53,6 +57,7 @@ routed_vlan_ipv4 =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
   foreach interface in device.interfaces
   where isPresent(interface.routedVlan?.ipv4?.fhrp?.hsrp?.fhrpGroups)
   foreach group in interface.routedVlan.ipv4.fhrp.hsrp.fhrpGroups
@@ -75,6 +80,7 @@ routed_vlan_ipv6 =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
   foreach interface in device.interfaces
   where isPresent(interface.routedVlan?.ipv6?.fhrp?.hsrp?.fhrpGroups)
   foreach group in interface.routedVlan.ipv6.fhrp.hsrp.fhrpGroups
@@ -97,6 +103,7 @@ subinterface_vrrp_ipv4 =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
   foreach interface in device.interfaces
   foreach subinterface in interface.subinterfaces
   where isPresent(subinterface.ipv4?.fhrp?.vrrp?.fhrpGroups)
@@ -120,6 +127,7 @@ subinterface_vrrp_ipv6 =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
   foreach interface in device.interfaces
   foreach subinterface in interface.subinterfaces
   where isPresent(subinterface.ipv6?.fhrp?.vrrp?.fhrpGroups)
@@ -143,6 +151,7 @@ routed_vlan_vrrp_ipv4 =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
   foreach interface in device.interfaces
   where isPresent(interface.routedVlan?.ipv4?.fhrp?.vrrp?.fhrpGroups)
   foreach group in interface.routedVlan.ipv4.fhrp.vrrp.fhrpGroups
@@ -165,6 +174,7 @@ routed_vlan_vrrp_ipv6 =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
   foreach interface in device.interfaces
   where isPresent(interface.routedVlan?.ipv6?.fhrp?.vrrp?.fhrpGroups)
   foreach group in interface.routedVlan.ipv6.fhrp.vrrp.fhrpGroups
