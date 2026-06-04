@@ -5,12 +5,15 @@
 
 import "netbox_utilities";
 
+@query
+f(forward_netbox_shard_keys: List<String>) =
 candidate_rows =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
   foreach ni in device.networkInstances
   foreach vlan in ni.vlans
+  where isEmpty(forward_netbox_shard_keys) || toString(vlan.vlanId) in forward_netbox_shard_keys
   let site_name = if isPresent(device.locationName) then toLowerCase(device.locationName) else "unknown"
   let site_slug = slugify(site_name)
   select distinct {

@@ -3,10 +3,13 @@
  * @description Raw NQE for NetBox MAC addresses derived from Forward interface ethernet state.
  */
 
+@query
+f(forward_netbox_shard_keys: List<String>) =
 candidate_rows =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
   foreach interface in device.interfaces
   where interface.interfaceType == IfaceType.IF_ETHERNET
   where isPresent(interface.ethernet.macAddress)

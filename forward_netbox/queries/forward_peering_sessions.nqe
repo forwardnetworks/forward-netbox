@@ -3,9 +3,12 @@
  * @description Optional raw NQE for netbox-peering-manager session rows backed by netbox-routing BGP peers.
  */
 
+@query
+f(forward_netbox_shard_keys: List<String>) =
 foreach device in network.devices
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
+where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
 foreach network_instance in device.networkInstances
 foreach protocol in network_instance.protocols
 where isPresent(protocol.bgp)

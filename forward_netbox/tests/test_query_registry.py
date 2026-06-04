@@ -21,7 +21,6 @@ from forward_netbox.utilities.query_registry import QuerySpec
 from forward_netbox.utilities.query_registry import read_builtin_query_source
 from forward_netbox.utilities.query_registry import routing_import_diagnostic_query
 from forward_netbox.utilities.query_registry import ROUTING_IMPORT_DIAGNOSTIC_QUERY_NAME
-from forward_netbox.utilities.query_registry import SHARD_PARAMETER_QUERY_FILES
 
 
 REQUIRED_FIELDS_BY_QUERY_NAME = {
@@ -390,7 +389,7 @@ class QueryRegistryTest(TestCase):
                 msg=f"{query_name} should deduplicate the projected record directly.",
             )
 
-    def test_device_scoped_builtin_queries_do_not_seed_unproven_parameters(self):
+    def test_device_scoped_builtin_queries_seed_empty_shard_parameter(self):
         rows = {row["name"]: row for row in builtin_nqe_map_rows()}
 
         for query_name in (
@@ -401,7 +400,10 @@ class QueryRegistryTest(TestCase):
             "Forward BGP Peers",
             "Forward Virtual Chassis",
         ):
-            self.assertEqual(rows[query_name]["parameters"], {})
+            self.assertEqual(
+                rows[query_name]["parameters"],
+                {"forward_netbox_shard_keys": []},
+            )
 
         self.assertEqual(
             rows["Forward Locations"]["parameters"],
@@ -409,6 +411,7 @@ class QueryRegistryTest(TestCase):
                 "device_tag_include_tags": [],
                 "device_tag_include_match": "any",
                 "device_tag_exclude_tags": [],
+                "forward_netbox_shard_keys": [],
             },
         )
 
@@ -434,19 +437,51 @@ class QueryRegistryTest(TestCase):
             },
         )
 
-    def test_builtin_queries_do_not_reference_unregistered_shard_parameters(self):
+    def test_sync_builtin_queries_seed_empty_shard_parameter(self):
+        rows = {row["name"]: row for row in builtin_nqe_map_rows()}
+        excluded_names = {
+            IPADDRESS_UNASSIGNABLE_DIAGNOSTIC_QUERY_NAME,
+            ROUTING_IMPORT_DIAGNOSTIC_QUERY_NAME,
+        }
+
+        for query_name, row in rows.items():
+            if query_name in excluded_names:
+                continue
+            self.assertIn(
+                "forward_netbox_shard_keys",
+                row["parameters"],
+                msg=f"{query_name} does not seed the shard parameter.",
+            )
+            self.assertEqual(row["parameters"]["forward_netbox_shard_keys"], [])
+
+    def test_sync_builtin_queries_declare_shard_parameter(self):
+        filenames = {
+            query["filename"]
+            for query in [*BUILTIN_QUERY_MAPS, *BUILTIN_OPTIONAL_QUERY_MAPS]
+        }
+        excluded_filenames = {
+            "forward_ip_addresses_unassignable_diagnostics.nqe",
+            "forward_routing_import_diagnostics.nqe",
+        }
+        for filename in sorted(filenames):
+            if filename in excluded_filenames:
+                continue
+            query = read_builtin_query_source(filename)
+            self.assertIn(
+                "forward_netbox_shard_keys",
+                query,
+                msg=f"{filename} does not declare the shard parameter.",
+            )
+
+    def test_shard_parameter_queries_leave_peer_device_lookups_global(self):
         filenames = {
             query["filename"]
             for query in [*BUILTIN_QUERY_MAPS, *BUILTIN_OPTIONAL_QUERY_MAPS]
         }
         for filename in sorted(filenames):
             query = read_builtin_query_source(filename)
-            if filename not in SHARD_PARAMETER_QUERY_FILES:
-                self.assertNotIn("forward_netbox_shard_keys", query)
-
-    def test_shard_parameter_queries_leave_peer_device_lookups_global(self):
-        for filename in sorted(SHARD_PARAMETER_QUERY_FILES):
-            query = read_builtin_query_source(filename)
+            if "forward_netbox_shard_keys" not in query:
+                continue
             for variable, block in _network_device_loop_blocks(query):
                 if variable != "peer_device":
                     continue
@@ -762,10 +797,14 @@ class QueryRegistryTest(TestCase):
                 if line.strip() and not line.strip().startswith("import ")
             ]
 
+            first_device_clause = next(
+                (clause for clause in clauses if clause.startswith("foreach ")),
+                "",
+            )
             self.assertEqual(
-                clauses[0],
+                first_device_clause,
                 "foreach device in network.devices",
-                msg=f"{query_name} no longer starts with the device iterator.",
+                msg=f"{query_name} no longer starts execution with the device iterator.",
             )
             self.assertEqual(
                 query.count("network.devices"),
