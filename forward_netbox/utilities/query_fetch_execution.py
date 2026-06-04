@@ -382,7 +382,6 @@ class ForwardQueryFetcher:
         self._failed_model_results: dict[str, ForwardModelResult] = {}
         self._resolved_specs_cache: dict[str, list[Any]] = {}
         self._incremental_baseline_cache: dict[tuple[Any, ...], Any] = {}
-        self._parameter_fallback_log_keys: set[tuple[str, str, str]] = set()
 
     def resolve_context(self, *, branch_run_state=None) -> ForwardQueryContext:
         branch_run_state = branch_run_state or {}
@@ -674,7 +673,7 @@ class ForwardQueryFetcher:
         context, row_limit, job = payload
         model_string, spec, coalesce_fields = job
         try:
-            preflight_rows = self._run_nqe_query_with_parameter_fallback(
+            preflight_rows = self._run_nqe_query(
                 spec=spec,
                 context=context,
                 parameters=spec.merged_parameters(context.query_parameters),
@@ -1411,7 +1410,7 @@ class ForwardQueryFetcher:
         context, row_limit, job = payload
         model_string, spec, coalesce_fields = job
         started = time.perf_counter()
-        rows = self._run_nqe_query_with_parameter_fallback(
+        rows = self._run_nqe_query(
             spec=spec,
             context=context,
             parameters=spec.merged_parameters(context.query_parameters),
@@ -1721,10 +1720,11 @@ class ForwardQueryFetcher:
                     partitions=column_filter_batches,
                     operation="diff",
                     retry_summary=partition_retry_summary,
-                    fetch_partition=lambda partition: self._run_nqe_diff_without_parameters(
+                    fetch_partition=lambda partition: self._run_nqe_diff(
                         spec=spec,
                         context=context,
                         before_snapshot_id=baseline.snapshot_id,
+                        parameters=parameters,
                         column_filters=partition,
                     ),
                 )
@@ -1829,16 +1829,12 @@ class ForwardQueryFetcher:
                 partitions=column_filter_batches,
                 operation="full",
                 retry_summary=partition_retry_summary,
-                fetch_partition=lambda partition: self._run_nqe_query_with_parameter_fallback(
+                fetch_partition=lambda partition: self._run_nqe_query(
                     spec=spec,
                     context=context,
                     parameters=parameters,
                     column_filters=partition,
                     fetch_all=True,
-                    allow_parameter_fallback=(
-                        not shard_scope
-                        or shard_scope.get("fetch_mode") != "nqe_parameters"
-                    ),
                 ),
             )
         except (ForwardClientError, ForwardConnectivityError) as exc:
@@ -1858,7 +1854,7 @@ class ForwardQueryFetcher:
             )
             model_artifact_rows, model_artifact_meta = _load_model_fetch_artifact()
             if model_artifact_rows is None:
-                rows = self._run_nqe_query_with_parameter_fallback(
+                rows = self._run_nqe_query(
                     spec=spec,
                     context=context,
                     parameters=parameters,
@@ -2535,21 +2531,7 @@ class ForwardQueryFetcher:
             parsed = DEFAULT_PREFLIGHT_ROW_LIMIT
         return max(1, min(MAX_PREFLIGHT_ROW_LIMIT, parsed))
 
-    def _supports_parameter_fallback_error(self, exc: Exception) -> bool:
-        message = str(exc)
-        unrecognized_parameters = (
-            "Unrecognized field" in message and "parameters" in message
-        )
-        return (
-            "does not take parameters" in message
-            or "Variable parameters not in scope" in message
-            or "Parameters were provided, but a main query does not take parameters"
-            in message
-            or unrecognized_parameters
-            or "not marked as ignorable" in message
-        )
-
-    def _run_nqe_query_with_parameter_fallback(
+    def _run_nqe_query(
         self,
         *,
         spec,
@@ -2558,49 +2540,37 @@ class ForwardQueryFetcher:
         limit: int | None = None,
         column_filters=None,
         fetch_all: bool = False,
-        allow_parameter_fallback: bool = True,
     ):
-        try:
-            return self.client.run_nqe_query(
-                query=spec.query,
-                query_id=spec.run_query_id,
-                commit_id=spec.commit_id,
-                network_id=context.network_id,
-                snapshot_id=context.snapshot_id,
-                parameters=parameters,
-                limit=limit,
-                column_filters=column_filters,
-                fetch_all=fetch_all,
-            )
-        except (ForwardClientError, ForwardConnectivityError) as exc:
-            if (
-                not allow_parameter_fallback
-                or not parameters
-                or not self._supports_parameter_fallback_error(exc)
-            ):
-                raise
-            fallback_key = (
-                str(getattr(spec, "query_name", "") or ""),
-                str(getattr(spec, "execution_value", "") or ""),
-                str(getattr(spec, "run_query_id", "") or ""),
-            )
-            if fallback_key not in self._parameter_fallback_log_keys:
-                self._parameter_fallback_log_keys.add(fallback_key)
-                self.logger.log_info(
-                    f"Forward query `{spec.execution_value}` rejected query parameters; retrying without parameters.",
-                    obj=self.sync,
-                )
-            return self.client.run_nqe_query(
-                query=spec.query,
-                query_id=spec.run_query_id,
-                commit_id=spec.commit_id,
-                network_id=context.network_id,
-                snapshot_id=context.snapshot_id,
-                parameters={},
-                limit=limit,
-                column_filters=column_filters,
-                fetch_all=fetch_all,
-            )
+        return self.client.run_nqe_query(
+            query=spec.query,
+            query_id=spec.run_query_id,
+            commit_id=spec.commit_id,
+            network_id=context.network_id,
+            snapshot_id=context.snapshot_id,
+            parameters=parameters,
+            limit=limit,
+            column_filters=column_filters,
+            fetch_all=fetch_all,
+        )
+
+    def _run_nqe_diff(
+        self,
+        *,
+        spec,
+        context: ForwardQueryContext,
+        before_snapshot_id: str,
+        parameters: dict[str, Any],
+        column_filters=None,
+    ):
+        return self.client.run_nqe_diff(
+            query_id=spec.run_query_id,
+            commit_id=spec.commit_id,
+            parameters=parameters,
+            before_snapshot_id=before_snapshot_id,
+            after_snapshot_id=context.snapshot_id,
+            column_filters=column_filters,
+            fetch_all=True,
+        )
 
     def _run_nqe_diff_without_parameters(
         self,

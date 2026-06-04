@@ -8,6 +8,8 @@
 
 import "netbox_utilities";
 
+@query
+f(forward_netbox_shard_keys: List<String>) =
 foreach device in network.devices
 let aliases = network.extensions.netbox_device_type_aliases
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
@@ -49,6 +51,9 @@ let mapped_slug = if isPresent(aliases.value) then max(
   else null : String
 let model = if isPresent(mapped_model) then mapped_model else raw_model
 let model_slug = if isPresent(mapped_slug) then mapped_slug else raw_model_slug
+where isEmpty(forward_netbox_shard_keys)
+  || model_slug in forward_netbox_shard_keys
+  || model in forward_netbox_shard_keys
 select distinct {
   manufacturer: manufacturer_name,
   manufacturer_slug: manufacturer_slug,

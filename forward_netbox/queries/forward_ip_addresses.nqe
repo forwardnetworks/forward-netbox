@@ -3,10 +3,13 @@
  * @description Raw NQE for NetBox IP address rows derived from Forward interface L3 state.
  */
 
+@query
+f(forward_netbox_shard_keys: List<String>) =
 subinterface_ipv4 =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
   foreach interface in device.interfaces
   foreach subinterface in interface.subinterfaces
   foreach address in subinterface.ipv4.addresses
@@ -28,6 +31,7 @@ subinterface_ipv6 =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
   foreach interface in device.interfaces
   foreach subinterface in interface.subinterfaces
   foreach address in subinterface.ipv6.addresses
@@ -48,6 +52,7 @@ bridge_ipv4 =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
   foreach interface in device.interfaces
   where isPresent(interface.bridge?.ipv4?.addresses)
   foreach address in interface.bridge.ipv4.addresses
@@ -69,6 +74,7 @@ bridge_ipv6 =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
   foreach interface in device.interfaces
   where isPresent(interface.bridge?.ipv6?.addresses)
   foreach address in interface.bridge.ipv6.addresses
@@ -89,6 +95,7 @@ tunnel_ipv4 =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
   foreach interface in device.interfaces
   where isPresent(interface.tunnel?.ipv4?.addresses)
   foreach address in interface.tunnel.ipv4.addresses
@@ -110,6 +117,7 @@ tunnel_ipv6 =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
   foreach interface in device.interfaces
   where isPresent(interface.tunnel?.ipv6?.addresses)
   foreach address in interface.tunnel.ipv6.addresses
@@ -130,6 +138,7 @@ routed_vlan_ipv4 =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
   foreach interface in device.interfaces
   where isPresent(interface.routedVlan?.ipv4?.addresses)
   foreach address in interface.routedVlan.ipv4.addresses
@@ -151,6 +160,7 @@ routed_vlan_ipv6 =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
   foreach interface in device.interfaces
   where isPresent(interface.routedVlan?.ipv6?.addresses)
   foreach address in interface.routedVlan.ipv6.addresses
@@ -178,6 +188,7 @@ importable_interfaces =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
   foreach interface in device.interfaces
   select {
     device: device.name,

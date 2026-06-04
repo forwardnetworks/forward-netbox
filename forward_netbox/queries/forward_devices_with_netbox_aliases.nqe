@@ -8,10 +8,13 @@
 
 import "netbox_utilities";
 
+@query
+f(forward_netbox_shard_keys: List<String>) =
 foreach device in network.devices
 let aliases = network.extensions.netbox_device_type_aliases
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
+where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
 let location = device.locationName
 let raw_model = toString(device.platform.model)
 let raw_model_slug = slugifyNetboxModel(raw_model)
