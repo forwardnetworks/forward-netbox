@@ -1,6 +1,7 @@
 from collections import Counter
 
 from .execution_ledger import latest_execution_run
+from .execution_ledger_serialization import api_usage_support_summary
 from .forward_api import LATEST_PROCESSED_SNAPSHOT
 from .health_apply_fetch import apply_engine_summary as _apply_engine_summary_impl
 from .health_apply_fetch import fetch_contract_summary as _fetch_contract_summary_impl
@@ -162,6 +163,7 @@ def sync_health_summary(sync):
         "latest_validation": _validation_summary(validation_run),
         "latest_ingestion": _ingestion_summary(latest_ingestion),
         "latest_execution_run": _execution_run_summary(execution_run),
+        "api_usage": api_usage_support_summary(execution_run),
         "capacity": capacity_summary,
         "next_run": next_run,
         "checks": checks,

@@ -15,6 +15,7 @@ from ..models import ForwardSource
 from ..models import ForwardSync
 from ..models import ForwardValidationRun
 from ..utilities.logging import SyncLogging
+from .api_usage import evaluate_forward_api_usage
 from .runtime_guidance import log_worker_timeout_guidance
 from .sync_state import mark_branch_run_failed
 
@@ -120,15 +121,24 @@ def _record_forward_api_usage(sync, executor):
     summary = summary_method()
     if not isinstance(summary, dict):
         return
+    summary = dict(summary)
+    budget = evaluate_forward_api_usage(
+        summary,
+        source_type=getattr(getattr(sync, "source", None), "type", None),
+    )
+    summary["budget"] = budget
     sync.logger.set_api_usage_summary(summary)
     sync.logger.log_info(
         "Forward API usage summary: "
+        f"api_usage_status={budget.get('status')} "
         f"http_attempts={summary.get('http_attempts', 0)} "
         f"http_retries={summary.get('http_retries', 0)} "
         f"http_429_failures={summary.get('http_429_failures', 0)} "
         f"nqe_query_calls={summary.get('nqe_query_calls', 0)} "
         f"nqe_diff_calls={summary.get('nqe_diff_calls', 0)} "
         f"nqe_pages={summary.get('nqe_pages', 0)} "
+        f"observed_http_attempts_per_minute="
+        f"{summary.get('observed_http_attempts_per_minute')} "
         f"throttle_sleep_seconds={summary.get('throttle_sleep_seconds', 0.0)}.",
         obj=sync,
     )

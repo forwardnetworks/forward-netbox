@@ -159,6 +159,164 @@ class ScaleBenchmarkReportTest(TestCase):
             checks["diff_baseline_transition"]["evidence"]["transition_code"],
             "api_diff_active",
         )
+        self.assertEqual(checks["api_usage_budget"]["status"], "info")
+
+    def test_report_passes_api_usage_budget_evidence(self):
+        report = scale_benchmark_report(
+            {
+                "run": {
+                    "id": 12,
+                    "backend": "branching",
+                    "status": "completed",
+                    "total_steps": 1,
+                    "next_step_index": 2,
+                    "baseline_ready": True,
+                },
+                "metrics": {
+                    "step_count": 1,
+                    "attempted_row_count": 10,
+                    "failed_row_count": 0,
+                    "pushdown_efficiency": {
+                        "fallback_steps": 0,
+                        "total_steps": 1,
+                        "fallback_rate": 0.0,
+                    },
+                    "pushdown_runtime": {"fallback_runtime_share": 0.0},
+                    "diff_utilization": {},
+                    "diff_baseline_transition": {},
+                    "partition_retry_summary": {},
+                    "throughput_smoothing": {"wait_share": 0.0},
+                    "apply_engines": ["adapter"],
+                },
+                "api_usage": {
+                    "available": True,
+                    "counters": {
+                        "http_attempts": 20,
+                        "http_429_failures": 0,
+                        "nqe_query_calls": 4,
+                        "nqe_diff_calls": 2,
+                        "nqe_pages": 6,
+                        "usage_window_seconds": 30.0,
+                        "observed_http_attempts_per_minute": 38.0,
+                    },
+                    "budget": {
+                        "status": "passed",
+                        "failure_reasons": [],
+                        "warnings": [],
+                        "metrics": {
+                            "configured_requests_per_minute": 1800,
+                            "hard_block_requests_per_minute": 2000,
+                            "usage_window_seconds": 30.0,
+                            "observed_http_attempts_per_minute": 38.0,
+                            "observed_rate_sample_complete": True,
+                        },
+                    },
+                },
+                "steps": [{"index": 1, "status": "merged"}],
+            }
+        )
+
+        checks = {item["code"]: item for item in report["checks"]}
+        self.assertEqual(report["summary"]["api_usage_status"], "passed")
+        self.assertEqual(checks["api_usage_budget"]["status"], "pass")
+        self.assertEqual(
+            checks["api_usage_budget"]["evidence"]["nqe_diff_calls"],
+            2,
+        )
+        self.assertEqual(
+            checks["api_usage_budget"]["evidence"]["observed_http_attempts_per_minute"],
+            38.0,
+        )
+
+    def test_report_warns_on_api_usage_budget_warning(self):
+        report = scale_benchmark_report(
+            {
+                "run": {"id": 13, "backend": "branching", "status": "completed"},
+                "metrics": {
+                    "step_count": 1,
+                    "attempted_row_count": 10,
+                    "failed_row_count": 0,
+                    "pushdown_efficiency": {
+                        "fallback_steps": 0,
+                        "total_steps": 1,
+                        "fallback_rate": 0.0,
+                    },
+                    "pushdown_runtime": {"fallback_runtime_share": 0.0},
+                    "diff_utilization": {},
+                    "diff_baseline_transition": {},
+                    "partition_retry_summary": {},
+                    "throughput_smoothing": {"wait_share": 0.0},
+                },
+                "api_usage": {
+                    "available": True,
+                    "counters": {"http_429_failures": 1},
+                    "budget": {
+                        "status": "warning",
+                        "failure_reasons": [],
+                        "warnings": ["forward_api_429_observed"],
+                        "metrics": {
+                            "configured_requests_per_minute": 1800,
+                            "hard_block_requests_per_minute": 2000,
+                        },
+                    },
+                },
+                "steps": [{"index": 1, "status": "merged"}],
+            }
+        )
+
+        checks = {item["code"]: item for item in report["checks"]}
+        self.assertEqual(report["status"], "warn")
+        self.assertEqual(checks["api_usage_budget"]["status"], "warn")
+        self.assertEqual(
+            checks["api_usage_budget"]["evidence"]["warnings"],
+            ["forward_api_429_observed"],
+        )
+
+    def test_report_fails_on_api_usage_budget_failure(self):
+        report = scale_benchmark_report(
+            {
+                "run": {"id": 14, "backend": "branching", "status": "completed"},
+                "metrics": {
+                    "step_count": 1,
+                    "attempted_row_count": 10,
+                    "failed_row_count": 0,
+                    "pushdown_efficiency": {
+                        "fallback_steps": 0,
+                        "total_steps": 1,
+                        "fallback_rate": 0.0,
+                    },
+                    "pushdown_runtime": {"fallback_runtime_share": 0.0},
+                    "diff_utilization": {},
+                    "diff_baseline_transition": {},
+                    "partition_retry_summary": {},
+                    "throughput_smoothing": {"wait_share": 0.0},
+                },
+                "api_usage": {
+                    "available": True,
+                    "counters": {"http_429_failures": 0},
+                    "budget": {
+                        "status": "failed",
+                        "failure_reasons": [
+                            "configured_requests_per_minute_exceeds_forward_saas_hard_block"
+                        ],
+                        "warnings": [],
+                        "metrics": {
+                            "configured_requests_per_minute": 2001,
+                            "hard_block_requests_per_minute": 2000,
+                        },
+                    },
+                },
+                "steps": [{"index": 1, "status": "merged"}],
+            }
+        )
+
+        checks = {item["code"]: item for item in report["checks"]}
+        self.assertEqual(report["status"], "fail")
+        self.assertEqual(checks["api_usage_budget"]["status"], "fail")
+        self.assertEqual(
+            checks["api_usage_budget"]["evidence"]["failure_reasons"],
+            ["configured_requests_per_minute_exceeds_forward_saas_hard_block"],
+        )
 
     def test_report_flags_fallback_and_row_failure_pressure(self):
         report = scale_benchmark_report(

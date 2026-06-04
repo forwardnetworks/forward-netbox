@@ -71,6 +71,17 @@ class ForwardIngestionLogExportViewTest(TestCase):
                     ]
                 ],
                 "statistics": {"dcim.site": {"current": 1, "total": 1}},
+                "forward_api_usage": {
+                    "api_requests_per_minute": 1800,
+                    "http_attempts": 11,
+                    "http_429_failures": 0,
+                    "nqe_query_calls": 3,
+                    "nqe_diff_calls": 2,
+                    "nqe_pages": 5,
+                    "throttle_sleep_seconds": 0.75,
+                    "usage_window_seconds": 30.0,
+                    "observed_http_attempts_per_minute": 20.0,
+                },
             },
         )
         cls.merge_job = Job.objects.create(
@@ -250,6 +261,18 @@ class ForwardIngestionLogExportViewTest(TestCase):
         )
         self.assertFalse(data["compatibility_cache"]["stale_payload_present"])
         self.assertIn("recovery_policy_summary", data)
+        self.assertTrue(data["api_usage"]["available"])
+        self.assertEqual(data["api_usage"]["counters"]["http_attempts"], 11)
+        self.assertEqual(data["api_usage"]["counters"]["nqe_diff_calls"], 2)
+        self.assertEqual(
+            data["api_usage"]["counters"]["observed_http_attempts_per_minute"],
+            20.0,
+        )
+        self.assertEqual(data["api_usage"]["budget"]["status"], "passed")
+        self.assertEqual(
+            data["api_usage"]["budget"]["metrics"]["headroom_requests_per_minute"],
+            200,
+        )
         self.assertIn("auto_policy_event_count", data["recovery_policy_summary"])
         self.assertIn("auto_policy_reasons", data["recovery_policy_summary"])
         self.assertIn("escalation_event_count", data["recovery_policy_summary"])
