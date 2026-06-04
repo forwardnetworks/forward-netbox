@@ -7,8 +7,11 @@
  * inventory items from device.platform.components.
  */
 
+@query
+f(forward_netbox_shard_keys: List<String>) =
 foreach device in network.devices
 where false
+where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
 select distinct {
   device: device.name,
   vc_name: "",

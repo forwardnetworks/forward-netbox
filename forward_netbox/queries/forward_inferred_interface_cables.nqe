@@ -3,6 +3,8 @@
  * @description NetBox cable rows derived from Forward resolved interface links.
  */
 
+@query
+f(forward_netbox_shard_keys: List<String>) =
 foreach device in network.devices
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
@@ -11,6 +13,9 @@ where interface.interfaceType != IfaceType.IF_AGGREGATE
 foreach link in interface.links
 where link.deviceName != ""
 where link.ifaceName != ""
+where isEmpty(forward_netbox_shard_keys)
+  || device.name in forward_netbox_shard_keys
+  || link.deviceName in forward_netbox_shard_keys
 where link.deviceName in (
   foreach snapshot_device in network.devices
   where snapshot_device.snapshotInfo.result == DeviceSnapshotResult.completed
