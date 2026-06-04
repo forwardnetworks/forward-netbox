@@ -6,13 +6,19 @@ Run the smallest gate that proves the change, then run the release gate before p
 | --- | --- |
 | Documentation only | `invoke harness-check`, `invoke harness-test`, `invoke docs` |
 | Query map or NQE helper change | `invoke harness-check`, `invoke harness-test`, `invoke lint`, `invoke test`, update built-in NQE reference |
-| Forward API client change | `invoke lint`, `invoke check`, `invoke test` |
+| Forward API client change | `invoke lint`, `invoke check`, `invoke test`; update API usage budget evaluation coverage when counters, pacing, retry, NQE pagination, or 429 handling change |
 | Sync planning or branch budget change | `invoke lint`, `invoke check`, `invoke scenario-test`, `invoke test`, local Docker sync smoke test |
 | Branching ledger, recovery, or scale behavior change | `invoke lint`, `invoke check`, `invoke scenario-test`, `invoke scale-chaos-test`, `invoke test`, `invoke playwright-test` when UI/API surfaces change; `scale-chaos-test` includes focused recovery and support-bundle export coverage, and `invoke scale-benchmark` should be run against the relevant execution run when runtime evidence exists |
 | Validation or drift policy change | `invoke lint`, `invoke check`, `invoke scenario-test`, `invoke test`, `invoke playwright-test`, validation-only smoke test, force-allow override smoke test when the change adds a break-glass path |
-| NetBox model adapter change | `invoke lint`, `invoke check`, `invoke scenario-test`, `invoke test`, targeted local Docker sync |
+| NetBox model adapter change | `invoke lint`, `invoke check`, `invoke scenario-test`, `invoke test`, targeted local Docker sync; add or update repeat-sync no-op coverage when identity, coalesce, nullable scope, or field normalization changes |
 | UI/API workflow change | `invoke lint`, `invoke check`, `invoke test`, `invoke playwright-test`, browser/UI verification when visible behavior changes |
 | Release | `invoke ci`, GitHub CI success on `main` and tag |
+
+Adapter releases should preserve the idempotence invariant: applying the same
+Forward-shaped rows to an unchanged NetBox state must not produce unexpected
+updates, `ObjectChange` rows, or branch diffs. For model families with nullable
+scope, such as VRF/global IPAM rows, assert the exact model-specific identity
+contract rather than relying on generic coalesce fallback behavior.
 
 ## Core Commands
 
@@ -184,12 +190,14 @@ invoke sync-autorecover-monitor --sync-ids 50,51 --max-polls 6 --interval-second
 - `invoke scale-benchmark` evaluates the latest execution-run support bundle
   for a sync and emits a sanitized pass/warn/fail report for fallback rate,
   diff utilization, row failures, partition retries, throughput wait, and
-  apply-engine evidence. Use `--run-id` for a specific run or `--input-json`
-  to evaluate an exported support bundle offline. Use `--reconcile` only for
-  live `--sync-name` or `--run-id` selectors when support intentionally wants
-  to repair stale ledger state before benchmarking. Scale evidence is rejected
-  when a run is marked completed but still contains non-terminal steps, because
-  that cannot prove fallback or scheduler readiness.
+  apply-engine evidence. It also checks `api_usage` evidence when present in the
+  support bundle and reports Forward SaaS pacing or 429 budget warnings/failures
+  as structured benchmark checks. Use `--run-id` for a specific run or
+  `--input-json` to evaluate an exported support bundle offline. Use
+  `--reconcile` only for live `--sync-name` or `--run-id` selectors when support
+  intentionally wants to repair stale ledger state before benchmarking. Scale
+  evidence is rejected when a run is marked completed but still contains
+  non-terminal steps, because that cannot prove fallback or scheduler readiness.
 - `invoke execution-run-recovery` reports the latest execution-run recovery
   recommendation for a sync or run ID. Add `--enqueue-next=True` only when
   support intentionally wants to resume the next eligible Branching shard
@@ -223,6 +231,12 @@ invoke sync-autorecover-monitor --sync-ids 50,51 --max-polls 6 --interval-second
 Operational default:
 - keep source `query_fetch_concurrency` at `6` initially and raise only with
   observed DB/worker headroom.
+- keep Forward SaaS `api_requests_per_minute` below the 2,000/minute hard block.
+  Syncs persist a `forward_api_usage.budget` evaluation with the configured rate,
+  observed HTTP attempt rate when enough request-window evidence exists, 429
+  count, NQE call/page counts, and pass/warning/fail status; release/support
+  checks and the Sync Health API usage card should use that structured payload
+  instead of parsing log text.
 
 For repeated operational soak runs (manual, opt-in):
 

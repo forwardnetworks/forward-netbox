@@ -5394,6 +5394,13 @@ class ForwardSyncRunnerTest(TestCase):
             values["enabled"] = True
         return ModuleBay.objects.create(**values)
 
+    def _update_statements(self, queries):
+        return [
+            query["sql"]
+            for query in queries
+            if query["sql"].lstrip().upper().startswith("UPDATE ")
+        ]
+
     def test_lookup_interface_requires_exact_name(self):
         device = self._create_device("device-1")
         interface = Interface.objects.create(
@@ -5761,6 +5768,22 @@ class ForwardSyncRunnerTest(TestCase):
             )
 
         self.assertEqual(len(cached_queries), 0)
+
+    def test_apply_dcim_site_repeat_sync_is_noop(self):
+        Site.objects.create(name="site-1", slug="site-1")
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {"name": "site-1", "slug": "site-1"}
+
+        before_count = ObjectChange.objects.count()
+        with CaptureQueriesContext(connection) as queries:
+            runner._apply_dcim_site(row)
+            runner._apply_dcim_site(row)
+
+        self.assertEqual(Site.objects.filter(slug="site-1").count(), 1)
+        self.assertEqual(self._update_statements(queries), [])
+        self.assertEqual(ObjectChange.objects.count(), before_count)
 
     def test_ensure_manufacturer_uses_unique_lookup_cache_after_first_resolution(self):
         runner = ForwardSyncRunner(
@@ -6945,6 +6968,42 @@ class ForwardSyncRunnerTest(TestCase):
         interface = Interface.objects.get(device=device, name="eth1-1")
         self.assertEqual(interface.mode, "access")
         self.assertEqual(interface.untagged_vlan, vlan)
+
+    def test_apply_dcim_interface_repeat_sync_is_noop(self):
+        device = self._create_device("device-1")
+        Interface.objects.create(
+            device=device,
+            name="Ethernet1/1",
+            type="1000base-t",
+            enabled=True,
+            mtu=1500,
+            description="uplink",
+            speed=1000000,
+        )
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "device": "device-1",
+            "name": "Ethernet1/1",
+            "type": "1000base-t",
+            "enabled": True,
+            "mtu": 1500,
+            "description": "uplink",
+            "speed": 1000000,
+        }
+
+        before_count = ObjectChange.objects.count()
+        with CaptureQueriesContext(connection) as queries:
+            runner._apply_dcim_interface(row)
+            runner._apply_dcim_interface(row)
+
+        self.assertEqual(
+            Interface.objects.filter(device=device, name="Ethernet1/1").count(),
+            1,
+        )
+        self.assertEqual(self._update_statements(queries), [])
+        self.assertEqual(ObjectChange.objects.count(), before_count)
 
     def test_apply_dcim_interface_keeps_import_when_untagged_vlan_missing(self):
         device = self._create_device("device-1")
@@ -8232,6 +8291,36 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertEqual(FHRPGroupAssignment.objects.count(), 1)
         self.assertEqual(IPAddress.objects.count(), 1)
         self.assertEqual(FHRPGroupAssignment.objects.get().priority, 110)
+
+    def test_apply_ipam_fhrpgroup_repeat_sync_is_noop(self):
+        device = self._create_device("device-1")
+        Interface.objects.create(device=device, name="Vlan100", type="virtual")
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "protocol": "hsrp",
+            "group_id": 10,
+            "name": "hsrp",
+            "device": "device-1",
+            "interface": "Vlan100",
+            "vrf": None,
+            "address": "10.0.0.1/32",
+            "state": "MASTER",
+            "priority": 100,
+            "status": "active",
+        }
+        runner._apply_ipam_fhrpgroup(row)
+
+        before_count = ObjectChange.objects.count()
+        with CaptureQueriesContext(connection) as queries:
+            runner._apply_ipam_fhrpgroup(row)
+
+        self.assertEqual(FHRPGroup.objects.count(), 1)
+        self.assertEqual(FHRPGroupAssignment.objects.count(), 1)
+        self.assertEqual(IPAddress.objects.count(), 1)
+        self.assertEqual(self._update_statements(queries), [])
+        self.assertEqual(ObjectChange.objects.count(), before_count)
 
     def test_apply_ipam_fhrpgroup_skips_missing_interface_and_continues(self):
         device = self._create_device("device-1")
@@ -12045,6 +12134,29 @@ class ForwardSyncRunnerTest(TestCase):
         )
         runner.logger.increment_statistics.assert_any_call(
             "dcim.device", outcome="applied"
+        )
+
+    def test_delete_model_rows_persists_successful_delete_statistics(self):
+        ingestion = ForwardIngestion.objects.create(sync=self.sync)
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=ingestion, client=None, logger_=Mock()
+        )
+        runner._delete_dcim_site = Mock(side_effect=[True, False, True])
+
+        runner._delete_model_rows(
+            "dcim.site",
+            [
+                {"name": "site-1", "slug": "site-1"},
+                {"name": "site-2", "slug": "site-2"},
+                {"name": "site-3", "slug": "site-3"},
+            ],
+        )
+
+        ingestion.refresh_from_db()
+        self.assertEqual(ingestion.applied_change_count, 2)
+        self.assertEqual(ingestion.deleted_change_count, 2)
+        runner.logger.increment_statistics.assert_any_call(
+            "dcim.site", outcome="skipped"
         )
 
     def test_delete_by_coalesce_maps_protected_error_to_dependency_skip(self):

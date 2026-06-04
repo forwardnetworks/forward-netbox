@@ -131,6 +131,8 @@ class ForwardClient:
         else:
             self._api_request_min_interval = 0.0
         self._api_usage_lock = threading.Lock()
+        self._api_usage_first_http_attempt_at = None
+        self._api_usage_last_http_attempt_at = None
         self._api_usage = self._empty_api_usage()
 
     def _empty_api_usage(self):
@@ -159,6 +161,16 @@ class ForwardClient:
         with self._api_usage_lock:
             self._api_usage[key] = self._api_usage.get(key, 0) + amount
 
+    def _record_http_attempt_usage(self):
+        now = time.monotonic()
+        with self._api_usage_lock:
+            self._api_usage["http_attempts"] = (
+                self._api_usage.get("http_attempts", 0) + 1
+            )
+            if self._api_usage_first_http_attempt_at is None:
+                self._api_usage_first_http_attempt_at = now
+            self._api_usage_last_http_attempt_at = now
+
     def _record_http_status_class(self, status_code):
         if not isinstance(status_code, int):
             return
@@ -173,14 +185,31 @@ class ForwardClient:
             summary["http_status_classes"] = dict(
                 self._api_usage.get("http_status_classes") or {}
             )
+            first_attempt_at = self._api_usage_first_http_attempt_at
+            last_attempt_at = self._api_usage_last_http_attempt_at
         summary["throttle_sleep_seconds"] = round(
             float(summary.get("throttle_sleep_seconds") or 0.0),
             6,
         )
+        window_seconds = (
+            max(float(last_attempt_at) - float(first_attempt_at), 0.0)
+            if first_attempt_at is not None and last_attempt_at is not None
+            else 0.0
+        )
+        http_attempts = int(summary.get("http_attempts") or 0)
+        observed_rate = (
+            round(((http_attempts - 1) * 60.0) / window_seconds, 3)
+            if http_attempts > 1 and window_seconds > 0
+            else None
+        )
+        summary["usage_window_seconds"] = round(window_seconds, 6)
+        summary["observed_http_attempts_per_minute"] = observed_rate
         return summary
 
     def reset_api_usage_summary(self):
         with self._api_usage_lock:
+            self._api_usage_first_http_attempt_at = None
+            self._api_usage_last_http_attempt_at = None
             self._api_usage = self._empty_api_usage()
 
     def _coerce_nqe_page_size(self, value):
@@ -355,7 +384,7 @@ class ForwardClient:
                     mounts=self._proxy_mounts(url),
                 ) as client:
                     self._throttle_request()
-                    self._record_api_usage("http_attempts")
+                    self._record_http_attempt_usage()
                     response = client.request(
                         method,
                         url,

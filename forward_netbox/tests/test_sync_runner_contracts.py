@@ -1,6 +1,10 @@
 from django.test import TestCase
 
+from forward_netbox.exceptions import ForwardQueryError
 from forward_netbox.utilities.sync import ForwardSyncRunner
+from forward_netbox.utilities.sync_contracts import default_coalesce_fields_for_model
+from forward_netbox.utilities.sync_contracts import row_coalesce_field_is_complete
+from forward_netbox.utilities.sync_contracts import validate_row_shape_for_model
 
 
 class ForwardSyncRunnerContractTest(TestCase):
@@ -56,3 +60,44 @@ class ForwardSyncRunnerContractTest(TestCase):
 
         self.assertEqual(upsert_rows, [{"slug": "site-b", "name": "Site B"}])
         self.assertEqual(delete_rows, [{"slug": "site-a", "name": "Site A"}])
+
+    def test_nullable_vrf_identity_is_model_specific(self):
+        self.assertTrue(
+            row_coalesce_field_is_complete("ipam.prefix", {"vrf": None}, "vrf")
+        )
+        self.assertTrue(
+            row_coalesce_field_is_complete("ipam.prefix", {"vrf": ""}, "vrf")
+        )
+        self.assertFalse(
+            row_coalesce_field_is_complete("ipam.ipaddress", {"vrf": None}, "vrf")
+        )
+        self.assertFalse(
+            row_coalesce_field_is_complete("netbox_routing.bgppeer", {"vrf": ""}, "vrf")
+        )
+
+    def test_default_vrf_fallback_contracts_are_explicit(self):
+        self.assertEqual(
+            default_coalesce_fields_for_model("ipam.prefix"),
+            [["prefix", "vrf"]],
+        )
+        self.assertEqual(
+            default_coalesce_fields_for_model("ipam.ipaddress"),
+            [["address", "vrf"], ["address"]],
+        )
+        self.assertEqual(
+            default_coalesce_fields_for_model("netbox_routing.bgppeer"),
+            [["device", "vrf", "neighbor_address"], ["device", "neighbor_address"]],
+        )
+
+    def test_prefix_requires_explicit_vrf_column_even_for_global_rows(self):
+        validate_row_shape_for_model(
+            "ipam.prefix",
+            {"prefix": "10.0.0.0/24", "vrf": None, "status": "active"},
+            default_coalesce_fields_for_model("ipam.prefix"),
+        )
+        with self.assertRaises(ForwardQueryError):
+            validate_row_shape_for_model(
+                "ipam.prefix",
+                {"prefix": "10.0.0.0/24", "status": "active"},
+                default_coalesce_fields_for_model("ipam.prefix"),
+            )

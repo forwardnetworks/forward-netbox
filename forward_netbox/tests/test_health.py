@@ -3,6 +3,8 @@ from datetime import timedelta
 from unittest.mock import Mock
 from unittest.mock import patch
 
+from core.choices import JobStatusChoices
+from core.models import Job
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
@@ -126,9 +128,33 @@ class ForwardSyncHealthTest(TestCase):
             applied_change_count=2,
         )
         now = timezone.now()
+        cls.execution_job = Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=cls.sync.pk,
+            name="health execution job",
+            user=None,
+            status=JobStatusChoices.STATUS_COMPLETED,
+            job_id="123e4567-e89b-12d3-a456-426614174099",
+            created=now,
+            started=now,
+            completed=now,
+            data={
+                "forward_api_usage": {
+                    "api_requests_per_minute": 1800,
+                    "http_attempts": 21,
+                    "http_429_failures": 0,
+                    "nqe_query_calls": 4,
+                    "nqe_diff_calls": 3,
+                    "nqe_pages": 9,
+                    "usage_window_seconds": 60.0,
+                    "observed_http_attempts_per_minute": 20.0,
+                }
+            },
+        )
         cls.execution_run = ForwardExecutionRun.objects.create(
             sync=cls.sync,
             source=cls.source,
+            job=cls.execution_job,
             backend="branching",
             status="running",
             snapshot_selector="latestProcessed",
@@ -196,6 +222,15 @@ class ForwardSyncHealthTest(TestCase):
         self.assertEqual(summary["next_run"]["blockers"], [])
         self.assertTrue(summary["latest_validation"]["allowed"])
         self.assertTrue(summary["latest_ingestion"]["baseline_ready"])
+        self.assertTrue(summary["api_usage"]["available"])
+        self.assertEqual(summary["api_usage"]["budget"]["status"], "passed")
+        self.assertEqual(summary["api_usage"]["counters"]["http_attempts"], 21)
+        self.assertEqual(
+            summary["api_usage"]["budget"]["metrics"][
+                "observed_http_attempts_per_minute"
+            ],
+            20.0,
+        )
         self.assertEqual(summary["capacity"]["completed_steps"], 1)
         self.assertEqual(summary["capacity"]["remaining_steps"], 1)
         self.assertEqual(summary["capacity"]["average_completed_step_seconds"], 20.0)
@@ -973,6 +1008,12 @@ class ForwardSyncHealthTest(TestCase):
         self.assertContains(response, "Bulk ORM expansion")
         self.assertContains(response, "Parity gates")
         self.assertContains(response, "Fetch Contracts")
+        self.assertContains(response, "Forward API Usage")
+        self.assertContains(response, "Budget status")
+        self.assertContains(response, "Configured rate")
+        self.assertContains(response, "Observed rate")
+        self.assertContains(response, "HTTP 429 failures")
+        self.assertContains(response, "NQE calls")
         self.assertContains(response, "Query Runtime")
         self.assertContains(response, "Fallback steps")
         self.assertContains(response, "Pushdown rate")

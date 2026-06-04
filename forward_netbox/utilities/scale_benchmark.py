@@ -36,6 +36,7 @@ def scale_benchmark_report(bundle, *, thresholds=None):
         _partition_retry_check(metrics),
         _throughput_smoothing_check(metrics, thresholds=thresholds),
         _apply_engine_check(metrics),
+        _api_usage_budget_check(bundle.get("api_usage") or {}),
     ]
     overall_status = _overall_status(checks)
     return {
@@ -63,6 +64,10 @@ def scale_benchmark_report(bundle, *, thresholds=None):
             "query_runtime_ms": _optional_float(metrics.get("query_runtime_ms")),
             "fetch_modes": list(metrics.get("fetch_modes") or []),
             "apply_engines": list(metrics.get("apply_engines") or []),
+            "api_usage_status": (
+                ((bundle.get("api_usage") or {}).get("budget") or {}).get("status")
+                or ""
+            ),
         },
         "fallback_pressure": fallback_pressure,
         "checks": checks,
@@ -585,6 +590,67 @@ def _apply_engine_check(metrics):
         "status": status,
         "message": message,
         "evidence": {"apply_engines": engines, "step_count": step_count},
+    }
+
+
+def _api_usage_budget_check(api_usage):
+    if not (api_usage or {}).get("available"):
+        return {
+            "code": "api_usage_budget",
+            "status": "info",
+            "message": "No Forward API usage budget evidence is available.",
+            "evidence": {
+                "available": False,
+                "reason": (api_usage or {}).get("reason") or "api_usage_missing",
+            },
+        }
+
+    budget = (api_usage or {}).get("budget") or {}
+    budget_status = str(budget.get("status") or "warning")
+    if budget_status == "failed":
+        status = "fail"
+        message = "Forward API usage budget failed."
+    elif budget_status == "warning":
+        status = "warn"
+        message = "Forward API usage budget reported warnings."
+    elif budget_status == "passed":
+        status = "pass"
+        message = "Forward API usage budget passed."
+    else:
+        status = "info"
+        message = "Forward API usage budget status is unrecognized."
+
+    counters = (api_usage or {}).get("counters") or {}
+    metrics = budget.get("metrics") or {}
+    return {
+        "code": "api_usage_budget",
+        "status": status,
+        "message": message,
+        "evidence": {
+            "available": True,
+            "budget_status": budget_status,
+            "warnings": list(budget.get("warnings") or []),
+            "failure_reasons": list(budget.get("failure_reasons") or []),
+            "configured_requests_per_minute": metrics.get(
+                "configured_requests_per_minute"
+            ),
+            "hard_block_requests_per_minute": metrics.get(
+                "hard_block_requests_per_minute"
+            ),
+            "http_attempts": counters.get("http_attempts"),
+            "observed_http_attempts_per_minute": metrics.get(
+                "observed_http_attempts_per_minute"
+            ),
+            "observed_rate_sample_complete": metrics.get(
+                "observed_rate_sample_complete"
+            ),
+            "usage_window_seconds": metrics.get("usage_window_seconds"),
+            "http_429_failures": counters.get("http_429_failures"),
+            "nqe_query_calls": counters.get("nqe_query_calls"),
+            "nqe_diff_calls": counters.get("nqe_diff_calls"),
+            "nqe_pages": counters.get("nqe_pages"),
+            "throttle_sleep_seconds": counters.get("throttle_sleep_seconds"),
+        },
     }
 
 
