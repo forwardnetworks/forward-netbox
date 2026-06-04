@@ -194,15 +194,15 @@ def _build_shard_fetch_model_contracts():
         if model_string in DEVICE_SHARD_MODELS:
             contracts[model_string] = {
                 "model": model_string,
-                "fetch_mode": "nqe_column_filter",
+                "fetch_mode": "nqe_parameters",
                 "key_family": "device",
                 "shard_safe": True,
                 "local_safety_filter": True,
                 "schema_contract": "same_nqe_row_shape",
-                "reason_code": "device_column_filter",
+                "reason_code": "device_query_parameter",
                 "reason": (
-                    "Device-scoped rows can be fetched with native Forward NQE "
-                    "column filters and still receive local shard safety filtering."
+                    "Device-scoped rows can be fetched with the built-in query-side "
+                    "shard parameter and still receive local shard safety filtering."
                 ),
                 "bucket_strategy": {
                     "supported": True,
@@ -237,29 +237,30 @@ def _build_shard_fetch_model_contracts():
         elif model_string in STRUCTURED_SHARD_FILTER_FIELDS:
             contracts[model_string] = {
                 "model": model_string,
-                "fetch_mode": "nqe_column_filter",
+                "fetch_mode": "nqe_parameters",
                 "key_family": ",".join(STRUCTURED_SHARD_FILTER_FIELDS[model_string]),
                 "shard_safe": True,
                 "local_safety_filter": True,
                 "schema_contract": "same_nqe_row_shape",
                 "reason_code": (
-                    "ipam_column_filter"
+                    "ipam_query_parameter"
                     if model_string in IPAM_SHARD_FILTER_FIELDS
-                    else "structured_column_filter"
+                    else "structured_query_parameter"
                 ),
                 "reason": (
-                    "Rows can be fetched with native Forward NQE column filters "
-                    "when the shard key exposes one of the stable identity columns."
+                    "Rows can be fetched with the built-in query-side shard "
+                    "parameter when the shard key exposes one of the stable "
+                    "identity columns."
                 ),
                 "bucket_strategy": {
                     "supported": True,
                     "key_family": ",".join(
                         STRUCTURED_SHARD_FILTER_FIELDS[model_string]
                     ),
-                    "reason_code": "column_filter_bucket_available",
+                    "reason_code": "query_parameter_bucket_available",
                     "reason": (
                         "This model has deterministic identity fields suitable for "
-                        "column-filter pushdown and deterministic bucketing."
+                        "query-parameter pushdown and deterministic bucketing."
                     ),
                 },
             }
@@ -376,48 +377,30 @@ def shard_fetch_contract(model_string, shard_keys):
     cable_device_names = _cable_device_names_from_shard_keys(shard_keys)
     if cable_device_names and model_string == "dcim.cable":
         fetch_parameters = {
-            SHARD_FETCH_PARAMETER_MODE_NAME: SHARD_FETCH_PARAMETER_MODE,
-            SHARD_FETCH_PARAMETER_KEYS: list(shard_keys),
-            SHARD_FETCH_PARAMETER_BUCKET: 0,
-            SHARD_FETCH_PARAMETER_BUCKET_COUNT: 1,
+            SHARD_FETCH_PARAMETER_KEYS: list(cable_device_names),
         }
         return {
-            "fetch_mode": "nqe_column_filter",
+            "fetch_mode": "nqe_parameters",
             "fetch_key_family": "device",
             "fetch_parameters": fetch_parameters,
             "query_parameters": {},
-            "fetch_column_filters": [
-                {
-                    "operator": "EQUALS_ANY",
-                    "columnName": "device",
-                    "values": list(cable_device_names),
-                }
-            ],
+            "fetch_column_filters": [],
         }
 
     device_names = _device_names_from_shard_keys(shard_keys)
     if device_names and model_string in DEVICE_SHARD_MODELS:
         fetch_parameters = {
-            SHARD_FETCH_PARAMETER_MODE_NAME: SHARD_FETCH_PARAMETER_MODE,
-            SHARD_FETCH_PARAMETER_KEYS: list(shard_keys),
-            SHARD_FETCH_PARAMETER_BUCKET: 0,
-            SHARD_FETCH_PARAMETER_BUCKET_COUNT: 1,
+            SHARD_FETCH_PARAMETER_KEYS: list(device_names),
         }
         return {
-            "fetch_mode": "nqe_column_filter",
+            "fetch_mode": "nqe_parameters",
             "fetch_key_family": "device",
             "fetch_parameters": fetch_parameters,
             "query_parameters": {},
-            "fetch_column_filters": [
-                {
-                    "operator": "EQUALS_ANY",
-                    "columnName": "device",
-                    "values": list(device_names),
-                }
-            ],
+            "fetch_column_filters": [],
         }
 
-    structured_contract = _structured_column_filter_contract(model_string, shard_keys)
+    structured_contract = _structured_parameter_contract(model_string, shard_keys)
     if structured_contract:
         return structured_contract
 
@@ -471,7 +454,7 @@ def _cable_device_names_from_shard_keys(shard_keys):
     return sorted(device_names)
 
 
-def _structured_column_filter_contract(model_string, shard_keys):
+def _structured_parameter_contract(model_string, shard_keys):
     candidate_fields = STRUCTURED_SHARD_FILTER_FIELDS.get(model_string)
     if not candidate_fields:
         return {}
@@ -502,19 +485,10 @@ def _structured_column_filter_contract(model_string, shard_keys):
         return {
             "fetch_key_family": field_name,
             "fetch_parameters": {
-                SHARD_FETCH_PARAMETER_MODE_NAME: SHARD_FETCH_PARAMETER_MODE,
-                SHARD_FETCH_PARAMETER_KEYS: list(shard_keys),
-                SHARD_FETCH_PARAMETER_BUCKET: 0,
-                SHARD_FETCH_PARAMETER_BUCKET_COUNT: 1,
+                SHARD_FETCH_PARAMETER_KEYS: list(unique_values),
             },
-            "fetch_mode": "nqe_column_filter",
-            "fetch_column_filters": [
-                {
-                    "operator": "EQUALS_ANY",
-                    "columnName": field_name,
-                    "values": list(unique_values),
-                }
-            ],
+            "fetch_mode": "nqe_parameters",
+            "fetch_column_filters": [],
         }
     return {}
 

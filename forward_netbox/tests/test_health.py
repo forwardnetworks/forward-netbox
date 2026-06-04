@@ -316,7 +316,7 @@ class ForwardSyncHealthTest(TestCase):
             "tree_model_constraints",
             summary["apply_engines"]["global_blocker_codes"],
         )
-        self.assertIn("nqe_column_filter", summary["fetch_contracts"]["modes"])
+        self.assertIn("nqe_parameters", summary["fetch_contracts"]["modes"])
         self.assertGreater(summary["fetch_contracts"]["shard_safe_count"], 0)
         self.assertEqual(
             summary["fetch_contracts"]["contract_registry_status"],
@@ -328,7 +328,7 @@ class ForwardSyncHealthTest(TestCase):
             summary["fetch_contracts"]["fallback_reasons"],
         )
         self.assertIn(
-            "structured_column_filter",
+            "structured_query_parameter",
             summary["fetch_contracts"]["fallback_reasons"],
         )
         self.assertTrue(summary["query_pushdown"]["available"])

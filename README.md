@@ -6,8 +6,8 @@
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v1.2.3` | `4.5.9` and `4.6.1` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Current release; further reduces Forward SaaS API/NQE pressure by coalescing compatible sibling shard EQUALS_ANY filters, adds local change-explainability summaries, and keeps staged branch boundaries unchanged |
-| `v1.2.2` | `4.5.9` and `4.6.1` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v1.2.3`; adds Forward API usage observability and support-bundle evidence, repeat-sync idempotence hardening, and live staged-delete statistics while preserving the 1.1 API/NQE limits |
+| `v1.3.0` | `4.5.9` and `4.6.1` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Current release; eliminates default Forward NQE column-filter shard fetches in favor of query-side `forward_netbox_shard_keys` parameters, keeps local shard safety filtering, and preserves branch boundaries while reducing Forward SaaS API/NQE pressure |
+| `v1.2.3` | `4.5.9` and `4.6.1` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v1.3.0`; further reduced Forward SaaS API/NQE pressure by coalescing compatible sibling shard EQUALS_ANY filters, added local change-explainability summaries, and kept staged branch boundaries unchanged |
 | `v1.2.1` | `4.5.9` and `4.6.1` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v1.2.2`; fixes prefix VRF churn by making `ipam.prefix` identity exact for global and VRF-scoped rows while preserving parameterized prefix shard NQE execution |
 | `v1.2.0` | `4.5.9` and `4.6.1` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v1.2.1`; adds optional NetBox-native HSRP/VRRP FHRP import, bounded access/native interface VLAN assignment from existing site-scoped VLANs, upgrade-safe FHRP VIP conflict handling, and NetBox 4.6 job-test compatibility hardening while preserving the 1.1 API/NQE limits |
 | `v1.1.1` | `4.5.9` and `4.6.1` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v1.2.0`; adds optional NetBox-native HSRP/FHRP import, upgrade-safe FHRP VIP conflict handling, and NetBox 4.6 job-test compatibility hardening while preserving the 1.1 API/NQE limits |
@@ -52,6 +52,7 @@
 
 | Release | Summary |
 | --- | --- |
+| `v1.3.0` | Eliminates default Forward NQE column-filter shard fetches in favor of query-side `forward_netbox_shard_keys` parameters, keeps local shard safety filtering, and preserves branch boundaries while reducing Forward SaaS API/NQE pressure. |
 | `v1.2.3` | Coalesces compatible sibling shard column-filter fetches into bounded EQUALS_ANY requests, caches prefetched sibling rows locally to avoid repeated Forward calls, and surfaces local Branching change-explainability summaries in support bundles and the ingestion UI. |
 | `v1.2.2` | Adds operator-visible Forward API usage budgets/rate evidence in Sync Health and support bundles, extends repeat-sync no-op hardening across key adapters, and persists successful staged deletes into ingestion statistics so active delete shards are visible before merge accounting catches up. |
 | `v1.2.1` | Fixes repeat prefix sync churn where otherwise unchanged `ipam.prefix` rows could be updated only because the VRF foreign key was re-resolved; built-in prefix maps now use exact `prefix + vrf` identity while prefix shard fetches still use parameterized NQE. |

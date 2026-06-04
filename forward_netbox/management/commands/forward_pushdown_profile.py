@@ -132,31 +132,16 @@ class Command(BaseCommand):
         coalesce_fields = fetcher._coalesce_fields(model_string, [spec])
         merged_parameters = spec.merged_parameters(context.query_parameters)
 
-        used_parameter_fallback = False
         full_start = time.perf_counter()
-        try:
-            full_rows = client.run_nqe_query(
-                query=spec.query,
-                query_id=spec.run_query_id,
-                commit_id=spec.commit_id,
-                network_id=context.network_id,
-                snapshot_id=context.snapshot_id,
-                parameters=merged_parameters,
-                fetch_all=True,
-            )
-        except ForwardClientError as exc:
-            if not self._looks_like_parameter_contract_error(exc):
-                raise
-            used_parameter_fallback = True
-            full_rows = client.run_nqe_query(
-                query=spec.query,
-                query_id=spec.run_query_id,
-                commit_id=spec.commit_id,
-                network_id=context.network_id,
-                snapshot_id=context.snapshot_id,
-                parameters={},
-                fetch_all=True,
-            )
+        full_rows = client.run_nqe_query(
+            query=spec.query,
+            query_id=spec.run_query_id,
+            commit_id=spec.commit_id,
+            network_id=context.network_id,
+            snapshot_id=context.snapshot_id,
+            parameters=merged_parameters,
+            fetch_all=True,
+        )
         full_runtime_ms = round((time.perf_counter() - full_start) * 1000.0, 3)
 
         shard_keys = []
@@ -192,27 +177,9 @@ class Command(BaseCommand):
                 fetch_all=True,
             )
         except ForwardClientError as exc:
-            if not self._looks_like_parameter_contract_error(exc):
-                pushdown_supported = False
-                pushdown_error = str(exc)
-                pushdown_rows = []
-            else:
-                used_parameter_fallback = True
-                try:
-                    pushdown_rows = client.run_nqe_query(
-                        query=spec.query,
-                        query_id=spec.run_query_id,
-                        commit_id=spec.commit_id,
-                        network_id=context.network_id,
-                        snapshot_id=context.snapshot_id,
-                        parameters={},
-                        column_filters=pushdown_filters,
-                        fetch_all=True,
-                    )
-                except ForwardClientError as fallback_exc:
-                    pushdown_supported = False
-                    pushdown_error = str(fallback_exc)
-                    pushdown_rows = []
+            pushdown_supported = False
+            pushdown_error = str(exc)
+            pushdown_rows = []
         pushdown_runtime_ms = round((time.perf_counter() - pushdown_start) * 1000.0, 3)
 
         local_filtered_rows = self._filter_rows_to_scope(
@@ -237,7 +204,6 @@ class Command(BaseCommand):
                 "fetch_key_family": scope.get("fetch_key_family"),
                 "query_parameter_keys": sorted(pushdown_parameters.keys()),
                 "column_filter_count": len(pushdown_filters or []),
-                "used_parameter_fallback": used_parameter_fallback,
                 "pushdown_supported": pushdown_supported,
                 "pushdown_error": pushdown_error,
             },
@@ -335,7 +301,3 @@ class Command(BaseCommand):
         raise CommandError(
             f"Query name `{query_name}` is not bound for the selected model."
         )
-
-    def _looks_like_parameter_contract_error(self, exc):
-        message = str(exc).lower()
-        return "does not take parameters" in message or "nqe_runtime_error" in message

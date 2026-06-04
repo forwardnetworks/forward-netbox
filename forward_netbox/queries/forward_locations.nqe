@@ -7,7 +7,7 @@
 import "netbox_utilities";
 
 @query
-f(device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>) =
+f(forward_netbox_shard_keys: List<String>, device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>) =
 foreach location in network.locations
 where location.name in (
   foreach d in network.devices
@@ -24,6 +24,9 @@ where location.name in (
 )
 let location_name = toLowerCase(location.name)
 let location_slug = slugify(location_name)
+where isEmpty(forward_netbox_shard_keys)
+  || location_slug in forward_netbox_shard_keys
+  || location_name in forward_netbox_shard_keys
 let address = join(", ", [if isPresent(location.city)
                           then location.city
                           else "city unknown",

@@ -17,9 +17,12 @@ ethernet_by_speed_mbps = [
   { mbps: 100000, type: "100gbase-x-qsfp28" }
 ];
 
+@query
+f(forward_netbox_shard_keys: List<String>) =
 foreach device in network.devices
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
+where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
 foreach interface in device.interfaces
   let is_ethernet = interface.interfaceType == IfaceType.IF_ETHERNET
   let speed_mbps = if is_ethernet then interface.ethernet.speedMbps else null : Integer
