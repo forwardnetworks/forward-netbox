@@ -1,0 +1,66 @@
+{% load helpers %}
+{% load i18n %}
+<div class="card">
+  <h5 class="card-header">{% trans "Change Explainability" %}</h5>
+  <div class="card-body">
+    {% if change_explainability.available %}
+      <table class="table table-hover attr-table">
+        <tr>
+          <th scope="row">{% trans "Source" %}</th>
+          <td>{{ change_explainability.source }}</td>
+        </tr>
+        <tr>
+          <th scope="row">{% trans "Branch" %}</th>
+          <td>{{ change_explainability.branch|placeholder }}</td>
+        </tr>
+        <tr>
+          <th scope="row">{% trans "Changes Scanned" %}</th>
+          <td>
+            {{ change_explainability.sampled_change_count }} / {{ change_explainability.total_change_count }}
+            {% if change_explainability.truncated %}
+              <span class="badge text-bg-warning">{% trans "Truncated" %}</span>
+            {% endif %}
+          </td>
+        </tr>
+        <tr>
+          <th scope="row">{% trans "Actions" %}</th>
+          <td>
+            {% for action, count in change_explainability.action_counts.items %}
+              <span class="badge text-bg-secondary">{{ action }} {{ count }}</span>
+            {% empty %}
+              {{ ""|placeholder }}
+            {% endfor %}
+          </td>
+        </tr>
+        <tr>
+          <th scope="row">{% trans "Top Models" %}</th>
+          <td>
+            {% for model, count in change_explainability.model_counts.items %}
+              <span class="badge text-bg-secondary">{{ model }} {{ count }}</span>
+            {% empty %}
+              {{ ""|placeholder }}
+            {% endfor %}
+          </td>
+        </tr>
+        <tr>
+          <th scope="row">{% trans "Top Fields" %}</th>
+          <td>
+            {% for field in change_explainability.top_changed_fields %}
+              <span class="badge text-bg-secondary">{{ field.field }} {{ field.count }}</span>
+            {% empty %}
+              {{ ""|placeholder }}
+            {% endfor %}
+          </td>
+        </tr>
+      </table>
+    {% else %}
+      <span class="text-muted">
+        {% if change_explainability.reason == "branch_missing" %}
+          {% trans "No Branching change diff is available for this ingestion." %}
+        {% else %}
+          {% trans "No local change explanation is available for this ingestion." %}
+        {% endif %}
+      </span>
+    {% endif %}
+  </div>
+</div>

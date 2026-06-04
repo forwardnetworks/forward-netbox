@@ -1,13 +1,16 @@
 import json
 
 from core.choices import JobStatusChoices
+from core.choices import ObjectChangeActionChoices
 from core.models import Job
+from core.models import ObjectType
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
 from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 from netbox_branching.models import Branch
+from netbox_branching.models import ChangeDiff
 
 from forward_netbox.models import ForwardExecutionRun
 from forward_netbox.models import ForwardExecutionStep
@@ -47,6 +50,10 @@ class ForwardIngestionLogExportViewTest(TestCase):
             sync=cls.sync,
             snapshot_selector="latestProcessed",
             snapshot_id="snapshot-1",
+        )
+        cls.branch = Branch.objects.create(
+            name="log-export-field-summary",
+            schema_id="log_export_field_summary",
         )
 
         now = timezone.now()
@@ -125,7 +132,30 @@ class ForwardIngestionLogExportViewTest(TestCase):
         cls.merge_job.save(update_fields=["log_entries"])
         cls.ingestion.job = cls.job
         cls.ingestion.merge_job = cls.merge_job
-        cls.ingestion.save(update_fields=["job", "merge_job"])
+        cls.ingestion.branch = cls.branch
+        cls.ingestion.save(update_fields=["job", "merge_job", "branch"])
+        prefix_type = ObjectType.objects.get(app_label="ipam", model="prefix")
+        ChangeDiff.objects.create(
+            branch=cls.branch,
+            object_type=prefix_type,
+            object_id=1001,
+            object_repr="192.0.2.0/27",
+            action=ObjectChangeActionChoices.ACTION_UPDATE,
+            original={
+                "prefix": "192.0.2.0/27",
+                "vrf": 100,
+                "status": "active",
+                "last_updated": "2026-06-03T19:00:00Z",
+            },
+            modified={
+                "prefix": "192.0.2.0/27",
+                "vrf": 200,
+                "status": "active",
+                "last_updated": "2026-06-03T19:05:00Z",
+            },
+            current={},
+            conflicts=[],
+        )
         cls.execution_run = ForwardExecutionRun.objects.create(
             sync=cls.sync,
             source=cls.source,
@@ -210,6 +240,36 @@ class ForwardIngestionLogExportViewTest(TestCase):
         self.assertEqual(
             data["merge_job_results"]["statistics"]["dcim.site"]["total"], 1
         )
+        self.assertEqual(
+            data["change_explainability"]["top_changed_fields"],
+            [{"field": "vrf", "count": 1}],
+        )
+
+    def test_ingestion_detail_renders_change_explainability(self):
+        self.client.force_login(self.user)
+
+        response = self.client.get(self.ingestion.get_absolute_url())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Change Explainability")
+        self.assertContains(response, "ipam.prefix 1")
+        self.assertContains(response, "vrf 1")
+
+    def test_ingestion_poll_refreshes_change_explainability(self):
+        self.client.force_login(self.user)
+
+        response = self.client.get(
+            reverse(
+                "plugins:forward_netbox:forwardingestion_logs",
+                kwargs={"pk": self.ingestion.pk},
+            ),
+            headers={"HX-Request": "true"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'id="change_explainability"')
+        self.assertContains(response, "ipam.prefix 1")
+        self.assertContains(response, "vrf 1")
 
     def test_export_logs_uses_ledger_branch_state_when_cache_is_absent(self):
         self.sync.clear_branch_run_state()
@@ -292,6 +352,13 @@ class ForwardIngestionLogExportViewTest(TestCase):
         self.assertEqual(
             data["steps"][0]["ingestion_detail"]["id"],
             self.ingestion.pk,
+        )
+        explainability = data["steps"][0]["ingestion_detail"]["change_explainability"]
+        self.assertTrue(explainability["available"])
+        self.assertEqual(explainability["model_counts"], {"ipam.prefix": 1})
+        self.assertEqual(
+            explainability["top_changed_fields_by_model"]["ipam.prefix"],
+            [{"field": "vrf", "count": 1}],
         )
         self.assertEqual(
             data["metrics"]["fetch_mode_counts_by_model"].get("dcim.site", {}),
@@ -417,6 +484,10 @@ class ForwardIngestionLogExportViewTest(TestCase):
         self.assertEqual(
             data["execution_run"]["steps"][0]["merge_job_detail"]["pk"],
             self.merge_job.pk,
+        )
+        self.assertEqual(
+            data["latest_ingestion"]["change_explainability"]["top_changed_fields"],
+            [{"field": "vrf", "count": 1}],
         )
 
     def test_sync_support_bundle_uses_ledger_branch_state_when_cache_is_absent(self):
