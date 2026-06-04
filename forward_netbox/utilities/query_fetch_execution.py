@@ -17,6 +17,8 @@ from ..choices import FORWARD_OPTIONAL_MODELS
 from ..choices import ForwardApplyEngineChoices
 from ..choices import ForwardDiffFallbackModeChoices
 from ..choices import ForwardExecutionBackendChoices
+from ..choices import ForwardExecutionStepKindChoices
+from ..choices import ForwardExecutionStepStatusChoices
 from ..exceptions import ForwardClientError
 from ..exceptions import ForwardConnectivityError
 from ..exceptions import ForwardQueryError
@@ -61,6 +63,8 @@ from .sync_contracts import validate_row_shape_for_model
 DEFAULT_PREFLIGHT_ROW_LIMIT = 5
 MAX_PREFLIGHT_ROW_LIMIT = 100
 SHARD_FETCH_COLUMN_FILTER_CHUNK_SIZE = 250
+DEFAULT_SHARD_FETCH_PREFETCH_STEPS = 6
+MAX_SHARD_FETCH_PREFETCH_STEPS = 50
 
 
 _SENSITIVE_EXCEPTION_PATTERNS = (
@@ -1510,6 +1514,8 @@ class ForwardQueryFetcher:
     ):
         fetch_artifact_descriptor = None
         model_fetch_artifact_descriptor = None
+        original_shard_scope = dict(shard_scope or {}) if shard_scope else None
+        prefetch_shard_scopes: list[dict[str, Any]] = []
 
         def _return(rows, delete_rows, sync_mode, metadata):
             metadata = dict(metadata or {})
@@ -1563,6 +1569,20 @@ class ForwardQueryFetcher:
             logger_=self.logger,
         )
         runner._model_coalesce_fields[model_string] = coalesce_fields
+        if shard_scope:
+            prefetch_shard_scopes = self._sibling_shard_prefetch_scopes(
+                model_string=model_string,
+                spec=spec,
+                shard_scope=shard_scope,
+                context=context,
+            )
+            if len(prefetch_shard_scopes) > 1:
+                combined_scope = self._combine_column_filter_shard_scopes(
+                    prefetch_shard_scopes
+                )
+                if combined_scope is not None:
+                    shard_scope = combined_scope
+        metadata_shard_scope = original_shard_scope or shard_scope
         column_filters = None
         column_filter_batches = [None]
         requested_fetch_mode = "model"
@@ -1572,26 +1592,28 @@ class ForwardQueryFetcher:
         if shard_scope and shard_scope.get("fetch_mode") == "nqe_column_filter":
             column_filters = shard_scope.get("fetch_column_filters") or None
             column_filter_batches = _partition_column_filters(column_filters)
-        if shard_scope:
-            requested_fetch_mode = shard_scope.get("fetch_mode") or "model"
-            fetch_key_family = shard_scope.get("fetch_key_family") or ""
-            fetch_parameters = dict(shard_scope.get("fetch_parameters") or {})
-            fetch_column_filters = list(shard_scope.get("fetch_column_filters") or [])
+        if metadata_shard_scope:
+            requested_fetch_mode = metadata_shard_scope.get("fetch_mode") or "model"
+            fetch_key_family = metadata_shard_scope.get("fetch_key_family") or ""
+            fetch_parameters = dict(metadata_shard_scope.get("fetch_parameters") or {})
+            fetch_column_filters = list(
+                metadata_shard_scope.get("fetch_column_filters") or []
+            )
         parameters = spec.merged_parameters(context.query_parameters)
-        if shard_scope:
-            if shard_scope.get("fetch_mode") == "nqe_parameters":
+        if metadata_shard_scope:
+            if metadata_shard_scope.get("fetch_mode") == "nqe_parameters":
                 parameters = {
                     **parameters,
-                    **(shard_scope.get("fetch_parameters") or {}),
+                    **(metadata_shard_scope.get("fetch_parameters") or {}),
                 }
-            if shard_scope.get("query_parameters"):
+            if metadata_shard_scope.get("query_parameters"):
                 parameters = {
                     **parameters,
-                    **(shard_scope.get("query_parameters") or {}),
+                    **(metadata_shard_scope.get("query_parameters") or {}),
                 }
-            if shard_scope.get("fetch_mode") != "model":
+            if metadata_shard_scope.get("fetch_mode") != "model":
                 self.logger.log_info(
-                    f"Fetching {model_string} shard using {shard_scope['fetch_mode']} scope.",
+                    f"Fetching {model_string} shard using {metadata_shard_scope['fetch_mode']} scope.",
                     obj=self.sync,
                 )
         parameters = self._apply_context_tag_parameters(parameters, context)
@@ -1711,13 +1733,24 @@ class ForwardQueryFetcher:
                 delete_rows, _ = self._apply_device_tag_scope(
                     model_string, delete_rows, context
                 )
-                if shard_scope:
+                self._save_prefetched_shard_artifacts(
+                    prefetch_shard_scopes[1:],
+                    model_string=model_string,
+                    spec=spec,
+                    baseline=baseline,
+                    context=context,
+                    coalesce_fields=coalesce_fields,
+                    rows=rows,
+                    delete_rows=delete_rows,
+                    sync_mode="diff",
+                )
+                if original_shard_scope:
                     rows, delete_rows = self._filter_rows_to_shard(
                         model_string,
                         rows,
                         delete_rows,
                         coalesce_fields,
-                        shard_scope,
+                        original_shard_scope,
                     )
                 return _return(
                     rows,
@@ -1856,13 +1889,24 @@ class ForwardQueryFetcher:
                 "full_fallback" if requested_mode != "model" else "model"
             )
             fetch_parameters = fallback_parameters
-        if shard_scope:
+        self._save_prefetched_shard_artifacts(
+            prefetch_shard_scopes[1:],
+            model_string=model_string,
+            spec=spec,
+            baseline=baseline,
+            context=context,
+            coalesce_fields=coalesce_fields,
+            rows=rows,
+            delete_rows=[],
+            sync_mode="full",
+        )
+        if original_shard_scope:
             rows, _ = self._filter_rows_to_shard(
                 model_string,
                 rows,
                 [],
                 coalesce_fields,
-                shard_scope,
+                original_shard_scope,
             )
         filtered_rows, removed_rows = self._apply_device_tag_scope(
             model_string, rows, context
@@ -1883,6 +1927,215 @@ class ForwardQueryFetcher:
                 "fetch_column_filters": fetch_column_filters,
             },
         )
+
+    def _sibling_shard_prefetch_limit(self) -> int:
+        parameters = getattr(self.sync, "parameters", None) or {}
+        configured = parameters.get("shard_fetch_prefetch_steps")
+        if configured in ("", None):
+            configured = DEFAULT_SHARD_FETCH_PREFETCH_STEPS
+        try:
+            value = int(configured)
+        except (TypeError, ValueError):
+            return DEFAULT_SHARD_FETCH_PREFETCH_STEPS
+        return max(1, min(value, MAX_SHARD_FETCH_PREFETCH_STEPS))
+
+    def _sibling_shard_prefetch_scopes(
+        self,
+        *,
+        model_string,
+        spec,
+        shard_scope,
+        context: ForwardQueryContext,
+    ) -> list[dict[str, Any]]:
+        if context.device_tag_prune_out_of_scope:
+            return [dict(shard_scope or {})]
+        if not shard_scope or shard_scope.get("fetch_mode") != "nqe_column_filter":
+            return [dict(shard_scope or {})] if shard_scope else []
+        current_filter = self._single_equals_any_filter(
+            shard_scope.get("fetch_column_filters")
+        )
+        if current_filter is None:
+            return [dict(shard_scope)]
+        limit = self._sibling_shard_prefetch_limit()
+        if limit <= 1:
+            return [dict(shard_scope)]
+        run = active_execution_run(self.sync)
+        if run is None:
+            return [dict(shard_scope)]
+        current_keys = tuple(str(key) for key in shard_scope.get("shard_keys") or ())
+        if not current_keys:
+            return [dict(shard_scope)]
+
+        step_queryset = run.steps.filter(
+            kind=ForwardExecutionStepKindChoices.STAGE,
+            model_string=model_string,
+            query_name=getattr(spec, "query_name", "") or "",
+            execution_mode=getattr(spec, "execution_mode", "") or "",
+            execution_value=getattr(spec, "execution_value", "") or "",
+            status__in=[
+                ForwardExecutionStepStatusChoices.PENDING,
+                ForwardExecutionStepStatusChoices.QUEUED,
+                ForwardExecutionStepStatusChoices.RUNNING,
+                ForwardExecutionStepStatusChoices.FAILED,
+                ForwardExecutionStepStatusChoices.TIMEOUT,
+            ],
+        ).order_by("index", "pk")
+        steps = list(step_queryset)
+        current_position = None
+        current_key_set = set(current_keys)
+        for index, step in enumerate(steps):
+            if set(str(key) for key in (step.shard_keys or [])) == current_key_set:
+                current_position = index
+                break
+        if current_position is None:
+            return [dict(shard_scope)]
+
+        scopes = [dict(shard_scope)]
+        for step in steps[current_position + 1 :]:
+            if len(scopes) >= limit:
+                break
+            candidate_scope = {
+                "fetch_mode": step.fetch_mode,
+                "fetch_key_family": step.fetch_key_family,
+                "fetch_parameters": dict(step.fetch_parameters or {}),
+                "query_parameters": dict(step.query_parameters or {}),
+                "fetch_column_filters": list(step.fetch_column_filters or []),
+                "shard_keys": list(step.shard_keys or []),
+            }
+            if not self._column_filter_scope_compatible(shard_scope, candidate_scope):
+                break
+            scopes.append(candidate_scope)
+        return scopes
+
+    def _column_filter_scope_compatible(self, first_scope, second_scope) -> bool:
+        if second_scope.get("fetch_mode") != "nqe_column_filter":
+            return False
+        if (first_scope.get("fetch_key_family") or "") != (
+            second_scope.get("fetch_key_family") or ""
+        ):
+            return False
+        first_filter = self._single_equals_any_filter(
+            first_scope.get("fetch_column_filters")
+        )
+        second_filter = self._single_equals_any_filter(
+            second_scope.get("fetch_column_filters")
+        )
+        if first_filter is None or second_filter is None:
+            return False
+        return first_filter.get("columnName") == second_filter.get(
+            "columnName"
+        ) and first_filter.get("operator") == second_filter.get("operator")
+
+    def _single_equals_any_filter(self, column_filters):
+        if not column_filters or len(column_filters) != 1:
+            return None
+        filter_item = dict(column_filters[0] or {})
+        if filter_item.get("operator") != "EQUALS_ANY":
+            return None
+        return filter_item
+
+    def _combine_column_filter_shard_scopes(self, scopes):
+        if not scopes:
+            return None
+        first_scope = dict(scopes[0])
+        first_filter = self._single_equals_any_filter(
+            first_scope.get("fetch_column_filters")
+        )
+        if first_filter is None:
+            return None
+        combined_values = []
+        combined_shard_keys = []
+        for scope in scopes:
+            filter_item = self._single_equals_any_filter(
+                scope.get("fetch_column_filters")
+            )
+            if filter_item is None:
+                return None
+            for value in filter_item.get("values") or []:
+                if value not in combined_values:
+                    combined_values.append(value)
+            for key in scope.get("shard_keys") or []:
+                if key not in combined_shard_keys:
+                    combined_shard_keys.append(key)
+        combined_filter = dict(first_filter)
+        combined_filter["values"] = combined_values
+        first_scope["fetch_column_filters"] = [combined_filter]
+        first_scope["shard_keys"] = combined_shard_keys
+        return first_scope
+
+    def _save_prefetched_shard_artifacts(
+        self,
+        scopes,
+        *,
+        model_string,
+        spec,
+        baseline,
+        context: ForwardQueryContext,
+        coalesce_fields,
+        rows,
+        delete_rows,
+        sync_mode,
+    ):
+        if not scopes:
+            return
+        for scope in scopes:
+            scope = dict(scope or {})
+            scoped_rows, scoped_delete_rows = self._filter_rows_to_shard(
+                model_string,
+                list(rows or []),
+                list(delete_rows or []),
+                coalesce_fields,
+                scope,
+            )
+            query_parameters = self._query_parameters_for_scope(spec, context, scope)
+            fetch_parameters = dict(scope.get("fetch_parameters") or {})
+            fetch_parameters["prefetch_artifact"] = {
+                "source": "sibling_shard_prefetch",
+                "prefetched": True,
+            }
+            descriptor = self._fetch_artifact_descriptor(
+                model_string=model_string,
+                spec=spec,
+                baseline=baseline,
+                context=context,
+                shard_scope=scope,
+                query_parameters=query_parameters,
+                fetch_parameters=dict(scope.get("fetch_parameters") or {}),
+                fetch_column_filters=list(scope.get("fetch_column_filters") or []),
+            )
+            if descriptor is None:
+                continue
+            save_fetch_artifact(
+                descriptor["key"],
+                run_id=descriptor["run_id"],
+                rows=scoped_rows,
+                delete_rows=scoped_delete_rows,
+                sync_mode=sync_mode,
+                fetch_meta={
+                    "fetch_mode": scope.get("fetch_mode") or "model",
+                    "fetch_key_family": scope.get("fetch_key_family") or "",
+                    "fetch_parameters": fetch_parameters,
+                    "query_parameters": query_parameters,
+                    "fetch_column_filters": list(
+                        scope.get("fetch_column_filters") or []
+                    ),
+                },
+            )
+
+    def _query_parameters_for_scope(self, spec, context: ForwardQueryContext, scope):
+        parameters = spec.merged_parameters(context.query_parameters)
+        if scope:
+            if scope.get("fetch_mode") == "nqe_parameters":
+                parameters = {
+                    **parameters,
+                    **(scope.get("fetch_parameters") or {}),
+                }
+            if scope.get("query_parameters"):
+                parameters = {
+                    **parameters,
+                    **(scope.get("query_parameters") or {}),
+                }
+        return self._apply_context_tag_parameters(dict(parameters or {}), context)
 
     def _fetch_artifact_descriptor(
         self,
