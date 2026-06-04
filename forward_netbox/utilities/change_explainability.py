@@ -45,7 +45,9 @@ def change_explainability_summary(ingestion, *, max_changes=DEFAULT_MAX_CHANGE_D
         )
         if fields:
             update_changes_with_field_detail += 1
-            model_field_counts = field_counts_by_model.setdefault(model_label, Counter())
+            model_field_counts = field_counts_by_model.setdefault(
+                model_label, Counter()
+            )
             for field in fields:
                 field_counts[field] += 1
                 model_field_counts[field] += 1
@@ -96,7 +98,8 @@ def _changed_fields(original, modified):
     return sorted(
         field
         for field in fields
-        if field not in EXCLUDED_DIFF_FIELDS and original.get(field) != modified.get(field)
+        if field not in EXCLUDED_DIFF_FIELDS
+        and original.get(field) != modified.get(field)
     )
 
 
