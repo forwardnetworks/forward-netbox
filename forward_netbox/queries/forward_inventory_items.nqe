@@ -28,9 +28,12 @@ inventoryRoleColor(role_name: String) =
   else if isNetBoxModuleRole(role_name) then "3f51b5"
   else "9e9e9e";
 
+@query
+f(forward_netbox_shard_keys: List<String>) =
 foreach device in network.devices
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
+where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
 foreach component in device.platform.components
 let manufacturer_name = canonicalManufacturerName(device.platform.vendor)
 let manufacturer_slug = slugify(manufacturer_name)

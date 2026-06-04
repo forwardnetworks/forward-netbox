@@ -78,7 +78,7 @@ class ForwardArchitectureAuditCommandTest(TestCase):
         self.assertEqual(interface_contract["model"], "dcim.interface")
         self.assertEqual(
             interface_contract["fetch_contract"]["fetch_mode"],
-            "nqe_column_filter",
+            "nqe_parameters",
         )
         self.assertEqual(
             interface_contract["apply_engine_classification"],
@@ -131,7 +131,7 @@ class ForwardArchitectureAuditCommandTest(TestCase):
         )
         self.assertEqual(
             matrix["fetch_contracts"]["dcim.interface"]["fetch_mode"],
-            "nqe_column_filter",
+            "nqe_parameters",
         )
         self.assertTrue(matrix["fetch_contracts"]["dcim.interface"]["shard_safe"])
         self.assertEqual(

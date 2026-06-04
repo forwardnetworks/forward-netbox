@@ -3,6 +3,8 @@
  * @description Optional raw NQE for netbox-routing OSPF area rows derived from Forward structured OSPF state.
  */
 
+@query
+f(forward_netbox_shard_keys: List<String>) =
 foreach device in network.devices
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
@@ -10,6 +12,7 @@ foreach network_instance in device.networkInstances
 foreach protocol in network_instance.protocols
 where isPresent(protocol.ospf)
 foreach area in protocol.ospf.areas
+where isEmpty(forward_netbox_shard_keys) || toString(area.id) in forward_netbox_shard_keys
 select distinct {
   area_id: toString(area.id),
   area_type: toString(area.areaType)
