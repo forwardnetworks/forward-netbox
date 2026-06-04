@@ -308,6 +308,10 @@ class ForwardClientTest(TestCase):
                 side_effect=[first_context, second_context],
             ),
             patch.object(self.client, "_throttle_request"),
+            patch(
+                "forward_netbox.utilities.forward_api_impl.time.monotonic",
+                side_effect=[100.0, 100.5],
+            ),
             patch("forward_netbox.utilities.forward_api_impl.time.sleep"),
         ):
             result = self.client._request("POST", "/nqe", json_body={"query": "q"})
@@ -329,6 +333,8 @@ class ForwardClientTest(TestCase):
                 "http_retries": 1,
                 "http_status_classes": {"2xx": 1, "4xx": 1},
                 "throttle_sleep_seconds": 0.0,
+                "usage_window_seconds": 0.5,
+                "observed_http_attempts_per_minute": 120.0,
                 "nqe_query_calls": 0,
                 "nqe_diff_calls": 0,
                 "nqe_pages": 0,
@@ -359,6 +365,8 @@ class ForwardClientTest(TestCase):
                 "http_retries": 0,
                 "http_status_classes": {},
                 "throttle_sleep_seconds": 0.0,
+                "usage_window_seconds": 0.0,
+                "observed_http_attempts_per_minute": None,
                 "nqe_query_calls": 0,
                 "nqe_diff_calls": 0,
                 "nqe_pages": 0,
@@ -366,6 +374,21 @@ class ForwardClientTest(TestCase):
                 "nqe_diff_pages": 0,
             },
         )
+
+    def test_api_usage_summary_reports_observed_http_attempt_rate(self):
+        with patch(
+            "forward_netbox.utilities.forward_api_impl.time.monotonic",
+            side_effect=[100.0, 102.0, 104.0],
+        ):
+            self.client._record_http_attempt_usage()
+            self.client._record_http_attempt_usage()
+            self.client._record_http_attempt_usage()
+
+        summary = self.client.api_usage_summary()
+
+        self.assertEqual(summary["http_attempts"], 3)
+        self.assertEqual(summary["usage_window_seconds"], 4.0)
+        self.assertEqual(summary["observed_http_attempts_per_minute"], 30.0)
 
     def test_request_raises_connectivity_error_after_transient_http_status_retries(
         self,
