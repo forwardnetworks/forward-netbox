@@ -5,6 +5,7 @@ from ipaddress import ip_interface
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 from django.db import transaction
+from django.db.models import F
 
 from ..choices import ForwardIngestionPhaseChoices
 from ..exceptions import ForwardDependencySkipError
@@ -21,6 +22,18 @@ PROGRESS_HEARTBEAT_ROW_INTERVAL = 500
 PROGRESS_HEARTBEAT_SECONDS = 60
 
 logger = logging.getLogger("forward_netbox.sync")
+
+
+def _increment_ingestion_delete_totals(runner, amount):
+    if amount <= 0 or runner.ingestion is None:
+        return
+    ingestion = runner.ingestion
+    ingestion.__class__.objects.filter(pk=ingestion.pk).update(
+        applied_change_count=F("applied_change_count") + amount,
+        deleted_change_count=F("deleted_change_count") + amount,
+    )
+    ingestion.applied_change_count = int(ingestion.applied_change_count or 0) + amount
+    ingestion.deleted_change_count = int(ingestion.deleted_change_count or 0) + amount
 
 
 def record_aggregated_conflict_warning(
@@ -356,6 +369,7 @@ def delete_model_rows(runner, model_string, rows):
     state = get_branch_run_display_state(runner.sync)
     last_emit_at = 0.0
     processed_rows = 0
+    pending_deleted = 0
     for row in rows:
         processed_rows += 1
         try:
@@ -364,6 +378,10 @@ def delete_model_rows(runner, model_string, rows):
             runner.events_clearer.increment()
             if deleted:
                 runner.logger.increment_statistics(model_string, outcome="applied")
+                pending_deleted += 1
+                if pending_deleted >= PROGRESS_HEARTBEAT_ROW_INTERVAL:
+                    _increment_ingestion_delete_totals(runner, pending_deleted)
+                    pending_deleted = 0
             else:
                 runner.logger.increment_statistics(model_string, outcome="skipped")
         except ForwardDependencySkipError as exc:
@@ -420,6 +438,7 @@ def delete_model_rows(runner, model_string, rows):
             state=state,
             last_emit_at=last_emit_at,
         )
+    _increment_ingestion_delete_totals(runner, pending_deleted)
     runner.logger.log_info(
         f"Finished deleting rows for {model_string}.",
         obj=runner.sync,

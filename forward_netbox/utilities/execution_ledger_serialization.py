@@ -1,4 +1,5 @@
 from ..choices import ForwardExecutionRunStatusChoices
+from .api_usage import evaluate_forward_api_usage
 from .branch_budget import BRANCH_RUN_STATE_PARAMETER
 from .execution_ledger_metrics import apply_engine_decision
 from .execution_ledger_metrics import execution_run_metrics
@@ -15,6 +16,7 @@ def execution_run_support_bundle(run, *, recommendation_fn):
         "run": run.as_support_summary(),
         "run_job": job_summary(run.job),
         "compatibility_cache": _compatibility_cache_evidence(run),
+        "api_usage": api_usage_support_summary(run),
         "recovery_recommendation": recommendation_fn(run),
         "recovery_policy_summary": _recovery_policy_summary(run),
         "metrics": execution_run_metrics(run, step_list),
@@ -29,6 +31,62 @@ def execution_run_support_bundle(run, *, recommendation_fn):
             }
             for step in step_list
         ],
+    }
+
+
+API_USAGE_COUNTER_KEYS = (
+    "api_requests_per_minute",
+    "http_attempts",
+    "http_successes",
+    "http_failures",
+    "http_timeout_failures",
+    "http_transport_failures",
+    "http_status_failures",
+    "http_429_failures",
+    "http_retries",
+    "http_status_classes",
+    "throttle_sleep_seconds",
+    "usage_window_seconds",
+    "observed_http_attempts_per_minute",
+    "nqe_query_calls",
+    "nqe_diff_calls",
+    "nqe_pages",
+    "nqe_query_pages",
+    "nqe_diff_pages",
+)
+
+
+def api_usage_support_summary(run):
+    job = getattr(run, "job", None)
+    job_data = getattr(job, "data", None) if job is not None else None
+    if not isinstance(job_data, dict):
+        return {
+            "available": False,
+            "reason": "run_job_data_missing",
+            "source": "run_job_data.forward_api_usage",
+        }
+    raw_summary = job_data.get("forward_api_usage")
+    if not isinstance(raw_summary, dict):
+        return {
+            "available": False,
+            "reason": "forward_api_usage_missing",
+            "source": "run_job_data.forward_api_usage",
+        }
+
+    counters = {
+        key: raw_summary[key] for key in API_USAGE_COUNTER_KEYS if key in raw_summary
+    }
+    budget = raw_summary.get("budget")
+    if not isinstance(budget, dict):
+        budget = evaluate_forward_api_usage(
+            counters,
+            source_type=getattr(getattr(run, "source", None), "type", None),
+        )
+    return {
+        "available": True,
+        "source": "run_job_data.forward_api_usage",
+        "counters": counters,
+        "budget": budget,
     }
 
 
