@@ -5,6 +5,7 @@ from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.core.exceptions import ValidationError
 from django.db import models
+from django.db.models.functions import Greatest
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404
 from django.shortcuts import redirect
@@ -93,13 +94,17 @@ from .utilities.sync_state import get_execution_display_state
 
 
 def annotate_statistics(queryset):
+    counted_changes = models.Q(
+        branch__changediff__action__in=[
+            ObjectChangeActionChoices.ACTION_CREATE,
+            ObjectChangeActionChoices.ACTION_UPDATE,
+            ObjectChangeActionChoices.ACTION_DELETE,
+        ]
+    ) & ~models.Q(branch__changediff__object_type__model="objectchange")
     return queryset.annotate(
-        num_created=models.Case(
-            models.When(
-                branch__isnull=True,
-                then=models.F("created_change_count"),
-            ),
-            default=models.Count(
+        num_created=Greatest(
+            models.F("created_change_count"),
+            models.Count(
                 "branch__changediff",
                 filter=models.Q(
                     branch__changediff__action=ObjectChangeActionChoices.ACTION_CREATE
@@ -108,12 +113,9 @@ def annotate_statistics(queryset):
             ),
             output_field=models.IntegerField(),
         ),
-        num_updated=models.Case(
-            models.When(
-                branch__isnull=True,
-                then=models.F("updated_change_count"),
-            ),
-            default=models.Count(
+        num_updated=Greatest(
+            models.F("updated_change_count"),
+            models.Count(
                 "branch__changediff",
                 filter=models.Q(
                     branch__changediff__action=ObjectChangeActionChoices.ACTION_UPDATE
@@ -122,12 +124,9 @@ def annotate_statistics(queryset):
             ),
             output_field=models.IntegerField(),
         ),
-        num_deleted=models.Case(
-            models.When(
-                branch__isnull=True,
-                then=models.F("deleted_change_count"),
-            ),
-            default=models.Count(
+        num_deleted=Greatest(
+            models.F("deleted_change_count"),
+            models.Count(
                 "branch__changediff",
                 filter=models.Q(
                     branch__changediff__action=ObjectChangeActionChoices.ACTION_DELETE
@@ -138,12 +137,9 @@ def annotate_statistics(queryset):
         ),
         description=models.F("branch__description"),
         user=models.F("sync__user__username"),
-        staged_changes=models.Case(
-            models.When(
-                branch__isnull=True,
-                then=models.F("applied_change_count"),
-            ),
-            default=models.Count(models.F("branch__changediff")),
+        staged_changes=Greatest(
+            models.F("applied_change_count"),
+            models.Count("branch__changediff", filter=counted_changes),
             output_field=models.IntegerField(),
         ),
         branch_name=models.F("branch__name"),

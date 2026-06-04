@@ -84,6 +84,76 @@
       </div>
     </div>
     <div class="card">
+      <h5 class="card-header">{% trans "Forward API Usage" %}</h5>
+      <div class="card-body">
+        {% if health.api_usage.available %}
+          {% with budget=health.api_usage.budget counters=health.api_usage.counters metrics=health.api_usage.budget.metrics %}
+            <table class="table table-hover attr-table">
+              <tr>
+                <th scope="row">{% trans "Budget status" %}</th>
+                <td>
+                  {% if budget.status == "passed" %}
+                    <span class="badge text-bg-success">{% trans "Pass" %}</span>
+                  {% elif budget.status == "failed" %}
+                    <span class="badge text-bg-danger">{% trans "Fail" %}</span>
+                  {% elif budget.status == "warning" %}
+                    <span class="badge text-bg-warning">{% trans "Warn" %}</span>
+                  {% else %}
+                    <span class="badge text-bg-secondary">{{ budget.status|placeholder }}</span>
+                  {% endif %}
+                </td>
+              </tr>
+              <tr>
+                <th scope="row">{% trans "Configured rate" %}</th>
+                <td>{{ metrics.configured_requests_per_minute|placeholder }} / {{ metrics.hard_block_requests_per_minute|placeholder }} rpm</td>
+              </tr>
+              <tr>
+                <th scope="row">{% trans "Observed rate" %}</th>
+                <td>
+                  {{ metrics.observed_http_attempts_per_minute|placeholder }} rpm
+                  {% if metrics.observed_rate_sample_complete %}
+                    <span class="text-muted">({% trans "sampled" %})</span>
+                  {% endif %}
+                </td>
+              </tr>
+              <tr>
+                <th scope="row">{% trans "HTTP attempts" %}</th>
+                <td>{{ counters.http_attempts|placeholder }}</td>
+              </tr>
+              <tr>
+                <th scope="row">{% trans "HTTP 429 failures" %}</th>
+                <td>{{ counters.http_429_failures|placeholder }}</td>
+              </tr>
+              <tr>
+                <th scope="row">{% trans "NQE calls" %}</th>
+                <td>
+                  query={{ counters.nqe_query_calls|placeholder }},
+                  diff={{ counters.nqe_diff_calls|placeholder }},
+                  pages={{ counters.nqe_pages|placeholder }}
+                </td>
+              </tr>
+              {% if budget.warnings %}
+                <tr>
+                  <th scope="row">{% trans "Warnings" %}</th>
+                  <td>{{ budget.warnings }}</td>
+                </tr>
+              {% endif %}
+              {% if budget.failure_reasons %}
+                <tr>
+                  <th scope="row">{% trans "Failure reasons" %}</th>
+                  <td>{{ budget.failure_reasons }}</td>
+                </tr>
+              {% endif %}
+            </table>
+          {% endwith %}
+        {% else %}
+          <p class="text-muted mb-0">
+            {% trans "No stored Forward API usage evidence is available for the latest execution run." %}
+          </p>
+        {% endif %}
+      </div>
+    </div>
+    <div class="card">
       <h5 class="card-header">{% trans "Checks" %}</h5>
       <div class="table-responsive">
         <table class="table table-hover">

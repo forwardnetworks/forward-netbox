@@ -11,6 +11,7 @@ from django.core.exceptions import ValidationError
 from django.test import override_settings
 from django.test import TestCase
 from django.utils import timezone
+from netbox_branching.models import Branch
 
 from forward_netbox.choices import FORWARD_BGP_MODELS
 from forward_netbox.choices import forward_configured_models
@@ -2180,6 +2181,23 @@ class ForwardIngestionSnapshotSummaryTest(TestCase):
         self.assertEqual(annotated.num_created, 7)
         self.assertEqual(annotated.num_updated, 130)
         self.assertEqual(annotated.num_deleted, 20)
+
+    def test_annotate_statistics_uses_persisted_counts_when_branch_diffs_lag(self):
+        branch = Branch.objects.create(
+            name=f"stats-lag-{uuid4().hex[:12]}",
+            schema_id=f"stats_lag_{uuid4().hex[:12]}",
+        )
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            branch=branch,
+            applied_change_count=500,
+            deleted_change_count=500,
+        )
+
+        annotated = annotate_statistics(ForwardIngestion.objects).get(pk=ingestion.pk)
+
+        self.assertEqual(annotated.staged_changes, 500)
+        self.assertEqual(annotated.num_deleted, 500)
 
 
 class ForwardNQEMapModelTest(TestCase):

@@ -140,6 +140,7 @@ class ForwardSyncOrchestrationHelperTest(TestCase):
         executor = SimpleNamespace(
             client=SimpleNamespace(
                 api_usage_summary=lambda: {
+                    "api_requests_per_minute": 1800,
                     "http_attempts": 7,
                     "http_retries": 1,
                     "http_429_failures": 0,
@@ -154,7 +155,11 @@ class ForwardSyncOrchestrationHelperTest(TestCase):
         _record_forward_api_usage(self.sync, executor)
 
         self.assertEqual(self.sync.logger.log_data["forward_api_usage"]["nqe_pages"], 3)
+        self.assertEqual(
+            self.sync.logger.log_data["forward_api_usage"]["budget"]["status"],
+            "passed",
+        )
         self.assertIn(
-            "Forward API usage summary: http_attempts=7",
+            "Forward API usage summary: api_usage_status=passed http_attempts=7",
             self.sync.logger.log_data["logs"][0][4],
         )
