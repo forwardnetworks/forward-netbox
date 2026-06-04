@@ -2388,7 +2388,7 @@ class ForwardNQEMapModelTest(TestCase):
         self.assertEqual(query_map.query, "")
         self.assertEqual(query_map.commit_id, "commit-1")
 
-    def test_seed_builtin_maps_removes_stale_shard_parameters(self):
+    def test_seed_builtin_maps_preserves_seeded_shard_parameters(self):
         netbox_model = ContentType.objects.get(app_label="dcim", model="interface")
         query_map = ForwardNQEMap.objects.get(
             name="Forward Interfaces",
@@ -2401,7 +2401,7 @@ class ForwardNQEMapModelTest(TestCase):
         seed_builtin_nqe_maps(type("Sender", (), {"label": "forward_netbox"}))
 
         query_map.refresh_from_db()
-        self.assertEqual(query_map.parameters, {})
+        self.assertEqual(query_map.parameters, {"forward_netbox_shard_keys": []})
 
     def test_seed_builtin_maps_creates_optional_alias_maps_disabled(self):
         netbox_model = ContentType.objects.get(app_label="dcim", model="device")

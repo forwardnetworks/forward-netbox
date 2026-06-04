@@ -28,13 +28,13 @@ Validate and harden source-level Forward tag scoping for NetBox sync with multi-
 2. Add `available-tags` API lookup from Forward source/network.
 3. Validate and mask new source parameter keys.
 4. Build scoped device-set query with `any`/`all` include semantics and exclude semantics.
-5. Keep fallback behavior: retry query/diff without parameters on recognized parameter rejection errors.
+5. Keep the query path parameter-native and fail fast on unsupported query shapes.
 6. Validate with containerized tests, UI smoke checks, and live scoped ingestion.
 
 ## Rollback
 
 - Revert the tag multi-select fields and API endpoint.
-- Revert query-fetch scoping changes and fallback wrappers.
+- Revert query-fetch scoping changes and related execution wiring.
 - Restore prior single-tag local-scope behavior.
 
 ## Decision Log

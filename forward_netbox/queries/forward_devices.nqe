@@ -6,9 +6,12 @@
 
 import "netbox_utilities";
 
+@query
+f(forward_netbox_shard_keys: List<String>) =
 foreach device in network.devices
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
+where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
 let location = device.locationName
 let model = device.platform.model
 let device_type = device.platform.deviceType

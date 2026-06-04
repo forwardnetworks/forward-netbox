@@ -99,10 +99,6 @@ DEVICE_TAG_QUERY_PARAMETER_DEFAULTS = {
     "device_tag_include_match": "any",
     "device_tag_exclude_tags": [],
 }
-SHARD_PARAMETER_QUERY_FILES = {
-    "forward_prefixes_ipv4.nqe",
-    "forward_prefixes_ipv6.nqe",
-}
 DEVICE_TAG_PARAMETER_QUERY_FILES = {
     "forward_locations.nqe",
     "forward_prefixes_ipv4.nqe",
@@ -116,14 +112,15 @@ def _read_query_source(filename: str) -> str:
 
 def _default_query_parameters(filename: str) -> dict[str, Any]:
     parameters = {}
+    source = None
     if filename in DEVICE_TAG_PARAMETER_QUERY_FILES:
         source = _read_query(filename)
         if "device_tag_include_tags" in source:
             parameters.update(DEVICE_TAG_QUERY_PARAMETER_DEFAULTS)
-    if filename in SHARD_PARAMETER_QUERY_FILES:
+    if source is None:
         source = _read_query(filename)
-        if SHARD_QUERY_PARAMETER_NAME in source:
-            parameters.update(SHARD_QUERY_PARAMETER_DEFAULT)
+    if SHARD_QUERY_PARAMETER_NAME in source:
+        parameters.update(SHARD_QUERY_PARAMETER_DEFAULT)
     return parameters
 
 

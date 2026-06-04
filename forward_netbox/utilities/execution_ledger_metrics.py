@@ -751,7 +751,7 @@ def _fallback_reason_remediation(reason):
             "message": "The model used the full model fetch contract.",
             "suggestions": [
                 "Confirm the model has a shard-safe fetch contract.",
-                "Add deterministic NQE column-filter support only if row shape stays unchanged.",
+                "Add deterministic NQE parameter support only if row shape stays unchanged.",
             ],
         }
     if reason_text == "shard_pushdown_failed_full_fallback":
@@ -1791,6 +1791,16 @@ def fetch_explanation(step):
         return (
             "Fetched the shard with native Forward NQE column filters "
             f"for {key_family} keys ({filter_count} filter(s))."
+        )
+    if mode == "nqe_parameters":
+        parameter_count = sum(
+            len(value) if isinstance(value, list) else 1
+            for value in (step.fetch_parameters or {}).values()
+        )
+        key_family = step.fetch_key_family or "shard"
+        return (
+            "Fetched the shard with Forward NQE query parameters "
+            f"for {key_family} keys ({parameter_count} parameter value(s))."
         )
     if mode == "shard":
         key_family = step.fetch_key_family or "shard"
