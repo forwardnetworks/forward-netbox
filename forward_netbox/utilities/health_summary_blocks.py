@@ -35,6 +35,13 @@ from .runtime_guidance import source_query_fetch_concurrency
 from .runtime_guidance import source_timeout_seconds
 
 
+def _safe_int(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 DEPENDENCY_PREFLIGHT_RULES = (
     {
         "code": "interface_routing_dependency_omitted",
@@ -193,7 +200,34 @@ def ingestion_summary(ingestion):
         "issue_count": ingestion.issues.count(),
         "applied_change_count": ingestion.applied_change_count,
         "failed_change_count": ingestion.failed_change_count,
+        "query_path_resolution": query_path_resolution_summary(ingestion),
         "created": ingestion.created.isoformat() if ingestion.created else None,
+    }
+
+
+def query_path_resolution_summary(ingestion):
+    model_results = list(getattr(ingestion, "model_results", None) or [])
+    total_query_path_specs = 0
+    artifact_hit_count = 0
+    client_resolve_count = 0
+    for result in model_results:
+        resolution = result.get("query_path_resolution") or {}
+        if not isinstance(resolution, dict):
+            continue
+        total_query_path_specs += _safe_int(resolution.get("query_path_spec_count"))
+        artifact_hit_count += _safe_int(resolution.get("artifact_hit_count"))
+        client_resolve_count += _safe_int(resolution.get("client_resolve_count"))
+    total_lookups = artifact_hit_count + client_resolve_count
+    return {
+        "available": bool(total_query_path_specs),
+        "total_query_path_specs": total_query_path_specs,
+        "artifact_hit_count": artifact_hit_count,
+        "client_resolve_count": client_resolve_count,
+        "cache_hit_rate": (
+            round(artifact_hit_count / float(total_lookups), 4)
+            if total_lookups
+            else None
+        ),
     }
 
 

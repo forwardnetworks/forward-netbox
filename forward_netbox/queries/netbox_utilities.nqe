@@ -56,6 +56,14 @@ export canonicalManufacturerName(vendor: Vendor) =
   then canonicalManufacturerOverride(vendor)
   else replace(replace(toString(vendor), "Vendor.", ""), "_", " ");
 
+export normalizePlatformName(platform_os: VendorOs) =
+  let platform_name = replace(toString(platform_os), "OS.", "")
+  let platform_name_lc = toLowerCase(platform_name)
+  if contains(platform_name_lc, "apic")
+    || contains(platform_name_lc, "nxos_aci")
+  then "ACI"
+  else platform_name;
+
 export slugify(value: String) =
   replaceRegexMatches(
     replaceRegexMatches(

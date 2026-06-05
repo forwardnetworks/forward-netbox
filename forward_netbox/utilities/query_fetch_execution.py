@@ -5,7 +5,6 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from dataclasses import field
 from dataclasses import replace
-from threading import Lock
 from typing import Any
 
 from django.db import close_old_connections
@@ -17,8 +16,6 @@ from ..choices import FORWARD_OPTIONAL_MODELS
 from ..choices import ForwardApplyEngineChoices
 from ..choices import ForwardDiffFallbackModeChoices
 from ..choices import ForwardExecutionBackendChoices
-from ..choices import ForwardExecutionStepKindChoices
-from ..choices import ForwardExecutionStepStatusChoices
 from ..exceptions import ForwardClientError
 from ..exceptions import ForwardConnectivityError
 from ..exceptions import ForwardQueryError
@@ -62,9 +59,6 @@ from .sync_contracts import validate_row_shape_for_model
 
 DEFAULT_PREFLIGHT_ROW_LIMIT = 5
 MAX_PREFLIGHT_ROW_LIMIT = 100
-SHARD_FETCH_COLUMN_FILTER_CHUNK_SIZE = 250
-DEFAULT_SHARD_FETCH_PREFETCH_STEPS = 6
-MAX_SHARD_FETCH_PREFETCH_STEPS = 50
 
 
 _SENSITIVE_EXCEPTION_PATTERNS = (
@@ -215,116 +209,6 @@ def _row_site_names(row: dict[str, Any]) -> set[str]:
     return names
 
 
-def _partition_column_filters(column_filters):
-    if not column_filters:
-        return [None]
-    if len(column_filters) != 1:
-        return [column_filters]
-    filter_item = dict(column_filters[0] or {})
-    if filter_item.get("operator") != "EQUALS_ANY":
-        return [column_filters]
-    values = list(filter_item.get("values") or [])
-    if len(values) <= SHARD_FETCH_COLUMN_FILTER_CHUNK_SIZE:
-        return [column_filters]
-
-    partitions = []
-    for start in range(0, len(values), SHARD_FETCH_COLUMN_FILTER_CHUNK_SIZE):
-        end = start + SHARD_FETCH_COLUMN_FILTER_CHUNK_SIZE
-        partition_item = dict(filter_item)
-        partition_item["values"] = values[start:end]
-        partitions.append([partition_item])
-    return partitions or [column_filters]
-
-
-def _split_column_filter_partition(partition):
-    if not partition or len(partition) != 1:
-        return []
-    filter_item = dict(partition[0] or {})
-    if filter_item.get("operator") != "EQUALS_ANY":
-        return []
-    values = list(filter_item.get("values") or [])
-    if len(values) <= 1:
-        return []
-    midpoint = len(values) // 2
-    split_partitions = []
-    for subset in (values[:midpoint], values[midpoint:]):
-        if not subset:
-            continue
-        split_filter = dict(filter_item)
-        split_filter["values"] = subset
-        split_partitions.append([split_filter])
-    return split_partitions
-
-
-def _alternate_single_value_column_filter_partition(partition):
-    if not partition or len(partition) != 1:
-        return []
-    filter_item = dict(partition[0] or {})
-    operator = filter_item.get("operator")
-    if operator == "DEFAULT":
-        value = filter_item.get("value")
-        if value in ("", None):
-            return []
-        alternate_filter = dict(filter_item)
-        alternate_filter.pop("value", None)
-        alternate_filter["operator"] = "EQUALS_ANY"
-        alternate_filter["values"] = [value]
-        return [alternate_filter]
-    if operator == "EQUALS_ANY":
-        values = list(filter_item.get("values") or [])
-        if len(values) != 1:
-            return []
-        alternate_filter = dict(filter_item)
-        alternate_filter.pop("values", None)
-        alternate_filter["operator"] = "DEFAULT"
-        alternate_filter["value"] = values[0]
-        return [alternate_filter]
-    return []
-
-
-def _default_column_filter_partitions_for_equals_any(partition):
-    if not partition or len(partition) != 1:
-        return []
-    filter_item = dict(partition[0] or {})
-    if filter_item.get("operator") != "EQUALS_ANY":
-        return []
-    values = [
-        value
-        for value in list(filter_item.get("values") or [])
-        if value not in ("", None)
-    ]
-    if len(values) <= 1:
-        return []
-    partitions = []
-    for value in values:
-        default_filter = dict(filter_item)
-        default_filter.pop("values", None)
-        default_filter["operator"] = "DEFAULT"
-        default_filter["value"] = value
-        partitions.append([default_filter])
-    return partitions
-
-
-def _partition_error_allows_split_retry(exc: Exception) -> bool:
-    if isinstance(exc, ForwardConnectivityError):
-        return True
-    message = str(exc or "").lower()
-    if "'value' is required" in message or '"value" is required' in message:
-        return True
-    if "timeout" in message or "timed out" in message:
-        return True
-    if re.search(r"\bhttp\s+4\d\d\b", message):
-        return False
-    if "bad request" in message:
-        return False
-    return True
-
-
-def _is_value_required_filter_error(exc: Exception) -> bool:
-    message = str(exc or "").lower()
-    return "'value' is required" in message or '"value" is required' in message
-
-
 @dataclass(frozen=True)
 class ForwardModelResult:
     model_string: str
@@ -347,6 +231,7 @@ class ForwardModelResult:
     fetch_parameters: dict[str, Any] = field(default_factory=dict)
     query_parameters: dict[str, Any] = field(default_factory=dict)
     fetch_column_filters: list[dict[str, Any]] = field(default_factory=list)
+    query_path_resolution: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -370,6 +255,7 @@ class ForwardModelResult:
             "fetch_parameters": self.fetch_parameters,
             "query_parameters": self.query_parameters,
             "fetch_column_filters": self.fetch_column_filters,
+            "query_path_resolution": self.query_path_resolution,
         }
 
 
@@ -382,6 +268,7 @@ class ForwardQueryFetcher:
         self._failed_model_results: dict[str, ForwardModelResult] = {}
         self._resolved_specs_cache: dict[str, list[Any]] = {}
         self._incremental_baseline_cache: dict[tuple[Any, ...], Any] = {}
+        self._query_path_resolution_cache: dict[str, dict[str, Any]] = {}
 
     def resolve_context(self, *, branch_run_state=None) -> ForwardQueryContext:
         branch_run_state = branch_run_state or {}
@@ -1010,12 +897,20 @@ class ForwardQueryFetcher:
     def _resolve_query_specs(self, model_string: str, specs):
         run = active_execution_run(self.sync)
         if run is None:
-            return resolve_query_specs_for_client(specs, self.client)
+            resolved_specs = resolve_query_specs_for_client(specs, self.client)
+            self._query_path_resolution_cache[model_string] = (
+                self._build_query_path_resolution_summary(model_string, specs)
+            )
+            return resolved_specs
         resolved_specs = []
+        query_path_spec_count = 0
+        artifact_hit_count = 0
+        client_resolve_count = 0
         for spec in specs:
             if not getattr(spec, "query_path", None):
                 resolved_specs.append(spec)
                 continue
+            query_path_spec_count += 1
             descriptor = self._query_spec_artifact_descriptor(
                 model_string=model_string,
                 spec=spec,
@@ -1025,6 +920,7 @@ class ForwardQueryFetcher:
                 resolved_query_id = str(cached.get("resolved_query_id") or "").strip()
                 resolved_commit_id = str(cached.get("commit_id") or "").strip()
                 if resolved_query_id:
+                    artifact_hit_count += 1
                     resolved_specs.append(
                         replace(
                             spec,
@@ -1033,10 +929,49 @@ class ForwardQueryFetcher:
                         )
                     )
                     continue
+            client_resolve_count += 1
             resolved_spec = spec.resolve(self.client)
             self._save_query_spec_artifact(descriptor, resolved_spec)
             resolved_specs.append(resolved_spec)
+        self._query_path_resolution_cache[model_string] = {
+            "available": bool(query_path_spec_count),
+            "query_path_spec_count": query_path_spec_count,
+            "artifact_hit_count": artifact_hit_count,
+            "client_resolve_count": client_resolve_count,
+            "cache_hit_rate": (
+                round(artifact_hit_count / float(query_path_spec_count), 4)
+                if query_path_spec_count
+                else None
+            ),
+            "message": (
+                f"Resolved {query_path_spec_count} query_path spec(s) with "
+                f"{artifact_hit_count} artifact hit(s) and "
+                f"{client_resolve_count} Forward lookup(s)."
+                if query_path_spec_count
+                else "No query_path specs were present for this model."
+            ),
+        }
         return resolved_specs
+
+    def _build_query_path_resolution_summary(
+        self, model_string: str, specs
+    ) -> dict[str, Any]:
+        query_path_spec_count = sum(
+            1 for spec in specs if getattr(spec, "query_path", None)
+        )
+        return {
+            "available": bool(query_path_spec_count),
+            "query_path_spec_count": query_path_spec_count,
+            "artifact_hit_count": 0,
+            "client_resolve_count": query_path_spec_count,
+            "cache_hit_rate": 0.0 if query_path_spec_count else None,
+            "message": (
+                f"Resolved {query_path_spec_count} query_path spec(s) with "
+                "Forward lookups."
+                if query_path_spec_count
+                else "No query_path specs were present for this model."
+            ),
+        }
 
     def _query_spec_artifact_descriptor(self, *, model_string: str, spec):
         source = getattr(self.sync, "source", None)
@@ -1224,6 +1159,9 @@ class ForwardQueryFetcher:
             fetch_parameters=dict(fetch_meta.get("fetch_parameters") or {}),
             query_parameters=dict(fetch_meta.get("query_parameters") or {}),
             fetch_column_filters=list(fetch_meta.get("fetch_column_filters") or []),
+            query_path_resolution=dict(
+                self._query_path_resolution_cache.get(model_string) or {}
+            ),
         )
         workload = None
         if rows or delete_rows:
@@ -1319,6 +1257,9 @@ class ForwardQueryFetcher:
             runtime_ms=runtime_ms,
             snapshot_id=context.snapshot_id,
             **self._apply_engine_result_fields(model_string),
+            query_path_resolution=dict(
+                self._query_path_resolution_cache.get(model_string) or {}
+            ),
             diagnostics=[
                 {
                     "name": "query_validation_failure",
@@ -1430,6 +1371,9 @@ class ForwardQueryFetcher:
             runtime_ms=runtime_ms,
             snapshot_id=context.snapshot_id,
             **self._apply_engine_result_fields(model_string),
+            query_path_resolution=dict(
+                self._query_path_resolution_cache.get(model_string) or {}
+            ),
         )
 
     def _apply_engine_result_fields(self, model_string: str) -> dict[str, Any]:
@@ -1512,9 +1456,7 @@ class ForwardQueryFetcher:
         return_fetch_meta=False,
     ):
         fetch_artifact_descriptor = None
-        model_fetch_artifact_descriptor = None
         original_shard_scope = dict(shard_scope or {}) if shard_scope else None
-        prefetch_shard_scopes: list[dict[str, Any]] = []
 
         def _return(rows, delete_rows, sync_mode, metadata):
             metadata = dict(metadata or {})
@@ -1538,29 +1480,6 @@ class ForwardQueryFetcher:
                 return rows, delete_rows, sync_mode, metadata
             return rows, delete_rows, sync_mode
 
-        def _load_model_fetch_artifact():
-            if model_fetch_artifact_descriptor is None:
-                return None, {}
-            payload, artifact_meta = load_fetch_artifact(
-                model_fetch_artifact_descriptor["key"],
-                run_id=model_fetch_artifact_descriptor["run_id"],
-            )
-            if payload is None:
-                return None, artifact_meta
-            return list(payload.get("rows") or []), artifact_meta
-
-        def _save_model_fetch_artifact(rows, metadata):
-            if model_fetch_artifact_descriptor is None:
-                return {}
-            return save_fetch_artifact(
-                model_fetch_artifact_descriptor["key"],
-                run_id=model_fetch_artifact_descriptor["run_id"],
-                rows=list(rows or []),
-                delete_rows=[],
-                sync_mode="full",
-                fetch_meta=metadata,
-            )
-
         runner = ForwardSyncRunner(
             sync=self.sync,
             ingestion=None,
@@ -1569,35 +1488,21 @@ class ForwardQueryFetcher:
         )
         runner._model_coalesce_fields[model_string] = coalesce_fields
         if shard_scope:
-            prefetch_shard_scopes = self._sibling_shard_prefetch_scopes(
-                model_string=model_string,
-                spec=spec,
-                shard_scope=shard_scope,
-                context=context,
-            )
-            if len(prefetch_shard_scopes) > 1:
-                combined_scope = self._combine_column_filter_shard_scopes(
-                    prefetch_shard_scopes
+            fetch_mode = str(shard_scope.get("fetch_mode") or "model")
+            if fetch_mode == "nqe_column_filter":
+                raise ForwardQueryError(
+                    "Legacy NQE column-filter shard fetches are no longer supported. "
+                    f"Update the `{model_string}` map to use query parameters or full-model fetch."
                 )
-                if combined_scope is not None:
-                    shard_scope = combined_scope
         metadata_shard_scope = original_shard_scope or shard_scope
-        column_filters = None
-        column_filter_batches = [None]
         requested_fetch_mode = "model"
         fetch_key_family = ""
         fetch_parameters = {}
         fetch_column_filters = []
-        if shard_scope and shard_scope.get("fetch_mode") == "nqe_column_filter":
-            column_filters = shard_scope.get("fetch_column_filters") or None
-            column_filter_batches = _partition_column_filters(column_filters)
         if metadata_shard_scope:
             requested_fetch_mode = metadata_shard_scope.get("fetch_mode") or "model"
             fetch_key_family = metadata_shard_scope.get("fetch_key_family") or ""
             fetch_parameters = dict(metadata_shard_scope.get("fetch_parameters") or {})
-            fetch_column_filters = list(
-                metadata_shard_scope.get("fetch_column_filters") or []
-            )
         parameters = spec.merged_parameters(context.query_parameters)
         if metadata_shard_scope:
             if metadata_shard_scope.get("fetch_mode") == "nqe_parameters":
@@ -1627,17 +1532,6 @@ class ForwardQueryFetcher:
             fetch_parameters=fetch_parameters,
             fetch_column_filters=fetch_column_filters,
         )
-        model_fetch_artifact_descriptor = self._fetch_artifact_descriptor(
-            model_string=model_string,
-            spec=spec,
-            baseline=baseline,
-            context=context,
-            shard_scope=shard_scope,
-            query_parameters=query_parameters,
-            fetch_parameters={},
-            fetch_column_filters=[],
-            artifact_scope="model_fallback",
-        )
         if fetch_artifact_descriptor is not None:
             payload, artifact_meta = load_fetch_artifact(
                 fetch_artifact_descriptor["key"],
@@ -1659,43 +1553,6 @@ class ForwardQueryFetcher:
                     cached_metadata,
                 )
 
-        if shard_scope and shard_scope.get("fetch_mode") != "model":
-            model_artifact_rows, model_artifact_meta = _load_model_fetch_artifact()
-            if model_artifact_rows is not None:
-                rows = list(model_artifact_rows)
-                rows, _ = self._filter_rows_to_shard(
-                    model_string,
-                    rows,
-                    [],
-                    coalesce_fields,
-                    shard_scope,
-                )
-                filtered_rows, removed_rows = self._apply_device_tag_scope(
-                    model_string,
-                    rows,
-                    context,
-                )
-                fallback_parameters = dict(fetch_parameters)
-                fallback_parameters["fallback_reason"] = "reused_model_fetch_artifact"
-                fallback_parameters["model_fetch_artifact"] = (
-                    sanitize_fetch_artifact_metadata(model_artifact_meta)
-                )
-                delete_rows = (
-                    removed_rows if context.device_tag_prune_out_of_scope else []
-                )
-                return _return(
-                    filtered_rows,
-                    delete_rows,
-                    "full",
-                    {
-                        "fetch_mode": "full_fallback",
-                        "fetch_key_family": fetch_key_family,
-                        "fetch_parameters": fallback_parameters,
-                        "query_parameters": query_parameters,
-                        "fetch_column_filters": fetch_column_filters,
-                    },
-                )
-
         if (
             baseline is not None
             and spec.run_query_id
@@ -1713,36 +1570,17 @@ class ForwardQueryFetcher:
                 obj=self.sync,
             )
         elif baseline is not None and spec.run_query_id:
-            partition_retry_summary = {}
             try:
-                diff_rows = self._fetch_partitioned_rows(
-                    model_string=model_string,
-                    partitions=column_filter_batches,
-                    operation="diff",
-                    retry_summary=partition_retry_summary,
-                    fetch_partition=lambda partition: self._run_nqe_diff(
-                        spec=spec,
-                        context=context,
-                        before_snapshot_id=baseline.snapshot_id,
-                        parameters=parameters,
-                        column_filters=partition,
-                    ),
+                diff_rows = self._run_nqe_diff(
+                    spec=spec,
+                    context=context,
+                    before_snapshot_id=baseline.snapshot_id,
+                    parameters=parameters,
                 )
                 rows, delete_rows = runner._split_diff_rows(model_string, diff_rows)
                 rows, _ = self._apply_device_tag_scope(model_string, rows, context)
                 delete_rows, _ = self._apply_device_tag_scope(
                     model_string, delete_rows, context
-                )
-                self._save_prefetched_shard_artifacts(
-                    prefetch_shard_scopes[1:],
-                    model_string=model_string,
-                    spec=spec,
-                    baseline=baseline,
-                    context=context,
-                    coalesce_fields=coalesce_fields,
-                    rows=rows,
-                    delete_rows=delete_rows,
-                    sync_mode="diff",
                 )
                 if original_shard_scope:
                     rows, delete_rows = self._filter_rows_to_shard(
@@ -1759,10 +1597,7 @@ class ForwardQueryFetcher:
                     {
                         "fetch_mode": requested_fetch_mode,
                         "fetch_key_family": fetch_key_family,
-                        "fetch_parameters": self._fetch_parameters_with_retry_summary(
-                            fetch_parameters,
-                            partition_retry_summary,
-                        ),
+                        "fetch_parameters": fetch_parameters,
                         "query_parameters": query_parameters,
                         "fetch_column_filters": fetch_column_filters,
                     },
@@ -1781,10 +1616,6 @@ class ForwardQueryFetcher:
                 )
                 fallback_parameters = dict(fetch_parameters)
                 fallback_parameters["fallback_reason"] = safe_exc
-                self._attach_partition_retry_summary(
-                    fallback_parameters,
-                    partition_retry_summary,
-                )
                 requested_mode = requested_fetch_mode if shard_scope else "diff"
                 requested_fetch_mode = (
                     "diff_fallback" if requested_mode != "model" else "model"
@@ -1822,80 +1653,21 @@ class ForwardQueryFetcher:
                     obj=self.sync,
                 )
 
-        partition_retry_summary = {}
         try:
-            rows = self._fetch_partitioned_rows(
-                model_string=model_string,
-                partitions=column_filter_batches,
-                operation="full",
-                retry_summary=partition_retry_summary,
-                fetch_partition=lambda partition: self._run_nqe_query(
-                    spec=spec,
-                    context=context,
-                    parameters=parameters,
-                    column_filters=partition,
-                    fetch_all=True,
-                ),
+            rows = self._run_nqe_query(
+                spec=spec,
+                context=context,
+                parameters=parameters,
+                fetch_all=True,
             )
         except (ForwardClientError, ForwardConnectivityError) as exc:
-            if not shard_scope or shard_scope.get("fetch_mode") == "model":
-                raise
             safe_exc = _safe_exception_summary(exc)
-            fallback_message = (
-                f"Forward shard-scoped NQE fetch failed for {model_string} using "
-                f"{shard_scope['fetch_mode']}; falling back to full model fetch: {safe_exc}"
-            )
-            self.logger.log_info(fallback_message, obj=self.sync)
-            fallback_parameters = dict(fetch_parameters)
-            fallback_parameters["fallback_reason"] = safe_exc
-            self._attach_partition_retry_summary(
-                fallback_parameters,
-                partition_retry_summary,
-            )
-            model_artifact_rows, model_artifact_meta = _load_model_fetch_artifact()
-            if model_artifact_rows is None:
-                rows = self._run_nqe_query(
-                    spec=spec,
-                    context=context,
-                    parameters=parameters,
-                    column_filters=None,
-                    fetch_all=True,
-                )
-                model_artifact_meta = _save_model_fetch_artifact(
-                    rows,
-                    {
-                        "fetch_mode": "model_fallback_source",
-                        "fetch_key_family": "",
-                        "fetch_parameters": {
-                            "fallback_reason": safe_exc,
-                            "source_fetch_mode": shard_scope.get("fetch_mode")
-                            or "model",
-                        },
-                        "query_parameters": query_parameters,
-                        "fetch_column_filters": [],
-                    },
-                )
-            else:
-                rows = model_artifact_rows
-            fallback_parameters["model_fetch_artifact"] = (
-                sanitize_fetch_artifact_metadata(model_artifact_meta)
-            )
-            requested_mode = shard_scope.get("fetch_mode") or "model"
-            requested_fetch_mode = (
-                "full_fallback" if requested_mode != "model" else "model"
-            )
-            fetch_parameters = fallback_parameters
-        self._save_prefetched_shard_artifacts(
-            prefetch_shard_scopes[1:],
-            model_string=model_string,
-            spec=spec,
-            baseline=baseline,
-            context=context,
-            coalesce_fields=coalesce_fields,
-            rows=rows,
-            delete_rows=[],
-            sync_mode="full",
-        )
+            if shard_scope and shard_scope.get("fetch_mode") != "model":
+                raise ForwardQueryError(
+                    "Shard-scoped NQE fetch failed and full-model fallback is disabled "
+                    f"for {model_string}: {safe_exc}"
+                ) from exc
+            raise
         if original_shard_scope:
             rows, _ = self._filter_rows_to_shard(
                 model_string,
@@ -1915,208 +1687,11 @@ class ForwardQueryFetcher:
             {
                 "fetch_mode": requested_fetch_mode,
                 "fetch_key_family": fetch_key_family,
-                "fetch_parameters": self._fetch_parameters_with_retry_summary(
-                    fetch_parameters,
-                    partition_retry_summary,
-                ),
+                "fetch_parameters": fetch_parameters,
                 "query_parameters": query_parameters,
                 "fetch_column_filters": fetch_column_filters,
             },
         )
-
-    def _sibling_shard_prefetch_limit(self) -> int:
-        parameters = getattr(self.sync, "parameters", None) or {}
-        configured = parameters.get("shard_fetch_prefetch_steps")
-        if configured in ("", None):
-            configured = DEFAULT_SHARD_FETCH_PREFETCH_STEPS
-        try:
-            value = int(configured)
-        except (TypeError, ValueError):
-            return DEFAULT_SHARD_FETCH_PREFETCH_STEPS
-        return max(1, min(value, MAX_SHARD_FETCH_PREFETCH_STEPS))
-
-    def _sibling_shard_prefetch_scopes(
-        self,
-        *,
-        model_string,
-        spec,
-        shard_scope,
-        context: ForwardQueryContext,
-    ) -> list[dict[str, Any]]:
-        if context.device_tag_prune_out_of_scope:
-            return [dict(shard_scope or {})]
-        if not shard_scope or shard_scope.get("fetch_mode") != "nqe_column_filter":
-            return [dict(shard_scope or {})] if shard_scope else []
-        current_filter = self._single_equals_any_filter(
-            shard_scope.get("fetch_column_filters")
-        )
-        if current_filter is None:
-            return [dict(shard_scope)]
-        limit = self._sibling_shard_prefetch_limit()
-        if limit <= 1:
-            return [dict(shard_scope)]
-        run = active_execution_run(self.sync)
-        if run is None:
-            return [dict(shard_scope)]
-        current_keys = tuple(str(key) for key in shard_scope.get("shard_keys") or ())
-        if not current_keys:
-            return [dict(shard_scope)]
-
-        step_queryset = run.steps.filter(
-            kind=ForwardExecutionStepKindChoices.STAGE,
-            model_string=model_string,
-            query_name=getattr(spec, "query_name", "") or "",
-            execution_mode=getattr(spec, "execution_mode", "") or "",
-            execution_value=getattr(spec, "execution_value", "") or "",
-            status__in=[
-                ForwardExecutionStepStatusChoices.PENDING,
-                ForwardExecutionStepStatusChoices.QUEUED,
-                ForwardExecutionStepStatusChoices.RUNNING,
-                ForwardExecutionStepStatusChoices.FAILED,
-                ForwardExecutionStepStatusChoices.TIMEOUT,
-            ],
-        ).order_by("index", "pk")
-        steps = list(step_queryset)
-        current_position = None
-        current_key_set = set(current_keys)
-        for index, step in enumerate(steps):
-            if set(str(key) for key in (step.shard_keys or [])) == current_key_set:
-                current_position = index
-                break
-        if current_position is None:
-            return [dict(shard_scope)]
-
-        scopes = [dict(shard_scope)]
-        for step in steps[current_position + 1 :]:
-            if len(scopes) >= limit:
-                break
-            candidate_scope = {
-                "fetch_mode": step.fetch_mode,
-                "fetch_key_family": step.fetch_key_family,
-                "fetch_parameters": dict(step.fetch_parameters or {}),
-                "query_parameters": dict(step.query_parameters or {}),
-                "fetch_column_filters": list(step.fetch_column_filters or []),
-                "shard_keys": list(step.shard_keys or []),
-            }
-            if not self._column_filter_scope_compatible(shard_scope, candidate_scope):
-                break
-            scopes.append(candidate_scope)
-        return scopes
-
-    def _column_filter_scope_compatible(self, first_scope, second_scope) -> bool:
-        if second_scope.get("fetch_mode") != "nqe_column_filter":
-            return False
-        if (first_scope.get("fetch_key_family") or "") != (
-            second_scope.get("fetch_key_family") or ""
-        ):
-            return False
-        first_filter = self._single_equals_any_filter(
-            first_scope.get("fetch_column_filters")
-        )
-        second_filter = self._single_equals_any_filter(
-            second_scope.get("fetch_column_filters")
-        )
-        if first_filter is None or second_filter is None:
-            return False
-        return first_filter.get("columnName") == second_filter.get(
-            "columnName"
-        ) and first_filter.get("operator") == second_filter.get("operator")
-
-    def _single_equals_any_filter(self, column_filters):
-        if not column_filters or len(column_filters) != 1:
-            return None
-        filter_item = dict(column_filters[0] or {})
-        if filter_item.get("operator") != "EQUALS_ANY":
-            return None
-        return filter_item
-
-    def _combine_column_filter_shard_scopes(self, scopes):
-        if not scopes:
-            return None
-        first_scope = dict(scopes[0])
-        first_filter = self._single_equals_any_filter(
-            first_scope.get("fetch_column_filters")
-        )
-        if first_filter is None:
-            return None
-        combined_values = []
-        combined_shard_keys = []
-        for scope in scopes:
-            filter_item = self._single_equals_any_filter(
-                scope.get("fetch_column_filters")
-            )
-            if filter_item is None:
-                return None
-            for value in filter_item.get("values") or []:
-                if value not in combined_values:
-                    combined_values.append(value)
-            for key in scope.get("shard_keys") or []:
-                if key not in combined_shard_keys:
-                    combined_shard_keys.append(key)
-        combined_filter = dict(first_filter)
-        combined_filter["values"] = combined_values
-        first_scope["fetch_column_filters"] = [combined_filter]
-        first_scope["shard_keys"] = combined_shard_keys
-        return first_scope
-
-    def _save_prefetched_shard_artifacts(
-        self,
-        scopes,
-        *,
-        model_string,
-        spec,
-        baseline,
-        context: ForwardQueryContext,
-        coalesce_fields,
-        rows,
-        delete_rows,
-        sync_mode,
-    ):
-        if not scopes:
-            return
-        for scope in scopes:
-            scope = dict(scope or {})
-            scoped_rows, scoped_delete_rows = self._filter_rows_to_shard(
-                model_string,
-                list(rows or []),
-                list(delete_rows or []),
-                coalesce_fields,
-                scope,
-            )
-            query_parameters = self._query_parameters_for_scope(spec, context, scope)
-            fetch_parameters = dict(scope.get("fetch_parameters") or {})
-            fetch_parameters["prefetch_artifact"] = {
-                "source": "sibling_shard_prefetch",
-                "prefetched": True,
-            }
-            descriptor = self._fetch_artifact_descriptor(
-                model_string=model_string,
-                spec=spec,
-                baseline=baseline,
-                context=context,
-                shard_scope=scope,
-                query_parameters=query_parameters,
-                fetch_parameters=dict(scope.get("fetch_parameters") or {}),
-                fetch_column_filters=list(scope.get("fetch_column_filters") or []),
-            )
-            if descriptor is None:
-                continue
-            save_fetch_artifact(
-                descriptor["key"],
-                run_id=descriptor["run_id"],
-                rows=scoped_rows,
-                delete_rows=scoped_delete_rows,
-                sync_mode=sync_mode,
-                fetch_meta={
-                    "fetch_mode": scope.get("fetch_mode") or "model",
-                    "fetch_key_family": scope.get("fetch_key_family") or "",
-                    "fetch_parameters": fetch_parameters,
-                    "query_parameters": query_parameters,
-                    "fetch_column_filters": list(
-                        scope.get("fetch_column_filters") or []
-                    ),
-                },
-            )
 
     def _query_parameters_for_scope(self, spec, context: ForwardQueryContext, scope):
         parameters = spec.merged_parameters(context.query_parameters)
@@ -2279,163 +1854,6 @@ class ForwardQueryFetcher:
             row for row in delete_rows if in_scope(row)
         ]
 
-    def _fetch_partitioned_rows(
-        self,
-        *,
-        model_string: str,
-        partitions: list[Any],
-        operation: str,
-        fetch_partition,
-        retry_summary=None,
-    ) -> list[dict[str, Any]]:
-        partition_list = list(partitions or [None])
-        operation_label = str(operation or "full")
-        stats_lock = Lock()
-        value_required_retry_logged = {"alternate": False, "split": False}
-
-        if retry_summary is not None:
-            retry_summary["operation"] = operation_label
-            retry_summary["partition_count"] = len(partition_list)
-
-        def record_retry_stat(name, amount=1):
-            if retry_summary is None:
-                return
-            with stats_lock:
-                retry_summary[name] = int(retry_summary.get(name) or 0) + int(amount)
-
-        def log_value_required_retry_once(retry_kind):
-            if retry_kind not in value_required_retry_logged:
-                return
-            with stats_lock:
-                already_logged = value_required_retry_logged[retry_kind]
-                if already_logged:
-                    return
-                value_required_retry_logged[retry_kind] = True
-            if retry_kind == "alternate":
-                self.logger.log_info(
-                    f"{model_string} {operation_label} partition filter required an "
-                    "alternate single-value operator; retrying automatically.",
-                    obj=self.sync,
-                )
-            else:
-                self.logger.log_info(
-                    f"{model_string} {operation_label} partition filter required "
-                    "smaller split partitions; retrying automatically.",
-                    obj=self.sync,
-                )
-
-        def fetch_partition_with_retry(partition):
-            try:
-                return list(fetch_partition(partition) or [])
-            except (
-                ForwardClientError,
-                ForwardConnectivityError,
-                ForwardQueryError,
-            ) as exc:
-                default_partitions = []
-                if _is_value_required_filter_error(exc):
-                    default_partitions = (
-                        _default_column_filter_partitions_for_equals_any(partition)
-                    )
-                if default_partitions:
-                    record_retry_stat(
-                        "alternate_operator_retry_count", len(default_partitions)
-                    )
-                    log_value_required_retry_once("alternate")
-                    rows = []
-                    for default_partition in default_partitions:
-                        rows.extend(fetch_partition_with_retry(default_partition))
-                    record_retry_stat("alternate_operator_success_count")
-                    return rows
-                split_partitions = _split_column_filter_partition(partition)
-                if not split_partitions:
-                    alternate_partition = (
-                        _alternate_single_value_column_filter_partition(partition)
-                    )
-                    if alternate_partition:
-                        record_retry_stat("alternate_operator_retry_count")
-                        if _is_value_required_filter_error(exc):
-                            log_value_required_retry_once("alternate")
-                        elif isinstance(exc, ForwardConnectivityError):
-                            safe_exc = _safe_exception_summary(exc)
-                            self.logger.log_info(
-                                f"{model_string} {operation_label} single-value partition "
-                                "fetch failed; retrying with alternate column-filter "
-                                f"operator before full fallback: {safe_exc}",
-                                obj=self.sync,
-                            )
-                        else:
-                            safe_exc = _safe_exception_summary(exc)
-                            self.logger.log_warning(
-                                f"{model_string} {operation_label} single-value partition "
-                                "fetch failed; retrying with alternate column-filter "
-                                f"operator before full fallback: {safe_exc}",
-                                obj=self.sync,
-                            )
-                        rows = list(fetch_partition(alternate_partition) or [])
-                        record_retry_stat("alternate_operator_success_count")
-                        return rows
-                    raise
-                if not _partition_error_allows_split_retry(exc):
-                    record_retry_stat("non_retryable_partition_failure_count")
-                    raise
-                record_retry_stat("split_retry_count", len(split_partitions))
-                if _is_value_required_filter_error(exc):
-                    log_value_required_retry_once("split")
-                elif isinstance(exc, ForwardConnectivityError):
-                    safe_exc = _safe_exception_summary(exc)
-                    self.logger.log_info(
-                        f"{model_string} {operation_label} partition fetch failed; "
-                        f"retrying as {len(split_partitions)} smaller partition(s): {safe_exc}",
-                        obj=self.sync,
-                    )
-                else:
-                    safe_exc = _safe_exception_summary(exc)
-                    self.logger.log_warning(
-                        f"{model_string} {operation_label} partition fetch failed; "
-                        f"retrying as {len(split_partitions)} smaller partition(s): {safe_exc}",
-                        obj=self.sync,
-                    )
-                retried_rows: list[dict[str, Any]] = []
-                for split_partition in split_partitions:
-                    retried_rows.extend(fetch_partition_with_retry(split_partition))
-                record_retry_stat("split_retry_success_count")
-                return retried_rows
-
-        if len(partition_list) <= 1:
-            return fetch_partition_with_retry(partition_list[0])
-
-        max_workers = self._query_fetch_worker_count(len(partition_list))
-        if max_workers <= 1:
-            rows: list[dict[str, Any]] = []
-            for partition in partition_list:
-                rows.extend(fetch_partition_with_retry(partition))
-            return rows
-
-        self.logger.log_info(
-            f"Fetching {model_string} with {len(partition_list)} {operation} partition(s) "
-            f"using {max_workers} worker(s).",
-            obj=self.sync,
-        )
-        indexed_rows: list[list[dict[str, Any]] | None] = [None] * len(partition_list)
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
-                executor.submit(
-                    self._run_thread_job,
-                    fetch_partition_with_retry,
-                    partition,
-                ): index
-                for index, partition in enumerate(partition_list)
-            }
-            for future in as_completed(futures):
-                index = futures[future]
-                indexed_rows[index] = list(future.result() or [])
-
-        rows: list[dict[str, Any]] = []
-        for partition_rows in indexed_rows:
-            rows.extend(partition_rows or [])
-        return rows
-
     def _run_thread_job(self, func, payload=None):
         if payload is None:
             func, payload = func
@@ -2445,48 +1863,6 @@ class ForwardQueryFetcher:
         finally:
             connection.close()
             connections.close_all()
-
-    def _fetch_parameters_with_retry_summary(self, fetch_parameters, retry_summary):
-        parameters = dict(fetch_parameters or {})
-        self._attach_partition_retry_summary(parameters, retry_summary)
-        return parameters
-
-    def _attach_partition_retry_summary(self, fetch_parameters, retry_summary):
-        summary = self._public_partition_retry_summary(retry_summary)
-        if summary:
-            fetch_parameters["partition_retry_summary"] = summary
-
-    def _public_partition_retry_summary(self, retry_summary):
-        retry_summary = dict(retry_summary or {})
-        retry_keys = (
-            "split_retry_count",
-            "alternate_operator_retry_count",
-            "split_retry_success_count",
-            "alternate_operator_success_count",
-            "non_retryable_partition_failure_count",
-        )
-        if not any(int(retry_summary.get(key) or 0) for key in retry_keys):
-            return {}
-        summary = {
-            "operation": str(retry_summary.get("operation") or ""),
-            "partition_count": int(retry_summary.get("partition_count") or 0),
-            "split_retry_count": int(retry_summary.get("split_retry_count") or 0),
-            "split_retry_success_count": int(
-                retry_summary.get("split_retry_success_count") or 0
-            ),
-            "alternate_operator_retry_count": int(
-                retry_summary.get("alternate_operator_retry_count") or 0
-            ),
-            "alternate_operator_success_count": int(
-                retry_summary.get("alternate_operator_success_count") or 0
-            ),
-        }
-        non_retryable_count = int(
-            retry_summary.get("non_retryable_partition_failure_count") or 0
-        )
-        if non_retryable_count:
-            summary["non_retryable_partition_failure_count"] = non_retryable_count
-        return summary
 
     def _coalesce_fields(self, model_string, specs) -> list[list[str]]:
         if specs:
@@ -2538,7 +1914,6 @@ class ForwardQueryFetcher:
         context: ForwardQueryContext,
         parameters: dict[str, Any],
         limit: int | None = None,
-        column_filters=None,
         fetch_all: bool = False,
     ):
         return self.client.run_nqe_query(
@@ -2549,7 +1924,6 @@ class ForwardQueryFetcher:
             snapshot_id=context.snapshot_id,
             parameters=parameters,
             limit=limit,
-            column_filters=column_filters,
             fetch_all=fetch_all,
         )
 
@@ -2560,7 +1934,6 @@ class ForwardQueryFetcher:
         context: ForwardQueryContext,
         before_snapshot_id: str,
         parameters: dict[str, Any],
-        column_filters=None,
     ):
         return self.client.run_nqe_diff(
             query_id=spec.run_query_id,
@@ -2568,7 +1941,6 @@ class ForwardQueryFetcher:
             parameters=parameters,
             before_snapshot_id=before_snapshot_id,
             after_snapshot_id=context.snapshot_id,
-            column_filters=column_filters,
             fetch_all=True,
         )
 
@@ -2578,7 +1950,6 @@ class ForwardQueryFetcher:
         spec,
         context: ForwardQueryContext,
         before_snapshot_id: str,
-        column_filters=None,
     ):
         return self.client.run_nqe_diff(
             query_id=spec.run_query_id,
@@ -2586,7 +1957,6 @@ class ForwardQueryFetcher:
             parameters={},
             before_snapshot_id=before_snapshot_id,
             after_snapshot_id=context.snapshot_id,
-            column_filters=column_filters,
             fetch_all=True,
         )
 

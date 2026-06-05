@@ -100,6 +100,7 @@ DEVICE_TAG_QUERY_PARAMETER_DEFAULTS = {
     "device_tag_exclude_tags": [],
 }
 DEVICE_TAG_PARAMETER_QUERY_FILES = {
+    "forward_hsrp_groups.nqe",
     "forward_locations.nqe",
     "forward_prefixes_ipv4.nqe",
     "forward_prefixes_ipv6.nqe",
