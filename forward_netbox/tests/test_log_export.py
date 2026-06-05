@@ -1,4 +1,5 @@
 import json
+from unittest.mock import patch
 
 from core.choices import JobStatusChoices
 from core.choices import ObjectChangeActionChoices
@@ -631,6 +632,26 @@ class ForwardIngestionLogExportViewTest(TestCase):
             later_run.pk,
         )
         self.assertEqual(data["execution_run"]["run"]["id"], later_run.pk)
+
+    @patch("forward_netbox.views.get_execution_display_state")
+    def test_export_logs_does_not_invent_compatibility_source(
+        self, mock_get_execution_display_state
+    ):
+        mock_get_execution_display_state.return_value = {
+            "execution_run_id": self.execution_run.pk,
+        }
+        self.client.force_login(self.user)
+
+        response = self.client.get(
+            reverse(
+                "plugins:forward_netbox:forwardingestion_export_logs",
+                kwargs={"pk": self.ingestion.pk},
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = json.loads(response.content)
+        self.assertIsNone(data["sync"]["execution_state_source"])
 
     def test_execution_run_support_bundle_reports_stale_compatibility_payload(self):
         self.execution_run.status = "completed"
