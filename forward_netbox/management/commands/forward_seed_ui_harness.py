@@ -376,7 +376,7 @@ class Command(BaseCommand):
                 "forward_netbox_shard_keys": ["device:ui-harness-device-1"],
             },
             shard_keys=["device:ui-harness-device-1"],
-            fetch_mode="nqe_column_filter",
+            fetch_mode="nqe_parameters",
             fetch_key_family="device",
             fetch_parameters={
                 "forward_netbox_shard_mode": "shard_keys",
@@ -384,13 +384,7 @@ class Command(BaseCommand):
                 "forward_netbox_shard_bucket": 0,
                 "forward_netbox_shard_bucket_count": 1,
             },
-            fetch_column_filters=[
-                {
-                    "operator": "DEFAULT",
-                    "columnName": "device",
-                    "value": "ui-harness-device-1",
-                }
-            ],
+            fetch_column_filters=[],
             ingestion=ingestion,
             job=ingestion.job,
             heartbeat=timezone.now(),

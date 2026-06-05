@@ -126,6 +126,21 @@ class ForwardSyncHealthTest(TestCase):
             snapshot_id="snapshot-1",
             baseline_ready=True,
             applied_change_count=2,
+            model_results=[
+                {
+                    "model": "dcim.device",
+                    "query_name": "Health Devices with NetBox Device Type Aliases",
+                    "row_count": 3,
+                    "delete_count": 1,
+                    "query_path_resolution": {
+                        "available": True,
+                        "query_path_spec_count": 1,
+                        "artifact_hit_count": 1,
+                        "client_resolve_count": 0,
+                        "cache_hit_rate": 1.0,
+                    },
+                }
+            ],
         )
         now = timezone.now()
         cls.execution_job = Job.objects.create(
@@ -222,6 +237,16 @@ class ForwardSyncHealthTest(TestCase):
         self.assertEqual(summary["next_run"]["blockers"], [])
         self.assertTrue(summary["latest_validation"]["allowed"])
         self.assertTrue(summary["latest_ingestion"]["baseline_ready"])
+        self.assertEqual(
+            summary["latest_ingestion"]["query_path_resolution"][
+                "total_query_path_specs"
+            ],
+            1,
+        )
+        self.assertEqual(
+            summary["latest_ingestion"]["query_path_resolution"]["artifact_hit_count"],
+            1,
+        )
         self.assertTrue(summary["api_usage"]["available"])
         self.assertEqual(summary["api_usage"]["budget"]["status"], "passed")
         self.assertEqual(summary["api_usage"]["counters"]["http_attempts"], 21)

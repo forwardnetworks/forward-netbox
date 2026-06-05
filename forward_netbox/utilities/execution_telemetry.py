@@ -107,6 +107,7 @@ def build_ingestion_execution_summary(
     retry_count = 0
     slowest_model = {}
     shard_count = 0
+    query_path_resolution = _build_query_path_resolution_summary(model_results)
 
     for result in model_results:
         row_count = _coerce_int(result.get("row_count"))
@@ -147,7 +148,62 @@ def build_ingestion_execution_summary(
         "created_change_count": created_change_count,
         "updated_change_count": updated_change_count,
         "deleted_change_count": deleted_change_count,
+        "query_path_resolution": query_path_resolution,
         "model_results": list(model_results),
+    }
+
+
+def _build_query_path_resolution_summary(model_results):
+    total_specs = 0
+    artifact_hits = 0
+    client_resolves = 0
+    model_items = []
+
+    for result in model_results or []:
+        resolution = result.get("query_path_resolution") or {}
+        if not isinstance(resolution, dict):
+            continue
+        model = str(result.get("model") or "").strip() or "unknown"
+        query_path_spec_count = _coerce_int(resolution.get("query_path_spec_count"))
+        artifact_hit_count = _coerce_int(resolution.get("artifact_hit_count"))
+        client_resolve_count = _coerce_int(resolution.get("client_resolve_count"))
+        if (
+            not query_path_spec_count
+            and not artifact_hit_count
+            and not client_resolve_count
+        ):
+            continue
+        total_specs += query_path_spec_count
+        artifact_hits += artifact_hit_count
+        client_resolves += client_resolve_count
+        model_items.append(
+            {
+                "model": model,
+                "query_path_spec_count": query_path_spec_count,
+                "artifact_hit_count": artifact_hit_count,
+                "client_resolve_count": client_resolve_count,
+                "cache_hit_rate": resolution.get("cache_hit_rate"),
+            }
+        )
+
+    model_items = sorted(
+        model_items,
+        key=lambda item: (
+            -int(item["query_path_spec_count"]),
+            -int(item["artifact_hit_count"]),
+            str(item["model"]),
+        ),
+    )[:10]
+    total_lookups = artifact_hits + client_resolves
+    return {
+        "available": bool(total_specs),
+        "total_query_path_specs": total_specs,
+        "artifact_hit_count": artifact_hits,
+        "client_resolve_count": client_resolves,
+        "cache_hit_rate": (
+            round(artifact_hits / float(total_lookups), 4) if total_lookups else None
+        ),
+        "top_models": model_items,
     }
 
 
