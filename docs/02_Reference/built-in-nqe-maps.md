@@ -223,7 +223,7 @@ import "netbox_utilities";
 foreach device in network.devices
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
-let platform_name = replace(toString(device.platform.os), "OS.", "")
+let platform_name = normalizePlatformName(device.platform.os)
 let platform_slug = slugify(platform_name)
 let manufacturer_name = canonicalManufacturerName(device.platform.vendor)
 let manufacturer_slug = slugify(manufacturer_name)
@@ -346,7 +346,7 @@ let site_name = if isPresent(location) then toLowerCase(location) else "unknown"
 let site_slug = slugify(site_name)
 let role_name = replace(toString(device_type), "DeviceType.", "")
 let role_slug = slugify(role_name)
-let platform_name = replace(toString(device.platform.os), "OS.", "")
+let platform_name = normalizePlatformName(device.platform.os)
 let platform_slug = slugify(platform_name)
 let device_type_slug = slugifyNetboxModel(toString(model))
 let manufacturer_name = canonicalManufacturerName(device.platform.vendor)
@@ -394,7 +394,7 @@ let site_name = if isPresent(location) then toLowerCase(location) else "unknown"
 let site_slug = slugify(site_name)
 let role_name = replace(toString(device_type), "DeviceType.", "")
 let role_slug = slugify(role_name)
-let platform_name = replace(toString(device.platform.os), "OS.", "")
+let platform_name = normalizePlatformName(device.platform.os)
 let platform_slug = slugify(platform_name)
 let vendor = device.platform.vendor
 let data_manufacturer_name = if isPresent(aliases.value) then max(

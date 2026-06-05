@@ -1870,6 +1870,13 @@ class ForwardIngestionSnapshotSummaryTest(TestCase):
                     "delete_count": 1,
                     "diagnostics": [{"message": "one"}],
                     "execution_mode": "query_id",
+                    "query_path_resolution": {
+                        "available": True,
+                        "query_path_spec_count": 1,
+                        "artifact_hit_count": 1,
+                        "client_resolve_count": 0,
+                        "cache_hit_rate": 1.0,
+                    },
                 },
                 {
                     "model": "dcim.device",
@@ -1879,6 +1886,13 @@ class ForwardIngestionSnapshotSummaryTest(TestCase):
                     "delete_count": 2,
                     "diagnostics": [{"message": "two"}, {"message": "three"}],
                     "execution_mode": "query_id",
+                    "query_path_resolution": {
+                        "available": True,
+                        "query_path_spec_count": 2,
+                        "artifact_hit_count": 1,
+                        "client_resolve_count": 1,
+                        "cache_hit_rate": 0.5,
+                    },
                 },
             ],
         )
@@ -1903,6 +1917,27 @@ class ForwardIngestionSnapshotSummaryTest(TestCase):
         )
         self.assertEqual(
             advisory["path_signals"]["top_model_results"][0]["estimated_changes"], 13
+        )
+        self.assertEqual(
+            advisory["path_signals"]["top_model_results"][0]["query_path_resolution"][
+                "query_path_spec_count"
+            ],
+            2,
+        )
+        self.assertEqual(
+            advisory["path_signals"]["query_path_resolution"]["total_query_path_specs"],
+            3,
+        )
+        self.assertEqual(
+            advisory["path_signals"]["query_path_resolution"]["artifact_hit_count"], 2
+        )
+        self.assertEqual(
+            advisory["path_signals"]["query_path_resolution"]["client_resolve_count"],
+            1,
+        )
+        self.assertEqual(
+            advisory["path_signals"]["query_path_resolution"]["top_models"][0]["model"],
+            "dcim.device",
         )
         self.assertEqual(sync_advisory["latest_validation_run"], validation_run.pk)
         self.assertEqual(

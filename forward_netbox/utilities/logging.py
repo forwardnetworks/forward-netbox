@@ -114,6 +114,7 @@ class SyncLogging:
                 "applied": 0,
                 "failed": 0,
                 "skipped": 0,
+                "unchanged": 0,
             }
             cache.set(self.cache_key, self.log_data, self.cache_timeout)
 
@@ -129,10 +130,11 @@ class SyncLogging:
                     "applied": 0,
                     "failed": 0,
                     "skipped": 0,
+                    "unchanged": 0,
                 },
             )
             stats["current"] += 1
-            if outcome in {"applied", "failed", "skipped"}:
+            if outcome in {"applied", "failed", "skipped", "unchanged"}:
                 stats[outcome] += 1
             cache.set(self.cache_key, self.log_data, self.cache_timeout)
 
@@ -148,6 +150,7 @@ class SyncLogging:
                     "applied": 0,
                     "failed": 0,
                     "skipped": 0,
+                    "unchanged": 0,
                 },
             )
             stats["total"] += amount
