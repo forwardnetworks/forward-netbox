@@ -165,11 +165,7 @@ def _job_export_payload(job):
 
 def _ingestion_log_export_payload(ingestion, *, active_stage):
     execution_state = json_safe_value(get_execution_display_state(ingestion.sync))
-    execution_state_source = (
-        execution_state.get("state_source") or "compatibility_cache"
-        if execution_state
-        else "none"
-    )
+    execution_state_source = execution_state.get("state_source") if execution_state else None
     return {
         "exported_at": timezone.now().isoformat(),
         "active_stage": active_stage,
@@ -220,11 +216,7 @@ def _ingestion_log_export_payload(ingestion, *, active_stage):
 def _sync_support_bundle_payload(sync):
     latest_ingestion = sync.last_ingestion
     execution_state = json_safe_value(get_execution_display_state(sync))
-    execution_state_source = (
-        execution_state.get("state_source") or "compatibility_cache"
-        if execution_state
-        else "none"
-    )
+    execution_state_source = execution_state.get("state_source") if execution_state else None
     return {
         "exported_at": timezone.now().isoformat(),
         "sync": {
