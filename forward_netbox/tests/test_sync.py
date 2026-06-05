@@ -47,7 +47,6 @@ from forward_netbox.choices import FORWARD_SUPPORTED_MODELS
 from forward_netbox.choices import ForwardDiffFallbackModeChoices
 from forward_netbox.choices import ForwardExecutionStepStatusChoices
 from forward_netbox.exceptions import ForwardClientError
-from forward_netbox.exceptions import ForwardConnectivityError
 from forward_netbox.exceptions import ForwardDependencySkipError
 from forward_netbox.exceptions import ForwardQueryError
 from forward_netbox.exceptions import ForwardSearchError
@@ -2130,7 +2129,7 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
             },
         )
 
-        self.assertIsNone(client.run_nqe_query.call_args.kwargs["column_filters"])
+        self.assertNotIn("column_filters", client.run_nqe_query.call_args.kwargs)
         self.assertEqual(
             client.run_nqe_query.call_args.kwargs["parameters"],
             {"forward_netbox_shard_keys": ["device-1"]},
@@ -2203,7 +2202,7 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
             },
         )
 
-        self.assertIsNone(client.run_nqe_query.call_args.kwargs["column_filters"])
+        self.assertNotIn("column_filters", client.run_nqe_query.call_args.kwargs)
         self.assertEqual(
             client.run_nqe_query.call_args.kwargs["parameters"],
             {"forward_netbox_shard_keys": ["device-1", "device-2"]},
@@ -2287,7 +2286,7 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
             set(full_plan[0].upsert_rows[0]),
             {"device", "name", "type", "enabled", "extra_debug"},
         )
-        self.assertIsNone(shard_client.run_nqe_query.call_args.kwargs["column_filters"])
+        self.assertNotIn("column_filters", shard_client.run_nqe_query.call_args.kwargs)
         self.assertEqual(
             shard_client.run_nqe_query.call_args.kwargs["parameters"],
             {"forward_netbox_shard_keys": ["device-1"]},
@@ -2368,7 +2367,7 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
             shard_client.run_nqe_query.call_args.kwargs["parameters"],
             {"forward_netbox_shard_keys": ["10.0.0.0/24"]},
         )
-        self.assertIsNone(shard_client.run_nqe_query.call_args.kwargs["column_filters"])
+        self.assertNotIn("column_filters", shard_client.run_nqe_query.call_args.kwargs)
 
     @patch("forward_netbox.utilities.query_fetch_execution.get_query_specs")
     def test_build_plan_preserves_fallback_model_row_shape_during_shard_fetch(
@@ -2438,7 +2437,7 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
             set(full_plan[0].upsert_rows[0]),
             {"name", "slug", "extra_debug"},
         )
-        self.assertIsNone(shard_client.run_nqe_query.call_args.kwargs["column_filters"])
+        self.assertNotIn("column_filters", shard_client.run_nqe_query.call_args.kwargs)
         self.assertEqual(
             shard_client.run_nqe_query.call_args.kwargs["parameters"],
             {"forward_netbox_shard_keys": ["site-1"]},
@@ -2576,7 +2575,7 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
             client.run_nqe_query.call_args.kwargs["parameters"],
             {"forward_netbox_shard_keys": ["10.0.0.0/24"]},
         )
-        self.assertIsNone(client.run_nqe_query.call_args.kwargs["column_filters"])
+        self.assertNotIn("column_filters", client.run_nqe_query.call_args.kwargs)
         self.assertEqual(len(plan), 1)
         self.assertEqual(plan[0].upsert_rows, [client.run_nqe_query.return_value[0]])
 
@@ -2653,7 +2652,6 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
             parameters={"forward_netbox_shard_keys": ["device-1", "device-2"]},
             before_snapshot_id="snapshot-before",
             after_snapshot_id="snapshot-after",
-            column_filters=None,
             fetch_all=True,
         )
         client.run_nqe_query.assert_not_called()
@@ -3511,17 +3509,13 @@ class ForwardMultiBranchExecutorAdaptiveSplitTest(TestCase):
                     "prefix=10.0.0.0/24",
                     "prefix=10.0.1.0/24",
                 ],
-                "fetch_mode": "nqe_column_filter",
+                "fetch_mode": "nqe_parameters",
                 "fetch_key_family": "prefix",
-                "fetch_parameters": {"shard_hint": "prefix"},
+                "fetch_parameters": {
+                    "forward_netbox_shard_keys": ["10.0.0.0/24", "10.0.1.0/24"]
+                },
                 "query_parameters": {},
-                "fetch_column_filters": [
-                    {
-                        "operator": "EQUALS_ANY",
-                        "columnName": "prefix",
-                        "values": ["10.0.0.0/24", "10.0.1.0/24"],
-                    }
-                ],
+                "fetch_column_filters": [],
             },
             46,
         )
@@ -3535,7 +3529,7 @@ class ForwardMultiBranchExecutorAdaptiveSplitTest(TestCase):
             set(selected.shard_keys),
             {"prefix=10.0.0.0/24", "prefix=10.0.1.0/24"},
         )
-        self.assertEqual(selected.fetch_mode, "nqe_column_filter")
+        self.assertEqual(selected.fetch_mode, "nqe_parameters")
 
     @override_settings(RQ_DEFAULT_TIMEOUT=300)
     def test_load_execution_context_warns_for_large_plan_with_short_worker_timeout(
@@ -4517,7 +4511,7 @@ class ForwardMultiBranchExecutorAdaptiveSplitTest(TestCase):
         ingestions = executor.run_next_plan_item(max_changes_per_branch=10)
 
         self.assertEqual(ingestions, [staged_ingestion])
-        self.assertIsNone(client.run_nqe_query.call_args.kwargs["column_filters"])
+        self.assertNotIn("column_filters", client.run_nqe_query.call_args.kwargs)
         self.assertEqual(
             client.run_nqe_query.call_args.kwargs["parameters"],
             {"forward_netbox_shard_keys": ["device-1"]},
@@ -7904,12 +7898,16 @@ class ForwardSyncRunnerTest(TestCase):
         }
 
         before_count = ObjectChange.objects.count()
-        runner._apply_ipam_prefix(row)
-        runner._apply_ipam_prefix(row)
+        with CaptureQueriesContext(connection) as queries:
+            first_result = runner._apply_ipam_prefix(row)
+            second_result = runner._apply_ipam_prefix(row)
 
         prefix.refresh_from_db()
         self.assertEqual(prefix.vrf, vrf)
         self.assertEqual(Prefix.objects.filter(prefix="192.0.2.0/27").count(), 1)
+        self.assertEqual(first_result, "unchanged")
+        self.assertEqual(second_result, "unchanged")
+        self.assertEqual(self._update_statements(queries), [])
         self.assertEqual(ObjectChange.objects.count(), before_count)
 
     def test_apply_ipam_ipaddress_skips_unassignable_network_and_broadcast_addresses(
@@ -8974,6 +8972,95 @@ class ForwardSyncRunnerTest(TestCase):
             all("forward_netbox_shard_keys" in query for query in called_queries)
         )
 
+    def test_run_prefix_only_repeat_sync_is_noop(self):
+        seed_builtin_nqe_maps(type("Sender", (), {"label": "forward_netbox"}))
+        parameters = {
+            "snapshot_id": "snapshot-prefix",
+            "enable_bulk_orm": False,
+            **{model_string: False for model_string in FORWARD_SUPPORTED_MODELS},
+            "ipam.prefix": True,
+        }
+        self.sync.parameters = parameters
+        self.sync.save(update_fields=["parameters"])
+        self.assertEqual(self.sync.get_model_strings(), ["ipam.prefix"])
+
+        first_client = Mock()
+        first_client.get_snapshots.return_value = [
+            {
+                "id": "snapshot-prefix",
+                "state": "PROCESSED",
+                "created_at": "",
+                "processed_at": "2026-06-02T04:52:00Z",
+            }
+        ]
+        first_client.get_snapshot_metrics.return_value = {}
+        first_client.run_nqe_query.side_effect = [
+            [{"prefix": "10.0.0.0/24", "vrf": None, "status": "active"}],
+            [{"prefix": "2001:db8::/64", "vrf": None, "status": "active"}],
+        ]
+        second_client = Mock()
+        second_client.get_snapshots.return_value = [
+            {
+                "id": "snapshot-prefix",
+                "state": "PROCESSED",
+                "created_at": "",
+                "processed_at": "2026-06-02T04:52:00Z",
+            }
+        ]
+        second_client.get_snapshot_metrics.return_value = {}
+        second_client.run_nqe_query.side_effect = [
+            [{"prefix": "10.0.0.0/24", "vrf": None, "status": "active"}],
+            [{"prefix": "2001:db8::/64", "vrf": None, "status": "active"}],
+        ]
+
+        with patch(
+            "forward_netbox.utilities.sync_execution.get_query_specs",
+            return_value=[
+                QuerySpec(
+                    model_string="ipam.prefix",
+                    query_name="Forward IPv4 Prefixes",
+                    query='select {prefix: "10.0.0.0/24", vrf: null, status: "active"}',
+                ),
+                QuerySpec(
+                    model_string="ipam.prefix",
+                    query_name="Forward IPv6 Prefixes",
+                    query='select {prefix: "2001:db8::/64", vrf: null, status: "active"}',
+                ),
+            ],
+        ):
+            first_logger = Mock()
+            first_runner = ForwardSyncRunner(
+                sync=self.sync,
+                ingestion=ForwardIngestion.objects.create(sync=self.sync),
+                client=first_client,
+                logger_=first_logger,
+            )
+            first_runner.run()
+
+            second_logger = Mock()
+            second_runner = ForwardSyncRunner(
+                sync=self.sync,
+                ingestion=ForwardIngestion.objects.create(sync=self.sync),
+                client=second_client,
+                logger_=second_logger,
+            )
+            second_runner.run()
+
+        first_logger.increment_statistics.assert_any_call(
+            "ipam.prefix", outcome="applied"
+        )
+        second_logger.increment_statistics.assert_any_call(
+            "ipam.prefix", outcome="unchanged"
+        )
+        self.assertEqual(
+            [
+                call.kwargs.get("outcome")
+                for call in second_logger.increment_statistics.call_args_list
+                if call.args == ("ipam.prefix",)
+            ],
+            ["unchanged", "unchanged"],
+        )
+
     def test_run_passes_query_rows_through_to_apply_and_statistics(self):
         ingestion = ForwardIngestion.objects.create(sync=self.sync)
         client = Mock()
@@ -9338,227 +9425,6 @@ class ForwardSyncRunnerTest(TestCase):
             )
         )
 
-    def test_fetch_spec_rows_partitions_large_column_filter_batches(self):
-        client = Mock()
-        logger = Mock()
-        fetcher = ForwardQueryFetcher(
-            sync=self.sync,
-            client=client,
-            logger_=logger,
-        )
-        context = ForwardQueryContext(
-            network_id="test-network",
-            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id="snapshot-before",
-        )
-        spec = QuerySpec(
-            model_string="dcim.interface",
-            query_name="Forward Interfaces",
-            query="foreach interface select {device: interface.device.name}",
-            parameters={"existing": "value"},
-        )
-        shard_scope = {
-            "fetch_mode": "nqe_column_filter",
-            "fetch_column_filters": [
-                {
-                    "operator": "EQUALS_ANY",
-                    "columnName": "device",
-                    "values": ["device-1", "device-2", "device-3"],
-                }
-            ],
-            "shard_keys": [
-                "device:device-1",
-                "device:device-2",
-                "device:device-3",
-            ],
-            "query_parameters": {},
-        }
-        client.run_nqe_query.side_effect = [
-            [
-                {"device": "device-1", "name": "Ethernet1/1"},
-                {"device": "device-2", "name": "Ethernet1/1"},
-            ],
-            [{"device": "device-3", "name": "Ethernet1/1"}],
-        ]
-
-        with patch(
-            "forward_netbox.utilities.query_fetch_execution.SHARD_FETCH_COLUMN_FILTER_CHUNK_SIZE",
-            2,
-        ):
-            rows, delete_rows, mode = fetcher._fetch_spec_rows(
-                "dcim.interface",
-                spec,
-                baseline=None,
-                context=context,
-                coalesce_fields=[["device", "name"]],
-                shard_scope=shard_scope,
-            )
-
-        self.assertEqual(client.run_nqe_query.call_count, 2)
-        self.assertEqual(
-            client.run_nqe_query.call_args_list[0].kwargs["column_filters"][0][
-                "values"
-            ],
-            ["device-1", "device-2"],
-        )
-        self.assertEqual(
-            client.run_nqe_query.call_args_list[1].kwargs["column_filters"][0][
-                "values"
-            ],
-            ["device-3"],
-        )
-        self.assertEqual(mode, "full")
-        self.assertEqual(delete_rows, [])
-        self.assertEqual(
-            [row["device"] for row in rows],
-            ["device-1", "device-2", "device-3"],
-        )
-        self.assertEqual(
-            client.run_nqe_query.call_args.kwargs["parameters"],
-            {"existing": "value"},
-        )
-
-    def test_fetch_spec_rows_prefetches_sibling_shard_column_filters_once(self):
-        client = Mock()
-        logger = Mock()
-        fetcher = ForwardQueryFetcher(
-            sync=self.sync,
-            client=client,
-            logger_=logger,
-        )
-        context = ForwardQueryContext(
-            network_id="test-network",
-            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id="snapshot-before",
-        )
-        spec = QuerySpec(
-            model_string="dcim.interface",
-            query_name="Forward Interfaces",
-            query="foreach interface select {device: interface.device.name}",
-        )
-        run = ForwardExecutionRun.objects.create(
-            sync=self.sync,
-            source=self.source,
-            backend="branching",
-            status="running",
-            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id="snapshot-before",
-            total_steps=2,
-            next_step_index=1,
-        )
-        first_scope = {
-            "fetch_mode": "nqe_column_filter",
-            "fetch_key_family": "device",
-            "fetch_column_filters": [
-                {
-                    "operator": "EQUALS_ANY",
-                    "columnName": "device",
-                    "values": ["device-1"],
-                }
-            ],
-            "shard_keys": ["device:device-1"],
-            "query_parameters": {},
-        }
-        second_scope = {
-            "fetch_mode": "nqe_column_filter",
-            "fetch_key_family": "device",
-            "fetch_column_filters": [
-                {
-                    "operator": "EQUALS_ANY",
-                    "columnName": "device",
-                    "values": ["device-2"],
-                }
-            ],
-            "shard_keys": ["device:device-2"],
-            "query_parameters": {},
-        }
-        ForwardExecutionStep.objects.create(
-            run=run,
-            index=1,
-            kind="stage",
-            status="running",
-            model_string="dcim.interface",
-            query_name=spec.query_name,
-            execution_mode=spec.execution_mode,
-            execution_value=spec.execution_value,
-            shard_keys=first_scope["shard_keys"],
-            fetch_mode=first_scope["fetch_mode"],
-            fetch_key_family=first_scope["fetch_key_family"],
-            fetch_column_filters=first_scope["fetch_column_filters"],
-        )
-        ForwardExecutionStep.objects.create(
-            run=run,
-            index=2,
-            kind="stage",
-            status="pending",
-            model_string="dcim.interface",
-            query_name=spec.query_name,
-            execution_mode=spec.execution_mode,
-            execution_value=spec.execution_value,
-            shard_keys=second_scope["shard_keys"],
-            fetch_mode=second_scope["fetch_mode"],
-            fetch_key_family=second_scope["fetch_key_family"],
-            fetch_column_filters=second_scope["fetch_column_filters"],
-        )
-        client.run_nqe_query.return_value = [
-            {"device": "device-1", "name": "Ethernet1/1"},
-            {"device": "device-2", "name": "Ethernet1/1"},
-        ]
-
-        with tempfile.TemporaryDirectory() as artifact_dir:
-            with patch.dict(
-                os.environ,
-                {"FORWARD_NETBOX_FETCH_ARTIFACT_DIR": artifact_dir},
-            ):
-                rows, delete_rows, sync_mode, fetch_meta = fetcher._fetch_spec_rows(
-                    "dcim.interface",
-                    spec,
-                    baseline=None,
-                    context=context,
-                    coalesce_fields=[["device", "name"]],
-                    shard_scope=first_scope,
-                    return_fetch_meta=True,
-                )
-
-                self.assertEqual(sync_mode, "full")
-                self.assertEqual(delete_rows, [])
-                self.assertEqual(rows, [{"device": "device-1", "name": "Ethernet1/1"}])
-                client.run_nqe_query.assert_called_once()
-                self.assertEqual(
-                    client.run_nqe_query.call_args.kwargs["column_filters"][0][
-                        "values"
-                    ],
-                    ["device-1", "device-2"],
-                )
-                self.assertEqual(
-                    fetch_meta["fetch_column_filters"][0]["values"],
-                    ["device-1"],
-                )
-
-                client.run_nqe_query.reset_mock()
-                rows, delete_rows, sync_mode, fetch_meta = fetcher._fetch_spec_rows(
-                    "dcim.interface",
-                    spec,
-                    baseline=None,
-                    context=context,
-                    coalesce_fields=[["device", "name"]],
-                    shard_scope=second_scope,
-                    return_fetch_meta=True,
-                )
-
-                client.run_nqe_query.assert_not_called()
-                self.assertEqual(sync_mode, "full")
-                self.assertEqual(delete_rows, [])
-                self.assertEqual(rows, [{"device": "device-2", "name": "Ethernet1/1"}])
-                self.assertEqual(
-                    fetch_meta["fetch_parameters"]["fetch_artifact"]["status"],
-                    "hit",
-                )
-                self.assertEqual(
-                    fetch_meta["fetch_parameters"]["prefetch_artifact"]["source"],
-                    "sibling_shard_prefetch",
-                )
-
     def test_fetch_spec_rows_filters_cable_device_pushdown_superset_to_shard(self):
         client = Mock()
         logger = Mock()
@@ -9623,7 +9489,7 @@ class ForwardSyncRunnerTest(TestCase):
             client.run_nqe_query.call_args.kwargs["parameters"],
             {"forward_netbox_shard_keys": ["device-a"]},
         )
-        self.assertIsNone(client.run_nqe_query.call_args.kwargs["column_filters"])
+        self.assertNotIn("column_filters", client.run_nqe_query.call_args.kwargs)
 
     def test_fetch_spec_rows_passes_prefix_shard_keys_as_nqe_parameters(self):
         client = Mock()
@@ -9684,7 +9550,7 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertEqual(fetch_meta["fetch_mode"], "nqe_parameters")
         self.assertEqual(fetch_meta["fetch_column_filters"], [])
         client.run_nqe_query.assert_called_once()
-        self.assertIsNone(client.run_nqe_query.call_args.kwargs["column_filters"])
+        self.assertNotIn("column_filters", client.run_nqe_query.call_args.kwargs)
         self.assertEqual(
             client.run_nqe_query.call_args.kwargs["parameters"],
             {
@@ -9695,8 +9561,7 @@ class ForwardSyncRunnerTest(TestCase):
             },
         )
 
-    def test_fetch_spec_rows_partitions_large_column_filter_diff_batches(self):
-        baseline = Mock(snapshot_id="snapshot-before")
+    def test_fetch_spec_rows_rejects_legacy_column_filter_scope(self):
         client = Mock()
         logger = Mock()
         fetcher = ForwardQueryFetcher(
@@ -9707,956 +9572,41 @@ class ForwardSyncRunnerTest(TestCase):
         context = ForwardQueryContext(
             network_id="test-network",
             snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id="snapshot-after",
-        )
-        spec = QuerySpec(
-            model_string="dcim.interface",
-            query_name="Forward Interfaces",
-            query_id="Q_interfaces",
-            parameters={"existing": "value"},
-        )
-        shard_scope = {
-            "fetch_mode": "nqe_column_filter",
-            "fetch_column_filters": [
-                {
-                    "operator": "EQUALS_ANY",
-                    "columnName": "device",
-                    "values": ["device-1", "device-2", "device-3"],
-                }
-            ],
-            "shard_keys": [
-                "device:device-1",
-                "device:device-2",
-                "device:device-3",
-            ],
-            "query_parameters": {},
-        }
-        client.run_nqe_diff.side_effect = [
-            [
-                {
-                    "type": "ADDED",
-                    "before": None,
-                    "after": {"device": "device-1", "name": "Ethernet1/1"},
-                },
-                {
-                    "type": "ADDED",
-                    "before": None,
-                    "after": {"device": "device-2", "name": "Ethernet1/1"},
-                },
-            ],
-            [
-                {
-                    "type": "ADDED",
-                    "before": None,
-                    "after": {"device": "device-3", "name": "Ethernet1/1"},
-                }
-            ],
-        ]
-
-        with patch(
-            "forward_netbox.utilities.query_fetch_execution.SHARD_FETCH_COLUMN_FILTER_CHUNK_SIZE",
-            2,
-        ):
-            rows, delete_rows, mode = fetcher._fetch_spec_rows(
-                "dcim.interface",
-                spec,
-                baseline=baseline,
-                context=context,
-                coalesce_fields=[["device", "name"]],
-                shard_scope=shard_scope,
-            )
-
-        self.assertEqual(client.run_nqe_diff.call_count, 2)
-        self.assertEqual(mode, "diff")
-        self.assertEqual(delete_rows, [])
-        self.assertEqual(
-            [row["device"] for row in rows],
-            ["device-1", "device-2", "device-3"],
-        )
-        self.assertEqual(
-            client.run_nqe_diff.call_args.kwargs["parameters"],
-            {"existing": "value"},
-        )
-
-    def test_fetch_spec_rows_recovers_failed_full_partition_by_splitting(self):
-        fetcher = ForwardQueryFetcher(
-            sync=self.sync,
-            client=Mock(),
-            logger_=Mock(),
-        )
-        spec = QuerySpec(
-            model_string="dcim.interface",
-            query_name="Forward Interfaces",
-            query="foreach interface select {device: interface.device.name, name: interface.name}",
-        )
-        context = ForwardQueryContext(
-            network_id="test-network",
-            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id="snapshot-after",
-        )
-        shard_scope = {
-            "fetch_mode": "nqe_column_filter",
-            "fetch_key_family": "device",
-            "fetch_parameters": {"shard_hint": "device"},
-            "fetch_column_filters": [
-                {
-                    "operator": "EQUALS_ANY",
-                    "columnName": "device",
-                    "values": ["device-1", "device-2", "device-3"],
-                }
-            ],
-            "query_parameters": {},
-            "shard_keys": ["device:device-1", "device:device-2", "device:device-3"],
-        }
-        fetcher._run_nqe_query = Mock(
-            side_effect=[
-                ForwardClientError("partition timeout"),
-                [{"device": "device-1", "name": "Ethernet1/1"}],
-                [
-                    {"device": "device-2", "name": "Ethernet1/1"},
-                    {"device": "device-3", "name": "Ethernet1/1"},
-                ],
-            ]
-        )
-
-        rows, delete_rows, sync_mode, fetch_meta = fetcher._fetch_spec_rows(
-            "dcim.interface",
-            spec,
-            baseline=None,
-            context=context,
-            coalesce_fields=[["device", "name"]],
-            shard_scope=shard_scope,
-            return_fetch_meta=True,
-        )
-
-        self.assertEqual(sync_mode, "full")
-        self.assertEqual(delete_rows, [])
-        self.assertEqual(fetch_meta["fetch_mode"], "nqe_column_filter")
-        self.assertEqual(
-            [row["device"] for row in rows],
-            ["device-1", "device-2", "device-3"],
-        )
-        self.assertEqual(fetcher._run_nqe_query.call_count, 3)
-        self.assertEqual(
-            fetcher._run_nqe_query.call_args_list[0].kwargs["column_filters"][0][
-                "values"
-            ],
-            ["device-1", "device-2", "device-3"],
-        )
-        self.assertEqual(
-            fetcher._run_nqe_query.call_args_list[1].kwargs["column_filters"][0][
-                "values"
-            ],
-            ["device-1"],
-        )
-        self.assertEqual(
-            fetcher._run_nqe_query.call_args_list[2].kwargs["column_filters"][0][
-                "values"
-            ],
-            ["device-2", "device-3"],
-        )
-        self.assertTrue(fetcher.logger.log_warning.called)
-
-    def test_fetch_spec_rows_does_not_split_non_retryable_http_400_partition(self):
-        fetcher = ForwardQueryFetcher(
-            sync=self.sync,
-            client=Mock(),
-            logger_=Mock(),
+            snapshot_id="snapshot-before",
         )
         spec = QuerySpec(
             model_string="ipam.prefix",
-            query_name="Forward Prefixes",
-            query="foreach prefix select {prefix: prefix.network}",
-        )
-        context = ForwardQueryContext(
-            network_id="test-network",
-            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id="snapshot-after",
+            query_name="Forward IPv4 Prefixes",
+            query="@query f() = []",
         )
         shard_scope = {
             "fetch_mode": "nqe_column_filter",
             "fetch_key_family": "prefix",
-            "fetch_parameters": {"shard_hint": "prefix"},
             "fetch_column_filters": [
                 {
                     "operator": "EQUALS_ANY",
                     "columnName": "prefix",
-                    "values": ["prefix-1", "prefix-2", "prefix-3"],
+                    "values": ["10.0.0.0/24"],
                 }
             ],
-            "query_parameters": {},
-            "shard_keys": [
-                "prefix=prefix-1",
-                "prefix=prefix-2",
-                "prefix=prefix-3",
-            ],
-        }
-        fetcher._run_nqe_query = Mock(
-            side_effect=[
-                ForwardClientError(
-                    "Forward API request failed with HTTP 400: bad request"
-                ),
-                [{"prefix": "prefix-1"}],
-            ]
-        )
-
-        rows, delete_rows, sync_mode, fetch_meta = fetcher._fetch_spec_rows(
-            "ipam.prefix",
-            spec,
-            baseline=None,
-            context=context,
-            coalesce_fields=[["prefix"]],
-            shard_scope=shard_scope,
-            return_fetch_meta=True,
-        )
-
-        self.assertEqual(sync_mode, "full")
-        self.assertEqual(delete_rows, [])
-        self.assertEqual(rows, [{"prefix": "prefix-1"}])
-        self.assertEqual(fetch_meta["fetch_mode"], "full_fallback")
-        self.assertEqual(fetcher._run_nqe_query.call_count, 2)
-        self.assertEqual(
-            fetcher._run_nqe_query.call_args_list[0].kwargs["column_filters"][0][
-                "values"
-            ],
-            ["prefix-1", "prefix-2", "prefix-3"],
-        )
-        self.assertIsNone(
-            fetcher._run_nqe_query.call_args_list[1].kwargs["column_filters"]
-        )
-        self.assertEqual(
-            fetch_meta["fetch_parameters"]["partition_retry_summary"],
-            {
-                "operation": "full",
-                "partition_count": 1,
-                "split_retry_count": 0,
-                "split_retry_success_count": 0,
-                "alternate_operator_retry_count": 0,
-                "alternate_operator_success_count": 0,
-                "non_retryable_partition_failure_count": 1,
-            },
-        )
-
-    def test_fetch_spec_rows_splits_value_required_http_400_partition(self):
-        fetcher = ForwardQueryFetcher(
-            sync=self.sync,
-            client=Mock(),
-            logger_=Mock(),
-        )
-        spec = QuerySpec(
-            model_string="dcim.interface",
-            query_name="Forward Interfaces",
-            query="foreach interface select {device: interface.device.name, name: interface.name}",
-        )
-        context = ForwardQueryContext(
-            network_id="test-network",
-            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id="snapshot-after",
-        )
-        shard_scope = {
-            "fetch_mode": "nqe_column_filter",
-            "fetch_key_family": "device",
-            "fetch_parameters": {"shard_hint": "device"},
-            "fetch_column_filters": [
-                {
-                    "operator": "EQUALS_ANY",
-                    "columnName": "device",
-                    "values": ["device-1", "device-2", "device-3"],
-                }
-            ],
-            "query_parameters": {},
-            "shard_keys": ["device:device-1", "device:device-2", "device:device-3"],
+            "shard_keys": ["prefix=10.0.0.0/24"],
         }
 
-        def _query_side_effect(*, column_filters, **kwargs):
-            filter_item = dict((column_filters or [{}])[0])
-            operator = str(filter_item.get("operator") or "")
-            if operator == "EQUALS_ANY":
-                raise ForwardClientError(
-                    "Forward API request failed with HTTP 400: {'value' is required}"
-                )
-            if operator == "DEFAULT":
-                value = str(filter_item.get("value") or "")
-                return [{"device": value, "name": "Ethernet1/1"}]
-            raise AssertionError(f"Unexpected column filter shape: {filter_item!r}")
-
-        fetcher._run_nqe_query = Mock(side_effect=_query_side_effect)
-
-        rows, delete_rows, sync_mode, fetch_meta = fetcher._fetch_spec_rows(
-            "dcim.interface",
-            spec,
-            baseline=None,
-            context=context,
-            coalesce_fields=[["device", "name"]],
-            shard_scope=shard_scope,
-            return_fetch_meta=True,
-        )
-
-        self.assertEqual(sync_mode, "full")
-        self.assertEqual(delete_rows, [])
-        self.assertEqual(fetch_meta["fetch_mode"], "nqe_column_filter")
-        self.assertEqual(
-            [row["device"] for row in rows],
-            ["device-1", "device-2", "device-3"],
-        )
-        self.assertEqual(fetcher._run_nqe_query.call_count, 4)
-        first_filter = fetcher._run_nqe_query.call_args_list[0].kwargs[
-            "column_filters"
-        ][0]
-        self.assertEqual(first_filter["operator"], "EQUALS_ANY")
-        self.assertEqual(first_filter["values"], ["device-1", "device-2", "device-3"])
-        self.assertEqual(
-            [
-                call.kwargs["column_filters"][0]["value"]
-                for call in fetcher._run_nqe_query.call_args_list[1:]
-            ],
-            ["device-1", "device-2", "device-3"],
-        )
-        self.assertEqual(
-            fetch_meta["fetch_parameters"]["partition_retry_summary"],
-            {
-                "operation": "full",
-                "partition_count": 1,
-                "split_retry_count": 0,
-                "split_retry_success_count": 0,
-                "alternate_operator_retry_count": 3,
-                "alternate_operator_success_count": 1,
-            },
-        )
-
-    def test_fetch_spec_rows_logs_value_required_full_fallback_as_info(self):
-        logger = Mock()
-        fetcher = ForwardQueryFetcher(
-            sync=self.sync,
-            client=Mock(),
-            logger_=logger,
-        )
-        spec = QuerySpec(
-            model_string="dcim.interface",
-            query_name="Forward Interfaces",
-            query="foreach interface select {device: interface.device.name, name: interface.name}",
-        )
-        context = ForwardQueryContext(
-            network_id="test-network",
-            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id="snapshot-after",
-        )
-        shard_scope = {
-            "fetch_mode": "nqe_column_filter",
-            "fetch_key_family": "device",
-            "fetch_parameters": {"shard_hint": "device"},
-            "fetch_column_filters": [
-                {"operator": "EQUALS_ANY", "columnName": "device", "values": ["core-1"]}
-            ],
-            "query_parameters": {},
-            "shard_keys": ["device:core-1"],
-        }
-        fetcher._run_nqe_query = Mock(
-            side_effect=[
-                ForwardClientError(
-                    "Forward API request failed with HTTP 400: {'value' is required}"
-                ),
-                ForwardClientError(
-                    "Forward API request failed with HTTP 400: {'value' is required}"
-                ),
-                [{"device": "core-1", "name": "Ethernet1/1"}],
-            ]
-        )
-
-        rows, delete_rows, sync_mode, fetch_meta = fetcher._fetch_spec_rows(
-            "dcim.interface",
-            spec,
-            baseline=None,
-            context=context,
-            coalesce_fields=[["device", "name"]],
-            shard_scope=shard_scope,
-            return_fetch_meta=True,
-        )
-
-        self.assertEqual(sync_mode, "full")
-        self.assertEqual(delete_rows, [])
-        self.assertEqual(rows, [{"device": "core-1", "name": "Ethernet1/1"}])
-        self.assertEqual(fetch_meta["fetch_mode"], "full_fallback")
-
-        info_messages = [call.args[0] for call in logger.log_info.call_args_list]
-        warning_messages = [call.args[0] for call in logger.log_warning.call_args_list]
-        self.assertTrue(
-            any(
-                "falling back to full model fetch" in message
-                for message in info_messages
+        with self.assertRaisesRegex(
+            ForwardQueryError,
+            "Legacy NQE column-filter shard fetches are no longer supported",
+        ):
+            fetcher._fetch_spec_rows(
+                "ipam.prefix",
+                spec,
+                baseline=None,
+                context=context,
+                coalesce_fields=[["prefix"]],
+                shard_scope=shard_scope,
             )
-        )
-        self.assertFalse(
-            any(
-                "falling back to full model fetch" in message
-                for message in warning_messages
-            )
-        )
 
-    def test_fetch_spec_rows_logs_connectivity_fallback_as_info(self):
-        logger = Mock()
-        fetcher = ForwardQueryFetcher(
-            sync=self.sync,
-            client=Mock(),
-            logger_=logger,
-        )
-        spec = QuerySpec(
-            model_string="dcim.interface",
-            query_name="Forward Interfaces",
-            query="foreach interface select {device: interface.device.name, name: interface.name}",
-        )
-        context = ForwardQueryContext(
-            network_id="test-network",
-            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id="snapshot-after",
-        )
-        shard_scope = {
-            "fetch_mode": "nqe_column_filter",
-            "fetch_key_family": "device",
-            "fetch_parameters": {"shard_hint": "device"},
-            "fetch_column_filters": [
-                {"operator": "REGEX", "columnName": "device", "value": "core-1"}
-            ],
-            "query_parameters": {},
-            "shard_keys": ["device:core-1"],
-        }
-        fetcher._run_nqe_query = Mock(
-            side_effect=[
-                ForwardConnectivityError(
-                    "Forward API request returned transient HTTP 503; retry attempts were exhausted."
-                ),
-                [{"device": "core-1", "name": "Ethernet1/1"}],
-            ]
-        )
-
-        rows, delete_rows, sync_mode, fetch_meta = fetcher._fetch_spec_rows(
-            "dcim.interface",
-            spec,
-            baseline=None,
-            context=context,
-            coalesce_fields=[["device", "name"]],
-            shard_scope=shard_scope,
-            return_fetch_meta=True,
-        )
-
-        self.assertEqual(sync_mode, "full")
-        self.assertEqual(delete_rows, [])
-        self.assertEqual(rows, [{"device": "core-1", "name": "Ethernet1/1"}])
-        self.assertEqual(fetch_meta["fetch_mode"], "full_fallback")
-
-        info_messages = [call.args[0] for call in logger.log_info.call_args_list]
-        warning_messages = [call.args[0] for call in logger.log_warning.call_args_list]
-        self.assertTrue(
-            any(
-                "falling back to full model fetch" in message
-                for message in info_messages
-            )
-        )
-        self.assertFalse(
-            any(
-                "falling back to full model fetch" in message
-                for message in warning_messages
-            )
-        )
-
-    def test_fetch_spec_rows_logs_server_error_fallback_as_info(self):
-        logger = Mock()
-        fetcher = ForwardQueryFetcher(
-            sync=self.sync,
-            client=Mock(),
-            logger_=logger,
-        )
-        spec = QuerySpec(
-            model_string="dcim.interface",
-            query_name="Forward Interfaces",
-            query="foreach interface select {device: interface.device.name, name: interface.name}",
-        )
-        context = ForwardQueryContext(
-            network_id="test-network",
-            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id="snapshot-after",
-        )
-        shard_scope = {
-            "fetch_mode": "nqe_column_filter",
-            "fetch_key_family": "device",
-            "fetch_parameters": {"shard_hint": "device"},
-            "fetch_column_filters": [
-                {"operator": "REGEX", "columnName": "device", "value": "core-1"}
-            ],
-            "query_parameters": {},
-            "shard_keys": ["device:core-1"],
-        }
-        fetcher._run_nqe_query = Mock(
-            side_effect=[
-                ForwardClientError(
-                    'Forward API request failed with HTTP 500: {"message":"db fail","status":"500"}'
-                ),
-                [{"device": "core-1", "name": "Ethernet1/1"}],
-            ]
-        )
-
-        rows, delete_rows, sync_mode, fetch_meta = fetcher._fetch_spec_rows(
-            "dcim.interface",
-            spec,
-            baseline=None,
-            context=context,
-            coalesce_fields=[["device", "name"]],
-            shard_scope=shard_scope,
-            return_fetch_meta=True,
-        )
-
-        self.assertEqual(sync_mode, "full")
-        self.assertEqual(delete_rows, [])
-        self.assertEqual(rows, [{"device": "core-1", "name": "Ethernet1/1"}])
-        self.assertEqual(fetch_meta["fetch_mode"], "full_fallback")
-
-        info_messages = [call.args[0] for call in logger.log_info.call_args_list]
-        warning_messages = [call.args[0] for call in logger.log_warning.call_args_list]
-        self.assertTrue(
-            any(
-                "falling back to full model fetch" in message
-                for message in info_messages
-            )
-        )
-        self.assertFalse(
-            any(
-                "falling back to full model fetch" in message
-                for message in warning_messages
-            )
-        )
-
-    def test_fetch_spec_rows_value_required_partition_retries_do_not_warn(self):
-        logger = Mock()
-        fetcher = ForwardQueryFetcher(
-            sync=self.sync,
-            client=Mock(),
-            logger_=logger,
-        )
-        spec = QuerySpec(
-            model_string="dcim.interface",
-            query_name="Forward Interfaces",
-            query="foreach interface select {device: interface.device.name, name: interface.name}",
-        )
-        context = ForwardQueryContext(
-            network_id="test-network",
-            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id="snapshot-after",
-        )
-        shard_scope = {
-            "fetch_mode": "nqe_column_filter",
-            "fetch_key_family": "device",
-            "fetch_parameters": {"shard_hint": "device"},
-            "fetch_column_filters": [
-                {
-                    "operator": "EQUALS_ANY",
-                    "columnName": "device",
-                    "values": ["device-1", "device-2", "device-3", "device-4"],
-                }
-            ],
-            "query_parameters": {},
-            "shard_keys": [
-                "device:device-1",
-                "device:device-2",
-                "device:device-3",
-                "device:device-4",
-            ],
-        }
-
-        def _query_side_effect(*, column_filters, **kwargs):
-            filter_item = dict((column_filters or [{}])[0])
-            operator = str(filter_item.get("operator") or "")
-            values = list(filter_item.get("values") or [])
-            if operator == "EQUALS_ANY" and len(values) > 1:
-                raise ForwardClientError(
-                    "Forward API request failed with HTTP 400: {'value' is required}"
-                )
-            if operator == "EQUALS_ANY" and len(values) == 1:
-                raise ForwardClientError(
-                    "Forward API request failed with HTTP 400: {'value' is required}"
-                )
-            if operator == "DEFAULT":
-                value = str(filter_item.get("value") or "")
-                return [{"device": value, "name": "Ethernet1/1"}]
-            raise AssertionError(f"Unexpected column filter shape: {filter_item!r}")
-
-        fetcher._run_nqe_query = Mock(side_effect=_query_side_effect)
-
-        rows, delete_rows, sync_mode, fetch_meta = fetcher._fetch_spec_rows(
-            "dcim.interface",
-            spec,
-            baseline=None,
-            context=context,
-            coalesce_fields=[["device", "name"]],
-            shard_scope=shard_scope,
-            return_fetch_meta=True,
-        )
-
-        self.assertEqual(sync_mode, "full")
-        self.assertEqual(delete_rows, [])
-        self.assertEqual(fetch_meta["fetch_mode"], "nqe_column_filter")
-        self.assertEqual(
-            sorted(row["device"] for row in rows),
-            ["device-1", "device-2", "device-3", "device-4"],
-        )
-
-        warning_messages = [call.args[0] for call in logger.log_warning.call_args_list]
-        self.assertFalse(
-            any("partition fetch failed" in message for message in warning_messages)
-        )
-        self.assertFalse(
-            any(
-                "single-value partition fetch failed" in message
-                for message in warning_messages
-            )
-        )
-
-        info_messages = [call.args[0] for call in logger.log_info.call_args_list]
-        self.assertTrue(
-            any(
-                "alternate single-value operator" in message
-                for message in info_messages
-            )
-        )
-        self.assertFalse(
-            any("smaller split partitions" in message for message in info_messages)
-        )
-
-    def test_fetch_spec_rows_connectivity_partition_retries_do_not_warn(self):
-        logger = Mock()
-        fetcher = ForwardQueryFetcher(
-            sync=self.sync,
-            client=Mock(),
-            logger_=logger,
-        )
-        spec = QuerySpec(
-            model_string="dcim.interface",
-            query_name="Forward Interfaces",
-            query="foreach interface select {device: interface.device.name, name: interface.name}",
-        )
-        context = ForwardQueryContext(
-            network_id="test-network",
-            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id="snapshot-after",
-        )
-        shard_scope = {
-            "fetch_mode": "nqe_column_filter",
-            "fetch_key_family": "device",
-            "fetch_parameters": {"shard_hint": "device"},
-            "fetch_column_filters": [
-                {
-                    "operator": "EQUALS_ANY",
-                    "columnName": "device",
-                    "values": ["device-1", "device-2", "device-3", "device-4"],
-                }
-            ],
-            "query_parameters": {},
-            "shard_keys": [
-                "device:device-1",
-                "device:device-2",
-                "device:device-3",
-                "device:device-4",
-            ],
-        }
-
-        def _query_side_effect(*, column_filters, **kwargs):
-            filter_item = dict((column_filters or [{}])[0])
-            operator = str(filter_item.get("operator") or "")
-            values = list(filter_item.get("values") or [])
-            if operator == "EQUALS_ANY" and len(values) > 1:
-                raise ForwardConnectivityError(
-                    "Forward API request returned transient HTTP 503; retry attempts were exhausted."
-                )
-            if operator == "EQUALS_ANY" and len(values) == 1:
-                raise ForwardConnectivityError(
-                    "Forward API request returned transient HTTP 504; retry attempts were exhausted."
-                )
-            if operator == "DEFAULT":
-                value = str(filter_item.get("value") or "")
-                return [{"device": value, "name": "Ethernet1/1"}]
-            raise AssertionError(f"Unexpected column filter shape: {filter_item!r}")
-
-        fetcher._run_nqe_query = Mock(side_effect=_query_side_effect)
-
-        rows, delete_rows, sync_mode, fetch_meta = fetcher._fetch_spec_rows(
-            "dcim.interface",
-            spec,
-            baseline=None,
-            context=context,
-            coalesce_fields=[["device", "name"]],
-            shard_scope=shard_scope,
-            return_fetch_meta=True,
-        )
-
-        self.assertEqual(sync_mode, "full")
-        self.assertEqual(delete_rows, [])
-        self.assertEqual(fetch_meta["fetch_mode"], "nqe_column_filter")
-        self.assertEqual(
-            sorted(row["device"] for row in rows),
-            ["device-1", "device-2", "device-3", "device-4"],
-        )
-
-        warning_messages = [call.args[0] for call in logger.log_warning.call_args_list]
-        self.assertFalse(
-            any("partition fetch failed" in message for message in warning_messages)
-        )
-        self.assertFalse(
-            any(
-                "single-value partition fetch failed" in message
-                for message in warning_messages
-            )
-        )
-
-        info_messages = [call.args[0] for call in logger.log_info.call_args_list]
-        self.assertTrue(
-            any(
-                "single-value partition fetch failed; retrying with alternate column-filter operator"
-                in message
-                for message in info_messages
-            )
-        )
-        self.assertTrue(
-            any(
-                "partition fetch failed; retrying as 2 smaller partition(s)" in message
-                for message in info_messages
-            )
-        )
-
-    def test_fetch_spec_rows_recovers_failed_diff_partition_by_splitting(self):
-        baseline = Mock(snapshot_id="snapshot-before")
-        fetcher = ForwardQueryFetcher(
-            sync=self.sync,
-            client=Mock(),
-            logger_=Mock(),
-        )
-        spec = QuerySpec(
-            model_string="dcim.interface",
-            query_name="Forward Interfaces",
-            query_id="Q_interfaces",
-        )
-        context = ForwardQueryContext(
-            network_id="test-network",
-            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id="snapshot-after",
-        )
-        shard_scope = {
-            "fetch_mode": "nqe_column_filter",
-            "fetch_key_family": "device",
-            "fetch_parameters": {"shard_hint": "device"},
-            "fetch_column_filters": [
-                {
-                    "operator": "EQUALS_ANY",
-                    "columnName": "device",
-                    "values": ["device-1", "device-2", "device-3"],
-                }
-            ],
-            "query_parameters": {},
-            "shard_keys": ["device:device-1", "device:device-2", "device:device-3"],
-        }
-        fetcher._run_nqe_diff = Mock(
-            side_effect=[
-                ForwardClientError("partition timeout"),
-                [
-                    {
-                        "type": "ADDED",
-                        "before": None,
-                        "after": {"device": "device-1", "name": "Ethernet1/1"},
-                    }
-                ],
-                [
-                    {
-                        "type": "ADDED",
-                        "before": None,
-                        "after": {"device": "device-2", "name": "Ethernet1/1"},
-                    },
-                    {
-                        "type": "ADDED",
-                        "before": None,
-                        "after": {"device": "device-3", "name": "Ethernet1/1"},
-                    },
-                ],
-            ]
-        )
-
-        rows, delete_rows, sync_mode, fetch_meta = fetcher._fetch_spec_rows(
-            "dcim.interface",
-            spec,
-            baseline=baseline,
-            context=context,
-            coalesce_fields=[["device", "name"]],
-            shard_scope=shard_scope,
-            return_fetch_meta=True,
-        )
-
-        self.assertEqual(sync_mode, "diff")
-        self.assertEqual(delete_rows, [])
-        self.assertEqual(fetch_meta["fetch_mode"], "nqe_column_filter")
-        self.assertEqual(
-            [row["device"] for row in rows],
-            ["device-1", "device-2", "device-3"],
-        )
-        self.assertEqual(fetcher._run_nqe_diff.call_count, 3)
-        self.assertTrue(fetcher.logger.log_warning.called)
-
-    def test_fetch_spec_rows_retries_single_default_filter_as_equals_any_before_fallback(
-        self,
-    ):
-        fetcher = ForwardQueryFetcher(
-            sync=self.sync,
-            client=Mock(),
-            logger_=Mock(),
-        )
-        spec = QuerySpec(
-            model_string="dcim.interface",
-            query_name="Forward Interfaces",
-            query="foreach interface select {device: interface.device.name, name: interface.name}",
-        )
-        context = ForwardQueryContext(
-            network_id="test-network",
-            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id="snapshot-after",
-        )
-        shard_scope = {
-            "fetch_mode": "nqe_column_filter",
-            "fetch_key_family": "device",
-            "fetch_parameters": {"shard_hint": "device"},
-            "fetch_column_filters": [
-                {"operator": "DEFAULT", "columnName": "device", "value": "core-1"}
-            ],
-            "query_parameters": {},
-            "shard_keys": ["device:core-1"],
-        }
-        fetcher._run_nqe_query = Mock(
-            side_effect=[
-                ForwardClientError(
-                    "default column filter rejected: networkId="
-                    + "123456 snapshotId="
-                    + "654321 queryId=Q"
-                    + "99999 user=operator@example.com"
-                ),
-                [{"device": "core-1", "name": "Ethernet1/1"}],
-            ]
-        )
-
-        rows, delete_rows, sync_mode, fetch_meta = fetcher._fetch_spec_rows(
-            "dcim.interface",
-            spec,
-            baseline=None,
-            context=context,
-            coalesce_fields=[["device", "name"]],
-            shard_scope=shard_scope,
-            return_fetch_meta=True,
-        )
-
-        self.assertEqual(sync_mode, "full")
-        self.assertEqual(delete_rows, [])
-        self.assertEqual(fetch_meta["fetch_mode"], "nqe_column_filter")
-        self.assertEqual(
-            [row["device"] for row in rows],
-            ["core-1"],
-        )
-        self.assertEqual(
-            fetch_meta["fetch_parameters"]["partition_retry_summary"],
-            {
-                "operation": "full",
-                "partition_count": 1,
-                "split_retry_count": 0,
-                "split_retry_success_count": 0,
-                "alternate_operator_retry_count": 1,
-                "alternate_operator_success_count": 1,
-            },
-        )
-        self.assertEqual(fetcher._run_nqe_query.call_count, 2)
-        self.assertEqual(
-            fetcher._run_nqe_query.call_args_list[1].kwargs["column_filters"],
-            [{"operator": "EQUALS_ANY", "columnName": "device", "values": ["core-1"]}],
-        )
-        self.assertTrue(fetcher.logger.log_warning.called)
-        warning_message = fetcher.logger.log_warning.call_args.args[0]
-        self.assertIn("networkId=<redacted>", warning_message)
-        self.assertIn("snapshotId=<redacted>", warning_message)
-        self.assertIn("queryId=<redacted>", warning_message)
-        self.assertIn("user=<redacted-email>", warning_message)
-        self.assertNotIn("123456", warning_message)
-        self.assertNotIn("654321", warning_message)
-        self.assertNotIn("99999", warning_message)
-        self.assertNotIn("operator@example.com", warning_message)
-
-    def test_fetch_spec_rows_retries_single_diff_filter_before_full_fallback(self):
-        baseline = Mock(snapshot_id="snapshot-before")
-        fetcher = ForwardQueryFetcher(
-            sync=self.sync,
-            client=Mock(),
-            logger_=Mock(),
-        )
-        spec = QuerySpec(
-            model_string="dcim.interface",
-            query_name="Forward Interfaces",
-            query_id="Q_interfaces",
-        )
-        context = ForwardQueryContext(
-            network_id="test-network",
-            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id="snapshot-after",
-        )
-        shard_scope = {
-            "fetch_mode": "nqe_column_filter",
-            "fetch_key_family": "device",
-            "fetch_parameters": {"shard_hint": "device"},
-            "fetch_column_filters": [
-                {"operator": "DEFAULT", "columnName": "device", "value": "core-1"}
-            ],
-            "query_parameters": {},
-            "shard_keys": ["device:core-1"],
-        }
-        fetcher._run_nqe_diff = Mock(
-            side_effect=[
-                ForwardClientError("default diff column filter rejected"),
-                [
-                    {
-                        "type": "ADDED",
-                        "before": None,
-                        "after": {"device": "core-1", "name": "Ethernet1/1"},
-                    }
-                ],
-            ]
-        )
-        fetcher._run_nqe_query = Mock()
-
-        rows, delete_rows, sync_mode, fetch_meta = fetcher._fetch_spec_rows(
-            "dcim.interface",
-            spec,
-            baseline=baseline,
-            context=context,
-            coalesce_fields=[["device", "name"]],
-            shard_scope=shard_scope,
-            return_fetch_meta=True,
-        )
-
-        self.assertEqual(sync_mode, "diff")
-        self.assertEqual(delete_rows, [])
-        self.assertEqual(fetch_meta["fetch_mode"], "nqe_column_filter")
-        self.assertEqual(
-            [row["device"] for row in rows],
-            ["core-1"],
-        )
-        self.assertEqual(
-            fetch_meta["fetch_parameters"]["partition_retry_summary"],
-            {
-                "operation": "diff",
-                "partition_count": 1,
-                "split_retry_count": 0,
-                "split_retry_success_count": 0,
-                "alternate_operator_retry_count": 1,
-                "alternate_operator_success_count": 1,
-            },
-        )
-        self.assertEqual(fetcher._run_nqe_diff.call_count, 2)
-        self.assertEqual(
-            fetcher._run_nqe_diff.call_args_list[1].kwargs["column_filters"],
-            [{"operator": "EQUALS_ANY", "columnName": "device", "values": ["core-1"]}],
-        )
-        self.assertFalse(fetcher._run_nqe_query.called)
-        self.assertTrue(fetcher.logger.log_warning.called)
+        client.run_nqe_query.assert_not_called()
+        client.run_nqe_diff.assert_not_called()
 
     def test_fetch_spec_rows_requires_diff_and_rejects_raw_query_fallback(self):
         self.sync.parameters["diff_fallback_mode"] = (
@@ -11063,6 +10013,17 @@ class ForwardSyncRunnerTest(TestCase):
             self.assertEqual(first_resolved[0].run_query_id, "qid-123")
             self.assertEqual(first_resolved[0].commit_id, "cid-123")
             first_client.resolve_nqe_query_reference.assert_called_once()
+            self.assertEqual(
+                first_fetcher._query_path_resolution_cache["dcim.device"],
+                {
+                    "available": True,
+                    "query_path_spec_count": 1,
+                    "artifact_hit_count": 0,
+                    "client_resolve_count": 1,
+                    "cache_hit_rate": 0.0,
+                    "message": "Resolved 1 query_path spec(s) with 0 artifact hit(s) and 1 Forward lookup(s).",
+                },
+            )
 
             second_client = Mock()
             second_client.resolve_nqe_query_reference.side_effect = AssertionError(
@@ -11077,6 +10038,17 @@ class ForwardSyncRunnerTest(TestCase):
             self.assertEqual(second_resolved[0].run_query_id, "qid-123")
             self.assertEqual(second_resolved[0].commit_id, "cid-123")
             self.assertFalse(second_client.resolve_nqe_query_reference.called)
+            self.assertEqual(
+                second_fetcher._query_path_resolution_cache["dcim.device"],
+                {
+                    "available": True,
+                    "query_path_spec_count": 1,
+                    "artifact_hit_count": 1,
+                    "client_resolve_count": 0,
+                    "cache_hit_rate": 1.0,
+                    "message": "Resolved 1 query_path spec(s) with 1 artifact hit(s) and 0 Forward lookup(s).",
+                },
+            )
 
     def test_query_path_resolution_reuses_artifact_across_runs(self):
         with tempfile.TemporaryDirectory() as artifact_dir, patch.dict(
@@ -11113,6 +10085,17 @@ class ForwardSyncRunnerTest(TestCase):
             self.assertEqual(first_resolved[0].run_query_id, "qid-123")
             self.assertEqual(first_resolved[0].commit_id, "cid-123")
             first_client.resolve_nqe_query_reference.assert_called_once()
+            self.assertEqual(
+                first_fetcher._query_path_resolution_cache["dcim.device"],
+                {
+                    "available": True,
+                    "query_path_spec_count": 1,
+                    "artifact_hit_count": 0,
+                    "client_resolve_count": 1,
+                    "cache_hit_rate": 0.0,
+                    "message": "Resolved 1 query_path spec(s) with 0 artifact hit(s) and 1 Forward lookup(s).",
+                },
+            )
 
             first_run.status = "completed"
             first_run.save(update_fields=["status"])
@@ -11140,6 +10123,17 @@ class ForwardSyncRunnerTest(TestCase):
             self.assertEqual(second_resolved[0].run_query_id, "qid-123")
             self.assertEqual(second_resolved[0].commit_id, "cid-123")
             self.assertFalse(second_client.resolve_nqe_query_reference.called)
+            self.assertEqual(
+                second_fetcher._query_path_resolution_cache["dcim.device"],
+                {
+                    "available": True,
+                    "query_path_spec_count": 1,
+                    "artifact_hit_count": 1,
+                    "client_resolve_count": 0,
+                    "cache_hit_rate": 1.0,
+                    "message": "Resolved 1 query_path spec(s) with 1 artifact hit(s) and 0 Forward lookup(s).",
+                },
+            )
 
     def test_apply_device_tag_scope_filters_rows_with_device_keys(self):
         fetcher = ForwardQueryFetcher(
@@ -11309,368 +10303,6 @@ class ForwardSyncRunnerTest(TestCase):
             [{"device": "branch-1", "name": "Ethernet1"}],
         )
 
-    def test_fetch_spec_rows_reports_fetch_metadata_for_column_filter_scope(self):
-        fetcher = ForwardQueryFetcher(
-            sync=self.sync,
-            client=Mock(),
-            logger_=Mock(),
-        )
-        spec = QuerySpec(
-            model_string="dcim.interface",
-            query_name="Forward Interfaces",
-            query="foreach interface select {device: interface.device.name, name: interface.name}",
-            parameters={"existing": "value"},
-        )
-        context = ForwardQueryContext(
-            network_id="test-network",
-            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id="snapshot-after",
-        )
-        shard_scope = {
-            "fetch_mode": "nqe_column_filter",
-            "fetch_key_family": "device",
-            "fetch_parameters": {"shard_hint": "device"},
-            "fetch_column_filters": [
-                {"operator": "DEFAULT", "columnName": "device", "value": "core-1"}
-            ],
-            "query_parameters": {"qscope": "core"},
-            "shard_keys": ["device:core-1"],
-        }
-        fetcher._run_nqe_query = Mock(
-            return_value=[{"device": "core-1", "name": "Ethernet1"}]
-        )
-
-        rows, delete_rows, sync_mode, fetch_meta = fetcher._fetch_spec_rows(
-            "dcim.interface",
-            spec,
-            baseline=None,
-            context=context,
-            coalesce_fields=[["device", "name"]],
-            shard_scope=shard_scope,
-            return_fetch_meta=True,
-        )
-
-        self.assertEqual(sync_mode, "full")
-        self.assertEqual(rows, [{"device": "core-1", "name": "Ethernet1"}])
-        self.assertEqual(delete_rows, [])
-        self.assertEqual(fetch_meta["fetch_mode"], "nqe_column_filter")
-        self.assertEqual(fetch_meta["fetch_key_family"], "device")
-        self.assertEqual(fetch_meta["fetch_parameters"], {"shard_hint": "device"})
-        self.assertEqual(
-            fetch_meta["fetch_column_filters"],
-            [{"operator": "DEFAULT", "columnName": "device", "value": "core-1"}],
-        )
-        self.assertEqual(
-            fetch_meta["query_parameters"],
-            {"existing": "value", "qscope": "core"},
-        )
-
-    def test_fetch_spec_rows_reuses_run_local_artifact_for_shard_retry(self):
-        with tempfile.TemporaryDirectory() as artifact_dir, patch.dict(
-            os.environ,
-            {"FORWARD_NETBOX_FETCH_ARTIFACT_DIR": artifact_dir},
-        ):
-            ForwardExecutionRun.objects.create(
-                sync=self.sync,
-                source=self.source,
-                backend="branching",
-                status="running",
-                snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-                snapshot_id="snapshot-after",
-                total_steps=1,
-                next_step_index=1,
-            )
-            spec = QuerySpec(
-                model_string="dcim.interface",
-                query_name="Forward Interfaces",
-                query="foreach interface select {device: interface.device.name, name: interface.name}",
-            )
-            context = ForwardQueryContext(
-                network_id="test-network",
-                snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-                snapshot_id="snapshot-after",
-            )
-            shard_scope = {
-                "fetch_mode": "nqe_column_filter",
-                "fetch_key_family": "device",
-                "fetch_parameters": {"shard_hint": "device"},
-                "fetch_column_filters": [
-                    {"operator": "DEFAULT", "columnName": "device", "value": "core-1"}
-                ],
-                "query_parameters": {},
-                "shard_keys": ["device:core-1"],
-            }
-            first_fetcher = ForwardQueryFetcher(
-                sync=self.sync,
-                client=Mock(),
-                logger_=Mock(),
-            )
-            first_fetcher._run_nqe_query = Mock(
-                return_value=[{"device": "core-1", "name": "Ethernet1"}]
-            )
-
-            rows, delete_rows, sync_mode, fetch_meta = first_fetcher._fetch_spec_rows(
-                "dcim.interface",
-                spec,
-                baseline=None,
-                context=context,
-                coalesce_fields=[["device", "name"]],
-                shard_scope=shard_scope,
-                return_fetch_meta=True,
-            )
-
-            self.assertEqual(sync_mode, "full")
-            self.assertEqual(rows, [{"device": "core-1", "name": "Ethernet1"}])
-            self.assertEqual(delete_rows, [])
-            self.assertEqual(
-                fetch_meta["fetch_parameters"]["fetch_artifact"]["status"],
-                "stored",
-            )
-            self.assertNotIn(
-                "rows",
-                fetch_meta["fetch_parameters"]["fetch_artifact"],
-            )
-
-            retry_fetcher = ForwardQueryFetcher(
-                sync=self.sync,
-                client=Mock(),
-                logger_=Mock(),
-            )
-            retry_fetcher._run_nqe_query = Mock(
-                side_effect=AssertionError("Forward query should not run")
-            )
-
-            retry_rows, retry_deletes, retry_mode, retry_meta = (
-                retry_fetcher._fetch_spec_rows(
-                    "dcim.interface",
-                    spec,
-                    baseline=None,
-                    context=context,
-                    coalesce_fields=[["device", "name"]],
-                    shard_scope=shard_scope,
-                    return_fetch_meta=True,
-                )
-            )
-
-            self.assertEqual(retry_mode, "full")
-            self.assertEqual(retry_rows, rows)
-            self.assertEqual(retry_deletes, [])
-            self.assertFalse(retry_fetcher._run_nqe_query.called)
-            self.assertEqual(
-                retry_meta["fetch_parameters"]["fetch_artifact"]["status"],
-                "hit",
-            )
-
-    def test_fetch_spec_rows_reuses_model_fallback_artifact_across_shards(self):
-        with tempfile.TemporaryDirectory() as artifact_dir, patch.dict(
-            os.environ,
-            {"FORWARD_NETBOX_FETCH_ARTIFACT_DIR": artifact_dir},
-        ):
-            ForwardExecutionRun.objects.create(
-                sync=self.sync,
-                source=self.source,
-                backend="branching",
-                status="running",
-                snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-                snapshot_id="snapshot-after",
-                total_steps=2,
-                next_step_index=1,
-            )
-            spec = QuerySpec(
-                model_string="dcim.interface",
-                query_name="Forward Interfaces",
-                query="foreach interface select {device: interface.device.name, name: interface.name}",
-            )
-            context = ForwardQueryContext(
-                network_id="test-network",
-                snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-                snapshot_id="snapshot-after",
-            )
-            first_scope = {
-                "fetch_mode": "nqe_column_filter",
-                "fetch_key_family": "device",
-                "fetch_parameters": {"shard_hint": "device"},
-                "fetch_column_filters": [
-                    {"operator": "DEFAULT", "columnName": "device", "value": "core-1"}
-                ],
-                "query_parameters": {},
-                "shard_keys": ["device:core-1"],
-            }
-            second_scope = {
-                **first_scope,
-                "fetch_column_filters": [
-                    {"operator": "DEFAULT", "columnName": "device", "value": "core-2"}
-                ],
-                "shard_keys": ["device:core-2"],
-            }
-            full_rows = [
-                {"device": "core-1", "name": "Ethernet1"},
-                {"device": "core-2", "name": "Ethernet2"},
-            ]
-            fetcher = ForwardQueryFetcher(
-                sync=self.sync,
-                client=Mock(),
-                logger_=Mock(),
-            )
-            fetcher._run_nqe_query = Mock(
-                side_effect=[
-                    ForwardClientError("scoped fetch failed"),
-                    ForwardClientError("alternate scoped fetch failed"),
-                    full_rows,
-                    ForwardClientError("scoped fetch failed again"),
-                    ForwardClientError("alternate scoped fetch failed again"),
-                ]
-            )
-
-            rows, _delete_rows, _sync_mode, fetch_meta = fetcher._fetch_spec_rows(
-                "dcim.interface",
-                spec,
-                baseline=None,
-                context=context,
-                coalesce_fields=[["device", "name"]],
-                shard_scope=first_scope,
-                return_fetch_meta=True,
-            )
-            retry_rows, _retry_deletes, _retry_mode, retry_meta = (
-                fetcher._fetch_spec_rows(
-                    "dcim.interface",
-                    spec,
-                    baseline=None,
-                    context=context,
-                    coalesce_fields=[["device", "name"]],
-                    shard_scope=second_scope,
-                    return_fetch_meta=True,
-                )
-            )
-
-            self.assertEqual(rows, [{"device": "core-1", "name": "Ethernet1"}])
-            self.assertEqual(retry_rows, [{"device": "core-2", "name": "Ethernet2"}])
-            self.assertEqual(fetcher._run_nqe_query.call_count, 3)
-            self.assertEqual(
-                fetch_meta["fetch_parameters"]["model_fetch_artifact"]["status"],
-                "stored",
-            )
-            self.assertEqual(
-                retry_meta["fetch_parameters"]["model_fetch_artifact"]["status"],
-                "hit",
-            )
-
-    def test_fetch_spec_rows_reuses_model_fallback_artifact_across_runs(self):
-        with tempfile.TemporaryDirectory() as artifact_dir, patch.dict(
-            os.environ,
-            {"FORWARD_NETBOX_FETCH_ARTIFACT_DIR": artifact_dir},
-        ):
-            run_1 = ForwardExecutionRun.objects.create(
-                sync=self.sync,
-                source=self.source,
-                backend="branching",
-                status="running",
-                snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-                snapshot_id="snapshot-after",
-                total_steps=2,
-                next_step_index=1,
-            )
-            spec = QuerySpec(
-                model_string="dcim.interface",
-                query_name="Forward Interfaces",
-                query="foreach interface select {device: interface.device.name, name: interface.name}",
-            )
-            context = ForwardQueryContext(
-                network_id="test-network",
-                snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-                snapshot_id="snapshot-after",
-            )
-            first_scope = {
-                "fetch_mode": "nqe_column_filter",
-                "fetch_key_family": "device",
-                "fetch_parameters": {"shard_hint": "device"},
-                "fetch_column_filters": [
-                    {"operator": "DEFAULT", "columnName": "device", "value": "core-1"}
-                ],
-                "query_parameters": {},
-                "shard_keys": ["device:core-1"],
-            }
-            second_scope = {
-                **first_scope,
-                "fetch_column_filters": [
-                    {"operator": "DEFAULT", "columnName": "device", "value": "core-2"}
-                ],
-                "shard_keys": ["device:core-2"],
-            }
-            full_rows = [
-                {"device": "core-1", "name": "Ethernet1"},
-                {"device": "core-2", "name": "Ethernet2"},
-            ]
-            first_fetcher = ForwardQueryFetcher(
-                sync=self.sync,
-                client=Mock(),
-                logger_=Mock(),
-            )
-            first_fetcher._run_nqe_query = Mock(
-                side_effect=[
-                    ForwardClientError("scoped fetch failed"),
-                    ForwardClientError("alternate scoped fetch failed"),
-                    full_rows,
-                ]
-            )
-
-            rows, _delete_rows, _sync_mode, fetch_meta = first_fetcher._fetch_spec_rows(
-                "dcim.interface",
-                spec,
-                baseline=None,
-                context=context,
-                coalesce_fields=[["device", "name"]],
-                shard_scope=first_scope,
-                return_fetch_meta=True,
-            )
-            run_1.status = "completed"
-            run_1.save(update_fields=["status"])
-            ForwardExecutionRun.objects.create(
-                sync=self.sync,
-                source=self.source,
-                backend="branching",
-                status="running",
-                snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-                snapshot_id="snapshot-after",
-                total_steps=2,
-                next_step_index=1,
-            )
-            retry_fetcher = ForwardQueryFetcher(
-                sync=self.sync,
-                client=Mock(),
-                logger_=Mock(),
-            )
-            retry_fetcher._run_nqe_query = Mock(
-                side_effect=[
-                    ForwardClientError("scoped fetch failed again"),
-                    ForwardClientError("alternate scoped fetch failed again"),
-                ]
-            )
-
-            retry_rows, _retry_delete_rows, _retry_sync_mode, retry_meta = (
-                retry_fetcher._fetch_spec_rows(
-                    "dcim.interface",
-                    spec,
-                    baseline=None,
-                    context=context,
-                    coalesce_fields=[["device", "name"]],
-                    shard_scope=second_scope,
-                    return_fetch_meta=True,
-                )
-            )
-
-            self.assertEqual(rows, [{"device": "core-1", "name": "Ethernet1"}])
-            self.assertEqual(retry_rows, [{"device": "core-2", "name": "Ethernet2"}])
-            self.assertEqual(
-                fetch_meta["fetch_parameters"]["model_fetch_artifact"]["status"],
-                "stored",
-            )
-            self.assertEqual(
-                retry_meta["fetch_parameters"]["model_fetch_artifact"]["status"],
-                "hit",
-            )
-            self.assertEqual(retry_fetcher._run_nqe_query.call_count, 0)
-
     def test_fetch_artifacts_are_pruned_when_execution_run_completes(self):
         with tempfile.TemporaryDirectory() as artifact_dir, patch.dict(
             os.environ,
@@ -11702,7 +10334,7 @@ class ForwardSyncRunnerTest(TestCase):
                 rows=[{"device": "core-1", "name": "Ethernet1"}],
                 delete_rows=[],
                 sync_mode="full",
-                fetch_meta={"fetch_mode": "nqe_column_filter"},
+                fetch_meta={"fetch_mode": "nqe_parameters"},
             )
 
             self.assertEqual(artifact_meta["status"], "stored")
@@ -11738,7 +10370,7 @@ class ForwardSyncRunnerTest(TestCase):
                 rows=[{"device": "core-1", "name": "Ethernet1"}],
                 delete_rows=[],
                 sync_mode="full",
-                fetch_meta={"fetch_mode": "nqe_column_filter"},
+                fetch_meta={"fetch_mode": "nqe_parameters"},
             )
 
             self.assertEqual(artifact_meta["status"], "stored")
@@ -11749,88 +10381,6 @@ class ForwardSyncRunnerTest(TestCase):
             self.assertFalse(
                 os.path.exists(os.path.join(artifact_dir, f"run-{run.pk}"))
             )
-
-    def test_fetch_spec_rows_marks_full_fallback_when_shard_fetch_fails(self):
-        fetcher = ForwardQueryFetcher(
-            sync=self.sync,
-            client=Mock(),
-            logger_=Mock(),
-        )
-        spec = QuerySpec(
-            model_string="dcim.interface",
-            query_name="Forward Interfaces",
-            query="foreach interface select {device: interface.device.name, name: interface.name}",
-        )
-        context = ForwardQueryContext(
-            network_id="test-network",
-            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id="snapshot-after",
-        )
-        shard_scope = {
-            "fetch_mode": "nqe_column_filter",
-            "fetch_key_family": "device",
-            "fetch_parameters": {"shard_hint": "device"},
-            "fetch_column_filters": [
-                {"operator": "DEFAULT", "columnName": "device", "value": "core-1"}
-            ],
-            "query_parameters": {},
-            "shard_keys": ["device:core-1"],
-        }
-        fetcher._run_nqe_query = Mock(
-            side_effect=[
-                ForwardClientError("scoped fetch failed"),
-                ForwardClientError(
-                    "alternate scoped fetch failed: networkId="
-                    + "123456 snapshotId="
-                    + "654321 queryId=Q"
-                    + "99999"
-                ),
-                [{"device": "core-1", "name": "Ethernet1"}],
-            ]
-        )
-
-        rows, delete_rows, sync_mode, fetch_meta = fetcher._fetch_spec_rows(
-            "dcim.interface",
-            spec,
-            baseline=None,
-            context=context,
-            coalesce_fields=[["device", "name"]],
-            shard_scope=shard_scope,
-            return_fetch_meta=True,
-        )
-
-        self.assertEqual(sync_mode, "full")
-        self.assertEqual(rows, [{"device": "core-1", "name": "Ethernet1"}])
-        self.assertEqual(delete_rows, [])
-        self.assertEqual(fetch_meta["fetch_mode"], "full_fallback")
-        self.assertEqual(fetch_meta["fetch_key_family"], "device")
-        fallback_reason = fetch_meta["fetch_parameters"]["fallback_reason"]
-        self.assertIn("alternate scoped fetch failed", fallback_reason)
-        self.assertIn("networkId=<redacted>", fallback_reason)
-        self.assertIn("snapshotId=<redacted>", fallback_reason)
-        self.assertIn("queryId=<redacted>", fallback_reason)
-        self.assertNotIn("123456", fallback_reason)
-        self.assertNotIn("654321", fallback_reason)
-        self.assertNotIn("99999", fallback_reason)
-        self.assertEqual(
-            fetch_meta["fetch_parameters"]["partition_retry_summary"],
-            {
-                "operation": "full",
-                "partition_count": 1,
-                "split_retry_count": 0,
-                "split_retry_success_count": 0,
-                "alternate_operator_retry_count": 1,
-                "alternate_operator_success_count": 0,
-            },
-        )
-        self.assertEqual(fetcher._run_nqe_query.call_count, 3)
-        self.assertEqual(
-            fetcher._run_nqe_query.call_args_list[1].kwargs["column_filters"],
-            [{"operator": "EQUALS_ANY", "columnName": "device", "values": ["core-1"]}],
-        )
-        self.assertIsNone(
-            fetcher._run_nqe_query.call_args_list[2].kwargs["column_filters"]
-        )
 
     def test_run_records_issue_when_rows_miss_required_identity_fields(self):
         ingestion = ForwardIngestion.objects.create(sync=self.sync)
@@ -13057,7 +11607,6 @@ class QueryParameterCompatibilityTest(TestCase):
             spec=spec,
             context=context,
             before_snapshot_id="before-s1",
-            column_filters=None,
         )
 
         self.assertEqual(rows, [{"changeType": "ADD", "data": {"name": "device-1"}}])

@@ -62,6 +62,7 @@ def coalesce_update_or_create(
     create_values,
     update_values=None,
     conflict_policy="strict",
+    return_change=False,
 ):
     lookups = [lookup for lookup in (coalesce_lookups or []) if lookup]
     if not lookups:
@@ -82,6 +83,8 @@ def coalesce_update_or_create(
             obj.save()
             remember_lookup_object(runner, obj)
             _remember_unique_lookups(runner, model, lookups, obj)
+            if return_change:
+                return obj, True, True
             return obj, True
         except IntegrityError:
             if conflict_policy != "reuse_on_unique_conflict":
@@ -103,6 +106,8 @@ def coalesce_update_or_create(
         obj.save(update_fields=update_fields)
     remember_lookup_object(runner, obj)
     _remember_unique_lookups(runner, model, lookups, obj)
+    if return_change:
+        return obj, False, bool(update_fields)
     return obj, False
 
 
@@ -112,7 +117,17 @@ def _model_field_value_matches(model, obj, field_name, value):
         current_id = getattr(obj, field.attname)
         desired_id = getattr(value, "pk", value)
         return current_id == desired_id
-    return getattr(obj, field_name) == value
+    current = getattr(obj, field_name)
+    if current == value:
+        return True
+    if (
+        model._meta.label_lower == "ipam.prefix"
+        and field_name == "prefix"
+        and current is not None
+        and value is not None
+    ):
+        return str(current) == str(value)
+    return False
 
 
 def get_unique_or_raise(runner, model, lookup):
@@ -263,6 +278,7 @@ def coalesce_upsert(
     coalesce_lookups,
     create_values,
     update_values=None,
+    return_change=False,
 ):
     return coalesce_update_or_create(
         runner,
@@ -271,6 +287,7 @@ def coalesce_upsert(
         create_values=create_values,
         update_values=update_values,
         conflict_policy=runner._conflict_policy(model_string),
+        return_change=return_change,
     )
 
 

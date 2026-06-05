@@ -184,7 +184,8 @@ def routing_vrf(runner, row):
             "rd": None,
             "description": "",
             "enforce_unique": False,
-        }
+        },
+        update_existing=False,
     )
 
 
