@@ -349,6 +349,48 @@ class QueryRegistryTest(TestCase):
         self.assertIn("interface.routedVlan.ipv6.fhrp.vrrp.fhrpGroups", spec.query)
         self.assertIn('protocol: "vrrp2"', spec.query)
         self.assertIn('protocol: "vrrp3"', spec.query)
+        self.assertEqual(
+            spec.parameters,
+            {
+                "device_tag_include_tags": [],
+                "device_tag_include_match": "any",
+                "device_tag_exclude_tags": [],
+                "forward_netbox_shard_keys": [],
+            },
+        )
+
+    def test_platform_queries_normalize_aci_vendor_platforms(self):
+        normalized_query_names = [
+            ("dcim.platform", "Forward Platforms"),
+            ("dcim.device", "Forward Devices"),
+            ("dcim.device", "Forward Devices with NetBox Device Type Aliases"),
+        ]
+        for model_string, query_name in normalized_query_names:
+            spec = get_seeded_builtin_query_spec(model_string, query_name)
+            self.assertIn(
+                "normalizePlatformName(device.platform.os)",
+                spec.query,
+                msg=f"{query_name} no longer normalizes forward platform OS values.",
+            )
+            self.assertNotIn(
+                'replace(toString(device.platform.os), "OS.", "")',
+                spec.query,
+                msg=f"{query_name} still uses legacy direct platform normalization.",
+            )
+
+        platform_spec = get_seeded_builtin_query_spec(
+            "dcim.platform", "Forward Platforms"
+        )
+        self.assertIn(
+            'contains(platform_name_lc, "apic")',
+            platform_spec.query,
+            msg="ACI alias normalization logic missing `apic` detection.",
+        )
+        self.assertIn(
+            'contains(platform_name_lc, "nxos_aci")',
+            platform_spec.query,
+            msg="ACI alias normalization logic missing `nxos_aci` detection.",
+        )
 
     def test_virtual_chassis_query_does_not_map_ha_peers_by_default(self):
         spec = next(

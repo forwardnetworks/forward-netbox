@@ -111,8 +111,7 @@ class Command(BaseCommand):
             model_string
             for model_string, contract in fetch_contracts.items()
             if contract.get("model") != model_string
-            or contract.get("fetch_mode")
-            not in {"nqe_column_filter", "nqe_parameters", "model"}
+            or contract.get("fetch_mode") not in {"nqe_parameters", "model"}
             or not contract.get("schema_contract")
             or not contract.get("reason_code")
             or not contract.get("reason")

@@ -170,6 +170,7 @@ class ForwardSyncRunnerAdapterMixin:
         create_values,
         update_values=None,
         conflict_policy="strict",
+        return_change=False,
     ):
         return sync_coalesce_update_or_create(
             self,
@@ -178,6 +179,7 @@ class ForwardSyncRunnerAdapterMixin:
             create_values=create_values,
             update_values=update_values,
             conflict_policy=conflict_policy,
+            return_change=return_change,
         )
 
     def _get_unique_or_raise(self, model, lookup):
@@ -200,6 +202,7 @@ class ForwardSyncRunnerAdapterMixin:
         coalesce_lookups,
         create_values,
         update_values=None,
+        return_change=False,
     ):
         return sync_coalesce_upsert(
             self,
@@ -208,6 +211,7 @@ class ForwardSyncRunnerAdapterMixin:
             coalesce_lookups=coalesce_lookups,
             create_values=create_values,
             update_values=update_values,
+            return_change=return_change,
         )
 
     def _coalesce_sets_for(self, model_string, default_sets):
@@ -446,7 +450,7 @@ class ForwardSyncRunnerAdapterMixin:
         )
         return device_type
 
-    def _ensure_vrf(self, row):
+    def _ensure_vrf(self, row, *, update_existing=True):
         from ipam.models import VRF
 
         rd = row.get("rd") or None
@@ -460,12 +464,25 @@ class ForwardSyncRunnerAdapterMixin:
         if rd:
             coalesce_sets.insert(0, ("rd",))
 
-        vrf, _ = self._upsert_values_from_defaults(
-            "ipam.vrf",
-            VRF,
-            values=values,
-            coalesce_sets=self._coalesce_sets_for("ipam.vrf", coalesce_sets),
-        )
+        coalesce_sets = self._coalesce_sets_for("ipam.vrf", coalesce_sets)
+        if update_existing:
+            vrf, _ = self._upsert_values_from_defaults(
+                "ipam.vrf",
+                VRF,
+                values=values,
+                coalesce_sets=coalesce_sets,
+            )
+        else:
+            vrf, _ = self._coalesce_upsert(
+                "ipam.vrf",
+                VRF,
+                coalesce_lookups=[
+                    self._coalesce_lookup(values, *coalesce_set)
+                    for coalesce_set in coalesce_sets
+                ],
+                create_values=values,
+                update_values={"name": values["name"]},
+            )
         return vrf
 
     def _optional_model(self, app_label, model_name, model_string):

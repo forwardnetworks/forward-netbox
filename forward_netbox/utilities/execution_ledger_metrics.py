@@ -1785,13 +1785,6 @@ def merge_wait_seconds(step):
 
 def fetch_explanation(step):
     mode = step.fetch_mode or "model"
-    if mode == "nqe_column_filter":
-        filter_count = len(step.fetch_column_filters or [])
-        key_family = step.fetch_key_family or "shard"
-        return (
-            "Fetched the shard with native Forward NQE column filters "
-            f"for {key_family} keys ({filter_count} filter(s))."
-        )
     if mode == "nqe_parameters":
         parameter_count = sum(
             len(value) if isinstance(value, list) else 1
