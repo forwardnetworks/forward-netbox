@@ -281,7 +281,9 @@ def apply_model_rows(runner, model_string, rows):
             with transaction.atomic():
                 result = handler(row)
             runner.events_clearer.increment()
-            if result is False:
+            if result == "unchanged":
+                runner.logger.increment_statistics(model_string, outcome="unchanged")
+            elif result is False:
                 runner.logger.increment_statistics(model_string, outcome="skipped")
             else:
                 runner.logger.increment_statistics(model_string, outcome="applied")

@@ -51,6 +51,21 @@ class ForwardIngestionLogExportViewTest(TestCase):
             sync=cls.sync,
             snapshot_selector="latestProcessed",
             snapshot_id="snapshot-1",
+            model_results=[
+                {
+                    "model": "ipam.prefix",
+                    "query_name": "Forward Prefixes",
+                    "row_count": 1,
+                    "delete_count": 0,
+                    "query_path_resolution": {
+                        "available": True,
+                        "query_path_spec_count": 1,
+                        "artifact_hit_count": 1,
+                        "client_resolve_count": 0,
+                        "cache_hit_rate": 1.0,
+                    },
+                }
+            ],
         )
         cls.branch = Branch.objects.create(
             name="log-export-field-summary",
@@ -322,6 +337,20 @@ class ForwardIngestionLogExportViewTest(TestCase):
         )
         self.assertFalse(data["compatibility_cache"]["stale_payload_present"])
         self.assertIn("recovery_policy_summary", data)
+        self.assertIn("latest_ingestion", data)
+        self.assertEqual(data["latest_ingestion"]["id"], self.ingestion.pk)
+        self.assertEqual(
+            data["latest_ingestion"]["execution_summary"]["query_path_resolution"][
+                "total_query_path_specs"
+            ],
+            1,
+        )
+        self.assertEqual(
+            data["latest_ingestion"]["execution_summary"]["query_path_resolution"][
+                "artifact_hit_count"
+            ],
+            1,
+        )
         self.assertTrue(data["api_usage"]["available"])
         self.assertEqual(data["api_usage"]["counters"]["http_attempts"], 11)
         self.assertEqual(data["api_usage"]["counters"]["nqe_diff_calls"], 2)

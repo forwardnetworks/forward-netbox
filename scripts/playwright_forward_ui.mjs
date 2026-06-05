@@ -189,7 +189,7 @@ async function main() {
     await page.getByRole("link", { name: "Steps" }).first().click();
     await expectVisible(page, "FETCH MODE");
     await expectVisible(page, "dcim.interface");
-    await expectVisible(page, "nqe_column_filter");
+    await expectVisible(page, "nqe_parameters");
     await assertNoHorizontalOverflow(page, "desktop execution step list");
     evidence.checks.push("execution step table exposes fetch mode and model progress");
 
