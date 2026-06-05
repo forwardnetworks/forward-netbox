@@ -105,12 +105,14 @@ def get_workload_summary(ingestion):
         "created_change_count": execution["created_change_count"],
         "updated_change_count": execution["updated_change_count"],
         "deleted_change_count": execution["deleted_change_count"],
+        "query_path_resolution": execution.get("query_path_resolution", {}),
     }
 
 
 def get_advisory_summary(ingestion):
     analysis = get_analysis_summary(ingestion)
     workload = get_workload_summary(ingestion)
+    execution = get_execution_summary(ingestion)
     model_results = list(ingestion.model_results or [])
     sorted_results = sorted(
         model_results,
@@ -131,6 +133,7 @@ def get_advisory_summary(ingestion):
                 "diagnostic_count": len(result.get("diagnostics") or []),
                 "sync_mode": result.get("sync_mode") or "",
                 "execution_mode": result.get("execution_mode") or "",
+                "query_path_resolution": result.get("query_path_resolution") or {},
             }
         )
     return {
@@ -158,6 +161,7 @@ def get_advisory_summary(ingestion):
             "model_result_count": analysis.get("model_result_count", 0),
             "diagnostic_count": analysis.get("diagnostic_count", 0),
             "top_model_results": result_overview,
+            "query_path_resolution": execution.get("query_path_resolution", {}),
         },
         "workload_preview": workload,
     }

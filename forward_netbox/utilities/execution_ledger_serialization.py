@@ -13,9 +13,11 @@ def execution_run_support_bundle(run, *, recommendation_fn):
         return {}
     steps = run.steps.order_by("index", "kind")
     step_list = list(steps)
+    latest_ingestion = getattr(getattr(run, "sync", None), "last_ingestion", None)
     return {
         "run": run.as_support_summary(),
         "run_job": job_summary(run.job),
+        "latest_ingestion": ingestion_support_summary(latest_ingestion),
         "compatibility_cache": _compatibility_cache_evidence(run),
         "api_usage": api_usage_support_summary(run),
         "recovery_recommendation": recommendation_fn(run),
@@ -170,6 +172,8 @@ def ingestion_support_summary(ingestion):
         "updated_change_count": int(ingestion.updated_change_count or 0),
         "deleted_change_count": int(ingestion.deleted_change_count or 0),
         "change_explainability": change_explainability_summary(ingestion),
+        "execution_summary": ingestion.get_execution_summary(),
+        "analysis_summary": ingestion.get_analysis_summary(),
         "issue_count": ingestion.issues.count(),
         "issues": [
             {

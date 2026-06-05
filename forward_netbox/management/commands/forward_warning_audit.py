@@ -25,11 +25,6 @@ def _is_info_equivalent_warning(message):
     if not normalized:
         return False
     if (
-        normalized.startswith("Forward shard-scoped NQE fetch failed for ")
-        and "falling back to full model fetch:" in normalized
-    ):
-        return True
-    if (
         "partition fetch failed; retrying as " in normalized
         and "smaller partition(s):" in normalized
         and "transient HTTP" in normalized

@@ -134,7 +134,8 @@ def apply_ipam_prefix(runner, row):
                 "rd": None,
                 "description": "",
                 "enforce_unique": False,
-            }
+            },
+            update_existing=False,
         )
         if row.get("vrf")
         else None
@@ -149,13 +150,15 @@ def apply_ipam_prefix(runner, row):
         "vrf": vrf,
         "status": row["status"],
     }
-    runner._coalesce_upsert(
+    _, created, changed = runner._coalesce_upsert(
         "ipam.prefix",
         Prefix,
         coalesce_lookups=coalesce_lookups,
         create_values=values,
         update_values=values,
+        return_change=True,
     )
+    return True if created or changed else "unchanged"
 
 
 def _fhrp_vrf(runner, row):
@@ -166,7 +169,8 @@ def _fhrp_vrf(runner, row):
                 "rd": None,
                 "description": "",
                 "enforce_unique": False,
-            }
+            },
+            update_existing=False,
         )
         if row.get("vrf")
         else None
@@ -439,7 +443,8 @@ def apply_ipam_ipaddress(runner, row):
                 "rd": None,
                 "description": "",
                 "enforce_unique": False,
-            }
+            },
+            update_existing=False,
         )
         if row.get("vrf")
         else None

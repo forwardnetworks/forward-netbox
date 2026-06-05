@@ -160,7 +160,8 @@ class Command(BaseCommand):
 
         pushdown_parameters = dict(merged_parameters)
         pushdown_parameters.update(scope.get("query_parameters") or {})
-        pushdown_filters = scope.get("fetch_column_filters") or None
+        if scope.get("fetch_mode") == "nqe_parameters":
+            pushdown_parameters.update(scope.get("fetch_parameters") or {})
 
         pushdown_start = time.perf_counter()
         pushdown_error = ""
@@ -173,7 +174,6 @@ class Command(BaseCommand):
                 network_id=context.network_id,
                 snapshot_id=context.snapshot_id,
                 parameters=pushdown_parameters,
-                column_filters=pushdown_filters,
                 fetch_all=True,
             )
         except ForwardClientError as exc:
@@ -203,7 +203,7 @@ class Command(BaseCommand):
                 "fetch_mode": scope.get("fetch_mode"),
                 "fetch_key_family": scope.get("fetch_key_family"),
                 "query_parameter_keys": sorted(pushdown_parameters.keys()),
-                "column_filter_count": len(pushdown_filters or []),
+                "column_filter_count": 0,
                 "pushdown_supported": pushdown_supported,
                 "pushdown_error": pushdown_error,
             },
