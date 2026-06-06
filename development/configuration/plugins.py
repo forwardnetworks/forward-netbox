@@ -20,6 +20,14 @@ if netbox_ver.startswith("v4.5"):
         ]
     )
 
+if os.environ.get("FORWARD_NETBOX_ENABLE_ACI_PLUGIN", "").lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+):
+    PLUGINS.append("netbox_cisco_aci")
+
 PLUGINS_CONFIG = {  # type: ignore
     "forward_netbox": {
         "enable_bgp_sync": True,

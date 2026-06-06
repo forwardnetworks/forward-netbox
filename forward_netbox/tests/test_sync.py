@@ -1370,6 +1370,212 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
                 "enabled": True,
                 "status": "active",
             }
+        elif model_string == "netbox_cisco_aci.acifabric":
+            target = {
+                "name": "fabric-1",
+                "fabric_id": 1,
+                "description": "Forward observed ACI fabric.",
+            }
+            noise = {
+                "name": "fabric-2",
+                "fabric_id": 1,
+                "description": "Forward observed ACI fabric.",
+            }
+        elif model_string == "netbox_cisco_aci.acipod":
+            target = {
+                "fabric_name": "fabric-1",
+                "name": "pod-1",
+                "pod_id": 1,
+                "description": "Forward observed ACI pod.",
+            }
+            noise = {
+                "fabric_name": "fabric-2",
+                "name": "pod-1",
+                "pod_id": 1,
+                "description": "Forward observed ACI pod.",
+            }
+        elif model_string == "netbox_cisco_aci.acinode":
+            target = {
+                "fabric_name": "fabric-1",
+                "pod_name": "pod-1",
+                "pod_id": 1,
+                "node_id": 101,
+                "name": "leaf-101",
+                "role": "leaf",
+                "node_type": "physical",
+                "serial_number": "SERIAL1",
+                "pod_tep_pool": "10.0.0.1",
+                "firmware_version": "",
+                "node_object_name": "leaf-101",
+                "description": "Forward observed ACI node.",
+            }
+            noise = {
+                "fabric_name": "fabric-1",
+                "pod_name": "pod-1",
+                "pod_id": 1,
+                "node_id": 102,
+                "name": "leaf-102",
+                "role": "leaf",
+                "node_type": "physical",
+                "serial_number": "SERIAL2",
+                "pod_tep_pool": "10.0.0.2",
+                "firmware_version": "",
+                "node_object_name": "leaf-102",
+                "description": "Forward observed ACI node.",
+            }
+        elif model_string == "netbox_cisco_aci.acitenant":
+            target = {
+                "fabric_name": "fabric-1",
+                "name": "tenant-1",
+                "description": "Forward observed ACI tenant.",
+            }
+            noise = {
+                "fabric_name": "fabric-1",
+                "name": "tenant-2",
+                "description": "Forward observed ACI tenant.",
+            }
+        elif model_string == "netbox_cisco_aci.acivrf":
+            target = {
+                "fabric_name": "fabric-1",
+                "tenant_name": "tenant-1",
+                "name": "vrf-1",
+                "policy_enforcement_preference": "enforced",
+                "policy_enforcement_direction": "ingress",
+                "bd_enforcement_enabled": False,
+                "preferred_group_enabled": False,
+                "description": "Forward observed ACI VRF.",
+            }
+            noise = {
+                "fabric_name": "fabric-1",
+                "tenant_name": "tenant-1",
+                "name": "vrf-2",
+                "policy_enforcement_preference": "enforced",
+                "policy_enforcement_direction": "ingress",
+                "bd_enforcement_enabled": False,
+                "preferred_group_enabled": False,
+                "description": "Forward observed ACI VRF.",
+            }
+        elif model_string == "netbox_cisco_aci.acibridgedomain":
+            target = {
+                "fabric_name": "fabric-1",
+                "tenant_name": "tenant-1",
+                "vrf_name": "vrf-1",
+                "name": "bd-1",
+                "unicast_routing_enabled": True,
+                "description": "Forward observed ACI bridge domain.",
+            }
+            noise = {
+                "fabric_name": "fabric-1",
+                "tenant_name": "tenant-1",
+                "vrf_name": "vrf-1",
+                "name": "bd-2",
+                "unicast_routing_enabled": True,
+                "description": "Forward observed ACI bridge domain.",
+            }
+        elif model_string == "netbox_cisco_aci.aciappprofile":
+            target = {
+                "fabric_name": "fabric-1",
+                "tenant_name": "tenant-1",
+                "name": "app-1",
+                "description": "Forward observed ACI app profile.",
+            }
+            noise = {
+                "fabric_name": "fabric-1",
+                "tenant_name": "tenant-1",
+                "name": "app-2",
+                "description": "Forward observed ACI app profile.",
+            }
+        elif model_string == "netbox_cisco_aci.aciendpointgroup":
+            target = {
+                "fabric_name": "fabric-1",
+                "tenant_name": "tenant-1",
+                "app_profile_name": "app-1",
+                "bridge_domain_name": "bd-1",
+                "vrf_name": "vrf-1",
+                "name": "epg-1",
+                "description": "Forward observed ACI EPG.",
+            }
+            noise = {
+                "fabric_name": "fabric-1",
+                "tenant_name": "tenant-1",
+                "app_profile_name": "app-1",
+                "bridge_domain_name": "bd-1",
+                "vrf_name": "vrf-1",
+                "name": "epg-2",
+                "description": "Forward observed ACI EPG.",
+            }
+        elif model_string == "netbox_cisco_aci.acicontract":
+            target = {
+                "fabric_name": "fabric-1",
+                "tenant_name": "tenant-1",
+                "name": "contract-1",
+                "scope": "context",
+                "description": "Forward observed ACI contract.",
+            }
+            noise = {
+                "fabric_name": "fabric-1",
+                "tenant_name": "tenant-1",
+                "name": "contract-2",
+                "scope": "context",
+                "description": "Forward observed ACI contract.",
+            }
+        elif model_string == "netbox_cisco_aci.acifilter":
+            target = {
+                "fabric_name": "fabric-1",
+                "tenant_name": "common",
+                "name": "filter-1",
+                "description": "Forward observed ACI filter.",
+            }
+            noise = {
+                "fabric_name": "fabric-1",
+                "tenant_name": "common",
+                "name": "filter-2",
+                "description": "Forward observed ACI filter.",
+            }
+        elif model_string == "netbox_cisco_aci.acil3out":
+            target = {
+                "fabric_name": "fabric-1",
+                "tenant_name": "tenant-1",
+                "vrf_name": "vrf-1",
+                "name": "l3out-1",
+                "protocol_static": True,
+                "description": "Forward observed ACI L3Out.",
+            }
+            noise = {
+                "fabric_name": "fabric-1",
+                "tenant_name": "tenant-1",
+                "vrf_name": "vrf-1",
+                "name": "l3out-2",
+                "protocol_static": True,
+                "description": "Forward observed ACI L3Out.",
+            }
+        elif model_string == "netbox_cisco_aci.acistaticportbinding":
+            target = {
+                "fabric_name": "fabric-1",
+                "tenant_name": "tenant-1",
+                "app_profile_name": "app-1",
+                "endpoint_group_name": "epg-1",
+                "device": "device-1",
+                "interface": "Ethernet1/1",
+                "encap_vlan": 100,
+                "binding_type": "regular",
+                "mode": "regular",
+                "deployment_immediacy": "lazy",
+                "description": "Forward observed ACI static binding.",
+            }
+            noise = {
+                "fabric_name": "fabric-1",
+                "tenant_name": "tenant-1",
+                "app_profile_name": "app-1",
+                "endpoint_group_name": "epg-1",
+                "device": "device-2",
+                "interface": "Ethernet1/1",
+                "encap_vlan": 100,
+                "binding_type": "regular",
+                "mode": "regular",
+                "deployment_immediacy": "lazy",
+                "description": "Forward observed ACI static binding.",
+            }
         else:
             raise AssertionError(f"Unhandled model: {model_string}")
 

@@ -11,6 +11,7 @@ Run the smallest gate that proves the change, then run the release gate before p
 | Branching ledger, recovery, or scale behavior change | `invoke lint`, `invoke check`, `invoke scenario-test`, `invoke scale-chaos-test`, `invoke test`, `invoke playwright-test` when UI/API surfaces change; `scale-chaos-test` includes focused recovery and support-bundle export coverage, and `invoke scale-benchmark` should be run against the relevant execution run when runtime evidence exists |
 | Validation or drift policy change | `invoke lint`, `invoke check`, `invoke scenario-test`, `invoke test`, `invoke playwright-test`, validation-only smoke test, force-allow override smoke test when the change adds a break-glass path |
 | NetBox model adapter change | `invoke lint`, `invoke check`, `invoke scenario-test`, `invoke test`, targeted local Docker sync; add or update repeat-sync no-op coverage when identity, coalesce, nullable scope, or field normalization changes |
+| Optional plugin integration change | `invoke harness-check`, `invoke lint`, `invoke check`, `invoke test`, `invoke architecture-audit-check`; verify no-plugin startup/seed fallback, installed-plugin ContentType seeding, disabled-by-default behavior, live NQE row shape, and repeat-sync idempotence for enabled plugin maps |
 | UI/API workflow change | `invoke lint`, `invoke check`, `invoke test`, `invoke playwright-test`, browser/UI verification when visible behavior changes |
 | Release | `invoke ci`, GitHub CI success on `main` and tag |
 
@@ -93,6 +94,44 @@ specific model using an existing sync configuration:
 invoke pushdown-profile --sync-name "ui-harness-sync" --model "dcim.interface"
 ```
 
+## Optional Cisco ACI Plugin Proof
+
+For `netbox-cisco-aci` integration work, keep acceptance tied to the proven
+write path and do not promote additional policy rows until parser identity and
+repeat-sync behavior are proven:
+
+- `netbox_cisco_aci.acifabric`
+- `netbox_cisco_aci.acipod`
+- `netbox_cisco_aci.acinode`
+- `netbox_cisco_aci.acitenant`
+- `netbox_cisco_aci.acivrf`
+- `netbox_cisco_aci.acifilter`
+
+The following maps must remain disabled/conservative no-op contracts until
+their source identity is bounded and repeat-sync safe:
+
+- `netbox_cisco_aci.acibridgedomain`
+- `netbox_cisco_aci.aciappprofile`
+- `netbox_cisco_aci.aciendpointgroup`
+- `netbox_cisco_aci.acicontract`
+- `netbox_cisco_aci.acil3out`
+- `netbox_cisco_aci.acistaticportbinding`
+
+Required proof:
+
+- The active ACI maps execute against an approved field dataset with no
+  sync-time column filters and no per-value NQE execution.
+- NQE emits normalized fields only; support bundles and artifacts must not store
+  raw ACI command responses.
+- The plugin is absent: NetBox starts, non-ACI maps seed normally, and ACI maps
+  are skipped because their ContentTypes do not exist.
+- The plugin is installed: ACI maps seed disabled by default, can be enabled
+  explicitly, and missing plugin dependencies are reported as row issues rather
+  than hard sync crashes.
+- A first enabled sync creates/updates only expected proven-path ACI rows.
+- Conservative contract maps execute as zero-row maps until promoted.
+- An immediate repeat sync is a no-op for unchanged ACI data.
+
 Optional flags:
 - `--query-name "Forward Interfaces"` when multiple maps are bound to the model.
 - `--sample-shard-keys 500` to widen shard sample size.
@@ -101,8 +140,12 @@ Optional flags:
 ### Architecture Audit Artifact
 
 Use this to emit a single JSON artifact that captures the current apply-engine
-model matrix (bulk-ORM safe set + adapter-required blockers) and optional
-sync/runtime evidence:
+model matrix (bulk-ORM safe set + adapter-required blockers), shipped
+query-contract registry, and optional sync/runtime evidence. The query-contract
+registry proves that models marked `nqe_parameters` have shipped NQE maps that
+declare `forward_netbox_shard_keys`, seed an empty default, run unfiltered when
+no parameters are set, and apply a positive shard predicate when parameters are
+provided.
 
 ```bash
 invoke architecture-audit
