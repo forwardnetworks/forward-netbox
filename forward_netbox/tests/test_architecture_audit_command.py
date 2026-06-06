@@ -41,7 +41,24 @@ class ForwardArchitectureAuditCommandTest(TestCase):
         self.assertIn("dcim.platform", matrix["bulk_orm_safe_models"])
         self.assertIn("dcim.virtualchassis", matrix["bulk_orm_safe_models"])
         self.assertIn("dcim.interface", matrix["adapter_required_models"])
+        self.assertIn("netbox_cisco_aci.acinode", matrix["adapter_required_models"])
         self.assertNotIn("dcim.virtualchassis", matrix["adapter_required_models"])
+        self.assertIn("aci.netbox_cisco_aci", matrix["optional_plugin_integrations"])
+        aci_integration = matrix["optional_plugin_integrations"]["aci.netbox_cisco_aci"]
+        self.assertEqual(aci_integration["app_label"], "netbox_cisco_aci")
+        self.assertFalse(aci_integration["enabled_by_default"])
+        self.assertIn(
+            "netbox_cisco_aci.acinode",
+            aci_integration["supported_models"],
+        )
+        self.assertIn(
+            "netbox_cisco_aci.aciendpointgroup",
+            aci_integration["supported_models"],
+        )
+        self.assertIn(
+            "netbox_cisco_aci.acil3outinterface",
+            aci_integration["discovery_models"],
+        )
         self.assertEqual(
             matrix["adapter_blockers"]["dcim.interface"],
             "relationship_side_effects",
@@ -70,7 +87,16 @@ class ForwardArchitectureAuditCommandTest(TestCase):
             matrix["classification_gaps"]["model_contract_registry_gaps"],
             [],
         )
+        self.assertEqual(
+            matrix["classification_gaps"]["query_contract_registry_gaps"],
+            [],
+        )
         self.assertEqual(matrix["model_contract_registry"]["status"], "pass")
+        self.assertEqual(matrix["query_contract_registry"]["status"], "pass")
+        self.assertEqual(
+            matrix["query_contract_registry"]["models"]["ipam.prefix"]["fetch_mode"],
+            "nqe_parameters",
+        )
         self.assertIn("dcim.interface", matrix["model_contract_registry"]["contracts"])
         interface_contract = matrix["model_contract_registry"]["contracts"][
             "dcim.interface"
@@ -242,6 +268,27 @@ class ForwardArchitectureAuditCommandTest(TestCase):
                         "model": "dcim.site",
                         "code": "missing_delete_dependency_rank",
                         "message": "missing rank",
+                    }
+                ],
+            },
+        ):
+            with self.assertRaises(CommandError):
+                call_command("forward_architecture_audit", "--fail-on-gap")
+
+    def test_architecture_audit_fail_on_gap_raises_on_query_contract_gap(self):
+        with patch(
+            "forward_netbox.management.commands.forward_architecture_audit.builtin_query_contract_summary",
+            return_value={
+                "status": "fail",
+                "model_count": 1,
+                "models": {},
+                "gaps": [
+                    {
+                        "model": "ipam.prefix",
+                        "query_name": "Forward IPv4 Prefixes",
+                        "filename": "forward_prefixes_ipv4.nqe",
+                        "code": "missing_positive_shard_predicate",
+                        "message": "missing predicate",
                     }
                 ],
             },

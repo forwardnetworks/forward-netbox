@@ -1,0 +1,52 @@
+/**
+ * @intent Forward ACI Nodes
+ * @description Discovers ACI switch nodes from the ACI fabric-node command output.
+ */
+
+import "netbox_utilities";
+
+nodeRegex = re`(?:^|\R)\s*(?<node_id:Integer>\d+)\s+(?<pod_id:Integer>\d+)\s+(?<node_name>\S+)\s+(?<serial_number>\S+)\s+(?<tep_address>\S+)\s+(?<role>\S+)\s+(?<state>\S+)`;
+
+aciFabricName(device) =
+  if isPresent(device.locationName) && length(device.locationName) > 0
+  then slugify(toLowerCase(device.locationName))
+  else "forward-aci-fabric";
+
+normalizeAciNodeRole(role: String) =
+  if toLowerCase(role) == "spine" then "spine"
+  else if toLowerCase(role) == "leaf" then "leaf"
+  else if toLowerCase(role) == "rleaf" then "rleaf"
+  else if toLowerCase(role) == "vleaf" then "vleaf"
+  else if toLowerCase(role) == "tier2" then "tier2"
+  else "leaf";
+
+@query
+f(forward_netbox_shard_keys: List<String>) =
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+foreach command in device.outputs.commands
+where command.commandType == CommandType.CISCO_ACI_FABRIC_NODES
+foreach node_match in regexMatches(command.response, nodeRegex)
+let node = node_match.data
+let fabric_name = aciFabricName(device)
+let pod_name = "pod-" + toString(node.pod_id)
+where isEmpty(forward_netbox_shard_keys)
+  || fabric_name in forward_netbox_shard_keys
+  || pod_name in forward_netbox_shard_keys
+  || node.node_name in forward_netbox_shard_keys
+  || toString(node.node_id) in forward_netbox_shard_keys
+select distinct {
+  fabric_name: fabric_name,
+  pod_name: pod_name,
+  pod_id: node.pod_id,
+  node_id: node.node_id,
+  name: node.node_name,
+  role: normalizeAciNodeRole(node.role),
+  node_type: "physical",
+  serial_number: node.serial_number,
+  pod_tep_pool: node.tep_address,
+  firmware_version: "",
+  node_object_name: node.node_name,
+  description: "Forward observed ACI node"
+};

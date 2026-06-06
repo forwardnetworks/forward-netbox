@@ -2,6 +2,30 @@ import logging
 
 from ..exceptions import ForwardQueryError
 from .module_readiness import module_bay_import_row
+from .sync_aci import apply_netbox_cisco_aci_aciappprofile
+from .sync_aci import apply_netbox_cisco_aci_acibridgedomain
+from .sync_aci import apply_netbox_cisco_aci_acicontract
+from .sync_aci import apply_netbox_cisco_aci_aciendpointgroup
+from .sync_aci import apply_netbox_cisco_aci_acifabric
+from .sync_aci import apply_netbox_cisco_aci_acifilter
+from .sync_aci import apply_netbox_cisco_aci_acil3out
+from .sync_aci import apply_netbox_cisco_aci_acinode
+from .sync_aci import apply_netbox_cisco_aci_acipod
+from .sync_aci import apply_netbox_cisco_aci_acistaticportbinding
+from .sync_aci import apply_netbox_cisco_aci_acitenant
+from .sync_aci import apply_netbox_cisco_aci_acivrf
+from .sync_aci import delete_netbox_cisco_aci_aciappprofile
+from .sync_aci import delete_netbox_cisco_aci_acibridgedomain
+from .sync_aci import delete_netbox_cisco_aci_acicontract
+from .sync_aci import delete_netbox_cisco_aci_aciendpointgroup
+from .sync_aci import delete_netbox_cisco_aci_acifabric
+from .sync_aci import delete_netbox_cisco_aci_acifilter
+from .sync_aci import delete_netbox_cisco_aci_acil3out
+from .sync_aci import delete_netbox_cisco_aci_acinode
+from .sync_aci import delete_netbox_cisco_aci_acipod
+from .sync_aci import delete_netbox_cisco_aci_acistaticportbinding
+from .sync_aci import delete_netbox_cisco_aci_acitenant
+from .sync_aci import delete_netbox_cisco_aci_acivrf
 from .sync_cable import apply_dcim_cable
 from .sync_cable import delete_dcim_cable
 from .sync_cable import lookup_cable_between
@@ -784,6 +808,42 @@ class ForwardSyncRunnerAdapterMixin:
     def _delete_netbox_routing_ospfinterface(self, row):
         return delete_netbox_routing_ospfinterface(self, row)
 
+    def _delete_netbox_cisco_aci_acifabric(self, row):
+        return delete_netbox_cisco_aci_acifabric(self, row)
+
+    def _delete_netbox_cisco_aci_acipod(self, row):
+        return delete_netbox_cisco_aci_acipod(self, row)
+
+    def _delete_netbox_cisco_aci_acinode(self, row):
+        return delete_netbox_cisco_aci_acinode(self, row)
+
+    def _delete_netbox_cisco_aci_acitenant(self, row):
+        return delete_netbox_cisco_aci_acitenant(self, row)
+
+    def _delete_netbox_cisco_aci_acivrf(self, row):
+        return delete_netbox_cisco_aci_acivrf(self, row)
+
+    def _delete_netbox_cisco_aci_acibridgedomain(self, row):
+        return delete_netbox_cisco_aci_acibridgedomain(self, row)
+
+    def _delete_netbox_cisco_aci_aciappprofile(self, row):
+        return delete_netbox_cisco_aci_aciappprofile(self, row)
+
+    def _delete_netbox_cisco_aci_aciendpointgroup(self, row):
+        return delete_netbox_cisco_aci_aciendpointgroup(self, row)
+
+    def _delete_netbox_cisco_aci_acicontract(self, row):
+        return delete_netbox_cisco_aci_acicontract(self, row)
+
+    def _delete_netbox_cisco_aci_acifilter(self, row):
+        return delete_netbox_cisco_aci_acifilter(self, row)
+
+    def _delete_netbox_cisco_aci_acil3out(self, row):
+        return delete_netbox_cisco_aci_acil3out(self, row)
+
+    def _delete_netbox_cisco_aci_acistaticportbinding(self, row):
+        return delete_netbox_cisco_aci_acistaticportbinding(self, row)
+
     def _apply_dcim_site(self, row):
         return apply_dcim_site(self, row)
 
@@ -861,3 +921,39 @@ class ForwardSyncRunnerAdapterMixin:
 
     def _apply_netbox_peering_manager_peeringsession(self, row):
         return apply_netbox_peering_manager_peeringsession(self, row)
+
+    def _apply_netbox_cisco_aci_acifabric(self, row):
+        return apply_netbox_cisco_aci_acifabric(self, row)
+
+    def _apply_netbox_cisco_aci_acipod(self, row):
+        return apply_netbox_cisco_aci_acipod(self, row)
+
+    def _apply_netbox_cisco_aci_acinode(self, row):
+        return apply_netbox_cisco_aci_acinode(self, row)
+
+    def _apply_netbox_cisco_aci_acitenant(self, row):
+        return apply_netbox_cisco_aci_acitenant(self, row)
+
+    def _apply_netbox_cisco_aci_acivrf(self, row):
+        return apply_netbox_cisco_aci_acivrf(self, row)
+
+    def _apply_netbox_cisco_aci_acibridgedomain(self, row):
+        return apply_netbox_cisco_aci_acibridgedomain(self, row)
+
+    def _apply_netbox_cisco_aci_aciappprofile(self, row):
+        return apply_netbox_cisco_aci_aciappprofile(self, row)
+
+    def _apply_netbox_cisco_aci_aciendpointgroup(self, row):
+        return apply_netbox_cisco_aci_aciendpointgroup(self, row)
+
+    def _apply_netbox_cisco_aci_acicontract(self, row):
+        return apply_netbox_cisco_aci_acicontract(self, row)
+
+    def _apply_netbox_cisco_aci_acifilter(self, row):
+        return apply_netbox_cisco_aci_acifilter(self, row)
+
+    def _apply_netbox_cisco_aci_acil3out(self, row):
+        return apply_netbox_cisco_aci_acil3out(self, row)
+
+    def _apply_netbox_cisco_aci_acistaticportbinding(self, row):
+        return apply_netbox_cisco_aci_acistaticportbinding(self, row)

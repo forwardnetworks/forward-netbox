@@ -1,0 +1,36 @@
+/**
+ * @intent Forward ACI Filters
+ * @description Discovers reusable ACI filter names from zoning-filter output.
+ */
+
+import "netbox_utilities";
+
+filterRegex = re`(?:^|\R)\|\s*(?<filter_id>\S+)\s*\|\s*(?<filter_name>\S+)\s*\|`;
+
+aciFabricName(device) =
+  if isPresent(device.locationName) && length(device.locationName) > 0
+  then slugify(toLowerCase(device.locationName))
+  else "forward-aci-fabric";
+
+@query
+f(forward_netbox_shard_keys: List<String>) =
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+foreach command in device.outputs.commands
+where command.commandType == CommandType.CISCO_ACI_ZONING_FILTER
+foreach filter_match in regexMatches(command.response, filterRegex)
+let aci_filter = filter_match.data
+let fabric_name = aciFabricName(device)
+where aci_filter.filter_id != "FilterId"
+where aci_filter.filter_id != "----------+----------+-------------+-------------+-------------+-------------+----------+-------------+-------------+-------------+-------------+----------+-------------+-------------+----------+"
+where isEmpty(forward_netbox_shard_keys)
+  || fabric_name in forward_netbox_shard_keys
+  || "common" in forward_netbox_shard_keys
+  || aci_filter.filter_name in forward_netbox_shard_keys
+select distinct {
+  fabric_name: fabric_name,
+  tenant_name: "common",
+  name: aci_filter.filter_name,
+  description: "Forward observed ACI filter"
+};

@@ -1,0 +1,22 @@
+/**
+ * @intent Forward ACI L3Outs
+ * @description Conservative ACI L3Out map; emits no rows until Forward exposes non-empty L3Out identity.
+ */
+
+@query
+f(forward_netbox_shard_keys: List<String>) =
+foreach device in network.devices
+where false
+where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
+select distinct {
+  fabric_name: "",
+  tenant_name: "",
+  vrf_name: "",
+  name: "",
+  protocol_bgp: false,
+  protocol_ospf: false,
+  protocol_eigrp: false,
+  protocol_static: true,
+  target_dscp: "",
+  description: ""
+};
