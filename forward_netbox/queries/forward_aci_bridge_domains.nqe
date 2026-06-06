@@ -1,0 +1,25 @@
+/**
+ * @intent Forward ACI Bridge Domains
+ * @description Conservative ACI bridge-domain map; emits no rows until Forward exposes bounded BD identity.
+ */
+
+@query
+f(forward_netbox_shard_keys: List<String>) =
+foreach device in network.devices
+where false
+where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
+select distinct {
+  fabric_name: "",
+  tenant_name: "",
+  vrf_tenant_name: "",
+  vrf_name: "",
+  name: "",
+  unicast_routing_enabled: true,
+  arp_flooding_enabled: false,
+  limit_ip_learn_to_subnets: true,
+  l2_unknown_unicast: "proxy",
+  l3_unknown_multicast: "flood",
+  multi_destination_flooding: "bd-flood",
+  mac_address: "",
+  description: ""
+};

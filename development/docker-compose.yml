@@ -8,6 +8,7 @@ services:
     env_file: env/netbox.env
     environment:
       NETBOX_VER: "${NETBOX_VER}"
+      FORWARD_NETBOX_ENABLE_ACI_PLUGIN: "${FORWARD_NETBOX_ENABLE_ACI_PLUGIN:-}"
       FORWARD_NETBOX_FETCH_ARTIFACT_DIR: "/fetch-artifacts"
       FORWARD_NETBOX_FETCH_ARTIFACT_TTL_SECONDS: "86400"
       FORWARD_NETBOX_FETCH_ARTIFACT_MAX_BYTES: "536870912"
@@ -31,6 +32,7 @@ services:
       dockerfile: development/Dockerfile
       args:
         NETBOX_VER: "${NETBOX_VER}"
+        ACI_PLUGIN_PACKAGE: "${ACI_PLUGIN_PACKAGE:-}"
   netbox-worker:
     !!merge <<: *netbox
     depends_on:

@@ -56,13 +56,23 @@ export canonicalManufacturerName(vendor: Vendor) =
   then canonicalManufacturerOverride(vendor)
   else replace(replace(toString(vendor), "Vendor.", ""), "_", " ");
 
-export normalizePlatformName(platform_os: VendorOs) =
-  let platform_name = replace(toString(platform_os), "OS.", "")
-  let platform_name_lc = toLowerCase(platform_name)
-  if contains(platform_name_lc, "apic")
-    || contains(platform_name_lc, "nxos_aci")
+export platformOsName(platform_os: String) =
+  replace(platform_os, "OS.", "");
+
+export isAciNxosVersion(platform_os: String, platform_os_version: String) =
+  platformOsName(platform_os) == "NXOS"
+  && (
+    matches(platform_os_version, "14.*")
+    || matches(platform_os_version, "15.*")
+    || matches(platform_os_version, "16.*")
+  );
+
+export normalizePlatformName(platform_os: String, platform_os_version: String) =
+  if matches(toLowerCase(platformOsName(platform_os)), "*apic*")
+    || matches(toLowerCase(platformOsName(platform_os)), "*nxos_aci*")
+    || isAciNxosVersion(platform_os, platform_os_version)
   then "ACI"
-  else platform_name;
+  else platformOsName(platform_os);
 
 export slugify(value: String) =
   replaceRegexMatches(
