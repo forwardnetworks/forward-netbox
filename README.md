@@ -6,7 +6,8 @@
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v1.3.1` | `4.5.9` and `4.6.1` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Current release; preserves the `v1.3.0` parameterized NQE path, removes the legacy sync column-filter shard path, and fixes repeat prefix sync accounting so unchanged `ipam.prefix` rows report as unchanged instead of update churn |
+| `v1.3.2` | `4.5.9` and `4.6.1` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Current release; adds optional `netbox-cisco-aci` integration maps and adapter support, keeps ACI maps disabled by default, preserves parameterized NQE execution, and validates repeat-sync idempotence for the proven ACI write path |
+| `v1.3.1` | `4.5.9` and `4.6.1` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v1.3.2`; preserves the `v1.3.0` parameterized NQE path, removes the legacy sync column-filter shard path, and fixes repeat prefix sync accounting so unchanged `ipam.prefix` rows report as unchanged instead of update churn |
 | `v1.3.0` | `4.5.9` and `4.6.1` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v1.3.1`; eliminates default Forward NQE column-filter shard fetches in favor of query-side `forward_netbox_shard_keys` parameters, keeps local shard safety filtering, and preserves branch boundaries while reducing Forward SaaS API/NQE pressure |
 | `v1.2.3` | `4.5.9` and `4.6.1` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v1.3.0`; further reduced Forward SaaS API/NQE pressure by coalescing compatible sibling shard EQUALS_ANY filters, added local change-explainability summaries, and kept staged branch boundaries unchanged |
 | `v1.2.1` | `4.5.9` and `4.6.1` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v1.2.2`; fixes prefix VRF churn by making `ipam.prefix` identity exact for global and VRF-scoped rows while preserving parameterized prefix shard NQE execution |
@@ -53,6 +54,7 @@
 
 | Release | Summary |
 | --- | --- |
+| `v1.3.2` | Adds optional `netbox-cisco-aci` plugin support with disabled-by-default ACI fabric, pod, node, tenant, VRF, and filter maps; keeps deeper ACI policy maps conservative until source identity is proven; and hardens duplicate ACI node observations so repeat syncs remain no-op when source data is unchanged. |
 | `v1.3.1` | Fixes repeat prefix sync accounting by treating unchanged NetBox `ipam.prefix` rows as unchanged, avoids dependency VRF metadata rewrites from prefix/IP/FHRP imports, removes the legacy sync column-filter shard path, and preserves the `v1.3.0` parameterized NQE path. |
 | `v1.3.0` | Eliminates default Forward NQE column-filter shard fetches in favor of query-side `forward_netbox_shard_keys` parameters, keeps local shard safety filtering, and preserves branch boundaries while reducing Forward SaaS API/NQE pressure. |
 | `v1.2.3` | Coalesces compatible sibling shard column-filter fetches into bounded EQUALS_ANY requests, caches prefetched sibling rows locally to avoid repeated Forward calls, and surfaces local Branching change-explainability summaries in support bundles and the ingestion UI. |

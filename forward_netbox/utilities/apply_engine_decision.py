@@ -235,6 +235,18 @@ ADAPTER_REQUIRED_MODELS = {
     "netbox_routing.ospfarea",
     "netbox_routing.ospfinstance",
     "netbox_routing.ospfinterface",
+    "netbox_cisco_aci.acifabric",
+    "netbox_cisco_aci.acipod",
+    "netbox_cisco_aci.acinode",
+    "netbox_cisco_aci.acitenant",
+    "netbox_cisco_aci.acivrf",
+    "netbox_cisco_aci.acibridgedomain",
+    "netbox_cisco_aci.aciappprofile",
+    "netbox_cisco_aci.aciendpointgroup",
+    "netbox_cisco_aci.acicontract",
+    "netbox_cisco_aci.acifilter",
+    "netbox_cisco_aci.acil3out",
+    "netbox_cisco_aci.acistaticportbinding",
 }
 
 ADAPTER_MODEL_BLOCKERS = {
@@ -348,6 +360,70 @@ ADAPTER_MODEL_BLOCKERS = {
         "blocker_reason": (
             "OSPF interface writes depend on instance/area relationships and "
             "adapter sequencing guarantees."
+        ),
+    },
+    "netbox_cisco_aci.acifabric": {
+        "blocker_code": "plugin_model_dependencies",
+        "blocker_reason": (
+            "ACI fabric writes target an optional plugin and must preserve "
+            "plugin validation, ContentType detection, and adapter-managed "
+            "row issue behavior."
+        ),
+    },
+    "netbox_cisco_aci.acipod": {
+        "blocker_code": "plugin_model_dependencies",
+        "blocker_reason": (
+            "ACI pod writes depend on prior ACI fabric resolution and optional "
+            "plugin model validation."
+        ),
+    },
+    "netbox_cisco_aci.acinode": {
+        "blocker_code": "plugin_model_dependencies",
+        "blocker_reason": (
+            "ACI node writes depend on ACI pod resolution and optional native "
+            "dcim.Device linkage through a generic foreign key."
+        ),
+    },
+    "netbox_cisco_aci.acitenant": {
+        "blocker_code": "plugin_model_dependencies",
+        "blocker_reason": "ACI tenant writes depend on prior ACI fabric resolution.",
+    },
+    "netbox_cisco_aci.acivrf": {
+        "blocker_code": "plugin_model_dependencies",
+        "blocker_reason": "ACI VRF writes depend on ACI tenant resolution.",
+    },
+    "netbox_cisco_aci.acibridgedomain": {
+        "blocker_code": "plugin_model_dependencies",
+        "blocker_reason": "ACI bridge-domain writes depend on tenant and VRF resolution.",
+    },
+    "netbox_cisco_aci.aciappprofile": {
+        "blocker_code": "plugin_model_dependencies",
+        "blocker_reason": "ACI application-profile writes depend on ACI tenant resolution.",
+    },
+    "netbox_cisco_aci.aciendpointgroup": {
+        "blocker_code": "plugin_model_dependencies",
+        "blocker_reason": (
+            "ACI endpoint-group writes depend on application profile and bridge-domain "
+            "resolution."
+        ),
+    },
+    "netbox_cisco_aci.acicontract": {
+        "blocker_code": "plugin_model_dependencies",
+        "blocker_reason": "ACI contract writes depend on ACI tenant resolution.",
+    },
+    "netbox_cisco_aci.acifilter": {
+        "blocker_code": "plugin_model_dependencies",
+        "blocker_reason": "ACI filter writes depend on ACI tenant resolution.",
+    },
+    "netbox_cisco_aci.acil3out": {
+        "blocker_code": "plugin_model_dependencies",
+        "blocker_reason": "ACI L3Out writes depend on tenant and VRF resolution.",
+    },
+    "netbox_cisco_aci.acistaticportbinding": {
+        "blocker_code": "plugin_model_dependencies",
+        "blocker_reason": (
+            "ACI static-port binding writes depend on EPG and native NetBox "
+            "interface resolution."
         ),
     },
 }

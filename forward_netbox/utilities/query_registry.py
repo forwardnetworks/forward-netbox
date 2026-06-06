@@ -7,6 +7,7 @@ from typing import Any
 
 from ..choices import FORWARD_SUPPORTED_MODELS
 from .model_contracts import architecture_default_coalesce_fields_for_model
+from .model_contracts import architecture_fetch_contract_for_model
 from .sync_contracts import normalize_coalesce_fields
 
 
@@ -402,6 +403,78 @@ BUILTIN_OPTIONAL_QUERY_MAPS = [
         "filename": "forward_peering_sessions.nqe",
         "enabled": True,
     },
+    {
+        "model_string": "netbox_cisco_aci.acifabric",
+        "name": "Forward ACI Fabrics",
+        "filename": "forward_aci_fabrics.nqe",
+        "enabled": False,
+    },
+    {
+        "model_string": "netbox_cisco_aci.acipod",
+        "name": "Forward ACI Pods",
+        "filename": "forward_aci_pods.nqe",
+        "enabled": False,
+    },
+    {
+        "model_string": "netbox_cisco_aci.acinode",
+        "name": "Forward ACI Nodes",
+        "filename": "forward_aci_nodes.nqe",
+        "enabled": False,
+    },
+    {
+        "model_string": "netbox_cisco_aci.acitenant",
+        "name": "Forward ACI Tenants",
+        "filename": "forward_aci_tenants.nqe",
+        "enabled": False,
+    },
+    {
+        "model_string": "netbox_cisco_aci.acivrf",
+        "name": "Forward ACI VRFs",
+        "filename": "forward_aci_vrfs.nqe",
+        "enabled": False,
+    },
+    {
+        "model_string": "netbox_cisco_aci.acibridgedomain",
+        "name": "Forward ACI Bridge Domains",
+        "filename": "forward_aci_bridge_domains.nqe",
+        "enabled": False,
+    },
+    {
+        "model_string": "netbox_cisco_aci.aciappprofile",
+        "name": "Forward ACI Application Profiles",
+        "filename": "forward_aci_app_profiles.nqe",
+        "enabled": False,
+    },
+    {
+        "model_string": "netbox_cisco_aci.aciendpointgroup",
+        "name": "Forward ACI Endpoint Groups",
+        "filename": "forward_aci_endpoint_groups.nqe",
+        "enabled": False,
+    },
+    {
+        "model_string": "netbox_cisco_aci.acicontract",
+        "name": "Forward ACI Contracts",
+        "filename": "forward_aci_contracts.nqe",
+        "enabled": False,
+    },
+    {
+        "model_string": "netbox_cisco_aci.acifilter",
+        "name": "Forward ACI Filters",
+        "filename": "forward_aci_filters.nqe",
+        "enabled": False,
+    },
+    {
+        "model_string": "netbox_cisco_aci.acil3out",
+        "name": "Forward ACI L3Outs",
+        "filename": "forward_aci_l3outs.nqe",
+        "enabled": False,
+    },
+    {
+        "model_string": "netbox_cisco_aci.acistaticportbinding",
+        "name": "Forward ACI Static Port Bindings",
+        "filename": "forward_aci_static_port_bindings.nqe",
+        "enabled": False,
+    },
 ]
 
 BUILTIN_SEEDED_QUERY_MAPS = [
@@ -436,6 +509,138 @@ def builtin_nqe_map_rows() -> list[dict[str, Any]]:
             }
         )
     return rows
+
+
+def builtin_query_contract_summary(model_strings=None) -> dict[str, Any]:
+    """Report whether shipped NQE maps satisfy model fetch contracts."""
+    selected_models = tuple(model_strings or FORWARD_SUPPORTED_MODELS)
+    contracts = {
+        model_string: architecture_fetch_contract_for_model(model_string)
+        for model_string in selected_models
+    }
+    query_defaults_by_model: dict[str, list[dict[str, Any]]] = {
+        model_string: [] for model_string in selected_models
+    }
+    for query_default in BUILTIN_SEEDED_QUERY_MAPS:
+        model_string = query_default["model_string"]
+        if model_string in query_defaults_by_model:
+            query_defaults_by_model[model_string].append(query_default)
+
+    model_reports = {}
+    gaps = []
+    for model_string in sorted(selected_models):
+        contract = contracts.get(model_string) or {}
+        query_defaults = query_defaults_by_model.get(model_string) or []
+        query_reports = [
+            _builtin_query_parameter_contract_report(model_string, query_default)
+            for query_default in query_defaults
+        ]
+
+        if contract.get("fetch_mode") == "nqe_parameters" and not query_reports:
+            gaps.append(
+                _query_contract_gap(
+                    model_string,
+                    "",
+                    "",
+                    "missing_builtin_query_map",
+                    "Model fetch contract is parameterized but no shipped query map exists.",
+                )
+            )
+
+        for query_report in query_reports:
+            if contract.get("fetch_mode") != "nqe_parameters":
+                continue
+            for check_key, code, message in (
+                (
+                    "declares_shard_parameter",
+                    "missing_shard_parameter_declaration",
+                    "Query does not declare forward_netbox_shard_keys.",
+                ),
+                (
+                    "seeds_empty_shard_parameter",
+                    "missing_shard_parameter_default",
+                    "Query map does not seed an empty forward_netbox_shard_keys default.",
+                ),
+                (
+                    "has_empty_shard_guard",
+                    "missing_empty_shard_guard",
+                    "Query does not keep no-parameter UI execution unfiltered.",
+                ),
+                (
+                    "has_positive_shard_predicate",
+                    "missing_positive_shard_predicate",
+                    "Query does not use forward_netbox_shard_keys to constrain rows.",
+                ),
+            ):
+                if query_report[check_key]:
+                    continue
+                gaps.append(
+                    _query_contract_gap(
+                        model_string,
+                        query_report["query_name"],
+                        query_report["filename"],
+                        code,
+                        message,
+                    )
+                )
+
+        model_reports[model_string] = {
+            "model": model_string,
+            "fetch_mode": contract.get("fetch_mode") or "",
+            "key_family": contract.get("key_family") or "",
+            "query_count": len(query_reports),
+            "queries": query_reports,
+        }
+
+    return {
+        "status": "pass" if not gaps else "fail",
+        "model_count": len(selected_models),
+        "models": model_reports,
+        "gaps": gaps,
+    }
+
+
+def _builtin_query_parameter_contract_report(
+    model_string: str,
+    query_default: dict[str, Any],
+) -> dict[str, Any]:
+    filename = query_default["filename"]
+    query = _read_query(filename)
+    parameters = _default_query_parameters(filename)
+    empty_guard_patterns = (
+        f"isEmpty({SHARD_QUERY_PARAMETER_NAME})",
+        f"length({SHARD_QUERY_PARAMETER_NAME}) == 0",
+    )
+    positive_predicate_patterns = (
+        f"in {SHARD_QUERY_PARAMETER_NAME}",
+        f"contains({SHARD_QUERY_PARAMETER_NAME}",
+    )
+    return {
+        "model": model_string,
+        "query_name": query_default["name"],
+        "filename": filename,
+        "enabled_by_default": bool(query_default.get("enabled", True)),
+        "declares_shard_parameter": SHARD_QUERY_PARAMETER_NAME in query,
+        "seeds_empty_shard_parameter": (
+            parameters.get(SHARD_QUERY_PARAMETER_NAME) == []
+        ),
+        "has_empty_shard_guard": any(
+            pattern in query for pattern in empty_guard_patterns
+        ),
+        "has_positive_shard_predicate": any(
+            pattern in query for pattern in positive_predicate_patterns
+        ),
+    }
+
+
+def _query_contract_gap(model_string, query_name, filename, code, message):
+    return {
+        "model": model_string,
+        "query_name": query_name,
+        "filename": filename,
+        "code": code,
+        "message": message,
+    }
 
 
 def _build_builtin_query_spec(query_default: dict[str, Any]) -> QuerySpec:

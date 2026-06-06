@@ -54,6 +54,11 @@ def task(function=None, *args, **kwargs):
 def docker_compose(context, command, **kwargs):
     build_env = {
         "NETBOX_VER": context.forward_netbox.netbox_ver,
+        "ACI_PLUGIN_PACKAGE": os.environ.get("ACI_PLUGIN_PACKAGE", ""),
+        "FORWARD_NETBOX_ENABLE_ACI_PLUGIN": os.environ.get(
+            "FORWARD_NETBOX_ENABLE_ACI_PLUGIN",
+            "",
+        ),
         **kwargs.pop("env", {}),
     }
     compose_command_tokens = [

@@ -237,6 +237,113 @@ MODEL_SYNC_CONTRACTS: dict[str, ModelSyncContract] = {
             ("device", "neighbor_address"),
         ),
     ),
+    "netbox_cisco_aci.acifabric": ModelSyncContract(
+        required_fields=("name", "fabric_id"),
+        allowed_coalesce_fields=("name",),
+        default_coalesce_fields=(("name",),),
+    ),
+    "netbox_cisco_aci.acipod": ModelSyncContract(
+        required_fields=("fabric_name", "name", "pod_id"),
+        allowed_coalesce_fields=("fabric_name", "pod_id", "name"),
+        default_coalesce_fields=(("fabric_name", "pod_id"),),
+    ),
+    "netbox_cisco_aci.acinode": ModelSyncContract(
+        required_fields=(
+            "fabric_name",
+            "pod_name",
+            "pod_id",
+            "node_id",
+            "name",
+            "role",
+            "node_type",
+        ),
+        allowed_coalesce_fields=("fabric_name", "pod_id", "node_id", "name"),
+        default_coalesce_fields=(("fabric_name", "pod_id", "node_id"),),
+    ),
+    "netbox_cisco_aci.acitenant": ModelSyncContract(
+        required_fields=("fabric_name", "name"),
+        allowed_coalesce_fields=("fabric_name", "name"),
+        default_coalesce_fields=(("fabric_name", "name"),),
+    ),
+    "netbox_cisco_aci.acivrf": ModelSyncContract(
+        required_fields=("fabric_name", "tenant_name", "name"),
+        allowed_coalesce_fields=("fabric_name", "tenant_name", "name"),
+        default_coalesce_fields=(("fabric_name", "tenant_name", "name"),),
+    ),
+    "netbox_cisco_aci.acibridgedomain": ModelSyncContract(
+        required_fields=("fabric_name", "tenant_name", "vrf_name", "name"),
+        allowed_coalesce_fields=("fabric_name", "tenant_name", "name"),
+        default_coalesce_fields=(("fabric_name", "tenant_name", "name"),),
+    ),
+    "netbox_cisco_aci.aciappprofile": ModelSyncContract(
+        required_fields=("fabric_name", "tenant_name", "name"),
+        allowed_coalesce_fields=("fabric_name", "tenant_name", "name"),
+        default_coalesce_fields=(("fabric_name", "tenant_name", "name"),),
+    ),
+    "netbox_cisco_aci.aciendpointgroup": ModelSyncContract(
+        required_fields=(
+            "fabric_name",
+            "tenant_name",
+            "app_profile_name",
+            "bridge_domain_name",
+            "name",
+        ),
+        allowed_coalesce_fields=(
+            "fabric_name",
+            "tenant_name",
+            "app_profile_name",
+            "name",
+        ),
+        default_coalesce_fields=(
+            ("fabric_name", "tenant_name", "app_profile_name", "name"),
+        ),
+    ),
+    "netbox_cisco_aci.acicontract": ModelSyncContract(
+        required_fields=("fabric_name", "tenant_name", "name"),
+        allowed_coalesce_fields=("fabric_name", "tenant_name", "name"),
+        default_coalesce_fields=(("fabric_name", "tenant_name", "name"),),
+    ),
+    "netbox_cisco_aci.acifilter": ModelSyncContract(
+        required_fields=("fabric_name", "tenant_name", "name"),
+        allowed_coalesce_fields=("fabric_name", "tenant_name", "name"),
+        default_coalesce_fields=(("fabric_name", "tenant_name", "name"),),
+    ),
+    "netbox_cisco_aci.acil3out": ModelSyncContract(
+        required_fields=("fabric_name", "tenant_name", "vrf_name", "name"),
+        allowed_coalesce_fields=("fabric_name", "tenant_name", "name"),
+        default_coalesce_fields=(("fabric_name", "tenant_name", "name"),),
+    ),
+    "netbox_cisco_aci.acistaticportbinding": ModelSyncContract(
+        required_fields=(
+            "fabric_name",
+            "tenant_name",
+            "app_profile_name",
+            "endpoint_group_name",
+            "device",
+            "interface",
+            "encap_vlan",
+        ),
+        allowed_coalesce_fields=(
+            "fabric_name",
+            "tenant_name",
+            "app_profile_name",
+            "endpoint_group_name",
+            "device",
+            "interface",
+            "encap_vlan",
+        ),
+        default_coalesce_fields=(
+            (
+                "fabric_name",
+                "tenant_name",
+                "app_profile_name",
+                "endpoint_group_name",
+                "device",
+                "interface",
+                "encap_vlan",
+            ),
+        ),
+    ),
 }
 
 
