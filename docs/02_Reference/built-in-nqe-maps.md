@@ -39,6 +39,47 @@ When a sync uses the local device tag filter mode, the plugin now passes the sel
 | Forward IP Addresses | `ipam.ipaddress` | [`forward_ip_addresses.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_ip_addresses.nqe) |
 | Forward HSRP Groups | `ipam.fhrpgroup` | [`forward_hsrp_groups.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_hsrp_groups.nqe) |
 | Forward Inventory Items | `dcim.inventoryitem` | [`forward_inventory_items.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_inventory_items.nqe) |
+| Forward ACI Fabrics | `netbox_cisco_aci.acifabric` | [`forward_aci_fabrics.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_fabrics.nqe) |
+| Forward ACI Pods | `netbox_cisco_aci.acipod` | [`forward_aci_pods.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_pods.nqe) |
+| Forward ACI Nodes | `netbox_cisco_aci.acinode` | [`forward_aci_nodes.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_nodes.nqe) |
+| Forward ACI Tenants | `netbox_cisco_aci.acitenant` | [`forward_aci_tenants.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_tenants.nqe) |
+| Forward ACI VRFs | `netbox_cisco_aci.acivrf` | [`forward_aci_vrfs.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_vrfs.nqe) |
+| Forward ACI Bridge Domains | `netbox_cisco_aci.acibridgedomain` | [`forward_aci_bridge_domains.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_bridge_domains.nqe) |
+| Forward ACI Application Profiles | `netbox_cisco_aci.aciappprofile` | [`forward_aci_app_profiles.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_app_profiles.nqe) |
+| Forward ACI Endpoint Groups | `netbox_cisco_aci.aciendpointgroup` | [`forward_aci_endpoint_groups.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_endpoint_groups.nqe) |
+| Forward ACI Contracts | `netbox_cisco_aci.acicontract` | [`forward_aci_contracts.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_contracts.nqe) |
+| Forward ACI Filters | `netbox_cisco_aci.acifilter` | [`forward_aci_filters.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_filters.nqe) |
+| Forward ACI L3Outs | `netbox_cisco_aci.acil3out` | [`forward_aci_l3outs.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_l3outs.nqe) |
+| Forward ACI Static Port Bindings | `netbox_cisco_aci.acistaticportbinding` | [`forward_aci_static_port_bindings.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_static_port_bindings.nqe) |
+
+## Optional Cisco ACI Plugin Maps
+
+The `1.3.2` ACI maps are disabled by default and require the optional
+`netbox-cisco-aci` plugin. They do not use sync-time Forward column filters.
+All maps declare `forward_netbox_shard_keys`, seed an empty default for UI
+execution, and constrain rows only when shard keys are provided.
+
+The proven write path covers ACI fabrics, pods, nodes, tenants, VRFs, and
+filters. Bridge domains, application profiles, EPGs, contracts, L3Outs, and
+static port bindings are present as disabled model/query contracts but remain
+conservative no-op maps until bounded source identity and repeat-sync
+idempotence are proven. The active maps parse selected command output in NQE
+and emit small normalized rows rather than returning raw command responses.
+
+| Map | Expected Fields |
+| --- | --- |
+| Forward ACI Fabrics | `name`, `fabric_id`, `description` |
+| Forward ACI Pods | `fabric_name`, `name`, `pod_id`, `description` |
+| Forward ACI Nodes | `fabric_name`, `pod_name`, `pod_id`, `node_id`, `name`, `role`, `node_type`, `serial_number`, `pod_tep_pool`, `firmware_version`, `node_object_name`, `description` |
+| Forward ACI Tenants | `fabric_name`, `name`, `description` |
+| Forward ACI VRFs | `fabric_name`, `tenant_name`, `name`, `policy_enforcement_preference`, `policy_enforcement_direction`, `bd_enforcement_enabled`, `preferred_group_enabled`, `description` |
+| Forward ACI Bridge Domains | `fabric_name`, `tenant_name`, `vrf_tenant_name`, `vrf_name`, `name`, `unicast_routing_enabled`, `arp_flooding_enabled`, `limit_ip_learn_to_subnets`, `l2_unknown_unicast`, `l3_unknown_multicast`, `multi_destination_flooding`, `mac_address`, `description` |
+| Forward ACI Application Profiles | `fabric_name`, `tenant_name`, `name`, `description` |
+| Forward ACI Endpoint Groups | `fabric_name`, `tenant_name`, `app_profile_name`, `bridge_domain_name`, `vrf_name`, `name`, `admin_shutdown`, `is_useg`, `intra_epg_isolation`, `preferred_group_member`, `qos_class`, `description` |
+| Forward ACI Contracts | `fabric_name`, `tenant_name`, `name`, `scope`, `description` |
+| Forward ACI Filters | `fabric_name`, `tenant_name`, `name`, `description` |
+| Forward ACI L3Outs | `fabric_name`, `tenant_name`, `vrf_name`, `name`, `protocol_bgp`, `protocol_ospf`, `protocol_eigrp`, `protocol_static`, `target_dscp`, `description` |
+| Forward ACI Static Port Bindings | `fabric_name`, `tenant_name`, `app_profile_name`, `endpoint_group_name`, `device_name`, `interface_name`, `encap_vlan`, `deployment_immediacy`, `mode`, `binding_type`, `description` |
 
 ## Shared Module
 
@@ -99,6 +140,24 @@ export canonicalManufacturerName(vendor: Vendor) =
   if isPresent(canonicalManufacturerOverride(vendor))
   then canonicalManufacturerOverride(vendor)
   else replace(replace(toString(vendor), "Vendor.", ""), "_", " ");
+
+export platformOsName(platform_os: String) =
+  replace(platform_os, "OS.", "");
+
+export isAciNxosVersion(platform_os: String, platform_os_version: String) =
+  platformOsName(platform_os) == "NXOS"
+  && (
+    matches(platform_os_version, "14.*")
+    || matches(platform_os_version, "15.*")
+    || matches(platform_os_version, "16.*")
+  );
+
+export normalizePlatformName(platform_os: String, platform_os_version: String) =
+  if matches(toLowerCase(platformOsName(platform_os)), "*apic*")
+    || matches(toLowerCase(platformOsName(platform_os)), "*nxos_aci*")
+    || isAciNxosVersion(platform_os, platform_os_version)
+  then "ACI"
+  else platformOsName(platform_os);
 
 export slugify(value: String) =
   replaceRegexMatches(
@@ -223,7 +282,7 @@ import "netbox_utilities";
 foreach device in network.devices
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
-let platform_name = normalizePlatformName(device.platform.os)
+let platform_name = normalizePlatformName(toString(device.platform.os), device.platform.osVersion)
 let platform_slug = slugify(platform_name)
 let manufacturer_name = canonicalManufacturerName(device.platform.vendor)
 let manufacturer_slug = slugify(manufacturer_name)
@@ -232,7 +291,7 @@ select distinct {
   manufacturer: manufacturer_name,
   manufacturer_slug: manufacturer_slug,
   slug: platform_slug
-}
+};
 ```
 
 ## Forward Device Models
@@ -346,7 +405,7 @@ let site_name = if isPresent(location) then toLowerCase(location) else "unknown"
 let site_slug = slugify(site_name)
 let role_name = replace(toString(device_type), "DeviceType.", "")
 let role_slug = slugify(role_name)
-let platform_name = normalizePlatformName(device.platform.os)
+let platform_name = normalizePlatformName(toString(device.platform.os), device.platform.osVersion)
 let platform_slug = slugify(platform_name)
 let device_type_slug = slugifyNetboxModel(toString(model))
 let manufacturer_name = canonicalManufacturerName(device.platform.vendor)
@@ -365,7 +424,7 @@ select {
   platform_slug: platform_slug,
   status: "active",
   manufacturer_slug: manufacturer_slug
-}
+};
 ```
 
 ## Forward Devices with NetBox Device Type Aliases
@@ -394,7 +453,7 @@ let site_name = if isPresent(location) then toLowerCase(location) else "unknown"
 let site_slug = slugify(site_name)
 let role_name = replace(toString(device_type), "DeviceType.", "")
 let role_slug = slugify(role_name)
-let platform_name = normalizePlatformName(device.platform.os)
+let platform_name = normalizePlatformName(toString(device.platform.os), device.platform.osVersion)
 let platform_slug = slugify(platform_name)
 let vendor = device.platform.vendor
 let data_manufacturer_name = if isPresent(aliases.value) then max(
@@ -445,7 +504,7 @@ select {
   platform_slug: platform_slug,
   status: "active",
   manufacturer_slug: manufacturer_slug
-}
+};
 ```
 
 ## Forward Virtual Chassis

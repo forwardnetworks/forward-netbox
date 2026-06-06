@@ -13,6 +13,21 @@ FORWARD_BGP_MODELS = (
     "netbox_peering_manager.peeringsession",
 )
 
+FORWARD_ACI_MODELS = (
+    "netbox_cisco_aci.acifabric",
+    "netbox_cisco_aci.acipod",
+    "netbox_cisco_aci.acinode",
+    "netbox_cisco_aci.acitenant",
+    "netbox_cisco_aci.acivrf",
+    "netbox_cisco_aci.acibridgedomain",
+    "netbox_cisco_aci.aciappprofile",
+    "netbox_cisco_aci.aciendpointgroup",
+    "netbox_cisco_aci.acicontract",
+    "netbox_cisco_aci.acifilter",
+    "netbox_cisco_aci.acil3out",
+    "netbox_cisco_aci.acistaticportbinding",
+)
+
 FORWARD_SUPPORTED_MODELS = (
     "dcim.site",
     "dcim.manufacturer",
@@ -33,12 +48,14 @@ FORWARD_SUPPORTED_MODELS = (
     "dcim.inventoryitem",
     "dcim.module",
     *FORWARD_BGP_MODELS,
+    *FORWARD_ACI_MODELS,
 )
 
 FORWARD_OPTIONAL_MODELS = {
     "ipam.fhrpgroup",
     "dcim.module",
     *FORWARD_BGP_MODELS,
+    *FORWARD_ACI_MODELS,
 }
 
 
