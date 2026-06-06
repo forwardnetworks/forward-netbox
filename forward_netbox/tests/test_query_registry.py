@@ -7,6 +7,7 @@ from forward_netbox.models import ForwardNQEMap
 from forward_netbox.signals import seed_builtin_nqe_maps
 from forward_netbox.utilities.query_registry import builtin_nqe_map_rows
 from forward_netbox.utilities.query_registry import BUILTIN_OPTIONAL_QUERY_MAPS
+from forward_netbox.utilities.query_registry import builtin_query_contract_summary
 from forward_netbox.utilities.query_registry import BUILTIN_QUERY_MAPS
 from forward_netbox.utilities.query_registry import BUILTIN_QUERY_SPECS
 from forward_netbox.utilities.query_registry import get_query_specs
@@ -368,7 +369,7 @@ class QueryRegistryTest(TestCase):
         for model_string, query_name in normalized_query_names:
             spec = get_seeded_builtin_query_spec(model_string, query_name)
             self.assertIn(
-                "normalizePlatformName(device.platform.os)",
+                "normalizePlatformName(toString(device.platform.os), device.platform.osVersion)",
                 spec.query,
                 msg=f"{query_name} no longer normalizes forward platform OS values.",
             )
@@ -382,14 +383,34 @@ class QueryRegistryTest(TestCase):
             "dcim.platform", "Forward Platforms"
         )
         self.assertIn(
-            'contains(platform_name_lc, "apic")',
+            'matches(toLowerCase(platformOsName(platform_os)), "*apic*")',
             platform_spec.query,
             msg="ACI alias normalization logic missing `apic` detection.",
         )
         self.assertIn(
-            'contains(platform_name_lc, "nxos_aci")',
+            'matches(toLowerCase(platformOsName(platform_os)), "*nxos_aci*")',
             platform_spec.query,
             msg="ACI alias normalization logic missing `nxos_aci` detection.",
+        )
+        self.assertIn(
+            'matches(platform_os_version, "15.*")',
+            platform_spec.query,
+            msg="ACI NX-OS release train detection missing 15.x versions.",
+        )
+        self.assertIn(
+            'matches(platform_os_version, "16.*")',
+            platform_spec.query,
+            msg="ACI NX-OS release train detection missing 16.x versions.",
+        )
+        self.assertNotIn(
+            "VendorOs",
+            platform_spec.query,
+            msg="NQE helpers should avoid stale VendorOs type annotations.",
+        )
+        self.assertNotIn(
+            "contains(",
+            platform_spec.query,
+            msg="NQE helpers should use SaaS-supported string matching.",
         )
 
     def test_virtual_chassis_query_does_not_map_ha_peers_by_default(self):
@@ -514,6 +535,48 @@ class QueryRegistryTest(TestCase):
                 query,
                 msg=f"{filename} does not declare the shard parameter.",
             )
+
+    def test_builtin_query_contract_summary_passes_for_parameterized_maps(self):
+        summary = builtin_query_contract_summary()
+
+        self.assertEqual(summary["status"], "pass")
+        self.assertEqual(summary["gaps"], [])
+        self.assertEqual(
+            summary["models"]["ipam.prefix"]["fetch_mode"],
+            "nqe_parameters",
+        )
+        prefix_query_names = {
+            query["query_name"] for query in summary["models"]["ipam.prefix"]["queries"]
+        }
+        self.assertEqual(
+            prefix_query_names,
+            {"Forward IPv4 Prefixes", "Forward IPv6 Prefixes"},
+        )
+        for model_report in summary["models"].values():
+            if model_report["fetch_mode"] != "nqe_parameters":
+                continue
+            self.assertGreater(
+                model_report["query_count"],
+                0,
+                msg=f"{model_report['model']} has no shipped query maps.",
+            )
+            for query_report in model_report["queries"]:
+                self.assertTrue(
+                    query_report["declares_shard_parameter"],
+                    msg=f"{query_report['filename']} missing shard parameter.",
+                )
+                self.assertTrue(
+                    query_report["seeds_empty_shard_parameter"],
+                    msg=f"{query_report['filename']} missing empty shard default.",
+                )
+                self.assertTrue(
+                    query_report["has_empty_shard_guard"],
+                    msg=f"{query_report['filename']} missing empty shard guard.",
+                )
+                self.assertTrue(
+                    query_report["has_positive_shard_predicate"],
+                    msg=f"{query_report['filename']} missing positive shard predicate.",
+                )
 
     def test_shard_parameter_queries_leave_peer_device_lookups_global(self):
         filenames = {
@@ -670,6 +733,79 @@ class QueryRegistryTest(TestCase):
         )
         self.assertIn(
             "Forward Modules",
+            {query_default["name"] for query_default in BUILTIN_OPTIONAL_QUERY_MAPS},
+        )
+
+    def test_optional_aci_maps_are_seeded_disabled(self):
+        rows = {
+            (row["model_string"], row["name"]): row for row in builtin_nqe_map_rows()
+        }
+
+        fabric_row = rows[("netbox_cisco_aci.acifabric", "Forward ACI Fabrics")]
+        pod_row = rows[("netbox_cisco_aci.acipod", "Forward ACI Pods")]
+        node_row = rows[("netbox_cisco_aci.acinode", "Forward ACI Nodes")]
+        tenant_row = rows[("netbox_cisco_aci.acitenant", "Forward ACI Tenants")]
+        vrf_row = rows[("netbox_cisco_aci.acivrf", "Forward ACI VRFs")]
+        bd_row = rows[
+            ("netbox_cisco_aci.acibridgedomain", "Forward ACI Bridge Domains")
+        ]
+        app_profile_row = rows[
+            ("netbox_cisco_aci.aciappprofile", "Forward ACI Application Profiles")
+        ]
+        epg_row = rows[
+            ("netbox_cisco_aci.aciendpointgroup", "Forward ACI Endpoint Groups")
+        ]
+        contract_row = rows[("netbox_cisco_aci.acicontract", "Forward ACI Contracts")]
+        filter_row = rows[("netbox_cisco_aci.acifilter", "Forward ACI Filters")]
+        l3out_row = rows[("netbox_cisco_aci.acil3out", "Forward ACI L3Outs")]
+        static_binding_row = rows[
+            (
+                "netbox_cisco_aci.acistaticportbinding",
+                "Forward ACI Static Port Bindings",
+            )
+        ]
+
+        aci_rows = (
+            fabric_row,
+            pod_row,
+            node_row,
+            tenant_row,
+            vrf_row,
+            bd_row,
+            app_profile_row,
+            epg_row,
+            contract_row,
+            filter_row,
+            l3out_row,
+            static_binding_row,
+        )
+        for row in aci_rows:
+            self.assertFalse(row["enabled"])
+            self.assertEqual(row["parameters"], {"forward_netbox_shard_keys": []})
+            self.assertIn("forward_netbox_shard_keys", row["query"])
+
+        self.assertIn("normalizePlatformName(", fabric_row["query"])
+        self.assertIn("CISCO_ACI_FABRIC_NODES", pod_row["query"])
+        self.assertIn("regexMatches(command.response, nodeRegex)", pod_row["query"])
+        self.assertIn("node_id:", node_row["query"])
+        self.assertIn("pod_id:", node_row["query"])
+        self.assertIn("serial_number:", node_row["query"])
+        self.assertIn("node_object_name:", node_row["query"])
+        self.assertIn("CISCO_ACI_FABRIC_VRFS", tenant_row["query"])
+        self.assertIn("tenant_name:", vrf_row["query"])
+        self.assertIn("where false", bd_row["query"])
+        self.assertIn("where false", app_profile_row["query"])
+        self.assertIn("where false", epg_row["query"])
+        self.assertIn("where false", contract_row["query"])
+        self.assertIn("CISCO_ACI_ZONING_FILTER", filter_row["query"])
+        self.assertIn("where false", l3out_row["query"])
+        self.assertIn("where false", static_binding_row["query"])
+        self.assertNotIn(
+            "Forward ACI Nodes",
+            {query_default["name"] for query_default in BUILTIN_QUERY_MAPS},
+        )
+        self.assertIn(
+            "Forward ACI Static Port Bindings",
             {query_default["name"] for query_default in BUILTIN_OPTIONAL_QUERY_MAPS},
         )
 

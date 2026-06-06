@@ -1,0 +1,31 @@
+/**
+ * @intent Forward ACI Fabrics
+ * @description Discovers ACI fabric containers for the optional netbox-cisco-aci integration.
+ */
+
+import "netbox_utilities";
+
+isAciDevice(device) =
+  normalizePlatformName(
+    toString(device.platform.os),
+    if isPresent(device.platform.osVersion) then device.platform.osVersion else ""
+  ) == "ACI";
+
+aciFabricName(device) =
+  if isPresent(device.locationName) && length(device.locationName) > 0
+  then slugify(toLowerCase(device.locationName))
+  else "forward-aci-fabric";
+
+@query
+f(forward_netbox_shard_keys: List<String>) =
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+where isAciDevice(device)
+let fabric_name = aciFabricName(device)
+where isEmpty(forward_netbox_shard_keys) || fabric_name in forward_netbox_shard_keys
+select distinct {
+  name: fabric_name,
+  fabric_id: 1,
+  description: "Forward observed ACI fabric"
+};
