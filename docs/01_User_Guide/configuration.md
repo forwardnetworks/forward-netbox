@@ -17,6 +17,8 @@ PLUGINS_CONFIG = {
 ```
 
 `enable_bgp_sync` defaults to `True`. Set it to `False` only if you want to hide the beta module/routing surface from the sync UI.
+Optional Cisco ACI plugin maps are discovered from the installed
+`netbox-cisco-aci` ContentTypes and are disabled by default.
 
 ## Forward Sources
 
@@ -197,6 +199,22 @@ Optional routing sync is enabled by default through `PLUGINS_CONFIG["forward_net
 
 For large routing datasets, publish the routing NQE into the Forward NQE library and bind each enabled NetBox map to the repository query path. The first run still performs a full baseline. Later `latestProcessed` runs can use Forward NQE diffs only when all enabled maps for that model are backed by a repository path or direct query ID; inline query text falls back to full execution.
 
+Optional Cisco ACI sync requires the `netbox-cisco-aci` plugin. When that
+plugin is installed and migrated, the map list exposes disabled `Forward ACI
+Fabrics`, `Forward ACI Pods`, `Forward ACI Nodes`, `Forward ACI Tenants`,
+`Forward ACI VRFs`, `Forward ACI Bridge Domains`, `Forward ACI Application
+Profiles`, `Forward ACI Endpoint Groups`, `Forward ACI Contracts`,
+`Forward ACI Filters`, `Forward ACI L3Outs`, and `Forward ACI Static Port
+Bindings` maps. Enable them only when you want Forward to create or update the
+plugin's ACI inventory and policy objects. The ACI maps use Forward
+saved-query/raw-query execution and `forward_netbox_shard_keys`; they do not
+use sync-time column filters or per-tenant/per-node Forward API calls. The
+fabric/pod/node, tenant/VRF, and filter maps parse selected command output in
+NQE and emit normalized fields instead of raw command responses. Bridge domain,
+application profile, EPG, contract, L3Out, and static binding maps are seeded
+disabled as conservative no-op contracts until their bounded parser identity
+and repeat-sync behavior are proven.
+
 Large datasets should prefer saved queries plus `latestProcessed`. That keeps the first run as a full baseline, then lets later runs use Forward `nqe-diffs` directly. The current built-ins also collapse NetBox identities in NQE where the source emits many raw rows for one object, such as prefix, IP, MAC, and VLAN records.
 
 The current built-in map set is:
@@ -219,6 +237,18 @@ The current built-in map set is:
 - `Forward IP Addresses`
 - `Forward HSRP Groups` (optional `ipam.fhrpgroup`)
 - `Forward Inventory Items`
+- `Forward ACI Fabrics` (optional `netbox_cisco_aci.acifabric`)
+- `Forward ACI Pods` (optional `netbox_cisco_aci.acipod`)
+- `Forward ACI Nodes` (optional `netbox_cisco_aci.acinode`)
+- `Forward ACI Tenants` (optional `netbox_cisco_aci.acitenant`)
+- `Forward ACI VRFs` (optional `netbox_cisco_aci.acivrf`)
+- `Forward ACI Bridge Domains` (optional `netbox_cisco_aci.acibridgedomain`)
+- `Forward ACI Application Profiles` (optional `netbox_cisco_aci.aciappprofile`)
+- `Forward ACI Endpoint Groups` (optional `netbox_cisco_aci.aciendpointgroup`)
+- `Forward ACI Contracts` (optional `netbox_cisco_aci.acicontract`)
+- `Forward ACI Filters` (optional `netbox_cisco_aci.acifilter`)
+- `Forward ACI L3Outs` (optional `netbox_cisco_aci.acil3out`)
+- `Forward ACI Static Port Bindings` (optional `netbox_cisco_aci.acistaticportbinding`)
 
 `Forward HSRP Groups` is optional and disabled unless `ipam.fhrpgroup` is selected
 for a sync. It imports Forward native HSRP and VRRP group state into NetBox
@@ -228,7 +258,7 @@ NetBox `vrrp2`, IPv6 VRRP rows map to NetBox `vrrp3`, and VIP IP addresses use
 the native `vrrp` role. Existing NetBox IP addresses that are assigned to
 another object are treated as conflicts and skipped instead of being reassigned.
 
-The optional beta map set also includes `Forward Modules`, `Forward BGP Peers`, `Forward BGP Address Families`, `Forward BGP Peer Address Families`, `Forward OSPF Instances`, `Forward OSPF Areas`, `Forward OSPF Interfaces`, and `Forward Peering Sessions` when their target ContentTypes exist.
+The optional beta map set also includes `Forward Modules`, `Forward BGP Peers`, `Forward BGP Address Families`, `Forward BGP Peer Address Families`, `Forward OSPF Instances`, `Forward OSPF Areas`, `Forward OSPF Interfaces`, `Forward Peering Sessions`, and the optional Forward ACI map family when their target ContentTypes exist.
 
 See the [Built-In NQE Reference](../02_Reference/built-in-nqe-maps.md) for the exact shipped query text and expected output fields.
 See the [Model Mapping Matrix](../02_Reference/model-mapping-matrix.md) for the current exact vs best-fit mapping semantics per NetBox model.

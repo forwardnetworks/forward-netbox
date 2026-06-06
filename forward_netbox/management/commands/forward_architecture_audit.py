@@ -27,6 +27,8 @@ from forward_netbox.utilities.model_contracts import architecture_fetch_contract
 from forward_netbox.utilities.model_contracts import (
     architecture_unclassified_supported_models,
 )
+from forward_netbox.utilities.plugin_integrations import integration_summary
+from forward_netbox.utilities.query_registry import builtin_query_contract_summary
 
 
 class Command(BaseCommand):
@@ -96,6 +98,9 @@ class Command(BaseCommand):
     def _apply_engine_matrix(self):
         model_eligibility = self._model_eligibility()
         fetch_contracts = self._fetch_contracts()
+        query_contract_summary = builtin_query_contract_summary(
+            FORWARD_SUPPORTED_MODELS
+        )
         model_contract_registry = architecture_contract_summary(
             FORWARD_SUPPORTED_MODELS
         )
@@ -119,6 +124,7 @@ class Command(BaseCommand):
             or "bucket_strategy" not in contract
         )
         return {
+            "optional_plugin_integrations": integration_summary(),
             "bulk_orm_safe_models": architecture_bulk_orm_safe_models(
                 FORWARD_SUPPORTED_MODELS
             ),
@@ -128,6 +134,7 @@ class Command(BaseCommand):
             "adapter_blockers": architecture_adapter_blockers(FORWARD_SUPPORTED_MODELS),
             "bulk_orm_expansion": bulk_orm_expansion_summary(FORWARD_SUPPORTED_MODELS),
             "model_contract_registry": model_contract_registry,
+            "query_contract_registry": query_contract_summary,
             "model_eligibility": model_eligibility,
             "fetch_contracts": fetch_contracts,
             "classification_gaps": {
@@ -147,6 +154,7 @@ class Command(BaseCommand):
                 "decision_unclassified_fallback_models": decision_fallback_models,
                 "fetch_contract_coverage_gaps": fetch_contract_coverage_gaps,
                 "model_contract_registry_gaps": model_contract_registry["gaps"],
+                "query_contract_registry_gaps": query_contract_summary["gaps"],
             },
         }
 
