@@ -298,6 +298,7 @@ class ForwardSyncRunner(ForwardSyncRunnerContractMixin, ForwardSyncRunnerAdapter
         self._tag_by_name_cache: dict[str, object] = {}
         self._device_tag_ids_cache: dict[int, set[int]] = {}
         self._asn_by_number_cache: dict[int, object] = {}
+        self._cable_between_cache: dict[tuple[int, int], object] = {}
         self._unique_lookup_cache: dict[tuple, object] = {}
         self._primed_missing_unique_lookup_keys: set[tuple] = set()
         self._model_coalesce_fields: dict[str, list[list[str]]] = {}

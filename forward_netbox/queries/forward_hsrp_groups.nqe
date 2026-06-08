@@ -3,9 +3,7 @@
  * @description NetBox FHRP group rows derived from Forward native HSRP and VRRP state.
  */
 
-@query
-f(forward_netbox_shard_keys: List<String>, device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>) =
-subinterface_ipv4 =
+subinterface_ipv4(forward_netbox_shard_keys: List<String>, device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>) =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
@@ -36,7 +34,7 @@ subinterface_ipv4 =
     status: "active"
   };
 
-subinterface_ipv6 =
+subinterface_ipv6(forward_netbox_shard_keys: List<String>, device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>) =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
@@ -67,7 +65,7 @@ subinterface_ipv6 =
     status: "active"
   };
 
-routed_vlan_ipv4 =
+routed_vlan_ipv4(forward_netbox_shard_keys: List<String>, device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>) =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
@@ -97,7 +95,7 @@ routed_vlan_ipv4 =
     status: "active"
   };
 
-routed_vlan_ipv6 =
+routed_vlan_ipv6(forward_netbox_shard_keys: List<String>, device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>) =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
@@ -127,7 +125,7 @@ routed_vlan_ipv6 =
     status: "active"
   };
 
-subinterface_vrrp_ipv4 =
+subinterface_vrrp_ipv4(forward_netbox_shard_keys: List<String>, device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>) =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
@@ -158,7 +156,7 @@ subinterface_vrrp_ipv4 =
     status: "active"
   };
 
-subinterface_vrrp_ipv6 =
+subinterface_vrrp_ipv6(forward_netbox_shard_keys: List<String>, device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>) =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
@@ -189,7 +187,7 @@ subinterface_vrrp_ipv6 =
     status: "active"
   };
 
-routed_vlan_vrrp_ipv4 =
+routed_vlan_vrrp_ipv4(forward_netbox_shard_keys: List<String>, device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>) =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
@@ -219,7 +217,7 @@ routed_vlan_vrrp_ipv4 =
     status: "active"
   };
 
-routed_vlan_vrrp_ipv6 =
+routed_vlan_vrrp_ipv6(forward_netbox_shard_keys: List<String>, device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>) =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
@@ -249,15 +247,16 @@ routed_vlan_vrrp_ipv6 =
     status: "active"
   };
 
-@primaryKey(protocol, group_id, address, device, interface, vrf)
+@query
+f(forward_netbox_shard_keys: List<String>, device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>) =
 foreach row in (
-  subinterface_ipv4
-  + subinterface_ipv6
-  + routed_vlan_ipv4
-  + routed_vlan_ipv6
-  + subinterface_vrrp_ipv4
-  + subinterface_vrrp_ipv6
-  + routed_vlan_vrrp_ipv4
-  + routed_vlan_vrrp_ipv6
+  subinterface_ipv4(forward_netbox_shard_keys, device_tag_include_tags, device_tag_include_match, device_tag_exclude_tags)
+  + subinterface_ipv6(forward_netbox_shard_keys, device_tag_include_tags, device_tag_include_match, device_tag_exclude_tags)
+  + routed_vlan_ipv4(forward_netbox_shard_keys, device_tag_include_tags, device_tag_include_match, device_tag_exclude_tags)
+  + routed_vlan_ipv6(forward_netbox_shard_keys, device_tag_include_tags, device_tag_include_match, device_tag_exclude_tags)
+  + subinterface_vrrp_ipv4(forward_netbox_shard_keys, device_tag_include_tags, device_tag_include_match, device_tag_exclude_tags)
+  + subinterface_vrrp_ipv6(forward_netbox_shard_keys, device_tag_include_tags, device_tag_include_match, device_tag_exclude_tags)
+  + routed_vlan_vrrp_ipv4(forward_netbox_shard_keys, device_tag_include_tags, device_tag_include_match, device_tag_exclude_tags)
+  + routed_vlan_vrrp_ipv6(forward_netbox_shard_keys, device_tag_include_tags, device_tag_include_match, device_tag_exclude_tags)
 )
-select distinct row
+select distinct row;

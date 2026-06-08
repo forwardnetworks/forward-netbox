@@ -159,6 +159,27 @@ MODEL_SYNC_CONTRACTS: dict[str, ModelSyncContract] = {
         allowed_coalesce_fields=("device", "module_bay"),
         default_coalesce_fields=(("device", "module_bay"),),
     ),
+    "netbox_routing.bgprouter": ModelSyncContract(
+        required_fields=(
+            "name",
+            "assigned_object_type",
+            "assigned_object_id",
+            "asn",
+        ),
+        allowed_coalesce_fields=(
+            "assigned_object_type",
+            "assigned_object_id",
+            "asn",
+        ),
+        default_coalesce_fields=(
+            ("assigned_object_type", "assigned_object_id", "asn"),
+        ),
+    ),
+    "netbox_routing.bgpscope": ModelSyncContract(
+        required_fields=("router", "vrf"),
+        allowed_coalesce_fields=("router", "vrf"),
+        default_coalesce_fields=(("router", "vrf"),),
+    ),
     "netbox_routing.bgppeer": ModelSyncContract(
         required_fields=(
             "device",

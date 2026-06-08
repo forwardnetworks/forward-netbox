@@ -41,11 +41,17 @@ DEFAULT_QUERY_PREFLIGHT_ENABLED = True
 DEFAULT_QUERY_DIAGNOSTICS_ENABLED = True
 TRANSIENT_FORWARD_HTTP_STATUS_CODES = {408, 429, 502, 503, 504}
 NQE_QUERY_REPOSITORIES = {"org", "fwd"}
+READ_CACHE_TIMEOUT_SECONDS = 60
+READ_CACHE_GENERATION_KEY_SUFFIX = ":query-generation"
 _RATE_LIMIT_LOCK = threading.Lock()
 _RATE_LIMIT_LAST_REQUEST_AT = {}
 
 
 def _shared_rate_limit_cache():
+    return django_cache
+
+
+def _shared_read_cache():
     return django_cache
 
 
@@ -131,9 +137,20 @@ class ForwardClient:
         else:
             self._api_request_min_interval = 0.0
         self._api_usage_lock = threading.Lock()
+        self._read_cache_lock = threading.Lock()
         self._api_usage_first_http_attempt_at = None
         self._api_usage_last_http_attempt_at = None
         self._api_usage = self._empty_api_usage()
+        self._latest_processed_snapshot_cache: dict[str, dict] = {}
+        self._snapshots_cache: dict[tuple[str, bool, int], list[dict]] = {}
+        self._snapshot_metrics_cache: dict[str, dict] = {}
+        self._networks_cache: list[dict] | None = None
+        self._committed_nqe_query_cache: dict[tuple[str, str, str], dict] = {}
+        self._org_nqe_queries_cache: dict[str, list[dict]] = {}
+        self._repository_queries_cache: dict[tuple[str, str], list[dict]] = {}
+        self._repository_query_index_cache: dict[tuple[str, str, int], dict] = {}
+        self._nqe_query_history_cache: dict[str, list[dict]] = {}
+        self._org_nqe_head_commit_id_cache: str | None = None
 
     def _empty_api_usage(self):
         return {
@@ -155,11 +172,126 @@ class ForwardClient:
             "nqe_pages": 0,
             "nqe_query_pages": 0,
             "nqe_diff_pages": 0,
+            "read_cache_hits": 0,
+            "read_cache_misses": 0,
         }
 
     def _record_api_usage(self, key, amount=1):
         with self._api_usage_lock:
             self._api_usage[key] = self._api_usage.get(key, 0) + amount
+
+    def _record_read_cache_hit(self):
+        self._record_api_usage("read_cache_hits")
+
+    def _record_read_cache_miss(self):
+        self._record_api_usage("read_cache_misses")
+
+    def _invalidate_nqe_query_read_caches(self):
+        with self._read_cache_lock:
+            self._committed_nqe_query_cache.clear()
+            self._org_nqe_queries_cache.clear()
+            self._repository_queries_cache.clear()
+            self._repository_query_index_cache.clear()
+            self._nqe_query_history_cache.clear()
+            self._org_nqe_head_commit_id_cache = None
+        self._bump_shared_query_read_generation()
+
+    def _shared_read_cache_scope(self) -> str:
+        scope = {
+            "source_pk": getattr(self.source, "pk", None),
+            "source_type": getattr(self.source, "type", None) or "",
+            "base_url": self.base_url,
+            "username": self.username or "",
+        }
+        encoded = json.dumps(scope, sort_keys=True, separators=(",", ":"))
+        digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+        return f"forward-netbox:forward-api-read-cache:{digest}"
+
+    def _shared_read_cache(self):
+        return _shared_read_cache()
+
+    def _shared_read_cache_key(self, kind: str, *parts: object) -> str:
+        scope = self._shared_read_cache_scope()
+        payload = {
+            "kind": kind,
+            "scope": scope,
+            "parts": [str(part) for part in parts],
+        }
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+        return f"{scope}:{kind}:{digest}"
+
+    def _shared_query_read_generation_key(self) -> str:
+        return f"{self._shared_read_cache_scope()}{READ_CACHE_GENERATION_KEY_SUFFIX}"
+
+    def _shared_query_read_generation(self) -> int:
+        cache = self._shared_read_cache()
+        if cache is None:
+            return 0
+        try:
+            return int(cache.get(self._shared_query_read_generation_key()) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def _bump_shared_query_read_generation(self) -> None:
+        cache = self._shared_read_cache()
+        if cache is None:
+            return
+        key = self._shared_query_read_generation_key()
+        try:
+            cache.incr(key)
+        except Exception:
+            try:
+                current = int(cache.get(key) or 0)
+            except (TypeError, ValueError):
+                current = 0
+            cache.set(key, current + 1, timeout=READ_CACHE_TIMEOUT_SECONDS)
+
+    def _shared_read_cache_get(self, key: str):
+        cache = self._shared_read_cache()
+        if cache is None:
+            return None
+        return cache.get(key)
+
+    def _shared_read_cache_set(self, key: str, value):
+        cache = self._shared_read_cache()
+        if cache is None:
+            return
+        cache.set(key, value, timeout=READ_CACHE_TIMEOUT_SECONDS)
+
+    def _build_nqe_repository_query_index(self, rows: list[dict]) -> dict:
+        by_query_id: dict[str, list[dict]] = {}
+        by_path: dict[str, dict] = {}
+        normalized_rows = []
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            normalized = dict(row)
+            normalized_rows.append(normalized)
+            query_id = str(normalized.get("queryId") or "").strip()
+            if query_id:
+                by_query_id.setdefault(query_id, []).append(normalized)
+            path = str(normalized.get("path") or "").strip()
+            if path:
+                by_path[path] = normalized
+        return {
+            "rows": normalized_rows,
+            "by_query_id": by_query_id,
+            "by_path": by_path,
+        }
+
+    def _copy_nqe_repository_query_index(self, index: dict | None) -> dict:
+        index = index or {}
+        return {
+            "rows": [dict(row) for row in index.get("rows") or []],
+            "by_query_id": {
+                query_id: [dict(row) for row in rows]
+                for query_id, rows in (index.get("by_query_id") or {}).items()
+            },
+            "by_path": {
+                path: dict(row) for path, row in (index.get("by_path") or {}).items()
+            },
+        }
 
     def _record_http_attempt_usage(self):
         now = time.monotonic()
@@ -204,6 +336,14 @@ class ForwardClient:
         )
         summary["usage_window_seconds"] = round(window_seconds, 6)
         summary["observed_http_attempts_per_minute"] = observed_rate
+        read_cache_hits = int(summary.get("read_cache_hits") or 0)
+        read_cache_misses = int(summary.get("read_cache_misses") or 0)
+        total_read_cache_lookups = read_cache_hits + read_cache_misses
+        summary["read_cache_hit_rate"] = (
+            round(read_cache_hits / float(total_read_cache_lookups), 6)
+            if total_read_cache_lookups
+            else None
+        )
         return summary
 
     def reset_api_usage_summary(self):
@@ -441,6 +581,19 @@ class ForwardClient:
         raise last_connectivity_error
 
     def get_networks(self):
+        shared_cache_key = self._shared_read_cache_key("networks")
+        with self._read_cache_lock:
+            cached_networks = self._networks_cache
+        if cached_networks is not None:
+            self._record_read_cache_hit()
+            return [dict(item) for item in cached_networks]
+        cached_networks = self._shared_read_cache_get(shared_cache_key)
+        if cached_networks is not None:
+            with self._read_cache_lock:
+                self._networks_cache = [dict(item) for item in cached_networks]
+            self._record_read_cache_hit()
+            return [dict(item) for item in cached_networks]
+        self._record_read_cache_miss()
         response = self._request("GET", "/networks")
         data = response.json()
         networks = []
@@ -456,9 +609,31 @@ class ForwardClient:
                     "label": f"{name} ({network_id})",
                 }
             )
+        with self._read_cache_lock:
+            self._networks_cache = [dict(item) for item in networks]
+        self._shared_read_cache_set(shared_cache_key, [dict(item) for item in networks])
         return networks
 
     def get_snapshots(self, network_id, *, include_archived=False, limit=100):
+        network_id = str(network_id or "").strip()
+        cache_key = (network_id, bool(include_archived), int(limit))
+        shared_cache_key = self._shared_read_cache_key(
+            "snapshots", network_id, bool(include_archived), int(limit)
+        )
+        with self._read_cache_lock:
+            cached_snapshots = self._snapshots_cache.get(cache_key)
+        if cached_snapshots is not None:
+            self._record_read_cache_hit()
+            return [dict(item) for item in cached_snapshots]
+        cached_snapshots = self._shared_read_cache_get(shared_cache_key)
+        if cached_snapshots is not None:
+            with self._read_cache_lock:
+                self._snapshots_cache[cache_key] = [
+                    dict(item) for item in cached_snapshots
+                ]
+            self._record_read_cache_hit()
+            return [dict(item) for item in cached_snapshots]
+        self._record_read_cache_miss()
         response = self._request(
             "GET",
             f"/networks/{network_id}/snapshots",
@@ -492,13 +667,41 @@ class ForwardClient:
                     "label": " | ".join(label_parts),
                 }
             )
+        with self._read_cache_lock:
+            self._snapshots_cache[cache_key] = [dict(item) for item in snapshots]
+        self._shared_read_cache_set(
+            shared_cache_key, [dict(item) for item in snapshots]
+        )
         return snapshots
 
     def get_latest_processed_snapshot(self, network_id):
+        network_id = str(network_id or "").strip()
+        shared_cache_key = self._shared_read_cache_key(
+            "latest-processed-snapshot", network_id
+        )
+        with self._read_cache_lock:
+            cached_snapshot = self._latest_processed_snapshot_cache.get(network_id)
+        if cached_snapshot is not None:
+            self._record_read_cache_hit()
+            return dict(cached_snapshot)
+        cached_snapshot = self._shared_read_cache_get(shared_cache_key)
+        if cached_snapshot is not None:
+            with self._read_cache_lock:
+                self._latest_processed_snapshot_cache[network_id] = dict(
+                    cached_snapshot
+                )
+            self._record_read_cache_hit()
+            return dict(cached_snapshot)
+        self._record_read_cache_miss()
         response = self._request(
             "GET", f"/networks/{network_id}/snapshots/latestProcessed"
         )
-        return response.json() or {}
+        snapshot = response.json() or {}
+        if isinstance(snapshot, dict):
+            with self._read_cache_lock:
+                self._latest_processed_snapshot_cache[network_id] = dict(snapshot)
+            self._shared_read_cache_set(shared_cache_key, dict(snapshot))
+        return snapshot
 
     def get_latest_processed_snapshot_id(self, network_id):
         snapshot = self.get_latest_processed_snapshot(network_id)
@@ -510,28 +713,81 @@ class ForwardClient:
         return snapshot_id
 
     def get_snapshot_metrics(self, snapshot_id):
+        snapshot_id = str(snapshot_id or "").strip()
+        shared_cache_key = self._shared_read_cache_key("snapshot-metrics", snapshot_id)
+        with self._read_cache_lock:
+            cached_metrics = self._snapshot_metrics_cache.get(snapshot_id)
+        if cached_metrics is not None:
+            self._record_read_cache_hit()
+            return dict(cached_metrics)
+        cached_metrics = self._shared_read_cache_get(shared_cache_key)
+        if cached_metrics is not None:
+            with self._read_cache_lock:
+                self._snapshot_metrics_cache[snapshot_id] = dict(cached_metrics)
+            self._record_read_cache_hit()
+            return dict(cached_metrics)
+        self._record_read_cache_miss()
         response = self._request("GET", f"/snapshots/{snapshot_id}/metrics")
-        return response.json() or {}
+        metrics = response.json() or {}
+        if isinstance(metrics, dict):
+            with self._read_cache_lock:
+                self._snapshot_metrics_cache[snapshot_id] = dict(metrics)
+            self._shared_read_cache_set(shared_cache_key, dict(metrics))
+        return metrics
 
     def get_org_nqe_queries(self, *, directory="/"):
         directory = _normalize_nqe_directory(directory)
+        shared_cache_key = self._shared_read_cache_key(
+            "org-nqe-queries", directory, self._shared_query_read_generation()
+        )
+        cached_queries = self._org_nqe_queries_cache.get(directory)
+        if cached_queries is not None:
+            self._record_read_cache_hit()
+            return [dict(row) for row in cached_queries]
+        cached_queries = self._shared_read_cache_get(shared_cache_key)
+        if cached_queries is not None:
+            self._org_nqe_queries_cache[directory] = list(cached_queries)
+            self._record_read_cache_hit()
+            return [dict(row) for row in cached_queries]
+        self._record_read_cache_miss()
         params = {"dir": directory}
         response = self._request("GET", "/nqe/queries", params=params or None)
         data = response.json() or []
-        return data if isinstance(data, list) else []
+        rows = data if isinstance(data, list) else []
+        self._org_nqe_queries_cache[directory] = list(rows)
+        self._shared_read_cache_set(shared_cache_key, list(rows))
+        return rows if isinstance(rows, list) else []
 
     def get_nqe_repository_queries(self, *, repository="org", directory="/"):
         repository = _normalize_nqe_repository(repository)
         directory = _normalize_nqe_directory(directory)
         if repository == "org":
             rows = self.get_org_nqe_queries(directory=directory)
-            normalized_rows = [
+            return [
                 normalized
                 for row in rows
                 if (normalized := _normalize_nqe_query_row(row, repository=repository))
             ]
-            if normalized_rows or directory != "/":
-                return normalized_rows
+
+        cache_key = (repository, directory)
+        shared_cache_key = self._shared_read_cache_key(
+            "repository-nqe-queries",
+            repository,
+            directory,
+            self._shared_query_read_generation(),
+        )
+        cached_queries = self._repository_queries_cache.get(cache_key)
+        if cached_queries is not None:
+            self._record_read_cache_hit()
+            return [dict(row) for row in cached_queries]
+        cached_queries = self._shared_read_cache_get(shared_cache_key)
+        if cached_queries is not None:
+            self._repository_queries_cache[cache_key] = [
+                dict(row) for row in cached_queries
+            ]
+            self._record_read_cache_hit()
+            return [dict(row) for row in cached_queries]
+        self._record_read_cache_miss()
 
         response = self._request(
             "GET",
@@ -539,21 +795,114 @@ class ForwardClient:
         )
         data = response.json() or {}
         rows = data.get("queries") if isinstance(data, dict) else []
-        return [
+        normalized_rows = [
             normalized
             for row in rows or []
             if _query_in_directory(row.get("path"), directory)
             if (normalized := _normalize_nqe_query_row(row, repository=repository))
         ]
+        self._repository_queries_cache[cache_key] = [
+            dict(row) for row in normalized_rows
+        ]
+        self._shared_read_cache_set(
+            shared_cache_key, [dict(row) for row in normalized_rows]
+        )
+        return normalized_rows
+
+    def get_nqe_repository_query_index(self, *, repository="org", directory="/"):
+        repository = _normalize_nqe_repository(repository)
+        directory = _normalize_nqe_directory(directory)
+        generation = self._shared_query_read_generation()
+        cache_key = (repository, directory, generation)
+        with self._read_cache_lock:
+            cached_index = self._repository_query_index_cache.get(cache_key)
+        if cached_index is not None:
+            self._record_read_cache_hit()
+            return self._copy_nqe_repository_query_index(cached_index)
+        shared_cache_key = self._shared_read_cache_key(
+            "repository-nqe-query-index",
+            repository,
+            directory,
+            generation,
+        )
+        cached_index = self._shared_read_cache_get(shared_cache_key)
+        if cached_index is not None:
+            with self._read_cache_lock:
+                self._repository_query_index_cache[cache_key] = (
+                    self._copy_nqe_repository_query_index(cached_index)
+                )
+            self._record_read_cache_hit()
+            return self._copy_nqe_repository_query_index(cached_index)
+        rows = self.get_nqe_repository_queries(
+            repository=repository,
+            directory=directory,
+        )
+        index = self._build_nqe_repository_query_index(rows)
+        with self._read_cache_lock:
+            self._repository_query_index_cache[cache_key] = (
+                self._copy_nqe_repository_query_index(index)
+            )
+        self._shared_read_cache_set(shared_cache_key, index)
+        return index
 
     def get_committed_nqe_query(
-        self, *, repository="org", query_path="", commit_id="head"
+        self,
+        *,
+        repository="org",
+        query_path="",
+        commit_id="head",
+        query_index: dict | None = None,
     ):
         repository = _normalize_nqe_repository(repository)
         query_path = _normalize_nqe_query_path(query_path)
         commit_id = str(commit_id or "head").strip() or "head"
         if not query_path:
             raise ForwardClientError("Forward NQE query path is required.")
+        if commit_id == "head":
+            if query_index is None:
+                try:
+                    query_index = self.get_nqe_repository_query_index(
+                        repository=repository,
+                        directory="/",
+                    )
+                except Exception:
+                    query_index = {}
+            indexed_query = (query_index.get("by_path") or {}).get(query_path)
+            if indexed_query and indexed_query.get("queryId"):
+                query = dict(indexed_query)
+                query.setdefault("repository", repository)
+                query.setdefault("intent", "")
+                query.setdefault("lastCommitId", "")
+                self._committed_nqe_query_cache[(repository, query_path, commit_id)] = (
+                    dict(query)
+                )
+                shared_cache_key = self._shared_read_cache_key(
+                    "committed-nqe-query",
+                    repository,
+                    query_path,
+                    commit_id,
+                    self._shared_query_read_generation(),
+                )
+                self._shared_read_cache_set(shared_cache_key, dict(query))
+                return query
+        cache_key = (repository, query_path, commit_id)
+        shared_cache_key = self._shared_read_cache_key(
+            "committed-nqe-query",
+            repository,
+            query_path,
+            commit_id,
+            self._shared_query_read_generation(),
+        )
+        cached_query = self._committed_nqe_query_cache.get(cache_key)
+        if cached_query is not None:
+            self._record_read_cache_hit()
+            return dict(cached_query)
+        cached_query = self._shared_read_cache_get(shared_cache_key)
+        if cached_query is not None:
+            self._committed_nqe_query_cache[cache_key] = dict(cached_query)
+            self._record_read_cache_hit()
+            return dict(cached_query)
+        self._record_read_cache_miss()
         response = self._request(
             "GET",
             f"/nqe/repos/{repository}/commits/{quote(commit_id, safe='')}/queries",
@@ -567,19 +916,36 @@ class ForwardClient:
         if isinstance(data.get("queries"), list):
             for query in data["queries"]:
                 if isinstance(query, dict) and query.get("path") == query_path:
-                    return query
+                    normalized = dict(query)
+                    normalized.setdefault("lastCommitId", "")
+                    self._committed_nqe_query_cache[cache_key] = dict(normalized)
+                    self._shared_read_cache_set(shared_cache_key, dict(normalized))
+                    return normalized
             raise ForwardClientError(
                 f"Forward NQE repository lookup did not include `{query_path}`."
             )
-        return data
+        normalized = dict(data)
+        last_commit = normalized.get("lastCommit") or {}
+        normalized.setdefault(
+            "lastCommitId",
+            str(last_commit.get("id") or normalized.get("lastCommitId") or "").strip(),
+        )
+        self._committed_nqe_query_cache[cache_key] = dict(normalized)
+        self._shared_read_cache_set(shared_cache_key, dict(normalized))
+        return normalized
 
     def resolve_nqe_query_reference(
-        self, *, repository="org", query_path="", commit_id=None
+        self, *, repository="org", query_path="", commit_id=None, query_index=None
     ):
+        repository = _normalize_nqe_repository(repository)
+        query_path = _normalize_nqe_query_path(query_path)
+        explicit_commit_id = str(commit_id or "").strip()
+        requested_commit_id = explicit_commit_id or "head"
         query = self.get_committed_nqe_query(
             repository=repository,
             query_path=query_path,
-            commit_id=commit_id or "head",
+            commit_id=requested_commit_id,
+            query_index=query_index,
         )
         query_id = str(query.get("queryId") or "").strip()
         if not query_id:
@@ -588,7 +954,10 @@ class ForwardClient:
             )
         last_commit = query.get("lastCommit") or {}
         resolved_commit_id = str(
-            commit_id or last_commit.get("id") or query.get("lastCommitId") or ""
+            explicit_commit_id
+            or last_commit.get("id")
+            or query.get("lastCommitId")
+            or ""
         ).strip()
         return {
             "queryId": query_id,
@@ -602,18 +971,35 @@ class ForwardClient:
         query_id = str(query_id or "").strip()
         if not query_id:
             return []
+        shared_cache_key = self._shared_read_cache_key(
+            "nqe-query-history", query_id, self._shared_query_read_generation()
+        )
+        cached_history = self._nqe_query_history_cache.get(query_id)
+        if cached_history is not None:
+            self._record_read_cache_hit()
+            return [dict(row) for row in cached_history]
+        cached_history = self._shared_read_cache_get(shared_cache_key)
+        if cached_history is not None:
+            self._nqe_query_history_cache[query_id] = list(cached_history)
+            self._record_read_cache_hit()
+            return [dict(row) for row in cached_history]
+        self._record_read_cache_miss()
         response = self._request(
             "GET",
             f"/nqe/queries/{quote(query_id, safe='')}/history",
         )
         data = response.json() or {}
         commits = data.get("commits") if isinstance(data, dict) else []
-        return commits or []
+        rows = commits or []
+        self._nqe_query_history_cache[query_id] = list(rows)
+        self._shared_read_cache_set(shared_cache_key, list(rows))
+        return rows
 
     def add_org_nqe_query(self, *, query_path, source_code):
         query_path = _normalize_nqe_query_path(query_path)
         if not query_path:
             raise ForwardClientError("Forward NQE query path is required.")
+        self._invalidate_nqe_query_read_caches()
         self._request(
             "POST",
             "/users/current/nqe/changes",
@@ -631,6 +1017,7 @@ class ForwardClient:
             raise ForwardClientError(
                 "Forward NQE query ID and commit ID are required to update an existing query."
             )
+        self._invalidate_nqe_query_read_caches()
         self._request(
             "POST",
             "/users/current/nqe/changes",
@@ -645,11 +1032,30 @@ class ForwardClient:
         )
 
     def get_org_nqe_head_commit_id(self):
+        shared_cache_key = self._shared_read_cache_key(
+            "org-head-commit", self._shared_query_read_generation()
+        )
+        if self._org_nqe_head_commit_id_cache is not None:
+            self._record_read_cache_hit()
+            return self._org_nqe_head_commit_id_cache
+        cached_commit = self._shared_read_cache_get(shared_cache_key)
+        if cached_commit is not None:
+            self._org_nqe_head_commit_id_cache = str(
+                (cached_commit or {}).get("value") or ""
+            )
+            self._record_read_cache_hit()
+            return self._org_nqe_head_commit_id_cache
+        self._record_read_cache_miss()
         response = self._request("GET", "/nqe/repos/org/commits/head")
         data = response.json()
+        commit_id = ""
         if isinstance(data, dict):
-            return str(data.get("id") or data.get("commitId") or "").strip()
-        return str(data or "").strip()
+            commit_id = str(data.get("id") or data.get("commitId") or "").strip()
+        else:
+            commit_id = str(data or "").strip()
+        self._org_nqe_head_commit_id_cache = commit_id
+        self._shared_read_cache_set(shared_cache_key, {"value": commit_id})
+        return commit_id
 
     def commit_org_nqe_queries(self, *, query_paths, message):
         query_paths = [
@@ -659,6 +1065,7 @@ class ForwardClient:
         ]
         if not query_paths:
             return ""
+        self._invalidate_nqe_query_read_caches()
         self._request(
             "POST",
             "/nqe/repos/org/commits",

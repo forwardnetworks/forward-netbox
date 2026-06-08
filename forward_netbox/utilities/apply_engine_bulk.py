@@ -747,17 +747,44 @@ def bulk_orm_apply_tree_models(
     normalized_rows: list[dict[str, Any]],
 ):
     from django.db import transaction
+    from django.db.models import Q
 
     with transaction.atomic():
+        lookup_values = {
+            field_name: []
+            for field_name in {
+                field for lookup_set in lookup_sets for field in lookup_set
+            }
+        }
+        for values in normalized_rows:
+            for field_name in lookup_values:
+                value = values.get(field_name)
+                if value not in ("", None):
+                    lookup_values[field_name].append(value)
+
+        existing_qs = model.objects.none()
+        if any(lookup_values.values()):
+            query = Q()
+            for field_name, values in lookup_values.items():
+                if values:
+                    query |= Q(**{f"{field_name}__in": values})
+            existing_qs = model.objects.filter(query).order_by("pk")
+
+        lookup_cache = {lookup_set: {} for lookup_set in lookup_sets}
+        for obj in existing_qs:
+            for lookup_set in lookup_sets:
+                key = lookup_key_from_object(obj, lookup_set)
+                if key is not None and key not in lookup_cache[lookup_set]:
+                    lookup_cache[lookup_set][key] = obj
+
         for values in normalized_rows:
             existing = None
             for lookup_set in lookup_sets:
-                lookup = {
-                    field_name: values.get(field_name) for field_name in lookup_set
-                }
-                if any(value in ("", None) for value in lookup.values()):
+                lookup_key = lookup_key_from_values(values, lookup_set)
+                if lookup_key is None:
                     continue
-                existing = model.objects.filter(**lookup).order_by("pk").first()
+                if lookup_key in lookup_cache[lookup_set]:
+                    existing = lookup_cache[lookup_set][lookup_key]
                 if existing is not None:
                     break
             if existing is None:
@@ -766,6 +793,10 @@ def bulk_orm_apply_tree_models(
                 obj.save()
                 runner.logger.increment_statistics(model_string, outcome="applied")
                 runner.events_clearer.increment()
+                for lookup_set in lookup_sets:
+                    lookup_key = lookup_key_from_values(values, lookup_set)
+                    if lookup_key is not None:
+                        lookup_cache[lookup_set][lookup_key] = obj
                 continue
 
             changed = False

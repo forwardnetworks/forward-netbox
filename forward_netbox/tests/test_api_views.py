@@ -197,13 +197,15 @@ class ForwardNQEMapAPIViewTest(TestCase):
     @patch("forward_netbox.api.views.ForwardSource.get_client")
     def test_available_query_folders_returns_detected_hierarchy(self, mock_get_client):
         mock_client = Mock()
-        mock_client.get_nqe_repository_queries.return_value = [
-            {
-                "queryId": "FQ_devices",
-                "path": "/Library/NetBox/forward_devices",
-                "repository": "fwd",
-            },
-        ]
+        mock_client.get_nqe_repository_query_index.return_value = {
+            "rows": [
+                {
+                    "queryId": "FQ_devices",
+                    "path": "/Library/NetBox/forward_devices",
+                    "repository": "fwd",
+                },
+            ]
+        }
         mock_get_client.return_value = mock_client
 
         response = self._invoke(
@@ -221,7 +223,7 @@ class ForwardNQEMapAPIViewTest(TestCase):
             [item["id"] for item in response.data["results"]],
             ["/", "/Library/", "/Library/NetBox/"],
         )
-        mock_client.get_nqe_repository_queries.assert_called_once_with(
+        mock_client.get_nqe_repository_query_index.assert_called_once_with(
             repository="fwd",
             directory="/",
         )
@@ -231,18 +233,20 @@ class ForwardNQEMapAPIViewTest(TestCase):
         self, mock_get_client
     ):
         mock_client = Mock()
-        mock_client.get_nqe_repository_queries.return_value = [
-            {
-                "queryId": "Q_devices",
-                "path": "/forward_netbox_validation/forward_devices",
-                "intent": "Forward Devices",
-            },
-            {
-                "queryId": "Q_interfaces",
-                "path": "/forward_netbox_validation/forward_interfaces",
-                "intent": "Forward Interfaces",
-            },
-        ]
+        mock_client.get_nqe_repository_query_index.return_value = {
+            "rows": [
+                {
+                    "queryId": "Q_devices",
+                    "path": "/forward_netbox_validation/forward_devices",
+                    "intent": "Forward Devices",
+                },
+                {
+                    "queryId": "Q_interfaces",
+                    "path": "/forward_netbox_validation/forward_interfaces",
+                    "intent": "Forward Interfaces",
+                },
+            ]
+        }
         mock_get_client.return_value = mock_client
 
         response = self._invoke(
@@ -265,25 +269,27 @@ class ForwardNQEMapAPIViewTest(TestCase):
         )
         self.assertEqual(response.data["results"][0]["query_id"], "Q_interfaces")
         self.assertIn("Forward Interfaces", response.data["results"][0]["display"])
-        mock_client.get_nqe_repository_queries.assert_called_once_with(
+        mock_client.get_nqe_repository_query_index.assert_called_once_with(
             repository="org", directory="/forward_netbox_validation/"
         )
 
     @patch("forward_netbox.api.views.ForwardSource.get_client")
     def test_available_queries_filters_by_netbox_model(self, mock_get_client):
         mock_client = Mock()
-        mock_client.get_nqe_repository_queries.return_value = [
-            {
-                "queryId": "Q_devices",
-                "path": "/forward_netbox_validation/forward_devices",
-                "intent": "Forward Devices",
-            },
-            {
-                "queryId": "Q_interfaces",
-                "path": "/forward_netbox_validation/forward_interfaces",
-                "intent": "Forward Interfaces",
-            },
-        ]
+        mock_client.get_nqe_repository_query_index.return_value = {
+            "rows": [
+                {
+                    "queryId": "Q_devices",
+                    "path": "/forward_netbox_validation/forward_devices",
+                    "intent": "Forward Devices",
+                },
+                {
+                    "queryId": "Q_interfaces",
+                    "path": "/forward_netbox_validation/forward_interfaces",
+                    "intent": "Forward Interfaces",
+                },
+            ]
+        }
         mock_get_client.return_value = mock_client
 
         response = self._invoke(
@@ -310,18 +316,20 @@ class ForwardNQEMapAPIViewTest(TestCase):
         self, mock_get_client
     ):
         mock_client = Mock()
-        mock_client.get_nqe_repository_queries.return_value = [
-            {
-                "queryId": "Q_devices",
-                "path": "/forward_netbox_validation/forward_devices",
-                "intent": "Forward Devices",
-            },
-            {
-                "queryId": "Q_interfaces",
-                "path": "/forward_netbox_validation/forward_interfaces",
-                "intent": "Forward Interfaces",
-            },
-        ]
+        mock_client.get_nqe_repository_query_index.return_value = {
+            "rows": [
+                {
+                    "queryId": "Q_devices",
+                    "path": "/forward_netbox_validation/forward_devices",
+                    "intent": "Forward Devices",
+                },
+                {
+                    "queryId": "Q_interfaces",
+                    "path": "/forward_netbox_validation/forward_interfaces",
+                    "intent": "Forward Interfaces",
+                },
+            ]
+        }
         mock_get_client.return_value = mock_client
         model_pk = ContentType.objects.get(app_label="dcim", model="device").pk
 
@@ -378,7 +386,51 @@ class ForwardNQEMapAPIViewTest(TestCase):
         self, mock_get_client
     ):
         mock_client = Mock()
-        mock_client.resolve_nqe_query_reference.return_value = {
+        mock_client.get_nqe_repository_query_index.return_value = {
+            "by_path": {
+                "/forward_netbox_validation/forward_interfaces": {
+                    "queryId": "Q_interfaces",
+                    "path": "/forward_netbox_validation/forward_interfaces",
+                    "lastCommitId": "commit-1",
+                }
+            }
+        }
+        mock_client.get_nqe_query_history.return_value = [
+            {
+                "id": "commit-1",
+                "path": "/forward_netbox_validation/forward_interfaces",
+                "committedAt": "2026-05-10T12:00:00Z",
+            }
+        ]
+        mock_get_client.return_value = mock_client
+
+        response = self._invoke(
+            self.user,
+            "available_query_commits",
+            "available-query-commits",
+            {
+                "source_id": self.source.pk,
+                "repository": "org",
+                "query_path": "/forward_netbox_validation/forward_interfaces",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["results"][0]["id"], "commit-1")
+        mock_client.get_nqe_repository_query_index.assert_called_once_with(
+            repository="org",
+            directory="/",
+        )
+        mock_client.get_committed_nqe_query.assert_not_called()
+        mock_client.get_nqe_query_history.assert_called_once_with("Q_interfaces")
+
+    @patch("forward_netbox.api.views.ForwardSource.get_client")
+    def test_available_query_commits_falls_back_to_committed_query_when_index_missing(
+        self, mock_get_client
+    ):
+        mock_client = Mock()
+        mock_client.get_nqe_repository_query_index.return_value = {"by_path": {}}
+        mock_client.get_committed_nqe_query.return_value = {
             "queryId": "Q_interfaces",
             "commitId": "commit-1",
         }
@@ -404,11 +456,60 @@ class ForwardNQEMapAPIViewTest(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["results"][0]["id"], "commit-1")
-        mock_client.resolve_nqe_query_reference.assert_called_once_with(
+        mock_client.get_nqe_repository_query_index.assert_called_once_with(
+            repository="org",
+            directory="/",
+        )
+        mock_client.get_committed_nqe_query.assert_called_once_with(
             repository="org",
             query_path="/forward_netbox_validation/forward_interfaces",
+            commit_id="head",
+            query_index={"by_path": {}},
         )
         mock_client.get_nqe_query_history.assert_called_once_with("Q_interfaces")
+
+    @patch("forward_netbox.api.views.ForwardSource.get_client")
+    def test_available_query_commits_uses_fwd_query_index_before_history(
+        self, mock_get_client
+    ):
+        mock_client = Mock()
+        mock_client.get_nqe_repository_query_index.return_value = {
+            "by_path": {
+                "/netbox/forward_interfaces": {
+                    "queryId": "FQ_interfaces",
+                    "path": "/netbox/forward_interfaces",
+                    "lastCommitId": "commit-1",
+                }
+            }
+        }
+        mock_client.get_nqe_query_history.return_value = [
+            {
+                "id": "commit-1",
+                "path": "/netbox/forward_interfaces",
+                "committedAt": "2026-05-10T12:00:00Z",
+            }
+        ]
+        mock_get_client.return_value = mock_client
+
+        response = self._invoke(
+            self.user,
+            "available_query_commits",
+            "available-query-commits",
+            {
+                "source_id": self.source.pk,
+                "repository": "fwd",
+                "query_path": "/netbox/forward_interfaces",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["results"][0]["id"], "commit-1")
+        mock_client.get_nqe_repository_query_index.assert_called_once_with(
+            repository="fwd",
+            directory="/",
+        )
+        mock_client.get_committed_nqe_query.assert_not_called()
+        mock_client.get_nqe_query_history.assert_called_once_with("FQ_interfaces")
 
     def test_available_queries_requires_source(self):
         response = self._invoke_available_queries({})

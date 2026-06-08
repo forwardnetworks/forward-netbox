@@ -269,6 +269,8 @@ class ForwardQueryFetcher:
         self._resolved_specs_cache: dict[str, list[Any]] = {}
         self._incremental_baseline_cache: dict[tuple[Any, ...], Any] = {}
         self._query_path_resolution_cache: dict[str, dict[str, Any]] = {}
+        self._context_ingestion_id_cache: dict[tuple[int | None, int], int | None] = {}
+        self._resolved_context_cache: dict[tuple[Any, ...], ForwardQueryContext] = {}
 
     def resolve_context(self, *, branch_run_state=None) -> ForwardQueryContext:
         branch_run_state = branch_run_state or {}
@@ -302,6 +304,24 @@ class ForwardQueryFetcher:
         ).strip()
         if include_match not in {"any", "all"}:
             include_match = "any"
+        prune_out_of_scope = bool(
+            source_parameters.get("device_tag_prune_out_of_scope")
+        )
+        context_cache_key = (
+            network_id,
+            snapshot_selector,
+            snapshot_id,
+            tuple(include_tags),
+            tuple(exclude_tags),
+            include_match,
+            prune_out_of_scope,
+            branch_run_state.get("ingestion_id"),
+            branch_run_state.get("pending_ingestion_id"),
+            branch_run_state.get("current_ingestion_id"),
+        )
+        cached_context = self._resolved_context_cache.get(context_cache_key)
+        if cached_context is not None:
+            return cached_context
         context_artifact = self._context_artifact_descriptor(
             network_id=network_id,
             snapshot_selector=snapshot_selector,
@@ -346,11 +366,7 @@ class ForwardQueryFetcher:
             snapshot_metrics = dict(cached_context.get("snapshot_metrics") or {})
             scoped_device_names = set(cached_context.get("scoped_device_names") or [])
             scoped_site_names = set(cached_context.get("scoped_site_names") or [])
-        prune_out_of_scope = bool(
-            source_parameters.get("device_tag_prune_out_of_scope")
-        )
-
-        return ForwardQueryContext(
+        context = ForwardQueryContext(
             network_id=network_id,
             snapshot_selector=snapshot_selector,
             snapshot_id=snapshot_id,
@@ -366,6 +382,8 @@ class ForwardQueryFetcher:
             scoped_device_names=scoped_device_names,
             scoped_site_names=scoped_site_names,
         )
+        self._resolved_context_cache[context_cache_key] = context
+        return context
 
     def _context_artifact_descriptor(
         self,
@@ -435,6 +453,9 @@ class ForwardQueryFetcher:
         run = active_execution_run(self.sync)
         if run is not None:
             target_index = int(run.next_step_index or 1)
+            cache_key = (getattr(run, "pk", None), target_index)
+            if cache_key in self._context_ingestion_id_cache:
+                return self._context_ingestion_id_cache[cache_key]
             stage_steps = run.steps.filter(kind="stage")
             candidate = stage_steps.filter(index=target_index).order_by("pk").first()
             if candidate is None:
@@ -444,7 +465,9 @@ class ForwardQueryFetcher:
                     .first()
                 )
             if candidate is not None and candidate.ingestion_id:
-                return int(candidate.ingestion_id)
+                ingestion_id = int(candidate.ingestion_id)
+                self._context_ingestion_id_cache[cache_key] = ingestion_id
+                return ingestion_id
         return (
             branch_run_state.get("ingestion_id")
             or branch_run_state.get("pending_ingestion_id")
@@ -906,11 +929,25 @@ class ForwardQueryFetcher:
         query_path_spec_count = 0
         artifact_hit_count = 0
         client_resolve_count = 0
+        repository_index_count = 0
+        query_indexes: dict[str, dict] = {}
         for spec in specs:
             if not getattr(spec, "query_path", None):
                 resolved_specs.append(spec)
                 continue
             query_path_spec_count += 1
+            repository = str(getattr(spec, "query_repository", "") or "org").strip()
+            query_index = query_indexes.get(repository)
+            if query_index is None:
+                try:
+                    query_index = self.client.get_nqe_repository_query_index(
+                        repository=repository,
+                        directory="/",
+                    )
+                except Exception:
+                    query_index = {}
+                query_indexes[repository] = query_index
+                repository_index_count += 1
             descriptor = self._query_spec_artifact_descriptor(
                 model_string=model_string,
                 spec=spec,
@@ -930,7 +967,7 @@ class ForwardQueryFetcher:
                     )
                     continue
             client_resolve_count += 1
-            resolved_spec = spec.resolve(self.client)
+            resolved_spec = spec.resolve(self.client, query_index=query_index)
             self._save_query_spec_artifact(descriptor, resolved_spec)
             resolved_specs.append(resolved_spec)
         self._query_path_resolution_cache[model_string] = {
@@ -938,6 +975,7 @@ class ForwardQueryFetcher:
             "query_path_spec_count": query_path_spec_count,
             "artifact_hit_count": artifact_hit_count,
             "client_resolve_count": client_resolve_count,
+            "repository_index_count": repository_index_count,
             "cache_hit_rate": (
                 round(artifact_hit_count / float(query_path_spec_count), 4)
                 if query_path_spec_count
@@ -945,7 +983,8 @@ class ForwardQueryFetcher:
             ),
             "message": (
                 f"Resolved {query_path_spec_count} query_path spec(s) with "
-                f"{artifact_hit_count} artifact hit(s) and "
+                f"{artifact_hit_count} artifact hit(s), "
+                f"{repository_index_count} repository index read(s), and "
                 f"{client_resolve_count} Forward lookup(s)."
                 if query_path_spec_count
                 else "No query_path specs were present for this model."
@@ -964,6 +1003,7 @@ class ForwardQueryFetcher:
             "query_path_spec_count": query_path_spec_count,
             "artifact_hit_count": 0,
             "client_resolve_count": query_path_spec_count,
+            "repository_index_count": 0,
             "cache_hit_rate": 0.0 if query_path_spec_count else None,
             "message": (
                 f"Resolved {query_path_spec_count} query_path spec(s) with "

@@ -1,0 +1,53 @@
+/**
+ * @intent Forward ACI APIC Nodes
+ * @description Discovers APIC controller and APIC switch inventory from APIC detail command output.
+ */
+
+import "netbox_utilities";
+
+apicNodeRegex = re`(?:^|\R)\s*ID\s*:\s*(?<node_id:Integer>\d+)(?:\*)?\s*\R(?:\s*Role\s*:\s*(?<role>\S+)\s*\R)?\s*Name\s*:\s*(?<node_name>\S+)\s*\R\s*Pod I[Dd]\s*:\s*(?<pod_id:Integer>\d+)\s*\R\s*Address\s*:\s*(?<address>\S+)\s*\R\s*(?:In-Band V4 Address|In-Band IPv4 Address)\s*:\s*(?<inb_mgmt_addr>\S+)\s*\R\s*(?:In-Band V6 Address|In-Band IPv6 Address)\s*:\s*(?<inb_mgmt_addr6>\S+)\s*\R\s*(?:OOB V4 Address|OOB IPv4 Address)\s*:\s*(?<oob_mgmt_addr>\S+)\s*\R\s*(?:OOB V6 Address|OOB IPv6 Address)\s*:\s*(?<oob_mgmt_addr6>\S+)\s*\R\s*Serial Number\s*:\s*(?<serial_number>\S+)\s*\R\s*Version\s*:\s*(?<version>\S+)(?:\s*\R\s*Up Time\s*:\s*(?<up_time>\S+))?(?:\s*\R\s*Fabric State\s*:\s*(?<fabric_state>\S+))?(?:\s*\R\s*State\s*:\s*(?<state>\S+))?`;
+
+aciFabricName(device) =
+  if isPresent(device.locationName) && length(device.locationName) > 0
+  then slugify(toLowerCase(device.locationName))
+  else "forward-aci-fabric";
+
+@query
+f(forward_netbox_shard_keys: List<String>) =
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+foreach command in device.outputs.commands
+where command.commandType == CommandType.CISCO_APIC_SWITCH
+  || command.commandType == CommandType.CISCO_APIC_CONTROLLER_DETAIL
+foreach node_match in regexMatches(command.response, apicNodeRegex)
+let node = node_match.data
+let fabric_name = aciFabricName(device)
+let pod_name = "pod-" + toString(node.pod_id)
+where isEmpty(forward_netbox_shard_keys)
+  || fabric_name in forward_netbox_shard_keys
+  || pod_name in forward_netbox_shard_keys
+  || node.node_name in forward_netbox_shard_keys
+  || toString(node.node_id) in forward_netbox_shard_keys
+select distinct {
+  fabric_name: fabric_name,
+  pod_name: pod_name,
+  pod_id: node.pod_id,
+  node_id: node.node_id,
+  name: node.node_name,
+  role:
+    if command.commandType == CommandType.CISCO_APIC_CONTROLLER_DETAIL
+    then "apic"
+    else if isPresent(node.role) && length(node.role) > 0
+    then node.role
+    else "leaf",
+  node_type: "physical",
+  serial_number: node.serial_number,
+  pod_tep_pool: node.address,
+  firmware_version: node.version,
+  node_object_name: node.node_name,
+  description:
+    if command.commandType == CommandType.CISCO_APIC_CONTROLLER_DETAIL
+    then "Forward observed APIC controller"
+    else "Forward observed APIC switch"
+};

@@ -24,6 +24,7 @@ This repository is a NetBox plugin that syncs Forward Networks inventory into Ne
 - Put local-only sensitive patterns in `.sensitive-patterns.local.txt`.
 - Keep release commits authored by the human operator configured in git.
 - Do not split large production modules casually. First document the boundary and add tests that preserve behavior.
+- For heavy Docker/Buildx/build-push work, especially long-running builds or native amd64 image work, prefer the remote amd64 Docker host `captainpacket@192.168.1.167`. Use `ssh captainpacket@192.168.1.167 'sh -lc "..."'` or `DOCKER_HOST=ssh://captainpacket@192.168.1.167` so the laptop only sends short commands and does not host the build load locally.
 
 ## Agent Workflow
 

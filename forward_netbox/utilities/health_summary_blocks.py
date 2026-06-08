@@ -1,6 +1,7 @@
 from collections import Counter
 from datetime import timedelta
 from math import ceil
+from types import SimpleNamespace
 
 from django.conf import settings
 from django.utils import timezone
@@ -25,6 +26,10 @@ from .execution_ledger_metrics import pushdown_efficiency_summary
 from .execution_ledger_metrics import pushdown_runtime_summary
 from .execution_ledger_metrics import pushdown_tuning_guidance
 from .execution_ledger_metrics import recent_pushdown_trend_snapshots
+from .execution_ledger_serialization import (
+    dependency_lookup_cache_support_summary as _dependency_lookup_cache_support_summary,
+)
+from .execution_telemetry import _build_query_mode_summary
 from .forward_api import DEFAULT_NQE_PAGE_SIZE
 from .forward_api import MAX_NQE_PAGE_SIZE
 from .forward_api import MAX_QUERY_FETCH_CONCURRENCY
@@ -189,6 +194,8 @@ def validation_summary(validation_run):
 def ingestion_summary(ingestion):
     if ingestion is None:
         return None
+    model_results = list(getattr(ingestion, "model_results", None) or [])
+    execution_summary = ingestion.get_execution_summary()
     return {
         "id": ingestion.pk,
         "name": ingestion.name,
@@ -200,7 +207,14 @@ def ingestion_summary(ingestion):
         "issue_count": ingestion.issues.count(),
         "applied_change_count": ingestion.applied_change_count,
         "failed_change_count": ingestion.failed_change_count,
+        "analysis_summary": ingestion.get_analysis_summary(),
+        "execution_summary": execution_summary,
+        "workload_preview": ingestion.get_workload_summary(),
+        "dependency_lookup_cache": _dependency_lookup_cache_support_summary(
+            SimpleNamespace(job=ingestion.job)
+        ),
         "query_path_resolution": query_path_resolution_summary(ingestion),
+        "query_modes": _build_query_mode_summary(model_results),
         "created": ingestion.created.isoformat() if ingestion.created else None,
     }
 
@@ -210,6 +224,7 @@ def query_path_resolution_summary(ingestion):
     total_query_path_specs = 0
     artifact_hit_count = 0
     client_resolve_count = 0
+    repository_index_count = 0
     for result in model_results:
         resolution = result.get("query_path_resolution") or {}
         if not isinstance(resolution, dict):
@@ -217,12 +232,14 @@ def query_path_resolution_summary(ingestion):
         total_query_path_specs += _safe_int(resolution.get("query_path_spec_count"))
         artifact_hit_count += _safe_int(resolution.get("artifact_hit_count"))
         client_resolve_count += _safe_int(resolution.get("client_resolve_count"))
+        repository_index_count += _safe_int(resolution.get("repository_index_count"))
     total_lookups = artifact_hit_count + client_resolve_count
     return {
         "available": bool(total_query_path_specs),
         "total_query_path_specs": total_query_path_specs,
         "artifact_hit_count": artifact_hit_count,
         "client_resolve_count": client_resolve_count,
+        "repository_index_count": repository_index_count,
         "cache_hit_rate": (
             round(artifact_hit_count / float(total_lookups), 4)
             if total_lookups

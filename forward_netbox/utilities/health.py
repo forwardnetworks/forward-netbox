@@ -2,6 +2,7 @@ from collections import Counter
 
 from .execution_ledger import latest_execution_run
 from .execution_ledger_serialization import api_usage_support_summary
+from .execution_ledger_serialization import dependency_lookup_cache_support_summary
 from .forward_api import LATEST_PROCESSED_SNAPSHOT
 from .health_apply_fetch import apply_engine_summary as _apply_engine_summary_impl
 from .health_apply_fetch import fetch_contract_summary as _fetch_contract_summary_impl
@@ -39,6 +40,9 @@ from .health_summary_blocks import (
 )
 from .health_summary_blocks import query_map_summary as _query_map_summary_impl
 from .health_summary_blocks import (
+    query_path_resolution_summary as _query_path_resolution_summary_impl,
+)
+from .health_summary_blocks import (
     query_pushdown_summary as _query_pushdown_summary_impl,
 )
 from .health_summary_blocks import runtime_summary as _runtime_summary_impl
@@ -46,6 +50,7 @@ from .health_summary_blocks import source_summary as _source_summary_impl
 from .health_summary_blocks import step_duration_seconds as _step_duration_seconds_impl
 from .health_summary_blocks import throughput_summary as _throughput_summary_impl
 from .health_summary_blocks import validation_summary as _validation_summary_impl
+from .plugin_integrations import integration_capability_summary
 from .query_binding import local_query_binding_drift
 from .sync_facade import resolve_snapshot_id
 
@@ -81,6 +86,7 @@ DATA_FILE_PROBES = {
 
 
 def sync_health_summary(sync):
+    optional_plugin_capabilities = integration_capability_summary()
     maps = [
         query_map
         for query_map in sync.get_maps()
@@ -113,13 +119,26 @@ def sync_health_summary(sync):
     )
     compatibility_cache = _compatibility_cache_summary(sync, execution_run)
     density_learning = _density_learning_summary(sync)
+    dependency_lookup_cache = dependency_lookup_cache_support_summary(execution_run)
+    latest_ingestion_summary = _ingestion_summary(latest_ingestion) or {}
+    ingestion_dependency_lookup_cache = latest_ingestion_summary.get(
+        "dependency_lookup_cache", {}
+    )
+    if (
+        isinstance(ingestion_dependency_lookup_cache, dict)
+        and not ingestion_dependency_lookup_cache.get("available")
+        and dependency_lookup_cache.get("available")
+    ):
+        latest_ingestion_summary["dependency_lookup_cache"] = dependency_lookup_cache
     query_drift = [local_query_binding_drift(query_map) for query_map in maps]
+    query_drift_summary = _query_drift_summary(query_drift)
     next_run = _next_run_expectation(sync, maps, raw_maps)
     checks = _health_checks(
         sync=sync,
         maps=maps,
         model_summary=model_summary,
         query_drift=query_drift,
+        query_drift_summary=query_drift_summary,
         raw_maps=raw_maps,
         data_file_maps=data_file_maps,
         validation_run=validation_run,
@@ -148,6 +167,23 @@ def sync_health_summary(sync):
         "throughput": throughput,
         "compatibility_cache": compatibility_cache,
         "density_learning": density_learning,
+        "dependency_lookup_cache": dependency_lookup_cache,
+        "optional_plugin_capabilities": optional_plugin_capabilities,
+        "optional_plugin_capabilities_ui": {
+            key.split(".", 1)[0]: value
+            for key, value in optional_plugin_capabilities.items()
+        },
+        "query_drift_summary": query_drift_summary,
+        "analysis_summary": (
+            latest_ingestion.get_analysis_summary()
+            if latest_ingestion is not None
+            else {}
+        ),
+        "query_path_resolution": (
+            _query_path_resolution_summary_impl(latest_ingestion)
+            if latest_ingestion is not None
+            else {}
+        ),
         "query_modes": {
             "query": query_mode_counts.get("query", 0),
             "query_id": query_mode_counts.get("query_id", 0),
@@ -161,7 +197,7 @@ def sync_health_summary(sync):
             "local_drift": query_drift,
         },
         "latest_validation": _validation_summary(validation_run),
-        "latest_ingestion": _ingestion_summary(latest_ingestion),
+        "latest_ingestion": latest_ingestion_summary,
         "latest_execution_run": _execution_run_summary(execution_run),
         "api_usage": api_usage_support_summary(execution_run),
         "capacity": capacity_summary,
@@ -582,6 +618,7 @@ def _health_checks(
     maps,
     model_summary,
     query_drift,
+    query_drift_summary,
     raw_maps,
     data_file_maps,
     validation_run,
@@ -601,6 +638,7 @@ def _health_checks(
         maps=maps,
         model_summary=model_summary,
         query_drift=query_drift,
+        query_drift_summary=query_drift_summary,
         raw_maps=raw_maps,
         data_file_maps=data_file_maps,
         validation_run=validation_run,
@@ -628,6 +666,49 @@ def _query_drift_check_status(query_drift):
 
 def _query_drift_check_message(query_drift):
     return _query_drift_check_message_impl(query_drift)
+
+
+def _query_drift_summary(query_drift):
+    status_counts = {}
+    remediation_actions = {}
+    for item in query_drift or []:
+        if not isinstance(item, dict):
+            continue
+        status = str(item.get("status") or "unknown").strip() or "unknown"
+        status_counts[status] = status_counts.get(status, 0) + 1
+        remediation = str(item.get("remediation") or "").strip()
+        if remediation and item.get("severity") != "pass":
+            remediation_actions[remediation] = (
+                remediation_actions.get(remediation, 0) + 1
+            )
+    remediation_action_list = [
+        {"message": message, "count": count}
+        for message, count in sorted(
+            remediation_actions.items(), key=lambda item: (-item[1], item[0])
+        )
+    ]
+    total = sum(status_counts.values())
+    return {
+        "available": bool(total),
+        "total_maps": total,
+        "status_counts": dict(sorted(status_counts.items())),
+        "remediation_actions": remediation_action_list,
+        "warn_count": sum(
+            1
+            for item in query_drift or []
+            if str((item or {}).get("severity") or "") == "warn"
+        ),
+        "info_count": sum(
+            1
+            for item in query_drift or []
+            if str((item or {}).get("severity") or "") == "info"
+        ),
+        "pass_count": sum(
+            1
+            for item in query_drift or []
+            if str((item or {}).get("severity") or "") == "pass"
+        ),
+    }
 
 
 def _branching_available():
