@@ -5,6 +5,7 @@ from django.db.models import Q
 from django.db.models.deletion import ProtectedError
 
 from ..exceptions import ForwardDependencySkipError
+from ..exceptions import ForwardQueryError
 from ..exceptions import ForwardSearchError
 
 
@@ -408,8 +409,6 @@ def delete_by_coalesce(runner, model, lookups):
 def optional_model(app_label, model_name, model_string):
     from django.apps import apps
 
-    from ..exceptions import ForwardQueryError
-
     try:
         return apps.get_model(app_label, model_name)
     except LookupError as exc:
@@ -608,7 +607,8 @@ def prime_dependency_lookup_caches(runner, model_string, rows):
     if routing_interface_alias_pairs:
         _prime_routing_interface_candidate_cache(runner, routing_interface_alias_pairs)
         summary["routing_interface_alias_count"] = len(routing_interface_alias_pairs)
-    routing_identity_summary = _prime_routing_bgp_identity_cache(
+    routing_identity_summary = _prime_optional_dependency_cache(
+        _prime_routing_bgp_identity_cache,
         runner,
         model_string,
         rows,
@@ -621,7 +621,8 @@ def prime_dependency_lookup_caches(runner, model_string, rows):
         summary["routing_bgp_scope_count"] = routing_identity_summary[
             "routing_bgp_scope_count"
         ]
-    routing_ospf_summary = _prime_routing_ospf_identity_cache(
+    routing_ospf_summary = _prime_optional_dependency_cache(
+        _prime_routing_ospf_identity_cache,
         runner,
         model_string,
         rows,
@@ -675,6 +676,13 @@ def prime_dependency_lookup_caches(runner, model_string, rows):
     )
     summary["available"] = bool(summary["primed_target_count"])
     return summary
+
+
+def _prime_optional_dependency_cache(primer, runner, model_string, rows):
+    try:
+        return primer(runner, model_string, rows)
+    except ForwardQueryError:
+        return {}
 
 
 def _dependency_device_names(model_string, rows):
