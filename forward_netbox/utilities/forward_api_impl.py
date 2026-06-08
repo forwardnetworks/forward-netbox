@@ -39,6 +39,11 @@ FORWARD_API_RATE_LIMIT_CACHE_TIMEOUT_SECONDS = 120
 FORWARD_API_RATE_LIMIT_LOCK_TIMEOUT_SECONDS = 5
 DEFAULT_QUERY_PREFLIGHT_ENABLED = True
 DEFAULT_QUERY_DIAGNOSTICS_ENABLED = True
+DEFAULT_NQE_ASYNC_ENABLED = False
+DEFAULT_NQE_ASYNC_POLL_INTERVAL_SECONDS = 1.0
+DEFAULT_NQE_ASYNC_MAX_POLLS = 1200
+MAX_NQE_ASYNC_POLL_INTERVAL_SECONDS = 60.0
+MAX_NQE_ASYNC_MAX_POLLS = 10000
 TRANSIENT_FORWARD_HTTP_STATUS_CODES = {408, 429, 502, 503, 504}
 NQE_QUERY_REPOSITORIES = {"org", "fwd"}
 READ_CACHE_TIMEOUT_SECONDS = 60
@@ -126,6 +131,18 @@ class ForwardClient:
                 params.get("nqe_identical_full_page_streak_limit")
             )
         )
+        self.nqe_async_enabled = self._coerce_bool(
+            params.get("nqe_async_enabled"),
+            DEFAULT_NQE_ASYNC_ENABLED,
+        )
+        self.nqe_async_poll_interval_seconds = (
+            self._coerce_nqe_async_poll_interval_seconds(
+                params.get("nqe_async_poll_interval_seconds")
+            )
+        )
+        self.nqe_async_max_polls = self._coerce_nqe_async_max_polls(
+            params.get("nqe_async_max_polls")
+        )
         self.base_url = source.url.rstrip("/")
         self.username = params.get("username")
         self.password = params.get("password")
@@ -172,6 +189,10 @@ class ForwardClient:
             "nqe_pages": 0,
             "nqe_query_pages": 0,
             "nqe_diff_pages": 0,
+            "nqe_async_query_calls": 0,
+            "nqe_async_trigger_calls": 0,
+            "nqe_async_status_calls": 0,
+            "nqe_async_result_calls": 0,
             "read_cache_hits": 0,
             "read_cache_misses": 0,
         }
@@ -405,6 +426,33 @@ class ForwardClient:
         if source_type == "saas" or self.base_url == "https://fwd.app":
             return DEFAULT_FORWARD_SAAS_API_REQUESTS_PER_MINUTE
         return DEFAULT_FORWARD_API_REQUESTS_PER_MINUTE
+
+    def _coerce_bool(self, value, default=False):
+        if value in (None, ""):
+            return bool(default)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+
+    def _coerce_nqe_async_poll_interval_seconds(self, value):
+        if value is None:
+            return DEFAULT_NQE_ASYNC_POLL_INTERVAL_SECONDS
+        try:
+            interval = float(value)
+        except (TypeError, ValueError):
+            return DEFAULT_NQE_ASYNC_POLL_INTERVAL_SECONDS
+        return max(0.0, min(interval, MAX_NQE_ASYNC_POLL_INTERVAL_SECONDS))
+
+    def _coerce_nqe_async_max_polls(self, value):
+        if value is None:
+            return DEFAULT_NQE_ASYNC_MAX_POLLS
+        try:
+            polls = int(value)
+        except (TypeError, ValueError):
+            return DEFAULT_NQE_ASYNC_MAX_POLLS
+        return max(1, min(polls, MAX_NQE_ASYNC_MAX_POLLS))
 
     def _page_signature(self, rows):
         if not rows:
@@ -1105,6 +1153,179 @@ class ForwardClient:
             )
         return parsed_rows, data.get("totalNumRows")
 
+    def _nqe_async_query_available(
+        self,
+        *,
+        network_id,
+        snapshot_id,
+        item_format,
+    ):
+        return (
+            self.nqe_async_enabled
+            and bool(network_id)
+            and bool(snapshot_id)
+            and str(item_format or "JSON").upper() == "JSON"
+        )
+
+    def _nqe_query_payload(
+        self,
+        *,
+        query=None,
+        query_id=None,
+        commit_id=None,
+        parameters=None,
+        limit=None,
+        offset=0,
+        item_format="JSON",
+        column_filters=None,
+    ):
+        payload = {
+            "parameters": parameters or {},
+            "queryOptions": {
+                "limit": limit,
+                "offset": offset,
+                "itemFormat": item_format,
+            },
+        }
+        if column_filters:
+            payload["queryOptions"]["columnFilters"] = column_filters
+        if query_id:
+            payload["queryId"] = query_id
+            if commit_id:
+                payload["commitId"] = commit_id
+        else:
+            payload["query"] = query
+        return payload
+
+    def _nqe_async_execution_payload(
+        self,
+        *,
+        query=None,
+        query_id=None,
+        commit_id=None,
+        parameters=None,
+        column_filters=None,
+    ):
+        payload = {"parameters": parameters or {}}
+        if column_filters:
+            payload["columnFilters"] = column_filters
+        if query_id:
+            payload["queryId"] = query_id
+            if commit_id:
+                payload["commitId"] = commit_id
+        else:
+            payload["query"] = query
+        return payload
+
+    def _nqe_async_status_state(self, status_payload):
+        return str((status_payload or {}).get("status") or "").strip().upper()
+
+    def _nqe_async_outcome(self, status_payload):
+        return str((status_payload or {}).get("outcome") or "").strip().upper()
+
+    def _nqe_async_error_summary(self, status_payload):
+        error = (status_payload or {}).get("error")
+        if isinstance(error, dict):
+            return (
+                error.get("message")
+                or error.get("reason")
+                or json.dumps(error, sort_keys=True, default=str)
+            )
+        if error:
+            return str(error)
+        return json.dumps(status_payload or {}, sort_keys=True, default=str)
+
+    def _start_nqe_async_execution(
+        self,
+        *,
+        query=None,
+        query_id=None,
+        commit_id=None,
+        network_id,
+        snapshot_id,
+        parameters=None,
+        column_filters=None,
+    ):
+        payload = self._nqe_async_execution_payload(
+            query=query,
+            query_id=query_id,
+            commit_id=commit_id,
+            parameters=parameters,
+            column_filters=column_filters,
+        )
+        self._record_api_usage("nqe_async_trigger_calls")
+        response = self._request(
+            "POST",
+            f"/networks/{quote(str(network_id), safe='')}/nqe-executions",
+            params={"snapshotId": snapshot_id},
+            json_body=payload,
+        )
+        data = response.json() or {}
+        execution_key = str(data.get("executionKey") or "").strip()
+        if not execution_key:
+            raise ForwardClientError(
+                "Forward async NQE execution did not return `executionKey`."
+            )
+        return execution_key, data
+
+    def _get_nqe_async_status(self, *, network_id, execution_key):
+        self._record_api_usage("nqe_async_status_calls")
+        response = self._request(
+            "GET",
+            "/networks/{network_id}/nqe-executions/{execution_key}".format(
+                network_id=quote(str(network_id), safe=""),
+                execution_key=quote(str(execution_key), safe=""),
+            ),
+        )
+        return response.json() or {}
+
+    def _wait_for_nqe_async_completion(self, *, network_id, execution_key, status):
+        current_status = status or {}
+        for poll_index in range(self.nqe_async_max_polls + 1):
+            state = self._nqe_async_status_state(current_status)
+            outcome = self._nqe_async_outcome(current_status)
+            if state == "COMPLETED":
+                if outcome == "OK":
+                    return current_status
+                raise ForwardClientError(
+                    "Forward async NQE execution completed with outcome "
+                    f"`{outcome or '<unknown>'}`: "
+                    f"{self._nqe_async_error_summary(current_status)}"
+                )
+            if poll_index >= self.nqe_async_max_polls:
+                break
+            if self.nqe_async_poll_interval_seconds:
+                time.sleep(self.nqe_async_poll_interval_seconds)
+            current_status = self._get_nqe_async_status(
+                network_id=network_id,
+                execution_key=execution_key,
+            )
+        raise ForwardClientError(
+            "Forward async NQE execution did not complete after "
+            f"{self.nqe_async_max_polls} status poll(s)."
+        )
+
+    def _fetch_nqe_async_result_page(
+        self,
+        *,
+        network_id,
+        execution_key,
+        limit,
+        offset,
+    ):
+        self._record_api_usage("nqe_pages")
+        self._record_api_usage("nqe_query_pages")
+        self._record_api_usage("nqe_async_result_calls")
+        response = self._request(
+            "GET",
+            "/networks/{network_id}/nqe-executions/{execution_key}/result".format(
+                network_id=quote(str(network_id), safe=""),
+                execution_key=quote(str(execution_key), safe=""),
+            ),
+            params={"offset": offset, "limit": limit},
+        )
+        return self._parse_nqe_records(response.json() or {})
+
     def run_nqe_query(
         self,
         *,
@@ -1129,25 +1350,37 @@ class ForwardClient:
         if limit < 1:
             raise ForwardClientError("`limit` must be at least 1.")
 
+        if self._nqe_async_query_available(
+            network_id=network_id,
+            snapshot_id=snapshot_id,
+            item_format=item_format,
+        ):
+            return self._run_nqe_query_async(
+                query=query,
+                query_id=query_id,
+                commit_id=commit_id,
+                network_id=network_id,
+                snapshot_id=snapshot_id,
+                parameters=parameters,
+                limit=limit,
+                offset=offset,
+                column_filters=column_filters,
+                fetch_all=fetch_all,
+            )
+
         def fetch_page(page_offset):
             self._record_api_usage("nqe_pages")
             self._record_api_usage("nqe_query_pages")
-            payload = {
-                "parameters": parameters or {},
-                "queryOptions": {
-                    "limit": limit,
-                    "offset": page_offset,
-                    "itemFormat": item_format,
-                },
-            }
-            if column_filters:
-                payload["queryOptions"]["columnFilters"] = column_filters
-            if query_id:
-                payload["queryId"] = query_id
-                if commit_id:
-                    payload["commitId"] = commit_id
-            else:
-                payload["query"] = query
+            payload = self._nqe_query_payload(
+                query=query,
+                query_id=query_id,
+                commit_id=commit_id,
+                parameters=parameters,
+                limit=limit,
+                offset=page_offset,
+                item_format=item_format,
+                column_filters=column_filters,
+            )
             req_params = {}
             if network_id:
                 req_params["networkId"] = network_id
@@ -1221,6 +1454,108 @@ class ForwardClient:
                 if expected_total is not None and len(all_records) < expected_total:
                     raise ForwardClientError(
                         "Forward NQE pagination ended early: "
+                        f"fetched {len(all_records)} rows but API reported {expected_total}."
+                    )
+                return all_records
+            all_records.extend(page_records)
+
+    def _run_nqe_query_async(
+        self,
+        *,
+        query=None,
+        query_id=None,
+        commit_id=None,
+        network_id,
+        snapshot_id,
+        parameters=None,
+        limit=None,
+        offset=0,
+        column_filters=None,
+        fetch_all=False,
+    ):
+        self._record_api_usage("nqe_query_calls")
+        self._record_api_usage("nqe_async_query_calls")
+        execution_key, initial_status = self._start_nqe_async_execution(
+            query=query,
+            query_id=query_id,
+            commit_id=commit_id,
+            network_id=network_id,
+            snapshot_id=snapshot_id,
+            parameters=parameters,
+            column_filters=column_filters,
+        )
+        self._wait_for_nqe_async_completion(
+            network_id=network_id,
+            execution_key=execution_key,
+            status=initial_status,
+        )
+        records, total_num_items = self._fetch_nqe_async_result_page(
+            network_id=network_id,
+            execution_key=execution_key,
+            limit=limit,
+            offset=offset,
+        )
+        if not fetch_all:
+            return records
+
+        all_records = list(records)
+        expected_total = int(total_num_items) if total_num_items is not None else None
+        last_page_size = len(records)
+        fetched_pages = 1
+        identical_full_page_streak = 0
+        previous_full_page_signature = (
+            self._page_signature(records)
+            if expected_total is None and len(records) == limit
+            else None
+        )
+
+        while True:
+            if expected_total is not None and len(all_records) >= expected_total:
+                return all_records
+            if expected_total is None and last_page_size < limit:
+                return all_records
+            if fetched_pages >= self.nqe_fetch_all_max_pages:
+                raise ForwardClientError(
+                    "Forward async NQE result pagination exceeded "
+                    f"{self.nqe_fetch_all_max_pages} page(s) while fetching "
+                    f"`{query_id or '<raw-query>'}`."
+                )
+
+            next_offset = offset + len(all_records)
+            page_records, page_total = self._fetch_nqe_async_result_page(
+                network_id=network_id,
+                execution_key=execution_key,
+                limit=limit,
+                offset=next_offset,
+            )
+            fetched_pages += 1
+            if expected_total is None and page_total is not None:
+                expected_total = int(page_total)
+            last_page_size = len(page_records)
+            if expected_total is None and last_page_size == limit and page_records:
+                signature = self._page_signature(page_records)
+                if signature == previous_full_page_signature:
+                    identical_full_page_streak += 1
+                else:
+                    identical_full_page_streak = 0
+                previous_full_page_signature = signature
+                if (
+                    identical_full_page_streak
+                    >= self.nqe_identical_full_page_streak_limit
+                ):
+                    raise ForwardClientError(
+                        "Forward async NQE result pagination did not advance; received "
+                        f"{identical_full_page_streak + 1} identical full page(s) "
+                        f"for `{query_id or '<raw-query>'}`. "
+                        "Verify Forward API pagination for this execution."
+                    )
+            else:
+                identical_full_page_streak = 0
+                previous_full_page_signature = None
+            if not page_records:
+                if expected_total is not None and len(all_records) < expected_total:
+                    raise ForwardClientError(
+                        "Forward async NQE result pagination ended early: "
                         f"fetched {len(all_records)} rows but API reported {expected_total}."
                     )
                 return all_records
