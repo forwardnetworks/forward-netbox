@@ -160,3 +160,68 @@ class SyncLogging:
         with self._lock:
             self.log_data["forward_api_usage"] = dict(summary or {})
             cache.set(self.cache_key, self.log_data, self.cache_timeout)
+
+    def add_dependency_lookup_summary(self, summary: dict) -> None:
+        summary = dict(summary or {})
+        if not summary:
+            return
+        model_string = str(summary.get("model") or "").strip()
+        if not model_string:
+            return
+        with self._lock:
+            bucket = self.log_data.setdefault(
+                "dependency_lookup_cache",
+                {
+                    "available": False,
+                    "row_count": 0,
+                    "primed_target_count": 0,
+                    "model_count": 0,
+                    "models": [],
+                },
+            )
+            bucket["available"] = True
+            bucket["row_count"] = int(bucket.get("row_count") or 0) + int(
+                summary.get("row_count") or 0
+            )
+            bucket["primed_target_count"] = int(
+                bucket.get("primed_target_count") or 0
+            ) + int(summary.get("primed_target_count") or 0)
+            models = list(bucket.get("models") or [])
+            existing = next(
+                (
+                    item
+                    for item in models
+                    if str(item.get("model") or "") == model_string
+                ),
+                None,
+            )
+            if existing is None:
+                models.append(summary)
+            else:
+                existing["row_count"] = int(existing.get("row_count") or 0) + int(
+                    summary.get("row_count") or 0
+                )
+                existing["primed_target_count"] = int(
+                    existing.get("primed_target_count") or 0
+                ) + int(summary.get("primed_target_count") or 0)
+                for key in (
+                    "device_name_count",
+                    "tag_row_count",
+                    "interface_pair_count",
+                    "module_bay_pair_count",
+                    "fhrp_group_count",
+                    "ipam_identity_row_count",
+                    "ipam_global_host_row_count",
+                ):
+                    existing[key] = int(existing.get(key) or 0) + int(
+                        summary.get(key) or 0
+                    )
+            bucket["model_count"] = len(models)
+            bucket["models"] = sorted(
+                models,
+                key=lambda item: (
+                    -int(item.get("row_count") or 0),
+                    str(item.get("model") or ""),
+                ),
+            )[:10]
+            cache.set(self.cache_key, self.log_data, self.cache_timeout)

@@ -221,6 +221,7 @@ def _sync_support_bundle_payload(sync):
     execution_state_source = (
         execution_state.get("state_source") if execution_state else None
     )
+    health = sync_health_summary(sync)
     return {
         "exported_at": timezone.now().isoformat(),
         "sync": {
@@ -235,6 +236,8 @@ def _sync_support_bundle_payload(sync):
             "workload_summary": sync.get_workload_summary(),
             "advisory_summary": sync.get_advisory_summary(),
         },
+        "query_drift_summary": health.get("query_drift_summary", {}),
+        "query_drift_results": health.get("query_modes", {}).get("local_drift", []),
         "latest_ingestion": (
             {
                 "pk": latest_ingestion.pk,
@@ -256,7 +259,7 @@ def _sync_support_bundle_payload(sync):
             else None
         ),
         "execution_run": json_safe_value(execution_run_bundle_for_sync(sync)),
-        "health": json_safe_value(sync_health_summary(sync)),
+        "health": json_safe_value(health),
     }
 
 
@@ -596,6 +599,7 @@ class ForwardSyncQueryDriftView(BaseObjectView):
     def get(self, request, pk):
         sync = get_object_or_404(self.queryset, pk=pk)
         client = sync.source.get_client()
+        health = sync_health_summary(sync)
         maps = [
             query_map
             for query_map in sync.get_maps()
@@ -608,6 +612,7 @@ class ForwardSyncQueryDriftView(BaseObjectView):
                 "name": sync.name,
                 "source": sync.source_id,
             },
+            "query_drift_summary": health.get("query_drift_summary", {}),
             "results": [
                 live_query_binding_drift(client=client, query_map=query_map)
                 for query_map in maps

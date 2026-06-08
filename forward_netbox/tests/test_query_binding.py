@@ -22,18 +22,48 @@ from forward_netbox.views import ForwardNQEMapBulkEditView
 class NQEMapBindingTest(TestCase):
     def test_build_bindings_matches_repository_queries_to_builtin_models(self):
         client = Mock()
-        client.get_nqe_repository_queries.return_value = [
-            {
-                "queryId": "Q_devices",
-                "path": "/forward_netbox_validation/forward_devices",
-                "lastCommitId": "commit-1",
+        client.get_nqe_repository_query_index.return_value = {
+            "rows": [
+                {
+                    "queryId": "Q_devices",
+                    "path": "/forward_netbox_validation/forward_devices",
+                    "lastCommitId": "commit-1",
+                },
+                {
+                    "queryId": "Q_unrelated",
+                    "path": "/forward_netbox_validation/unrelated",
+                    "lastCommitId": "commit-2",
+                },
+            ],
+            "by_path": {
+                "/forward_netbox_validation/forward_devices": {
+                    "queryId": "Q_devices",
+                    "path": "/forward_netbox_validation/forward_devices",
+                    "lastCommitId": "commit-1",
+                },
+                "/forward_netbox_validation/unrelated": {
+                    "queryId": "Q_unrelated",
+                    "path": "/forward_netbox_validation/unrelated",
+                    "lastCommitId": "commit-2",
+                },
             },
-            {
-                "queryId": "Q_unrelated",
-                "path": "/forward_netbox_validation/unrelated",
-                "lastCommitId": "commit-2",
+            "by_query_id": {
+                "Q_devices": [
+                    {
+                        "queryId": "Q_devices",
+                        "path": "/forward_netbox_validation/forward_devices",
+                        "lastCommitId": "commit-1",
+                    }
+                ],
+                "Q_unrelated": [
+                    {
+                        "queryId": "Q_unrelated",
+                        "path": "/forward_netbox_validation/unrelated",
+                        "lastCommitId": "commit-2",
+                    }
+                ],
             },
-        ]
+        }
 
         bindings = build_nqe_map_bindings(
             client=client,
@@ -52,6 +82,29 @@ class NQEMapBindingTest(TestCase):
         )
         self.assertEqual(bindings[0].commit_id, "commit-1")
 
+    def test_build_bindings_uses_provided_query_index_without_refetching(self):
+        client = Mock()
+        query_index = {
+            "rows": [
+                {
+                    "queryId": "Q_devices",
+                    "path": "/forward_netbox_validation/forward_devices",
+                    "lastCommitId": "commit-1",
+                }
+            ]
+        }
+
+        bindings = build_nqe_map_bindings(
+            client=client,
+            repository="org",
+            directory="/forward_netbox_validation/",
+            query_index=query_index,
+        )
+
+        self.assertEqual(len(bindings), 1)
+        self.assertEqual(bindings[0].query_id, "Q_devices")
+        client.get_nqe_repository_query_index.assert_not_called()
+
     def test_apply_bindings_switches_matching_model_to_query_id_mode(self):
         netbox_model = ContentType.objects.get(app_label="dcim", model="device")
         query_map = ForwardNQEMap.objects.create(
@@ -63,14 +116,32 @@ class NQEMapBindingTest(TestCase):
         )
         bindings = build_nqe_map_bindings(
             client=Mock(
-                get_nqe_repository_queries=Mock(
-                    return_value=[
-                        {
-                            "queryId": "Q_devices",
-                            "path": "/forward_netbox_validation/forward_devices",
-                            "lastCommitId": "commit-1",
-                        }
-                    ]
+                get_nqe_repository_query_index=Mock(
+                    return_value={
+                        "rows": [
+                            {
+                                "queryId": "Q_devices",
+                                "path": "/forward_netbox_validation/forward_devices",
+                                "lastCommitId": "commit-1",
+                            }
+                        ],
+                        "by_path": {
+                            "/forward_netbox_validation/forward_devices": {
+                                "queryId": "Q_devices",
+                                "path": "/forward_netbox_validation/forward_devices",
+                                "lastCommitId": "commit-1",
+                            }
+                        },
+                        "by_query_id": {
+                            "Q_devices": [
+                                {
+                                    "queryId": "Q_devices",
+                                    "path": "/forward_netbox_validation/forward_devices",
+                                    "lastCommitId": "commit-1",
+                                }
+                            ]
+                        },
+                    }
                 )
             ),
             repository="org",
@@ -126,13 +197,31 @@ class NQEMapBindingTest(TestCase):
         )
         self.assertTrue(form.is_valid(), form.errors)
         client = Mock()
-        client.get_nqe_repository_queries.return_value = [
-            {
-                "queryId": "Q_devices",
-                "path": "/forward_netbox_validation/forward_devices",
-                "lastCommitId": "commit-1",
-            }
-        ]
+        client.get_nqe_repository_query_index.return_value = {
+            "rows": [
+                {
+                    "queryId": "Q_devices",
+                    "path": "/forward_netbox_validation/forward_devices",
+                    "lastCommitId": "commit-1",
+                }
+            ],
+            "by_path": {
+                "/forward_netbox_validation/forward_devices": {
+                    "queryId": "Q_devices",
+                    "path": "/forward_netbox_validation/forward_devices",
+                    "lastCommitId": "commit-1",
+                }
+            },
+            "by_query_id": {
+                "Q_devices": [
+                    {
+                        "queryId": "Q_devices",
+                        "path": "/forward_netbox_validation/forward_devices",
+                        "lastCommitId": "commit-1",
+                    }
+                ]
+            },
+        }
 
         view = ForwardNQEMapBulkEditView()
         with patch.object(ForwardSource, "get_client", return_value=client):
@@ -241,6 +330,7 @@ class NQEMapBindingTest(TestCase):
         self.assertEqual(drift["status"], "direct_query_id_unverified")
         self.assertEqual(drift["severity"], "info")
         self.assertEqual(drift["commit_binding"], "latest_commit")
+        self.assertIn("repository-path", drift["remediation"])
 
     def test_live_query_binding_drift_reports_repository_source_match(self):
         netbox_model = ContentType.objects.get(app_label="dcim", model="device")
@@ -297,15 +387,19 @@ class NQEMapBindingTest(TestCase):
             query_id="Q_devices",
         )
         client = Mock()
-        client.get_nqe_repository_queries.side_effect = [
-            [
-                {
-                    "queryId": "Q_devices",
-                    "path": "/forward_netbox_validation/forward_devices",
-                    "lastCommitId": "commit-1",
+        client.get_nqe_repository_query_index.side_effect = [
+            {
+                "by_query_id": {
+                    "Q_devices": [
+                        {
+                            "queryId": "Q_devices",
+                            "path": "/forward_netbox_validation/forward_devices",
+                            "lastCommitId": "commit-1",
+                        }
+                    ]
                 }
-            ],
-            [],
+            },
+            {"by_query_id": {}},
         ]
         client.get_committed_nqe_query.return_value = {
             "queryId": "Q_devices",
@@ -329,15 +423,19 @@ class NQEMapBindingTest(TestCase):
             commit_id="commit-pinned",
         )
         client = Mock()
-        client.get_nqe_repository_queries.side_effect = [
-            [
-                {
-                    "queryId": "Q_devices",
-                    "path": "/forward_netbox_validation/forward_devices",
-                    "lastCommitId": "commit-latest",
+        client.get_nqe_repository_query_index.side_effect = [
+            {
+                "by_query_id": {
+                    "Q_devices": [
+                        {
+                            "queryId": "Q_devices",
+                            "path": "/forward_netbox_validation/forward_devices",
+                            "lastCommitId": "commit-latest",
+                        }
+                    ]
                 }
-            ],
-            [],
+            },
+            {"by_query_id": {}},
         ]
         client.get_committed_nqe_query.return_value = {
             "queryId": "Q_devices",
@@ -365,13 +463,14 @@ class NQEMapBindingTest(TestCase):
             query_id="Q_missing",
         )
         client = Mock()
-        client.get_nqe_repository_queries.return_value = []
+        client.get_nqe_repository_query_index.return_value = {"by_query_id": {}}
 
         drift = live_query_binding_drift(client=client, query_map=query_map)
 
         self.assertEqual(drift["status"], "direct_query_id_unverified")
         self.assertEqual(drift["severity"], "warn")
         self.assertEqual(drift["live_status"], "direct_query_id_not_found")
+        self.assertIn("repository path", drift["remediation"])
 
     def test_publish_builtin_queries_adds_sources_commits_and_binds_selected_maps(self):
         netbox_model = ContentType.objects.get(app_label="dcim", model="device")
@@ -381,20 +480,50 @@ class NQEMapBindingTest(TestCase):
             query=read_builtin_query_source("forward_devices.nqe"),
         )
         client = Mock()
-        client.get_nqe_repository_queries.side_effect = [
-            [],
-            [
-                {
-                    "queryId": "OQ_utilities",
-                    "path": "/forward_netbox_validation/netbox_utilities",
-                    "lastCommitId": "commit-1",
+        client.get_nqe_repository_query_index.side_effect = [
+            {"rows": [], "by_path": {}, "by_query_id": {}},
+            {
+                "rows": [
+                    {
+                        "queryId": "OQ_utilities",
+                        "path": "/forward_netbox_validation/netbox_utilities",
+                        "lastCommitId": "commit-1",
+                    },
+                    {
+                        "queryId": "OQ_devices",
+                        "path": "/forward_netbox_validation/forward_devices",
+                        "lastCommitId": "commit-1",
+                    },
+                ],
+                "by_path": {
+                    "/forward_netbox_validation/netbox_utilities": {
+                        "queryId": "OQ_utilities",
+                        "path": "/forward_netbox_validation/netbox_utilities",
+                        "lastCommitId": "commit-1",
+                    },
+                    "/forward_netbox_validation/forward_devices": {
+                        "queryId": "OQ_devices",
+                        "path": "/forward_netbox_validation/forward_devices",
+                        "lastCommitId": "commit-1",
+                    },
                 },
-                {
-                    "queryId": "OQ_devices",
-                    "path": "/forward_netbox_validation/forward_devices",
-                    "lastCommitId": "commit-1",
+                "by_query_id": {
+                    "OQ_utilities": [
+                        {
+                            "queryId": "OQ_utilities",
+                            "path": "/forward_netbox_validation/netbox_utilities",
+                            "lastCommitId": "commit-1",
+                        }
+                    ],
+                    "OQ_devices": [
+                        {
+                            "queryId": "OQ_devices",
+                            "path": "/forward_netbox_validation/forward_devices",
+                            "lastCommitId": "commit-1",
+                        }
+                    ],
                 },
-            ],
+            },
         ]
         client.commit_org_nqe_queries.return_value = "commit-1"
 
@@ -428,6 +557,11 @@ class NQEMapBindingTest(TestCase):
         client.commit_org_nqe_queries.assert_called_once_with(
             query_paths=published_paths,
             message="Publish Forward NetBox NQE maps",
+        )
+        self.assertEqual(client.get_nqe_repository_query_index.call_count, 2)
+        client.get_nqe_repository_query_index.assert_any_call(
+            repository="org",
+            directory="/forward_netbox_validation/",
         )
         self.assertTrue(any(result.matched for result in results))
         query_map.refresh_from_db()
@@ -466,20 +600,54 @@ class NQEMapBindingTest(TestCase):
         )
         self.assertTrue(form.is_valid(), form.errors)
         client = Mock()
-        client.get_nqe_repository_queries.side_effect = [
-            [],
-            [
-                {
-                    "queryId": "OQ_utilities",
-                    "path": "/forward_netbox_validation/netbox_utilities",
-                    "lastCommitId": "commit-1",
+        client.get_nqe_repository_query_index.side_effect = [
+            {
+                "rows": [],
+                "by_path": {},
+                "by_query_id": {},
+            },
+            {
+                "rows": [
+                    {
+                        "queryId": "OQ_utilities",
+                        "path": "/forward_netbox_validation/netbox_utilities",
+                        "lastCommitId": "commit-1",
+                    },
+                    {
+                        "queryId": "OQ_devices",
+                        "path": "/forward_netbox_validation/forward_devices",
+                        "lastCommitId": "commit-1",
+                    },
+                ],
+                "by_path": {
+                    "/forward_netbox_validation/netbox_utilities": {
+                        "queryId": "OQ_utilities",
+                        "path": "/forward_netbox_validation/netbox_utilities",
+                        "lastCommitId": "commit-1",
+                    },
+                    "/forward_netbox_validation/forward_devices": {
+                        "queryId": "OQ_devices",
+                        "path": "/forward_netbox_validation/forward_devices",
+                        "lastCommitId": "commit-1",
+                    },
                 },
-                {
-                    "queryId": "OQ_devices",
-                    "path": "/forward_netbox_validation/forward_devices",
-                    "lastCommitId": "commit-1",
+                "by_query_id": {
+                    "OQ_utilities": [
+                        {
+                            "queryId": "OQ_utilities",
+                            "path": "/forward_netbox_validation/netbox_utilities",
+                            "lastCommitId": "commit-1",
+                        }
+                    ],
+                    "OQ_devices": [
+                        {
+                            "queryId": "OQ_devices",
+                            "path": "/forward_netbox_validation/forward_devices",
+                            "lastCommitId": "commit-1",
+                        }
+                    ],
                 },
-            ],
+            },
         ]
         client.commit_org_nqe_queries.return_value = "commit-1"
 
@@ -491,6 +659,64 @@ class NQEMapBindingTest(TestCase):
         query_map.refresh_from_db()
         self.assertEqual(query_map.query_id, "OQ_devices")
         self.assertEqual(query_map.query_path, "")
+        self.assertEqual(client.get_nqe_repository_query_index.call_count, 2)
+        client.get_nqe_repository_query_index.assert_any_call(
+            repository="org",
+            directory="/forward_netbox_validation/",
+        )
+
+    def test_publish_builtin_queries_reuses_initial_query_index_when_no_changes(
+        self,
+    ):
+        netbox_model = ContentType.objects.get(app_label="dcim", model="device")
+        query_map = ForwardNQEMap.objects.create(
+            name="Forward Devices",
+            netbox_model=netbox_model,
+            query=read_builtin_query_source("forward_devices.nqe"),
+            query_repository="org",
+            query_path="/forward_netbox_validation/forward_devices",
+        )
+        client = Mock()
+        client.get_nqe_repository_query_index.return_value = {
+            "rows": [
+                {
+                    "queryId": "OQ_devices",
+                    "path": "/forward_netbox_validation/forward_devices",
+                    "lastCommitId": "commit-1",
+                }
+            ],
+            "by_path": {
+                "/forward_netbox_validation/forward_devices": {
+                    "queryId": "OQ_devices",
+                    "path": "/forward_netbox_validation/forward_devices",
+                    "lastCommitId": "commit-1",
+                }
+            },
+            "by_query_id": {
+                "OQ_devices": [
+                    {
+                        "queryId": "OQ_devices",
+                        "path": "/forward_netbox_validation/forward_devices",
+                        "lastCommitId": "commit-1",
+                    }
+                ]
+            },
+        }
+
+        results = publish_builtin_nqe_map_queries(
+            client=client,
+            directory="/forward_netbox_validation/",
+            queryset=ForwardNQEMap.objects.filter(pk=query_map.pk),
+            commit_message="Publish Forward NetBox NQE maps",
+            pin_commit=True,
+        )
+
+        self.assertEqual(len(results), 1)
+        self.assertTrue(results[0].matched)
+        client.get_nqe_repository_query_index.assert_called_once_with(
+            repository="org",
+            directory="/forward_netbox_validation/",
+        )
 
     def test_apply_bindings_skips_ambiguous_same_model_maps(self):
         netbox_model = ContentType.objects.get(app_label="ipam", model="prefix")
@@ -501,17 +727,43 @@ class NQEMapBindingTest(TestCase):
         )
         bindings = build_nqe_map_bindings(
             client=Mock(
-                get_nqe_repository_queries=Mock(
-                    return_value=[
-                        {
-                            "queryId": "Q_ipv4",
-                            "path": "/forward_netbox_validation/forward_prefixes_ipv4",
+                get_nqe_repository_query_index=Mock(
+                    return_value={
+                        "rows": [
+                            {
+                                "queryId": "Q_ipv4",
+                                "path": "/forward_netbox_validation/forward_prefixes_ipv4",
+                            },
+                            {
+                                "queryId": "Q_ipv6",
+                                "path": "/forward_netbox_validation/forward_prefixes_ipv6",
+                            },
+                        ],
+                        "by_path": {
+                            "/forward_netbox_validation/forward_prefixes_ipv4": {
+                                "queryId": "Q_ipv4",
+                                "path": "/forward_netbox_validation/forward_prefixes_ipv4",
+                            },
+                            "/forward_netbox_validation/forward_prefixes_ipv6": {
+                                "queryId": "Q_ipv6",
+                                "path": "/forward_netbox_validation/forward_prefixes_ipv6",
+                            },
                         },
-                        {
-                            "queryId": "Q_ipv6",
-                            "path": "/forward_netbox_validation/forward_prefixes_ipv6",
+                        "by_query_id": {
+                            "Q_ipv4": [
+                                {
+                                    "queryId": "Q_ipv4",
+                                    "path": "/forward_netbox_validation/forward_prefixes_ipv4",
+                                }
+                            ],
+                            "Q_ipv6": [
+                                {
+                                    "queryId": "Q_ipv6",
+                                    "path": "/forward_netbox_validation/forward_prefixes_ipv6",
+                                }
+                            ],
                         },
-                    ]
+                    }
                 )
             ),
             repository="org",
@@ -581,17 +833,43 @@ class NQEMapBindingTest(TestCase):
         )
         bindings = build_nqe_map_bindings(
             client=Mock(
-                get_nqe_repository_queries=Mock(
-                    return_value=[
-                        {
-                            "queryId": "Q_ipv4",
-                            "path": "/forward_netbox_validation/forward_prefixes_ipv4",
+                get_nqe_repository_query_index=Mock(
+                    return_value={
+                        "rows": [
+                            {
+                                "queryId": "Q_ipv4",
+                                "path": "/forward_netbox_validation/forward_prefixes_ipv4",
+                            },
+                            {
+                                "queryId": "Q_ipv6",
+                                "path": "/forward_netbox_validation/forward_prefixes_ipv6",
+                            },
+                        ],
+                        "by_path": {
+                            "/forward_netbox_validation/forward_prefixes_ipv4": {
+                                "queryId": "Q_ipv4",
+                                "path": "/forward_netbox_validation/forward_prefixes_ipv4",
+                            },
+                            "/forward_netbox_validation/forward_prefixes_ipv6": {
+                                "queryId": "Q_ipv6",
+                                "path": "/forward_netbox_validation/forward_prefixes_ipv6",
+                            },
                         },
-                        {
-                            "queryId": "Q_ipv6",
-                            "path": "/forward_netbox_validation/forward_prefixes_ipv6",
+                        "by_query_id": {
+                            "Q_ipv4": [
+                                {
+                                    "queryId": "Q_ipv4",
+                                    "path": "/forward_netbox_validation/forward_prefixes_ipv4",
+                                }
+                            ],
+                            "Q_ipv6": [
+                                {
+                                    "queryId": "Q_ipv6",
+                                    "path": "/forward_netbox_validation/forward_prefixes_ipv6",
+                                }
+                            ],
                         },
-                    ]
+                    }
                 )
             ),
             repository="org",
@@ -619,13 +897,29 @@ class NQEMapBindingTest(TestCase):
         )
         bindings = build_nqe_map_bindings(
             client=Mock(
-                get_nqe_repository_queries=Mock(
-                    return_value=[
-                        {
-                            "queryId": "Q_interfaces",
-                            "path": "/forward_netbox_validation/forward_interfaces",
-                        }
-                    ]
+                get_nqe_repository_query_index=Mock(
+                    return_value={
+                        "rows": [
+                            {
+                                "queryId": "Q_interfaces",
+                                "path": "/forward_netbox_validation/forward_interfaces",
+                            }
+                        ],
+                        "by_path": {
+                            "/forward_netbox_validation/forward_interfaces": {
+                                "queryId": "Q_interfaces",
+                                "path": "/forward_netbox_validation/forward_interfaces",
+                            }
+                        },
+                        "by_query_id": {
+                            "Q_interfaces": [
+                                {
+                                    "queryId": "Q_interfaces",
+                                    "path": "/forward_netbox_validation/forward_interfaces",
+                                }
+                            ]
+                        },
+                    }
                 )
             ),
             repository="org",

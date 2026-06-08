@@ -13,6 +13,7 @@ def health_checks(
     maps,
     model_summary,
     query_drift,
+    query_drift_summary,
     raw_maps,
     data_file_maps,
     validation_run,
@@ -87,7 +88,9 @@ def health_checks(
         check(
             name="Local query drift",
             status=query_drift_check_status(query_drift),
-            message=query_drift_check_message(query_drift),
+            message=query_drift_check_message(
+                query_drift, query_drift_summary=query_drift_summary
+            ),
         ),
         check(
             name="Data-file maps",
@@ -391,19 +394,36 @@ def query_drift_check_status(query_drift):
     return "pass"
 
 
-def query_drift_check_message(query_drift):
+def query_drift_check_message(query_drift, *, query_drift_summary=None):
     if not query_drift:
         return "No enabled NQE maps can be checked for local query drift."
     warn_count = len([item for item in query_drift if item.get("severity") == "warn"])
     info_count = len([item for item in query_drift if item.get("severity") == "info"])
+    remediation_actions = list(
+        (query_drift_summary or {}).get("remediation_actions") or []
+    )
+    remediation_preview = ""
+    if remediation_actions:
+        top_action = remediation_actions[0]
+        message = str(top_action.get("message") or "").strip()
+        count = top_action.get("count")
+        if message:
+            remediation_preview = (
+                f" Top remediation: {count} map(s) need {message.lower()}."
+                if count
+                else f" Top remediation: {message}."
+            )
     if warn_count:
-        return f"{warn_count} enabled map(s) differ from or cannot match bundled query metadata."
+        return (
+            f"{warn_count} enabled map(s) differ from or cannot match bundled "
+            f"query metadata.{remediation_preview}"
+        )
     if info_count:
         return (
             f"{info_count} enabled direct-query-ID map(s) require live Forward "
-            "repository lookup for full drift verification."
+            f"repository lookup for full drift verification.{remediation_preview}"
         )
-    return "Enabled maps match local bundled query metadata."
+    return f"Enabled maps match local bundled query metadata.{remediation_preview}"
 
 
 def validation_check_status(validation_run):

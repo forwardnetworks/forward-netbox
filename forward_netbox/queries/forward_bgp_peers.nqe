@@ -46,4 +46,4 @@ select distinct {
   description: if isPresent(neighbor.description) then neighbor.description else "",
   advertised_prefixes: if isPresent(neighbor.statistics) then neighbor.statistics.advertisedPrefixes else null : Integer,
   received_prefixes: if isPresent(neighbor.statistics) then neighbor.statistics.receivedPrefixes else null : Integer
-}
+};

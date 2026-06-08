@@ -62,4 +62,4 @@ select distinct {
   status: if neighbor.enabled then "active" else "offline",
   has_adj_rib_in: isPresent(rib_neighbor.adjRibInPost),
   has_adj_rib_out: isPresent(rib_neighbor.adjRibOutPost)
-}
+};

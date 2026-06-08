@@ -132,6 +132,30 @@
                   pages={{ counters.nqe_pages|placeholder }}
                 </td>
               </tr>
+              <tr>
+                <th scope="row">{% trans "Throttle sleep" %}</th>
+                <td>{{ metrics.throttle_sleep_seconds|placeholder }} s</td>
+              </tr>
+              <tr>
+                <th scope="row">{% trans "Query parameters" %}</th>
+                <td>
+                  {% with param_summary=health.api_usage.step_query_parameters %}
+                    {% if param_summary.available %}
+                      {{ param_summary.step_count }} {% trans "step(s) with explicit parameters" %}
+                      <ul class="mb-0 ps-3">
+                        {% for item in param_summary.top_steps %}
+                          <li>
+                            {{ item.model }} / {{ item.query_name }}:
+                            {{ item.query_parameters }}
+                          </li>
+                        {% endfor %}
+                      </ul>
+                    {% else %}
+                      <span class="text-muted">{% trans "No explicit step query parameters recorded." %}</span>
+                    {% endif %}
+                  {% endwith %}
+                </td>
+              </tr>
               {% if budget.warnings %}
                 <tr>
                   <th scope="row">{% trans "Warnings" %}</th>
@@ -151,6 +175,147 @@
             {% trans "No stored Forward API usage evidence is available for the latest execution run." %}
           </p>
         {% endif %}
+      </div>
+    </div>
+    <div class="card">
+      <h5 class="card-header">{% trans "Dependency Lookup Cache" %}</h5>
+      <div class="card-body">
+        {% if health.dependency_lookup_cache.available %}
+          <table class="table table-hover attr-table">
+            <tr>
+              <th scope="row">{% trans "Models primed" %}</th>
+              <td>{{ health.dependency_lookup_cache.model_count|placeholder }}</td>
+            </tr>
+            <tr>
+              <th scope="row">{% trans "Rows processed" %}</th>
+              <td>{{ health.dependency_lookup_cache.row_count|placeholder }}</td>
+            </tr>
+            <tr>
+              <th scope="row">{% trans "Primed targets" %}</th>
+              <td>{{ health.dependency_lookup_cache.primed_target_count|placeholder }}</td>
+            </tr>
+          </table>
+          {% if health.dependency_lookup_cache.models %}
+            <div class="small text-muted mb-2">{% trans "Top primed models" %}</div>
+            <ul class="mb-0 ps-3">
+              {% for item in health.dependency_lookup_cache.models %}
+                <li>
+                  {{ item.model }}:
+                  {{ item.row_count }} {% trans "rows" %},
+                  {{ item.primed_target_count }} {% trans "primed targets" %}
+                  {% if item.fhrp_group_count %}
+                    ,
+                    {{ item.fhrp_group_count }} {% trans "FHRP groups" %}
+                  {% endif %}
+                </li>
+              {% endfor %}
+            </ul>
+          {% endif %}
+        {% else %}
+          <p class="text-muted mb-0">
+            {% trans "No dependency lookup cache evidence is available for the latest execution run." %}
+          </p>
+        {% endif %}
+      </div>
+    </div>
+    <div class="card">
+      <h5 class="card-header">{% trans "Optional Plugin Capabilities" %}</h5>
+      <div class="card-body">
+        {% for integration_key, integration in health.optional_plugin_capabilities_ui.items %}
+          <div class="mb-4">
+            <div class="small text-muted mb-2">
+              {{ integration.display_name|default:integration_key }}
+            </div>
+            <table class="table table-hover attr-table">
+              <tr>
+                <th scope="row">{% trans "Integration" %}</th>
+                <td>{{ integration.app_label|placeholder }}</td>
+              </tr>
+              <tr>
+                <th scope="row">{% trans "Installed" %}</th>
+                <td>{{ integration.installed|yesno:"Yes,No" }}</td>
+              </tr>
+              <tr>
+                <th scope="row">{% trans "Installed version" %}</th>
+                <td>{{ integration.version|placeholder }}</td>
+              </tr>
+              <tr>
+                <th scope="row">{% trans "Minimum version" %}</th>
+                <td>{{ integration.minimum_version|placeholder }}</td>
+              </tr>
+              <tr>
+                <th scope="row">{% trans "Package names" %}</th>
+                <td>{{ integration.package_names|join:", " }}</td>
+              </tr>
+              <tr>
+                <th scope="row">{% trans "Detected package" %}</th>
+                <td>{{ integration.installed_package_name|placeholder }}</td>
+              </tr>
+              <tr>
+                <th scope="row">{% trans "Available" %}</th>
+                <td>{{ integration.available|yesno:"Yes,No" }}</td>
+              </tr>
+              <tr>
+                <th scope="row">{% trans "Availability status" %}</th>
+                <td>{{ integration.availability_status|placeholder }}</td>
+              </tr>
+              <tr>
+                <th scope="row">{% trans "Availability reason" %}</th>
+                <td>{{ integration.availability_reason|placeholder }}</td>
+              </tr>
+              <tr>
+                <th scope="row">{% trans "Unsupported version" %}</th>
+                <td>{{ integration.unsupported_version|yesno:"Yes,No" }}</td>
+              </tr>
+              <tr>
+                <th scope="row">{% trans "Required models missing" %}</th>
+                <td>{{ integration.missing_required|length }}</td>
+              </tr>
+              <tr>
+                <th scope="row">{% trans "Optional models missing" %}</th>
+                <td>{{ integration.missing_optional|length }}</td>
+              </tr>
+              <tr>
+                <th scope="row">{% trans "Command inventory entries" %}</th>
+                <td>{{ integration.command_inventory_count }}</td>
+              </tr>
+            </table>
+            {% if integration.missing_required %}
+              <div class="small text-muted mb-2">{% trans "Missing required models" %}</div>
+              <ul class="mb-0 ps-3">
+                {% for model in integration.missing_required %}
+                  <li>{{ model }}</li>
+                {% endfor %}
+              </ul>
+            {% endif %}
+            {% if integration.missing_optional %}
+              <div class="small text-muted mt-3 mb-2">{% trans "Missing optional models" %}</div>
+              <ul class="mb-0 ps-3">
+                {% for model in integration.missing_optional %}
+                  <li>{{ model }}</li>
+                {% endfor %}
+              </ul>
+            {% endif %}
+            {% if integration.command_inventory %}
+              <div class="small text-muted mt-3 mb-2">{% trans "Command inventory" %}</div>
+              <ul class="mb-0 ps-3">
+                {% for command in integration.command_inventory %}
+                  <li>
+                    {{ command.command_type }}
+                    <span class="text-muted">
+                      - {{ command.status|default:"unknown" }}
+                      {% if command.source %}
+                        - {{ command.source }}
+                      {% endif %}
+                    </span>
+                  </li>
+                {% endfor %}
+              </ul>
+            {% endif %}
+          </div>
+        {% empty %}
+          <p class="text-muted mb-0">{% trans "No optional plugin capability evidence is available." %}</p>
+        {% endfor %}
       </div>
     </div>
     <div class="card">
@@ -228,6 +393,72 @@
       </div>
     </div>
     <div class="card">
+      <h5 class="card-header">{% trans "Query Path Resolution" %}</h5>
+      <div class="card-body">
+        {% with resolution=health.query_path_resolution %}
+          {% if resolution.available %}
+            <table class="table table-hover attr-table">
+              <tr>
+                <th scope="row">{% trans "Query path specs" %}</th>
+                <td>{{ resolution.total_query_path_specs|placeholder }}</td>
+              </tr>
+              <tr>
+                <th scope="row">{% trans "Artifact hits" %}</th>
+                <td>{{ resolution.artifact_hit_count|placeholder }}</td>
+              </tr>
+              <tr>
+                <th scope="row">{% trans "Repository index reads" %}</th>
+                <td>{{ resolution.repository_index_count|placeholder }}</td>
+              </tr>
+              <tr>
+                <th scope="row">{% trans "Forward lookups" %}</th>
+                <td>{{ resolution.client_resolve_count|placeholder }}</td>
+              </tr>
+              <tr>
+                <th scope="row">{% trans "Cache hit rate" %}</th>
+                <td>{{ resolution.cache_hit_rate|placeholder }}</td>
+              </tr>
+            </table>
+          {% else %}
+            <p class="text-muted mb-0">
+              {% trans "No query-path resolution telemetry is available for the latest execution run." %}
+            </p>
+          {% endif %}
+        {% endwith %}
+      </div>
+    </div>
+    <div class="card">
+      <h5 class="card-header">{% trans "Query Drift Summary" %}</h5>
+      <div class="card-body">
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">{% trans "Maps assessed" %}</th>
+            <td>{{ health.query_drift_summary.total_maps|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Warn / info / pass" %}</th>
+            <td>
+              {{ health.query_drift_summary.warn_count }}/{{ health.query_drift_summary.info_count }}/{{ health.query_drift_summary.pass_count }}
+            </td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Remediation actions" %}</th>
+            <td>
+              {% if health.query_drift_summary.remediation_actions %}
+                <ul class="mb-0 ps-3">
+                  {% for item in health.query_drift_summary.remediation_actions %}
+                    <li>{{ item.count }} - {{ item.message }}</li>
+                  {% endfor %}
+                </ul>
+              {% else %}
+                <span class="text-muted">{% trans "No remediation actions emitted." %}</span>
+              {% endif %}
+            </td>
+          </tr>
+        </table>
+      </div>
+    </div>
+    <div class="card">
       <h5 class="card-header">{% trans "Local Query Drift" %}</h5>
       <div class="card-body border-bottom">
         <a class="btn btn-sm btn-outline-primary" href="{% url 'plugins:forward_netbox:forwardsync_query_drift' pk=object.pk %}">
@@ -246,6 +477,7 @@
               <th>{% trans "Commit" %}</th>
               <th>{% trans "Status" %}</th>
               <th>{% trans "Message" %}</th>
+              <th>{% trans "Remediation" %}</th>
             </tr>
           </thead>
           <tbody>
@@ -264,10 +496,11 @@
                   {% endif %}
                 </td>
                 <td>{{ item.message }}</td>
+                <td>{{ item.remediation|default:"" }}</td>
               </tr>
             {% empty %}
               <tr>
-                <td colspan="5" class="text-muted">{% trans "No local query drift diagnostics available" %}</td>
+                <td colspan="6" class="text-muted">{% trans "No local query drift diagnostics available" %}</td>
               </tr>
             {% endfor %}
           </tbody>

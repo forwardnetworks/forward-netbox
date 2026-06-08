@@ -1,0 +1,55 @@
+/**
+ * @intent Forward ACI Command Inventory
+ * @description Discovery-only inventory of bounded ACI/APIC command families.
+ */
+
+@query
+f(forward_netbox_shard_keys: List<String>) =
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+foreach command in device.outputs.commands
+where command.commandType == CommandType.CISCO_APIC_SWITCH
+  || command.commandType == CommandType.CISCO_APIC_CONTROLLER_DETAIL
+  || command.commandType == CommandType.CISCO_ACI_FABRIC_NODES
+  || command.commandType == CommandType.CISCO_ACI_FABRIC_VRFS
+  || command.commandType == CommandType.CISCO_ACI_NODE_TYPE
+  || command.commandType == CommandType.CISCO_ACI_SPINE_INTERFACE_MODE
+  || command.commandType == CommandType.CISCO_ACI_SPINE_IP_ENDPOINTS
+  || command.commandType == CommandType.CISCO_ACI_SPINE_TUNNELS_NEXTHOP
+  || command.commandType == CommandType.CISCO_ACI_TUNNELS_ENDPOINTS
+  || command.commandType == CommandType.CISCO_ACI_ZONING_RULE
+  || command.commandType == CommandType.CISCO_ACI_ZONING_FILTER
+  || command.commandType == CommandType.CISCO_ACI_EPM_ENDPOINTS
+  || command.commandType == CommandType.CISCO_APIC_VLAN_LEAF
+  || command.commandType == CommandType.CISCO_APIC_EXT_L3OUT_INTERFACES
+  || command.commandType == CommandType.CISCO_APIC_VLAN_STATUS_LEAF
+  || command.commandType == CommandType.CISCO_APIC_VPC_MAP
+let command_type =
+  if command.commandType == CommandType.CISCO_APIC_SWITCH then "CISCO_APIC_SWITCH"
+  else if command.commandType == CommandType.CISCO_APIC_CONTROLLER_DETAIL then "CISCO_APIC_CONTROLLER_DETAIL"
+  else if command.commandType == CommandType.CISCO_ACI_FABRIC_NODES then "CISCO_ACI_FABRIC_NODES"
+  else if command.commandType == CommandType.CISCO_ACI_FABRIC_VRFS then "CISCO_ACI_FABRIC_VRFS"
+  else if command.commandType == CommandType.CISCO_ACI_NODE_TYPE then "CISCO_ACI_NODE_TYPE"
+  else if command.commandType == CommandType.CISCO_ACI_SPINE_INTERFACE_MODE then "CISCO_ACI_SPINE_INTERFACE_MODE"
+  else if command.commandType == CommandType.CISCO_ACI_SPINE_IP_ENDPOINTS then "CISCO_ACI_SPINE_IP_ENDPOINTS"
+  else if command.commandType == CommandType.CISCO_ACI_SPINE_TUNNELS_NEXTHOP then "CISCO_ACI_SPINE_TUNNELS_NEXTHOP"
+  else if command.commandType == CommandType.CISCO_ACI_TUNNELS_ENDPOINTS then "CISCO_ACI_TUNNELS_ENDPOINTS"
+  else if command.commandType == CommandType.CISCO_ACI_ZONING_RULE then "CISCO_ACI_ZONING_RULE"
+  else if command.commandType == CommandType.CISCO_ACI_ZONING_FILTER then "CISCO_ACI_ZONING_FILTER"
+  else if command.commandType == CommandType.CISCO_ACI_EPM_ENDPOINTS then "CISCO_ACI_EPM_ENDPOINTS"
+  else if command.commandType == CommandType.CISCO_APIC_VLAN_LEAF then "CISCO_APIC_VLAN_LEAF"
+  else if command.commandType == CommandType.CISCO_APIC_EXT_L3OUT_INTERFACES then "CISCO_APIC_EXT_L3OUT_INTERFACES"
+  else if command.commandType == CommandType.CISCO_APIC_VLAN_STATUS_LEAF then "CISCO_APIC_VLAN_STATUS_LEAF"
+  else "CISCO_APIC_VPC_MAP"
+where isEmpty(forward_netbox_shard_keys)
+  || device.name in forward_netbox_shard_keys
+  || command_type in forward_netbox_shard_keys
+select distinct {
+  device: device.name,
+  command_type: command_type,
+  response_present: isPresent(command.response),
+  response_length: if isPresent(command.response) then length(command.response) else 0,
+  status: "present",
+  description: "Forward observed ACI command inventory"
+};

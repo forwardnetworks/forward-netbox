@@ -27,8 +27,12 @@ from forward_netbox.utilities.model_contracts import architecture_fetch_contract
 from forward_netbox.utilities.model_contracts import (
     architecture_unclassified_supported_models,
 )
+from forward_netbox.utilities.plugin_integrations import integration_capability_summary
 from forward_netbox.utilities.plugin_integrations import integration_summary
 from forward_netbox.utilities.query_registry import builtin_query_contract_summary
+from forward_netbox.utilities.query_registry import (
+    optional_plugin_query_contract_summary,
+)
 
 
 class Command(BaseCommand):
@@ -101,6 +105,7 @@ class Command(BaseCommand):
         query_contract_summary = builtin_query_contract_summary(
             FORWARD_SUPPORTED_MODELS
         )
+        optional_query_contract_summary = optional_plugin_query_contract_summary()
         model_contract_registry = architecture_contract_summary(
             FORWARD_SUPPORTED_MODELS
         )
@@ -125,6 +130,7 @@ class Command(BaseCommand):
         )
         return {
             "optional_plugin_integrations": integration_summary(),
+            "optional_plugin_capabilities": integration_capability_summary(),
             "bulk_orm_safe_models": architecture_bulk_orm_safe_models(
                 FORWARD_SUPPORTED_MODELS
             ),
@@ -135,6 +141,9 @@ class Command(BaseCommand):
             "bulk_orm_expansion": bulk_orm_expansion_summary(FORWARD_SUPPORTED_MODELS),
             "model_contract_registry": model_contract_registry,
             "query_contract_registry": query_contract_summary,
+            "optional_plugin_query_contract_registry": (
+                optional_query_contract_summary
+            ),
             "model_eligibility": model_eligibility,
             "fetch_contracts": fetch_contracts,
             "classification_gaps": {
@@ -155,11 +164,22 @@ class Command(BaseCommand):
                 "fetch_contract_coverage_gaps": fetch_contract_coverage_gaps,
                 "model_contract_registry_gaps": model_contract_registry["gaps"],
                 "query_contract_registry_gaps": query_contract_summary["gaps"],
+                "optional_plugin_query_contract_registry_gaps": {
+                    key: summary["gaps"]
+                    for key, summary in optional_query_contract_summary.items()
+                },
             },
         }
 
     def _has_classification_gaps(self, gaps):
-        return any(bool(items) for items in gaps.values())
+        for items in gaps.values():
+            if isinstance(items, dict):
+                if self._has_classification_gaps(items):
+                    return True
+                continue
+            if bool(items):
+                return True
+        return False
 
     def _model_eligibility(self):
         default_sync = SimpleNamespace(
