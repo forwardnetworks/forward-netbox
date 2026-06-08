@@ -7,14 +7,17 @@ from ..exceptions import ForwardSearchError
 
 
 def delete_ipam_vlan(runner, row):
-    from dcim.models import Site
     from ipam.models import VLAN
 
     site = None
     if row.get("site_slug"):
-        site = Site.objects.filter(slug=row["site_slug"]).order_by("pk").first()
+        from dcim.models import Site
+
+        site = runner._get_unique_or_raise(Site, {"slug": row["site_slug"]})
     if site is None and row.get("site"):
-        site = Site.objects.filter(name=row["site"]).order_by("pk").first()
+        from dcim.models import Site
+
+        site = runner._get_unique_or_raise(Site, {"name": row["site"]})
     if site is None or row.get("vid") in (None, ""):
         return False
     return runner._delete_by_coalesce(
@@ -68,7 +71,6 @@ def delete_ipam_ipaddress(runner, row):
 
 def delete_ipam_fhrpgroup(runner, row):
     from dcim.models import Interface
-    from ipam.models import FHRPGroup
     from ipam.models import FHRPGroupAssignment
     from ipam.models import IPAddress
 
@@ -92,12 +94,13 @@ def delete_ipam_fhrpgroup(runner, row):
 
     if not FHRPGroupAssignment.objects.filter(group=group).exists():
         vrf = _fhrp_vrf(runner, row)
-        ip_address = IPAddress.objects.filter(
-            address=row.get("address"),
-            vrf=vrf,
-            assigned_object_type=runner._content_type_for(FHRPGroup),
-            assigned_object_id=group.pk,
-        ).first()
+        ip_address = runner._get_unique_or_raise(
+            IPAddress,
+            {
+                "address": row.get("address"),
+                "vrf": vrf,
+            },
+        )
         if ip_address is not None:
             ip_address.delete()
             deleted = True

@@ -542,6 +542,7 @@ class ForwardSyncRunnerAdapterMixin:
             )
         existing = self._get_unique_or_raise(ASN, {"asn": asn_number})
         if existing is not None:
+            self._asn_by_number_cache[existing.asn] = existing
             return existing
         rir = self._ensure_forward_observed_rir()
         asn = ASN(asn=asn_number, rir=rir)

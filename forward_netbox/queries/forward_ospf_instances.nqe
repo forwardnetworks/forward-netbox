@@ -38,4 +38,4 @@ select distinct {
   router_id: inferred_router_id,
   name: "",
   comments: ""
-}
+};

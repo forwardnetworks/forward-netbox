@@ -48,14 +48,12 @@ def delete_dcim_platform(runner, row):
 def delete_dcim_devicetype(runner, row):
     manufacturer = None
     if row.get("manufacturer_slug"):
-        manufacturer = (
-            Manufacturer.objects.filter(slug=row["manufacturer_slug"])
-            .order_by("pk")
-            .first()
+        manufacturer = runner._get_unique_or_raise(
+            Manufacturer, {"slug": row["manufacturer_slug"]}
         )
     if manufacturer is None and row.get("manufacturer"):
-        manufacturer = (
-            Manufacturer.objects.filter(name=row["manufacturer"]).order_by("pk").first()
+        manufacturer = runner._get_unique_or_raise(
+            Manufacturer, {"name": row["manufacturer"]}
         )
     if manufacturer is None:
         return False

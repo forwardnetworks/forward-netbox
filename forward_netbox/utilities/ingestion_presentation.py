@@ -35,9 +35,11 @@ def get_model_results_summary(ingestion):
 
 
 def get_execution_summary(ingestion):
+    job_results = ingestion.get_job_logs(ingestion.job)
     return build_ingestion_execution_summary(
         model_results=get_model_results_summary(ingestion),
-        job_logs=ingestion.get_job_logs(ingestion.job).get("logs", []),
+        job_results=job_results,
+        job_logs=job_results.get("logs", []),
         applied_change_count=ingestion.applied_change_count,
         failed_change_count=ingestion.failed_change_count,
         created_change_count=ingestion.created_change_count,
@@ -105,6 +107,7 @@ def get_workload_summary(ingestion):
         "created_change_count": execution["created_change_count"],
         "updated_change_count": execution["updated_change_count"],
         "deleted_change_count": execution["deleted_change_count"],
+        "unchanged_row_count": execution["unchanged_row_count"],
         "query_path_resolution": execution.get("query_path_resolution", {}),
     }
 
@@ -160,6 +163,7 @@ def get_advisory_summary(ingestion):
         "path_signals": {
             "model_result_count": analysis.get("model_result_count", 0),
             "diagnostic_count": analysis.get("diagnostic_count", 0),
+            "query_modes": execution.get("query_modes", {}),
             "top_model_results": result_overview,
             "query_path_resolution": execution.get("query_path_resolution", {}),
         },

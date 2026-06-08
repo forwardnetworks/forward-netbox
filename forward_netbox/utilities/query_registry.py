@@ -8,6 +8,7 @@ from typing import Any
 from ..choices import FORWARD_SUPPORTED_MODELS
 from .model_contracts import architecture_default_coalesce_fields_for_model
 from .model_contracts import architecture_fetch_contract_for_model
+from .plugin_integrations.registry import OPTIONAL_PLUGIN_INTEGRATIONS
 from .sync_contracts import normalize_coalesce_fields
 
 
@@ -56,17 +57,22 @@ class QuerySpec:
     def diff_query_id(self) -> str | None:
         return self.run_query_id
 
-    def resolve(self, client) -> "QuerySpec":
+    def resolve(self, client, query_index: dict | None = None) -> "QuerySpec":
         if not self.query_path:
             return self
-        resolved = client.resolve_nqe_query_reference(
+        resolved = client.get_committed_nqe_query(
             repository=self.query_repository or "org",
             query_path=self.query_path,
-            commit_id=self.commit_id,
+            commit_id=self.commit_id or "head",
+            query_index=query_index,
         )
         resolved_query_id = str(resolved.get("queryId") or "").strip()
         resolved_commit_id = str(
-            self.commit_id or resolved.get("commitId") or ""
+            self.commit_id
+            or resolved.get("commitId")
+            or resolved.get("lastCommitId")
+            or (resolved.get("lastCommit") or {}).get("id")
+            or ""
         ).strip()
         return replace(
             self,
@@ -350,6 +356,12 @@ BUILTIN_OPTIONAL_QUERY_MAPS = [
         "enabled": False,
     },
     {
+        "model_string": "dcim.device",
+        "name": "Forward ACI Command Inventory",
+        "filename": "forward_aci_command_inventory.nqe",
+        "enabled": False,
+    },
+    {
         "model_string": "extras.taggeditem",
         "name": "Forward Device Feature Tags with Rules",
         "filename": "forward_device_feature_tags_with_rules.nqe",
@@ -419,6 +431,12 @@ BUILTIN_OPTIONAL_QUERY_MAPS = [
         "model_string": "netbox_cisco_aci.acinode",
         "name": "Forward ACI Nodes",
         "filename": "forward_aci_nodes.nqe",
+        "enabled": False,
+    },
+    {
+        "model_string": "netbox_cisco_aci.acinode",
+        "name": "Forward ACI APIC Nodes",
+        "filename": "forward_aci_apic_nodes.nqe",
         "enabled": False,
     },
     {
@@ -511,7 +529,10 @@ def builtin_nqe_map_rows() -> list[dict[str, Any]]:
     return rows
 
 
-def builtin_query_contract_summary(model_strings=None) -> dict[str, Any]:
+def query_contract_summary_for_maps(
+    query_defaults: list[dict[str, Any]],
+    model_strings=None,
+) -> dict[str, Any]:
     """Report whether shipped NQE maps satisfy model fetch contracts."""
     selected_models = tuple(model_strings or FORWARD_SUPPORTED_MODELS)
     contracts = {
@@ -521,7 +542,7 @@ def builtin_query_contract_summary(model_strings=None) -> dict[str, Any]:
     query_defaults_by_model: dict[str, list[dict[str, Any]]] = {
         model_string: [] for model_string in selected_models
     }
-    for query_default in BUILTIN_SEEDED_QUERY_MAPS:
+    for query_default in query_defaults:
         model_string = query_default["model_string"]
         if model_string in query_defaults_by_model:
             query_defaults_by_model[model_string].append(query_default)
@@ -600,6 +621,25 @@ def builtin_query_contract_summary(model_strings=None) -> dict[str, Any]:
     }
 
 
+def builtin_query_contract_summary(model_strings=None) -> dict[str, Any]:
+    return query_contract_summary_for_maps(BUILTIN_SEEDED_QUERY_MAPS, model_strings)
+
+
+def optional_plugin_query_contract_summary(model_strings=None) -> dict[str, Any]:
+    summary = {}
+    for integration in OPTIONAL_PLUGIN_INTEGRATIONS:
+        integration_query_defaults = [
+            query_default
+            for query_default in BUILTIN_OPTIONAL_QUERY_MAPS
+            if query_default["name"] in integration.query_maps
+        ]
+        summary[integration.key] = query_contract_summary_for_maps(
+            integration_query_defaults,
+            model_strings or integration.supported_models,
+        )
+    return summary
+
+
 def _builtin_query_parameter_contract_report(
     model_string: str,
     query_default: dict[str, Any],
@@ -640,7 +680,33 @@ def _query_contract_gap(model_string, query_name, filename, code, message):
         "filename": filename,
         "code": code,
         "message": message,
+        "remediation": _query_contract_gap_remediation(code),
     }
+
+
+def _query_contract_gap_remediation(code: str) -> str:
+    remediations = {
+        "missing_builtin_query_map": (
+            "Add a shipped query map for the model and publish it with "
+            "forward_netbox_shard_keys support."
+        ),
+        "missing_shard_parameter_declaration": (
+            "Declare `forward_netbox_shard_keys` in the query signature."
+        ),
+        "missing_shard_parameter_default": (
+            "Seed `forward_netbox_shard_keys: []` in the query map parameters."
+        ),
+        "missing_empty_shard_guard": (
+            "Keep no-parameter UI execution unfiltered with an empty-list guard."
+        ),
+        "missing_positive_shard_predicate": (
+            "Use `forward_netbox_shard_keys` in a positive membership predicate."
+        ),
+    }
+    return remediations.get(
+        code,
+        "Review the query contract and align the shipped map with the fetch contract.",
+    )
 
 
 def _build_builtin_query_spec(query_default: dict[str, Any]) -> QuerySpec:
@@ -719,7 +785,104 @@ def _build_query_spec_from_map(query_map) -> QuerySpec:
 
 
 def resolve_query_specs_for_client(specs: list[QuerySpec], client) -> list[QuerySpec]:
-    return [spec.resolve(client) for spec in specs]
+    resolved_specs: list[QuerySpec] = []
+    query_indexes: dict[str, dict] = {}
+    resolved_query_cache: dict[tuple[str, str, str], tuple[str | None, str | None]] = {}
+    for spec in specs:
+        if not spec.query_path:
+            resolved_specs.append(spec)
+            continue
+        repository = spec.query_repository or "org"
+        commit_id = str(spec.commit_id or "").strip()
+        if commit_id in ("", "head"):
+            query_index = query_indexes.get(repository)
+            if query_index is None:
+                try:
+                    query_index = client.get_nqe_repository_query_index(
+                        repository=repository,
+                        directory="/",
+                    )
+                except Exception:
+                    query_index = {}
+                if not isinstance(query_index, dict):
+                    query_index = {"by_path": {}}
+                query_indexes[repository] = query_index
+            indexed_query = (query_index.get("by_path") or {}).get(spec.query_path)
+            if indexed_query and indexed_query.get("queryId"):
+                resolved_commit_id = str(
+                    indexed_query.get("commitId")
+                    or indexed_query.get("lastCommitId")
+                    or (indexed_query.get("lastCommit") or {}).get("id")
+                    or ""
+                ).strip()
+                resolved_specs.append(
+                    replace(
+                        spec,
+                        resolved_query_id=str(
+                            indexed_query.get("queryId") or ""
+                        ).strip()
+                        or None,
+                        commit_id=resolved_commit_id or spec.commit_id,
+                    )
+                )
+                continue
+            cache_key = (repository, spec.query_path, "head")
+            resolved_meta = resolved_query_cache.get(cache_key)
+            if resolved_meta is None:
+                resolved_query = client.get_committed_nqe_query(
+                    repository=repository,
+                    query_path=spec.query_path,
+                    commit_id="head",
+                    query_index=query_index,
+                )
+                resolved_meta = (
+                    str(resolved_query.get("queryId") or "").strip() or None,
+                    str(
+                        resolved_query.get("commitId")
+                        or resolved_query.get("lastCommitId")
+                        or (resolved_query.get("lastCommit") or {}).get("id")
+                        or ""
+                    ).strip()
+                    or None,
+                )
+                resolved_query_cache[cache_key] = resolved_meta
+            resolved_query_id, resolved_commit_id = resolved_meta
+            resolved_specs.append(
+                replace(
+                    spec,
+                    resolved_query_id=resolved_query_id,
+                    commit_id=resolved_commit_id or spec.commit_id,
+                )
+            )
+            continue
+        cache_key = (repository, spec.query_path, commit_id)
+        resolved_meta = resolved_query_cache.get(cache_key)
+        if resolved_meta is None:
+            resolved_query = client.get_committed_nqe_query(
+                repository=repository,
+                query_path=spec.query_path,
+                commit_id=commit_id,
+            )
+            resolved_meta = (
+                str(resolved_query.get("queryId") or "").strip() or None,
+                str(
+                    resolved_query.get("commitId")
+                    or resolved_query.get("lastCommitId")
+                    or (resolved_query.get("lastCommit") or {}).get("id")
+                    or ""
+                ).strip()
+                or None,
+            )
+            resolved_query_cache[cache_key] = resolved_meta
+        resolved_query_id, resolved_commit_id = resolved_meta
+        resolved_specs.append(
+            replace(
+                spec,
+                resolved_query_id=resolved_query_id,
+                commit_id=resolved_commit_id or spec.commit_id,
+            )
+        )
+    return resolved_specs
 
 
 def _resolve_map_query_specs(model_string: str, maps) -> list[QuerySpec]:

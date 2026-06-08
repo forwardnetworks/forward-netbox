@@ -60,4 +60,4 @@ select distinct {
   model: model,
   part_number: raw_model,
   slug: model_slug
-}
+};

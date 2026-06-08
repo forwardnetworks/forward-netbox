@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from django.core.cache import cache
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
@@ -15,6 +17,9 @@ from .branch_budget import MODEL_CHANGE_DENSITY_PROFILE_PARAMETER
 from .density_learning import density_profile_summary
 from .density_learning import normalize_density_map
 from .density_learning import normalize_density_profile
+from .execution_ledger_serialization import (
+    dependency_lookup_cache_support_summary as _dependency_lookup_cache_support_summary,
+)
 from .execution_telemetry import build_branch_run_summary
 from .execution_telemetry import build_sync_execution_summary
 from .job_liveness import job_has_live_execution
@@ -470,9 +475,25 @@ def get_analysis_summary(sync):
             latest_validation_run.status if latest_validation_run else ""
         ),
         "latest_ingestion": None,
+        "latest_ingestion_analysis_summary": {},
+        "query_path_resolution": {},
+        "query_modes": {},
+        "dependency_lookup_cache": {},
     }
     if last_ingestion is not None:
         summary["latest_ingestion"] = last_ingestion.get_analysis_summary()
+        summary["latest_ingestion_analysis_summary"] = (
+            last_ingestion.get_analysis_summary()
+        )
+        summary["query_modes"] = last_ingestion.get_execution_summary().get(
+            "query_modes", {}
+        )
+        summary["query_path_resolution"] = last_ingestion.get_execution_summary().get(
+            "query_path_resolution", {}
+        )
+        summary["dependency_lookup_cache"] = _dependency_lookup_cache_support_summary(
+            SimpleNamespace(job=last_ingestion.job)
+        )
         summary["baseline_ready"] = bool(last_ingestion.baseline_ready)
         summary["sync_mode"] = last_ingestion.sync_mode or ""
     return summary
@@ -914,6 +935,18 @@ def get_advisory_summary(sync):
     if last_ingestion is not None:
         summary["latest_ingestion"] = last_ingestion.get_advisory_summary()
         summary["analysis_summary"] = last_ingestion.get_analysis_summary()
+        summary["latest_ingestion_analysis_summary"] = (
+            last_ingestion.get_analysis_summary()
+        )
+        summary["query_modes"] = last_ingestion.get_execution_summary().get(
+            "query_modes", {}
+        )
+        summary["query_path_resolution"] = last_ingestion.get_execution_summary().get(
+            "query_path_resolution", {}
+        )
+        summary["dependency_lookup_cache"] = _dependency_lookup_cache_support_summary(
+            SimpleNamespace(job=last_ingestion.job)
+        )
     latest_validation_run = sync.latest_validation_run
     if latest_validation_run is not None:
         summary["latest_validation_run"] = latest_validation_run.pk

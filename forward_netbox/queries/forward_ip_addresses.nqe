@@ -3,9 +3,7 @@
  * @description Raw NQE for NetBox IP address rows derived from Forward interface L3 state.
  */
 
-@query
-f(forward_netbox_shard_keys: List<String>) =
-subinterface_ipv4 =
+subinterface_ipv4(forward_netbox_shard_keys: List<String>) =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
@@ -27,7 +25,7 @@ subinterface_ipv4 =
     status: "active"
   };
 
-subinterface_ipv6 =
+subinterface_ipv6(forward_netbox_shard_keys: List<String>) =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
@@ -48,7 +46,7 @@ subinterface_ipv6 =
     status: "active"
   };
 
-bridge_ipv4 =
+bridge_ipv4(forward_netbox_shard_keys: List<String>) =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
@@ -70,7 +68,7 @@ bridge_ipv4 =
     status: "active"
   };
 
-bridge_ipv6 =
+bridge_ipv6(forward_netbox_shard_keys: List<String>) =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
@@ -91,7 +89,7 @@ bridge_ipv6 =
     status: "active"
   };
 
-tunnel_ipv4 =
+tunnel_ipv4(forward_netbox_shard_keys: List<String>) =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
@@ -113,7 +111,7 @@ tunnel_ipv4 =
     status: "active"
   };
 
-tunnel_ipv6 =
+tunnel_ipv6(forward_netbox_shard_keys: List<String>) =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
@@ -134,7 +132,7 @@ tunnel_ipv6 =
     status: "active"
   };
 
-routed_vlan_ipv4 =
+routed_vlan_ipv4(forward_netbox_shard_keys: List<String>) =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
@@ -156,7 +154,7 @@ routed_vlan_ipv4 =
     status: "active"
   };
 
-routed_vlan_ipv6 =
+routed_vlan_ipv6(forward_netbox_shard_keys: List<String>) =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
@@ -177,14 +175,14 @@ routed_vlan_ipv6 =
     status: "active"
   };
 
-candidate_rows =
+candidate_rows(forward_netbox_shard_keys: List<String>) =
   foreach row in (
-  subinterface_ipv4 + subinterface_ipv6 + bridge_ipv4 + bridge_ipv6 + tunnel_ipv4 + tunnel_ipv6
-    + routed_vlan_ipv4 + routed_vlan_ipv6
+  subinterface_ipv4(forward_netbox_shard_keys) + subinterface_ipv6(forward_netbox_shard_keys) + bridge_ipv4(forward_netbox_shard_keys) + bridge_ipv6(forward_netbox_shard_keys) + tunnel_ipv4(forward_netbox_shard_keys) + tunnel_ipv6(forward_netbox_shard_keys)
+    + routed_vlan_ipv4(forward_netbox_shard_keys) + routed_vlan_ipv6(forward_netbox_shard_keys)
 )
   select distinct row;
 
-importable_interfaces =
+importable_interfaces(forward_netbox_shard_keys: List<String>) =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
@@ -195,20 +193,20 @@ importable_interfaces =
     interface: interface.name
   };
 
-assignable_candidate_rows =
-  foreach row in candidate_rows
-  foreach imported_interface in importable_interfaces
+assignable_candidate_rows(forward_netbox_shard_keys: List<String>) =
+  foreach row in candidate_rows(forward_netbox_shard_keys)
+  foreach imported_interface in importable_interfaces(forward_netbox_shard_keys)
   where imported_interface.device == row.device
   where imported_interface.interface == row.interface
   select distinct row;
 
-global_candidate_rows =
-  foreach row in assignable_candidate_rows
+global_candidate_rows(forward_netbox_shard_keys: List<String>) =
+  foreach row in assignable_candidate_rows(forward_netbox_shard_keys)
   where !isPresent(row.vrf)
   select row;
 
-global_rows =
-  foreach row in global_candidate_rows
+global_rows(forward_netbox_shard_keys: List<String>) =
+  foreach row in global_candidate_rows(forward_netbox_shard_keys)
   group row as grouped_rows by row.host_ip as host_ip
   let chosen_prefix_length = max(foreach candidate in grouped_rows
     select candidate.prefix_length)
@@ -226,13 +224,13 @@ global_rows =
     status: "active"
   };
 
-vrf_candidate_rows =
-  foreach row in assignable_candidate_rows
+vrf_candidate_rows(forward_netbox_shard_keys: List<String>) =
+  foreach row in assignable_candidate_rows(forward_netbox_shard_keys)
   where isPresent(row.vrf)
   select row;
 
-vrf_rows =
-  foreach row in vrf_candidate_rows
+vrf_rows(forward_netbox_shard_keys: List<String>) =
+  foreach row in vrf_candidate_rows(forward_netbox_shard_keys)
   group row as grouped_rows by {address: row.address, vrf: row.vrf} as key
   let chosen_device = min(foreach candidate in grouped_rows
     select candidate.device)
@@ -247,6 +245,7 @@ vrf_rows =
     status: "active"
   };
 
-@primaryKey(address, vrf)
-foreach row in (global_rows + vrf_rows)
-select distinct row
+@query
+f(forward_netbox_shard_keys: List<String>) =
+foreach row in (global_rows(forward_netbox_shard_keys) + vrf_rows(forward_netbox_shard_keys))
+select distinct row;
