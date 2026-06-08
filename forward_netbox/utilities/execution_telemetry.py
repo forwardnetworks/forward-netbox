@@ -19,6 +19,47 @@ def _coerce_float(value):
         return 0.0
 
 
+def _build_query_mode_summary(model_results):
+    execution_mode_counts = {}
+    fetch_mode_counts = {}
+    result_items = []
+
+    for result in model_results or []:
+        execution_mode = str(result.get("execution_mode") or "").strip() or "unknown"
+        fetch_mode = str(result.get("fetch_mode") or "").strip() or "unknown"
+        execution_mode_counts[execution_mode] = (
+            execution_mode_counts.get(execution_mode, 0) + 1
+        )
+        fetch_mode_counts[fetch_mode] = fetch_mode_counts.get(fetch_mode, 0) + 1
+
+        result_items.append(
+            {
+                "model": result.get("model") or "",
+                "query_name": result.get("query_name") or "",
+                "execution_mode": execution_mode,
+                "fetch_mode": fetch_mode,
+                "row_count": _coerce_int(result.get("row_count")),
+                "delete_count": _coerce_int(result.get("delete_count")),
+                "query_path_resolution": result.get("query_path_resolution") or {},
+            }
+        )
+
+    result_items = sorted(
+        result_items,
+        key=lambda item: (
+            -(item["row_count"] + item["delete_count"]),
+            str(item["model"]),
+            str(item["query_name"]),
+        ),
+    )[:10]
+    return {
+        "available": bool(result_items),
+        "execution_modes": dict(sorted(execution_mode_counts.items())),
+        "fetch_modes": dict(sorted(fetch_mode_counts.items())),
+        "top_model_results": result_items,
+    }
+
+
 def build_plan_preview(plan, *, max_changes_per_branch):
     if not plan:
         return {
@@ -93,6 +134,7 @@ def build_plan_preview(plan, *, max_changes_per_branch):
 def build_ingestion_execution_summary(
     *,
     model_results,
+    job_results=None,
     job_logs,
     applied_change_count,
     failed_change_count,
@@ -105,9 +147,11 @@ def build_ingestion_execution_summary(
     total_estimated = 0
     total_runtime_ms = 0.0
     retry_count = 0
+    unchanged_row_count = 0
     slowest_model = {}
     shard_count = 0
     query_path_resolution = _build_query_path_resolution_summary(model_results)
+    query_modes = _build_query_mode_summary(model_results)
 
     for result in model_results:
         row_count = _coerce_int(result.get("row_count"))
@@ -134,6 +178,15 @@ def build_ingestion_execution_summary(
             if message.startswith("Branch budget retry:"):
                 retry_count += 1
 
+    job_statistics = (
+        (job_results or {}).get("statistics") if isinstance(job_results, dict) else {}
+    )
+    if isinstance(job_statistics, dict):
+        for stats in job_statistics.values():
+            if not isinstance(stats, dict):
+                continue
+            unchanged_row_count += _coerce_int(stats.get("unchanged"))
+
     return {
         "model_count": len(model_results),
         "shard_count": shard_count or len(model_results),
@@ -148,7 +201,9 @@ def build_ingestion_execution_summary(
         "created_change_count": created_change_count,
         "updated_change_count": updated_change_count,
         "deleted_change_count": deleted_change_count,
+        "unchanged_row_count": unchanged_row_count,
         "query_path_resolution": query_path_resolution,
+        "query_modes": query_modes,
         "model_results": list(model_results),
     }
 
@@ -157,6 +212,7 @@ def _build_query_path_resolution_summary(model_results):
     total_specs = 0
     artifact_hits = 0
     client_resolves = 0
+    repository_index_reads = 0
     model_items = []
 
     for result in model_results or []:
@@ -167,21 +223,25 @@ def _build_query_path_resolution_summary(model_results):
         query_path_spec_count = _coerce_int(resolution.get("query_path_spec_count"))
         artifact_hit_count = _coerce_int(resolution.get("artifact_hit_count"))
         client_resolve_count = _coerce_int(resolution.get("client_resolve_count"))
+        repository_index_count = _coerce_int(resolution.get("repository_index_count"))
         if (
             not query_path_spec_count
             and not artifact_hit_count
             and not client_resolve_count
+            and not repository_index_count
         ):
             continue
         total_specs += query_path_spec_count
         artifact_hits += artifact_hit_count
         client_resolves += client_resolve_count
+        repository_index_reads += repository_index_count
         model_items.append(
             {
                 "model": model,
                 "query_path_spec_count": query_path_spec_count,
                 "artifact_hit_count": artifact_hit_count,
                 "client_resolve_count": client_resolve_count,
+                "repository_index_count": repository_index_count,
                 "cache_hit_rate": resolution.get("cache_hit_rate"),
             }
         )
@@ -200,6 +260,7 @@ def _build_query_path_resolution_summary(model_results):
         "total_query_path_specs": total_specs,
         "artifact_hit_count": artifact_hits,
         "client_resolve_count": client_resolves,
+        "repository_index_count": repository_index_reads,
         "cache_hit_rate": (
             round(artifact_hits / float(total_lookups), 4) if total_lookups else None
         ),

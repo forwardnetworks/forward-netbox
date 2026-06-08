@@ -11,20 +11,28 @@ from ..exceptions import ForwardSearchError
 DEPENDENCY_LOOKUP_PAIR_CHUNK_SIZE = 500
 UNIQUE_LOOKUP_CACHE_FIELD_SETS = {
     "dcim.devicerole": (("slug",), ("name",)),
-    "dcim.devicetype": (("slug",), ("manufacturer", "model")),
+    "dcim.cable": (("pk",),),
+    "dcim.devicetype": (("slug",), ("manufacturer", "slug"), ("manufacturer", "model")),
     "dcim.inventoryitemrole": (("slug",), ("name",)),
     "dcim.manufacturer": (("slug",), ("name",)),
+    "dcim.modulebay": (("device", "name"),),
     "dcim.moduletype": (("manufacturer", "model"),),
     "dcim.platform": (("slug",), ("name",)),
     "dcim.site": (("slug",), ("name",)),
     "extras.tag": (("slug",), ("name",)),
     "ipam.ipaddress": (
         ("address", "vrf"),
+        ("address__net_host", "vrf"),
         ("address__net_host", "vrf__isnull"),
     ),
+    "ipam.fhrpgroup": (("protocol", "group_id", "name"),),
     "ipam.vlan": (("site", "vid"),),
-    "ipam.prefix": (("prefix", "vrf"),),
+    "ipam.prefix": (("prefix", "vrf"), ("prefix", "vrf__isnull")),
     "netbox_peering_manager.peeringsession": (("bgp_peer",),),
+    "netbox_routing.bgprouter": (
+        ("assigned_object_type", "assigned_object_id", "asn"),
+    ),
+    "netbox_routing.bgpscope": (("router", "vrf"),),
     "netbox_cisco_aci.aciappprofile": (("aci_tenant", "name"),),
     "netbox_cisco_aci.acibridgedomain": (("aci_tenant", "name"),),
     "netbox_cisco_aci.acicontract": (("aci_tenant", "name"),),
@@ -44,13 +52,15 @@ UNIQUE_LOOKUP_CACHE_FIELD_SETS = {
     "netbox_routing.bgprouter": (
         ("assigned_object_type", "assigned_object_id", "asn"),
     ),
-    "netbox_routing.bgpscope": (("router", "vrf"),),
     "netbox_routing.bgppeer": (("scope", "peer"),),
     "netbox_routing.bgppeeraddressfamily": (
         ("assigned_object_type", "assigned_object_id", "address_family"),
     ),
     "netbox_routing.ospfarea": (("area_id",),),
-    "netbox_routing.ospfinstance": (("device", "vrf", "process_id"),),
+    "netbox_routing.ospfinstance": (
+        ("device", "process_id"),
+        ("device", "vrf", "process_id"),
+    ),
     "netbox_routing.ospfinterface": (("interface",),),
 }
 
@@ -141,6 +151,18 @@ def _model_field_value_matches(model, obj, field_name, value):
         and value is not None
     ):
         return str(current) == str(value)
+    if (
+        model._meta.label_lower == "netbox_routing.ospfinstance"
+        and field_name == "router_id"
+        and current is not None
+        and value is not None
+    ):
+        try:
+            return str(ip_interface(str(current)).ip) == str(
+                ip_interface(str(value)).ip
+            )
+        except ValueError:
+            return str(current) == str(value)
     return False
 
 
@@ -504,12 +526,10 @@ def lookup_device_by_name(runner, device_name):
 
     if not device_name:
         return None
-    if device_name in runner._device_by_name_cache:
-        return runner._device_by_name_cache[device_name]
-    device = Device.objects.filter(name=device_name).order_by("pk").first()
-    if device is not None:
-        remember_lookup_object(runner, device)
-    return device
+    try:
+        return get_device_by_name(runner, device_name)
+    except Device.DoesNotExist:
+        return None
 
 
 def lookup_interface(runner, device, interface_name):
@@ -522,15 +542,18 @@ def lookup_interface(runner, device, interface_name):
         return runner._interface_by_device_name_cache[key]
     if key in runner._missing_interface_by_device_name_cache:
         return None
-    interface = Interface.objects.filter(device=device, name=interface_name).first()
-    if interface is not None:
-        remember_lookup_object(runner, interface)
-    else:
+    interface = runner._get_unique_or_raise(
+        Interface,
+        {"device": device, "name": interface_name},
+    )
+    if interface is None:
         runner._missing_interface_by_device_name_cache.add(key)
     return interface
 
 
 def lookup_module_bay(runner, device, module_bay_name):
+    from dcim.models import ModuleBay
+
     if device is None or not module_bay_name:
         return None
     key = (device.pk, module_bay_name)
@@ -538,30 +561,120 @@ def lookup_module_bay(runner, device, module_bay_name):
         return runner._module_bay_by_device_name_cache[key]
     if key in runner._missing_module_bay_by_device_name_cache:
         return None
-    module_bay = device.modulebays.filter(name=module_bay_name).order_by("pk").first()
-    if module_bay is not None:
-        remember_lookup_object(runner, module_bay)
-    else:
+    module_bay = runner._get_unique_or_raise(
+        ModuleBay,
+        {"device": device, "name": module_bay_name},
+    )
+    if module_bay is None:
         runner._missing_module_bay_by_device_name_cache.add(key)
     return module_bay
 
 
 def prime_dependency_lookup_caches(runner, model_string, rows):
+    summary = {
+        "available": False,
+        "model": model_string,
+        "row_count": len(rows),
+        "device_name_count": 0,
+        "tag_row_count": 0,
+        "interface_pair_count": 0,
+        "routing_interface_alias_count": 0,
+        "routing_ospf_area_count": 0,
+        "routing_ospf_instance_count": 0,
+        "module_bay_pair_count": 0,
+        "fhrp_group_count": 0,
+        "vlan_pair_count": 0,
+        "ipam_identity_row_count": 0,
+        "ipam_global_host_row_count": 0,
+        "primed_target_count": 0,
+    }
     runner._primed_missing_unique_lookup_keys = set()
     _prime_dcim_dependency_identity_cache(runner, model_string, rows)
     device_names = _dependency_device_names(model_string, rows)
     if device_names:
         _prime_device_cache(runner, device_names)
+        summary["device_name_count"] = len(device_names)
     tag_rows = _dependency_tag_rows(model_string, rows)
     if tag_rows:
         _prime_tag_cache(runner, tag_rows)
+        summary["tag_row_count"] = len(tag_rows)
     interface_pairs = _dependency_interface_pairs(model_string, rows)
     if interface_pairs:
         _prime_interface_cache(runner, interface_pairs)
+        summary["interface_pair_count"] = len(interface_pairs)
+    routing_interface_alias_pairs = _dependency_routing_interface_alias_pairs(
+        model_string, rows
+    )
+    if routing_interface_alias_pairs:
+        _prime_routing_interface_candidate_cache(runner, routing_interface_alias_pairs)
+        summary["routing_interface_alias_count"] = len(routing_interface_alias_pairs)
+    routing_identity_summary = _prime_routing_bgp_identity_cache(
+        runner,
+        model_string,
+        rows,
+    )
+    if routing_identity_summary:
+        summary["routing_asn_count"] = routing_identity_summary["routing_asn_count"]
+        summary["routing_bgp_router_count"] = routing_identity_summary[
+            "routing_bgp_router_count"
+        ]
+        summary["routing_bgp_scope_count"] = routing_identity_summary[
+            "routing_bgp_scope_count"
+        ]
+    routing_ospf_summary = _prime_routing_ospf_identity_cache(
+        runner,
+        model_string,
+        rows,
+    )
+    if routing_ospf_summary:
+        summary["routing_ospf_area_count"] = routing_ospf_summary[
+            "routing_ospf_area_count"
+        ]
+        summary["routing_ospf_instance_count"] = routing_ospf_summary[
+            "routing_ospf_instance_count"
+        ]
     module_bay_pairs = _dependency_module_bay_pairs(model_string, rows)
     if module_bay_pairs:
         _prime_module_bay_cache(runner, module_bay_pairs)
-    _prime_ipam_coalesce_identity_cache(runner, model_string, rows)
+        summary["module_bay_pair_count"] = len(module_bay_pairs)
+    fhrp_group_keys = _dependency_fhrp_group_keys(model_string, rows)
+    if fhrp_group_keys:
+        _prime_fhrp_group_cache(runner, fhrp_group_keys)
+        summary["fhrp_group_count"] = len(fhrp_group_keys)
+    vlan_pairs = _dependency_vlan_pairs(model_string, rows)
+    if vlan_pairs:
+        _prime_vlan_cache(runner, vlan_pairs)
+        summary["vlan_pair_count"] = len(vlan_pairs)
+    ipam_identity_summary = _prime_ipam_coalesce_identity_cache(
+        runner,
+        model_string,
+        rows,
+    )
+    if ipam_identity_summary:
+        summary["ipam_identity_row_count"] = int(
+            ipam_identity_summary.get("ipam_identity_row_count") or 0
+        )
+        summary["ipam_global_host_row_count"] = int(
+            ipam_identity_summary.get("ipam_global_host_row_count") or 0
+        )
+    summary["primed_target_count"] = (
+        summary["device_name_count"]
+        + summary["tag_row_count"]
+        + summary["interface_pair_count"]
+        + summary["routing_interface_alias_count"]
+        + summary.get("routing_asn_count", 0)
+        + summary.get("routing_bgp_router_count", 0)
+        + summary.get("routing_bgp_scope_count", 0)
+        + summary["routing_ospf_area_count"]
+        + summary["routing_ospf_instance_count"]
+        + summary["module_bay_pair_count"]
+        + summary["fhrp_group_count"]
+        + summary["vlan_pair_count"]
+        + summary["ipam_identity_row_count"]
+        + summary["ipam_global_host_row_count"]
+    )
+    summary["available"] = bool(summary["primed_target_count"])
+    return summary
 
 
 def _dependency_device_names(model_string, rows):
@@ -609,6 +722,253 @@ def _dependency_interface_pairs(model_string, rows):
     }
 
 
+def _dependency_routing_interface_alias_pairs(model_string, rows):
+    if model_string != "netbox_routing.ospfinterface":
+        return set()
+    from .sync_routing_impl import routing_interface_lookup_candidates
+
+    return {
+        (
+            str(row.get("device")).strip(),
+            candidate,
+        )
+        for row in rows
+        if row.get("device") not in ("", None)
+        and row.get("local_interface") not in ("", None)
+        for candidate in routing_interface_lookup_candidates(row.get("local_interface"))
+        if candidate
+    }
+
+
+def _prime_routing_bgp_identity_cache(runner, model_string, rows):
+    if model_string not in {
+        "netbox_routing.bgppeer",
+        "netbox_routing.bgpaddressfamily",
+        "netbox_routing.bgppeeraddressfamily",
+        "netbox_routing.ospfinstance",
+        "netbox_routing.ospfinterface",
+    }:
+        return {}
+
+    from dcim.models import Device
+    from ipam.models import ASN
+    from ipam.models import VRF
+
+    BGPRouter = runner._optional_model(
+        "netbox_routing", "BGPRouter", "netbox_routing.bgppeer"
+    )
+    BGPScope = runner._optional_model(
+        "netbox_routing", "BGPScope", "netbox_routing.bgppeer"
+    )
+    if BGPRouter is None or BGPScope is None:
+        return {}
+
+    asn_numbers = set()
+    for row in rows:
+        for field in ("local_asn", "peer_asn"):
+            value = row.get(field)
+            if value in ("", None):
+                continue
+            try:
+                asn_numbers.add(int(value))
+            except (TypeError, ValueError):
+                continue
+    if asn_numbers:
+        for chunk in _chunks(sorted(asn_numbers), DEPENDENCY_LOOKUP_PAIR_CHUNK_SIZE):
+            for asn in ASN.objects.filter(asn__in=chunk):
+                remember_lookup_object(runner, asn)
+
+    vrf_names = {
+        str(row.get("vrf")).strip()
+        for row in rows
+        if row.get("vrf") not in ("", None) and str(row.get("vrf")).strip()
+    }
+    if vrf_names:
+        _prime_slug_name_identity_cache(runner, VRF, slugs=set(), names=vrf_names)
+
+    ct = runner._content_type_for(Device)
+    requested_router_keys: set[tuple[int, int]] = set()
+    for row in rows:
+        device_name = str(row.get("device") or "").strip()
+        local_asn_value = row.get("local_asn")
+        if not device_name or local_asn_value in ("", None):
+            continue
+        device = runner._device_by_name_cache.get(device_name)
+        if device is None:
+            continue
+        try:
+            asn_number = int(local_asn_value)
+        except (TypeError, ValueError):
+            continue
+        local_asn = runner._asn_by_number_cache.get(asn_number)
+        if local_asn is None:
+            continue
+        requested_router_keys.add((device.pk, local_asn.pk))
+
+    found_router_keys = set()
+    if requested_router_keys:
+        for chunk in _chunks(
+            sorted(requested_router_keys), DEPENDENCY_LOOKUP_PAIR_CHUNK_SIZE
+        ):
+            device_ids = {device_id for device_id, _asn_id in chunk}
+            asn_ids = {asn_id for _device_id, asn_id in chunk}
+            query = Q(
+                assigned_object_type=ct,
+                assigned_object_id__in=device_ids,
+                asn_id__in=asn_ids,
+            )
+            for obj in BGPRouter.objects.filter(query):
+                _remember_unique_lookup(
+                    runner,
+                    BGPRouter,
+                    {
+                        "assigned_object_type": ct,
+                        "assigned_object_id": obj.assigned_object_id,
+                        "asn": obj.asn_id,
+                    },
+                    obj,
+                )
+                found_router_keys.add((obj.assigned_object_id, obj.asn_id))
+
+    requested_scope_keys: set[tuple[int, int | None]] = set()
+    for row in rows:
+        device_name = str(row.get("device") or "").strip()
+        local_asn_value = row.get("local_asn")
+        if not device_name or local_asn_value in ("", None):
+            continue
+        device = runner._device_by_name_cache.get(device_name)
+        if device is None:
+            continue
+        try:
+            asn_number = int(local_asn_value)
+        except (TypeError, ValueError):
+            continue
+        local_asn = runner._asn_by_number_cache.get(asn_number)
+        if local_asn is None:
+            continue
+        router = _cached_unique_identity_object(
+            runner,
+            BGPRouter,
+            {
+                "assigned_object_type": ct,
+                "assigned_object_id": device.pk,
+                "asn": local_asn,
+            },
+        )
+        if router is None:
+            continue
+        vrf_name = _vrf_name_from_row(row)
+        vrf = runner._vrf_by_name_cache.get(vrf_name) if vrf_name else None
+        requested_scope_keys.add((router.pk, getattr(vrf, "pk", None)))
+
+    found_scope_keys = set()
+    if requested_scope_keys:
+        for chunk in _chunks(
+            sorted(requested_scope_keys), DEPENDENCY_LOOKUP_PAIR_CHUNK_SIZE
+        ):
+            router_ids = {router_id for router_id, _vrf_id in chunk}
+            query = Q(router_id__in=router_ids)
+            for obj in BGPScope.objects.filter(query):
+                _remember_unique_lookup(
+                    runner,
+                    BGPScope,
+                    {"router": obj.router_id, "vrf": obj.vrf_id},
+                    obj,
+                )
+                found_scope_keys.add((obj.router_id, obj.vrf_id))
+
+    return {
+        "routing_asn_count": len(asn_numbers),
+        "routing_bgp_router_count": len(found_router_keys),
+        "routing_bgp_scope_count": len(found_scope_keys),
+    }
+
+
+def _prime_routing_ospf_identity_cache(runner, model_string, rows):
+    if model_string not in {
+        "netbox_routing.ospfinstance",
+        "netbox_routing.ospfinterface",
+    }:
+        return {}
+
+    OSPFInstance = runner._optional_model(
+        "netbox_routing", "OSPFInstance", "netbox_routing.ospfinstance"
+    )
+    OSPFArea = runner._optional_model(
+        "netbox_routing", "OSPFArea", "netbox_routing.ospfarea"
+    )
+    if OSPFInstance is None or OSPFArea is None:
+        return {}
+
+    from .sync_routing_impl import ospf_process_values
+
+    vrf_names = {
+        str(row.get("vrf")).strip()
+        for row in rows
+        if row.get("vrf") not in ("", None) and str(row.get("vrf")).strip()
+    }
+    if vrf_names:
+        from ipam.models import VRF
+
+        _prime_slug_name_identity_cache(runner, VRF, slugs=set(), names=vrf_names)
+
+    requested_area_ids = {
+        str(row.get("area_id")).strip()
+        for row in rows
+        if row.get("area_id") not in ("", None) and str(row.get("area_id")).strip()
+    }
+    found_area_ids = set()
+    if requested_area_ids:
+        for chunk in _chunks(
+            sorted(requested_area_ids), DEPENDENCY_LOOKUP_PAIR_CHUNK_SIZE
+        ):
+            for obj in OSPFArea.objects.filter(area_id__in=chunk):
+                _remember_unique_lookup(runner, OSPFArea, {"area_id": obj.area_id}, obj)
+                found_area_ids.add(str(obj.area_id))
+
+    requested_instance_keys: set[tuple[int, int | None, int]] = set()
+    for row in rows:
+        device_name = str(row.get("device") or "").strip()
+        if not device_name:
+            continue
+        device = runner._device_by_name_cache.get(device_name)
+        if device is None:
+            continue
+        vrf_name = _vrf_name_from_row(row)
+        vrf = runner._vrf_by_name_cache.get(vrf_name) if vrf_name else None
+        process_id, _process_label = ospf_process_values(row)
+        requested_instance_keys.add((device.pk, getattr(vrf, "pk", None), process_id))
+
+    found_instance_keys = set()
+    if requested_instance_keys:
+        for chunk in _chunks(
+            sorted(requested_instance_keys), DEPENDENCY_LOOKUP_PAIR_CHUNK_SIZE
+        ):
+            device_ids = {device_id for device_id, _vrf_id, _process_id in chunk}
+            process_ids = {process_id for _device_id, _vrf_id, process_id in chunk}
+            query = Q(device_id__in=device_ids, process_id__in=process_ids)
+            for obj in OSPFInstance.objects.filter(query):
+                key = (obj.device_id, obj.vrf_id, obj.process_id)
+                if key not in requested_instance_keys:
+                    continue
+                _remember_unique_lookup(
+                    runner,
+                    OSPFInstance,
+                    {
+                        "device": obj.device_id,
+                        "vrf": obj.vrf_id,
+                        "process_id": obj.process_id,
+                    },
+                    obj,
+                )
+                found_instance_keys.add(key)
+
+    return {
+        "routing_ospf_area_count": len(found_area_ids),
+        "routing_ospf_instance_count": len(found_instance_keys),
+    }
+
+
 def _dependency_module_bay_pairs(model_string, rows):
     if model_string != "dcim.module":
         return set()
@@ -618,6 +978,45 @@ def _dependency_module_bay_pairs(model_string, rows):
         if row.get("device") not in ("", None)
         and row.get("module_bay") not in ("", None)
     }
+
+
+def _dependency_vlan_pairs(model_string, rows):
+    if model_string != "ipam.vlan":
+        return set()
+    return {
+        (str(row.get("site")).strip(), int(row.get("vid")))
+        for row in rows
+        if row.get("site") not in ("", None)
+        and row.get("vid") not in ("", None)
+        and str(row.get("site")).strip()
+    }
+
+
+def _dependency_fhrp_group_keys(model_string, rows):
+    if model_string != "ipam.fhrpgroup":
+        return set()
+    return {
+        (
+            str(row.get("protocol") or "hsrp").strip().lower() or "hsrp",
+            int(row.get("group_id")),
+            _dependency_fhrp_group_name(row),
+        )
+        for row in rows
+        if row.get("group_id") not in ("", None) and str(row.get("group_id")).strip()
+    }
+
+
+def _dependency_fhrp_group_name(row):
+    protocol = str(row.get("protocol") or "hsrp").strip().lower()
+    group_id = str(row.get("group_id") or "").strip()
+    address = str(row.get("address") or "").split("/", 1)[0]
+    vrf = str(row.get("vrf") or "").strip()
+    parts = [protocol, group_id]
+    if vrf:
+        parts.append(vrf)
+    if address:
+        parts.append(address)
+    return "-".join(part for part in parts if part)[:100]
 
 
 def _dependency_tag_rows(model_string, rows):
@@ -821,6 +1220,12 @@ def _prime_device_type_identity_cache(runner, rows):
                 _remember_unique_lookup(
                     runner,
                     DeviceType,
+                    {"manufacturer": obj.manufacturer, "slug": obj.slug},
+                    obj,
+                )
+                _remember_unique_lookup(
+                    runner,
+                    DeviceType,
                     {"manufacturer": obj.manufacturer_id, "model": obj.model},
                     obj,
                 )
@@ -835,6 +1240,12 @@ def _prime_device_type_identity_cache(runner, rows):
                 model__in=chunk,
             ):
                 _remember_unique_lookup(runner, DeviceType, {"slug": obj.slug}, obj)
+                _remember_unique_lookup(
+                    runner,
+                    DeviceType,
+                    {"manufacturer": obj.manufacturer, "slug": obj.slug},
+                    obj,
+                )
                 _remember_unique_lookup(
                     runner,
                     DeviceType,
@@ -942,6 +1353,30 @@ def _prime_interface_cache(runner, interface_pairs):
     )
 
 
+def _prime_routing_interface_candidate_cache(runner, routing_interface_alias_pairs):
+    from dcim.models import Interface
+
+    device_names = {device_name for device_name, _ in routing_interface_alias_pairs}
+    _prime_device_cache(runner, device_names)
+
+    requested_by_device: dict[int, set[str]] = {}
+    for device_name, candidate in routing_interface_alias_pairs:
+        device = runner._device_by_name_cache.get(device_name)
+        if device is None:
+            continue
+        requested_by_device.setdefault(device.pk, set()).add(candidate)
+
+    for device_id, candidates in requested_by_device.items():
+        for chunk in _chunks(sorted(candidates), DEPENDENCY_LOOKUP_PAIR_CHUNK_SIZE):
+            query = Q(device_id=device_id)
+            candidate_query = Q()
+            for candidate in chunk:
+                candidate_query |= Q(name__iexact=candidate)
+            query &= candidate_query
+            for obj in Interface.objects.filter(query):
+                remember_lookup_object(runner, obj)
+
+
 def _prime_module_bay_cache(runner, module_bay_pairs):
     from dcim.models.device_components import ModuleBay
 
@@ -954,9 +1389,102 @@ def _prime_module_bay_cache(runner, module_bay_pairs):
     )
 
 
+def _prime_vlan_cache(runner, vlan_pairs):
+    from dcim.models import Site
+    from ipam.models import VLAN
+
+    site_names = {site_name for site_name, _ in vlan_pairs if site_name}
+    _prime_slug_name_identity_cache(
+        runner,
+        Site,
+        slugs=set(),
+        names=site_names,
+    )
+    missing_keys = set()
+    for site_name, vid in vlan_pairs:
+        site = _cached_unique_identity_object(runner, Site, {"name": site_name})
+        if site is None:
+            site = _cached_unique_identity_object(runner, Site, {"slug": site_name})
+        if site is None:
+            continue
+        cache_key = _unique_lookup_cache_key(VLAN, {"site": site, "vid": vid})
+        if cache_key is None:
+            continue
+        if cache_key in runner._primed_missing_unique_lookup_keys:
+            continue
+        if cache_key in runner._unique_lookup_cache:
+            continue
+        missing_keys.add((site.pk, vid))
+    if not missing_keys:
+        return
+    found_keys = set()
+    for chunk in _chunks(sorted(missing_keys), DEPENDENCY_LOOKUP_PAIR_CHUNK_SIZE):
+        grouped_by_site: dict[int, set[int]] = {}
+        for site_id, vid in chunk:
+            grouped_by_site.setdefault(site_id, set()).add(vid)
+        query = Q()
+        for site_id, vids in grouped_by_site.items():
+            query |= Q(site_id=site_id, vid__in=sorted(vids))
+        for obj in VLAN.objects.filter(query):
+            _remember_unique_lookup(
+                runner,
+                VLAN,
+                {"site": obj.site_id, "vid": obj.vid},
+                obj,
+            )
+            found_keys.add((obj.site_id, obj.vid))
+    for site_id, vid in missing_keys - found_keys:
+        _mark_missing_unique_lookup(runner, VLAN, {"site": site_id, "vid": vid})
+
+
+def _prime_fhrp_group_cache(runner, fhrp_group_keys):
+    from ipam.models import FHRPGroup
+
+    requested_keys = {
+        (protocol, group_id, name)
+        for protocol, group_id, name in fhrp_group_keys
+        if protocol and group_id not in (None, "")
+    }
+    if not requested_keys:
+        return
+
+    requested_by_protocol: dict[str, dict[int, set[str]]] = {}
+    for protocol, group_id, name in requested_keys:
+        requested_by_protocol.setdefault(protocol, {}).setdefault(group_id, set()).add(
+            name
+        )
+
+    found_keys = set()
+    for protocol, groups in requested_by_protocol.items():
+        for chunk in _chunks(sorted(groups.keys()), DEPENDENCY_LOOKUP_PAIR_CHUNK_SIZE):
+            query = Q(protocol=protocol, group_id__in=chunk)
+            for obj in FHRPGroup.objects.filter(query):
+                key = (str(obj.protocol).strip().lower(), obj.group_id, obj.name)
+                if key not in requested_keys:
+                    continue
+                _remember_unique_lookup(
+                    runner,
+                    FHRPGroup,
+                    {
+                        "protocol": key[0],
+                        "group_id": key[1],
+                        "name": key[2],
+                    },
+                    obj,
+                )
+                found_keys.add(key)
+
+    for protocol, group_id, name in requested_keys - found_keys:
+        _mark_missing_unique_lookup(
+            runner,
+            FHRPGroup,
+            {"protocol": protocol, "group_id": group_id, "name": name},
+        )
+
+
 def _prime_ipam_coalesce_identity_cache(runner, model_string, rows):
     if model_string not in {"ipam.prefix", "ipam.ipaddress", "ipam.fhrpgroup"}:
-        return
+        return {}
     from ipam.models import IPAddress
     from ipam.models import Prefix
     from ipam.models import VRF
@@ -975,7 +1503,7 @@ def _prime_ipam_coalesce_identity_cache(runner, model_string, rows):
         vrf_name = _vrf_name_from_row(row)
         identity_rows.append((value, vrf_name))
     if not identity_rows:
-        return
+        return {}
 
     vrf_names = {vrf_name for _, vrf_name in identity_rows if vrf_name is not None}
     missing_vrf_names = [
@@ -994,7 +1522,10 @@ def _prime_ipam_coalesce_identity_cache(runner, model_string, rows):
         if vrf is not None:
             requested_pairs.add((value, vrf.pk))
     if not requested_pairs:
-        return
+        return {
+            "ipam_identity_row_count": len(identity_rows),
+            "ipam_global_host_row_count": 0,
+        }
 
     found_by_pair: dict[tuple[str, int | None], list[object]] = {}
     requested_by_vrf: dict[int | None, set[str]] = {}
@@ -1029,12 +1560,26 @@ def _prime_ipam_coalesce_identity_cache(runner, model_string, rows):
             runner._primed_missing_unique_lookup_keys.add(cache_key)
 
     if model_string != "ipam.ipaddress":
-        return
+        return {
+            "ipam_identity_row_count": len(identity_rows),
+            "ipam_global_host_row_count": 0,
+        }
     _prime_ipam_global_host_identity_cache(
         runner,
         IPAddress,
         rows,
     )
+    return {
+        "ipam_identity_row_count": len(identity_rows),
+        "ipam_global_host_row_count": len(
+            {
+                host_value
+                for row in rows
+                if _vrf_name_from_row(row) is None
+                if (host_value := _row_ipam_host_value(row)) is not None
+            }
+        ),
+    }
 
 
 def _vrf_name_from_row(row):

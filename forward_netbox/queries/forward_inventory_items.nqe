@@ -64,4 +64,4 @@ select distinct {
   status: "active",
   discovered: true,
   description: inventory_description
-}
+};

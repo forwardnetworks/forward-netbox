@@ -1,0 +1,71 @@
+{
+  "queries": [
+    {
+      "map_name": "Forward ACI Nodes",
+      "filename": "forward_aci_nodes.nqe",
+      "required_fields": [
+        "fabric_name",
+        "pod_name",
+        "pod_id",
+        "node_id",
+        "name",
+        "role",
+        "node_type",
+        "serial_number",
+        "pod_tep_pool",
+        "firmware_version",
+        "node_object_name",
+        "description"
+      ],
+      "command_markers": [
+        "CISCO_ACI_FABRIC_NODES",
+        "regexMatches(command.response, nodeRegex)",
+        "nodeRegex"
+      ],
+      "forbid_raw_response_projection": true
+    },
+    {
+      "map_name": "Forward ACI APIC Nodes",
+      "filename": "forward_aci_apic_nodes.nqe",
+      "required_fields": [
+        "fabric_name",
+        "pod_name",
+        "pod_id",
+        "node_id",
+        "name",
+        "role",
+        "node_type",
+        "serial_number",
+        "pod_tep_pool",
+        "firmware_version",
+        "node_object_name",
+        "description"
+      ],
+      "command_markers": [
+        "CISCO_APIC_SWITCH",
+        "CISCO_APIC_CONTROLLER_DETAIL",
+        "regexMatches(command.response, apicNodeRegex)",
+        "apicNodeRegex",
+        "In-Band IPv4 Address",
+        "Pod I[Dd]"
+      ],
+      "forbid_raw_response_projection": true
+    },
+    {
+      "map_name": "Forward ACI Pods",
+      "filename": "forward_aci_pods.nqe",
+      "required_fields": [
+        "fabric_name",
+        "name",
+        "pod_id",
+        "description"
+      ],
+      "command_markers": [
+        "CISCO_ACI_FABRIC_NODES",
+        "regexMatches(command.response, nodeRegex)",
+        "nodeRegex"
+      ],
+      "forbid_raw_response_projection": true
+    }
+  ]
+}

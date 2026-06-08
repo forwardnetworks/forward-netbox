@@ -1,10 +1,14 @@
+import json
 import re
+from pathlib import Path
+from unittest.mock import Mock
 
 from django.contrib.contenttypes.models import ContentType
 from django.test import TestCase
 
 from forward_netbox.models import ForwardNQEMap
 from forward_netbox.signals import seed_builtin_nqe_maps
+from forward_netbox.utilities.query_registry import _query_contract_gap_remediation
 from forward_netbox.utilities.query_registry import builtin_nqe_map_rows
 from forward_netbox.utilities.query_registry import BUILTIN_OPTIONAL_QUERY_MAPS
 from forward_netbox.utilities.query_registry import builtin_query_contract_summary
@@ -18,8 +22,12 @@ from forward_netbox.utilities.query_registry import (
 from forward_netbox.utilities.query_registry import (
     IPADDRESS_UNASSIGNABLE_DIAGNOSTIC_QUERY_NAME,
 )
+from forward_netbox.utilities.query_registry import (
+    optional_plugin_query_contract_summary,
+)
 from forward_netbox.utilities.query_registry import QuerySpec
 from forward_netbox.utilities.query_registry import read_builtin_query_source
+from forward_netbox.utilities.query_registry import resolve_query_specs_for_client
 from forward_netbox.utilities.query_registry import routing_import_diagnostic_query
 from forward_netbox.utilities.query_registry import ROUTING_IMPORT_DIAGNOSTIC_QUERY_NAME
 
@@ -160,13 +168,54 @@ def _network_device_loop_blocks(query):
 
 
 class QueryRegistryTest(TestCase):
+    def test_aci_command_inventory_query_matches_fixture_contract(self):
+        fixture_path = (
+            Path(__file__).with_name("fixtures") / "aci_command_inventory_expected.json"
+        )
+        expected = json.loads(fixture_path.read_text(encoding="utf-8"))
+        query = read_builtin_query_source(expected["filename"])
+
+        self.assertEqual(expected["map_name"], "Forward ACI Command Inventory")
+        self.assertEqual(expected["model_string"], "dcim.device")
+        for command_type in expected["command_types"]:
+            self.assertIn(command_type, query)
+        for field_name in expected["required_fields"]:
+            self.assertIn(field_name, query)
+        self.assertIn("@intent Forward ACI Command Inventory", query)
+        self.assertIn("where isEmpty(forward_netbox_shard_keys)", query)
+        self.assertIn('description: "Forward observed ACI command inventory"', query)
+        if expected["forbid_raw_response_projection"]:
+            self.assertNotIn("response: command.response", query)
+            self.assertNotIn("response = command.response", query)
+
+    def test_aci_discovery_queries_match_fixture_contract(self):
+        fixture_path = (
+            Path(__file__).with_name("fixtures") / "aci_discovery_expected.json"
+        )
+        expected = json.loads(fixture_path.read_text(encoding="utf-8"))
+
+        for query_expected in expected["queries"]:
+            query = read_builtin_query_source(query_expected["filename"])
+            self.assertIn(f'@intent {query_expected["map_name"]}', query)
+            self.assertIn("where isEmpty(forward_netbox_shard_keys)", query)
+            for marker in query_expected["command_markers"]:
+                self.assertIn(marker, query)
+            for field_name in query_expected["required_fields"]:
+                self.assertIn(field_name, query)
+            if query_expected["forbid_raw_response_projection"]:
+                self.assertNotIn("response: command.response", query)
+                self.assertNotIn("response = command.response", query)
+
     def test_query_spec_resolves_repository_path_to_runtime_query_id(self):
         class Client:
-            def resolve_nqe_query_reference(self, *, repository, query_path, commit_id):
+            def get_committed_nqe_query(
+                self, *, repository, query_path, commit_id, query_index=None
+            ):
                 self.call = {
                     "repository": repository,
                     "query_path": query_path,
                     "commit_id": commit_id,
+                    "query_index": query_index,
                 }
                 return {
                     "queryId": "Q_devices",
@@ -196,9 +245,144 @@ class QueryRegistryTest(TestCase):
             {
                 "repository": "org",
                 "query_path": "/forward_netbox_validation/forward_devices",
-                "commit_id": None,
+                "commit_id": "head",
+                "query_index": None,
             },
         )
+
+    def test_resolve_query_specs_for_client_batches_head_path_queries_by_repository(
+        self,
+    ):
+        client = Mock()
+        client.get_nqe_repository_query_index.return_value = {
+            "by_path": {
+                "/forward_netbox_validation/forward_devices": {
+                    "queryId": "Q_devices",
+                    "path": "/forward_netbox_validation/forward_devices",
+                    "lastCommitId": "commit-1",
+                },
+                "/forward_netbox_validation/forward_interfaces": {
+                    "queryId": "Q_interfaces",
+                    "path": "/forward_netbox_validation/forward_interfaces",
+                    "lastCommitId": "commit-2",
+                },
+            }
+        }
+
+        specs = [
+            QuerySpec(
+                model_string="dcim.device",
+                query_name="Forward Devices",
+                query_repository="org",
+                query_path="/forward_netbox_validation/forward_devices",
+            ),
+            QuerySpec(
+                model_string="dcim.interface",
+                query_name="Forward Interfaces",
+                query_repository="org",
+                query_path="/forward_netbox_validation/forward_interfaces",
+            ),
+        ]
+
+        resolved = resolve_query_specs_for_client(specs, client)
+
+        self.assertEqual(client.get_nqe_repository_query_index.call_count, 1)
+        self.assertEqual(resolved[0].run_query_id, "Q_devices")
+        self.assertEqual(resolved[1].run_query_id, "Q_interfaces")
+        self.assertEqual(resolved[0].commit_id, "commit-1")
+        self.assertEqual(resolved[1].commit_id, "commit-2")
+        client.get_committed_nqe_query.assert_not_called()
+
+    def test_resolve_query_specs_for_client_falls_back_for_pinned_commit(self):
+        client = Mock()
+        client.get_nqe_repository_query_index.return_value = {"by_path": {}}
+        client.get_committed_nqe_query.return_value = {
+            "queryId": "Q_devices",
+            "commitId": "commit-1",
+        }
+
+        specs = [
+            QuerySpec(
+                model_string="dcim.device",
+                query_name="Forward Devices",
+                query_repository="org",
+                query_path="/forward_netbox_validation/forward_devices",
+                commit_id="commit-1",
+            )
+        ]
+
+        resolved = resolve_query_specs_for_client(specs, client)
+
+        self.assertEqual(resolved[0].run_query_id, "Q_devices")
+        self.assertEqual(resolved[0].commit_id, "commit-1")
+        client.get_nqe_repository_query_index.assert_not_called()
+        client.get_committed_nqe_query.assert_called_once_with(
+            repository="org",
+            query_path="/forward_netbox_validation/forward_devices",
+            commit_id="commit-1",
+        )
+
+    def test_resolve_query_specs_for_client_reuses_index_for_head_miss(self):
+        client = Mock()
+        client.get_nqe_repository_query_index.return_value = {"by_path": {}}
+        client.get_committed_nqe_query.return_value = {
+            "queryId": "Q_devices",
+            "commitId": "commit-1",
+        }
+
+        specs = [
+            QuerySpec(
+                model_string="dcim.device",
+                query_name="Forward Devices",
+                query_repository="org",
+                query_path="/forward_netbox_validation/forward_devices",
+            )
+        ]
+
+        resolved = resolve_query_specs_for_client(specs, client)
+
+        self.assertEqual(resolved[0].run_query_id, "Q_devices")
+        self.assertEqual(resolved[0].commit_id, "commit-1")
+        client.get_nqe_repository_query_index.assert_called_once_with(
+            repository="org",
+            directory="/",
+        )
+        client.get_committed_nqe_query.assert_called_once_with(
+            repository="org",
+            query_path="/forward_netbox_validation/forward_devices",
+            commit_id="head",
+            query_index={"by_path": {}},
+        )
+
+    def test_resolve_query_specs_for_client_dedupes_identical_head_misses(self):
+        client = Mock()
+        client.get_nqe_repository_query_index.return_value = {"by_path": {}}
+        client.get_committed_nqe_query.return_value = {
+            "queryId": "Q_devices",
+            "commitId": "commit-1",
+        }
+
+        specs = [
+            QuerySpec(
+                model_string="dcim.device",
+                query_name="Forward Devices",
+                query_repository="org",
+                query_path="/forward_netbox_validation/forward_devices",
+            ),
+            QuerySpec(
+                model_string="dcim.device",
+                query_name="Forward Devices Copy",
+                query_repository="org",
+                query_path="/forward_netbox_validation/forward_devices",
+            ),
+        ]
+
+        resolved = resolve_query_specs_for_client(specs, client)
+
+        self.assertEqual(resolved[0].run_query_id, "Q_devices")
+        self.assertEqual(resolved[1].run_query_id, "Q_devices")
+        self.assertEqual(client.get_nqe_repository_query_index.call_count, 1)
+        self.assertEqual(client.get_committed_nqe_query.call_count, 1)
 
     def test_query_spec_requires_one_query_reference(self):
         with self.assertRaisesRegex(
@@ -578,6 +762,60 @@ class QueryRegistryTest(TestCase):
                     msg=f"{query_report['filename']} missing positive shard predicate.",
                 )
 
+    def test_optional_plugin_query_contract_summary_passes_for_aci_maps(self):
+        summary = optional_plugin_query_contract_summary()
+
+        self.assertIn("aci.netbox_cisco_aci", summary)
+        aci_summary = summary["aci.netbox_cisco_aci"]
+        self.assertEqual(aci_summary["status"], "pass")
+        self.assertEqual(aci_summary["gaps"], [])
+        self.assertGreater(aci_summary["model_count"], 0)
+        self.assertEqual(
+            aci_summary["models"]["netbox_cisco_aci.acifabric"]["fetch_mode"],
+            "nqe_parameters",
+        )
+        self.assertEqual(
+            aci_summary["models"]["netbox_cisco_aci.acicontract"]["query_count"],
+            1,
+        )
+        self.assertIn("routing.netbox_routing", summary)
+        routing_summary = summary["routing.netbox_routing"]
+        self.assertEqual(routing_summary["status"], "pass")
+        self.assertEqual(routing_summary["gaps"], [])
+        self.assertGreater(routing_summary["model_count"], 0)
+        self.assertIn("netbox_routing.bgppeer", routing_summary["models"])
+        self.assertIn("netbox_routing.ospfinterface", routing_summary["models"])
+        self.assertIn("peering.netbox_peering_manager", summary)
+        peering_summary = summary["peering.netbox_peering_manager"]
+        self.assertEqual(peering_summary["status"], "pass")
+        self.assertEqual(peering_summary["gaps"], [])
+        self.assertGreater(peering_summary["model_count"], 0)
+        self.assertIn(
+            "netbox_peering_manager.peeringsession", peering_summary["models"]
+        )
+
+    def test_query_contract_gap_remediation_messages_cover_known_gap_codes(self):
+        self.assertIn(
+            "shipped query map",
+            _query_contract_gap_remediation("missing_builtin_query_map"),
+        )
+        self.assertIn(
+            "forward_netbox_shard_keys",
+            _query_contract_gap_remediation("missing_shard_parameter_declaration"),
+        )
+        self.assertIn(
+            "forward_netbox_shard_keys: []",
+            _query_contract_gap_remediation("missing_shard_parameter_default"),
+        )
+        self.assertIn(
+            "empty-list guard",
+            _query_contract_gap_remediation("missing_empty_shard_guard"),
+        )
+        self.assertIn(
+            "positive membership predicate",
+            _query_contract_gap_remediation("missing_positive_shard_predicate"),
+        )
+
     def test_shard_parameter_queries_leave_peer_device_lookups_global(self):
         filenames = {
             query["filename"]
@@ -675,6 +913,7 @@ class QueryRegistryTest(TestCase):
             query_default
             for query_default in BUILTIN_OPTIONAL_QUERY_MAPS
             if query_default["model_string"] in {"dcim.devicetype", "dcim.device"}
+            and "Aliases" in query_default["name"]
         ]
 
         self.assertEqual(len(alias_query_defaults), 2)
@@ -741,9 +980,18 @@ class QueryRegistryTest(TestCase):
             (row["model_string"], row["name"]): row for row in builtin_nqe_map_rows()
         }
 
+        command_inventory_row = rows[("dcim.device", "Forward ACI Command Inventory")]
+        self.assertFalse(command_inventory_row["enabled"])
+        self.assertEqual(
+            command_inventory_row["parameters"], {"forward_netbox_shard_keys": []}
+        )
+        self.assertIn("CISCO_APIC_SWITCH", command_inventory_row["query"])
+        self.assertIn("response_length", command_inventory_row["query"])
+
         fabric_row = rows[("netbox_cisco_aci.acifabric", "Forward ACI Fabrics")]
         pod_row = rows[("netbox_cisco_aci.acipod", "Forward ACI Pods")]
         node_row = rows[("netbox_cisco_aci.acinode", "Forward ACI Nodes")]
+        apic_node_row = rows[("netbox_cisco_aci.acinode", "Forward ACI APIC Nodes")]
         tenant_row = rows[("netbox_cisco_aci.acitenant", "Forward ACI Tenants")]
         vrf_row = rows[("netbox_cisco_aci.acivrf", "Forward ACI VRFs")]
         bd_row = rows[
@@ -769,6 +1017,7 @@ class QueryRegistryTest(TestCase):
             fabric_row,
             pod_row,
             node_row,
+            apic_node_row,
             tenant_row,
             vrf_row,
             bd_row,
@@ -791,6 +1040,11 @@ class QueryRegistryTest(TestCase):
         self.assertIn("pod_id:", node_row["query"])
         self.assertIn("serial_number:", node_row["query"])
         self.assertIn("node_object_name:", node_row["query"])
+        self.assertIn("CISCO_APIC_SWITCH", apic_node_row["query"])
+        self.assertIn("CISCO_APIC_CONTROLLER_DETAIL", apic_node_row["query"])
+        self.assertIn("apicNodeRegex", apic_node_row["query"])
+        self.assertIn("In-Band IPv4 Address", apic_node_row["query"])
+        self.assertIn("Pod I[Dd]", apic_node_row["query"])
         self.assertIn("CISCO_ACI_FABRIC_VRFS", tenant_row["query"])
         self.assertIn("tenant_name:", vrf_row["query"])
         self.assertIn("where false", bd_row["query"])
@@ -945,6 +1199,19 @@ class QueryRegistryTest(TestCase):
 
         query_map.refresh_from_db()
         self.assertTrue(query_map.enabled)
+
+    def test_seed_builtin_maps_skips_aci_maps_when_plugin_contenttypes_are_absent(self):
+        self.assertFalse(
+            ContentType.objects.filter(app_label="netbox_cisco_aci").exists()
+        )
+
+        seed_builtin_nqe_maps(type("Sender", (), {"label": "forward_netbox"}))
+
+        aci_maps = ForwardNQEMap.objects.filter(
+            netbox_model__app_label="netbox_cisco_aci",
+            built_in=True,
+        )
+        self.assertEqual(aci_maps.count(), 0)
 
     def test_builtin_map_query_id_overrides_bundled_query_for_diff_support(self):
         content_type = ContentType.objects.get(app_label="dcim", model="site")
@@ -1190,8 +1457,22 @@ class QueryRegistryTest(TestCase):
             "let chosen_prefix_length = max(foreach candidate in grouped_rows",
             ip_spec.query,
         )
-        self.assertIn("importable_interfaces =", ip_spec.query)
-        self.assertIn("assignable_candidate_rows =", ip_spec.query)
+        self.assertIn(
+            "importable_interfaces(forward_netbox_shard_keys: List<String>) =",
+            ip_spec.query,
+        )
+        self.assertIn(
+            "assignable_candidate_rows(forward_netbox_shard_keys: List<String>) =",
+            ip_spec.query,
+        )
+        self.assertIn(
+            "foreach row in candidate_rows(forward_netbox_shard_keys)",
+            ip_spec.query,
+        )
+        self.assertIn(
+            "foreach imported_interface in importable_interfaces(forward_netbox_shard_keys)",
+            ip_spec.query,
+        )
         self.assertIn("where imported_interface.device == row.device", ip_spec.query)
         self.assertIn(
             "where imported_interface.interface == row.interface", ip_spec.query

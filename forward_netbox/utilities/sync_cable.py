@@ -5,11 +5,39 @@ from ..exceptions import ForwardSyncDataError
 from .sync_primitives import forget_lookup_object
 
 
+def _cable_between_cache_key(interface, remote_interface):
+    interface_id = getattr(interface, "pk", None)
+    remote_interface_id = getattr(remote_interface, "pk", None)
+    if not interface_id or not remote_interface_id:
+        return None
+    return tuple(sorted((interface_id, remote_interface_id)))
+
+
+def remember_cable_between(runner, interface, remote_interface, cable):
+    cache_key = _cable_between_cache_key(interface, remote_interface)
+    if cache_key is None:
+        return
+    runner._cable_between_cache[cache_key] = cable
+
+
+def forget_cable_between(runner, interface, remote_interface):
+    cache_key = _cable_between_cache_key(interface, remote_interface)
+    if cache_key is None:
+        return
+    runner._cable_between_cache.pop(cache_key, None)
+
+
 def lookup_cable_between(runner, interface, remote_interface):
-    interface.refresh_from_db(fields=["cable"])
-    remote_interface.refresh_from_db(fields=["cable"])
+    from dcim.models import Cable
+
+    cache_key = _cable_between_cache_key(interface, remote_interface)
+    if cache_key is not None and cache_key in runner._cable_between_cache:
+        return runner._cable_between_cache[cache_key]
     if interface.cable_id and interface.cable_id == remote_interface.cable_id:
-        return interface.cable
+        cable = runner._get_unique_or_raise(Cable, {"pk": interface.cable_id})
+        if cable is not None:
+            remember_cable_between(runner, interface, remote_interface, cable)
+            return cable
     return None
 
 
@@ -32,6 +60,7 @@ def delete_dcim_cable(runner, row):
     if cable is None:
         return False
     cable.delete()
+    forget_cable_between(runner, interface, remote_interface)
     forget_lookup_object(runner, interface)
     forget_lookup_object(runner, remote_interface)
     return True
@@ -139,10 +168,13 @@ def apply_dcim_cable(runner, row):
 
     cable = lookup_cable_between(runner, interface, remote_interface)
     if cable is not None:
+        if str(getattr(cable, "status", "") or "") == str(row["status"]):
+            return cable
         cable.status = row["status"]
         cable.full_clean()
         cable.save()
-        return
+        remember_cable_between(runner, interface, remote_interface, cable)
+        return cable
 
     interface.refresh_from_db(fields=["cable"])
     remote_interface.refresh_from_db(fields=["cable"])
@@ -175,5 +207,8 @@ def apply_dcim_cable(runner, row):
     )
     cable.full_clean()
     cable.save()
+    interface.cable_id = cable.pk
+    remote_interface.cable_id = cable.pk
+    remember_cable_between(runner, interface, remote_interface, cable)
     forget_lookup_object(runner, interface)
     forget_lookup_object(runner, remote_interface)

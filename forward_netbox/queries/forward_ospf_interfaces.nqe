@@ -46,4 +46,4 @@ select distinct {
   role: if isPresent(neighbor.role) then toString(neighbor.role) else "",
   remote_device: if isPresent(neighbor.remotePeer) then neighbor.remotePeer.deviceName else "",
   remote_interface: if isPresent(neighbor.remotePeer) then neighbor.remotePeer.interface else ""
-}
+};

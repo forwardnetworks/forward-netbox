@@ -17,4 +17,4 @@ select distinct {
   rd: null : String,
   description: "",
   enforce_unique: false
-}
+};

@@ -33,4 +33,4 @@ select distinct {
   tag: rule.tag,
   tag_slug: rule.tag_slug,
   tag_color: rule.tag_color
-}
+};

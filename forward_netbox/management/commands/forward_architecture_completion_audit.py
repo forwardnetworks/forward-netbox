@@ -83,7 +83,7 @@ class Command(BaseCommand):
         checks = [
             self._check(
                 "bulk_orm_classification_gaps_clear",
-                all(not items for items in gaps.values()),
+                not ArchitectureAuditCommand()._has_classification_gaps(gaps),
                 "apply_engine_matrix.classification_gaps",
                 external=False,
             ),

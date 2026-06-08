@@ -1,0 +1,32 @@
+{
+  "map_name": "Forward ACI Command Inventory",
+  "model_string": "dcim.device",
+  "filename": "forward_aci_command_inventory.nqe",
+  "required_fields": [
+    "device",
+    "command_type",
+    "response_present",
+    "response_length",
+    "status",
+    "description"
+  ],
+  "command_types": [
+    "CISCO_APIC_SWITCH",
+    "CISCO_APIC_CONTROLLER_DETAIL",
+    "CISCO_ACI_FABRIC_NODES",
+    "CISCO_ACI_FABRIC_VRFS",
+    "CISCO_ACI_NODE_TYPE",
+    "CISCO_ACI_SPINE_INTERFACE_MODE",
+    "CISCO_ACI_SPINE_IP_ENDPOINTS",
+    "CISCO_ACI_SPINE_TUNNELS_NEXTHOP",
+    "CISCO_ACI_TUNNELS_ENDPOINTS",
+    "CISCO_ACI_ZONING_RULE",
+    "CISCO_ACI_ZONING_FILTER",
+    "CISCO_ACI_EPM_ENDPOINTS",
+    "CISCO_APIC_VLAN_LEAF",
+    "CISCO_APIC_EXT_L3OUT_INTERFACES",
+    "CISCO_APIC_VLAN_STATUS_LEAF",
+    "CISCO_APIC_VPC_MAP"
+  ],
+  "forbid_raw_response_projection": true
+}

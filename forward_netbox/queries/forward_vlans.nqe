@@ -5,9 +5,7 @@
 
 import "netbox_utilities";
 
-@query
-f(forward_netbox_shard_keys: List<String>) =
-candidate_rows =
+candidateRows(forward_netbox_shard_keys: List<String>) =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
@@ -24,8 +22,10 @@ candidate_rows =
     status: "active"
   };
 
+@query
+f(forward_netbox_shard_keys: List<String>) =
 foreach grouped in (
-  foreach row in candidate_rows
+  foreach row in candidateRows(forward_netbox_shard_keys)
   group row as grouped_rows by {
     site: row.site,
     site_slug: row.site_slug,
@@ -48,4 +48,4 @@ foreach grouped in (
     status: "active"
   }
 )
-select grouped
+select grouped;

@@ -14,6 +14,7 @@ from dcim.models import DeviceType
 from dcim.models import Interface
 from dcim.models import InventoryItem
 from dcim.models import InventoryItemRole
+from dcim.models import MACAddress
 from dcim.models import Manufacturer
 from dcim.models import Module
 from dcim.models import Platform
@@ -71,6 +72,9 @@ from forward_netbox.utilities.apply_engine import BULK_ORM_ENABLED_MODELS_WITHOU
 from forward_netbox.utilities.apply_engine import bulk_orm_expansion_summary
 from forward_netbox.utilities.apply_engine import select_apply_engine
 from forward_netbox.utilities.apply_engine import UNCLASSIFIED_SUPPORTED_MODELS
+from forward_netbox.utilities.apply_engine_bulk import (
+    bulk_orm_apply_tree_models,
+)
 from forward_netbox.utilities.branch_budget import branch_budget_density_policy_summary
 from forward_netbox.utilities.branch_budget import BranchPlanItem
 from forward_netbox.utilities.branch_budget import BranchWorkload
@@ -118,6 +122,8 @@ from forward_netbox.utilities.sync_facade import (
 from forward_netbox.utilities.sync_primitives import delete_by_coalesce
 from forward_netbox.utilities.sync_primitives import get_unique_or_raise
 from forward_netbox.utilities.sync_primitives import prime_dependency_lookup_caches
+from forward_netbox.utilities.sync_routing_impl import lookup_ipaddress_by_host
+from forward_netbox.utilities.sync_routing_impl import lookup_routing_interface_name
 from forward_netbox.utilities.sync_state import get_branch_run_display_state
 
 
@@ -1763,7 +1769,7 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
             }
         ]
         client.get_snapshot_metrics.return_value = {}
-        client.resolve_nqe_query_reference.return_value = {
+        client.get_committed_nqe_query.return_value = {
             "queryId": "Q-sites",
             "commitId": "C-sites",
         }
@@ -1790,10 +1796,11 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
 
         planner.build_plan(max_changes_per_branch=10, run_preflight=True)
 
-        client.resolve_nqe_query_reference.assert_called_once_with(
+        client.get_committed_nqe_query.assert_called_once_with(
             repository="org",
             query_path="/forward_netbox_validation/forward_sites",
-            commit_id=None,
+            commit_id="head",
+            query_index={"by_path": {}},
         )
 
     @patch("forward_netbox.utilities.query_fetch_execution.get_query_specs")
@@ -1850,7 +1857,7 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
         ]
         client.get_snapshot_metrics.return_value = {}
 
-        def resolve_side_effect(*, repository, query_path, commit_id):
+        def resolve_side_effect(*, repository, query_path, commit_id, query_index=None):
             if query_path == "/forward_netbox_validation/forward_platforms":
                 raise ForwardClientError("repository lookup timeout")
             return {
@@ -1858,7 +1865,7 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
                 "commitId": "C-sites",
             }
 
-        client.resolve_nqe_query_reference.side_effect = resolve_side_effect
+        client.get_committed_nqe_query.side_effect = resolve_side_effect
         client.run_nqe_query.return_value = [{"name": "site-1", "slug": "site-1"}]
         self.sync.resolve_snapshot_id = lambda client=None: "snapshot-after"
         self.sync.get_model_strings = lambda: ["dcim.platform", "dcim.site"]
@@ -5566,13 +5573,11 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertEqual(runner._lookup_interface(device, "Ethernet1/1"), interface)
         self.assertIsNone(runner._lookup_interface(device, "ethernet1/1"))
 
-    def test_device_lookup_cache_is_positive_only(self):
+    def test_device_lookup_cache_reuses_positive_lookup(self):
+        device = self._create_device("device-1")
         runner = ForwardSyncRunner(
             sync=self.sync, ingestion=None, client=None, logger_=Mock()
         )
-
-        self.assertIsNone(runner._lookup_device_by_name("device-1"))
-        device = self._create_device("device-1")
 
         with CaptureQueriesContext(connection) as queries:
             self.assertEqual(runner._get_device_by_name("device-1"), device)
@@ -5590,6 +5595,17 @@ class ForwardSyncRunnerTest(TestCase):
                 runner._get_device_by_name("device-404")
             with self.assertRaises(Device.DoesNotExist):
                 runner._get_device_by_name("device-404")
+
+        self.assertEqual(len(queries), 1)
+
+    def test_device_lookup_cache_reuses_negative_lookup_for_optional_get(self):
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        with CaptureQueriesContext(connection) as queries:
+            self.assertIsNone(runner._lookup_device_by_name("device-404"))
+            self.assertIsNone(runner._lookup_device_by_name("device-404"))
 
         self.assertEqual(len(queries), 1)
 
@@ -5670,6 +5686,78 @@ class ForwardSyncRunnerTest(TestCase):
 
         self.assertEqual(len(queries), 0)
 
+    def test_routing_interface_alias_lookup_reuses_cache_after_first_resolution(self):
+        device = self._create_device("device-1")
+        interface = Interface.objects.create(
+            device=device,
+            name="GigabitEthernet0/0/2",
+            type="1000base-t",
+        )
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        first = lookup_routing_interface_name(runner, device, "gi0/0/2")
+        with CaptureQueriesContext(connection) as queries:
+            second = lookup_routing_interface_name(runner, device, "gi0/0/2")
+
+        self.assertEqual(first, interface)
+        self.assertEqual(second, interface)
+        self.assertEqual(len(queries), 0)
+
+    def test_dependency_lookup_cache_primes_routing_interface_alias_candidates(self):
+        device = self._create_device("device-ospf-alias")
+        interface = Interface.objects.create(
+            device=device,
+            name="GigabitEthernet0/0/2",
+            type="1000base-t",
+        )
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        with CaptureQueriesContext(connection) as prime_queries:
+            summary = prime_dependency_lookup_caches(
+                runner,
+                "netbox_routing.ospfinterface",
+                [
+                    {
+                        "device": device.name,
+                        "local_interface": "gi0/0/2",
+                    }
+                ],
+            )
+
+        self.assertEqual(summary["routing_interface_alias_count"], 2)
+        self.assertGreaterEqual(len(prime_queries), 1)
+
+        with CaptureQueriesContext(connection) as lookup_queries:
+            resolved = lookup_routing_interface_name(runner, device, "gi0/0/2")
+
+        self.assertEqual(resolved, interface)
+        self.assertEqual(len(lookup_queries), 0)
+
+    def test_lookup_ipaddress_by_host_reuses_vrf_scoped_cache_after_first_resolution(
+        self,
+    ):
+        vrf = VRF.objects.create(name="blue", rd="64512:1")
+        ip_address = IPAddress.objects.create(
+            address="192.0.2.1/24",
+            vrf=vrf,
+            status="active",
+        )
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        first = lookup_ipaddress_by_host(runner, address="192.0.2.1", vrf=vrf)
+        with CaptureQueriesContext(connection) as queries:
+            second = lookup_ipaddress_by_host(runner, address="192.0.2.1", vrf=vrf)
+
+        self.assertEqual(first, ip_address)
+        self.assertEqual(second, ip_address)
+        self.assertEqual(len(queries), 0)
+
     def test_interface_coalesce_reuses_primed_identity_cache(self):
         device = self._create_device("device-1")
         interface = Interface.objects.create(
@@ -5735,7 +5823,7 @@ class ForwardSyncRunnerTest(TestCase):
         )
 
         with CaptureQueriesContext(connection) as queries:
-            prime_dependency_lookup_caches(
+            summary = prime_dependency_lookup_caches(
                 runner,
                 "dcim.interface",
                 [
@@ -5745,6 +5833,11 @@ class ForwardSyncRunnerTest(TestCase):
             )
 
         self.assertEqual(len(queries), 2)
+        self.assertEqual(summary["model"], "dcim.interface")
+        self.assertEqual(summary["row_count"], 2)
+        self.assertEqual(summary["device_name_count"], 1)
+        self.assertEqual(summary["interface_pair_count"], 2)
+        self.assertTrue(summary["available"])
         with CaptureQueriesContext(connection) as cached_queries:
             self.assertEqual(runner._get_device_by_name("device-1"), device)
 
@@ -5936,6 +6029,164 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertEqual(self._update_statements(queries), [])
         self.assertEqual(ObjectChange.objects.count(), before_count)
 
+    def test_apply_dcim_platform_repeat_sync_is_noop(self):
+        Manufacturer.objects.create(name="vendor-1", slug="vendor-1")
+        Platform.objects.create(
+            name="platform-1",
+            slug="platform-1",
+            manufacturer=Manufacturer.objects.get(slug="vendor-1"),
+        )
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "name": "platform-1",
+            "slug": "platform-1",
+            "manufacturer": "vendor-1",
+            "manufacturer_slug": "vendor-1",
+        }
+
+        before_count = ObjectChange.objects.count()
+        with CaptureQueriesContext(connection) as queries:
+            runner._apply_dcim_platform(row)
+            runner._apply_dcim_platform(row)
+
+        self.assertEqual(Platform.objects.filter(slug="platform-1").count(), 1)
+        self.assertEqual(self._update_statements(queries), [])
+        self.assertEqual(ObjectChange.objects.count(), before_count)
+
+    def test_apply_dcim_manufacturer_repeat_sync_is_noop(self):
+        Manufacturer.objects.create(name="vendor-2", slug="vendor-2")
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {"name": "vendor-2", "slug": "vendor-2"}
+
+        before_count = ObjectChange.objects.count()
+        with CaptureQueriesContext(connection) as queries:
+            runner._apply_dcim_manufacturer(row)
+            runner._apply_dcim_manufacturer(row)
+
+        self.assertEqual(Manufacturer.objects.filter(slug="vendor-2").count(), 1)
+        self.assertEqual(self._update_statements(queries), [])
+        self.assertEqual(ObjectChange.objects.count(), before_count)
+
+    def test_apply_dcim_devicerole_repeat_sync_is_noop(self):
+        DeviceRole.objects.create(name="role-1", slug="role-1", color="9e9e9e")
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {"name": "role-1", "slug": "role-1", "color": "9e9e9e"}
+
+        before_count = ObjectChange.objects.count()
+        with CaptureQueriesContext(connection) as queries:
+            runner._apply_dcim_devicerole(row)
+            runner._apply_dcim_devicerole(row)
+
+        self.assertEqual(DeviceRole.objects.filter(slug="role-1").count(), 1)
+        self.assertEqual(self._update_statements(queries), [])
+        self.assertEqual(ObjectChange.objects.count(), before_count)
+
+    def test_apply_dcim_devicetype_repeat_sync_is_noop(self):
+        manufacturer = Manufacturer.objects.create(name="vendor-3", slug="vendor-3")
+        DeviceType.objects.create(
+            manufacturer=manufacturer,
+            model="model-1",
+            slug="model-1",
+        )
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "manufacturer": "vendor-3",
+            "manufacturer_slug": "vendor-3",
+            "model": "model-1",
+            "slug": "model-1",
+        }
+
+        before_count = ObjectChange.objects.count()
+        with CaptureQueriesContext(connection) as queries:
+            runner._apply_dcim_devicetype(row)
+            runner._apply_dcim_devicetype(row)
+
+        self.assertEqual(
+            DeviceType.objects.filter(
+                manufacturer=manufacturer, slug="model-1"
+            ).count(),
+            1,
+        )
+        self.assertEqual(self._update_statements(queries), [])
+        self.assertEqual(ObjectChange.objects.count(), before_count)
+
+    def test_apply_extras_taggeditem_repeat_sync_is_noop(self):
+        device = self._create_device("device-tag-noop")
+        Tag.objects.create(name="feature", slug="feature", color="9e9e9e")
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "device": device.name,
+            "tag": "feature",
+            "tag_slug": "feature",
+            "tag_color": "9e9e9e",
+        }
+
+        before_count = ObjectChange.objects.count()
+        with CaptureQueriesContext(connection) as queries:
+            runner._apply_extras_taggeditem(row)
+            runner._apply_extras_taggeditem(row)
+
+        self.assertEqual(device.tags.filter(slug="feature").count(), 1)
+        self.assertEqual(self._update_statements(queries), [])
+        self.assertEqual(ObjectChange.objects.count(), before_count)
+
+    def test_ensure_platform_reuses_cache_after_first_resolution(self):
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "name": "platform-2",
+            "slug": "platform-2",
+            "manufacturer": "vendor-2",
+            "manufacturer_slug": "vendor-2",
+        }
+
+        first = runner._ensure_platform(row)
+        with CaptureQueriesContext(connection) as queries:
+            second = runner._ensure_platform(row)
+
+        self.assertEqual(first.pk, second.pk)
+        self.assertEqual(len(queries), 0)
+
+    def test_ensure_module_type_reuses_cache_after_first_resolution(self):
+        manufacturer = Manufacturer.objects.create(name="vendor-5", slug="vendor-5")
+        module_type = ModuleType.objects.create(
+            manufacturer=manufacturer,
+            model="Line Card 5",
+            part_number="LC-5",
+            description="",
+            comments="",
+        )
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "manufacturer": "vendor-5",
+            "manufacturer_slug": "vendor-5",
+            "model": "Line Card 5",
+            "part_number": "LC-5",
+            "description": "",
+            "comments": "",
+        }
+
+        first = runner._ensure_module_type(row)
+        with CaptureQueriesContext(connection) as queries:
+            second = runner._ensure_module_type(row)
+
+        self.assertEqual(first.pk, module_type.pk)
+        self.assertEqual(second.pk, module_type.pk)
+        self.assertEqual(len(queries), 0)
+
     def test_ensure_manufacturer_uses_unique_lookup_cache_after_first_resolution(self):
         runner = ForwardSyncRunner(
             sync=self.sync, ingestion=None, client=None, logger_=Mock()
@@ -6103,6 +6354,80 @@ class ForwardSyncRunnerTest(TestCase):
                     {"prefix": "10.3.0.0/24", "vrf": None},
                 ),
                 prefix,
+            )
+
+        self.assertEqual(len(cached_queries), 0)
+
+    def test_dependency_lookup_cache_primes_ipam_vlan_site_identity(self):
+        site = Site.objects.create(name="site-1", slug="site-1")
+        vlan = VLAN.objects.create(site=site, vid=10, name="VLAN10", status="active")
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        with CaptureQueriesContext(connection) as queries:
+            summary = prime_dependency_lookup_caches(
+                runner,
+                "ipam.vlan",
+                [
+                    {
+                        "site": "site-1",
+                        "vid": 10,
+                        "name": "VLAN10",
+                        "status": "active",
+                    }
+                ],
+            )
+
+        self.assertEqual(len(queries), 2)
+        self.assertEqual(summary["vlan_pair_count"], 1)
+        with CaptureQueriesContext(connection) as cached_queries:
+            self.assertEqual(
+                get_unique_or_raise(runner, VLAN, {"site": site, "vid": 10}),
+                vlan,
+            )
+
+        self.assertEqual(len(cached_queries), 0)
+
+    def test_dependency_lookup_cache_primes_ipam_fhrpgroup_identity(self):
+        VRF.objects.create(name="blue", rd="64512:3")
+        group_name = "hsrp-10-blue-10.0.0.1"
+        group = FHRPGroup.objects.create(
+            protocol="hsrp",
+            group_id=10,
+            name=group_name,
+        )
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        with CaptureQueriesContext(connection) as queries:
+            summary = prime_dependency_lookup_caches(
+                runner,
+                "ipam.fhrpgroup",
+                [
+                    {
+                        "device": "device-1",
+                        "interface": "Vlan10",
+                        "protocol": "hsrp",
+                        "group_id": 10,
+                        "address": "10.0.0.1/24",
+                        "vrf": "blue",
+                        "state": "active",
+                    }
+                ],
+            )
+
+        self.assertGreaterEqual(len(queries), 2)
+        self.assertEqual(summary["fhrp_group_count"], 1)
+        with CaptureQueriesContext(connection) as cached_queries:
+            self.assertEqual(
+                get_unique_or_raise(
+                    runner,
+                    FHRPGroup,
+                    {"protocol": "hsrp", "group_id": 10, "name": group_name},
+                ),
+                group,
             )
 
         self.assertEqual(len(cached_queries), 0)
@@ -6600,6 +6925,19 @@ class ForwardSyncRunnerTest(TestCase):
 
         self.assertEqual(len(queries), 1)
 
+    def test_module_bay_lookup_cache_reuses_positive_lookup(self):
+        device = self._create_device("device-module-hit")
+        module_bay = self._create_module_bay(device, name="Slot 1")
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        with CaptureQueriesContext(connection) as queries:
+            self.assertEqual(runner._lookup_module_bay(device, "Slot 1"), module_bay)
+            self.assertEqual(runner._lookup_module_bay(device, "Slot 1"), module_bay)
+
+        self.assertEqual(len(queries), 1)
+
     def test_coalesce_unique_lookup_uses_single_bounded_query(self):
         site = Site.objects.create(name="site-query-count", slug="site-query-count")
         runner = ForwardSyncRunner(
@@ -6779,11 +7117,11 @@ class ForwardSyncRunnerTest(TestCase):
             "asn": asn,
         }
 
+        self.assertEqual(get_unique_or_raise(runner, BGPRouter, lookup), router)
         with CaptureQueriesContext(connection) as queries:
             self.assertEqual(get_unique_or_raise(runner, BGPRouter, lookup), router)
-            self.assertEqual(get_unique_or_raise(runner, BGPRouter, lookup), router)
 
-        self.assertEqual(len(queries), 1)
+        self.assertEqual(len(queries), 0)
 
     def test_bgp_scope_uses_exact_vrf_lookup_without_router_only_ambiguity(self):
         if not apps.is_installed("netbox_routing"):
@@ -6806,6 +7144,223 @@ class ForwardSyncRunnerTest(TestCase):
 
         self.assertEqual(runner._ensure_bgp_scope({}, router, None), global_scope)
         runner.logger.log_warning.assert_not_called()
+
+    def test_bgp_scope_reuses_positive_cache_after_first_resolution(self):
+        if not apps.is_installed("netbox_routing"):
+            self.skipTest("netbox-routing optional plugin is not installed")
+        BGPRouter = apps.get_model("netbox_routing", "BGPRouter")
+        BGPScope = apps.get_model("netbox_routing", "BGPScope")
+        device = self._create_device("device-bgp-scope-cache")
+        asn = ASN.objects.create(rir=RIR.objects.create(name="ARIN"), asn=64512)
+        router = BGPRouter.objects.create(
+            name="device-bgp-scope-cache AS64512",
+            assigned_object_type=ContentType.objects.get_for_model(Device),
+            assigned_object_id=device.pk,
+            asn=asn,
+        )
+        global_scope = BGPScope.objects.create(router=router, vrf=None)
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        self.assertEqual(runner._ensure_bgp_scope({}, router, None), global_scope)
+        with CaptureQueriesContext(connection) as queries:
+            second = runner._ensure_bgp_scope({}, router, None)
+
+        self.assertEqual(second, global_scope)
+        self.assertEqual(len(queries), 0)
+
+    def test_bgp_scope_delete_resolution_reuses_cache_after_first_resolution(self):
+        if not apps.is_installed("netbox_routing"):
+            self.skipTest("netbox-routing optional plugin is not installed")
+        BGPRouter = apps.get_model("netbox_routing", "BGPRouter")
+        BGPScope = apps.get_model("netbox_routing", "BGPScope")
+        device = self._create_device("device-bgp-scope-delete-cache")
+        asn = ASN.objects.create(rir=RIR.objects.create(name="ARIN"), asn=64512)
+        router = BGPRouter.objects.create(
+            name="device-bgp-scope-delete-cache AS64512",
+            assigned_object_type=ContentType.objects.get_for_model(Device),
+            assigned_object_id=device.pk,
+            asn=asn,
+        )
+        global_scope = BGPScope.objects.create(router=router, vrf=None)
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "device": "device-bgp-scope-delete-cache",
+            "vrf": None,
+            "local_asn": 64512,
+        }
+
+        first = runner._resolve_bgp_scope_for_delete(row)
+        with CaptureQueriesContext(connection) as queries:
+            second = runner._resolve_bgp_scope_for_delete(row)
+
+        self.assertEqual(first, global_scope)
+        self.assertEqual(second, global_scope)
+        self.assertEqual(len(queries), 0)
+
+    def test_dependency_lookup_cache_primes_bgp_router_scope_identity(self):
+        if not apps.is_installed("netbox_routing"):
+            self.skipTest("netbox-routing optional plugin is not installed")
+        BGPRouter = apps.get_model("netbox_routing", "BGPRouter")
+        BGPScope = apps.get_model("netbox_routing", "BGPScope")
+        device = self._create_device("device-bgp-prime")
+        asn = ASN.objects.create(rir=RIR.objects.create(name="ARIN"), asn=64512)
+        router = BGPRouter.objects.create(
+            name="device-bgp-prime AS64512",
+            assigned_object_type=ContentType.objects.get_for_model(Device),
+            assigned_object_id=device.pk,
+            asn=asn,
+        )
+        scope = BGPScope.objects.create(router=router, vrf=None)
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        with CaptureQueriesContext(connection) as prime_queries:
+            summary = prime_dependency_lookup_caches(
+                runner,
+                "netbox_routing.bgppeer",
+                [
+                    {
+                        "device": device.name,
+                        "vrf": None,
+                        "local_asn": 64512,
+                        "peer_asn": 64512,
+                    }
+                ],
+            )
+
+        self.assertGreaterEqual(len(prime_queries), 1)
+        self.assertEqual(summary["routing_asn_count"], 1)
+        self.assertEqual(summary["routing_bgp_router_count"], 1)
+        self.assertEqual(summary["routing_bgp_scope_count"], 1)
+
+        with CaptureQueriesContext(connection) as lookup_queries:
+            self.assertEqual(runner._ensure_asn(64512), asn)
+            self.assertEqual(
+                get_unique_or_raise(
+                    runner,
+                    BGPRouter,
+                    {
+                        "assigned_object_type": ContentType.objects.get_for_model(
+                            Device
+                        ),
+                        "assigned_object_id": device.pk,
+                        "asn": asn,
+                    },
+                ),
+                router,
+            )
+            self.assertEqual(
+                get_unique_or_raise(runner, BGPScope, {"router": router, "vrf": None}),
+                scope,
+            )
+
+        self.assertEqual(len(lookup_queries), 0)
+
+    def test_dependency_lookup_cache_primes_ospf_instance_area_identity(self):
+        if not apps.is_installed("netbox_routing"):
+            self.skipTest("netbox-routing optional plugin is not installed")
+        OSPFInstance = apps.get_model("netbox_routing", "OSPFInstance")
+        OSPFArea = apps.get_model("netbox_routing", "OSPFArea")
+        device = self._create_device("device-ospf-prime")
+        instance = OSPFInstance.objects.create(
+            name="device-ospf-prime OSPF 1",
+            router_id="192.0.2.1",
+            process_id=1,
+            device=device,
+            vrf=None,
+            comments="Observed by Forward from structured OSPF state.",
+        )
+        area = OSPFArea.objects.create(
+            area_id="0.0.0.0",
+            area_type="backbone",
+            description="Observed by Forward from structured OSPF state.",
+        )
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        with CaptureQueriesContext(connection) as prime_queries:
+            summary = prime_dependency_lookup_caches(
+                runner,
+                "netbox_routing.ospfinstance",
+                [
+                    {
+                        "device": device.name,
+                        "vrf": None,
+                        "process_id": 1,
+                        "router_id": "192.0.2.1",
+                        "area_id": "0.0.0.0",
+                    }
+                ],
+            )
+
+        self.assertGreaterEqual(len(prime_queries), 1)
+        self.assertEqual(summary["routing_ospf_area_count"], 1)
+        self.assertEqual(summary["routing_ospf_instance_count"], 1)
+
+        with CaptureQueriesContext(connection) as lookup_queries:
+            self.assertEqual(
+                get_unique_or_raise(
+                    runner,
+                    OSPFInstance,
+                    {"device": device, "vrf": None, "process_id": 1},
+                ),
+                instance,
+            )
+            self.assertEqual(
+                get_unique_or_raise(runner, OSPFArea, {"area_id": "0.0.0.0"}),
+                area,
+            )
+
+        self.assertEqual(len(lookup_queries), 0)
+
+    def test_bgp_address_family_reuses_positive_cache_after_first_resolution(self):
+        if not apps.is_installed("netbox_routing"):
+            self.skipTest("netbox-routing optional plugin is not installed")
+        BGPAddressFamily = apps.get_model("netbox_routing", "BGPAddressFamily")
+        self._create_device("device-bgp-af-cache")
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "device": "device-bgp-af-cache",
+            "vrf": None,
+            "local_asn": 64512,
+            "afi_safi": "AfiSafiType.IPV4_UNICAST",
+        }
+
+        first = runner._ensure_bgp_address_family(row)
+        with CaptureQueriesContext(connection) as queries:
+            second = runner._ensure_bgp_address_family(row)
+
+        self.assertEqual(first.pk, second.pk)
+        self.assertEqual(BGPAddressFamily.objects.count(), 1)
+        self.assertEqual(len(queries), 0)
+
+    def test_ospf_area_reuses_positive_cache_after_first_resolution(self):
+        if not apps.is_installed("netbox_routing"):
+            self.skipTest("netbox-routing optional plugin is not installed")
+        OSPFArea = apps.get_model("netbox_routing", "OSPFArea")
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "area_id": "0",
+            "area_type": "OspfAreaType.BACKBONE",
+        }
+
+        first = runner._ensure_ospf_area(row)
+        with CaptureQueriesContext(connection) as queries:
+            second = runner._ensure_ospf_area(row)
+
+        self.assertEqual(first.pk, second.pk)
+        self.assertEqual(OSPFArea.objects.count(), 1)
+        self.assertEqual(len(queries), 0)
 
     def test_bgp_peer_address_family_adapter_creates_native_address_family(self):
         if not apps.is_installed("netbox_routing"):
@@ -6875,6 +7430,170 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertIn("Adj-RIB-Out post-policy: present", peer_af_comments)
         self.assertIn("Adj-RIB-Out post-policy: absent", peer_af_comments)
 
+    def test_bgp_peer_adapter_repeat_sync_is_noop(self):
+        if not apps.is_installed("netbox_routing"):
+            self.skipTest("netbox-routing optional plugin is not installed")
+        BGPPeer = apps.get_model("netbox_routing", "BGPPeer")
+        self._create_device("device-1")
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "device": "device-1",
+            "vrf": None,
+            "local_asn": 65000,
+            "neighbor_address": "192.0.2.1",
+            "peer_asn": 65100,
+            "enabled": True,
+            "status": "active",
+        }
+
+        before_count = ObjectChange.objects.count()
+        runner._apply_netbox_routing_bgppeer(row)
+        with CaptureQueriesContext(connection) as queries:
+            runner._apply_netbox_routing_bgppeer(row)
+
+        self.assertEqual(BGPPeer.objects.count(), 1)
+        self.assertEqual(ObjectChange.objects.count(), before_count)
+        self.assertEqual(self._update_statements(queries), [])
+
+    def test_bgp_peer_address_family_adapter_repeat_sync_is_noop(self):
+        if not apps.is_installed("netbox_routing"):
+            self.skipTest("netbox-routing optional plugin is not installed")
+        BGPPeerAddressFamily = apps.get_model("netbox_routing", "BGPPeerAddressFamily")
+        self._create_device("device-1")
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "device": "device-1",
+            "vrf": None,
+            "local_asn": 64512,
+            "router_id": "192.0.2.254",
+            "neighbor_address": "192.0.2.1",
+            "peer_asn": 64513,
+            "peer_type": "PeerType.EXTERNAL",
+            "afi_safi": "AfiSafiType.IPV4_UNICAST",
+            "enabled": True,
+            "status": "active",
+            "has_adj_rib_in": False,
+            "has_adj_rib_out": True,
+        }
+
+        before_count = ObjectChange.objects.count()
+        runner._apply_netbox_routing_bgppeeraddressfamily(row)
+        with CaptureQueriesContext(connection) as queries:
+            runner._apply_netbox_routing_bgppeeraddressfamily(row)
+
+        self.assertEqual(BGPPeerAddressFamily.objects.count(), 1)
+        self.assertEqual(ObjectChange.objects.count(), before_count)
+        self.assertEqual(self._update_statements(queries), [])
+
+    def test_peering_relationship_reuses_cache_after_first_resolution(self):
+        if not apps.is_installed("netbox_peering_manager"):
+            self.skipTest("netbox-peering-manager optional plugin is not installed")
+        Relationship = apps.get_model("netbox_peering_manager", "Relationship")
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "relationship": "External BGP",
+            "relationship_slug": "external-bgp",
+        }
+
+        first = runner._ensure_peering_relationship(row)
+        with CaptureQueriesContext(connection) as queries:
+            second = runner._ensure_peering_relationship(row)
+
+        self.assertEqual(first.pk, second.pk)
+        self.assertEqual(Relationship.objects.filter(slug="external-bgp").count(), 1)
+        self.assertEqual(len(queries), 0)
+
+    def test_routing_remaining_apply_helpers_repeat_sync_is_noop(self):
+        if not apps.is_installed("netbox_routing"):
+            self.skipTest("netbox-routing optional plugin is not installed")
+        BGPAddressFamily = apps.get_model("netbox_routing", "BGPAddressFamily")
+        OSPFInstance = apps.get_model("netbox_routing", "OSPFInstance")
+        OSPFArea = apps.get_model("netbox_routing", "OSPFArea")
+        self._create_device("device-1")
+
+        cases = [
+            (
+                "bgpaddressfamily",
+                "netbox_routing.bgpaddressfamily",
+                {
+                    "device": "device-1",
+                    "vrf": None,
+                    "local_asn": 64512,
+                    "afi_safi": "AfiSafiType.IPV4_UNICAST",
+                },
+                BGPAddressFamily,
+            ),
+            (
+                "ospfinstance",
+                "netbox_routing.ospfinstance",
+                {
+                    "device": "device-1",
+                    "vrf": None,
+                    "process_id": "UNDERLAY",
+                    "domain": "fabric",
+                    "router_id": "192.0.2.254",
+                },
+                OSPFInstance,
+            ),
+            (
+                "ospfarea",
+                "netbox_routing.ospfarea",
+                {
+                    "area_id": "0",
+                    "area_type": "OspfAreaType.BACKBONE",
+                },
+                OSPFArea,
+            ),
+        ]
+
+        for label, model_string, row, model in cases:
+            with self.subTest(label=label):
+                runner = ForwardSyncRunner(
+                    sync=self.sync, ingestion=None, client=None, logger_=Mock()
+                )
+                before_count = ObjectChange.objects.count()
+                runner._apply_model_rows(model_string, [row])
+                with CaptureQueriesContext(connection) as queries:
+                    runner._apply_model_rows(model_string, [row])
+
+                self.assertEqual(model.objects.count(), 1)
+                self.assertEqual(ObjectChange.objects.count(), before_count)
+                self.assertEqual(self._update_statements(queries), [])
+
+    def test_peering_session_adapter_repeat_sync_is_noop(self):
+        if not apps.is_installed("netbox_peering_manager"):
+            self.skipTest("netbox-peering-manager optional plugin is not installed")
+        PeeringSession = apps.get_model("netbox_peering_manager", "PeeringSession")
+        self._create_device("device-1")
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "device": "device-1",
+            "vrf": None,
+            "local_asn": 65000,
+            "neighbor_address": "192.0.2.1",
+            "peer_asn": 65100,
+            "enabled": True,
+            "status": "active",
+            "peer_type": "PeerType.EXTERNAL",
+        }
+
+        before_count = ObjectChange.objects.count()
+        runner._apply_netbox_peering_manager_peeringsession(row)
+        with CaptureQueriesContext(connection) as queries:
+            runner._apply_netbox_peering_manager_peeringsession(row)
+
+        self.assertEqual(PeeringSession.objects.count(), 1)
+        self.assertEqual(ObjectChange.objects.count(), before_count)
+        self.assertEqual(self._update_statements(queries), [])
+
     def test_ospf_interface_adapter_preserves_named_process_label(self):
         if not apps.is_installed("netbox_routing"):
             self.skipTest("netbox-routing optional plugin is not installed")
@@ -6921,6 +7640,40 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertIn("Remote interface: Ethernet1/2", ospf_interface.comments)
         self.assertIn("Remote interface IP: 192.0.2.253/31", ospf_interface.comments)
         self.assertIn("Remote router ID: 192.0.2.253", ospf_interface.comments)
+
+    def test_ospf_interface_adapter_reuses_cache_after_first_resolution(self):
+        if not apps.is_installed("netbox_routing"):
+            self.skipTest("netbox-routing optional plugin is not installed")
+        OSPFInterface = apps.get_model("netbox_routing", "OSPFInterface")
+        device = self._create_device("device-ospf-cache")
+        Interface.objects.create(device=device, name="Ethernet1/1", type="1000base-t")
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "device": "device-ospf-cache",
+            "vrf": None,
+            "process_id": "UNDERLAY",
+            "domain": "fabric",
+            "router_id": "192.0.2.254",
+            "area_id": "0",
+            "area_type": "OspfAreaType.BACKBONE",
+            "local_interface": "Ethernet1/1",
+            "remote_router_id": "192.0.2.253",
+            "remote_interface_ip": "192.0.2.253/31",
+            "cost": 1,
+            "role": "OspfRole.DESIGNATED_ROUTER",
+            "remote_device": "device-2",
+            "remote_interface": "Ethernet1/2",
+        }
+
+        first = runner._ensure_ospf_interface(row)
+        with CaptureQueriesContext(connection) as queries:
+            second = runner._ensure_ospf_interface(row)
+
+        self.assertEqual(first.pk, second.pk)
+        self.assertEqual(OSPFInterface.objects.count(), 1)
+        self.assertEqual(len(queries), 0)
 
     def test_ospf_interface_adapter_resolves_common_interface_aliases(self):
         if not apps.is_installed("netbox_routing"):
@@ -7004,6 +7757,41 @@ class ForwardSyncRunnerTest(TestCase):
             OSPFInterface.objects.values_list("interface__name", flat=True),
             ["GigabitEthernet0/0/2", "Port-channel3", "TenGigabitEthernet0/1/3.765"],
         )
+
+    def test_ospf_interface_adapter_repeat_sync_is_noop(self):
+        if not apps.is_installed("netbox_routing"):
+            self.skipTest("netbox-routing optional plugin is not installed")
+        OSPFInterface = apps.get_model("netbox_routing", "OSPFInterface")
+        device = self._create_device("device-1")
+        Interface.objects.create(device=device, name="Ethernet1/1", type="1000base-t")
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "device": "device-1",
+            "vrf": None,
+            "process_id": "UNDERLAY",
+            "domain": "fabric",
+            "router_id": "192.0.2.254",
+            "area_id": "0",
+            "area_type": "OspfAreaType.BACKBONE",
+            "local_interface": "Ethernet1/1",
+            "remote_router_id": "192.0.2.253",
+            "remote_interface_ip": "192.0.2.253/31",
+            "cost": 1,
+            "role": "OspfRole.DESIGNATED_ROUTER",
+            "remote_device": "device-2",
+            "remote_interface": "Ethernet1/2",
+        }
+
+        before_count = ObjectChange.objects.count()
+        runner._apply_netbox_routing_ospfinterface(row)
+        with CaptureQueriesContext(connection) as queries:
+            runner._apply_netbox_routing_ospfinterface(row)
+
+        self.assertEqual(OSPFInterface.objects.count(), 1)
+        self.assertEqual(ObjectChange.objects.count(), before_count)
+        self.assertEqual(self._update_statements(queries), [])
 
     def test_ospf_interface_adapter_skips_missing_interface_without_failure(self):
         if not apps.is_installed("netbox_routing"):
@@ -7120,6 +7908,41 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertEqual(interface.mode, "access")
         self.assertEqual(interface.untagged_vlan, vlan)
 
+    def test_apply_dcim_interface_reuses_untagged_vlan_cache_after_first_resolution(
+        self,
+    ):
+        device = self._create_device("device-1")
+        VLAN.objects.create(
+            site=device.site,
+            vid=10,
+            name="users",
+            status="active",
+        )
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "device": "device-1",
+            "name": "eth1-1",
+            "type": "1000base-t",
+            "lag": None,
+            "mode": "access",
+            "untagged_vlan": 10,
+            "enabled": True,
+            "mtu": 9000,
+            "description": "",
+            "speed": 1000000,
+        }
+
+        runner._apply_model_rows("dcim.interface", [row])
+        with CaptureQueriesContext(connection) as queries:
+            runner._apply_model_rows("dcim.interface", [row])
+
+        self.assertEqual(
+            Interface.objects.filter(device=device, name="eth1-1").count(), 1
+        )
+        self.assertEqual(self._update_statements(queries), [])
+
     def test_apply_dcim_interface_repeat_sync_is_noop(self):
         device = self._create_device("device-1")
         Interface.objects.create(
@@ -7153,6 +7976,69 @@ class ForwardSyncRunnerTest(TestCase):
             Interface.objects.filter(device=device, name="Ethernet1/1").count(),
             1,
         )
+        self.assertEqual(self._update_statements(queries), [])
+        self.assertEqual(ObjectChange.objects.count(), before_count)
+
+    def test_apply_dcim_macaddress_repeat_sync_is_noop(self):
+        device = self._create_device("device-mac-noop")
+        interface = Interface.objects.create(
+            device=device,
+            name="Ethernet1/1",
+            type="1000base-t",
+        )
+        MACAddress.objects.create(
+            mac_address="00:11:22:33:44:55",
+            assigned_object_type=ContentType.objects.get_for_model(Interface),
+            assigned_object_id=interface.pk,
+        )
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "device": device.name,
+            "interface": interface.name,
+            "mac": "00:11:22:33:44:55",
+        }
+
+        before_count = ObjectChange.objects.count()
+        with CaptureQueriesContext(connection) as queries:
+            runner._apply_dcim_macaddress(row)
+            runner._apply_dcim_macaddress(row)
+
+        self.assertEqual(
+            MACAddress.objects.filter(mac_address="00:11:22:33:44:55").count(), 1
+        )
+        self.assertEqual(self._update_statements(queries), [])
+        self.assertEqual(ObjectChange.objects.count(), before_count)
+
+    def test_apply_dcim_device_repeat_sync_is_noop(self):
+        device = self._create_device("device-1")
+        row = {
+            "name": "device-1",
+            "site": device.site.name,
+            "site_slug": device.site.slug,
+            "role": device.role.name,
+            "role_slug": device.role.slug,
+            "role_color": device.role.color,
+            "manufacturer": device.device_type.manufacturer.name,
+            "manufacturer_slug": device.device_type.manufacturer.slug,
+            "device_type": device.device_type.model,
+            "device_type_slug": device.device_type.slug,
+            "platform": None,
+            "status": device.status,
+            "serial": "",
+        }
+
+        before_count = ObjectChange.objects.count()
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        with CaptureQueriesContext(connection) as queries:
+            runner._apply_dcim_device(row)
+            runner._apply_dcim_device(row)
+
+        device.refresh_from_db()
+        self.assertEqual(Device.objects.filter(name="device-1").count(), 1)
         self.assertEqual(self._update_statements(queries), [])
         self.assertEqual(ObjectChange.objects.count(), before_count)
 
@@ -7448,6 +8334,42 @@ class ForwardSyncRunnerTest(TestCase):
             InventoryItem.objects.filter(device=device, name="Slot 1").exists()
         )
 
+    def test_apply_dcim_inventoryitem_repeat_sync_is_noop(self):
+        device = self._create_device("device-inventory-noop")
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "device": device.name,
+            "manufacturer": "vendor-1",
+            "manufacturer_slug": "vendor-1",
+            "name": "Power Supply 1",
+            "label": "PSU 1",
+            "part_id": "PSU-1",
+            "serial": "SN-1",
+            "asset_tag": "ASSET-1",
+            "role": "POWER SUPPLY",
+            "role_slug": "power-supply",
+            "role_color": "ff9800",
+            "part_type": "POWER SUPPLY",
+            "module_component": False,
+            "status": "active",
+            "discovered": True,
+            "description": "Version: V01",
+        }
+
+        before_count = ObjectChange.objects.count()
+        runner._apply_dcim_inventoryitem(row)
+        with CaptureQueriesContext(connection) as queries:
+            runner._apply_dcim_inventoryitem(row)
+
+        self.assertEqual(
+            InventoryItem.objects.filter(device=device, name="Power Supply 1").count(),
+            1,
+        )
+        self.assertEqual(ObjectChange.objects.count(), before_count)
+        self.assertEqual(self._update_statements(queries), [])
+
     def test_apply_dcim_cable_creates_cable_between_interfaces(self):
         device = self._create_device("device-a")
         remote_device = self._create_device("device-b")
@@ -7516,6 +8438,73 @@ class ForwardSyncRunnerTest(TestCase):
         )
 
         self.assertEqual(Cable.objects.count(), 1)
+
+    def test_apply_dcim_cable_repeat_sync_is_noop(self):
+        device = self._create_device("device-a")
+        remote_device = self._create_device("device-b")
+        Interface.objects.create(
+            device=device,
+            name="Ethernet1/1",
+            type="1000base-t",
+        )
+        Interface.objects.create(
+            device=remote_device,
+            name="Ethernet1/2",
+            type="1000base-t",
+        )
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "device": "device-a",
+            "interface": "Ethernet1/1",
+            "remote_device": "device-b",
+            "remote_interface": "Ethernet1/2",
+            "status": "connected",
+        }
+
+        before_count = ObjectChange.objects.count()
+        runner._apply_dcim_cable(row)
+        with CaptureQueriesContext(connection) as queries:
+            runner._apply_dcim_cable(row)
+
+        self.assertEqual(Cable.objects.count(), 1)
+        self.assertEqual(ObjectChange.objects.count(), before_count)
+        self.assertEqual(self._update_statements(queries), [])
+
+    def test_lookup_cable_between_reuses_cache_after_first_resolution(self):
+        device = self._create_device("device-a")
+        remote_device = self._create_device("device-b")
+        interface = Interface.objects.create(
+            device=device,
+            name="Ethernet1/1",
+            type="1000base-t",
+        )
+        remote_interface = Interface.objects.create(
+            device=remote_device,
+            name="Ethernet1/2",
+            type="1000base-t",
+        )
+        cable = Cable.objects.create(
+            status="connected",
+            a_terminations=[interface],
+            b_terminations=[remote_interface],
+        )
+        interface.cable_id = cable.pk
+        remote_interface.cable_id = cable.pk
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        with CaptureQueriesContext(connection) as first_queries:
+            first = runner._lookup_cable_between(interface, remote_interface)
+        with CaptureQueriesContext(connection) as queries:
+            second = runner._lookup_cable_between(interface, remote_interface)
+
+        self.assertEqual(first.pk, cable.pk)
+        self.assertEqual(second.pk, cable.pk)
+        self.assertEqual(len(first_queries), 1)
+        self.assertEqual(len(queries), 0)
 
     def test_apply_dcim_cable_skips_lag_endpoint(self):
         device = self._create_device("device-a")
@@ -7869,6 +8858,34 @@ class ForwardSyncRunnerTest(TestCase):
             1,
         )
 
+    def test_apply_dcim_module_repeat_sync_is_noop(self):
+        device = self._create_device("device-module-noop")
+        self._create_module_bay(device)
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "device": device.name,
+            "module_bay": "Slot 1",
+            "manufacturer": "vendor-1",
+            "manufacturer_slug": "vendor-1",
+            "model": "Line Card 1",
+            "part_number": "LC-1",
+            "status": "active",
+            "serial": "SN-1",
+            "asset_tag": "AT-1",
+            "description": "line card",
+        }
+
+        before_count = ObjectChange.objects.count()
+        runner._apply_dcim_module(row)
+        with CaptureQueriesContext(connection) as queries:
+            runner._apply_dcim_module(row)
+
+        self.assertEqual(Module.objects.filter(device=device).count(), 1)
+        self.assertEqual(ObjectChange.objects.count(), before_count)
+        self.assertEqual(self._update_statements(queries), [])
+
     def test_delete_dcim_module_deletes_exact_module(self):
         device = self._create_device("device-a")
         manufacturer = Manufacturer.objects.get(slug="vendor-1")
@@ -8116,6 +9133,74 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertEqual(self._update_statements(queries), [])
         self.assertEqual(ObjectChange.objects.count(), before_count)
 
+    def test_apply_ipam_vlan_repeat_sync_is_noop(self):
+        site = Site.objects.create(name="site-1", slug="site-1")
+        VLAN.objects.create(site=site, vid=10, name="VLAN10", status="active")
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "site": "site-1",
+            "site_slug": "site-1",
+            "vid": 10,
+            "name": "VLAN10",
+            "status": "active",
+        }
+
+        before_count = ObjectChange.objects.count()
+        with CaptureQueriesContext(connection) as queries:
+            runner._apply_ipam_vlan(row)
+            runner._apply_ipam_vlan(row)
+
+        self.assertEqual(VLAN.objects.filter(site=site, vid=10).count(), 1)
+        self.assertEqual(self._update_statements(queries), [])
+        self.assertEqual(ObjectChange.objects.count(), before_count)
+
+    def test_delete_ipam_vlan_reuses_cached_site_lookup_after_first_resolution(self):
+        site = Site.objects.create(name="site-1", slug="site-1")
+        VLAN.objects.create(site=site, vid=10, name="VLAN10", status="active")
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "site": "site-1",
+            "site_slug": "site-1",
+            "vid": 10,
+        }
+
+        with patch.object(runner, "_delete_by_coalesce", return_value=False):
+            self.assertFalse(runner._delete_ipam_vlan(row))
+            with CaptureQueriesContext(connection) as queries:
+                self.assertFalse(runner._delete_ipam_vlan(row))
+
+        self.assertEqual(len(queries), 0)
+
+    def test_apply_ipam_vrf_repeat_sync_is_noop(self):
+        VRF.objects.create(
+            name="blue",
+            rd="64512:106",
+            description="",
+            enforce_unique=False,
+        )
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "name": "blue",
+            "rd": "64512:106",
+            "description": "",
+            "enforce_unique": False,
+        }
+
+        before_count = ObjectChange.objects.count()
+        with CaptureQueriesContext(connection) as queries:
+            runner._apply_ipam_vrf(row)
+            runner._apply_ipam_vrf(row)
+
+        self.assertEqual(VRF.objects.filter(name="blue").count(), 1)
+        self.assertEqual(self._update_statements(queries), [])
+        self.assertEqual(ObjectChange.objects.count(), before_count)
+
     def test_apply_ipam_ipaddress_skips_unassignable_network_and_broadcast_addresses(
         self,
     ):
@@ -8299,6 +9384,29 @@ class ForwardSyncRunnerTest(TestCase):
         ]
         self.assertEqual(update_statements, [])
         logger.log_warning.assert_not_called()
+
+    def test_apply_ipam_ipaddress_repeat_sync_is_noop(self):
+        device = self._create_device("device-ip-noop")
+        Interface.objects.create(device=device, name="Ethernet1/1", type="1000base-t")
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "device": "device-ip-noop",
+            "interface": "Ethernet1/1",
+            "address": "10.0.0.1/24",
+            "vrf": None,
+            "status": "active",
+        }
+
+        before_count = ObjectChange.objects.count()
+        runner._apply_ipam_ipaddress(row)
+        with CaptureQueriesContext(connection) as queries:
+            runner._apply_ipam_ipaddress(row)
+
+        self.assertEqual(IPAddress.objects.filter(address="10.0.0.1/24").count(), 1)
+        self.assertEqual(ObjectChange.objects.count(), before_count)
+        self.assertEqual(self._update_statements(queries), [])
 
     def test_apply_ipam_fhrpgroup_creates_group_assignment_and_vip(self):
         device = self._create_device("device-1")
@@ -8546,6 +9654,36 @@ class ForwardSyncRunnerTest(TestCase):
         deleted = runner._delete_ipam_fhrpgroup(row)
 
         self.assertTrue(deleted)
+        self.assertEqual(FHRPGroupAssignment.objects.count(), 0)
+        self.assertEqual(FHRPGroup.objects.count(), 0)
+        self.assertEqual(IPAddress.objects.count(), 0)
+
+    def test_delete_ipam_fhrpgroup_reuses_cached_vip_lookup_after_first_resolution(
+        self,
+    ):
+        device = self._create_device("device-1")
+        Interface.objects.create(device=device, name="Vlan100", type="virtual")
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "protocol": "hsrp",
+            "group_id": 10,
+            "name": "hsrp",
+            "device": "device-1",
+            "interface": "Vlan100",
+            "vrf": None,
+            "address": "10.0.0.1/32",
+            "state": "MASTER",
+            "priority": 100,
+            "status": "active",
+        }
+        runner._apply_ipam_fhrpgroup(row)
+        runner._get_unique_or_raise(IPAddress, {"address": row["address"], "vrf": None})
+
+        with patch("ipam.models.IPAddress.objects.filter", side_effect=AssertionError):
+            self.assertTrue(runner._delete_ipam_fhrpgroup(row))
+
         self.assertEqual(FHRPGroupAssignment.objects.count(), 0)
         self.assertEqual(FHRPGroup.objects.count(), 0)
         self.assertEqual(IPAddress.objects.count(), 0)
@@ -8806,6 +9944,35 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertEqual(site.slug, "site-1")
         self.assertEqual(Site.objects.filter(slug="site-1").count(), 1)
 
+    def test_ensure_site_reuses_cache_after_first_resolution(self):
+        Site.objects.create(name="site-1", slug="site-1")
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        first = runner._ensure_site({"name": "site-1", "slug": "site-1"})
+        with CaptureQueriesContext(connection) as queries:
+            second = runner._ensure_site({"name": "site-1", "slug": "site-1"})
+
+        self.assertEqual(first.pk, second.pk)
+        self.assertEqual(Site.objects.filter(slug="site-1").count(), 1)
+        self.assertEqual(len(queries), 0)
+
+    def test_global_prefix_lookup_reuses_cache_after_first_resolution(self):
+        Prefix.objects.create(prefix="192.0.2.0/24", status="active")
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        lookup = {"prefix": "192.0.2.0/24", "vrf__isnull": True}
+
+        first = runner._get_unique_or_raise(Prefix, lookup)
+        with CaptureQueriesContext(connection) as queries:
+            second = runner._get_unique_or_raise(Prefix, lookup)
+
+        self.assertEqual(first.pk, second.pk)
+        self.assertEqual(Prefix.objects.filter(prefix="192.0.2.0/24").count(), 1)
+        self.assertEqual(len(queries), 0)
+
     def test_ensure_device_type_rejects_conflicting_model_and_slug_matches(self):
         manufacturer = Manufacturer.objects.create(name="Cisco", slug="cisco")
         DeviceType.objects.create(
@@ -8853,7 +10020,25 @@ class ForwardSyncRunnerTest(TestCase):
             second = runner._ensure_device_type(row)
 
         self.assertEqual(first.pk, second.pk)
-        self.assertEqual(len(queries), 2)
+        self.assertEqual(len(queries), 0)
+
+    def test_delete_dcim_devicetype_reuses_cached_manufacturer_lookup(self):
+        Manufacturer.objects.create(name="Cisco", slug="cisco")
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "manufacturer_slug": "cisco",
+            "model": "WS-C4507R-E",
+            "slug": "ws-c4507r-e",
+        }
+
+        with patch.object(runner, "_delete_by_coalesce", return_value=False):
+            self.assertFalse(runner._delete_dcim_devicetype(row))
+            with CaptureQueriesContext(connection) as queries:
+                self.assertFalse(runner._delete_dcim_devicetype(row))
+
+        self.assertEqual(len(queries), 0)
 
     def test_non_lookup_models_remain_strict_on_integrity_errors(self):
         runner = ForwardSyncRunner(
@@ -10097,6 +11282,68 @@ class ForwardSyncRunnerTest(TestCase):
             self.assertEqual(client.get_snapshots.call_count, 1)
             self.assertEqual(client.run_nqe_query.call_count, 1)
 
+    @patch("forward_netbox.utilities.query_fetch_execution.active_execution_run")
+    def test_resolve_context_reuses_per_fetcher_context_cache(self, mock_active_run):
+        self.source.parameters["device_tag_include_tags"] = ["DATACENTER"]
+        self.source.parameters["device_tag_exclude_tags"] = ["BRANCH"]
+        self.source.save(update_fields=["parameters"])
+        with tempfile.TemporaryDirectory() as artifact_dir, patch.dict(
+            os.environ,
+            {"FORWARD_NETBOX_FETCH_ARTIFACT_DIR": artifact_dir},
+        ):
+            run = Mock()
+            run.pk = 1
+            run.next_step_index = 1
+            candidate = Mock()
+            candidate.ingestion_id = 9
+            stage_steps = Mock()
+            stage_steps.filter.return_value.order_by.return_value.first.return_value = (
+                candidate
+            )
+            run.steps.filter.return_value = stage_steps
+            mock_active_run.return_value = run
+            client = Mock()
+            client.get_snapshot_metrics.return_value = {"deviceCount": 2}
+            client.get_snapshots.return_value = [
+                {
+                    "id": "snapshot-after",
+                    "state": "processed",
+                    "created_at": "2026-03-31T10:00:00Z",
+                    "processed_at": "2026-03-31T12:00:00Z",
+                }
+            ]
+            client.get_latest_processed_snapshot.return_value = {
+                "id": "snapshot-after",
+                "processedAt": "2026-03-31T12:15:00Z",
+            }
+            client.run_nqe_query.return_value = [{"name": "core-1"}]
+            fetcher = ForwardQueryFetcher(
+                sync=self.sync,
+                client=client,
+                logger_=Mock(),
+            )
+            self.sync.get_network_id = Mock(return_value="test-network")
+            self.sync.get_snapshot_id = Mock(return_value=LATEST_PROCESSED_SNAPSHOT)
+            self.sync.resolve_snapshot_id = Mock(return_value="snapshot-after")
+            self.sync.get_query_parameters = Mock(return_value={})
+            self.sync.get_maps = Mock(return_value=[])
+            branch_run_state = {
+                "snapshot_selector": LATEST_PROCESSED_SNAPSHOT,
+                "snapshot_id": "snapshot-after",
+            }
+
+            first = fetcher.resolve_context(branch_run_state=branch_run_state)
+            second = fetcher.resolve_context(branch_run_state=branch_run_state)
+
+            self.assertEqual(first.ingestion_id, 9)
+            self.assertEqual(second.ingestion_id, 9)
+            self.assertIs(first, second)
+            self.assertEqual(mock_active_run.call_count, 2)
+            self.sync.resolve_snapshot_id.assert_not_called()
+            self.assertEqual(client.get_snapshot_metrics.call_count, 1)
+            self.assertEqual(client.get_snapshots.call_count, 1)
+            self.assertEqual(client.run_nqe_query.call_count, 1)
+
     def test_resolve_context_reuses_context_artifact_across_runs(self):
         self.source.parameters["device_tag_include_tags"] = ["DATACENTER"]
         self.source.parameters["device_tag_exclude_tags"] = ["BRANCH"]
@@ -10206,7 +11453,7 @@ class ForwardSyncRunnerTest(TestCase):
                 query_path="/forward_netbox_validation/forward_devices",
             )
             first_client = Mock()
-            first_client.resolve_nqe_query_reference.return_value = {
+            first_client.get_committed_nqe_query.return_value = {
                 "queryId": "qid-123",
                 "commitId": "cid-123",
             }
@@ -10218,7 +11465,7 @@ class ForwardSyncRunnerTest(TestCase):
             first_resolved = first_fetcher._resolve_query_specs("dcim.device", [spec])
             self.assertEqual(first_resolved[0].run_query_id, "qid-123")
             self.assertEqual(first_resolved[0].commit_id, "cid-123")
-            first_client.resolve_nqe_query_reference.assert_called_once()
+            first_client.get_committed_nqe_query.assert_called_once()
             self.assertEqual(
                 first_fetcher._query_path_resolution_cache["dcim.device"],
                 {
@@ -10226,13 +11473,14 @@ class ForwardSyncRunnerTest(TestCase):
                     "query_path_spec_count": 1,
                     "artifact_hit_count": 0,
                     "client_resolve_count": 1,
+                    "repository_index_count": 1,
                     "cache_hit_rate": 0.0,
-                    "message": "Resolved 1 query_path spec(s) with 0 artifact hit(s) and 1 Forward lookup(s).",
+                    "message": "Resolved 1 query_path spec(s) with 0 artifact hit(s), 1 repository index read(s), and 1 Forward lookup(s).",
                 },
             )
 
             second_client = Mock()
-            second_client.resolve_nqe_query_reference.side_effect = AssertionError(
+            second_client.get_committed_nqe_query.side_effect = AssertionError(
                 "query_path resolve should be served from run-local artifact"
             )
             second_fetcher = ForwardQueryFetcher(
@@ -10243,7 +11491,7 @@ class ForwardSyncRunnerTest(TestCase):
             second_resolved = second_fetcher._resolve_query_specs("dcim.device", [spec])
             self.assertEqual(second_resolved[0].run_query_id, "qid-123")
             self.assertEqual(second_resolved[0].commit_id, "cid-123")
-            self.assertFalse(second_client.resolve_nqe_query_reference.called)
+            self.assertFalse(second_client.get_committed_nqe_query.called)
             self.assertEqual(
                 second_fetcher._query_path_resolution_cache["dcim.device"],
                 {
@@ -10251,8 +11499,9 @@ class ForwardSyncRunnerTest(TestCase):
                     "query_path_spec_count": 1,
                     "artifact_hit_count": 1,
                     "client_resolve_count": 0,
+                    "repository_index_count": 1,
                     "cache_hit_rate": 1.0,
-                    "message": "Resolved 1 query_path spec(s) with 1 artifact hit(s) and 0 Forward lookup(s).",
+                    "message": "Resolved 1 query_path spec(s) with 1 artifact hit(s), 1 repository index read(s), and 0 Forward lookup(s).",
                 },
             )
 
@@ -10278,7 +11527,7 @@ class ForwardSyncRunnerTest(TestCase):
                 query_path="/forward_netbox_validation/forward_devices",
             )
             first_client = Mock()
-            first_client.resolve_nqe_query_reference.return_value = {
+            first_client.get_committed_nqe_query.return_value = {
                 "queryId": "qid-123",
                 "commitId": "cid-123",
             }
@@ -10290,7 +11539,7 @@ class ForwardSyncRunnerTest(TestCase):
             first_resolved = first_fetcher._resolve_query_specs("dcim.device", [spec])
             self.assertEqual(first_resolved[0].run_query_id, "qid-123")
             self.assertEqual(first_resolved[0].commit_id, "cid-123")
-            first_client.resolve_nqe_query_reference.assert_called_once()
+            first_client.get_committed_nqe_query.assert_called_once()
             self.assertEqual(
                 first_fetcher._query_path_resolution_cache["dcim.device"],
                 {
@@ -10298,8 +11547,9 @@ class ForwardSyncRunnerTest(TestCase):
                     "query_path_spec_count": 1,
                     "artifact_hit_count": 0,
                     "client_resolve_count": 1,
+                    "repository_index_count": 1,
                     "cache_hit_rate": 0.0,
-                    "message": "Resolved 1 query_path spec(s) with 0 artifact hit(s) and 1 Forward lookup(s).",
+                    "message": "Resolved 1 query_path spec(s) with 0 artifact hit(s), 1 repository index read(s), and 1 Forward lookup(s).",
                 },
             )
 
@@ -10317,7 +11567,7 @@ class ForwardSyncRunnerTest(TestCase):
             )
 
             second_client = Mock()
-            second_client.resolve_nqe_query_reference.side_effect = AssertionError(
+            second_client.get_committed_nqe_query.side_effect = AssertionError(
                 "query_path resolve should be served from shared artifact"
             )
             second_fetcher = ForwardQueryFetcher(
@@ -10328,7 +11578,7 @@ class ForwardSyncRunnerTest(TestCase):
             second_resolved = second_fetcher._resolve_query_specs("dcim.device", [spec])
             self.assertEqual(second_resolved[0].run_query_id, "qid-123")
             self.assertEqual(second_resolved[0].commit_id, "cid-123")
-            self.assertFalse(second_client.resolve_nqe_query_reference.called)
+            self.assertFalse(second_client.get_committed_nqe_query.called)
             self.assertEqual(
                 second_fetcher._query_path_resolution_cache["dcim.device"],
                 {
@@ -10336,10 +11586,105 @@ class ForwardSyncRunnerTest(TestCase):
                     "query_path_spec_count": 1,
                     "artifact_hit_count": 1,
                     "client_resolve_count": 0,
+                    "repository_index_count": 1,
                     "cache_hit_rate": 1.0,
-                    "message": "Resolved 1 query_path spec(s) with 1 artifact hit(s) and 0 Forward lookup(s).",
+                    "message": "Resolved 1 query_path spec(s) with 1 artifact hit(s), 1 repository index read(s), and 0 Forward lookup(s).",
                 },
             )
+
+    def test_query_path_resolution_reuses_repository_index_within_run(self):
+        with tempfile.TemporaryDirectory() as artifact_dir, patch.dict(
+            os.environ,
+            {"FORWARD_NETBOX_FETCH_ARTIFACT_DIR": artifact_dir},
+        ):
+            ForwardExecutionRun.objects.create(
+                sync=self.sync,
+                source=self.source,
+                backend="branching",
+                status="running",
+                snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+                snapshot_id="snapshot-after",
+                total_steps=2,
+                next_step_index=1,
+            )
+            specs = [
+                QuerySpec(
+                    model_string="dcim.device",
+                    query_name="Forward Devices",
+                    query_repository="org",
+                    query_path="/forward_netbox_validation/forward_devices",
+                ),
+                QuerySpec(
+                    model_string="dcim.interface",
+                    query_name="Forward Interfaces",
+                    query_repository="org",
+                    query_path="/forward_netbox_validation/forward_interfaces",
+                ),
+            ]
+            client = Mock()
+            client.get_nqe_repository_query_index.return_value = {"by_path": {}}
+            client.get_committed_nqe_query.side_effect = [
+                {"queryId": "qid-123", "commitId": "cid-123"},
+                {"queryId": "qid-456", "commitId": "cid-456"},
+            ]
+            fetcher = ForwardQueryFetcher(
+                sync=self.sync,
+                client=client,
+                logger_=Mock(),
+            )
+
+            resolved = fetcher._resolve_query_specs("dcim.device", specs)
+
+            self.assertEqual(
+                [spec.run_query_id for spec in resolved], ["qid-123", "qid-456"]
+            )
+            self.assertEqual(
+                [spec.commit_id for spec in resolved], ["cid-123", "cid-456"]
+            )
+            client.get_nqe_repository_query_index.assert_called_once_with(
+                repository="org",
+                directory="/",
+            )
+            self.assertEqual(client.get_committed_nqe_query.call_count, 2)
+            self.assertEqual(
+                fetcher._query_path_resolution_cache["dcim.device"],
+                {
+                    "available": True,
+                    "query_path_spec_count": 2,
+                    "artifact_hit_count": 0,
+                    "client_resolve_count": 2,
+                    "repository_index_count": 1,
+                    "cache_hit_rate": 0.0,
+                    "message": "Resolved 2 query_path spec(s) with 0 artifact hit(s), 1 repository index read(s), and 2 Forward lookup(s).",
+                },
+            )
+
+    @patch("forward_netbox.utilities.query_fetch_execution.active_execution_run")
+    def test_resolve_context_ingestion_id_reuses_run_step_cache(self, mock_active_run):
+        run = Mock()
+        run.pk = 1
+        run.next_step_index = 2
+        candidate = Mock()
+        candidate.ingestion_id = 7
+        stage_steps = Mock()
+        stage_steps.filter.return_value.order_by.return_value.first.return_value = (
+            candidate
+        )
+        run.steps.filter.return_value = stage_steps
+        mock_active_run.return_value = run
+        fetcher = ForwardQueryFetcher(
+            sync=self.sync,
+            client=Mock(),
+            logger_=Mock(),
+        )
+
+        first = fetcher._resolve_context_ingestion_id({})
+        second = fetcher._resolve_context_ingestion_id({})
+
+        self.assertEqual(first, 7)
+        self.assertEqual(second, 7)
+        run.steps.filter.assert_called_once_with(kind="stage")
+        self.assertEqual(stage_steps.filter.call_count, 1)
 
     def test_apply_device_tag_scope_filters_rows_with_device_keys(self):
         fetcher = ForwardQueryFetcher(
@@ -11201,6 +12546,46 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertEqual(device.vc_position, 2)
         self.assertEqual(VirtualChassis.objects.get(pk=vc.pk).domain, "100")
 
+    def test_apply_virtual_chassis_repeat_sync_is_noop(self):
+        site = Site.objects.create(name="site-4", slug="site-4")
+        manufacturer = Manufacturer.objects.create(name="vendor-4", slug="vendor-4")
+        role = DeviceRole.objects.create(name="role-4", slug="role-4", color="9e9e9e")
+        device_type = DeviceType.objects.create(
+            manufacturer=manufacturer,
+            model="model-4",
+            slug="model-4",
+        )
+        vc = VirtualChassis.objects.create(name="site-4-vpc-400", domain="400")
+        device = Device.objects.create(
+            name="device-4",
+            site=site,
+            role=role,
+            device_type=device_type,
+            status="active",
+            virtual_chassis=vc,
+            vc_position=4,
+        )
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "device": device.name,
+            "vc_name": vc.name,
+            "vc_domain": vc.domain,
+            "vc_position": 4,
+        }
+
+        before_count = ObjectChange.objects.count()
+        with CaptureQueriesContext(connection) as queries:
+            runner._apply_dcim_virtualchassis(row)
+            runner._apply_dcim_virtualchassis(row)
+
+        device.refresh_from_db()
+        self.assertEqual(device.virtual_chassis, vc)
+        self.assertEqual(device.vc_position, 4)
+        self.assertEqual(self._update_statements(queries), [])
+        self.assertEqual(ObjectChange.objects.count(), before_count)
+
     def test_apply_virtual_chassis_rejects_duplicate_position(self):
         site = Site.objects.create(name="site-3", slug="site-3")
         manufacturer = Manufacturer.objects.create(name="vendor-3", slug="vendor-3")
@@ -11414,6 +12799,191 @@ class ForwardApplyEngineParityTest(TestCase):
         self.assertTrue(deleted)
         self.assertFalse(VirtualChassis.objects.filter(name="vc-delete").exists())
 
+    def test_netbox_routing_bgppeer_delete_parity(self):
+        if not apps.is_installed("netbox_routing"):
+            self.skipTest("netbox-routing optional plugin is not installed")
+        BGPPeer = apps.get_model("netbox_routing", "BGPPeer")
+        BGPRouter = apps.get_model("netbox_routing", "BGPRouter")
+        BGPScope = apps.get_model("netbox_routing", "BGPScope")
+        device = self._device("device-bgp-delete")
+        ASN.objects.create(rir=RIR.objects.create(name="ARIN"), asn=64512)
+        runner = self._runner()
+        row = {
+            "device": device.name,
+            "vrf": None,
+            "local_asn": 64512,
+            "neighbor_address": "192.0.2.1",
+            "peer_asn": 64513,
+            "enabled": True,
+            "status": "active",
+        }
+
+        runner._apply_netbox_routing_bgppeer(row)
+        self.assertEqual(BGPPeer.objects.count(), 1)
+        self.assertEqual(BGPRouter.objects.count(), 1)
+        self.assertEqual(BGPScope.objects.count(), 1)
+
+        deleted = runner._delete_netbox_routing_bgppeer(row)
+
+        self.assertTrue(deleted)
+        self.assertFalse(BGPPeer.objects.exists())
+        self.assertFalse(BGPRouter.objects.exists())
+        self.assertFalse(BGPScope.objects.exists())
+
+    def test_netbox_routing_bgppeeraddressfamily_delete_parity(self):
+        if not apps.is_installed("netbox_routing"):
+            self.skipTest("netbox-routing optional plugin is not installed")
+        BGPPeerAddressFamily = apps.get_model("netbox_routing", "BGPPeerAddressFamily")
+        self._device("device-bgp-af-delete")
+        runner = self._runner()
+        row = {
+            "device": "device-bgp-af-delete",
+            "vrf": None,
+            "local_asn": 64512,
+            "neighbor_address": "192.0.2.1",
+            "peer_asn": 64513,
+            "enabled": True,
+            "status": "active",
+            "peer_type": "PeerType.EXTERNAL",
+            "afi_safi": "AfiSafiType.IPV4_UNICAST",
+            "has_adj_rib_in": False,
+            "has_adj_rib_out": True,
+        }
+
+        runner._apply_netbox_routing_bgppeeraddressfamily(row)
+        self.assertEqual(BGPPeerAddressFamily.objects.count(), 1)
+
+        deleted = runner._delete_netbox_routing_bgppeeraddressfamily(row)
+
+        self.assertTrue(deleted)
+        self.assertFalse(BGPPeerAddressFamily.objects.exists())
+
+    def test_netbox_routing_bgpaddressfamily_delete_parity(self):
+        if not apps.is_installed("netbox_routing"):
+            self.skipTest("netbox-routing optional plugin is not installed")
+        BGPAddressFamily = apps.get_model("netbox_routing", "BGPAddressFamily")
+        self._device("device-bgp-address-family-delete")
+        ASN.objects.create(rir=RIR.objects.create(name="ARIN"), asn=64512)
+        runner = self._runner()
+        row = {
+            "device": "device-bgp-address-family-delete",
+            "vrf": None,
+            "local_asn": 64512,
+            "afi_safi": "AfiSafiType.IPV4_UNICAST",
+        }
+
+        runner._apply_netbox_routing_bgpaddressfamily(row)
+        self.assertEqual(BGPAddressFamily.objects.count(), 1)
+
+        deleted = runner._delete_netbox_routing_bgpaddressfamily(row)
+
+        self.assertTrue(deleted)
+        self.assertFalse(BGPAddressFamily.objects.exists())
+
+    def test_netbox_peering_manager_peeringsession_delete_parity(self):
+        if not apps.is_installed("netbox_peering_manager"):
+            self.skipTest("netbox-peering-manager optional plugin is not installed")
+        PeeringSession = apps.get_model("netbox_peering_manager", "PeeringSession")
+        BGPPeer = apps.get_model("netbox_routing", "BGPPeer")
+        self._device("device-peering-delete")
+        runner = self._runner()
+        row = {
+            "device": "device-peering-delete",
+            "vrf": None,
+            "local_asn": 65000,
+            "neighbor_address": "192.0.2.1",
+            "peer_asn": 65100,
+            "enabled": True,
+            "status": "active",
+            "peer_type": "PeerType.EXTERNAL",
+        }
+
+        runner._apply_netbox_peering_manager_peeringsession(row)
+        self.assertEqual(PeeringSession.objects.count(), 1)
+        self.assertEqual(BGPPeer.objects.count(), 1)
+
+        deleted = runner._delete_netbox_peering_manager_peeringsession(row)
+
+        self.assertTrue(deleted)
+        self.assertFalse(PeeringSession.objects.exists())
+        self.assertTrue(BGPPeer.objects.exists())
+
+    def test_netbox_routing_ospfinstance_delete_parity(self):
+        if not apps.is_installed("netbox_routing"):
+            self.skipTest("netbox-routing optional plugin is not installed")
+        OSPFInstance = apps.get_model("netbox_routing", "OSPFInstance")
+        self._device("device-ospf-instance-delete")
+        runner = self._runner()
+        row = {
+            "device": "device-ospf-instance-delete",
+            "vrf": None,
+            "process_id": "UNDERLAY",
+            "domain": "fabric",
+            "router_id": "192.0.2.254",
+        }
+
+        runner._apply_netbox_routing_ospfinstance(row)
+        self.assertEqual(OSPFInstance.objects.count(), 1)
+
+        deleted = runner._delete_netbox_routing_ospfinstance(row)
+
+        self.assertTrue(deleted)
+        self.assertFalse(OSPFInstance.objects.exists())
+
+    def test_netbox_routing_ospfarea_delete_parity(self):
+        if not apps.is_installed("netbox_routing"):
+            self.skipTest("netbox-routing optional plugin is not installed")
+        OSPFArea = apps.get_model("netbox_routing", "OSPFArea")
+        runner = self._runner()
+        row = {
+            "area_id": "0",
+            "area_type": "OspfAreaType.BACKBONE",
+        }
+
+        runner._apply_netbox_routing_ospfarea(row)
+        self.assertEqual(OSPFArea.objects.count(), 1)
+
+        deleted = runner._delete_netbox_routing_ospfarea(row)
+
+        self.assertTrue(deleted)
+        self.assertFalse(OSPFArea.objects.exists())
+
+    def test_netbox_routing_ospfinterface_delete_parity(self):
+        if not apps.is_installed("netbox_routing"):
+            self.skipTest("netbox-routing optional plugin is not installed")
+        OSPFInterface = apps.get_model("netbox_routing", "OSPFInterface")
+        self._device("device-ospf-delete")
+        Interface.objects.create(
+            device=Device.objects.get(name="device-ospf-delete"),
+            name="Ethernet1/1",
+            type="1000base-t",
+        )
+        runner = self._runner()
+        row = {
+            "device": "device-ospf-delete",
+            "vrf": None,
+            "process_id": "UNDERLAY",
+            "domain": "fabric",
+            "router_id": "192.0.2.254",
+            "area_id": "0",
+            "area_type": "OspfAreaType.BACKBONE",
+            "local_interface": "Ethernet1/1",
+            "remote_router_id": "192.0.2.253",
+            "remote_interface_ip": "192.0.2.253/31",
+            "cost": 1,
+            "role": "OspfRole.DESIGNATED_ROUTER",
+            "remote_device": "device-2",
+            "remote_interface": "Ethernet1/2",
+        }
+
+        runner._apply_netbox_routing_ospfinterface(row)
+        self.assertEqual(OSPFInterface.objects.count(), 1)
+
+        deleted = runner._delete_netbox_routing_ospfinterface(row)
+
+        self.assertTrue(deleted)
+        self.assertFalse(OSPFInterface.objects.exists())
+
     def test_dcim_virtualchassis_validation_failure_parity(self):
         device_1 = self._device("device-conflict-1")
         device_2 = self._device("device-conflict-2")
@@ -11553,6 +13123,41 @@ class ForwardApplyEngineParityTest(TestCase):
         expansion = bulk_orm_expansion_summary(["dcim.virtualchassis"])
         self.assertIn("dcim.virtualchassis", expansion["safe_models"])
         self.assertEqual(self._virtual_chassis_decision().selected_engine, "bulk_orm")
+
+    def test_bulk_tree_lookup_cache_reuses_device_role_lookup_across_rows(self):
+        role = DeviceRole.objects.create(
+            name="role-1",
+            slug="role-1",
+            color="9e9e9e",
+        )
+        runner = self._runner()
+        rows = [
+            {"name": "role-1", "slug": "role-1", "color": "9e9e9e"},
+            {"name": "role-2", "slug": "role-2", "color": "9e9e9e"},
+        ]
+
+        with CaptureQueriesContext(connection) as queries:
+            self.assertTrue(
+                bulk_orm_apply_tree_models(
+                    runner=runner,
+                    model_string="dcim.devicerole",
+                    model=DeviceRole,
+                    fields=("name", "slug", "color"),
+                    lookup_sets=(("slug",), ("name",)),
+                    normalized_rows=rows,
+                )
+            )
+
+        self.assertEqual(
+            DeviceRole.objects.filter(slug__in=["role-1", "role-2"]).count(), 2
+        )
+        prefetch_selects = [
+            query["sql"]
+            for query in queries
+            if 'FROM "dcim_devicerole"' in query["sql"] and " IN " in query["sql"]
+        ]
+        self.assertEqual(len(prefetch_selects), 1)
+        self.assertEqual(role.pk, DeviceRole.objects.get(slug="role-1").pk)
 
     def test_dcim_device_create_parity(self):
         self._assert_device_stays_adapter()

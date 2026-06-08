@@ -98,6 +98,7 @@ def local_query_binding_drift(query_map: ForwardNQEMap) -> dict:
                 status="bundled_raw_match",
                 severity="pass",
                 message="Raw query text matches the bundled NQE source.",
+                remediation="No change needed.",
                 expected_filename=expected_filename,
                 expected_name=expected_name,
             )
@@ -108,6 +109,10 @@ def local_query_binding_drift(query_map: ForwardNQEMap) -> dict:
             message=(
                 "Raw query text differs from the bundled NQE source; diffs require "
                 "a repository path or direct query ID."
+            ),
+            remediation=(
+                "Switch the map to a repository path or direct query ID before "
+                "relying on diff execution."
             ),
             expected_filename=expected_filename,
             expected_name=expected_name,
@@ -124,6 +129,10 @@ def local_query_binding_drift(query_map: ForwardNQEMap) -> dict:
                     "Repository path filename matches the bundled NQE map. Live "
                     "commit/source drift is not checked on page render."
                 ),
+                remediation=(
+                    "No change needed unless you want to pin a specific query "
+                    "commit for reproducible drift checks."
+                ),
                 expected_filename=expected_filename,
                 expected_name=expected_name,
                 current_filename=current_filename,
@@ -135,6 +144,10 @@ def local_query_binding_drift(query_map: ForwardNQEMap) -> dict:
             message=(
                 "Repository path filename does not match the bundled NQE map for "
                 "this NetBox model."
+            ),
+            remediation=(
+                "Bind the map to the bundled query path for this model or restore "
+                "the correct shipped map before syncing."
             ),
             expected_filename=expected_filename,
             expected_name=expected_name,
@@ -150,6 +163,10 @@ def local_query_binding_drift(query_map: ForwardNQEMap) -> dict:
                 "Direct query IDs are org-specific and cannot be compared to the "
                 "bundled query source without a live Forward repository lookup."
             ),
+            remediation=(
+                "Prefer repository-path bindings for reproducible drift checks; "
+                "pin a commit if the direct query ID must remain."
+            ),
             expected_filename=expected_filename,
             expected_name=expected_name,
         )
@@ -159,6 +176,7 @@ def local_query_binding_drift(query_map: ForwardNQEMap) -> dict:
         status="unknown_execution_mode",
         severity="warn",
         message=f"Unknown query execution mode `{mode}`.",
+        remediation="Reset the map to a supported execution mode.",
         expected_filename=expected_filename,
         expected_name=expected_name,
     )
@@ -182,6 +200,7 @@ def live_query_binding_drift(*, client, query_map: ForwardNQEMap) -> dict:
             "live_checked": False,
             "live_status": "not_required",
             "live_message": "Raw bundled query text is checked locally.",
+            "remediation": local_result.get("remediation", ""),
         }
     if mode == "query_path":
         repository = query_map.query_repository or "org"
@@ -215,6 +234,7 @@ def live_query_binding_drift(*, client, query_map: ForwardNQEMap) -> dict:
         "live_checked": False,
         "live_status": "unknown_execution_mode",
         "live_message": f"Unknown query execution mode `{mode}`.",
+        "remediation": local_result.get("remediation", ""),
     }
 
 
@@ -225,6 +245,10 @@ def _live_lookup_failed(local_result: dict, exc: Exception) -> dict:
         "live_checked": True,
         "live_status": "live_lookup_failed",
         "live_message": f"Forward query repository lookup failed: {exc}",
+        "remediation": (
+            "Retry after fixing Forward repository connectivity, or switch the map "
+            "to a repository path if you need deterministic drift checks."
+        ),
     }
 
 
@@ -239,16 +263,15 @@ def _live_drift_for_query_id(
     lookup_errors = []
     for repository in ("org", "fwd"):
         try:
-            queries = client.get_nqe_repository_queries(
+            query_index = client.get_nqe_repository_query_index(
                 repository=repository,
                 directory="/",
             )
         except Exception as exc:
             lookup_errors.append(f"{repository}: {exc}")
             continue
-        for query in queries:
-            if str(query.get("queryId") or "").strip() == query_map.query_id:
-                matches.append((repository, query))
+        for query in query_index.get("by_query_id", {}).get(query_map.query_id, []):
+            matches.append((repository, query))
 
     if not matches:
         message = (
@@ -262,6 +285,10 @@ def _live_drift_for_query_id(
             "live_checked": True,
             "live_status": "direct_query_id_not_found",
             "live_message": message,
+            "remediation": (
+                "Bind this map to a repository path or re-publish the query so the "
+                "direct ID can be resolved consistently."
+            ),
         }
     if len(matches) > 1:
         return {
@@ -272,6 +299,10 @@ def _live_drift_for_query_id(
             "live_message": (
                 "Direct query ID matched multiple repository entries; bind by "
                 "repository path to make drift checks deterministic."
+            ),
+            "remediation": (
+                "Convert the map to a repository path binding so the direct query "
+                "ID no longer depends on repository lookup order."
             ),
         }
 
@@ -358,6 +389,7 @@ def _live_drift_result_from_committed_query(
         "requested_commit_id": requested_commit_id or "",
         "source_matches_bundled": source_matches,
         "current_filename": query_filename,
+        "remediation": local_result.get("remediation", ""),
     }
 
 
@@ -375,6 +407,7 @@ def _query_drift_result(
     status: str,
     severity: str,
     message: str,
+    remediation: str = "",
     expected_filename: str = "",
     expected_name: str = "",
     current_filename: str = "",
@@ -388,6 +421,7 @@ def _query_drift_result(
         "status": status,
         "severity": severity,
         "message": message,
+        "remediation": remediation,
         "expected_name": expected_name,
         "expected_filename": expected_filename,
         "current_filename": current_filename,
@@ -478,13 +512,16 @@ def build_nqe_map_bindings(
     repository: str,
     directory: str,
     pin_commit: bool = False,
+    query_index: dict | None = None,
 ) -> list[NQEMapBinding]:
     filename_to_query_default = builtin_filename_to_query_default()
     bindings = []
-    for query in client.get_nqe_repository_queries(
-        repository=repository,
-        directory=directory,
-    ):
+    if query_index is None:
+        query_index = client.get_nqe_repository_query_index(
+            repository=repository,
+            directory=directory,
+        )
+    for query in query_index.get("rows") or []:
         query_path = str(query.get("path") or "").strip()
         query_id = str(query.get("queryId") or "").strip()
         if not query_path:
@@ -575,13 +612,10 @@ def publish_builtin_nqe_map_queries(
     if not map_query_paths:
         return results
 
-    existing_by_path = {
-        str(query.get("path") or "").strip(): query
-        for query in client.get_nqe_repository_queries(
-            repository="org",
-            directory=directory,
-        )
-    }
+    query_index = client.get_nqe_repository_query_index(
+        repository="org", directory=directory
+    )
+    existing_by_path = query_index.get("by_path", {})
     changed_paths = []
     for filename in publish_filenames:
         query_path = query_path_from_filename(directory, filename)
@@ -612,11 +646,18 @@ def publish_builtin_nqe_map_queries(
             message=commit_message,
         )
 
+    binding_query_index = query_index
+    if changed_paths:
+        binding_query_index = client.get_nqe_repository_query_index(
+            repository="org", directory=directory
+        )
+
     bindings = build_nqe_map_bindings(
         client=client,
         repository="org",
         directory=directory,
         pin_commit=pin_commit,
+        query_index=binding_query_index,
     )
     if commit_id and pin_commit:
         bindings = [
