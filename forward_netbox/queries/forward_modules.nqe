@@ -43,4 +43,4 @@ select distinct {
   serial: if isPresent(component_serial) then truncate(component_serial, 50) else null : String,
   asset_tag: null : String,
   description: if isPresent(component_description) then component_description else ""
-}
+};

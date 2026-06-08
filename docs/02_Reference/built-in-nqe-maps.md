@@ -42,6 +42,7 @@ When a sync uses the local device tag filter mode, the plugin now passes the sel
 | Forward ACI Fabrics | `netbox_cisco_aci.acifabric` | [`forward_aci_fabrics.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_fabrics.nqe) |
 | Forward ACI Pods | `netbox_cisco_aci.acipod` | [`forward_aci_pods.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_pods.nqe) |
 | Forward ACI Nodes | `netbox_cisco_aci.acinode` | [`forward_aci_nodes.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_nodes.nqe) |
+| Forward ACI APIC Nodes | `netbox_cisco_aci.acinode` | [`forward_aci_apic_nodes.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_apic_nodes.nqe) |
 | Forward ACI Tenants | `netbox_cisco_aci.acitenant` | [`forward_aci_tenants.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_tenants.nqe) |
 | Forward ACI VRFs | `netbox_cisco_aci.acivrf` | [`forward_aci_vrfs.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_vrfs.nqe) |
 | Forward ACI Bridge Domains | `netbox_cisco_aci.acibridgedomain` | [`forward_aci_bridge_domains.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_bridge_domains.nqe) |
@@ -51,10 +52,11 @@ When a sync uses the local device tag filter mode, the plugin now passes the sel
 | Forward ACI Filters | `netbox_cisco_aci.acifilter` | [`forward_aci_filters.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_filters.nqe) |
 | Forward ACI L3Outs | `netbox_cisco_aci.acil3out` | [`forward_aci_l3outs.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_l3outs.nqe) |
 | Forward ACI Static Port Bindings | `netbox_cisco_aci.acistaticportbinding` | [`forward_aci_static_port_bindings.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_static_port_bindings.nqe) |
+| Forward ACI Command Inventory | `dcim.device` | [`forward_aci_command_inventory.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_command_inventory.nqe) |
 
 ## Optional Cisco ACI Plugin Maps
 
-The `1.3.2` ACI maps are disabled by default and require the optional
+The `1.3.3` ACI maps are disabled by default and require the optional
 `netbox-cisco-aci` plugin. They do not use sync-time Forward column filters.
 All maps declare `forward_netbox_shard_keys`, seed an empty default for UI
 execution, and constrain rows only when shard keys are provided.
@@ -65,12 +67,16 @@ static port bindings are present as disabled model/query contracts but remain
 conservative no-op maps until bounded source identity and repeat-sync
 idempotence are proven. The active maps parse selected command output in NQE
 and emit small normalized rows rather than returning raw command responses.
+The separate `Forward ACI Command Inventory` map is discovery-only and reports
+which bounded ACI/APIC command families are present on each device without
+returning raw response payloads.
 
 | Map | Expected Fields |
 | --- | --- |
 | Forward ACI Fabrics | `name`, `fabric_id`, `description` |
 | Forward ACI Pods | `fabric_name`, `name`, `pod_id`, `description` |
 | Forward ACI Nodes | `fabric_name`, `pod_name`, `pod_id`, `node_id`, `name`, `role`, `node_type`, `serial_number`, `pod_tep_pool`, `firmware_version`, `node_object_name`, `description` |
+| Forward ACI APIC Nodes | `fabric_name`, `pod_name`, `pod_id`, `node_id`, `name`, `role`, `node_type`, `serial_number`, `pod_tep_pool`, `firmware_version`, `node_object_name`, `description` |
 | Forward ACI Tenants | `fabric_name`, `name`, `description` |
 | Forward ACI VRFs | `fabric_name`, `tenant_name`, `name`, `policy_enforcement_preference`, `policy_enforcement_direction`, `bd_enforcement_enabled`, `preferred_group_enabled`, `description` |
 | Forward ACI Bridge Domains | `fabric_name`, `tenant_name`, `vrf_tenant_name`, `vrf_name`, `name`, `unicast_routing_enabled`, `arp_flooding_enabled`, `limit_ip_learn_to_subnets`, `l2_unknown_unicast`, `l3_unknown_multicast`, `multi_destination_flooding`, `mac_address`, `description` |

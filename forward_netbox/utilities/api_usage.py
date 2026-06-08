@@ -57,6 +57,8 @@ def evaluate_forward_api_usage(
     nqe_diff_calls = int(_number(payload.get("nqe_diff_calls"), 0))
     nqe_pages = int(_number(payload.get("nqe_pages"), 0))
     throttle_sleep_seconds = float(_number(payload.get("throttle_sleep_seconds"), 0.0))
+    read_cache_hits = int(_number(payload.get("read_cache_hits"), 0))
+    read_cache_misses = int(_number(payload.get("read_cache_misses"), 0))
     usage_window_seconds = float(_number(payload.get("usage_window_seconds"), 0.0))
     observed_http_attempts_per_minute_value = payload.get(
         "observed_http_attempts_per_minute"
@@ -143,5 +145,12 @@ def evaluate_forward_api_usage(
             "nqe_calls": nqe_query_calls + nqe_diff_calls,
             "nqe_pages": nqe_pages,
             "throttle_sleep_seconds": round(throttle_sleep_seconds, 3),
+            "read_cache_hits": read_cache_hits,
+            "read_cache_misses": read_cache_misses,
+            "read_cache_hit_rate": (
+                round(read_cache_hits / float(read_cache_hits + read_cache_misses), 3)
+                if (read_cache_hits + read_cache_misses)
+                else None
+            ),
         },
     }

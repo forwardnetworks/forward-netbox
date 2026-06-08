@@ -17,8 +17,11 @@ PLUGINS_CONFIG = {
 ```
 
 `enable_bgp_sync` defaults to `True`. Set it to `False` only if you want to hide the beta module/routing surface from the sync UI.
-Optional Cisco ACI plugin maps are discovered from the installed
-`netbox-cisco-aci` ContentTypes and are disabled by default.
+Optional plugin capability reporting is shared across routing, peering, and
+Cisco ACI. The architecture audit, sync health page, and support bundle all
+surface the same installed/available/version status so operators can see why a
+plugin surface is unavailable without opening the database. Optional maps are
+still disabled by default unless the target plugin ContentTypes are installed.
 
 ## Forward Sources
 
@@ -197,11 +200,18 @@ The plugin also seeds a default `Forward Device Feature Tags` map and a disabled
 
 Optional routing sync is enabled by default through `PLUGINS_CONFIG["forward_netbox"]["enable_bgp_sync"] = True`. When the optional NetBox plugins are installed, the sync form exposes the beta `netbox_routing.bgppeer`, `netbox_routing.bgpaddressfamily`, `netbox_routing.bgppeeraddressfamily`, `netbox_routing.ospfinstance`, `netbox_routing.ospfarea`, `netbox_routing.ospfinterface`, and `netbox_peering_manager.peeringsession` maps. The `netbox-routing` maps are the primary native BGP/OSPF targets; the `netbox-peering-manager` map creates an overlay session linked to the BGP peer. Set the flag to `False` only if you want to hide that beta surface. The routing queries use explicit local identity when Forward provides it, then apply conservative native-query inference from reciprocal Forward peer evidence. During planning, routing diagnostics report BGP neighbors skipped because no explicit or safely inferred local AS exists, unsupported BGP address families, and OSPF rows skipped because no unique process-level local router ID can be inferred safely.
 
+The optional-plugin framework is shared with Cisco ACI as well. The generic
+capability report treats `netbox-routing`, `netbox-peering-manager`, and
+`netbox-cisco-aci` as first-class optional integrations, and the same
+reporting path appears in the architecture audit, sync health view, and support
+bundle exports.
+
 For large routing datasets, publish the routing NQE into the Forward NQE library and bind each enabled NetBox map to the repository query path. The first run still performs a full baseline. Later `latestProcessed` runs can use Forward NQE diffs only when all enabled maps for that model are backed by a repository path or direct query ID; inline query text falls back to full execution.
 
 Optional Cisco ACI sync requires the `netbox-cisco-aci` plugin. When that
 plugin is installed and migrated, the map list exposes disabled `Forward ACI
 Fabrics`, `Forward ACI Pods`, `Forward ACI Nodes`, `Forward ACI Tenants`,
+`Forward ACI APIC Nodes`,
 `Forward ACI VRFs`, `Forward ACI Bridge Domains`, `Forward ACI Application
 Profiles`, `Forward ACI Endpoint Groups`, `Forward ACI Contracts`,
 `Forward ACI Filters`, `Forward ACI L3Outs`, and `Forward ACI Static Port
@@ -210,10 +220,12 @@ plugin's ACI inventory and policy objects. The ACI maps use Forward
 saved-query/raw-query execution and `forward_netbox_shard_keys`; they do not
 use sync-time column filters or per-tenant/per-node Forward API calls. The
 fabric/pod/node, tenant/VRF, and filter maps parse selected command output in
-NQE and emit normalized fields instead of raw command responses. Bridge domain,
-application profile, EPG, contract, L3Out, and static binding maps are seeded
-disabled as conservative no-op contracts until their bounded parser identity
-and repeat-sync behavior are proven.
+NQE and emit normalized fields instead of raw command responses. A separate
+`Forward ACI Command Inventory` discovery map reports bounded APIC/ACI command
+family presence without exposing raw payloads. Bridge domain, application
+profile, EPG, contract, L3Out, and static binding maps are seeded disabled as
+conservative no-op contracts until their bounded parser identity and
+repeat-sync behavior are proven.
 
 Large datasets should prefer saved queries plus `latestProcessed`. That keeps the first run as a full baseline, then lets later runs use Forward `nqe-diffs` directly. The current built-ins also collapse NetBox identities in NQE where the source emits many raw rows for one object, such as prefix, IP, MAC, and VLAN records.
 
@@ -240,6 +252,7 @@ The current built-in map set is:
 - `Forward ACI Fabrics` (optional `netbox_cisco_aci.acifabric`)
 - `Forward ACI Pods` (optional `netbox_cisco_aci.acipod`)
 - `Forward ACI Nodes` (optional `netbox_cisco_aci.acinode`)
+- `Forward ACI APIC Nodes` (optional `netbox_cisco_aci.acinode`)
 - `Forward ACI Tenants` (optional `netbox_cisco_aci.acitenant`)
 - `Forward ACI VRFs` (optional `netbox_cisco_aci.acivrf`)
 - `Forward ACI Bridge Domains` (optional `netbox_cisco_aci.acibridgedomain`)

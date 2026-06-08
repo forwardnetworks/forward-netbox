@@ -94,3 +94,37 @@ class SyncLoggingTest(TestCase):
             },
         )
         mock_cache_set.assert_called_once()
+
+    @patch("forward_netbox.utilities.logging.cache.set")
+    def test_add_dependency_lookup_summary_persists_model_payload(self, mock_cache_set):
+        logger = SyncLogging(job=52)
+
+        logger.add_dependency_lookup_summary(
+            {
+                "model": "dcim.device",
+                "row_count": 4,
+                "primed_target_count": 7,
+                "device_name_count": 4,
+                "tag_row_count": 0,
+                "interface_pair_count": 2,
+                "module_bay_pair_count": 0,
+                "fhrp_group_count": 1,
+                "ipam_identity_row_count": 0,
+                "ipam_global_host_row_count": 0,
+            }
+        )
+
+        self.assertTrue(logger.log_data["dependency_lookup_cache"]["available"])
+        self.assertEqual(logger.log_data["dependency_lookup_cache"]["row_count"], 4)
+        self.assertEqual(
+            logger.log_data["dependency_lookup_cache"]["primed_target_count"], 7
+        )
+        self.assertEqual(
+            logger.log_data["dependency_lookup_cache"]["models"][0]["fhrp_group_count"],
+            1,
+        )
+        self.assertEqual(
+            logger.log_data["dependency_lookup_cache"]["models"][0]["model"],
+            "dcim.device",
+        )
+        mock_cache_set.assert_called_once()

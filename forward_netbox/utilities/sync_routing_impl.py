@@ -275,24 +275,13 @@ def ensure_bgp_scope(runner, row, router, vrf):
         "netbox_routing", "BGPScope", "netbox_routing.bgppeer"
     )
     values = runner._model_field_values(BGPScope, {"router": router, "vrf": vrf})
-    scope = BGPScope.objects.filter(router=router, vrf=vrf).order_by("pk").first()
-    if scope is None:
-        scope = BGPScope(**values)
-        scope.full_clean()
-        scope.save()
-        return scope
-
-    duplicate_count = BGPScope.objects.filter(router=router, vrf=vrf).count() - 1
-    if duplicate_count > 0:
-        runner._record_aggregated_skip_warning(
-            model_string="netbox_routing.bgppeer",
-            reason="duplicate-bgp-scope",
-            warning_message=(
-                "Reusing the oldest duplicate BGP scope for router "
-                f"`{router}` and VRF `{vrf or 'global'}`; "
-                f"{duplicate_count} duplicate scope(s) already exist."
-            ),
-        )
+    scope, _ = runner._coalesce_upsert(
+        "netbox_routing.bgpscope",
+        BGPScope,
+        coalesce_lookups=[{"router": router, "vrf": vrf}],
+        create_values=values,
+        update_values=values,
+    )
     return scope
 
 
@@ -767,14 +756,17 @@ def resolve_bgp_peer_for_delete(runner, row):
         vrf = runner._get_unique_or_raise(VRF, {"name": row["vrf"]})
         if vrf is None:
             return None
-    router = BGPRouter.objects.filter(
-        assigned_object_type=runner._content_type_for(Device),
-        assigned_object_id=device.pk,
-        asn=local_asn,
-    ).first()
+    router = runner._get_unique_or_raise(
+        BGPRouter,
+        {
+            "assigned_object_type": runner._content_type_for(Device),
+            "assigned_object_id": device.pk,
+            "asn": local_asn,
+        },
+    )
     if router is None:
         return None
-    scope = BGPScope.objects.filter(router=router, vrf=vrf).first()
+    scope = runner._get_unique_or_raise(BGPScope, {"router": router, "vrf": vrf})
     if scope is None:
         return None
     peer_ip = runner._lookup_ipaddress_by_host(
@@ -813,11 +805,14 @@ def resolve_bgp_scope_for_delete(runner, row):
         vrf = runner._get_unique_or_raise(VRF, {"name": row["vrf"]})
         if vrf is None:
             return None
-    router = BGPRouter.objects.filter(
-        assigned_object_type=runner._content_type_for(Device),
-        assigned_object_id=device.pk,
-        asn=local_asn,
-    ).first()
+    router = runner._get_unique_or_raise(
+        BGPRouter,
+        {
+            "assigned_object_type": runner._content_type_for(Device),
+            "assigned_object_id": device.pk,
+            "asn": local_asn,
+        },
+    )
     if router is None:
         return None
-    return BGPScope.objects.filter(router=router, vrf=vrf).first()
+    return runner._get_unique_or_raise(BGPScope, {"router": router, "vrf": vrf})

@@ -90,6 +90,11 @@ def apply_dcim_virtualchassis(runner, row):
                 data=row,
             )
         defaults = {"virtual_chassis": vc, "vc_position": row["vc_position"]}
+        if (
+            device.virtual_chassis_id == vc.pk
+            and device.vc_position == row["vc_position"]
+        ):
+            return vc
         Device.objects.filter(pk=device.pk).update(**defaults)
     return vc
 

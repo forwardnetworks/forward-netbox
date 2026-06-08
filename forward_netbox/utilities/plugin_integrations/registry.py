@@ -1,6 +1,12 @@
 from dataclasses import asdict
 from dataclasses import dataclass
 from dataclasses import field
+from importlib import metadata
+
+from django.apps import apps
+from django.contrib.contenttypes.models import ContentType
+from packaging.version import InvalidVersion
+from packaging.version import Version
 
 
 @dataclass(frozen=True)
@@ -13,16 +19,16 @@ class OptionalPluginIntegration:
     discovery_models: tuple[str, ...] = ()
     future_models: tuple[str, ...] = ()
     query_maps: tuple[str, ...] = ()
+    command_inventory: tuple[dict, ...] = ()
+    package_names: tuple[str, ...] = ()
+    minimum_package_version: str | None = None
     enabled_by_default: bool = False
     status: str = "candidate"
     notes: tuple[str, ...] = field(default_factory=tuple)
 
     def as_dict(self):
         payload = asdict(self)
-        for key, value in payload.items():
-            if isinstance(value, tuple):
-                payload[key] = list(value)
-        return payload
+        return _json_safe(payload)
 
 
 ACI_INTEGRATION = OptionalPluginIntegration(
@@ -80,6 +86,7 @@ ACI_INTEGRATION = OptionalPluginIntegration(
         "Forward ACI Fabrics",
         "Forward ACI Pods",
         "Forward ACI Nodes",
+        "Forward ACI APIC Nodes",
         "Forward ACI Tenants",
         "Forward ACI VRFs",
         "Forward ACI Bridge Domains",
@@ -90,6 +97,119 @@ ACI_INTEGRATION = OptionalPluginIntegration(
         "Forward ACI L3Outs",
         "Forward ACI Static Port Bindings",
     ),
+    package_names=(
+        "netbox-cisco-aci",
+        "netbox_aci_plugin",
+        "netbox-aci-plugin",
+        "netbox-aci",
+    ),
+    minimum_package_version="0.2.2",
+    command_inventory=(
+        {
+            "command_type": "CISCO_APIC_SWITCH",
+            "source": "APIC switch detail",
+            "status": "current",
+            "notes": ("Feeds APIC node discovery rows.",),
+        },
+        {
+            "command_type": "CISCO_APIC_CONTROLLER_DETAIL",
+            "source": "APIC controller detail",
+            "status": "current",
+            "notes": ("Feeds APIC controller discovery rows.",),
+        },
+        {
+            "command_type": "CISCO_ACI_FABRIC_NODES",
+            "source": "ACI fabric node detail",
+            "status": "current",
+            "notes": ("Feeds current ACI node and pod discovery maps.",),
+        },
+        {
+            "command_type": "CISCO_ACI_FABRIC_VRFS",
+            "source": "ACI fabric VRF detail",
+            "status": "current",
+            "notes": ("Feeds current ACI tenant and VRF discovery maps.",),
+        },
+        {
+            "command_type": "CISCO_ACI_NODE_TYPE",
+            "source": "ACI node type detail",
+            "status": "future",
+            "notes": ("Discovery candidate for leaf/spine role classification."),
+        },
+        {
+            "command_type": "CISCO_ACI_SPINE_INTERFACE_MODE",
+            "source": "ACI spine interface mode detail",
+            "status": "future",
+            "notes": ("Discovery candidate for spine interface role inference."),
+        },
+        {
+            "command_type": "CISCO_ACI_SPINE_IP_ENDPOINTS",
+            "source": "ACI spine IP endpoint detail",
+            "status": "future",
+            "notes": ("Discovery candidate for spine endpoint presence and addresses."),
+        },
+        {
+            "command_type": "CISCO_ACI_SPINE_TUNNELS_NEXTHOP",
+            "source": "ACI spine tunnel nexthop detail",
+            "status": "future",
+            "notes": (
+                "Discovery candidate for tunnel nexthop presence and reachability."
+            ),
+        },
+        {
+            "command_type": "CISCO_ACI_TUNNELS_ENDPOINTS",
+            "source": "ACI tunnel endpoint detail",
+            "status": "future",
+            "notes": (
+                "Discovery candidate for tunnel endpoint inventory and presence."
+            ),
+        },
+        {
+            "command_type": "CISCO_ACI_ZONING_RULE",
+            "source": "ACI zoning rule detail",
+            "status": "future",
+            "notes": ("Discovery candidate for policy observation and parser proof.",),
+        },
+        {
+            "command_type": "CISCO_ACI_ZONING_FILTER",
+            "source": "ACI zoning filter detail",
+            "status": "current",
+            "notes": (
+                "Feeds current ACI filter discovery and anchors filter identity.",
+            ),
+        },
+        {
+            "command_type": "CISCO_ACI_EPM_ENDPOINTS",
+            "source": "ACI endpoint table detail",
+            "status": "future",
+            "notes": ("Discovery candidate for endpoint and EPG-related inventory."),
+        },
+        {
+            "command_type": "CISCO_APIC_VLAN_LEAF",
+            "source": "APIC VLAN leaf detail",
+            "status": "future",
+            "notes": ("Discovery candidate for VLAN / bridge-domain / EPG inventory.",),
+        },
+        {
+            "command_type": "CISCO_APIC_EXT_L3OUT_INTERFACES",
+            "source": "APIC external L3Out interface detail",
+            "status": "future",
+            "notes": ("Discovery candidate for external L3Out interface inventory."),
+        },
+        {
+            "command_type": "CISCO_APIC_VLAN_STATUS_LEAF",
+            "source": "APIC VLAN status detail",
+            "status": "future",
+            "notes": ("Discovery candidate for VLAN state and presence reporting.",),
+        },
+        {
+            "command_type": "CISCO_APIC_VPC_MAP",
+            "source": "APIC vPC map detail",
+            "status": "future",
+            "notes": (
+                "Discovery candidate for vPC topology presence and node mapping."
+            ),
+        },
+    ),
     enabled_by_default=False,
     status="policy_write_path",
     notes=(
@@ -99,7 +219,73 @@ ACI_INTEGRATION = OptionalPluginIntegration(
 )
 
 
-OPTIONAL_PLUGIN_INTEGRATIONS = (ACI_INTEGRATION,)
+ROUTING_INTEGRATION = OptionalPluginIntegration(
+    key="routing.netbox_routing",
+    app_label="netbox_routing",
+    display_name="NetBox Routing",
+    required_models=(
+        "netbox_routing.bgprouter",
+        "netbox_routing.bgpscope",
+        "netbox_routing.bgppeer",
+        "netbox_routing.bgpaddressfamily",
+        "netbox_routing.bgppeeraddressfamily",
+        "netbox_routing.ospfinstance",
+        "netbox_routing.ospfarea",
+        "netbox_routing.ospfinterface",
+    ),
+    supported_models=(
+        "netbox_routing.bgppeer",
+        "netbox_routing.bgpaddressfamily",
+        "netbox_routing.bgppeeraddressfamily",
+        "netbox_routing.ospfinstance",
+        "netbox_routing.ospfarea",
+        "netbox_routing.ospfinterface",
+    ),
+    query_maps=(
+        "Forward BGP Peers",
+        "Forward BGP Address Families",
+        "Forward BGP Peer Address Families",
+        "Forward OSPF Instances",
+        "Forward OSPF Areas",
+        "Forward OSPF Interfaces",
+    ),
+    package_names=("netbox-routing", "netbox_routing"),
+    enabled_by_default=False,
+    status="beta_surface",
+    notes=(
+        "Beta routing import surface backed by optional NetBox routing models.",
+        "The registry reports capability and query-contract coverage only; routing "
+        "behavior continues to live in the dedicated sync adapters.",
+    ),
+)
+
+
+PEERING_INTEGRATION = OptionalPluginIntegration(
+    key="peering.netbox_peering_manager",
+    app_label="netbox_peering_manager",
+    display_name="NetBox Peering Manager",
+    required_models=(
+        "netbox_peering_manager.relationship",
+        "netbox_peering_manager.peeringsession",
+    ),
+    supported_models=("netbox_peering_manager.peeringsession",),
+    query_maps=("Forward Peering Sessions",),
+    package_names=("netbox-peering-manager", "netbox_peering_manager"),
+    enabled_by_default=False,
+    status="beta_surface",
+    notes=(
+        "Optional peering overlay backed by netbox-routing.",
+        "The registry reports capability and query-contract coverage only; the "
+        "session adapter remains in the routing sync path.",
+    ),
+)
+
+
+OPTIONAL_PLUGIN_INTEGRATIONS = (
+    ROUTING_INTEGRATION,
+    PEERING_INTEGRATION,
+    ACI_INTEGRATION,
+)
 
 
 def iter_integrations():
@@ -119,3 +305,151 @@ def integration_summary():
         integration.key: integration.as_dict()
         for integration in OPTIONAL_PLUGIN_INTEGRATIONS
     }
+
+
+def integration_capability_summary():
+    return {
+        integration.key: _integration_capability_summary(integration)
+        for integration in OPTIONAL_PLUGIN_INTEGRATIONS
+    }
+
+
+def _integration_capability_summary(integration: OptionalPluginIntegration):
+    detected_package_name, installed_version = _integration_package_version(
+        integration.package_names
+    )
+    required_models_present = _present_models(integration.required_models)
+    required_models_missing = _missing_models(integration.required_models)
+    supported_models_present = _present_models(integration.supported_models)
+    supported_models_missing = _missing_models(integration.supported_models)
+    discovery_models_present = _present_models(integration.discovery_models)
+    discovery_models_missing = _missing_models(integration.discovery_models)
+    future_models_present = _present_models(integration.future_models)
+    future_models_missing = _missing_models(integration.future_models)
+    missing_optional = sorted(
+        set(discovery_models_missing).union(future_models_missing)
+    )
+    availability_status = _integration_availability_status(
+        installed=apps.is_installed(integration.app_label),
+        missing_required=required_models_missing,
+        unsupported_version=_is_unsupported_version(
+            installed_version, integration.minimum_package_version
+        ),
+    )
+    return {
+        "app_label": integration.app_label,
+        "display_name": integration.display_name,
+        "installed": apps.is_installed(integration.app_label),
+        "available": availability_status == "available",
+        "availability_status": availability_status,
+        "availability_reason": _integration_availability_reason(
+            availability_status, integration.minimum_package_version
+        ),
+        "package_names": integration.package_names,
+        "installed_package_name": detected_package_name,
+        "version": installed_version,
+        "minimum_version": integration.minimum_package_version,
+        "unsupported_version": _is_unsupported_version(
+            installed_version, integration.minimum_package_version
+        ),
+        "required_model_count": len(integration.required_models),
+        "supported_model_count": len(integration.supported_models),
+        "discovery_model_count": len(integration.discovery_models),
+        "future_model_count": len(integration.future_models),
+        "query_map_count": len(integration.query_maps),
+        "command_inventory_count": len(integration.command_inventory),
+        "command_inventory": list(integration.command_inventory),
+        "required_models_present": required_models_present,
+        "required_models_missing": required_models_missing,
+        "supported_models_present": supported_models_present,
+        "supported_models_missing": supported_models_missing,
+        "discovery_models_present": discovery_models_present,
+        "discovery_models_missing": discovery_models_missing,
+        "future_models_present": future_models_present,
+        "future_models_missing": future_models_missing,
+        "missing_required": required_models_missing,
+        "missing_optional": missing_optional,
+    }
+
+
+def _integration_package_version(
+    package_names: tuple[str, ...],
+) -> tuple[str | None, str | None]:
+    for package_name in package_names:
+        try:
+            return package_name, metadata.version(package_name)
+        except metadata.PackageNotFoundError:
+            continue
+    return None, None
+
+
+def _is_unsupported_version(
+    installed_version: str | None,
+    minimum_version: str | None,
+) -> bool:
+    if not installed_version or not minimum_version:
+        return False
+    try:
+        return Version(installed_version) < Version(minimum_version)
+    except InvalidVersion:
+        return False
+
+
+def _integration_availability_status(
+    *, installed: bool, missing_required: list[str], unsupported_version: bool
+) -> str:
+    if not installed:
+        return "not_installed"
+    if missing_required:
+        return "missing_required_models"
+    if unsupported_version:
+        return "unsupported_version"
+    return "available"
+
+
+def _integration_availability_reason(
+    availability_status: str, minimum_version: str | None
+) -> str:
+    if availability_status == "not_installed":
+        return "Target plugin app is not installed."
+    if availability_status == "missing_required_models":
+        return "One or more required plugin models are missing."
+    if availability_status == "unsupported_version":
+        if minimum_version:
+            return f"Installed plugin version is below the supported minimum {minimum_version}."
+        return "Installed plugin version is below the supported minimum."
+    return "Plugin capability is available."
+
+
+def _present_models(model_strings):
+    return sorted(
+        model_string
+        for model_string in model_strings
+        if _content_type_exists(model_string)
+    )
+
+
+def _missing_models(model_strings):
+    return sorted(
+        model_string
+        for model_string in model_strings
+        if not _content_type_exists(model_string)
+    )
+
+
+def _content_type_exists(model_string: str) -> bool:
+    try:
+        app_label, model = model_string.split(".", 1)
+    except ValueError:
+        return False
+    return ContentType.objects.filter(app_label=app_label, model=model).exists()
+
+
+def _json_safe(value):
+    if isinstance(value, tuple):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    return value

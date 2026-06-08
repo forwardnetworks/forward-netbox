@@ -18,4 +18,4 @@ select distinct {
   name: "",
   vc_domain: "",
   vc_position: 1
-}
+};

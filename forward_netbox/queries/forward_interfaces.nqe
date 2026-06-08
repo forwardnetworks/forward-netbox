@@ -60,4 +60,4 @@ foreach interface in device.interfaces
     mtu: interface.mtu,
     description: if isPresent(interface.description) then interface.description else "",
     speed: if isPresent(speed_mbps) then speed_mbps * 1000 else null : Integer
-  }
+  };
