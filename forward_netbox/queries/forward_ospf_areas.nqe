@@ -16,4 +16,4 @@ where isEmpty(forward_netbox_shard_keys) || toString(area.id) in forward_netbox_
 select distinct {
   area_id: toString(area.id),
   area_type: toString(area.areaType)
-}
+};

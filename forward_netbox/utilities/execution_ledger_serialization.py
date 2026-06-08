@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from ..choices import ForwardExecutionRunStatusChoices
 from .api_usage import evaluate_forward_api_usage
 from .branch_budget import BRANCH_RUN_STATE_PARAMETER
@@ -6,6 +8,7 @@ from .execution_ledger_metrics import apply_engine_decision
 from .execution_ledger_metrics import execution_run_metrics
 from .execution_ledger_metrics import fetch_explanation
 from .execution_ledger_metrics import job_summary
+from .plugin_integrations import integration_capability_summary
 
 
 def execution_run_support_bundle(run, *, recommendation_fn):
@@ -14,10 +17,40 @@ def execution_run_support_bundle(run, *, recommendation_fn):
     steps = run.steps.order_by("index", "kind")
     step_list = list(steps)
     latest_ingestion = getattr(getattr(run, "sync", None), "last_ingestion", None)
+    latest_ingestion_summary = ingestion_support_summary(latest_ingestion)
+    sync_health = {}
+    sync = getattr(run, "sync", None)
+    if sync is not None:
+        from .health import sync_health_summary
+
+        sync_health = sync_health_summary(sync)
     return {
         "run": run.as_support_summary(),
         "run_job": job_summary(run.job),
-        "latest_ingestion": ingestion_support_summary(latest_ingestion),
+        "latest_ingestion": latest_ingestion_summary,
+        "optional_plugin_capabilities": integration_capability_summary(),
+        "analysis_summary": (
+            latest_ingestion_summary.get("analysis_summary", {})
+            if isinstance(latest_ingestion_summary, dict)
+            else {}
+        ),
+        "query_path_resolution": (
+            latest_ingestion_summary.get("query_path_resolution", {})
+            if isinstance(latest_ingestion_summary, dict)
+            else {}
+        ),
+        "query_modes": (
+            latest_ingestion_summary.get("query_modes", {})
+            if isinstance(latest_ingestion_summary, dict)
+            else {}
+        ),
+        "query_drift_summary": sync_health.get("query_drift_summary", {}),
+        "query_drift_results": (
+            sync_health.get("query_modes", {}).get("local_drift", [])
+            if isinstance(sync_health, dict)
+            else []
+        ),
+        "dependency_lookup_cache": dependency_lookup_cache_support_summary(run),
         "compatibility_cache": _compatibility_cache_evidence(run),
         "api_usage": api_usage_support_summary(run),
         "recovery_recommendation": recommendation_fn(run),
@@ -56,7 +89,13 @@ API_USAGE_COUNTER_KEYS = (
     "nqe_pages",
     "nqe_query_pages",
     "nqe_diff_pages",
+    "read_cache_hits",
+    "read_cache_misses",
+    "read_cache_hit_rate",
 )
+
+
+API_USAGE_QUERY_PARAMETER_STEP_LIMIT = 10
 
 
 def api_usage_support_summary(run):
@@ -90,6 +129,69 @@ def api_usage_support_summary(run):
         "source": "run_job_data.forward_api_usage",
         "counters": counters,
         "budget": budget,
+        "step_query_parameters": _api_usage_step_query_parameter_summary(run),
+    }
+
+
+def dependency_lookup_cache_support_summary(run):
+    job = getattr(run, "job", None)
+    job_data = getattr(job, "data", None) if job is not None else None
+    if not isinstance(job_data, dict):
+        return {
+            "available": False,
+            "reason": "run_job_data_missing",
+            "source": "run_job_data.dependency_lookup_cache",
+        }
+    raw_summary = job_data.get("dependency_lookup_cache")
+    if not isinstance(raw_summary, dict):
+        return {
+            "available": False,
+            "reason": "dependency_lookup_cache_missing",
+            "source": "run_job_data.dependency_lookup_cache",
+        }
+    models = raw_summary.get("models")
+    if not isinstance(models, list):
+        models = []
+    return {
+        "available": True,
+        "source": "run_job_data.dependency_lookup_cache",
+        "row_count": int(raw_summary.get("row_count") or 0),
+        "primed_target_count": int(raw_summary.get("primed_target_count") or 0),
+        "model_count": int(raw_summary.get("model_count") or len(models)),
+        "models": models,
+    }
+
+
+def _api_usage_step_query_parameter_summary(run):
+    steps = (
+        run.steps.order_by("index", "kind")
+        if getattr(run, "steps", None) is not None
+        else []
+    )
+    step_items = []
+    matching_step_count = 0
+    for step in steps:
+        query_parameters = dict(step.query_parameters or {})
+        if not query_parameters:
+            continue
+        matching_step_count += 1
+        step_items.append(
+            {
+                "model": step.model_string or "",
+                "query_name": step.query_name or "",
+                "execution_mode": step.execution_mode or "",
+                "fetch_mode": step.fetch_mode or "",
+                "query_parameters": query_parameters,
+            }
+        )
+    step_items = step_items[:API_USAGE_QUERY_PARAMETER_STEP_LIMIT]
+    return {
+        "available": bool(step_items),
+        "step_count": matching_step_count,
+        "total_step_count": (
+            steps.count() if hasattr(steps, "count") else len(step_items)
+        ),
+        "top_steps": step_items,
     }
 
 
@@ -157,6 +259,7 @@ def ingestion_support_summary(ingestion):
     if ingestion is None:
         return None
     issues = list(ingestion.issues.order_by("timestamp")[:25])
+    execution_summary = ingestion.get_execution_summary()
     return {
         "id": ingestion.pk,
         "name": ingestion.name,
@@ -172,7 +275,12 @@ def ingestion_support_summary(ingestion):
         "updated_change_count": int(ingestion.updated_change_count or 0),
         "deleted_change_count": int(ingestion.deleted_change_count or 0),
         "change_explainability": change_explainability_summary(ingestion),
-        "execution_summary": ingestion.get_execution_summary(),
+        "execution_summary": execution_summary,
+        "query_modes": execution_summary.get("query_modes", {}),
+        "query_path_resolution": execution_summary.get("query_path_resolution", {}),
+        "dependency_lookup_cache": dependency_lookup_cache_support_summary(
+            SimpleNamespace(job=ingestion.job)
+        ),
         "analysis_summary": ingestion.get_analysis_summary(),
         "issue_count": ingestion.issues.count(),
         "issues": [

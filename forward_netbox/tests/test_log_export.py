@@ -20,6 +20,7 @@ from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.utilities.branch_budget import BRANCH_RUN_STATE_PARAMETER
 from forward_netbox.utilities.execution_ledger import active_execution_run
+from forward_netbox.utilities.health import sync_health_summary
 
 
 class ForwardIngestionLogExportViewTest(TestCase):
@@ -55,6 +56,8 @@ class ForwardIngestionLogExportViewTest(TestCase):
                 {
                     "model": "ipam.prefix",
                     "query_name": "Forward Prefixes",
+                    "execution_mode": "query_path",
+                    "fetch_mode": "nqe_parameters",
                     "row_count": 1,
                     "delete_count": 0,
                     "query_path_resolution": {
@@ -62,6 +65,7 @@ class ForwardIngestionLogExportViewTest(TestCase):
                         "query_path_spec_count": 1,
                         "artifact_hit_count": 1,
                         "client_resolve_count": 0,
+                        "repository_index_count": 1,
                         "cache_hit_rate": 1.0,
                     },
                 }
@@ -93,7 +97,6 @@ class ForwardIngestionLogExportViewTest(TestCase):
                         "Synthetic sync stage completed.",
                     ]
                 ],
-                "statistics": {"dcim.site": {"current": 1, "total": 1}},
                 "forward_api_usage": {
                     "api_requests_per_minute": 1800,
                     "http_attempts": 11,
@@ -104,6 +107,37 @@ class ForwardIngestionLogExportViewTest(TestCase):
                     "throttle_sleep_seconds": 0.75,
                     "usage_window_seconds": 30.0,
                     "observed_http_attempts_per_minute": 20.0,
+                },
+                "statistics": {
+                    "dcim.site": {"current": 1, "total": 1},
+                    "dcim.cable": {
+                        "current": 4,
+                        "total": 4,
+                        "applied": 1,
+                        "failed": 0,
+                        "skipped": 0,
+                        "unchanged": 2,
+                    },
+                },
+                "dependency_lookup_cache": {
+                    "available": True,
+                    "row_count": 4,
+                    "primed_target_count": 7,
+                    "model_count": 1,
+                    "models": [
+                        {
+                            "model": "dcim.device",
+                            "row_count": 4,
+                            "primed_target_count": 7,
+                            "device_name_count": 4,
+                            "tag_row_count": 0,
+                            "interface_pair_count": 2,
+                            "module_bay_pair_count": 0,
+                            "fhrp_group_count": 1,
+                            "ipam_identity_row_count": 0,
+                            "ipam_global_host_row_count": 0,
+                        }
+                    ],
                 },
             },
         )
@@ -337,19 +371,72 @@ class ForwardIngestionLogExportViewTest(TestCase):
         )
         self.assertFalse(data["compatibility_cache"]["stale_payload_present"])
         self.assertIn("recovery_policy_summary", data)
+        self.assertEqual(
+            data["query_drift_summary"],
+            sync_health_summary(self.sync)["query_drift_summary"],
+        )
+        self.assertEqual(
+            data["query_drift_results"],
+            sync_health_summary(self.sync)["query_modes"]["local_drift"],
+        )
+        self.assertIn("remediation", data["query_drift_results"][0])
+        self.assertTrue(data["dependency_lookup_cache"]["available"])
+        self.assertEqual(data["dependency_lookup_cache"]["row_count"], 4)
         self.assertIn("latest_ingestion", data)
         self.assertEqual(data["latest_ingestion"]["id"], self.ingestion.pk)
+        self.assertEqual(
+            data["analysis_summary"],
+            data["latest_ingestion"]["analysis_summary"],
+        )
+        self.assertEqual(
+            data["query_path_resolution"]["total_query_path_specs"],
+            1,
+        )
         self.assertEqual(
             data["latest_ingestion"]["execution_summary"]["query_path_resolution"][
                 "total_query_path_specs"
             ],
             1,
         )
+        self.assertTrue(
+            data["latest_ingestion"]["dependency_lookup_cache"]["available"]
+        )
+        self.assertEqual(
+            data["latest_ingestion"]["dependency_lookup_cache"]["row_count"],
+            4,
+        )
+        self.assertEqual(
+            data["latest_ingestion"]["execution_summary"]["unchanged_row_count"],
+            2,
+        )
         self.assertEqual(
             data["latest_ingestion"]["execution_summary"]["query_path_resolution"][
                 "artifact_hit_count"
             ],
             1,
+        )
+        self.assertEqual(
+            data["latest_ingestion"]["execution_summary"]["query_path_resolution"][
+                "repository_index_count"
+            ],
+            1,
+        )
+        self.assertEqual(
+            data["latest_ingestion"]["query_modes"]["execution_modes"],
+            {"query_path": 1},
+        )
+        self.assertEqual(
+            data["latest_ingestion"]["query_modes"]["fetch_modes"],
+            {"nqe_parameters": 1},
+        )
+        self.assertTrue(data["dependency_lookup_cache"]["available"])
+        self.assertEqual(
+            data["query_modes"]["execution_modes"],
+            {"query_path": 1},
+        )
+        self.assertEqual(
+            data["query_modes"]["fetch_modes"],
+            {"nqe_parameters": 1},
         )
         self.assertTrue(data["api_usage"]["available"])
         self.assertEqual(data["api_usage"]["counters"]["http_attempts"], 11)
@@ -362,6 +449,13 @@ class ForwardIngestionLogExportViewTest(TestCase):
         self.assertEqual(
             data["api_usage"]["budget"]["metrics"]["headroom_requests_per_minute"],
             200,
+        )
+        self.assertEqual(
+            data["dependency_lookup_cache"]["models"][0]["fhrp_group_count"], 1
+        )
+        self.assertEqual(
+            data["api_usage"]["budget"]["metrics"]["throttle_sleep_seconds"],
+            0.75,
         )
         self.assertIn("auto_policy_event_count", data["recovery_policy_summary"])
         self.assertIn("auto_policy_reasons", data["recovery_policy_summary"])
@@ -376,6 +470,17 @@ class ForwardIngestionLogExportViewTest(TestCase):
         self.assertEqual(data["steps"][0]["id"], self.execution_step.pk)
         self.assertEqual(
             data["steps"][0]["query_parameters"],
+            {"forward_netbox_shard_keys": ["device-1"]},
+        )
+        self.assertTrue(data["api_usage"]["step_query_parameters"]["available"])
+        self.assertEqual(
+            data["api_usage"]["step_query_parameters"]["step_count"],
+            1,
+        )
+        self.assertEqual(
+            data["api_usage"]["step_query_parameters"]["top_steps"][0][
+                "query_parameters"
+            ],
             {"forward_netbox_shard_keys": ["device-1"]},
         )
         self.assertEqual(data["steps"][0]["job_detail"]["pk"], self.job.pk)
@@ -508,6 +613,15 @@ class ForwardIngestionLogExportViewTest(TestCase):
         data = json.loads(response.content)
         self.assertEqual(data["sync"]["pk"], self.sync.pk)
         self.assertEqual(data["sync"]["execution_state_source"], "execution_ledger")
+        self.assertEqual(
+            data["query_drift_summary"],
+            sync_health_summary(self.sync)["query_drift_summary"],
+        )
+        self.assertEqual(
+            data["query_drift_results"],
+            sync_health_summary(self.sync)["query_modes"]["local_drift"],
+        )
+        self.assertIn("remediation", data["query_drift_results"][0])
         self.assertEqual(data["latest_ingestion"]["pk"], self.ingestion.pk)
         self.assertEqual(data["execution_run"]["run"]["id"], self.execution_run.pk)
         self.assertEqual(data["health"]["source"]["name"], self.source.name)
@@ -519,6 +633,61 @@ class ForwardIngestionLogExportViewTest(TestCase):
             data["latest_ingestion"]["change_explainability"]["top_changed_fields"],
             [{"field": "vrf", "count": 1}],
         )
+        self.assertIn("optional_plugin_capabilities", data["execution_run"])
+        self.assertIn(
+            "aci.netbox_cisco_aci",
+            data["execution_run"]["optional_plugin_capabilities"],
+        )
+        self.assertIn(
+            "routing.netbox_routing",
+            data["execution_run"]["optional_plugin_capabilities"],
+        )
+        self.assertIn(
+            "peering.netbox_peering_manager",
+            data["execution_run"]["optional_plugin_capabilities"],
+        )
+        self.assertEqual(
+            data["execution_run"]["optional_plugin_capabilities"][
+                "routing.netbox_routing"
+            ]["display_name"],
+            "NetBox Routing",
+        )
+        self.assertEqual(
+            data["execution_run"]["optional_plugin_capabilities"][
+                "peering.netbox_peering_manager"
+            ]["display_name"],
+            "NetBox Peering Manager",
+        )
+        routing_capabilities = data["execution_run"]["optional_plugin_capabilities"][
+            "routing.netbox_routing"
+        ]
+        peering_capabilities = data["execution_run"]["optional_plugin_capabilities"][
+            "peering.netbox_peering_manager"
+        ]
+        self.assertIn("availability_status", routing_capabilities)
+        self.assertIn("availability_reason", routing_capabilities)
+        self.assertIn("package_names", routing_capabilities)
+        self.assertIn("installed_package_name", routing_capabilities)
+        self.assertIn("minimum_version", routing_capabilities)
+        self.assertIn("version", routing_capabilities)
+        self.assertIn("unsupported_version", routing_capabilities)
+        self.assertIn("availability_status", peering_capabilities)
+        self.assertIn("availability_reason", peering_capabilities)
+        self.assertIn("package_names", peering_capabilities)
+        self.assertIn("installed_package_name", peering_capabilities)
+        self.assertIn("minimum_version", peering_capabilities)
+        self.assertIn("version", peering_capabilities)
+        self.assertIn("unsupported_version", peering_capabilities)
+        aci_capabilities = data["execution_run"]["optional_plugin_capabilities"][
+            "aci.netbox_cisco_aci"
+        ]
+        self.assertIn("availability_status", aci_capabilities)
+        self.assertIn("availability_reason", aci_capabilities)
+        self.assertIn("package_names", aci_capabilities)
+        self.assertIn("installed_package_name", aci_capabilities)
+        self.assertIn("minimum_version", aci_capabilities)
+        self.assertIn("version", aci_capabilities)
+        self.assertIn("unsupported_version", aci_capabilities)
 
     def test_sync_support_bundle_uses_ledger_branch_state_when_cache_is_absent(self):
         self.sync.clear_branch_run_state()

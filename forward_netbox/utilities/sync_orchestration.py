@@ -137,6 +137,8 @@ def _record_forward_api_usage(sync, executor):
         f"nqe_query_calls={summary.get('nqe_query_calls', 0)} "
         f"nqe_diff_calls={summary.get('nqe_diff_calls', 0)} "
         f"nqe_pages={summary.get('nqe_pages', 0)} "
+        f"read_cache_hits={summary.get('read_cache_hits', 0)} "
+        f"read_cache_hit_rate={summary.get('read_cache_hit_rate')} "
         f"observed_http_attempts_per_minute="
         f"{summary.get('observed_http_attempts_per_minute')} "
         f"throttle_sleep_seconds={summary.get('throttle_sleep_seconds', 0.0)}.",

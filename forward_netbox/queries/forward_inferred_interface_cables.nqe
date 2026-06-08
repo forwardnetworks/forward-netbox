@@ -42,4 +42,4 @@ select distinct {
   remote_interface: if device.name < link.deviceName || (device.name == link.deviceName && interface.name < link.ifaceName)
     then link.ifaceName else interface.name,
   status: "connected"
-}
+};

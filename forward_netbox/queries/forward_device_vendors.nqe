@@ -20,4 +20,4 @@ where isEmpty(forward_netbox_shard_keys)
 select distinct {
   name: manufacturer_name,
   slug: manufacturer_slug
-}
+};

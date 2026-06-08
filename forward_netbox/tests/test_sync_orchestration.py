@@ -148,6 +148,9 @@ class ForwardSyncOrchestrationHelperTest(TestCase):
                     "nqe_diff_calls": 1,
                     "nqe_pages": 3,
                     "throttle_sleep_seconds": 1.25,
+                    "read_cache_hits": 5,
+                    "read_cache_misses": 2,
+                    "read_cache_hit_rate": 0.714286,
                 }
             )
         )
@@ -155,6 +158,9 @@ class ForwardSyncOrchestrationHelperTest(TestCase):
         _record_forward_api_usage(self.sync, executor)
 
         self.assertEqual(self.sync.logger.log_data["forward_api_usage"]["nqe_pages"], 3)
+        self.assertEqual(
+            self.sync.logger.log_data["forward_api_usage"]["read_cache_hits"], 5
+        )
         self.assertEqual(
             self.sync.logger.log_data["forward_api_usage"]["budget"]["status"],
             "passed",

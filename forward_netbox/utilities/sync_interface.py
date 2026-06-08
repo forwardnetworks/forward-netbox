@@ -182,7 +182,7 @@ def _interface_untagged_vlan(runner, device, row):
             ),
         )
         return False, None
-    vlan = VLAN.objects.filter(site=device.site, vid=vid).order_by("pk").first()
+    vlan = runner._get_unique_or_raise(VLAN, {"site": device.site, "vid": vid})
     if vlan is None:
         runner._record_aggregated_skip_warning(
             model_string="dcim.interface",

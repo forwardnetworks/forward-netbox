@@ -17,4 +17,4 @@ select distinct {
   tag: "Prot_BGP",
   tag_slug: "prot-bgp",
   tag_color: "2196f3"
-}
+};

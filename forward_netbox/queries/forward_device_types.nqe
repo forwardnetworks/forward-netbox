@@ -21,4 +21,4 @@ select distinct {
   name: device_type,
   slug: role_slug,
   color: "9e9e9e"
-}
+};
