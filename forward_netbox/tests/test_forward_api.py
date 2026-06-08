@@ -38,6 +38,9 @@ class FakeSharedCache:
 
 class ForwardClientTest(TestCase):
     def setUp(self):
+        shared_cache = forward_api_impl._shared_read_cache()
+        if hasattr(shared_cache, "clear"):
+            shared_cache.clear()
         self.client = ForwardClient(
             SimpleNamespace(
                 url="https://fwd.app",
@@ -498,6 +501,10 @@ class ForwardClientTest(TestCase):
                 "nqe_pages": 0,
                 "nqe_query_pages": 0,
                 "nqe_diff_pages": 0,
+                "nqe_async_query_calls": 0,
+                "nqe_async_trigger_calls": 0,
+                "nqe_async_status_calls": 0,
+                "nqe_async_result_calls": 0,
                 "read_cache_hits": 0,
                 "read_cache_misses": 0,
                 "read_cache_hit_rate": None,
@@ -533,6 +540,10 @@ class ForwardClientTest(TestCase):
                 "nqe_pages": 0,
                 "nqe_query_pages": 0,
                 "nqe_diff_pages": 0,
+                "nqe_async_query_calls": 0,
+                "nqe_async_trigger_calls": 0,
+                "nqe_async_status_calls": 0,
+                "nqe_async_result_calls": 0,
                 "read_cache_hits": 0,
                 "read_cache_misses": 0,
                 "read_cache_hit_rate": None,
@@ -632,6 +643,256 @@ class ForwardClientTest(TestCase):
             self.client._request.call_args.kwargs["json_body"]["queryOptions"]["limit"],
             10000,
         )
+
+    def test_run_nqe_query_uses_sync_endpoint_when_async_disabled(self):
+        self.client._request = Mock(
+            return_value=self._response(
+                {
+                    "items": [{"fields": {"n": 1}}],
+                    "totalNumItems": 1,
+                }
+            )
+        )
+
+        rows = self.client.run_nqe_query(
+            query_id="Q_devices",
+            network_id="network-1",
+            snapshot_id="snapshot-1",
+        )
+
+        self.assertEqual(rows, [{"n": 1}])
+        self.client._request.assert_called_once()
+        self.assertEqual(self.client._request.call_args.args[1], "/nqe")
+
+    def test_run_nqe_query_async_polls_and_fetches_result(self):
+        client = ForwardClient(
+            SimpleNamespace(
+                url="https://fwd.app",
+                parameters={
+                    "username": "user@example.com",
+                    "password": "secret",
+                    "nqe_async_enabled": True,
+                    "nqe_async_poll_interval_seconds": 0,
+                },
+            )
+        )
+        client._request = Mock(
+            side_effect=[
+                self._response({"executionKey": "X_123", "status": "SUBMITTED"}),
+                self._response({"status": "EXECUTING", "rowsProduced": 0}),
+                self._response({"status": "COMPLETED", "outcome": "OK"}),
+                self._response(
+                    {
+                        "items": [
+                            {"fields": {"n": 1}},
+                            {"fields": {"n": 2}},
+                        ],
+                        "totalNumItems": 2,
+                    }
+                ),
+            ]
+        )
+
+        rows = client.run_nqe_query(
+            query_id="Q_devices",
+            commit_id="commit-1",
+            network_id="network-1",
+            snapshot_id="snapshot-1",
+            parameters={"forward_netbox_shard_keys": ["device-1"]},
+            column_filters=[
+                {
+                    "columnName": "name",
+                    "operator": "EQUALS_ANY",
+                    "values": ["device-1"],
+                }
+            ],
+        )
+
+        self.assertEqual(rows, [{"n": 1}, {"n": 2}])
+        self.assertEqual(
+            [call.args for call in client._request.call_args_list],
+            [
+                ("POST", "/networks/network-1/nqe-executions"),
+                ("GET", "/networks/network-1/nqe-executions/X_123"),
+                ("GET", "/networks/network-1/nqe-executions/X_123"),
+                ("GET", "/networks/network-1/nqe-executions/X_123/result"),
+            ],
+        )
+        trigger = client._request.call_args_list[0]
+        self.assertEqual(trigger.kwargs["params"], {"snapshotId": "snapshot-1"})
+        self.assertEqual(
+            trigger.kwargs["json_body"],
+            {
+                "queryId": "Q_devices",
+                "commitId": "commit-1",
+                "parameters": {"forward_netbox_shard_keys": ["device-1"]},
+                "columnFilters": [
+                    {
+                        "columnName": "name",
+                        "operator": "EQUALS_ANY",
+                        "values": ["device-1"],
+                    }
+                ],
+            },
+        )
+        result = client._request.call_args_list[-1]
+        self.assertEqual(result.kwargs["params"], {"offset": 0, "limit": 10000})
+        summary = client.api_usage_summary()
+        self.assertEqual(summary["nqe_query_calls"], 1)
+        self.assertEqual(summary["nqe_async_query_calls"], 1)
+        self.assertEqual(summary["nqe_async_trigger_calls"], 1)
+        self.assertEqual(summary["nqe_async_status_calls"], 2)
+        self.assertEqual(summary["nqe_async_result_calls"], 1)
+        self.assertEqual(summary["nqe_pages"], 1)
+
+    def test_run_nqe_query_async_fetch_all_pages_single_execution(self):
+        client = ForwardClient(
+            SimpleNamespace(
+                url="https://fwd.app",
+                parameters={
+                    "username": "user@example.com",
+                    "password": "secret",
+                    "nqe_async_enabled": True,
+                    "nqe_async_poll_interval_seconds": 0,
+                },
+            )
+        )
+        client._request = Mock(
+            side_effect=[
+                self._response(
+                    {"executionKey": "X_123", "status": "COMPLETED", "outcome": "OK"}
+                ),
+                self._response(
+                    {
+                        "items": [
+                            {"fields": {"n": 1}},
+                            {"fields": {"n": 2}},
+                        ],
+                        "totalNumItems": 3,
+                    }
+                ),
+                self._response(
+                    {
+                        "items": [{"fields": {"n": 3}}],
+                        "totalNumItems": 3,
+                    }
+                ),
+            ]
+        )
+
+        rows = client.run_nqe_query(
+            query="foreach d in network.devices select { n: 1 }",
+            network_id="network-1",
+            snapshot_id="snapshot-1",
+            limit=2,
+            fetch_all=True,
+        )
+
+        self.assertEqual(rows, [{"n": 1}, {"n": 2}, {"n": 3}])
+        self.assertEqual(client._request.call_count, 3)
+        self.assertEqual(
+            [
+                call.kwargs.get("params")
+                for call in client._request.call_args_list
+                if call.args[1].endswith("/result")
+            ],
+            [{"offset": 0, "limit": 2}, {"offset": 2, "limit": 2}],
+        )
+        self.assertEqual(client.api_usage_summary()["nqe_async_trigger_calls"], 1)
+        self.assertEqual(client.api_usage_summary()["nqe_async_result_calls"], 2)
+
+    def test_run_nqe_query_async_raises_on_non_ok_outcome(self):
+        client = ForwardClient(
+            SimpleNamespace(
+                url="https://fwd.app",
+                parameters={
+                    "username": "user@example.com",
+                    "password": "secret",
+                    "nqe_async_enabled": True,
+                    "nqe_async_poll_interval_seconds": 0,
+                },
+            )
+        )
+        client._request = Mock(
+            return_value=self._response(
+                {
+                    "executionKey": "X_123",
+                    "status": "COMPLETED",
+                    "outcome": "USER_ERROR",
+                    "error": {"message": "bad query"},
+                }
+            )
+        )
+
+        with self.assertRaisesRegex(
+            ForwardClientError,
+            "completed with outcome `USER_ERROR`: bad query",
+        ):
+            client.run_nqe_query(
+                query_id="Q_devices",
+                network_id="network-1",
+                snapshot_id="snapshot-1",
+            )
+        self.assertEqual(client._request.call_count, 1)
+
+    def test_run_nqe_query_async_raises_when_poll_limit_exceeded(self):
+        client = ForwardClient(
+            SimpleNamespace(
+                url="https://fwd.app",
+                parameters={
+                    "username": "user@example.com",
+                    "password": "secret",
+                    "nqe_async_enabled": True,
+                    "nqe_async_poll_interval_seconds": 0,
+                    "nqe_async_max_polls": 2,
+                },
+            )
+        )
+        client._request = Mock(
+            side_effect=[
+                self._response({"executionKey": "X_123", "status": "SUBMITTED"}),
+                self._response({"status": "EXECUTING"}),
+                self._response({"status": "EXECUTING"}),
+            ]
+        )
+
+        with self.assertRaisesRegex(
+            ForwardClientError,
+            "did not complete after 2 status poll",
+        ):
+            client.run_nqe_query(
+                query_id="Q_devices",
+                network_id="network-1",
+                snapshot_id="snapshot-1",
+            )
+        self.assertEqual(client._request.call_count, 3)
+
+    def test_run_nqe_query_async_falls_back_without_snapshot(self):
+        client = ForwardClient(
+            SimpleNamespace(
+                url="https://fwd.app",
+                parameters={
+                    "username": "user@example.com",
+                    "password": "secret",
+                    "nqe_async_enabled": True,
+                    "nqe_async_poll_interval_seconds": 0,
+                },
+            )
+        )
+        client._request = Mock(
+            return_value=self._response(
+                {
+                    "items": [{"fields": {"n": 1}}],
+                    "totalNumItems": 1,
+                }
+            )
+        )
+
+        rows = client.run_nqe_query(query_id="Q_devices", network_id="network-1")
+
+        self.assertEqual(rows, [{"n": 1}])
+        self.assertEqual(client._request.call_args.args[1], "/nqe")
+        self.assertEqual(client.api_usage_summary()["nqe_async_query_calls"], 0)
 
     def test_run_nqe_query_fetch_all_pages_until_total_num_items(self):
         self.client._request = Mock(
