@@ -125,3 +125,16 @@ class ForwardApiUsageEvaluationTest(SimpleTestCase):
             evaluation["metrics"]["configured_requests_per_minute"],
             1800,
         )
+
+    def test_read_cache_metrics_are_reported(self):
+        evaluation = evaluate_forward_api_usage(
+            {
+                "read_cache_hits": 3,
+                "read_cache_misses": 1,
+            },
+            source_type=ForwardSourceDeploymentChoices.CUSTOM,
+        )
+
+        self.assertEqual(evaluation["metrics"]["read_cache_hits"], 3)
+        self.assertEqual(evaluation["metrics"]["read_cache_misses"], 1)
+        self.assertEqual(evaluation["metrics"]["read_cache_hit_rate"], 0.75)

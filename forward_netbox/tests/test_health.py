@@ -28,6 +28,7 @@ from forward_netbox.utilities.health import live_source_health_check
 from forward_netbox.utilities.health import sync_health_summary
 from forward_netbox.utilities.health_checks import ingestion_check_message
 from forward_netbox.utilities.health_checks import ingestion_check_status
+from forward_netbox.utilities.health_checks import query_drift_check_message
 from forward_netbox.utilities.health_summary_blocks import large_run_tuning_summary
 from forward_netbox.utilities.query_registry import read_compiled_builtin_query_source
 
@@ -132,11 +133,14 @@ class ForwardSyncHealthTest(TestCase):
                     "query_name": "Health Devices with NetBox Device Type Aliases",
                     "row_count": 3,
                     "delete_count": 1,
+                    "execution_mode": "query_path",
+                    "fetch_mode": "nqe_parameters",
                     "query_path_resolution": {
                         "available": True,
                         "query_path_spec_count": 1,
                         "artifact_hit_count": 1,
                         "client_resolve_count": 0,
+                        "repository_index_count": 1,
                         "cache_hit_rate": 1.0,
                     },
                 }
@@ -161,11 +165,45 @@ class ForwardSyncHealthTest(TestCase):
                     "nqe_query_calls": 4,
                     "nqe_diff_calls": 3,
                     "nqe_pages": 9,
+                    "throttle_sleep_seconds": 1.5,
                     "usage_window_seconds": 60.0,
                     "observed_http_attempts_per_minute": 20.0,
-                }
+                },
+                "statistics": {
+                    "dcim.cable": {
+                        "current": 4,
+                        "total": 4,
+                        "applied": 1,
+                        "failed": 0,
+                        "skipped": 0,
+                        "unchanged": 2,
+                    }
+                },
+                "dependency_lookup_cache": {
+                    "available": True,
+                    "row_count": 4,
+                    "primed_target_count": 7,
+                    "model_count": 1,
+                    "models": [
+                        {
+                            "model": "dcim.device",
+                            "row_count": 4,
+                            "primed_target_count": 7,
+                            "device_name_count": 4,
+                            "tag_row_count": 0,
+                            "interface_pair_count": 2,
+                            "module_bay_pair_count": 0,
+                            "fhrp_group_count": 1,
+                            "ipam_identity_row_count": 0,
+                            "ipam_global_host_row_count": 0,
+                        }
+                    ],
+                },
             },
         )
+        cls.sync.last_ingestion.job = cls.execution_job
+        cls.sync.last_ingestion.save(update_fields=["job"])
+        cls.sync.refresh_from_db()
         cls.execution_run = ForwardExecutionRun.objects.create(
             sync=cls.sync,
             source=cls.source,
@@ -184,6 +222,7 @@ class ForwardSyncHealthTest(TestCase):
             model_string="dcim.site",
             started=now - timedelta(seconds=20),
             completed=now,
+            query_parameters={"forward_netbox_shard_keys": ["device-1"]},
             fetch_parameters={
                 "partition_retry_summary": {
                     "operation": "full",
@@ -217,6 +256,37 @@ class ForwardSyncHealthTest(TestCase):
         self.assertEqual(summary["query_modes"]["query_id"], 1)
         self.assertEqual(summary["query_modes"]["query_path"], 1)
         self.assertEqual(summary["query_modes"]["query"], 0)
+        self.assertEqual(summary["query_drift_summary"]["total_maps"], 2)
+        self.assertEqual(
+            summary["query_drift_summary"]["status_counts"],
+            {
+                "direct_query_id_unverified": 1,
+                "repository_path_matches_bundled_filename": 1,
+            },
+        )
+        self.assertEqual(summary["query_drift_summary"]["warn_count"], 0)
+        self.assertEqual(summary["query_drift_summary"]["info_count"], 1)
+        self.assertEqual(summary["query_drift_summary"]["pass_count"], 1)
+        self.assertEqual(
+            summary["query_drift_summary"]["remediation_actions"][0]["count"],
+            1,
+        )
+        self.assertIn(
+            "repository-path",
+            summary["query_drift_summary"]["remediation_actions"][0]["message"],
+        )
+        self.assertIn(
+            "Top remediation:",
+            query_drift_check_message(
+                [
+                    {
+                        "severity": "info",
+                        "remediation": "Prefer repository-path bindings for reproducible drift checks; pin a commit if the direct query ID must remain.",
+                    }
+                ],
+                query_drift_summary=summary["query_drift_summary"],
+            ),
+        )
         self.assertEqual(
             summary["query_modes"]["local_drift"][0]["status"],
             "direct_query_id_unverified",
@@ -238,13 +308,40 @@ class ForwardSyncHealthTest(TestCase):
         self.assertTrue(summary["latest_validation"]["allowed"])
         self.assertTrue(summary["latest_ingestion"]["baseline_ready"])
         self.assertEqual(
+            summary["latest_ingestion"]["query_modes"]["execution_modes"],
+            {"query_path": 1},
+        )
+        self.assertEqual(
+            summary["latest_ingestion"]["query_modes"]["fetch_modes"],
+            {"nqe_parameters": 1},
+        )
+        self.assertIn("execution_summary", summary["latest_ingestion"])
+        self.assertIn("workload_preview", summary["latest_ingestion"])
+        self.assertEqual(
+            summary["analysis_summary"],
+            summary["latest_ingestion"]["analysis_summary"],
+        )
+        self.assertEqual(
+            summary["query_path_resolution"]["total_query_path_specs"],
+            1,
+        )
+        self.assertEqual(
             summary["latest_ingestion"]["query_path_resolution"][
                 "total_query_path_specs"
             ],
             1,
         )
+        self.assertTrue(
+            summary["latest_ingestion"]["dependency_lookup_cache"]["available"]
+        )
         self.assertEqual(
             summary["latest_ingestion"]["query_path_resolution"]["artifact_hit_count"],
+            1,
+        )
+        self.assertEqual(
+            summary["latest_ingestion"]["query_path_resolution"][
+                "repository_index_count"
+            ],
             1,
         )
         self.assertTrue(summary["api_usage"]["available"])
@@ -255,6 +352,24 @@ class ForwardSyncHealthTest(TestCase):
                 "observed_http_attempts_per_minute"
             ],
             20.0,
+        )
+        self.assertEqual(
+            summary["api_usage"]["budget"]["metrics"]["throttle_sleep_seconds"],
+            1.5,
+        )
+        self.assertTrue(summary["api_usage"]["step_query_parameters"]["available"])
+        self.assertEqual(summary["api_usage"]["step_query_parameters"]["step_count"], 1)
+        self.assertEqual(
+            summary["api_usage"]["step_query_parameters"]["top_steps"][0][
+                "query_parameters"
+            ],
+            {"forward_netbox_shard_keys": ["device-1"]},
+        )
+        self.assertTrue(summary["dependency_lookup_cache"]["available"])
+        self.assertEqual(summary["dependency_lookup_cache"]["row_count"], 4)
+        self.assertEqual(summary["dependency_lookup_cache"]["model_count"], 1)
+        self.assertEqual(
+            summary["dependency_lookup_cache"]["models"][0]["fhrp_group_count"], 1
         )
         self.assertEqual(summary["capacity"]["completed_steps"], 1)
         self.assertEqual(summary["capacity"]["remaining_steps"], 1)
@@ -716,6 +831,60 @@ class ForwardSyncHealthTest(TestCase):
         self.assertTrue(compat["prune_recommended"])
         self.assertIn("prune is recommended", compat["message"])
 
+    def test_sync_health_summary_reports_optional_plugin_capabilities(self):
+        summary = sync_health_summary(self.sync)
+        self.assertIn("optional_plugin_capabilities", summary)
+        self.assertIn("optional_plugin_capabilities_ui", summary)
+        self.assertIn(
+            "aci.netbox_cisco_aci",
+            summary["optional_plugin_capabilities"],
+        )
+        self.assertIn(
+            "routing.netbox_routing",
+            summary["optional_plugin_capabilities"],
+        )
+        self.assertIn(
+            "peering.netbox_peering_manager",
+            summary["optional_plugin_capabilities"],
+        )
+        self.assertIn("aci", summary["optional_plugin_capabilities_ui"])
+        self.assertIn("routing", summary["optional_plugin_capabilities_ui"])
+        self.assertIn("peering", summary["optional_plugin_capabilities_ui"])
+        self.assertIn(
+            "availability_status",
+            summary["optional_plugin_capabilities"]["aci.netbox_cisco_aci"],
+        )
+        self.assertIn(
+            "availability_reason",
+            summary["optional_plugin_capabilities"]["aci.netbox_cisco_aci"],
+        )
+        self.assertIn(
+            "version",
+            summary["optional_plugin_capabilities"]["aci.netbox_cisco_aci"],
+        )
+        self.assertIn(
+            "minimum_version",
+            summary["optional_plugin_capabilities"]["aci.netbox_cisco_aci"],
+        )
+        self.assertIn(
+            "package_names",
+            summary["optional_plugin_capabilities"]["aci.netbox_cisco_aci"],
+        )
+        self.assertIn(
+            "installed_package_name",
+            summary["optional_plugin_capabilities"]["aci.netbox_cisco_aci"],
+        )
+        self.assertIn(
+            "command_inventory",
+            summary["optional_plugin_capabilities"]["aci.netbox_cisco_aci"],
+        )
+        self.assertEqual(
+            summary["optional_plugin_capabilities"]["aci.netbox_cisco_aci"][
+                "command_inventory_count"
+            ],
+            16,
+        )
+
     @override_settings(RQ_DEFAULT_TIMEOUT=100)
     def test_large_run_tuning_advises_fast_bootstrap_on_timeout_risk(self):
         summary = large_run_tuning_summary(
@@ -1026,9 +1195,12 @@ class ForwardSyncHealthTest(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Health Summary")
         self.assertContains(response, "Query Binding")
+        self.assertContains(response, "Query Path Resolution")
         self.assertContains(response, "Local Query Drift")
+        self.assertContains(response, "Remediation")
         self.assertContains(response, "Commit")
         self.assertContains(response, "latest committed Forward query revision")
+        self.assertContains(response, "repository-path bindings")
         self.assertContains(response, "Apply Engines")
         self.assertContains(response, "Bulk ORM expansion")
         self.assertContains(response, "Parity gates")
@@ -1038,6 +1210,25 @@ class ForwardSyncHealthTest(TestCase):
         self.assertContains(response, "Configured rate")
         self.assertContains(response, "Observed rate")
         self.assertContains(response, "HTTP 429 failures")
+        self.assertContains(response, "Throttle sleep")
+        self.assertContains(response, "Query parameters")
+        self.assertContains(response, "Dependency Lookup Cache")
+        self.assertContains(response, "Optional Plugin Capabilities")
+        self.assertContains(response, "NetBox Routing")
+        self.assertContains(response, "NetBox Peering Manager")
+        self.assertContains(response, "Installed version")
+        self.assertContains(response, "Minimum version")
+        self.assertContains(response, "Package names")
+        self.assertContains(response, "Detected package")
+        self.assertContains(response, "Availability status")
+        self.assertContains(response, "Availability reason")
+        self.assertContains(response, "Command inventory entries")
+        self.assertContains(response, "Command inventory")
+        self.assertContains(response, "CISCO_ACI_FABRIC_NODES")
+        self.assertContains(response, "Required models missing")
+        self.assertContains(response, "Missing required models")
+        self.assertContains(response, "Missing optional models")
+        self.assertContains(response, "FHRP groups")
         self.assertContains(response, "NQE calls")
         self.assertContains(response, "Query Runtime")
         self.assertContains(response, "Fallback steps")
@@ -1204,6 +1395,7 @@ class ForwardSyncHealthTest(TestCase):
         self.client.force_login(self.user)
         client = Mock()
         client.get_nqe_repository_queries.return_value = []
+        client.get_nqe_repository_query_index.return_value = {"by_query_id": {}}
         client.get_committed_nqe_query.return_value = {
             "queryId": "Q_devices",
             "lastCommitId": "commit-1",
@@ -1223,6 +1415,17 @@ class ForwardSyncHealthTest(TestCase):
         self.assertIn("attachment;", response["Content-Disposition"])
         data = json.loads(response.content)
         self.assertEqual(data["sync"]["pk"], self.sync.pk)
+        self.assertEqual(data["query_drift_summary"]["total_maps"], 2)
+        self.assertEqual(
+            data["query_drift_summary"]["status_counts"],
+            {
+                "direct_query_id_unverified": 1,
+                "repository_path_matches_bundled_filename": 1,
+            },
+        )
+        self.assertEqual(data["query_drift_summary"]["warn_count"], 0)
+        self.assertEqual(data["query_drift_summary"]["info_count"], 1)
+        self.assertEqual(data["query_drift_summary"]["pass_count"], 1)
         self.assertEqual(len(data["results"]), 2)
         path_result = next(
             result for result in data["results"] if result["mode"] == "query_path"

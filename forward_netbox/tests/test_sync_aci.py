@@ -2,15 +2,34 @@ from types import SimpleNamespace
 from unittest import TestCase
 
 from forward_netbox.exceptions import ForwardDependencySkipError
+from forward_netbox.utilities.sync_aci import apply_netbox_cisco_aci_aciappprofile
+from forward_netbox.utilities.sync_aci import apply_netbox_cisco_aci_acibridgedomain
+from forward_netbox.utilities.sync_aci import apply_netbox_cisco_aci_acicontract
 from forward_netbox.utilities.sync_aci import apply_netbox_cisco_aci_aciendpointgroup
+from forward_netbox.utilities.sync_aci import apply_netbox_cisco_aci_acifabric
 from forward_netbox.utilities.sync_aci import apply_netbox_cisco_aci_acifilter
+from forward_netbox.utilities.sync_aci import apply_netbox_cisco_aci_acil3out
 from forward_netbox.utilities.sync_aci import apply_netbox_cisco_aci_acinode
+from forward_netbox.utilities.sync_aci import apply_netbox_cisco_aci_acipod
 from forward_netbox.utilities.sync_aci import (
     apply_netbox_cisco_aci_acistaticportbinding,
 )
+from forward_netbox.utilities.sync_aci import apply_netbox_cisco_aci_acitenant
 from forward_netbox.utilities.sync_aci import apply_netbox_cisco_aci_acivrf
+from forward_netbox.utilities.sync_aci import delete_netbox_cisco_aci_aciappprofile
+from forward_netbox.utilities.sync_aci import delete_netbox_cisco_aci_acibridgedomain
+from forward_netbox.utilities.sync_aci import delete_netbox_cisco_aci_acicontract
+from forward_netbox.utilities.sync_aci import delete_netbox_cisco_aci_aciendpointgroup
+from forward_netbox.utilities.sync_aci import delete_netbox_cisco_aci_acifabric
+from forward_netbox.utilities.sync_aci import delete_netbox_cisco_aci_acifilter
+from forward_netbox.utilities.sync_aci import delete_netbox_cisco_aci_acil3out
 from forward_netbox.utilities.sync_aci import delete_netbox_cisco_aci_acinode
 from forward_netbox.utilities.sync_aci import delete_netbox_cisco_aci_acipod
+from forward_netbox.utilities.sync_aci import (
+    delete_netbox_cisco_aci_acistaticportbinding,
+)
+from forward_netbox.utilities.sync_aci import delete_netbox_cisco_aci_acitenant
+from forward_netbox.utilities.sync_aci import delete_netbox_cisco_aci_acivrf
 
 
 class _FakeField:
@@ -100,6 +119,17 @@ class _ACIRunner:
                 "netbox_cisco_aci.aciappprofile",
                 ("aci_tenant", "name", "description"),
             ),
+            "ACIContract": _fake_model(
+                "netbox_cisco_aci.acicontract",
+                (
+                    "aci_tenant",
+                    "name",
+                    "scope",
+                    "qos_class",
+                    "target_dscp",
+                    "description",
+                ),
+            ),
             "ACIEndpointGroup": _fake_model(
                 "netbox_cisco_aci.aciendpointgroup",
                 (
@@ -118,6 +148,20 @@ class _ACIRunner:
             "ACIFilter": _fake_model(
                 "netbox_cisco_aci.acifilter",
                 ("aci_tenant", "name", "description"),
+            ),
+            "ACIL3Out": _fake_model(
+                "netbox_cisco_aci.acil3out",
+                (
+                    "aci_tenant",
+                    "aci_vrf",
+                    "name",
+                    "protocol_bgp",
+                    "protocol_ospf",
+                    "protocol_eigrp",
+                    "protocol_static",
+                    "target_dscp",
+                    "description",
+                ),
             ),
             "ACIStaticPortBinding": _fake_model(
                 "netbox_cisco_aci.acistaticportbinding",
@@ -224,6 +268,21 @@ class _ACIRunner:
                     ),
                 )
             ] = obj
+        elif model_string in {
+            "netbox_cisco_aci.acicontract",
+            "netbox_cisco_aci.acil3out",
+        }:
+            self.lookups[
+                (
+                    model,
+                    (
+                        "aci_tenant",
+                        self._parent_key(values["aci_tenant"]),
+                        "name",
+                        values["name"],
+                    ),
+                )
+            ] = obj
         elif model_string == "netbox_cisco_aci.aciendpointgroup":
             self.lookups[
                 (
@@ -233,6 +292,20 @@ class _ACIRunner:
                         self._parent_key(values["aci_app_profile"]),
                         "name",
                         values["name"],
+                    ),
+                )
+            ] = obj
+        elif model_string == "netbox_cisco_aci.acistaticportbinding":
+            self.lookups[
+                (
+                    model,
+                    (
+                        "aci_endpoint_group",
+                        self._parent_key(values["aci_endpoint_group"]),
+                        "dcim_interface",
+                        self._parent_key(values["dcim_interface"]),
+                        "encap_vlan",
+                        values["encap_vlan"],
                     ),
                 )
             ] = obj
@@ -313,6 +386,24 @@ class _ACIRunner:
                         ),
                     )
                 )
+            elif coalesce_set == (
+                "aci_endpoint_group",
+                "dcim_interface",
+                "encap_vlan",
+            ):
+                existing = self.lookups.get(
+                    (
+                        model,
+                        (
+                            "aci_endpoint_group",
+                            self._parent_key(values["aci_endpoint_group"]),
+                            "dcim_interface",
+                            self._parent_key(values["dcim_interface"]),
+                            "encap_vlan",
+                            values["encap_vlan"],
+                        ),
+                    )
+                )
             elif coalesce_set == ("aci_pod", "name"):
                 existing = self.lookups.get(
                     (
@@ -350,6 +441,9 @@ class _ACIRunner:
         if device is None:
             return None
         return self.interfaces.get((device.pk, interface_name))
+
+    def _content_type_for(self, model):
+        return model
 
     def _get_unique_or_raise(self, model, lookup):
         if set(lookup) == {"name"}:
@@ -585,6 +679,537 @@ class SyncACIAdapterTest(TestCase):
         self.assertEqual(runner.upserts[1]["values"]["name"], "common")
         self.assertEqual(runner.upserts[2]["values"]["name"], "filter-a")
 
+    def test_apply_aciendpointgroup_is_repeat_sync_noop(self):
+        runner = _ACIRunner()
+        row = {
+            "fabric_name": "fabric-a",
+            "tenant_name": "tenant-a",
+            "app_profile_name": "app-a",
+            "bridge_domain_name": "bd-a",
+            "vrf_name": "vrf-a",
+            "name": "epg-a",
+        }
+
+        first_epg = apply_netbox_cisco_aci_aciendpointgroup(runner, row)
+        before_upserts = len(runner.upserts)
+        duplicate_epg = apply_netbox_cisco_aci_aciendpointgroup(runner, row)
+
+        self.assertIs(duplicate_epg, first_epg)
+        self.assertEqual(len(runner.upserts), before_upserts)
+
+    def test_remaining_aci_helpers_are_repeat_sync_noop(self):
+        cases = [
+            (
+                "fabric",
+                apply_netbox_cisco_aci_acifabric,
+                {"name": "fabric-a", "fabric_id": 1},
+            ),
+            (
+                "tenant",
+                apply_netbox_cisco_aci_acitenant,
+                {"fabric_name": "fabric-a", "name": "tenant-a"},
+            ),
+            (
+                "vrf",
+                apply_netbox_cisco_aci_acivrf,
+                {
+                    "fabric_name": "fabric-a",
+                    "tenant_name": "tenant-a",
+                    "name": "vrf-a",
+                },
+            ),
+            (
+                "bridge-domain",
+                apply_netbox_cisco_aci_acibridgedomain,
+                {
+                    "fabric_name": "fabric-a",
+                    "tenant_name": "tenant-a",
+                    "vrf_tenant_name": "tenant-a",
+                    "vrf_name": "vrf-a",
+                    "name": "bd-a",
+                },
+            ),
+            (
+                "app-profile",
+                apply_netbox_cisco_aci_aciappprofile,
+                {
+                    "fabric_name": "fabric-a",
+                    "tenant_name": "tenant-a",
+                    "name": "app-a",
+                },
+            ),
+            (
+                "contract",
+                apply_netbox_cisco_aci_acicontract,
+                {
+                    "fabric_name": "fabric-a",
+                    "tenant_name": "tenant-a",
+                    "name": "contract-a",
+                },
+            ),
+            (
+                "filter",
+                apply_netbox_cisco_aci_acifilter,
+                {
+                    "fabric_name": "fabric-a",
+                    "tenant_name": "tenant-a",
+                    "name": "filter-a",
+                },
+            ),
+            (
+                "l3out",
+                apply_netbox_cisco_aci_acil3out,
+                {
+                    "fabric_name": "fabric-a",
+                    "tenant_name": "tenant-a",
+                    "vrf_tenant_name": "tenant-a",
+                    "vrf_name": "vrf-a",
+                    "name": "l3out-a",
+                },
+            ),
+        ]
+
+        for label, apply_fn, row in cases:
+            with self.subTest(label=label):
+                runner = _ACIRunner()
+                first = apply_fn(runner, row)
+                before_upserts = len(runner.upserts)
+                duplicate = apply_fn(runner, row)
+
+                self.assertIs(duplicate, first)
+                self.assertEqual(len(runner.upserts), before_upserts)
+
+    def test_aci_delete_helpers_resolve_expected_identity(self):
+        cases = [
+            (
+                "fabric",
+                apply_netbox_cisco_aci_acifabric,
+                delete_netbox_cisco_aci_acifabric,
+                {"name": "fabric-a", "fabric_id": 1},
+                {"name": "fabric-a"},
+                "ACIFabric",
+            ),
+            (
+                "pod",
+                apply_netbox_cisco_aci_acipod,
+                delete_netbox_cisco_aci_acipod,
+                {
+                    "fabric_name": "fabric-a",
+                    "pod_id": "1",
+                    "name": "pod-1",
+                },
+                {
+                    "fabric_name": "fabric-a",
+                    "pod_id": "1",
+                },
+                "ACIPod",
+            ),
+            (
+                "tenant",
+                apply_netbox_cisco_aci_acitenant,
+                delete_netbox_cisco_aci_acitenant,
+                {"fabric_name": "fabric-a", "name": "tenant-a"},
+                {"fabric_name": "fabric-a", "name": "tenant-a"},
+                "ACITenant",
+            ),
+            (
+                "vrf",
+                apply_netbox_cisco_aci_acivrf,
+                delete_netbox_cisco_aci_acivrf,
+                {"fabric_name": "fabric-a", "tenant_name": "tenant-a", "name": "vrf-a"},
+                {"fabric_name": "fabric-a", "tenant_name": "tenant-a", "name": "vrf-a"},
+                "ACIVRF",
+            ),
+            (
+                "bridge-domain",
+                apply_netbox_cisco_aci_acibridgedomain,
+                delete_netbox_cisco_aci_acibridgedomain,
+                {
+                    "fabric_name": "fabric-a",
+                    "tenant_name": "tenant-a",
+                    "vrf_tenant_name": "tenant-a",
+                    "vrf_name": "vrf-a",
+                    "name": "bd-a",
+                },
+                {
+                    "fabric_name": "fabric-a",
+                    "tenant_name": "tenant-a",
+                    "vrf_tenant_name": "tenant-a",
+                    "vrf_name": "vrf-a",
+                    "name": "bd-a",
+                },
+                "ACIBridgeDomain",
+            ),
+            (
+                "app-profile",
+                apply_netbox_cisco_aci_aciappprofile,
+                delete_netbox_cisco_aci_aciappprofile,
+                {
+                    "fabric_name": "fabric-a",
+                    "tenant_name": "tenant-a",
+                    "name": "app-a",
+                },
+                {
+                    "fabric_name": "fabric-a",
+                    "tenant_name": "tenant-a",
+                    "name": "app-a",
+                },
+                "ACIAppProfile",
+            ),
+            (
+                "endpoint-group",
+                apply_netbox_cisco_aci_aciendpointgroup,
+                delete_netbox_cisco_aci_aciendpointgroup,
+                {
+                    "fabric_name": "fabric-a",
+                    "tenant_name": "tenant-a",
+                    "app_profile_name": "app-a",
+                    "bridge_domain_name": "bd-a",
+                    "vrf_name": "vrf-a",
+                    "name": "epg-a",
+                },
+                {
+                    "fabric_name": "fabric-a",
+                    "tenant_name": "tenant-a",
+                    "app_profile_name": "app-a",
+                    "bridge_domain_name": "bd-a",
+                    "vrf_name": "vrf-a",
+                    "name": "epg-a",
+                },
+                "ACIEndpointGroup",
+            ),
+            (
+                "contract",
+                apply_netbox_cisco_aci_acicontract,
+                delete_netbox_cisco_aci_acicontract,
+                {
+                    "fabric_name": "fabric-a",
+                    "tenant_name": "tenant-a",
+                    "name": "contract-a",
+                },
+                {
+                    "fabric_name": "fabric-a",
+                    "tenant_name": "tenant-a",
+                    "name": "contract-a",
+                },
+                "ACIContract",
+            ),
+            (
+                "filter",
+                apply_netbox_cisco_aci_acifilter,
+                delete_netbox_cisco_aci_acifilter,
+                {
+                    "fabric_name": "fabric-a",
+                    "tenant_name": "tenant-a",
+                    "name": "filter-a",
+                },
+                {
+                    "fabric_name": "fabric-a",
+                    "tenant_name": "tenant-a",
+                    "name": "filter-a",
+                },
+                "ACIFilter",
+            ),
+            (
+                "l3out",
+                apply_netbox_cisco_aci_acil3out,
+                delete_netbox_cisco_aci_acil3out,
+                {
+                    "fabric_name": "fabric-a",
+                    "tenant_name": "tenant-a",
+                    "vrf_tenant_name": "tenant-a",
+                    "vrf_name": "vrf-a",
+                    "name": "l3out-a",
+                },
+                {
+                    "fabric_name": "fabric-a",
+                    "tenant_name": "tenant-a",
+                    "vrf_tenant_name": "tenant-a",
+                    "vrf_name": "vrf-a",
+                    "name": "l3out-a",
+                },
+                "ACIL3Out",
+            ),
+            (
+                "static-port-binding",
+                apply_netbox_cisco_aci_acistaticportbinding,
+                delete_netbox_cisco_aci_acistaticportbinding,
+                {
+                    "fabric_name": "fabric-a",
+                    "tenant_name": "tenant-a",
+                    "app_profile_name": "app-a",
+                    "endpoint_group_name": "epg-a",
+                    "device_name": "leaf-101",
+                    "interface_name": "Eth1/1",
+                    "encap_vlan": "100",
+                    "deployment_immediacy": "lazy",
+                    "mode": "regular",
+                    "binding_type": "regular",
+                },
+                {
+                    "fabric_name": "fabric-a",
+                    "tenant_name": "tenant-a",
+                    "app_profile_name": "app-a",
+                    "endpoint_group_name": "epg-a",
+                    "device_name": "leaf-101",
+                    "interface_name": "Eth1/1",
+                    "encap_vlan": "100",
+                    "deployment_immediacy": "lazy",
+                    "mode": "regular",
+                    "binding_type": "regular",
+                },
+                "ACIStaticPortBinding",
+            ),
+            (
+                "node",
+                apply_netbox_cisco_aci_acinode,
+                delete_netbox_cisco_aci_acinode,
+                {
+                    "fabric_name": "fabric-a",
+                    "pod_name": "pod-1",
+                    "pod_id": "1",
+                    "node_id": "101",
+                    "name": "leaf-101",
+                    "role": "leaf",
+                    "node_type": "physical",
+                    "serial_number": "SERIAL1",
+                    "pod_tep_pool": "10.0.0.1",
+                    "firmware_version": "",
+                    "node_object_name": "leaf-101",
+                    "description": "Forward observed ACI node.",
+                },
+                {
+                    "fabric_name": "fabric-a",
+                    "pod_id": "1",
+                    "node_id": "101",
+                },
+                "ACINode",
+            ),
+        ]
+
+        for label, create_fn, delete_fn, create_row, delete_row, model_name in cases:
+            with self.subTest(label=label):
+                runner = _ACIRunner()
+                device = interface = None
+                if label == "static-port-binding":
+                    apply_netbox_cisco_aci_aciendpointgroup(
+                        runner,
+                        {
+                            "fabric_name": "fabric-a",
+                            "tenant_name": "tenant-a",
+                            "app_profile_name": "app-a",
+                            "bridge_domain_name": "bd-a",
+                            "vrf_name": "vrf-a",
+                            "name": "epg-a",
+                        },
+                    )
+                    device = SimpleNamespace(pk=101, name="leaf-101")
+                    interface = SimpleNamespace(pk=202, name="Eth1/1")
+                    runner.devices[device.name] = device
+                    runner.interfaces[(device.pk, interface.name)] = interface
+                elif label == "node":
+                    device = SimpleNamespace(pk=101, name="leaf-101")
+                    runner.devices[device.name] = device
+                create_fn(runner, create_row)
+                deleted = delete_fn(runner, delete_row)
+
+                self.assertTrue(deleted)
+                self.assertEqual(runner.deletes[-1]["model"], runner.models[model_name])
+                if label == "fabric":
+                    expected_lookup = [{"name": "fabric-a"}]
+                elif label == "tenant":
+                    fabric = runner.lookups[
+                        (runner.models["ACIFabric"], ("name", "fabric-a"))
+                    ]
+                    expected_lookup = [{"aci_fabric": fabric, "name": "tenant-a"}]
+                elif label == "vrf":
+                    tenant = runner.lookups[
+                        (
+                            runner.models["ACITenant"],
+                            (
+                                "aci_fabric",
+                                runner.lookups[
+                                    (runner.models["ACIFabric"], ("name", "fabric-a"))
+                                ].pk,
+                                "name",
+                                "tenant-a",
+                            ),
+                        )
+                    ]
+                    expected_lookup = [{"aci_tenant": tenant, "name": "vrf-a"}]
+                elif label == "bridge-domain":
+                    tenant = runner.lookups[
+                        (
+                            runner.models["ACITenant"],
+                            (
+                                "aci_fabric",
+                                runner.lookups[
+                                    (runner.models["ACIFabric"], ("name", "fabric-a"))
+                                ].pk,
+                                "name",
+                                "tenant-a",
+                            ),
+                        )
+                    ]
+                    expected_lookup = [{"aci_tenant": tenant, "name": "bd-a"}]
+                elif label == "app-profile":
+                    tenant = runner.lookups[
+                        (
+                            runner.models["ACITenant"],
+                            (
+                                "aci_fabric",
+                                runner.lookups[
+                                    (runner.models["ACIFabric"], ("name", "fabric-a"))
+                                ].pk,
+                                "name",
+                                "tenant-a",
+                            ),
+                        )
+                    ]
+                    expected_lookup = [{"aci_tenant": tenant, "name": "app-a"}]
+                elif label == "endpoint-group":
+                    app_profile = runner.lookups[
+                        (
+                            runner.models["ACIAppProfile"],
+                            (
+                                "aci_tenant",
+                                runner.lookups[
+                                    (
+                                        runner.models["ACITenant"],
+                                        (
+                                            "aci_fabric",
+                                            runner.lookups[
+                                                (
+                                                    runner.models["ACIFabric"],
+                                                    ("name", "fabric-a"),
+                                                )
+                                            ].pk,
+                                            "name",
+                                            "tenant-a",
+                                        ),
+                                    )
+                                ].pk,
+                                "name",
+                                "app-a",
+                            ),
+                        )
+                    ]
+                    expected_lookup = [
+                        {"aci_app_profile": app_profile, "name": "epg-a"}
+                    ]
+                elif label == "contract":
+                    tenant = runner.lookups[
+                        (
+                            runner.models["ACITenant"],
+                            (
+                                "aci_fabric",
+                                runner.lookups[
+                                    (runner.models["ACIFabric"], ("name", "fabric-a"))
+                                ].pk,
+                                "name",
+                                "tenant-a",
+                            ),
+                        )
+                    ]
+                    expected_lookup = [{"aci_tenant": tenant, "name": "contract-a"}]
+                elif label == "filter":
+                    tenant = runner.lookups[
+                        (
+                            runner.models["ACITenant"],
+                            (
+                                "aci_fabric",
+                                runner.lookups[
+                                    (runner.models["ACIFabric"], ("name", "fabric-a"))
+                                ].pk,
+                                "name",
+                                "tenant-a",
+                            ),
+                        )
+                    ]
+                    expected_lookup = [{"aci_tenant": tenant, "name": "filter-a"}]
+                elif label == "l3out":
+                    tenant = runner.lookups[
+                        (
+                            runner.models["ACITenant"],
+                            (
+                                "aci_fabric",
+                                runner.lookups[
+                                    (runner.models["ACIFabric"], ("name", "fabric-a"))
+                                ].pk,
+                                "name",
+                                "tenant-a",
+                            ),
+                        )
+                    ]
+                    expected_lookup = [{"aci_tenant": tenant, "name": "l3out-a"}]
+                elif label == "static-port-binding":
+                    app_profile = runner.lookups[
+                        (
+                            runner.models["ACIAppProfile"],
+                            (
+                                "aci_tenant",
+                                runner.lookups[
+                                    (
+                                        runner.models["ACITenant"],
+                                        (
+                                            "aci_fabric",
+                                            runner.lookups[
+                                                (
+                                                    runner.models["ACIFabric"],
+                                                    ("name", "fabric-a"),
+                                                )
+                                            ].pk,
+                                            "name",
+                                            "tenant-a",
+                                        ),
+                                    )
+                                ].pk,
+                                "name",
+                                "app-a",
+                            ),
+                        )
+                    ]
+                    expected_lookup = [
+                        {
+                            "aci_endpoint_group": runner.lookups[
+                                (
+                                    runner.models["ACIEndpointGroup"],
+                                    (
+                                        "aci_app_profile",
+                                        app_profile.pk,
+                                        "name",
+                                        "epg-a",
+                                    ),
+                                )
+                            ],
+                            "dcim_interface": interface,
+                            "encap_vlan": 100,
+                        }
+                    ]
+                elif label == "pod":
+                    fabric = runner.lookups[
+                        (runner.models["ACIFabric"], ("name", "fabric-a"))
+                    ]
+                    expected_lookup = [{"aci_fabric": fabric, "pod_id": 1}]
+                elif label == "node":
+                    pod = runner.lookups[
+                        (
+                            runner.models["ACIPod"],
+                            (
+                                "aci_fabric",
+                                runner.lookups[
+                                    (runner.models["ACIFabric"], ("name", "fabric-a"))
+                                ].pk,
+                                "pod_id",
+                                1,
+                            ),
+                        )
+                    ]
+                    expected_lookup = [{"aci_pod": pod, "node_id": 101}]
+                else:
+                    expected_lookup = None
+                self.assertEqual(runner.deletes[-1]["lookups"], expected_lookup)
+
     def test_apply_static_port_binding_accepts_nqe_contract_device_interface_keys(self):
         runner = _ACIRunner()
         apply_netbox_cisco_aci_aciendpointgroup(
@@ -630,6 +1255,43 @@ class SyncACIAdapterTest(TestCase):
             binding_call["coalesce_sets"],
             [("aci_endpoint_group", "dcim_interface", "encap_vlan")],
         )
+
+    def test_apply_static_port_binding_is_repeat_sync_noop(self):
+        runner = _ACIRunner()
+        apply_netbox_cisco_aci_aciendpointgroup(
+            runner,
+            {
+                "fabric_name": "fabric-a",
+                "tenant_name": "tenant-a",
+                "app_profile_name": "app-a",
+                "bridge_domain_name": "bd-a",
+                "vrf_name": "vrf-a",
+                "name": "epg-a",
+            },
+        )
+        device = SimpleNamespace(pk=101, name="leaf-101")
+        interface = SimpleNamespace(pk=202, name="Eth1/1")
+        runner.devices[device.name] = device
+        runner.interfaces[(device.pk, interface.name)] = interface
+        row = {
+            "fabric_name": "fabric-a",
+            "tenant_name": "tenant-a",
+            "app_profile_name": "app-a",
+            "endpoint_group_name": "epg-a",
+            "device_name": "leaf-101",
+            "interface_name": "Eth1/1",
+            "encap_vlan": "100",
+            "deployment_immediacy": "lazy",
+            "mode": "regular",
+            "binding_type": "regular",
+        }
+
+        first_binding = apply_netbox_cisco_aci_acistaticportbinding(runner, row)
+        before_upserts = len(runner.upserts)
+        duplicate_binding = apply_netbox_cisco_aci_acistaticportbinding(runner, row)
+
+        self.assertIs(duplicate_binding, first_binding)
+        self.assertEqual(len(runner.upserts), before_upserts)
 
     def test_apply_static_port_binding_reports_missing_endpoint_group_dependency(self):
         runner = _ACIRunner()

@@ -15,6 +15,7 @@ from ..utilities.forward_api import MAX_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT
 from ..utilities.forward_api import MAX_NQE_PAGE_SIZE
 from ..utilities.forward_api import MAX_QUERY_FETCH_CONCURRENCY
 from ..utilities.query_fetch import MAX_PREFLIGHT_ROW_LIMIT
+from .branch_budget import BRANCH_RUN_STATE_PARAMETER
 from .branch_budget import MODEL_CHANGE_DENSITY_PARAMETER
 from .branch_budget import MODEL_CHANGE_DENSITY_PROFILE_PARAMETER
 from .sync_contracts import normalize_coalesce_fields
@@ -280,6 +281,7 @@ def clean_forward_sync(sync):
             "bulk_orm_models",
             "scheduler_overlap",
             "diff_fallback_mode",
+            BRANCH_RUN_STATE_PARAMETER,
             MODEL_CHANGE_DENSITY_PARAMETER,
             MODEL_CHANGE_DENSITY_PROFILE_PARAMETER,
             *FORWARD_SUPPORTED_MODELS,

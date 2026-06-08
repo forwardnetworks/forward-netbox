@@ -385,7 +385,7 @@ class ForwardNQEMapViewSet(NetBoxModelViewSet):
             )
 
         try:
-            queries = source.get_client().get_nqe_repository_queries(
+            query_index = source.get_client().get_nqe_repository_query_index(
                 repository=repository,
                 directory="/",
             )
@@ -401,7 +401,7 @@ class ForwardNQEMapViewSet(NetBoxModelViewSet):
         folders = sorted(
             {
                 folder
-                for query in queries
+                for query in query_index.get("rows") or []
                 for folder in _query_parent_directories(query.get("path"))
             }
         )
@@ -441,7 +441,7 @@ class ForwardNQEMapViewSet(NetBoxModelViewSet):
 
         results = []
         try:
-            queries = source.get_client().get_nqe_repository_queries(
+            query_index = source.get_client().get_nqe_repository_query_index(
                 repository=repository,
                 directory=directory,
             )
@@ -456,7 +456,7 @@ class ForwardNQEMapViewSet(NetBoxModelViewSet):
 
         repository_label = NQE_REPOSITORY_LABELS.get(repository, repository)
         filename_to_query_default = builtin_filename_to_query_default()
-        for query in queries:
+        for query in query_index.get("rows") or []:
             query_id = str(query.get("queryId") or "").strip()
             path = str(query.get("path") or "").strip()
             intent = str(query.get("intent") or "").strip()
@@ -520,11 +520,24 @@ class ForwardNQEMapViewSet(NetBoxModelViewSet):
         try:
             client = source.get_client()
             if query_path and not query_id:
-                resolved = client.resolve_nqe_query_reference(
-                    repository=repository,
-                    query_path=query_path,
-                )
-                query_id = str(resolved.get("queryId") or "").strip()
+                try:
+                    query_index = client.get_nqe_repository_query_index(
+                        repository=repository,
+                        directory="/",
+                    )
+                except Exception:
+                    query_index = {}
+                indexed_query = (query_index.get("by_path") or {}).get(query_path)
+                if indexed_query and indexed_query.get("queryId"):
+                    query_id = str(indexed_query.get("queryId") or "").strip()
+                else:
+                    committed_query = client.get_committed_nqe_query(
+                        repository=repository,
+                        query_path=query_path,
+                        commit_id="head",
+                        query_index=query_index,
+                    )
+                    query_id = str(committed_query.get("queryId") or "").strip()
             commits = client.get_nqe_query_history(query_id)
         except Exception:
             return Response(

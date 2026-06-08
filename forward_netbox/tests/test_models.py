@@ -34,6 +34,7 @@ from forward_netbox.models import ForwardSync
 from forward_netbox.models import ForwardValidationRun
 from forward_netbox.signals import seed_builtin_nqe_maps
 from forward_netbox.tables import ForwardSyncTable
+from forward_netbox.utilities.branch_budget import BRANCH_RUN_STATE_PARAMETER
 from forward_netbox.utilities.branch_budget import build_branch_budget_hints
 from forward_netbox.utilities.branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
 from forward_netbox.utilities.execution_telemetry import build_branch_run_summary
@@ -369,6 +370,28 @@ class ForwardSyncModelTest(TestCase):
             sync.clean()
 
         self.assertIn("Unsupported Forward sync keys", str(ctx.exception))
+
+    def test_sync_accepts_legacy_branch_run_compatibility_state(self):
+        sync = ForwardSync(
+            name="sync-compat-branch",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+                BRANCH_RUN_STATE_PARAMETER: {
+                    "phase": "planning",
+                    "next_plan_index": 2,
+                    "total_plan_items": 4,
+                },
+            },
+        )
+
+        sync.clean()
+
+        self.assertIn(BRANCH_RUN_STATE_PARAMETER, sync.parameters)
+        self.assertEqual(
+            sync.parameters[BRANCH_RUN_STATE_PARAMETER]["phase"], "planning"
+        )
 
     def test_sync_rejects_invalid_diff_fallback_mode(self):
         sync = ForwardSync(
@@ -989,6 +1012,8 @@ class ForwardSyncModelTest(TestCase):
         self.assertEqual(ingestion_summary["model_count"], 0)
         self.assertEqual(ingestion_summary["retry_count"], 0)
         self.assertEqual(ingestion_summary["model_results"], [])
+        self.assertEqual(ingestion_summary["query_modes"]["execution_modes"], {})
+        self.assertEqual(ingestion_summary["query_modes"]["fetch_modes"], {})
 
         sync_summary = build_sync_execution_summary(
             enabled_models=["dcim.cable"],
@@ -1024,6 +1049,8 @@ class ForwardSyncModelTest(TestCase):
                     "estimated_changes": 5,
                     "branch_plan_index": 1,
                     "branch_plan_total": 3,
+                    "execution_mode": "query_path",
+                    "fetch_mode": "nqe_parameters",
                 },
                 {
                     "model": "dcim.device",
@@ -1033,6 +1060,8 @@ class ForwardSyncModelTest(TestCase):
                     "delete_count": 0,
                     "branch_plan_index": 2,
                     "branch_plan_total": 3,
+                    "execution_mode": "query_id",
+                    "fetch_mode": "query",
                 },
             ],
             applied_change_count=17,
@@ -1064,6 +1093,24 @@ class ForwardSyncModelTest(TestCase):
             ForwardIngestion,
             "get_job_logs",
             return_value={
+                "statistics": {
+                    "dcim.cable": {
+                        "current": 4,
+                        "total": 4,
+                        "applied": 1,
+                        "failed": 0,
+                        "skipped": 0,
+                        "unchanged": 2,
+                    },
+                    "dcim.device": {
+                        "current": 12,
+                        "total": 12,
+                        "applied": 1,
+                        "failed": 0,
+                        "skipped": 0,
+                        "unchanged": 3,
+                    },
+                },
                 "logs": [
                     (
                         "2026-05-03T10:00:00Z",
@@ -1079,7 +1126,7 @@ class ForwardSyncModelTest(TestCase):
                         None,
                         "Forward ingestion completed.",
                     ),
-                ]
+                ],
             },
         ):
             summary = ingestion.get_execution_summary()
@@ -1092,6 +1139,15 @@ class ForwardSyncModelTest(TestCase):
         self.assertEqual(summary["runtime_ms"], 20.5)
         self.assertEqual(summary["slowest_model"]["model"], "dcim.cable")
         self.assertEqual(summary["applied_change_count"], 17)
+        self.assertEqual(summary["unchanged_row_count"], 5)
+        self.assertEqual(
+            summary["query_modes"]["execution_modes"],
+            {"query_id": 1, "query_path": 1},
+        )
+        self.assertEqual(
+            summary["query_modes"]["fetch_modes"],
+            {"nqe_parameters": 1, "query": 1},
+        )
         self.assertEqual(sync_summary["branch_budget_hints"]["dcim.cable"], 1666)
         self.assertEqual(sync_summary["pre_run_estimate"]["retry_risk"], "medium")
         self.assertIn("latest_ingestion", sync_summary)
@@ -1816,6 +1872,7 @@ class ForwardIngestionSnapshotSummaryTest(TestCase):
         )
 
         analysis = ingestion.get_analysis_summary()
+        execution = ingestion.get_execution_summary()
         sync_analysis = self.sync.get_analysis_summary()
 
         self.assertEqual(analysis["baseline_ready"], True)
@@ -1840,6 +1897,13 @@ class ForwardIngestionSnapshotSummaryTest(TestCase):
             sync_analysis["latest_validation_status"],
             ForwardValidationStatusChoices.BLOCKED,
         )
+        self.assertEqual(sync_analysis["latest_ingestion_analysis_summary"], analysis)
+        self.assertEqual(
+            sync_analysis["query_path_resolution"],
+            execution["query_path_resolution"],
+        )
+        self.assertEqual(sync_analysis["query_modes"], execution["query_modes"])
+        self.assertFalse(sync_analysis["dependency_lookup_cache"]["available"])
         self.assertTrue(sync_analysis["latest_ingestion"]["baseline_ready"])
         self.assertEqual(sync_analysis["latest_ingestion"]["issue_count"], 2)
 
@@ -1869,12 +1933,14 @@ class ForwardIngestionSnapshotSummaryTest(TestCase):
                     "row_count": 5,
                     "delete_count": 1,
                     "diagnostics": [{"message": "one"}],
-                    "execution_mode": "query_id",
+                    "execution_mode": "query_path",
+                    "fetch_mode": "nqe_parameters",
                     "query_path_resolution": {
                         "available": True,
                         "query_path_spec_count": 1,
                         "artifact_hit_count": 1,
                         "client_resolve_count": 0,
+                        "repository_index_count": 1,
                         "cache_hit_rate": 1.0,
                     },
                 },
@@ -1886,11 +1952,13 @@ class ForwardIngestionSnapshotSummaryTest(TestCase):
                     "delete_count": 2,
                     "diagnostics": [{"message": "two"}, {"message": "three"}],
                     "execution_mode": "query_id",
+                    "fetch_mode": "query",
                     "query_path_resolution": {
                         "available": True,
                         "query_path_spec_count": 2,
                         "artifact_hit_count": 1,
                         "client_resolve_count": 1,
+                        "repository_index_count": 0,
                         "cache_hit_rate": 0.5,
                     },
                 },
@@ -1906,6 +1974,7 @@ class ForwardIngestionSnapshotSummaryTest(TestCase):
 
         advisory = ingestion.get_advisory_summary()
         sync_advisory = self.sync.get_advisory_summary()
+        execution = ingestion.get_execution_summary()
 
         self.assertTrue(advisory["baseline_ready"])
         self.assertEqual(advisory["blast_radius"]["estimated_changes"], 21)
@@ -1936,10 +2005,28 @@ class ForwardIngestionSnapshotSummaryTest(TestCase):
             1,
         )
         self.assertEqual(
+            advisory["path_signals"]["query_path_resolution"]["repository_index_count"],
+            1,
+        )
+        self.assertEqual(
+            advisory["path_signals"]["query_modes"]["execution_modes"],
+            {"query_id": 1, "query_path": 1},
+        )
+        self.assertEqual(
+            advisory["path_signals"]["query_modes"]["fetch_modes"],
+            {"nqe_parameters": 1, "query": 1},
+        )
+        self.assertEqual(
             advisory["path_signals"]["query_path_resolution"]["top_models"][0]["model"],
             "dcim.device",
         )
         self.assertEqual(sync_advisory["latest_validation_run"], validation_run.pk)
+        self.assertEqual(
+            sync_advisory["query_path_resolution"],
+            execution["query_path_resolution"],
+        )
+        self.assertEqual(sync_advisory["query_modes"], execution["query_modes"])
+        self.assertFalse(sync_advisory["dependency_lookup_cache"]["available"])
         self.assertEqual(
             sync_advisory["latest_ingestion"]["intent_signals"]["issue_count"], 1
         )

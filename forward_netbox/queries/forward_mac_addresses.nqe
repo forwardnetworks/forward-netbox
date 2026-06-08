@@ -3,9 +3,7 @@
  * @description Raw NQE for NetBox MAC addresses derived from Forward interface ethernet state.
  */
 
-@query
-f(forward_netbox_shard_keys: List<String>) =
-candidate_rows =
+candidateRows(forward_netbox_shard_keys: List<String>) =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
@@ -20,8 +18,9 @@ candidate_rows =
     mac_address: toString(interface.ethernet.macAddress)
   };
 
-@primaryKey(mac_address)
-foreach row in candidate_rows
+@query
+f(forward_netbox_shard_keys: List<String>) =
+foreach row in candidateRows(forward_netbox_shard_keys)
 where row.mac_address != "00:00:00:00:00:00"
 group row as grouped_rows by row.mac_address as mac_address
 let chosen_device = min(foreach candidate in grouped_rows
@@ -34,4 +33,4 @@ select {
   interface: chosen_interface,
   mac: mac_address,
   mac_address: mac_address
-}
+};

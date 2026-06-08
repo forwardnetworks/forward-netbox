@@ -271,7 +271,10 @@ def apply_model_rows(runner, model_string, rows):
         f"Applying {len(rows)} rows for {model_string}.",
         obj=runner.sync,
     )
-    prime_dependency_lookup_caches(runner, model_string, rows)
+    dependency_lookup_summary = prime_dependency_lookup_caches(
+        runner, model_string, rows
+    )
+    runner.logger.add_dependency_lookup_summary(dependency_lookup_summary)
     state = get_branch_run_display_state(runner.sync)
     last_emit_at = 0.0
     processed_rows = 0
@@ -367,7 +370,10 @@ def delete_model_rows(runner, model_string, rows):
         f"Deleting {len(rows)} rows for {model_string}.",
         obj=runner.sync,
     )
-    prime_dependency_lookup_caches(runner, model_string, rows)
+    dependency_lookup_summary = prime_dependency_lookup_caches(
+        runner, model_string, rows
+    )
+    runner.logger.add_dependency_lookup_summary(dependency_lookup_summary)
     state = get_branch_run_display_state(runner.sync)
     last_emit_at = 0.0
     processed_rows = 0
