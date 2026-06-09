@@ -204,7 +204,6 @@ def build_ingestion_execution_summary(
         "unchanged_row_count": unchanged_row_count,
         "query_path_resolution": query_path_resolution,
         "query_modes": query_modes,
-        "model_results": list(model_results),
     }
 
 

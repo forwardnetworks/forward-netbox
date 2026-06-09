@@ -481,14 +481,12 @@ def get_analysis_summary(sync):
         "dependency_lookup_cache": {},
     }
     if last_ingestion is not None:
-        summary["latest_ingestion"] = last_ingestion.get_analysis_summary()
-        summary["latest_ingestion_analysis_summary"] = (
-            last_ingestion.get_analysis_summary()
-        )
-        summary["query_modes"] = last_ingestion.get_execution_summary().get(
-            "query_modes", {}
-        )
-        summary["query_path_resolution"] = last_ingestion.get_execution_summary().get(
+        latest_execution_summary = last_ingestion.get_execution_summary()
+        latest_ingestion_analysis_summary = last_ingestion.get_analysis_summary()
+        summary["latest_ingestion"] = latest_ingestion_analysis_summary
+        summary["latest_ingestion_analysis_summary"] = latest_ingestion_analysis_summary
+        summary["query_modes"] = latest_execution_summary.get("query_modes", {})
+        summary["query_path_resolution"] = latest_execution_summary.get(
             "query_path_resolution", {}
         )
         summary["dependency_lookup_cache"] = _dependency_lookup_cache_support_summary(
@@ -933,15 +931,14 @@ def get_advisory_summary(sync):
     summary = get_workload_summary(sync)
     last_ingestion = sync.last_ingestion
     if last_ingestion is not None:
-        summary["latest_ingestion"] = last_ingestion.get_advisory_summary()
-        summary["analysis_summary"] = last_ingestion.get_analysis_summary()
-        summary["latest_ingestion_analysis_summary"] = (
-            last_ingestion.get_analysis_summary()
-        )
-        summary["query_modes"] = last_ingestion.get_execution_summary().get(
-            "query_modes", {}
-        )
-        summary["query_path_resolution"] = last_ingestion.get_execution_summary().get(
+        latest_execution_summary = last_ingestion.get_execution_summary()
+        latest_ingestion_advisory_summary = last_ingestion.get_advisory_summary()
+        latest_ingestion_analysis_summary = last_ingestion.get_analysis_summary()
+        summary["latest_ingestion"] = latest_ingestion_advisory_summary
+        summary["analysis_summary"] = latest_ingestion_analysis_summary
+        summary["latest_ingestion_analysis_summary"] = latest_ingestion_analysis_summary
+        summary["query_modes"] = latest_execution_summary.get("query_modes", {})
+        summary["query_path_resolution"] = latest_execution_summary.get(
             "query_path_resolution", {}
         )
         summary["dependency_lookup_cache"] = _dependency_lookup_cache_support_summary(
