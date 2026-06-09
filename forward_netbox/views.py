@@ -97,6 +97,9 @@ from .utilities.resumable_branching import enqueue_branch_stage_job
 from .utilities.sync_state import get_execution_display_state
 
 
+_EXECUTION_PLAN_ITEM_LIMIT = 25
+
+
 def annotate_statistics(queryset):
     counted_changes = models.Q(
         branch__changediff__action__in=[
@@ -166,8 +169,29 @@ def _job_export_payload(job):
     }
 
 
+def _compact_execution_state_payload(execution_state):
+    state = dict(execution_state or {})
+    plan_items = state.get("plan_items")
+    if isinstance(plan_items, list):
+        state["plan_items_count"] = len(plan_items)
+        if len(plan_items) > _EXECUTION_PLAN_ITEM_LIMIT:
+            state["plan_items"] = plan_items[:_EXECUTION_PLAN_ITEM_LIMIT]
+            state["plan_items_truncated"] = True
+        else:
+            state["plan_items_truncated"] = False
+    else:
+        try:
+            state["plan_items_count"] = int(state.get("total_plan_items") or 0)
+        except (TypeError, ValueError):
+            state["plan_items_count"] = 0
+        state["plan_items_truncated"] = False
+    return state
+
+
 def _ingestion_log_export_payload(ingestion, *, active_stage):
-    execution_state = json_safe_value(get_execution_display_state(ingestion.sync))
+    execution_state = _compact_execution_state_payload(
+        json_safe_value(get_execution_display_state(ingestion.sync))
+    )
     execution_state_source = (
         execution_state.get("state_source") if execution_state else None
     )
@@ -205,6 +229,10 @@ def _ingestion_log_export_payload(ingestion, *, active_stage):
             "current_model_string": execution_state.get("current_model_string") or "",
             "current_shard_index": execution_state.get("current_shard_index"),
             "last_stage_job_id": execution_state.get("last_stage_job_id"),
+            "plan_items_count": execution_state.get("plan_items_count", 0),
+            "plan_items_truncated": bool(
+                execution_state.get("plan_items_truncated") or False
+            ),
             "plan_items": execution_state.get("plan_items") or [],
         },
         "execution_run": json_safe_value(execution_run_bundle_for_sync(ingestion.sync)),
@@ -220,7 +248,9 @@ def _ingestion_log_export_payload(ingestion, *, active_stage):
 
 def _sync_support_bundle_payload(sync):
     latest_ingestion = sync.last_ingestion
-    execution_state = json_safe_value(get_execution_display_state(sync))
+    execution_state = _compact_execution_state_payload(
+        json_safe_value(get_execution_display_state(sync))
+    )
     execution_state_source = (
         execution_state.get("state_source") if execution_state else None
     )
@@ -1004,7 +1034,9 @@ class ForwardIngestionLogView(LoginRequiredMixin, View):
         data["merge_job_results"] = ingestion.get_job_logs(ingestion.merge_job)
         data["active_stage"] = active_stage
         data["merge_disabled"] = not ingestion.merge_job
-        data["execution_state"] = get_execution_display_state(ingestion.sync)
+        data["execution_state"] = _compact_execution_state_payload(
+            json_safe_value(get_execution_display_state(ingestion.sync))
+        )
         data["change_explainability"] = change_explainability_summary(ingestion)
         data["export_logs_url"] = reverse(
             "plugins:forward_netbox:forwardingestion_export_logs",
@@ -1054,7 +1086,9 @@ class ForwardIngestionProgressView(LoginRequiredMixin, View):
         data["merge_job"] = ingestion.merge_job
         data["active_stage"] = active_stage
         data["merge_disabled"] = not ingestion.merge_job
-        data["execution_state"] = get_execution_display_state(ingestion.sync)
+        data["execution_state"] = _compact_execution_state_payload(
+            json_safe_value(get_execution_display_state(ingestion.sync))
+        )
         return render(request, self.template_name, data)
 
 
@@ -1073,7 +1107,9 @@ class ForwardIngestionView(generic.ObjectView):
         data["merge_job_results"] = instance.get_job_logs(instance.merge_job)
         data["active_stage"] = active_stage
         data["merge_disabled"] = not instance.merge_job
-        data["execution_state"] = get_execution_display_state(instance.sync)
+        data["execution_state"] = _compact_execution_state_payload(
+            json_safe_value(get_execution_display_state(instance.sync))
+        )
         data["change_explainability"] = change_explainability_summary(instance)
         data["export_logs_url"] = reverse(
             "plugins:forward_netbox:forwardingestion_export_logs",

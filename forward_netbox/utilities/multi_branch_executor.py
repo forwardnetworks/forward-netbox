@@ -358,6 +358,7 @@ class ForwardMultiBranchExecutor:
         *,
         max_changes_per_branch=DEFAULT_MAX_CHANGES_PER_BRANCH,
         expected_plan_index=None,
+        claimed_step=None,
         overlap_stage=False,
     ):
         self.max_changes_per_branch = max_changes_per_branch
@@ -371,7 +372,18 @@ class ForwardMultiBranchExecutor:
             or (run.next_step_index if run is not None else 1)
             or 1
         )
-        next_plan_index = int(expected_plan_index or state_next_plan_index)
+        claimed_plan_item = (
+            self._execution_step_snapshot(
+                claimed_step, status=getattr(claimed_step, "status", "")
+            )
+            if claimed_step is not None
+            else None
+        )
+        next_plan_index = int(
+            expected_plan_index
+            or (claimed_plan_item.get("index") if claimed_plan_item else 0)
+            or state_next_plan_index
+        )
         if expected_plan_index is not None and int(expected_plan_index) != int(
             state_next_plan_index
         ):
@@ -383,7 +395,7 @@ class ForwardMultiBranchExecutor:
                 ),
                 obj=self.sync,
             )
-        persisted_item = self._persisted_plan_item(next_plan_index)
+        persisted_item = claimed_plan_item or self._persisted_plan_item(next_plan_index)
         model_strings = (
             [persisted_item["model"]]
             if persisted_item and persisted_item.get("model")
@@ -491,6 +503,30 @@ class ForwardMultiBranchExecutor:
             if int(item.get("index") or 0) == int(index):
                 return item
         return None
+
+    def _execution_step_snapshot(self, step, *, status="pending"):
+        if step is None:
+            return None
+        return {
+            "index": int(step.index),
+            "model": step.model_string,
+            "label": step.label,
+            "estimated_changes": int(step.estimated_changes),
+            "sync_mode": step.sync_mode,
+            "operation": step.operation or "mixed",
+            "shard_keys": list(step.shard_keys or ()),
+            "query_name": step.query_name,
+            "execution_mode": step.execution_mode,
+            "execution_value": step.execution_value,
+            "baseline_snapshot_id": step.baseline_snapshot_id,
+            "apply_engine": step.apply_engine,
+            "fetch_mode": step.fetch_mode,
+            "fetch_key_family": step.fetch_key_family,
+            "fetch_parameters": step.fetch_parameters,
+            "query_parameters": step.query_parameters,
+            "fetch_column_filters": step.fetch_column_filters,
+            "status": status,
+        }
 
     def _select_plan_item(self, plan, persisted_item, index):
         if not persisted_item:
