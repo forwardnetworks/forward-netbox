@@ -553,7 +553,7 @@ class QueryRegistryTest(TestCase):
         for model_string, query_name in normalized_query_names:
             spec = get_seeded_builtin_query_spec(model_string, query_name)
             self.assertIn(
-                "normalizePlatformName(toString(device.platform.os), device.platform.osVersion)",
+                "normalizeDevicePlatformName(device)",
                 spec.query,
                 msg=f"{query_name} no longer normalizes forward platform OS values.",
             )
@@ -586,14 +586,26 @@ class QueryRegistryTest(TestCase):
             platform_spec.query,
             msg="ACI NX-OS release train detection missing 16.x versions.",
         )
+
+    def test_netbox_utilities_aci_detection_uses_command_inventory(self):
+        fixture_path = (
+            Path(__file__).with_name("fixtures") / "aci_command_inventory_expected.json"
+        )
+        expected = json.loads(fixture_path.read_text(encoding="utf-8"))
+        utilities = read_builtin_query_source("netbox_utilities.nqe")
+
+        self.assertIn("export deviceHasAciCommandOutputs(device)", utilities)
+        for command_type in expected["command_types"]:
+            self.assertIn(command_type, utilities)
+        self.assertIn("export normalizeDevicePlatformName(device)", utilities)
         self.assertNotIn(
             "VendorOs",
-            platform_spec.query,
+            utilities,
             msg="NQE helpers should avoid stale VendorOs type annotations.",
         )
         self.assertNotIn(
             "contains(",
-            platform_spec.query,
+            utilities,
             msg="NQE helpers should use SaaS-supported string matching.",
         )
 
@@ -1033,7 +1045,7 @@ class QueryRegistryTest(TestCase):
             self.assertEqual(row["parameters"], {"forward_netbox_shard_keys": []})
             self.assertIn("forward_netbox_shard_keys", row["query"])
 
-        self.assertIn("normalizePlatformName(", fabric_row["query"])
+        self.assertIn("isAciDevice(device)", fabric_row["query"])
         self.assertIn("CISCO_ACI_FABRIC_NODES", pod_row["query"])
         self.assertIn("regexMatches(command.response, nodeRegex)", pod_row["query"])
         self.assertIn("node_id:", node_row["query"])

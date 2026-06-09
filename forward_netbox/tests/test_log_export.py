@@ -441,6 +441,14 @@ class ForwardIngestionLogExportViewTest(TestCase):
         self.assertTrue(data["api_usage"]["available"])
         self.assertEqual(data["api_usage"]["counters"]["http_attempts"], 11)
         self.assertEqual(data["api_usage"]["counters"]["nqe_diff_calls"], 2)
+        self.assertIn("insights_summary", data)
+        self.assertTrue(data["insights_summary"]["available"])
+        self.assertEqual(data["insights_summary"]["http_attempts"], 11)
+        self.assertEqual(data["insights_summary"]["nqe_diff_calls"], 2)
+        self.assertEqual(
+            data["insights_summary"]["execution_mode_counts"],
+            [["query_path", 1]],
+        )
         self.assertEqual(
             data["api_usage"]["counters"]["observed_http_attempts_per_minute"],
             20.0,
@@ -592,6 +600,60 @@ class ForwardIngestionLogExportViewTest(TestCase):
             "complete_baseline_then_use_newer_snapshot",
         )
         self.assertIn("baseline_reason_summary", data["metrics"]["trend_snapshots"][0])
+
+    def test_execution_run_support_bundle_includes_failure_summary(self):
+        failed_sync = ForwardSync.objects.create(
+            name="sync-log-export-failure",
+            source=self.source,
+            parameters={"snapshot_id": "latestProcessed"},
+        )
+        failed_run = ForwardExecutionRun.objects.create(
+            sync=failed_sync,
+            source=self.source,
+            job=self.job,
+            backend="branching",
+            status="failed",
+            phase="failed",
+            phase_message="Forward execution failed.",
+            total_steps=1,
+            next_step_index=1,
+        )
+        ForwardExecutionStep.objects.create(
+            run=failed_run,
+            index=1,
+            status="failed",
+            model_string="ipam.prefix",
+            query_name="Forward Prefixes",
+            execution_mode="query_id",
+            execution_value="Q_154ce88d2f6b9e896aff0e3d925a682d7d4247ad",
+            last_error="Forward API request failed with HTTP 400: prefix shard broke.",
+        )
+        self.client.force_login(self.user)
+
+        response = self.client.get(
+            reverse(
+                "plugins:forward_netbox:forwardexecutionrun_export_bundle",
+                kwargs={"pk": failed_run.pk},
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = json.loads(response.content)
+        self.assertEqual(
+            data["failure_summary"]["message"],
+            "Shard 1 ipam.prefix Forward Prefixes failed.",
+        )
+        self.assertEqual(
+            data["failure_summary"]["query_id"],
+            "Q_154ce88d2f6b9e896aff0e3d925a682d7d4247ad",
+        )
+        self.assertEqual(
+            data["failure_summary"]["step_pk"], failed_run.steps.first().pk
+        )
+        self.assertEqual(
+            data["failure_summary"]["error"],
+            "Forward API request failed with HTTP 400: prefix shard broke.",
+        )
 
     def test_sync_support_bundle_downloads_json_bundle(self):
         self.client.force_login(self.user)
