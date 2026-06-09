@@ -343,6 +343,115 @@ class ForwardIngestionLogExportViewTest(TestCase):
         self.assertEqual(data["execution_plan"]["total_plan_items"], 1)
         self.assertEqual(data["execution_run"]["run"]["id"], self.execution_run.pk)
 
+    def test_export_logs_compacts_large_execution_plan_items(self):
+        sync = ForwardSync.objects.create(
+            name="sync-log-export-plan-items",
+            source=self.source,
+            parameters={"snapshot_id": "latestProcessed"},
+        )
+        ingestion = ForwardIngestion.objects.create(
+            sync=sync,
+            snapshot_selector="latestProcessed",
+            snapshot_id="snapshot-2",
+        )
+        sync.set_branch_run_state(
+            {
+                "snapshot_id": "snapshot-2",
+                "phase": "planning",
+                "total_plan_items": 99,
+                "plan_items": [
+                    {
+                        "index": index,
+                        "status": "queued",
+                        "model": "dcim.device",
+                    }
+                    for index in range(99)
+                ],
+            }
+        )
+
+        self.client.force_login(self.user)
+
+        response = self.client.get(
+            reverse(
+                "plugins:forward_netbox:forwardingestion_export_logs",
+                kwargs={"pk": ingestion.pk},
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = json.loads(response.content)
+        self.assertEqual(data["execution_plan"]["total_plan_items"], 99)
+        self.assertEqual(data["execution_plan"]["plan_items_count"], 99)
+        self.assertTrue(data["execution_plan"]["plan_items_truncated"])
+        self.assertEqual(len(data["execution_plan"]["plan_items"]), 25)
+        self.assertEqual(
+            data["sync"]["execution_state"]["plan_items_count"],
+            99,
+        )
+        self.assertEqual(
+            len(data["sync"]["execution_state"]["plan_items"]),
+            25,
+        )
+
+    def test_ingestion_views_compact_execution_state_for_large_plan_items(self):
+        legacy_sync = ForwardSync.objects.create(
+            name="sync-log-export-legacy-state",
+            source=self.source,
+            parameters={"snapshot_id": "latestProcessed"},
+        )
+        legacy_ingestion = ForwardIngestion.objects.create(
+            sync=legacy_sync,
+            snapshot_selector="latestProcessed",
+            snapshot_id="snapshot-3",
+        )
+        legacy_sync.set_branch_run_state(
+            {
+                "phase": "planning",
+                "total_plan_items": 99,
+                "next_plan_index": 2,
+                "plan_items": [
+                    {
+                        "index": index,
+                        "status": "queued",
+                        "model": "dcim.device",
+                    }
+                    for index in range(99)
+                ],
+            }
+        )
+
+        self.client.force_login(self.user)
+
+        detail_response = self.client.get(
+            reverse(
+                "plugins:forward_netbox:forwardingestion",
+                kwargs={"pk": legacy_ingestion.pk},
+            )
+        )
+        logs_response = self.client.get(
+            reverse(
+                "plugins:forward_netbox:forwardingestion_logs",
+                kwargs={"pk": legacy_ingestion.pk},
+            )
+        )
+        progress_response = self.client.get(
+            reverse(
+                "plugins:forward_netbox:forwardingestion_progress",
+                kwargs={"pk": legacy_ingestion.pk},
+            )
+        )
+
+        self.assertEqual(detail_response.status_code, 200)
+        self.assertEqual(logs_response.status_code, 200)
+        self.assertEqual(progress_response.status_code, 200)
+
+        for response in [detail_response, logs_response, progress_response]:
+            execution_state = response.context["execution_state"]
+            self.assertEqual(execution_state["plan_items_count"], 99)
+            self.assertTrue(execution_state["plan_items_truncated"])
+            self.assertEqual(len(execution_state["plan_items"]), 25)
+
     def test_execution_run_support_bundle_downloads_json_bundle(self):
         self.client.force_login(self.user)
 
@@ -771,6 +880,36 @@ class ForwardIngestionLogExportViewTest(TestCase):
         self.assertEqual(data["sync"]["execution_state_source"], "execution_ledger")
         self.assertTrue(data["sync"]["execution_state"]["state_synthesized"])
         self.assertEqual(data["execution_run"]["run"]["id"], self.execution_run.pk)
+
+    def test_sync_support_bundle_compacts_advisory_workload_preview_plan_items(self):
+        standalone_sync = ForwardSync.objects.create(
+            name="sync-support-bundle-compact",
+            source=self.source,
+            parameters={"snapshot_id": "latestProcessed"},
+        )
+        standalone_sync.set_branch_run_state(
+            {
+                "snapshot_id": "snapshot-state",
+                "phase": "executing",
+                "plan_items": [
+                    {"index": index, "status": "queued"} for index in range(150)
+                ],
+            }
+        )
+        self.client.force_login(self.user)
+
+        response = self.client.get(
+            reverse(
+                "plugins:forward_netbox:forwardsync_support_bundle",
+                kwargs={"pk": standalone_sync.pk},
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = json.loads(response.content)
+        advisory = data["sync"]["advisory_summary"]
+        self.assertNotIn("plan_items", advisory["branch_run"])
+        self.assertEqual(advisory["branch_run"]["plan_items_count"], 150)
 
     def test_sync_support_bundle_survives_cleanup_and_later_run(self):
         self.sync.clear_branch_run_state()
