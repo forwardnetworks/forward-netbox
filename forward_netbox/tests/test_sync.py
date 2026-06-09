@@ -4424,6 +4424,92 @@ class ForwardMultiBranchExecutorAdaptiveSplitTest(TestCase):
             )
         )
 
+    def test_run_next_plan_item_uses_claimed_step_snapshot_for_shard_scope(self):
+        workload = BranchWorkload(
+            model_string="dcim.device",
+            label="dcim.device | Forward Devices",
+            upsert_rows=[{"name": f"device-{index}"} for index in range(8)],
+            coalesce_fields=[["name"]],
+        )
+        plan = build_branch_plan([workload], max_changes_per_branch=4)
+        execution_run = ForwardExecutionRun.objects.create(
+            sync=self.sync,
+            source=self.source,
+            backend="branching",
+            status="running",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id=self.SNAPSHOT_ID,
+            total_steps=len(plan) + 1,
+            next_step_index=2,
+        )
+        claimed_step = ForwardExecutionStep.objects.create(
+            run=execution_run,
+            index=1,
+            kind="stage",
+            status=ForwardExecutionStepStatusChoices.RUNNING,
+            model_string=plan[0].model_string,
+            label=plan[0].label,
+            query_name=plan[0].query_name,
+            execution_mode=plan[0].execution_mode,
+            execution_value=plan[0].execution_value,
+            shard_keys=list(plan[0].shard_keys),
+            estimated_changes=plan[0].estimated_changes,
+        )
+        ForwardExecutionStep.objects.create(
+            run=execution_run,
+            index=2,
+            kind="stage",
+            status=ForwardExecutionStepStatusChoices.PENDING,
+            model_string="dcim.site",
+            label="dcim.site | Forward Locations",
+            query_name=plan[0].query_name,
+            execution_mode=plan[0].execution_mode,
+            execution_value=plan[0].execution_value,
+            shard_keys=list(plan[0].shard_keys),
+            estimated_changes=plan[0].estimated_changes,
+        )
+        self.sync.clear_branch_run_state()
+        executor = ForwardMultiBranchExecutor(
+            sync=self.sync,
+            client=Mock(),
+            logger_=Mock(),
+            job=Mock(pk=127),
+        )
+        context = {
+            "snapshot_selector": LATEST_PROCESSED_SNAPSHOT,
+            "snapshot_id": self.SNAPSHOT_ID,
+            "snapshot_info": {},
+            "snapshot_metrics": {},
+        }
+        staged_ingestion = ForwardIngestion.objects.create(sync=self.sync)
+        executor._load_execution_context = Mock(
+            return_value=(context, plan, {}, 1, {}, {})
+        )
+        executor._run_plan_item = Mock(return_value=staged_ingestion)
+        executor._persisted_plan_item = Mock(
+            side_effect=AssertionError(
+                "index lookup should not be used for claim scope"
+            )
+        )
+
+        ingestions = executor.run_next_plan_item(
+            max_changes_per_branch=4,
+            expected_plan_index=1,
+            claimed_step=claimed_step,
+        )
+
+        self.assertEqual(ingestions, [staged_ingestion])
+        self.assertFalse(executor._persisted_plan_item.called)
+        load_kwargs = executor._load_execution_context.call_args.kwargs
+        self.assertEqual(load_kwargs["shard_scope"]["model"], claimed_step.model_string)
+        self.assertEqual(
+            load_kwargs["shard_scope"]["execution_value"],
+            claimed_step.execution_value,
+        )
+        self.assertEqual(
+            load_kwargs["shard_scope"]["shard_keys"], list(plan[0].shard_keys)
+        )
+
     def test_run_next_plan_item_raises_when_claimed_index_missing(self):
         workload = BranchWorkload(
             model_string="dcim.device",

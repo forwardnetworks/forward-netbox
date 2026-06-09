@@ -529,9 +529,55 @@ class ForwardSyncStateHelperTest(TestCase):
         self.assertNotIn("plan_items", display["branch_run"])
         self.assertEqual(display["branch_run"]["plan_items_count"], 1)
         self.assertEqual(workload["branch_run"]["phase"], "executing")
+        self.assertNotIn("plan_items", workload["branch_run"])
+        self.assertIn("plan_items_count", workload["branch_run"])
         self.assertEqual(workload["pre_run_estimate"]["planned_shards"], 3)
         self.assertEqual(execution["branch_run"]["phase"], "executing")
+        self.assertNotIn("plan_items", execution["branch_run"])
+        self.assertIn("plan_items_count", execution["branch_run"])
         self.assertEqual(activity, "Processing dcim.interface shard 2/3")
+
+    def test_sync_summaries_compact_plan_items_for_ui_payload(self):
+        self.sync.set_branch_run_state(
+            {
+                "snapshot_id": "snapshot-state",
+                "phase": "planning",
+                "phase_message": "Building shard plan.",
+                "plan_items": [{"index": i, "status": "queued"} for i in range(99)],
+                "plan_preview": {
+                    "planned_shards": 99,
+                    "estimated_changes": 123456,
+                },
+            }
+        )
+
+        workload = self.sync.get_workload_summary()
+        execution = self.sync.get_execution_summary()
+
+        self.assertNotIn("plan_items", workload["branch_run"])
+        self.assertEqual(workload["branch_run"]["plan_items_count"], 99)
+        self.assertNotIn("plan_items", execution["branch_run"])
+        self.assertEqual(execution["branch_run"]["plan_items_count"], 99)
+        self.assertEqual(workload["pre_run_estimate"]["planned_shards"], 99)
+        self.assertEqual(execution["pre_run_estimate"]["estimated_changes"], 123456)
+
+    def test_advisory_summary_compacts_nested_workload_preview_plan_items(self):
+        self.sync.set_branch_run_state(
+            {
+                "snapshot_id": "snapshot-state",
+                "phase": "executing",
+                "plan_items": [{"index": i, "status": "queued"} for i in range(150)],
+            }
+        )
+
+        advisory = self.sync.get_advisory_summary()
+
+        self.assertIn("branch_run", advisory)
+        branch_run = advisory["branch_run"]
+        self.assertIsInstance(branch_run, dict)
+        self.assertNotIn("plan_items", branch_run)
+        self.assertEqual(branch_run["plan_items_count"], 150)
+        self.assertIn("pre_run_estimate", advisory)
 
     def test_ledger_display_state_orders_plan_items_by_step_index(self):
         execution_run = ForwardExecutionRun.objects.create(
