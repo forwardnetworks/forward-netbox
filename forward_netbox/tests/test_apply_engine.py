@@ -1,3 +1,4 @@
+from unittest.mock import call
 from unittest.mock import Mock
 from unittest.mock import patch
 
@@ -585,6 +586,45 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
         self.assertFalse(runner._apply_model_rows.called)
         self.assertEqual(Platform.objects.get(slug="nxos").manufacturer.slug, "juniper")
         self.assertEqual(Platform.objects.get(slug="iosxr").manufacturer.slug, "cisco")
+
+    def test_bulk_orm_counts_unchanged_platform_rows_as_unchanged(self):
+        self.sync.parameters["enable_bulk_orm"] = True
+        self.sync.save(update_fields=["parameters"])
+        manufacturer = Manufacturer.objects.create(name="Cisco", slug="cisco")
+        Platform.objects.create(
+            name="ACI",
+            slug="aci",
+            manufacturer=manufacturer,
+        )
+        runner = self._runner()
+        engine = select_apply_engine(
+            sync=self.sync,
+            model_string="dcim.platform",
+            backend="branching",
+        )
+
+        engine.apply_upserts(
+            runner,
+            "dcim.platform",
+            [
+                {
+                    "name": "ACI",
+                    "slug": "aci",
+                    "manufacturer": "Cisco",
+                    "manufacturer_slug": "cisco",
+                }
+            ],
+        )
+
+        self.assertEqual(Platform.objects.filter(slug="aci").count(), 1)
+        self.assertIn(
+            call("dcim.platform", outcome="unchanged"),
+            runner.logger.increment_statistics.mock_calls,
+        )
+        self.assertNotIn(
+            call("dcim.platform", outcome="applied"),
+            runner.logger.increment_statistics.mock_calls,
+        )
 
     def test_bulk_orm_records_issue_for_invalid_row(self):
         self.sync.parameters["enable_bulk_orm"] = True

@@ -145,6 +145,7 @@
         {% endif %}
       {% endwith %}
     {% endwith %}
+    {% include 'forward_netbox/inc/execution_failure_banner.html' with failure_summary=latest_execution_failure support_bundle_url=support_bundle_url %}
     <div class="card">
       <h5 class="card-header">{% trans "Enabled Models" %}</h5>
       <div class="card-body">
