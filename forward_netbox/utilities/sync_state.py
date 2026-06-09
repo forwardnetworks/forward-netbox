@@ -431,6 +431,8 @@ def _compact_display_branch_run(branch_run):
     plan_items = summary.pop("plan_items", None)
     if isinstance(plan_items, list):
         summary["plan_items_count"] = len(plan_items)
+    else:
+        summary["plan_items_count"] = int(summary.get("total_plan_items") or 0)
     preview = summary.get("plan_preview")
     if isinstance(preview, dict) and len(preview) > 25:
         summary["plan_preview"] = {
@@ -451,7 +453,7 @@ def get_execution_summary(sync):
     density_profile = get_model_change_density_profile(sync)
     state = get_branch_run_display_state(sync)
     last_ingestion = sync.last_ingestion
-    return build_sync_execution_summary(
+    summary = build_sync_execution_summary(
         enabled_models=enabled_models,
         max_changes_per_branch=max_changes_per_branch,
         model_change_density=model_change_density,
@@ -461,6 +463,7 @@ def get_execution_summary(sync):
             last_ingestion.get_execution_summary() if last_ingestion else None
         ),
     )
+    return _compact_display_sync_summary(summary)
 
 
 def get_analysis_summary(sync):
@@ -506,6 +509,9 @@ def get_workload_summary(sync):
     model_change_density = get_model_change_density(sync)
     density_profile = get_model_change_density_profile(sync)
     state = get_branch_run_display_state(sync)
+    branch_run_summary = (
+        _compact_display_branch_run(build_branch_run_summary(state)) if state else {}
+    )
     summary = {
         "enabled_models": list(enabled_models),
         "max_changes_per_branch": max_changes_per_branch,
@@ -526,8 +532,13 @@ def get_workload_summary(sync):
             model_change_density=model_change_density,
             model_change_density_profile=density_profile,
         ),
-        "branch_run": build_branch_run_summary(state) if state else {},
-        "pre_run_estimate": state.get("plan_preview") or {},
+        "branch_run": branch_run_summary,
+        "pre_run_estimate": (
+            branch_run_summary.get("plan_preview")
+            if isinstance(branch_run_summary, dict)
+            else {}
+        )
+        or {},
         "baseline_ready": (
             bool(sync.last_ingestion.baseline_ready) if sync.last_ingestion else False
         ),
@@ -545,6 +556,20 @@ def get_workload_summary(sync):
         sync,
         lane_advice=summary["initial_baseline_lane"],
     )
+    return summary
+
+
+def _compact_display_sync_summary(summary):
+    if not isinstance(summary, dict):
+        return summary
+    branch_run = summary.get("branch_run")
+    if isinstance(branch_run, dict):
+        summary["branch_run"] = _compact_display_branch_run(branch_run)
+        summary["pre_run_estimate"] = (
+            summary["branch_run"].get("plan_preview")
+            if isinstance(summary["branch_run"], dict)
+            else {}
+        )
     return summary
 
 
