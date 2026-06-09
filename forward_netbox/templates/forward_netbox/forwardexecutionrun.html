@@ -46,6 +46,8 @@
 {% block content %}
 <div class="row mb-3">
   <div class="col col-md-6">
+    {% include 'forward_netbox/inc/execution_failure_banner.html' with failure_summary=latest_execution_failure support_bundle_url=support_bundle_url %}
+    {% include 'forward_netbox/inc/execution_insights.html' with latest_execution_insights=latest_execution_insights %}
     <div class="card">
       <h5 class="card-header">{% trans "Execution Run" %}</h5>
       <div class="card-body">
