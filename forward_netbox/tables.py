@@ -17,6 +17,8 @@ from .models import ForwardNQEMap
 from .models import ForwardSource
 from .models import ForwardSync
 from .models import ForwardValidationRun
+from .utilities.execution_ledger import latest_execution_run
+from .utilities.execution_ledger_serialization import execution_run_failure_summary
 from .utilities.json_safe import json_safe_value
 
 
@@ -77,11 +79,26 @@ class ForwardSyncTable(NetBoxTable):
     name = tables.Column(linkify=True)
     status = columns.ChoiceFieldColumn()
     source = tables.Column(linkify=True, verbose_name=_("Source"))
+    latest_failure = tables.Column(
+        verbose_name=_("Latest Failure"),
+        orderable=False,
+        empty_values=(),
+    )
     last_ingestion = tables.Column(accessor="last_ingestion", linkify=True)
     drift_policy = tables.Column(linkify=True, verbose_name=_("Drift Policy"))
 
     def render_last_ingestion(self, value):
         return getattr(value, "name", "---") if value else "---"
+
+    def render_latest_failure(self, value, record):
+        summary = execution_run_failure_summary(latest_execution_run(record))
+        if not summary["available"]:
+            return "---"
+        return format_html(
+            '<span title="{}">{}</span>',
+            summary["error"],
+            summary["message"],
+        )
 
     class Meta(NetBoxTable.Meta):
         model = ForwardSync
@@ -90,6 +107,7 @@ class ForwardSyncTable(NetBoxTable):
             "name",
             "status",
             "source",
+            "latest_failure",
             "auto_merge",
             "drift_policy",
             "last_synced",
@@ -103,6 +121,7 @@ class ForwardSyncTable(NetBoxTable):
             "name",
             "status",
             "source",
+            "latest_failure",
             "scheduled",
             "auto_merge",
             "drift_policy",
@@ -203,6 +222,11 @@ class ForwardExecutionRunTable(NetBoxTable):
     )
     sync = tables.Column(linkify=True)
     source = tables.Column(linkify=True)
+    latest_failure = tables.Column(
+        verbose_name=_("Latest Failure"),
+        orderable=False,
+        empty_values=(),
+    )
     validation_run = tables.Column(linkify=True)
     job = tables.Column(linkify=True)
     backend = columns.ChoiceFieldColumn()
@@ -212,6 +236,16 @@ class ForwardExecutionRunTable(NetBoxTable):
     def render_run(self, record):
         return str(record)
 
+    def render_latest_failure(self, value, record):
+        summary = execution_run_failure_summary(record)
+        if not summary["available"]:
+            return "---"
+        return format_html(
+            '<span title="{}">{}</span>',
+            summary["error"],
+            summary["message"],
+        )
+
     class Meta(NetBoxTable.Meta):
         model = ForwardExecutionRun
         fields = (
@@ -219,6 +253,7 @@ class ForwardExecutionRunTable(NetBoxTable):
             "pk",
             "sync",
             "source",
+            "latest_failure",
             "backend",
             "status",
             "phase",
@@ -236,6 +271,7 @@ class ForwardExecutionRunTable(NetBoxTable):
             "sync",
             "backend",
             "status",
+            "latest_failure",
             "phase",
             "total_steps",
             "next_step_index",
@@ -253,6 +289,16 @@ class ForwardExecutionStepTable(NetBoxTable):
     run = tables.Column(linkify=True)
     kind = columns.ChoiceFieldColumn()
     status = columns.ChoiceFieldColumn()
+    query_id = tables.Column(
+        verbose_name=_("Query ID"),
+        orderable=False,
+        empty_values=(),
+    )
+    query_path = tables.Column(
+        verbose_name=_("Query path"),
+        orderable=False,
+        empty_values=(),
+    )
     branch = tables.Column(linkify=True)
     ingestion = tables.Column(linkify=True)
     job = tables.Column(linkify=True)
@@ -261,6 +307,14 @@ class ForwardExecutionStepTable(NetBoxTable):
 
     def render_step(self, record):
         return str(record)
+
+    def render_query_id(self, value, record):
+        return record.execution_value if record.execution_mode == "query_id" else "---"
+
+    def render_query_path(self, value, record):
+        return (
+            record.execution_value if record.execution_mode == "query_path" else "---"
+        )
 
     class Meta(NetBoxTable.Meta):
         model = ForwardExecutionStep
@@ -272,8 +326,10 @@ class ForwardExecutionStepTable(NetBoxTable):
             "kind",
             "status",
             "model_string",
-            "label",
             "query_name",
+            "query_id",
+            "query_path",
+            "label",
             "sync_mode",
             "estimated_changes",
             "actual_changes",
@@ -300,6 +356,9 @@ class ForwardExecutionStepTable(NetBoxTable):
             "kind",
             "status",
             "model_string",
+            "query_name",
+            "query_id",
+            "query_path",
             "label",
             "estimated_changes",
             "actual_changes",

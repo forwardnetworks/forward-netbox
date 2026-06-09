@@ -1,3 +1,4 @@
+import json
 import logging
 
 from core.models import Job
@@ -127,6 +128,11 @@ from .utilities.sync_state import (
 from .utilities.validation import force_allow_validation_run
 
 logger = logging.getLogger("forward_netbox.models")
+
+
+def _nqe_string_literal(value: str) -> str:
+    return json.dumps(value)
+
 
 FORWARD_SUPPORTED_SYNC_MODELS = Q()
 for model_string in FORWARD_SUPPORTED_MODELS:
@@ -294,8 +300,7 @@ class ForwardSource(ForwardPluginModelDocsMixin, JobsMixin, PrimaryModel):
 
             where_clauses = []
             include_exprs = [
-                f'"{tag.replace("\"", "\\\"")}" in device.tagNames'
-                for tag in include_tags
+                f"{_nqe_string_literal(tag)} in device.tagNames" for tag in include_tags
             ]
             if include_exprs:
                 if include_match == "all":
@@ -303,8 +308,9 @@ class ForwardSource(ForwardPluginModelDocsMixin, JobsMixin, PrimaryModel):
                 else:
                     where_clauses.append(f"where ({' || '.join(include_exprs)})")
             for tag in exclude_tags:
-                escaped = tag.replace('"', '\\"')
-                where_clauses.append(f'where !("{escaped}" in device.tagNames)')
+                where_clauses.append(
+                    f"where !({_nqe_string_literal(tag)} in device.tagNames)"
+                )
 
             scoped_rows = client.run_nqe_query(
                 query=(
