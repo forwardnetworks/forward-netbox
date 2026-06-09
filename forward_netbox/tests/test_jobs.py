@@ -770,6 +770,7 @@ class ForwardJobsTest(TestCase):
         mock_executor.return_value.run_next_plan_item.assert_called_once_with(
             max_changes_per_branch=self.sync.get_max_changes_per_branch(),
             expected_plan_index=2,
+            claimed_step=ANY,
             overlap_stage=True,
         )
         mock_stage_liveness_monitor.assert_called_once_with(
@@ -1001,6 +1002,12 @@ class ForwardJobsTest(TestCase):
         self.assertNotIn("Unable to resolve", current_step.last_error)
         self.assertNotEqual(self.sync.status, ForwardSyncStatusChoices.FAILED)
         self.assertIsNone(job.terminated_status)
+        mock_executor.return_value.run_next_plan_item.assert_called_once_with(
+            max_changes_per_branch=self.sync.get_max_changes_per_branch(),
+            expected_plan_index=46,
+            claimed_step=stale_step,
+            overlap_stage=False,
+        )
 
     @patch("forward_netbox.utilities.multi_branch.ForwardMultiBranchExecutor")
     def test_stage_forward_branch_item_skips_when_no_active_run_and_history_exists(
