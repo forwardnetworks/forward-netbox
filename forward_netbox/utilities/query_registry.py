@@ -84,7 +84,7 @@ class QuerySpec:
         self, extra_parameters: dict[str, Any] | None = None
     ) -> dict[str, Any]:
         parameters = dict(self.parameters)
-        if extra_parameters:
+        if extra_parameters and parameters:
             parameters.update(extra_parameters)
         return parameters
 
