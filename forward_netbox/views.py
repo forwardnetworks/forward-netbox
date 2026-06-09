@@ -78,9 +78,12 @@ from .utilities.execution_ledger import discard_stage_branch_for_retry
 from .utilities.execution_ledger import execution_run_bundle_for_sync
 from .utilities.execution_ledger import execution_run_recovery_recommendation
 from .utilities.execution_ledger import execution_run_support_bundle
+from .utilities.execution_ledger import latest_execution_run
 from .utilities.execution_ledger import prepare_stage_step_retry
 from .utilities.execution_ledger import reconcile_execution_run
 from .utilities.execution_ledger_metrics import pushdown_trend_history_for_sync
+from .utilities.execution_ledger_serialization import execution_run_failure_summary
+from .utilities.execution_ledger_serialization import execution_run_insights_summary
 from .utilities.health import live_data_file_health_check
 from .utilities.health import live_source_health_check
 from .utilities.health import sync_health_summary
@@ -512,6 +515,9 @@ class ForwardSyncView(generic.ObjectView):
             "last_ingestion": instance.last_ingestion,
             "latest_validation_run": instance.latest_validation_run,
             "enabled_models": instance.enabled_models(),
+            "latest_execution_failure": execution_run_failure_summary(
+                latest_execution_run(instance)
+            ),
             "support_bundle_url": reverse(
                 "plugins:forward_netbox:forwardsync_support_bundle",
                 kwargs={"pk": instance.pk},
@@ -785,6 +791,8 @@ class ForwardExecutionRunView(generic.ObjectView):
                 "plugins:forward_netbox:forwardexecutionrun_export_bundle",
                 kwargs={"pk": instance.pk},
             ),
+            "latest_execution_failure": execution_run_failure_summary(instance),
+            "latest_execution_insights": execution_run_insights_summary(instance),
             "retryable_step": current_retryable_step(instance),
             "discardable_step": current_discardable_step(instance),
             "recovery_recommendation": execution_run_recovery_recommendation(instance),

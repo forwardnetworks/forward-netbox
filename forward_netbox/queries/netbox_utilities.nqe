@@ -74,6 +74,47 @@ export normalizePlatformName(platform_os: String, platform_os_version: String) =
   then "ACI"
   else platformOsName(platform_os);
 
+export deviceHasAciCommandOutputs(device) =
+  isPresent(
+    max(
+      foreach command in device.outputs.commands
+      where command.commandType in [
+        CommandType.CISCO_APIC_SWITCH,
+        CommandType.CISCO_APIC_CONTROLLER_DETAIL,
+        CommandType.CISCO_ACI_FABRIC_NODES,
+        CommandType.CISCO_ACI_FABRIC_VRFS,
+        CommandType.CISCO_ACI_NODE_TYPE,
+        CommandType.CISCO_ACI_SPINE_INTERFACE_MODE,
+        CommandType.CISCO_ACI_SPINE_IP_ENDPOINTS,
+        CommandType.CISCO_ACI_SPINE_TUNNELS_NEXTHOP,
+        CommandType.CISCO_ACI_TUNNELS_ENDPOINTS,
+        CommandType.CISCO_ACI_ZONING_RULE,
+        CommandType.CISCO_ACI_ZONING_FILTER,
+        CommandType.CISCO_ACI_EPM_ENDPOINTS,
+        CommandType.CISCO_APIC_VLAN_LEAF,
+        CommandType.CISCO_APIC_EXT_L3OUT_INTERFACES,
+        CommandType.CISCO_APIC_VLAN_STATUS_LEAF,
+        CommandType.CISCO_APIC_VPC_MAP
+      ]
+      select command.commandType
+    )
+  );
+
+export isAciDevice(device) =
+  normalizePlatformName(
+    toString(device.platform.os),
+    if isPresent(device.platform.osVersion) then device.platform.osVersion else ""
+  ) == "ACI"
+  || deviceHasAciCommandOutputs(device);
+
+export normalizeDevicePlatformName(device) =
+  if isAciDevice(device)
+  then "ACI"
+  else normalizePlatformName(
+    toString(device.platform.os),
+    if isPresent(device.platform.osVersion) then device.platform.osVersion else ""
+  );
+
 export slugify(value: String) =
   replaceRegexMatches(
     replaceRegexMatches(
