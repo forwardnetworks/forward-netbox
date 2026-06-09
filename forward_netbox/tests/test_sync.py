@@ -13396,6 +13396,39 @@ class QueryParameterCompatibilityTest(TestCase):
             },
         )
 
+    def test_query_fetch_does_not_push_context_tags_to_unparameterized_specs(self):
+        sync = Mock()
+        fetcher = ForwardQueryFetcher(sync=sync, client=Mock(), logger_=Mock())
+        spec = Mock(
+            query="foreach device in network.devices select {name: device.name}",
+            run_query_id="qid-plain",
+            commit_id="cid-plain",
+            execution_value="qid-plain",
+            merged_parameters=Mock(return_value={}),
+        )
+        context = ForwardQueryContext(
+            network_id="n1",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="s1",
+            device_tag_include_tags=["Core", "DC"],
+            device_tag_include_match="all",
+            device_tag_exclude_tags=["Branch"],
+        )
+        fetcher._run_nqe_query = Mock(return_value=[])
+
+        fetcher._fetch_spec_rows(
+            "dcim.device",
+            spec,
+            baseline=None,
+            context=context,
+            coalesce_fields=[["name"]],
+        )
+
+        self.assertEqual(
+            fetcher._run_nqe_query.call_args.kwargs["parameters"],
+            {},
+        )
+
     def test_query_fetch_escapes_tag_scope_literals_in_scoped_query(self):
         source = ForwardSource.objects.create(
             name="tag-scope-source",
