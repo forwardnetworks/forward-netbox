@@ -1,0 +1,41 @@
+{% load i18n %}
+{% if failure_summary.available %}
+  <div class="alert alert-{{ failure_summary.severity }}" role="alert">
+    <div class="d-flex justify-content-between gap-3 align-items-start">
+      <div class="flex-grow-1">
+        <strong>{{ failure_summary.message }}</strong>
+        <div>{{ failure_summary.error }}</div>
+        {% if failure_summary.step_index or failure_summary.model or failure_summary.query_name or failure_summary.query_id or failure_summary.query_path %}
+          <div class="mt-2 text-muted">
+            {% if failure_summary.step_index %}
+              {% trans "Shard" %} {{ failure_summary.step_index }}
+            {% endif %}
+            {% if failure_summary.model %}
+              {{ failure_summary.model }}
+            {% endif %}
+            {% if failure_summary.query_name %}
+              {{ failure_summary.query_name }}
+            {% endif %}
+            {% if failure_summary.query_id %}
+              {% trans "Query ID" %} {{ failure_summary.query_id }}
+            {% elif failure_summary.query_path %}
+              {% trans "Query path" %} {{ failure_summary.query_path }}
+            {% endif %}
+          </div>
+        {% endif %}
+      </div>
+      <div class="flex-shrink-0 d-flex gap-2">
+        {% if failure_summary.step_pk %}
+          <a class="btn btn-sm btn-outline-primary" href="{% url 'plugins:forward_netbox:forwardexecutionstep' pk=failure_summary.step_pk %}">
+            <i class="mdi mdi-open-in-new" aria-hidden="true"></i>&nbsp;{% trans "View step" %}
+          </a>
+        {% endif %}
+        {% if support_bundle_url %}
+          <a class="btn btn-sm btn-outline-secondary" href="{{ support_bundle_url }}">
+            <i class="mdi mdi-download" aria-hidden="true"></i>&nbsp;{% trans "Support bundle" %}
+          </a>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+{% endif %}

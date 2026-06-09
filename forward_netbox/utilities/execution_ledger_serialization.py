@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from ..choices import ForwardExecutionRunStatusChoices
+from ..choices import ForwardExecutionStepStatusChoices
 from .api_usage import evaluate_forward_api_usage
 from .branch_budget import BRANCH_RUN_STATE_PARAMETER
 from .change_explainability import change_explainability_summary
@@ -53,9 +54,11 @@ def execution_run_support_bundle(run, *, recommendation_fn):
         "dependency_lookup_cache": dependency_lookup_cache_support_summary(run),
         "compatibility_cache": _compatibility_cache_evidence(run),
         "api_usage": api_usage_support_summary(run),
+        "insights_summary": execution_run_insights_summary(run),
         "recovery_recommendation": recommendation_fn(run),
         "recovery_policy_summary": _recovery_policy_summary(run),
         "metrics": execution_run_metrics(run, step_list),
+        "failure_summary": execution_run_failure_summary(run, step_list),
         "steps": [
             {
                 **step.as_support_summary(),
@@ -68,6 +71,132 @@ def execution_run_support_bundle(run, *, recommendation_fn):
             for step in step_list
         ],
     }
+
+
+def execution_run_insights_summary(run):
+    if run is None:
+        return {
+            "available": False,
+            "message": "No execution run is available.",
+        }
+    api_usage = api_usage_support_summary(run)
+    latest_ingestion = ingestion_support_summary(
+        getattr(getattr(run, "sync", None), "last_ingestion", None)
+    )
+    query_modes = (
+        latest_ingestion.get("query_modes", {})
+        if isinstance(latest_ingestion, dict)
+        else {}
+    )
+    if not api_usage.get("available") and not query_modes.get("available"):
+        return {
+            "available": False,
+            "message": "No execution telemetry is available.",
+        }
+    budget = api_usage.get("budget", {}) if isinstance(api_usage, dict) else {}
+    metrics = budget.get("metrics", {}) if isinstance(budget, dict) else {}
+    return {
+        "available": True,
+        "budget_status": budget.get("status", "") if isinstance(budget, dict) else "",
+        "budget_failure_reasons": (
+            budget.get("failure_reasons", []) if isinstance(budget, dict) else []
+        ),
+        "budget_warnings": (
+            budget.get("warnings", []) if isinstance(budget, dict) else []
+        ),
+        "http_attempts": int(metrics.get("http_attempts") or 0),
+        "http_429_failures": int(metrics.get("http_429_failures") or 0),
+        "nqe_query_calls": int(metrics.get("nqe_query_calls") or 0),
+        "nqe_diff_calls": int(metrics.get("nqe_diff_calls") or 0),
+        "nqe_pages": int(metrics.get("nqe_pages") or 0),
+        "throttle_sleep_seconds": float(metrics.get("throttle_sleep_seconds") or 0.0),
+        "observed_http_attempts_per_minute": metrics.get(
+            "observed_http_attempts_per_minute"
+        ),
+        "headroom_requests_per_minute": metrics.get("headroom_requests_per_minute"),
+        "execution_mode_counts": list(
+            (query_modes.get("execution_modes") or {}).items()
+        ),
+        "fetch_mode_counts": list((query_modes.get("fetch_modes") or {}).items()),
+        "top_model_results": (query_modes.get("top_model_results") or [])[:3],
+    }
+
+
+def execution_run_failure_summary(run, step_list=None):
+    if run is None:
+        return {
+            "available": False,
+            "severity": "info",
+            "message": "No execution run is available.",
+        }
+    steps = (
+        list(step_list)
+        if step_list is not None
+        else list(run.steps.order_by("index", "kind", "pk"))
+    )
+    failed_steps = [
+        step
+        for step in steps
+        if step.status
+        in {
+            ForwardExecutionStepStatusChoices.FAILED,
+            ForwardExecutionStepStatusChoices.TIMEOUT,
+            ForwardExecutionStepStatusChoices.MERGE_TIMEOUT,
+        }
+    ]
+    step = failed_steps[0] if failed_steps else None
+    if step is None and not (run.last_error or "").strip():
+        return {"available": False, "severity": "info", "message": ""}
+    error = ""
+    if step is not None:
+        error = (step.last_error or "").strip()
+    if not error:
+        error = (run.last_error or "").strip()
+    if not error:
+        error = (run.phase_message or "").strip()
+    if not error:
+        error = "The execution run failed, but no error text is available."
+    step_label = ""
+    if step is not None:
+        step_label = " ".join(
+            value
+            for value in [
+                f"Shard {step.index}",
+                step.model_string or "",
+                step.query_name or "",
+            ]
+            if value
+        ).strip()
+    execution_mode = getattr(step, "execution_mode", "") or ""
+    execution_value = getattr(step, "execution_value", "") or ""
+    query_id = execution_value if execution_mode == "query_id" else ""
+    query_path = execution_value if execution_mode == "query_path" else ""
+    message = f"{step_label} failed." if step_label else "The execution run failed."
+    summary = {
+        "available": True,
+        "severity": (
+            "danger"
+            if run.status
+            in {
+                ForwardExecutionRunStatusChoices.FAILED,
+                ForwardExecutionRunStatusChoices.TIMEOUT,
+            }
+            else "warning"
+        ),
+        "message": message,
+        "error": error,
+        "step_pk": getattr(step, "pk", None),
+        "step_index": getattr(step, "index", None),
+        "model": getattr(step, "model_string", "") or "",
+        "query_name": getattr(step, "query_name", "") or "",
+        "execution_mode": execution_mode,
+        "execution_value": execution_value,
+        "query_id": query_id,
+        "query_path": query_path,
+        "status": getattr(step, "status", "") or "",
+        "run_status": run.status or "",
+    }
+    return summary
 
 
 API_USAGE_COUNTER_KEYS = (

@@ -296,8 +296,10 @@ def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str,
         if changed and getattr(existing, "pk", None) is not None:
             existing.full_clean()
             update_objects.append(existing)
-        runner.logger.increment_statistics(model_string, outcome="applied")
-        runner.events_clearer.increment()
+            runner.logger.increment_statistics(model_string, outcome="applied")
+            runner.events_clearer.increment()
+            continue
+        runner.logger.increment_statistics(model_string, outcome="unchanged")
 
     with transaction.atomic():
         if create_objects:
@@ -808,7 +810,9 @@ def bulk_orm_apply_tree_models(
             if changed:
                 existing.full_clean()
                 existing.save()
-            runner.logger.increment_statistics(model_string, outcome="applied")
-            runner.events_clearer.increment()
+                runner.logger.increment_statistics(model_string, outcome="applied")
+                runner.events_clearer.increment()
+                continue
+            runner.logger.increment_statistics(model_string, outcome="unchanged")
     runner.events_clearer.clear()
     return True
