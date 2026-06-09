@@ -1356,7 +1356,7 @@ class ForwardSyncModelTest(TestCase):
         )
         self.assertEqual(ingestion_summary["model_count"], 0)
         self.assertEqual(ingestion_summary["retry_count"], 0)
-        self.assertEqual(ingestion_summary["model_results"], [])
+        self.assertNotIn("model_results", ingestion_summary)
         self.assertEqual(ingestion_summary["query_modes"]["execution_modes"], {})
         self.assertEqual(ingestion_summary["query_modes"]["fetch_modes"], {})
 
@@ -1496,6 +1496,7 @@ class ForwardSyncModelTest(TestCase):
         self.assertEqual(sync_summary["branch_budget_hints"]["dcim.cable"], 1666)
         self.assertEqual(sync_summary["pre_run_estimate"]["retry_risk"], "medium")
         self.assertIn("latest_ingestion", sync_summary)
+        self.assertNotIn("model_results", sync_summary["latest_ingestion"])
         self.assertEqual(sync_summary["latest_ingestion"]["retry_count"], 1)
 
     def test_execution_summary_counts_platform_unchanged_rows(self):
