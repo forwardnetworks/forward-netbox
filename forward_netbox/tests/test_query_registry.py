@@ -396,6 +396,33 @@ class QueryRegistryTest(TestCase):
                 query_id="Q_devices",
             )
 
+    def test_query_spec_only_merges_extra_parameters_for_parameterized_queries(self):
+        plain_spec = QuerySpec(
+            model_string="dcim.device",
+            query_name="Forward Devices",
+            query="select {}",
+        )
+        parameterized_spec = QuerySpec(
+            model_string="ipam.prefix",
+            query_name="Forward IPv4 Prefixes",
+            query="select {}",
+            parameters={"forward_netbox_shard_keys": []},
+        )
+
+        self.assertEqual(
+            plain_spec.merged_parameters({"device_tag_include_tags": ["Prod_Core"]}),
+            {},
+        )
+        self.assertEqual(
+            parameterized_spec.merged_parameters(
+                {"device_tag_include_tags": ["Prod_Core"]}
+            ),
+            {
+                "forward_netbox_shard_keys": [],
+                "device_tag_include_tags": ["Prod_Core"],
+            },
+        )
+
     def test_builtin_queries_expose_required_output_fields(self):
         for query_default in BUILTIN_QUERY_MAPS:
             model_specs = BUILTIN_QUERY_SPECS[query_default["model_string"]]
