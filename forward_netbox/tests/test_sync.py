@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import time
@@ -6078,6 +6079,32 @@ class ForwardSyncRunnerTest(TestCase):
             runner._apply_dcim_platform(row)
 
         self.assertEqual(Platform.objects.filter(slug="platform-1").count(), 1)
+        self.assertEqual(self._update_statements(queries), [])
+        self.assertEqual(ObjectChange.objects.count(), before_count)
+
+    def test_apply_dcim_platform_repeat_sync_is_noop_for_aci_platform(self):
+        manufacturer = Manufacturer.objects.create(name="Cisco", slug="cisco")
+        Platform.objects.create(
+            name="ACI",
+            slug="aci",
+            manufacturer=manufacturer,
+        )
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "name": "ACI",
+            "slug": "aci",
+            "manufacturer": "Cisco",
+            "manufacturer_slug": "cisco",
+        }
+
+        before_count = ObjectChange.objects.count()
+        with CaptureQueriesContext(connection) as queries:
+            runner._apply_dcim_platform(row)
+            runner._apply_dcim_platform(row)
+
+        self.assertEqual(Platform.objects.filter(slug="aci").count(), 1)
         self.assertEqual(self._update_statements(queries), [])
         self.assertEqual(ObjectChange.objects.count(), before_count)
 
@@ -13393,6 +13420,67 @@ class QueryParameterCompatibilityTest(TestCase):
                 "device_tag_exclude_tags": ["Branch"],
                 "forward_netbox_shard_keys": [],
             },
+        )
+
+    def test_query_fetch_escapes_tag_scope_literals_in_scoped_query(self):
+        source = ForwardSource.objects.create(
+            name="tag-scope-source",
+            type="saas",
+            url="https://fwd.app",
+            status="ready",
+            parameters={
+                "username": "user@example.com",
+                "password": "secret",
+                "verify": True,
+                "network_id": "test-network",
+                "device_tag_include_tags": ['Core "A"', r"Edge\Path"],
+                "device_tag_include_match": "all",
+                "device_tag_exclude_tags": ['Branch "B"'],
+            },
+        )
+        sync = ForwardSync.objects.create(
+            name="tag-scope-sync",
+            source=source,
+            parameters={"snapshot_id": LATEST_PROCESSED_SNAPSHOT},
+        )
+
+        client = Mock()
+        client.get_snapshot_metrics.return_value = {}
+        client.get_snapshots.return_value = []
+        client.get_latest_processed_snapshot.return_value = {
+            "id": "snapshot-after",
+            "processedAt": "2026-03-31T12:15:00Z",
+        }
+        client.run_nqe_query.return_value = [
+            {"name": "core-1", "site": "main dc"},
+        ]
+        fetcher = ForwardQueryFetcher(
+            sync=sync,
+            client=client,
+            logger_=Mock(),
+        )
+        sync.get_network_id = Mock(return_value="test-network")
+        sync.get_snapshot_id = Mock(return_value=LATEST_PROCESSED_SNAPSHOT)
+        sync.resolve_snapshot_id = Mock(return_value="snapshot-after")
+        sync.get_query_parameters = Mock(return_value={})
+        sync.get_maps = Mock(return_value=[])
+
+        context = fetcher.resolve_context()
+        scoped_queries = [
+            call.kwargs["query"]
+            for call in client.run_nqe_query.call_args_list
+            if "device.tagNames" in call.kwargs["query"]
+        ]
+
+        self.assertEqual(context.scoped_device_names, {"core-1"})
+        self.assertTrue(scoped_queries)
+        scoped_query = scoped_queries[0]
+        self.assertIn(json.dumps('Core "A"'), scoped_query)
+        self.assertIn(json.dumps(r"Edge\Path"), scoped_query)
+        branch_literal = json.dumps('Branch "B"')
+        self.assertIn(
+            f"where !({branch_literal} in device.tagNames)",
+            scoped_query,
         )
 
     def test_query_fetch_logs_are_not_emitted_for_parameter_passthrough(self):
