@@ -656,6 +656,7 @@ def stage_forward_branch_item(job, *args, **kwargs):
         executor.run_next_plan_item(
             max_changes_per_branch=sync.get_max_changes_per_branch(),
             expected_plan_index=claimed_index,
+            claimed_step=claimed_step,
             overlap_stage=overlap_stage,
         )
         queued_merge_job = _auto_enqueue_merge_for_staged_step(sync, user=job.user)

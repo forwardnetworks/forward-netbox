@@ -12,28 +12,29 @@ Install the plugin package, enable the required plugins, run the migrations, and
 Install the wheel from GitHub Releases into the same Python environment as NetBox:
 
 ```bash
-pip install /path/to/forward_netbox-1.3.5.1-py3-none-any.whl
+pip install /path/to/forward_netbox-1.3.5.2-py3-none-any.whl
 ```
 
 Alternatively, install directly from the GitHub source archive:
 
 ```bash
-pip install /path/to/forward_netbox-1.3.5.1.tar.gz
+pip install /path/to/forward_netbox-1.3.5.2.tar.gz
 ```
 
 If you mirror the package into a private Python index, pin the same release version:
 
 ```bash
-pip install --pre forward-netbox==1.3.5.1
+pip install --pre forward-netbox==1.3.5.2
 ```
 
 ## Release Compatibility
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v1.3.5.1` | `4.5.9` and `4.6.1` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Current release; removes raw `model_results` from the sync telemetry summary and prevents unparameterized query IDs from receiving source-level tag parameters, which keeps the sync detail view responsive and preserves the saved-query-ID path compatibility. |
-| `v1.3.5` | `4.5.9` and `4.6.1` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v1.3.5.1`; keeps the 1.3.x saved-query-ID path parameter-compatible, tightens ACI platform detection with command-inventory signals, and preserves the lower-noise execution accounting used by the 1.3.x sync path |
-| `v1.3.3` | `4.5.9` and `4.6.1` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v1.3.5.1`; refreshes bundled NQE syntax for saved query-ID execution, keeps all shipped maps parameter-compatible with `forward_netbox_shard_keys`, and updates the saved validation-folder query IDs used by the 1.3.x sync path |
+| `v1.3.5.2` | `4.5.9` and `4.6.1` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Current release; prevents stale claim drift when sync workers resume or overlap by executing shards against the currently claimed step snapshot, and compacts execution-summary payloads so sync detail and support bundles remain responsive. |
+| `v1.3.5.1` | `4.5.9` and `4.6.1` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v1.3.5.2`; removes raw `model_results` from the sync telemetry summary and prevents unparameterized query IDs from receiving source-level tag parameters, which keeps the sync detail view responsive and preserves the saved-query-ID path compatibility. |
+| `v1.3.5` | `4.5.9` and `4.6.1` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v1.3.5.2`; keeps the 1.3.x saved-query-ID path parameter-compatible, tightens ACI platform detection with command-inventory signals, and preserves the lower-noise execution accounting used by the 1.3.x sync path |
+| `v1.3.3` | `4.5.9` and `4.6.1` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v1.3.5.2`; refreshes bundled NQE syntax for saved query-ID execution, keeps all shipped maps parameter-compatible with `forward_netbox_shard_keys`, and updates the saved validation-folder query IDs used by the 1.3.x sync path |
 | `v1.3.1` | `4.5.9` and `4.6.1` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v1.3.2`; preserves the `v1.3.0` parameterized NQE path, removes the legacy sync column-filter shard path, and fixes repeat prefix sync accounting so unchanged `ipam.prefix` rows report as unchanged instead of update churn |
 | `v1.3.0` | `4.5.9` and `4.6.1` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v1.3.1`; eliminates default Forward NQE column-filter shard fetches in favor of query-side `forward_netbox_shard_keys` parameters, keeps local shard safety filtering, and preserves branch boundaries while reducing Forward SaaS API/NQE pressure |
 | `v1.2.3` | `4.5.9` and `4.6.1` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v1.3.0`; further reduced Forward SaaS API/NQE pressure by coalescing compatible sibling shard EQUALS_ANY filters, added local change-explainability summaries, and kept staged branch boundaries unchanged |
@@ -81,6 +82,7 @@ pip install --pre forward-netbox==1.3.5.1
 
 | Release | Summary |
 | --- | --- |
+| `v1.3.5.2` | Prevents shard execution drift by tying resume/overlap workers to the claimed execution step and compacts sync execution payloads (`plan_items`, workload previews, and advisory branch summaries) so large runs remain user-visible but lightweight in UI/log exports. |
 | `v1.3.5.1` | Removes the raw `model_results` payload from sync telemetry summaries and stops unparameterized query IDs from inheriting source-level tag parameters, which keeps sync-detail rendering responsive while preserving the saved-query-ID path. |
 | `v1.3.5` | Tightens the saved-query-ID path for 1.3.x, keeps shipped maps parameter-compatible with `forward_netbox_shard_keys`, and uses command-inventory signals to avoid misclassifying ACI platforms during repeat syncs. |
 | `v1.3.2` | Adds optional `netbox-cisco-aci` plugin support with disabled-by-default ACI fabric, pod, node, tenant, VRF, and filter maps; keeps deeper ACI policy maps conservative until source identity is proven; and hardens duplicate ACI node observations so repeat syncs remain no-op when source data is unchanged. |
