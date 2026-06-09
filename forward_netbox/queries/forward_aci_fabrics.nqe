@@ -5,12 +5,6 @@
 
 import "netbox_utilities";
 
-isAciDevice(device) =
-  normalizePlatformName(
-    toString(device.platform.os),
-    if isPresent(device.platform.osVersion) then device.platform.osVersion else ""
-  ) == "ACI";
-
 aciFabricName(device) =
   if isPresent(device.locationName) && length(device.locationName) > 0
   then slugify(toLowerCase(device.locationName))
