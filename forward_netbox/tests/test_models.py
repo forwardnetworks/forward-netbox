@@ -3,13 +3,16 @@ from unittest.mock import Mock
 from unittest.mock import patch
 from uuid import uuid4
 
+from core.choices import JobStatusChoices
 from core.exceptions import SyncError
+from core.models import Job
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
 from django.test import override_settings
 from django.test import TestCase
+from django.urls import reverse
 from django.utils import timezone
 from netbox_branching.models import Branch
 
@@ -18,6 +21,7 @@ from forward_netbox.choices import forward_configured_models
 from forward_netbox.choices import ForwardDiffFallbackModeChoices
 from forward_netbox.choices import ForwardDriftPolicyBaselineChoices
 from forward_netbox.choices import ForwardExecutionBackendChoices
+from forward_netbox.choices import ForwardExecutionRunStatusChoices
 from forward_netbox.choices import ForwardExecutionStepStatusChoices
 from forward_netbox.choices import ForwardSourceStatusChoices
 from forward_netbox.choices import ForwardSyncStatusChoices
@@ -787,6 +791,347 @@ class ForwardSyncModelTest(TestCase):
         self.assertContains(response, "Use Fast bootstrap for trusted baseline")
         self.assertContains(response, "Use only for a trusted initial baseline.")
 
+    def test_sync_detail_renders_latest_execution_failure_summary(self):
+        user = get_user_model().objects.create_superuser(
+            username="sync-failure-admin",
+            password="TestPassword123!",
+            email="sync-failure-admin@example.com",
+        )
+        sync = ForwardSync.objects.create(
+            name="sync-failure-summary",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "ipam.prefix": True,
+            },
+        )
+        run = ForwardExecutionRun.objects.create(
+            sync=sync,
+            source=self.source,
+            status=ForwardExecutionRunStatusChoices.FAILED,
+            phase="failed",
+            phase_message="Forward execution failed.",
+            total_steps=1,
+            next_step_index=1,
+        )
+        ForwardExecutionStep.objects.create(
+            run=run,
+            index=1,
+            kind="stage",
+            status=ForwardExecutionStepStatusChoices.FAILED,
+            model_string="ipam.prefix",
+            query_name="Forward Prefixes",
+            execution_mode="query_id",
+            execution_value="Q_154ce88d2f6b9e896aff0e3d925a682d7d4247ad",
+            last_error="Forward API request failed with HTTP 400: prefix shard broke.",
+        )
+        self.client.force_login(user)
+
+        response = self.client.get(sync.get_absolute_url())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Shard 1 ipam.prefix Forward Prefixes failed.")
+        self.assertContains(
+            response,
+            "Forward API request failed with HTTP 400: prefix shard broke.",
+        )
+        self.assertContains(
+            response,
+            reverse(
+                "plugins:forward_netbox:forwardexecutionstep",
+                kwargs={"pk": run.steps.first().pk},
+            ),
+        )
+        self.assertContains(response, "Support bundle")
+        self.assertContains(response, "Q_154ce88d2f6b9e896aff0e3d925a682d7d4247ad")
+
+    def _build_execution_insights_fixture(self):
+        sync = ForwardSync.objects.create(
+            name="run-insights-sync",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+                "ipam.prefix": True,
+            },
+        )
+        ForwardIngestion.objects.create(
+            sync=sync,
+            model_results=[
+                {
+                    "model": "ipam.prefix",
+                    "query_name": "Forward Prefixes",
+                    "execution_mode": "query_id",
+                    "fetch_mode": "nqe_parameters",
+                    "row_count": 10,
+                    "delete_count": 0,
+                },
+                {
+                    "model": "dcim.device",
+                    "query_name": "Forward Devices",
+                    "execution_mode": "query_path",
+                    "fetch_mode": "nqe_parameters",
+                    "row_count": 5,
+                    "delete_count": 1,
+                },
+            ],
+        )
+        run = ForwardExecutionRun.objects.create(
+            sync=sync,
+            source=self.source,
+            status=ForwardExecutionRunStatusChoices.COMPLETED,
+            phase="completed",
+            phase_message="Forward execution completed.",
+            total_steps=2,
+            next_step_index=3,
+        )
+        now = timezone.now()
+        job = Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardExecutionRun),
+            object_id=run.pk,
+            name="execution-insights-job",
+            user=None,
+            status=JobStatusChoices.STATUS_COMPLETED,
+            job_id=str(uuid4()),
+            created=now,
+            started=now,
+            completed=now,
+            data={
+                "forward_api_usage": {
+                    "api_requests_per_minute": 1800,
+                    "http_attempts": 24,
+                    "http_429_failures": 1,
+                    "nqe_query_calls": 3,
+                    "nqe_diff_calls": 2,
+                    "nqe_pages": 5,
+                    "throttle_sleep_seconds": 1.25,
+                    "usage_window_seconds": 30.0,
+                    "observed_http_attempts_per_minute": 48.0,
+                }
+            },
+        )
+        run.job = job
+        run.save(update_fields=["job"])
+        return sync, run
+
+    def test_execution_run_detail_renders_execution_insights_summary(self):
+        user = get_user_model().objects.create_superuser(
+            username="run-insights-admin",
+            password="TestPassword123!",
+            email="run-insights-admin@example.com",
+        )
+        sync, run = self._build_execution_insights_fixture()
+        self.client.force_login(user)
+
+        response = self.client.get(run.get_absolute_url())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Execution Insights")
+        self.assertContains(response, "HTTP attempts")
+        self.assertContains(response, "NQE query calls")
+        self.assertContains(response, "query_id")
+        self.assertContains(response, "query_path")
+        self.assertContains(response, "ipam.prefix")
+        self.assertContains(response, "dcim.device")
+        self.assertContains(response, sync.name)
+
+    def test_sync_list_renders_latest_execution_failure_summary(self):
+        user = get_user_model().objects.create_superuser(
+            username="sync-list-admin",
+            password="TestPassword123!",
+            email="sync-list-admin@example.com",
+        )
+        sync = ForwardSync.objects.create(
+            name="sync-list-failure-summary",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "ipam.prefix": True,
+            },
+        )
+        run = ForwardExecutionRun.objects.create(
+            sync=sync,
+            source=self.source,
+            status=ForwardExecutionRunStatusChoices.FAILED,
+            phase="failed",
+            phase_message="Forward execution failed.",
+            total_steps=1,
+            next_step_index=1,
+        )
+        ForwardExecutionStep.objects.create(
+            run=run,
+            index=1,
+            kind="stage",
+            status=ForwardExecutionStepStatusChoices.FAILED,
+            model_string="ipam.prefix",
+            query_name="Forward Prefixes",
+            last_error="Forward API request failed with HTTP 400: prefix shard broke.",
+        )
+        self.client.force_login(user)
+
+        response = self.client.get(reverse("plugins:forward_netbox:forwardsync_list"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "sync-list-failure-summary")
+        self.assertContains(response, "Shard 1 ipam.prefix Forward Prefixes failed.")
+
+    def test_execution_run_detail_renders_latest_execution_failure_summary(self):
+        user = get_user_model().objects.create_superuser(
+            username="run-detail-admin",
+            password="TestPassword123!",
+            email="run-detail-admin@example.com",
+        )
+        sync = ForwardSync.objects.create(
+            name="run-detail-sync",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "ipam.prefix": True,
+            },
+        )
+        run = ForwardExecutionRun.objects.create(
+            sync=sync,
+            source=self.source,
+            status=ForwardExecutionRunStatusChoices.FAILED,
+            phase="failed",
+            phase_message="Forward execution failed.",
+            total_steps=1,
+            next_step_index=1,
+        )
+        ForwardExecutionStep.objects.create(
+            run=run,
+            index=1,
+            kind="stage",
+            status=ForwardExecutionStepStatusChoices.FAILED,
+            model_string="ipam.prefix",
+            query_name="Forward Prefixes",
+            execution_mode="query_id",
+            execution_value="Q_154ce88d2f6b9e896aff0e3d925a682d7d4247ad",
+            last_error="Forward API request failed with HTTP 400: prefix shard broke.",
+        )
+        self.client.force_login(user)
+
+        response = self.client.get(run.get_absolute_url())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Shard 1 ipam.prefix Forward Prefixes failed.")
+        self.assertContains(
+            response,
+            "Forward API request failed with HTTP 400: prefix shard broke.",
+        )
+        self.assertContains(
+            response,
+            reverse(
+                "plugins:forward_netbox:forwardexecutionstep",
+                kwargs={"pk": run.steps.first().pk},
+            ),
+        )
+        self.assertContains(response, "Support bundle")
+        self.assertContains(response, "Query ID")
+
+    def test_execution_run_list_renders_latest_execution_failure_summary(self):
+        user = get_user_model().objects.create_superuser(
+            username="run-list-admin",
+            password="TestPassword123!",
+            email="run-list-admin@example.com",
+        )
+        sync = ForwardSync.objects.create(
+            name="run-list-sync",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "ipam.prefix": True,
+            },
+        )
+        run = ForwardExecutionRun.objects.create(
+            sync=sync,
+            source=self.source,
+            status=ForwardExecutionRunStatusChoices.FAILED,
+            phase="failed",
+            phase_message="Forward execution failed.",
+            total_steps=1,
+            next_step_index=1,
+        )
+        ForwardExecutionStep.objects.create(
+            run=run,
+            index=1,
+            kind="stage",
+            status=ForwardExecutionStepStatusChoices.FAILED,
+            model_string="ipam.prefix",
+            query_name="Forward Prefixes",
+            last_error="Forward API request failed with HTTP 400: prefix shard broke.",
+        )
+        self.client.force_login(user)
+
+        response = self.client.get(
+            reverse("plugins:forward_netbox:forwardexecutionrun_list")
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "run-list-sync")
+        self.assertContains(response, "Shard 1 ipam.prefix Forward Prefixes failed.")
+
+    def test_execution_run_steps_list_renders_query_references(self):
+        user = get_user_model().objects.create_superuser(
+            username="run-steps-admin",
+            password="TestPassword123!",
+            email="run-steps-admin@example.com",
+        )
+        sync = ForwardSync.objects.create(
+            name="run-steps-sync",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "ipam.prefix": True,
+            },
+        )
+        run = ForwardExecutionRun.objects.create(
+            sync=sync,
+            source=self.source,
+            status=ForwardExecutionRunStatusChoices.FAILED,
+            phase="failed",
+            phase_message="Forward execution failed.",
+            total_steps=2,
+            next_step_index=1,
+        )
+        ForwardExecutionStep.objects.create(
+            run=run,
+            index=1,
+            kind="stage",
+            status=ForwardExecutionStepStatusChoices.STAGED,
+            model_string="ipam.prefix",
+            query_name="Forward Prefixes",
+            execution_mode="query_id",
+            execution_value="Q_154ce88d2f6b9e896aff0e3d925a682d7d4247ad",
+        )
+        ForwardExecutionStep.objects.create(
+            run=run,
+            index=2,
+            kind="stage",
+            status=ForwardExecutionStepStatusChoices.STAGED,
+            model_string="ipam.vrf",
+            query_name="Forward VRFs",
+            execution_mode="query_path",
+            execution_value="/queries/netbox/ipam/vrfs.nqe",
+        )
+        self.client.force_login(user)
+
+        response = self.client.get(
+            reverse(
+                "plugins:forward_netbox:forwardexecutionrun_steps",
+                kwargs={"pk": run.pk},
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Query ID")
+        self.assertContains(response, "Query path")
+        self.assertContains(
+            response,
+            "Q_154ce88d2f6b9e896aff0e3d925a682d7d4247ad",
+        )
+        self.assertContains(response, "/queries/netbox/ipam/vrfs.nqe")
+
     def test_display_parameters_include_branch_budget_hints(self):
         sync = ForwardSync.objects.create(
             name="sync-display-budget",
@@ -1152,6 +1497,66 @@ class ForwardSyncModelTest(TestCase):
         self.assertEqual(sync_summary["pre_run_estimate"]["retry_risk"], "medium")
         self.assertIn("latest_ingestion", sync_summary)
         self.assertEqual(sync_summary["latest_ingestion"]["retry_count"], 1)
+
+    def test_execution_summary_counts_platform_unchanged_rows(self):
+        sync = ForwardSync.objects.create(
+            name="sync-execution-summary-platform",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.platform": True,
+            },
+        )
+        ingestion = ForwardIngestion.objects.create(
+            sync=sync,
+            model_results=[
+                {
+                    "model": "dcim.platform",
+                    "query_name": "Forward Platforms",
+                    "runtime_ms": 9.0,
+                    "row_count": 1,
+                    "delete_count": 0,
+                    "estimated_changes": 1,
+                    "branch_plan_index": 1,
+                    "branch_plan_total": 1,
+                    "execution_mode": "query_id",
+                    "fetch_mode": "query",
+                }
+            ],
+            applied_change_count=1,
+            failed_change_count=0,
+            created_change_count=0,
+            updated_change_count=0,
+            deleted_change_count=0,
+        )
+
+        with patch.object(
+            ForwardIngestion,
+            "get_job_logs",
+            return_value={
+                "statistics": {
+                    "dcim.platform": {
+                        "current": 1,
+                        "total": 1,
+                        "applied": 0,
+                        "failed": 0,
+                        "skipped": 0,
+                        "unchanged": 1,
+                    }
+                },
+                "logs": [],
+            },
+        ):
+            summary = ingestion.get_execution_summary()
+            sync_summary = sync.get_execution_summary()
+
+        self.assertEqual(summary["unchanged_row_count"], 1)
+        self.assertEqual(summary["query_modes"]["execution_modes"], {"query_id": 1})
+        self.assertEqual(sync_summary["latest_ingestion"]["retry_count"], 0)
+        self.assertEqual(
+            sync_summary["latest_ingestion"]["unchanged_row_count"],
+            1,
+        )
 
     @patch("forward_netbox.models.ForwardSource.get_client")
     @patch("forward_netbox.utilities.multi_branch.ForwardMultiBranchExecutor")
