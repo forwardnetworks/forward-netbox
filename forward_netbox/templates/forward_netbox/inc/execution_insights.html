@@ -1,0 +1,86 @@
+{% load helpers %}
+{% load i18n %}
+{% if latest_execution_insights.available %}
+  <div class="card">
+    <h5 class="card-header">{% trans "Execution Insights" %}</h5>
+    <div class="card-body">
+      <table class="table table-hover attr-table mb-3">
+        <tr>
+          <th scope="row">{% trans "HTTP attempts" %}</th>
+          <td>{{ latest_execution_insights.http_attempts }}</td>
+        </tr>
+        <tr>
+          <th scope="row">{% trans "NQE query calls" %}</th>
+          <td>{{ latest_execution_insights.nqe_query_calls }}</td>
+        </tr>
+        <tr>
+          <th scope="row">{% trans "NQE diff calls" %}</th>
+          <td>{{ latest_execution_insights.nqe_diff_calls }}</td>
+        </tr>
+        <tr>
+          <th scope="row">{% trans "429 failures" %}</th>
+          <td>{{ latest_execution_insights.http_429_failures }}</td>
+        </tr>
+        <tr>
+          <th scope="row">{% trans "Throttle sleep" %}</th>
+          <td>{{ latest_execution_insights.throttle_sleep_seconds }}s</td>
+        </tr>
+        <tr>
+          <th scope="row">{% trans "Budget status" %}</th>
+          <td>{{ latest_execution_insights.budget_status|placeholder }}</td>
+        </tr>
+      </table>
+      <div class="row">
+        <div class="col-md-6 mb-3">
+          <div class="text-uppercase text-secondary fw-semibold small mb-2">{% trans "Query modes" %}</div>
+          {% if latest_execution_insights.execution_mode_counts %}
+            <ul class="list-group list-group-flush">
+              {% for mode, count in latest_execution_insights.execution_mode_counts %}
+                <li class="list-group-item px-0 d-flex justify-content-between">
+                  <span>{{ mode }}</span>
+                  <span>{{ count }}</span>
+                </li>
+              {% endfor %}
+            </ul>
+          {% else %}
+            <span class="text-muted">{% trans "No query mode data" %}</span>
+          {% endif %}
+        </div>
+        <div class="col-md-6 mb-3">
+          <div class="text-uppercase text-secondary fw-semibold small mb-2">{% trans "Fetch modes" %}</div>
+          {% if latest_execution_insights.fetch_mode_counts %}
+            <ul class="list-group list-group-flush">
+              {% for mode, count in latest_execution_insights.fetch_mode_counts %}
+                <li class="list-group-item px-0 d-flex justify-content-between">
+                  <span>{{ mode }}</span>
+                  <span>{{ count }}</span>
+                </li>
+              {% endfor %}
+            </ul>
+          {% else %}
+            <span class="text-muted">{% trans "No fetch mode data" %}</span>
+          {% endif %}
+        </div>
+      </div>
+      {% if latest_execution_insights.top_model_results %}
+        <div class="text-uppercase text-secondary fw-semibold small mb-2">{% trans "Top model results" %}</div>
+        <ul class="list-group list-group-flush">
+          {% for item in latest_execution_insights.top_model_results %}
+            <li class="list-group-item px-0">
+              <div class="d-flex justify-content-between gap-3">
+                <div>
+                  <div class="fw-semibold">{{ item.model }}</div>
+                  <div class="text-muted small">{{ item.query_name }}</div>
+                </div>
+                <div class="text-end text-muted small">
+                  <div>{{ item.execution_mode }} / {{ item.fetch_mode }}</div>
+                  <div>{{ item.row_count }} rows, {{ item.delete_count }} deletes</div>
+                </div>
+              </div>
+            </li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    </div>
+  </div>
+{% endif %}

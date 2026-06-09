@@ -2,6 +2,7 @@ import json
 import os
 import re
 import shlex
+import sys
 import time
 from datetime import datetime
 from datetime import timedelta
@@ -486,23 +487,27 @@ def makemigrations(context):
 
 @task
 def lint(context):
-    context.run("pre-commit run --all-files")
+    context.run(f"{shlex.quote(sys.executable)} -m pre_commit run --all-files")
 
 
 @task(name="sensitive-check")
 def sensitive_check(context):
-    context.run("python scripts/check_sensitive_content.py")
-    context.run("python scripts/check_sensitive_content.py --all-history")
+    context.run(f"{shlex.quote(sys.executable)} scripts/check_sensitive_content.py")
+    context.run(
+        f"{shlex.quote(sys.executable)} scripts/check_sensitive_content.py --all-history"
+    )
 
 
 @task(name="harness-check")
 def harness_check(context):
-    context.run("python scripts/check_harness.py")
+    context.run(f"{shlex.quote(sys.executable)} scripts/check_harness.py")
 
 
 @task(name="harness-test")
 def harness_test(context):
-    context.run("python -m unittest discover -s scripts/tests -p 'test_*.py'")
+    context.run(
+        f"{shlex.quote(sys.executable)} -m unittest discover -s scripts/tests -p 'test_*.py'"
+    )
 
 
 @task
@@ -2688,12 +2693,12 @@ def playwright_test(context):
 
 @task
 def package(context):
-    context.run("python -m build")
+    context.run(f"{shlex.quote(sys.executable)} -m build")
 
 
 @task
 def docs(context):
-    context.run("mkdocs build --strict")
+    context.run(f"{shlex.quote(sys.executable)} -m mkdocs build --strict")
 
 
 @task(name="smoke-sync")

@@ -1,3 +1,4 @@
+import json
 import re
 import time
 from concurrent.futures import as_completed
@@ -56,6 +57,11 @@ from .query_registry import optional_builtin_query_names_for_model
 from .query_registry import resolve_query_specs_for_client
 from .sync import ForwardSyncRunner
 from .sync_contracts import validate_row_shape_for_model
+
+
+def _nqe_string_literal(value: str) -> str:
+    return json.dumps(value)
+
 
 DEFAULT_PREFLIGHT_ROW_LIMIT = 5
 MAX_PREFLIGHT_ROW_LIMIT = 100
@@ -490,7 +496,7 @@ class ForwardQueryFetcher:
             "where device.platform.vendor != Vendor.FORWARD_CUSTOM",
         ]
         include_exprs = [
-            f'"{tag.replace("\"", "\\\"")}" in device.tagNames' for tag in include_tags
+            f"{_nqe_string_literal(tag)} in device.tagNames" for tag in include_tags
         ]
         if include_exprs:
             if include_match == "all":
@@ -498,8 +504,7 @@ class ForwardQueryFetcher:
             else:
                 where.append(f"where ({' || '.join(include_exprs)})")
         for tag in exclude_tags:
-            exclude_literal = tag.replace('"', '\\"')
-            where.append(f'where !("{exclude_literal}" in device.tagNames)')
+            where.append(f"where !({_nqe_string_literal(tag)} in device.tagNames)")
         query = "\n".join(
             [
                 "foreach device in network.devices",
