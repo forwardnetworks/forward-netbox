@@ -76,6 +76,19 @@ Likely docs and test surfaces:
 Work in small releaseable slices. Each slice must either ship an operator-visible
 improvement or produce evidence that prevents speculative complexity.
 
+Current CI hardening notes:
+
+- Keep optional routing-model cache priming behind a `netbox_routing` install
+  guard so 4.6.1 validation can exercise missing-plugin paths without crashing.
+- Rebuild the isolated CI NetBox image before isolated test runs so dependency
+  changes like password-protected support-bundle support are validated against
+  a fresh runtime instead of a stale image.
+- Keep `scripts/tests/test_tasks.py` aligned with the isolated-runtime compose
+  sequence so harness checks stay green when the test path adds required setup
+  steps.
+- Re-run the repository harness after any task-test formatting pass so the
+  active-plan requirement stays attached to the exact diff the harness sees.
+
 ### P0: Field-Scale Evidence Intake
 
 Problem:
