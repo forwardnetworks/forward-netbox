@@ -677,6 +677,111 @@ def prime_dependency_lookup_caches(runner, model_string, rows):
     return summary
 
 
+DEPENDENCY_PARENT_DEVICE_FIELDS = {
+    "dcim.interface": ("device",),
+    "dcim.macaddress": ("device",),
+    "dcim.cable": ("device", "remote_device"),
+    "dcim.inventoryitem": ("device",),
+    "dcim.module": ("device",),
+    "dcim.virtualchassis": ("device",),
+    "extras.taggeditem": ("device",),
+    "ipam.fhrpgroup": ("device",),
+    "ipam.ipaddress": ("device",),
+    "netbox_peering_manager.peeringsession": ("device",),
+    "netbox_routing.bgpaddressfamily": ("device",),
+    "netbox_routing.bgppeer": ("device",),
+    "netbox_routing.bgppeeraddressfamily": ("device",),
+    "netbox_routing.ospfinstance": ("device",),
+    "netbox_routing.ospfinterface": ("device",),
+}
+DEPENDENCY_PARENT_DEVICE_MODELS = tuple(DEPENDENCY_PARENT_DEVICE_FIELDS)
+
+
+def _dependency_parent_row_identity(model_string, row):
+    for field in ("name", "interface", "module_bay", "address", "tag"):
+        value = row.get(field)
+        if value not in ("", None):
+            return str(value)
+    if model_string == "ipam.fhrpgroup":
+        return str(row.get("group_id") or "")
+    if model_string == "dcim.cable":
+        left = row.get("interface") or ""
+        right = row.get("remote_interface") or ""
+        if left or right:
+            return f"{left}->{right}".strip("->")
+    return ""
+
+
+def dependency_parent_coverage_summary(runner, model_string, rows):
+    fields = DEPENDENCY_PARENT_DEVICE_FIELDS.get(model_string, ())
+    if not fields:
+        return {
+            "available": False,
+            "model": model_string,
+            "row_count": len(rows),
+            "blocked_row_count": 0,
+            "missing_parent_count": 0,
+            "missing_parent_names": [],
+            "groups": [],
+        }
+
+    missing_device_by_name_cache = getattr(runner, "_missing_device_by_name_cache", {})
+    if not isinstance(missing_device_by_name_cache, dict):
+        missing_device_by_name_cache = {}
+    groups: dict[tuple[str, str], dict] = {}
+    for row in rows:
+        for field in fields:
+            device_name = str(row.get(field) or "").strip()
+            if not device_name:
+                continue
+            if device_name not in missing_device_by_name_cache:
+                continue
+            key = (field, device_name)
+            group = groups.setdefault(
+                key,
+                {
+                    "parent_model": "dcim.device",
+                    "parent_field": field,
+                    "parent_name": device_name,
+                    "row_count": 0,
+                    "sample_rows": [],
+                },
+            )
+            group["row_count"] += 1
+            if len(group["sample_rows"]) < 5:
+                sample = _dependency_parent_row_identity(model_string, row)
+                if sample:
+                    group["sample_rows"].append(sample)
+
+    ordered_groups = sorted(
+        groups.values(),
+        key=lambda item: (
+            -int(item.get("row_count") or 0),
+            str(item.get("parent_field") or ""),
+            str(item.get("parent_name") or ""),
+        ),
+    )
+    blocked_row_count = sum(
+        int(group.get("row_count") or 0) for group in ordered_groups
+    )
+    missing_parent_names = sorted(
+        {
+            str(group.get("parent_name") or "")
+            for group in ordered_groups
+            if group.get("parent_name")
+        }
+    )
+    return {
+        "available": bool(ordered_groups),
+        "model": model_string,
+        "row_count": len(rows),
+        "blocked_row_count": blocked_row_count,
+        "missing_parent_count": len(ordered_groups),
+        "missing_parent_names": missing_parent_names,
+        "groups": ordered_groups,
+    }
+
+
 def _dependency_device_names(model_string, rows):
     fields_by_model = {
         "dcim.cable": ("device", "remote_device"),

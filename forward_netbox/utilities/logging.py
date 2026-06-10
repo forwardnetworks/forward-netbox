@@ -119,8 +119,11 @@ class SyncLogging:
             cache.set(self.cache_key, self.log_data, self.cache_timeout)
 
     def increment_statistics(
-        self, model_string: str, *, outcome: str = "applied"
+        self, model_string: str, *, outcome: str = "applied", amount: int = 1
     ) -> None:
+        amount = max(0, int(amount or 0))
+        if amount <= 0:
+            return
         with self._lock:
             stats = self.log_data.setdefault("statistics", {}).setdefault(
                 model_string,
@@ -133,9 +136,9 @@ class SyncLogging:
                     "unchanged": 0,
                 },
             )
-            stats["current"] += 1
+            stats["current"] += amount
             if outcome in {"applied", "failed", "skipped", "unchanged"}:
-                stats[outcome] += 1
+                stats[outcome] += amount
             cache.set(self.cache_key, self.log_data, self.cache_timeout)
 
     def add_statistics_total(self, model_string: str, amount: int) -> None:
@@ -220,6 +223,73 @@ class SyncLogging:
             bucket["models"] = sorted(
                 models,
                 key=lambda item: (
+                    -int(item.get("row_count") or 0),
+                    str(item.get("model") or ""),
+                ),
+            )[:10]
+            cache.set(self.cache_key, self.log_data, self.cache_timeout)
+
+    def add_dependency_parent_coverage_summary(self, summary: dict) -> None:
+        summary = dict(summary or {})
+        if not summary or not summary.get("available"):
+            return
+        model_string = str(summary.get("model") or "").strip()
+        if not model_string:
+            return
+        with self._lock:
+            bucket = self.log_data.setdefault(
+                "dependency_parent_coverage",
+                {
+                    "available": False,
+                    "row_count": 0,
+                    "blocked_row_count": 0,
+                    "missing_parent_count": 0,
+                    "model_count": 0,
+                    "models": [],
+                },
+            )
+            bucket["available"] = True
+            bucket["row_count"] = int(bucket.get("row_count") or 0) + int(
+                summary.get("row_count") or 0
+            )
+            bucket["blocked_row_count"] = int(
+                bucket.get("blocked_row_count") or 0
+            ) + int(summary.get("blocked_row_count") or 0)
+            bucket["missing_parent_count"] = int(
+                bucket.get("missing_parent_count") or 0
+            ) + int(summary.get("missing_parent_count") or 0)
+            models = list(bucket.get("models") or [])
+            existing = next(
+                (
+                    item
+                    for item in models
+                    if str(item.get("model") or "") == model_string
+                ),
+                None,
+            )
+            if existing is None:
+                models.append(summary)
+            else:
+                existing["row_count"] = int(existing.get("row_count") or 0) + int(
+                    summary.get("row_count") or 0
+                )
+                existing["blocked_row_count"] = int(
+                    existing.get("blocked_row_count") or 0
+                ) + int(summary.get("blocked_row_count") or 0)
+                existing["missing_parent_count"] = int(
+                    existing.get("missing_parent_count") or 0
+                ) + int(summary.get("missing_parent_count") or 0)
+                missing_names = set(existing.get("missing_parent_names") or [])
+                missing_names.update(summary.get("missing_parent_names") or [])
+                existing["missing_parent_names"] = sorted(missing_names)
+                existing_groups = list(existing.get("groups") or [])
+                existing_groups.extend(summary.get("groups") or [])
+                existing["groups"] = existing_groups
+            bucket["model_count"] = len(models)
+            bucket["models"] = sorted(
+                models,
+                key=lambda item: (
+                    -int(item.get("blocked_row_count") or 0),
                     -int(item.get("row_count") or 0),
                     str(item.get("model") or ""),
                 ),

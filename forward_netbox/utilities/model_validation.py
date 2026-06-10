@@ -21,6 +21,7 @@ from .branch_budget import MODEL_CHANGE_DENSITY_PROFILE_PARAMETER
 from .sync_contracts import normalize_coalesce_fields
 from .sync_contracts import validate_query_shape_for_model
 from .sync_facade import DEFAULT_ENABLE_BULK_ORM_FOR_NEW_SYNCS
+from .sync_primitives import DEPENDENCY_PARENT_DEVICE_MODELS
 
 
 def clean_forward_source(source):
@@ -267,6 +268,14 @@ def clean_forward_nqe_map(nqe_map):
             raise ValidationError(_(str(exc)))
 
 
+def _enabled_parent_device_dependency_models(sync):
+    return [
+        model_string
+        for model_string in DEPENDENCY_PARENT_DEVICE_MODELS
+        if sync.is_model_enabled(model_string)
+    ]
+
+
 def clean_forward_sync(sync):
     parameters = dict(sync.parameters or {})
     invalid = sorted(
@@ -344,6 +353,15 @@ def clean_forward_sync(sync):
 def validate_forward_sync_runtime(sync):
     if sync.scheduled and sync.scheduled < timezone.now():
         raise ValidationError({"scheduled": _("Scheduled time must be in the future.")})
+    enabled_parent_device_models = _enabled_parent_device_dependency_models(sync)
+    if enabled_parent_device_models and not sync.is_model_enabled("dcim.device"):
+        raise ValidationError(
+            _(
+                "`dcim.device` must be enabled when syncing child models that "
+                "depend on device coverage: "
+                f"{', '.join(enabled_parent_device_models)}."
+            )
+        )
     if not any(
         sync.is_model_enabled(model_string)
         for model_string in forward_configured_models()

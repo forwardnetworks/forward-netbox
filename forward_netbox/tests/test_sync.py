@@ -8092,6 +8092,56 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertEqual(self._update_statements(queries), [])
         self.assertEqual(ObjectChange.objects.count(), before_count)
 
+    def test_apply_dcim_interface_skips_rows_with_missing_parent_device_once(self):
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        runner._apply_dcim_interface = Mock()
+        runner._missing_device_by_name_cache = {"missing-device": True}
+
+        with patch(
+            "forward_netbox.utilities.sync_reporting.prime_dependency_lookup_caches",
+            return_value={
+                "available": False,
+                "model": "dcim.interface",
+                "row_count": 1,
+                "primed_target_count": 0,
+                "model_count": 0,
+                "models": [],
+            },
+        ), patch(
+            "forward_netbox.utilities.sync_reporting.record_issue"
+        ) as record_issue:
+            runner._apply_model_rows(
+                "dcim.interface",
+                [
+                    {
+                        "device": "missing-device",
+                        "name": "Ethernet1/1",
+                        "type": "1000base-t",
+                        "enabled": True,
+                        "mtu": 1500,
+                        "description": "",
+                    }
+                ],
+            )
+
+        runner._apply_dcim_interface.assert_not_called()
+        record_issue.assert_called_once()
+        _, _, kwargs = record_issue.mock_calls[0]
+        self.assertEqual(kwargs["log_level"], "info")
+        self.assertEqual(kwargs["context"]["missing_parent_count"], 1)
+        self.assertEqual(kwargs["context"]["missing_parent_names"], ["missing-device"])
+        runner.logger.increment_statistics.assert_called_once_with(
+            "dcim.interface",
+            outcome="skipped",
+            amount=1,
+        )
+        self.assertEqual(
+            Interface.objects.filter(device__name="missing-device").count(),
+            0,
+        )
+
     def test_apply_dcim_macaddress_repeat_sync_is_noop(self):
         device = self._create_device("device-mac-noop")
         interface = Interface.objects.create(
