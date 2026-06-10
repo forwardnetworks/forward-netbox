@@ -510,6 +510,37 @@ class ForwardIngestionLogExportViewTest(TestCase):
             self.assertEqual(len(execution_state["plan_items"]), 25)
 
     def test_execution_run_support_bundle_downloads_json_bundle(self):
+        self.job.data = {
+            **self.job.data,
+            "dependency_parent_coverage": {
+                "available": True,
+                "source": "run_job_data.dependency_parent_coverage",
+                "row_count": 8,
+                "blocked_row_count": 3,
+                "missing_parent_count": 1,
+                "model_count": 1,
+                "models": [
+                    {
+                        "available": True,
+                        "model": "dcim.interface",
+                        "row_count": 8,
+                        "blocked_row_count": 3,
+                        "missing_parent_count": 1,
+                        "missing_parent_names": ["device-1"],
+                        "groups": [
+                            {
+                                "parent_model": "dcim.device",
+                                "parent_field": "device",
+                                "parent_name": "device-1",
+                                "row_count": 3,
+                                "sample_rows": ["eth1/1", "eth1/2"],
+                            }
+                        ],
+                    }
+                ],
+            },
+        }
+        self.job.save(update_fields=["data"])
         self.client.force_login(self.user)
 
         response = self.client.get(
@@ -552,6 +583,8 @@ class ForwardIngestionLogExportViewTest(TestCase):
         self.assertIn("remediation", data["query_drift_results"][0])
         self.assertTrue(data["dependency_lookup_cache"]["available"])
         self.assertEqual(data["dependency_lookup_cache"]["row_count"], 4)
+        self.assertTrue(data["dependency_parent_coverage"]["available"])
+        self.assertEqual(data["dependency_parent_coverage"]["row_count"], 8)
         self.assertIn("latest_ingestion", data)
         self.assertEqual(data["latest_ingestion"]["id"], self.ingestion.pk)
         self.assertEqual(
@@ -571,9 +604,16 @@ class ForwardIngestionLogExportViewTest(TestCase):
         self.assertTrue(
             data["latest_ingestion"]["dependency_lookup_cache"]["available"]
         )
+        self.assertTrue(
+            data["latest_ingestion"]["dependency_parent_coverage"]["available"]
+        )
         self.assertEqual(
             data["latest_ingestion"]["dependency_lookup_cache"]["row_count"],
             4,
+        )
+        self.assertEqual(
+            data["latest_ingestion"]["dependency_parent_coverage"]["row_count"],
+            8,
         )
         self.assertEqual(
             data["latest_ingestion"]["execution_summary"]["unchanged_row_count"],

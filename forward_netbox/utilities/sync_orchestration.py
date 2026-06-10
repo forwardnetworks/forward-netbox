@@ -3,6 +3,7 @@ import traceback
 
 from core.exceptions import SyncError
 from core.signals import pre_sync
+from django.core.exceptions import ValidationError
 from django.utils import timezone
 
 from ..choices import ForwardExecutionBackendChoices
@@ -149,6 +150,16 @@ def _record_forward_api_usage(sync, executor):
 def run_forward_sync(sync, job=None, *, max_changes_per_branch=None):
     from .fast_bootstrap_executor import ForwardFastBootstrapExecutor
     from .multi_branch import ForwardMultiBranchExecutor
+
+    sync.logger = SyncLogging(job=job.pk if job else sync.pk)
+    try:
+        sync.full_clean()
+    except ValidationError as exc:
+        sync.logger.log_failure(
+            f"Forward sync configuration is invalid: {exc}",
+            obj=sync,
+        )
+        raise
 
     if sync.is_waiting_for_branch_merge:
         sync.logger.log_warning(

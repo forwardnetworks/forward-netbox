@@ -1191,6 +1191,23 @@ class ForwardSyncModelTest(TestCase):
 
         self.assertIn("Select at least one NetBox model to sync.", str(ctx.exception))
 
+    def test_sync_requires_dcim_device_for_child_models(self):
+        sync = ForwardSync(
+            name="sync-child-model-without-device",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": False,
+                "dcim.interface": True,
+            },
+        )
+
+        with self.assertRaises(ValidationError) as ctx:
+            sync.clean()
+
+        self.assertIn("dcim.device", str(ctx.exception))
+        self.assertIn("dcim.interface", str(ctx.exception))
+
     @override_settings(PLUGINS_CONFIG=BGP_DISABLED_PLUGIN_CONFIG)
     def test_bgp_models_are_disabled_without_feature_flag_even_when_parameter_is_true(
         self,
@@ -2276,6 +2293,49 @@ class ForwardIngestionSnapshotSummaryTest(TestCase):
             message="prefix warning",
             exception="warning",
         )
+        now = timezone.now()
+        execution_job = Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=self.sync.pk,
+            name="analysis summary job",
+            user=None,
+            status=JobStatusChoices.STATUS_COMPLETED,
+            job_id=str(uuid4()),
+            created=now,
+            started=now,
+            completed=now,
+            data={
+                "dependency_parent_coverage": {
+                    "available": True,
+                    "source": "run_job_data.dependency_parent_coverage",
+                    "row_count": 8,
+                    "blocked_row_count": 3,
+                    "missing_parent_count": 1,
+                    "model_count": 1,
+                    "models": [
+                        {
+                            "available": True,
+                            "model": "dcim.interface",
+                            "row_count": 8,
+                            "blocked_row_count": 3,
+                            "missing_parent_count": 1,
+                            "missing_parent_names": ["device-1"],
+                            "groups": [
+                                {
+                                    "parent_model": "dcim.device",
+                                    "parent_field": "device",
+                                    "parent_name": "device-1",
+                                    "row_count": 3,
+                                    "sample_rows": ["eth1/1", "eth1/2"],
+                                }
+                            ],
+                        }
+                    ],
+                }
+            },
+        )
+        ingestion.job = execution_job
+        ingestion.save(update_fields=["job"])
 
         analysis = ingestion.get_analysis_summary()
         execution = ingestion.get_execution_summary()
@@ -2310,6 +2370,11 @@ class ForwardIngestionSnapshotSummaryTest(TestCase):
         )
         self.assertEqual(sync_analysis["query_modes"], execution["query_modes"])
         self.assertFalse(sync_analysis["dependency_lookup_cache"]["available"])
+        self.assertTrue(sync_analysis["dependency_parent_coverage"]["available"])
+        self.assertEqual(
+            sync_analysis["dependency_parent_coverage"]["row_count"],
+            8,
+        )
         self.assertTrue(sync_analysis["latest_ingestion"]["baseline_ready"])
         self.assertEqual(sync_analysis["latest_ingestion"]["issue_count"], 2)
 
