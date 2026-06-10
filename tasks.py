@@ -267,6 +267,7 @@ def _run_tests_in_isolated_runtime(
 ):
     isolated = _compose_project_context(context, project_name)
     docker_compose(isolated, "down --remove-orphans -v")
+    docker_compose(isolated, "build netbox netbox-worker")
     docker_compose(isolated, "up -d postgres redis")
     try:
         _wait_for_isolated_postgres(isolated)
