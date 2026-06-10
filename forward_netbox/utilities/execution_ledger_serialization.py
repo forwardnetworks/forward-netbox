@@ -20,14 +20,17 @@ def execution_run_support_bundle(run, *, recommendation_fn):
     latest_ingestion = getattr(getattr(run, "sync", None), "last_ingestion", None)
     latest_ingestion_summary = ingestion_support_summary(latest_ingestion)
     sync_health = {}
+    live_diagnostics = {}
     sync = getattr(run, "sync", None)
     if sync is not None:
         from .health import sync_health_summary
 
         sync_health = sync_health_summary(sync)
+        live_diagnostics = live_support_diagnostics(sync, sync_health=sync_health)
     return {
         "run": run.as_support_summary(),
         "run_job": job_summary(run.job),
+        "health": sync_health,
         "latest_ingestion": latest_ingestion_summary,
         "optional_plugin_capabilities": integration_capability_summary(),
         "analysis_summary": (
@@ -55,6 +58,7 @@ def execution_run_support_bundle(run, *, recommendation_fn):
         "compatibility_cache": _compatibility_cache_evidence(run),
         "api_usage": api_usage_support_summary(run),
         "insights_summary": execution_run_insights_summary(run),
+        "live_diagnostics": live_diagnostics,
         "recovery_recommendation": recommendation_fn(run),
         "recovery_policy_summary": _recovery_policy_summary(run),
         "metrics": execution_run_metrics(run, step_list),
@@ -71,6 +75,69 @@ def execution_run_support_bundle(run, *, recommendation_fn):
             for step in step_list
         ],
     }
+
+
+def live_support_diagnostics(sync, *, sync_health=None):
+    if sync is None or getattr(sync, "source", None) is None:
+        return {
+            "available": False,
+            "message": "No sync source is available for live diagnostics.",
+        }
+    try:
+        client = sync.source.get_client()
+    except Exception as exc:
+        return {
+            "available": False,
+            "message": f"Could not construct a Forward client for live diagnostics: {exc}",
+        }
+
+    from .health import live_data_file_health_check
+    from .health import live_source_health_check
+    from .query_binding import live_query_binding_drift
+
+    maps = [
+        query_map
+        for query_map in sync.get_maps()
+        if sync.is_model_enabled(query_map.model_string)
+    ]
+    if sync_health is None:
+        from .health import sync_health_summary
+
+        sync_health = sync_health_summary(sync)
+    source_health = _safe_live_diagnostic(live_source_health_check, sync)
+    data_file_health = _safe_live_diagnostic(live_data_file_health_check, sync)
+    query_drift_results = []
+    query_drift_error = ""
+    try:
+        query_drift_results = [
+            live_query_binding_drift(client=client, query_map=query_map)
+            for query_map in maps
+        ]
+    except Exception as exc:
+        query_drift_error = str(exc)
+
+    return {
+        "available": True,
+        "source_health": source_health,
+        "query_drift": {
+            "available": True,
+            "summary": sync_health.get("query_drift_summary", {}),
+            "results": query_drift_results,
+            "error": query_drift_error,
+        },
+        "data_file_health": data_file_health,
+        "enabled_map_count": len(maps),
+    }
+
+
+def _safe_live_diagnostic(func, sync):
+    try:
+        return func(sync)
+    except Exception as exc:
+        return {
+            "available": False,
+            "error": str(exc),
+        }
 
 
 def execution_run_insights_summary(run):

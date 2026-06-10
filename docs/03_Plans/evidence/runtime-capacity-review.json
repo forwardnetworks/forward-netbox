@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-06-02T03:42:12.216354+00:00",
+  "generated_at": "2026-06-10T13:45:36.260275+00:00",
   "host": {
     "cpu_count": 12,
     "memory_gib": 32
@@ -29,10 +29,10 @@
   },
   "source": {
     "available": true,
-    "nqe_page_size": 5000,
-    "query_fetch_concurrency": 2,
+    "nqe_page_size": null,
+    "query_fetch_concurrency": null,
     "source_name": "smoke-source-release-smoke-20260601",
-    "timeout": 1200
+    "timeout": null
   },
   "storage": {
     "docker_root_dir": "/var/lib/docker",

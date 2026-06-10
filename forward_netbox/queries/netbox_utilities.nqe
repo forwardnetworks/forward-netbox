@@ -67,14 +67,13 @@ export isAciNxosVersion(platform_os: String, platform_os_version: String) =
     || matches(platform_os_version, "16.*")
   );
 
-export normalizePlatformName(platform_os: String, platform_os_version: String) =
-  if matches(toLowerCase(platformOsName(platform_os)), "*apic*")
-    || matches(toLowerCase(platformOsName(platform_os)), "*nxos_aci*")
-    || isAciNxosVersion(platform_os, platform_os_version)
-  then "ACI"
-  else platformOsName(platform_os);
+export normalizePlatformName(platform_os: String, platform_os_version: String) = if matches(toLowerCase(platformOsName(platform_os)), "*apic*")
+  || matches(toLowerCase(platformOsName(platform_os)), "*nxos_aci*")
+  || isAciNxosVersion(platform_os, platform_os_version)
+then "ACI"
+else platformOsName(platform_os);
 
-export deviceHasAciCommandOutputs(device) =
+export deviceHasAciCommandOutputs(device: Device) =
   isPresent(
     max(
       foreach command in device.outputs.commands
@@ -100,20 +99,17 @@ export deviceHasAciCommandOutputs(device) =
     )
   );
 
-export isAciDevice(device) =
+export isAciDevice(device: Device) =
   normalizePlatformName(
     toString(device.platform.os),
     if isPresent(device.platform.osVersion) then device.platform.osVersion else ""
   ) == "ACI"
   || deviceHasAciCommandOutputs(device);
 
-export normalizeDevicePlatformName(device) =
-  if isAciDevice(device)
-  then "ACI"
-  else normalizePlatformName(
-    toString(device.platform.os),
-    if isPresent(device.platform.osVersion) then device.platform.osVersion else ""
-  );
+export normalizeDevicePlatformName(device: Device) = if isAciDevice(device) then "ACI" else normalizePlatformName(
+  toString(device.platform.os),
+  if isPresent(device.platform.osVersion) then device.platform.osVersion else ""
+);
 
 export slugify(value: String) =
   replaceRegexMatches(

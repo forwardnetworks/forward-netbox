@@ -37,6 +37,20 @@
     <a class="btn btn-outline-secondary" href="{{ support_bundle_url }}">
       <i class="mdi mdi-download" aria-hidden="true"></i>&nbsp;{% trans "Export Support Bundle" %}
     </a>
+    <form action="{{ support_bundle_zip_url }}" method="post" class="d-inline-flex align-items-center gap-2">
+      {% csrf_token %}
+      <input
+        type="password"
+        name="password"
+        class="form-control form-control-sm"
+        style="width: 12rem;"
+        placeholder="{% trans 'Password' %}"
+        autocomplete="off"
+      >
+      <button type="submit" class="btn btn-outline-secondary">
+        <i class="mdi mdi-zip-box" aria-hidden="true"></i>&nbsp;{% trans "Export ZIP" %}
+      </button>
+    </form>
   {% endif %}
 {% endblock extra_controls %}
 
