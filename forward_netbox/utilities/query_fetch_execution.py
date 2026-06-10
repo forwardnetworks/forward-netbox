@@ -1565,7 +1565,8 @@ class ForwardQueryFetcher:
                     f"Fetching {model_string} shard using {metadata_shard_scope['fetch_mode']} scope.",
                     obj=self.sync,
                 )
-        parameters = self._apply_context_tag_parameters(parameters, context)
+        parameters = self._apply_context_tag_parameters(spec, parameters, context)
+        parameters = self._validate_query_parameters(model_string, spec, parameters)
         query_parameters = dict(parameters or {})
         fetch_artifact_descriptor = self._fetch_artifact_descriptor(
             model_string=model_string,
@@ -1740,6 +1741,9 @@ class ForwardQueryFetcher:
 
     def _query_parameters_for_scope(self, spec, context: ForwardQueryContext, scope):
         parameters = spec.merged_parameters(context.query_parameters)
+        model_string = getattr(spec, "model_string", "") or getattr(
+            spec, "query_name", ""
+        )
         if scope:
             if scope.get("fetch_mode") == "nqe_parameters":
                 parameters = {
@@ -1751,7 +1755,10 @@ class ForwardQueryFetcher:
                     **parameters,
                     **(scope.get("query_parameters") or {}),
                 }
-        return self._apply_context_tag_parameters(dict(parameters or {}), context)
+        parameters = self._apply_context_tag_parameters(
+            spec, dict(parameters or {}), context
+        )
+        return self._validate_query_parameters(model_string, spec, parameters)
 
     def _fetch_artifact_descriptor(
         self,
@@ -1824,16 +1831,57 @@ class ForwardQueryFetcher:
         }
 
     def _apply_context_tag_parameters(
-        self, parameters: dict[str, Any], context: ForwardQueryContext
+        self,
+        spec,
+        parameters: dict[str, Any],
+        context: ForwardQueryContext,
     ) -> dict[str, Any]:
-        if "device_tag_include_tags" not in parameters:
-            return parameters
+        spec_parameters = getattr(spec, "parameters", {}) or {}
+        if not isinstance(spec_parameters, dict):
+            spec_parameters = {}
+        accepts_device_tag_parameters = any(
+            key in spec_parameters
+            for key in (
+                "device_tag_include_tags",
+                "device_tag_exclude_tags",
+                "device_tag_include_match",
+            )
+        )
+        sanitized_parameters = {
+            key: value
+            for key, value in parameters.items()
+            if not str(key).startswith("device_tag_")
+        }
+        if not accepts_device_tag_parameters:
+            return sanitized_parameters
         tag_parameters = {
             "device_tag_include_tags": list(context.device_tag_include_tags or []),
             "device_tag_include_match": context.device_tag_include_match or "any",
             "device_tag_exclude_tags": list(context.device_tag_exclude_tags or []),
         }
-        return {**parameters, **tag_parameters}
+        return {**sanitized_parameters, **tag_parameters}
+
+    def _validate_query_parameters(
+        self,
+        model_string: str,
+        spec,
+        parameters: dict[str, Any],
+    ) -> dict[str, Any]:
+        spec_parameters = getattr(spec, "parameters", {}) or {}
+        if not isinstance(spec_parameters, dict):
+            spec_parameters = {}
+        if not spec_parameters:
+            return parameters
+        unexpected = sorted(key for key in parameters if key not in spec_parameters)
+        if unexpected:
+            query_name = getattr(spec, "query_name", "") or model_string
+            raise ForwardQueryError(
+                "Forward NQE map "
+                f"`{query_name}` for {model_string} produced unsupported parameter(s): "
+                f"{', '.join(unexpected)}. Update the query contract instead of "
+                "injecting runtime parameters."
+            )
+        return parameters
 
     def _apply_device_tag_scope(
         self, model_string: str, rows: list[dict], context: ForwardQueryContext
