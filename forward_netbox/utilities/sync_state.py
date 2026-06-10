@@ -20,6 +20,9 @@ from .density_learning import normalize_density_profile
 from .execution_ledger_serialization import (
     dependency_lookup_cache_support_summary as _dependency_lookup_cache_support_summary,
 )
+from .execution_ledger_serialization import (
+    dependency_parent_coverage_support_summary as _dependency_parent_coverage_support_summary,
+)
 from .execution_telemetry import build_branch_run_summary
 from .execution_telemetry import build_sync_execution_summary
 from .job_liveness import job_has_live_execution
@@ -482,6 +485,7 @@ def get_analysis_summary(sync):
         "query_path_resolution": {},
         "query_modes": {},
         "dependency_lookup_cache": {},
+        "dependency_parent_coverage": {},
     }
     if last_ingestion is not None:
         latest_execution_summary = last_ingestion.get_execution_summary()
@@ -494,6 +498,11 @@ def get_analysis_summary(sync):
         )
         summary["dependency_lookup_cache"] = _dependency_lookup_cache_support_summary(
             SimpleNamespace(job=last_ingestion.job)
+        )
+        summary["dependency_parent_coverage"] = (
+            _dependency_parent_coverage_support_summary(
+                SimpleNamespace(job=last_ingestion.job)
+            )
         )
         summary["baseline_ready"] = bool(last_ingestion.baseline_ready)
         summary["sync_mode"] = last_ingestion.sync_mode or ""
@@ -968,6 +977,11 @@ def get_advisory_summary(sync):
         )
         summary["dependency_lookup_cache"] = _dependency_lookup_cache_support_summary(
             SimpleNamespace(job=last_ingestion.job)
+        )
+        summary["dependency_parent_coverage"] = (
+            _dependency_parent_coverage_support_summary(
+                SimpleNamespace(job=last_ingestion.job)
+            )
         )
     latest_validation_run = sync.latest_validation_run
     if latest_validation_run is not None:

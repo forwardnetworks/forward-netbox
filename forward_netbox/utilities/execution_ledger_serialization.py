@@ -55,6 +55,7 @@ def execution_run_support_bundle(run, *, recommendation_fn):
             else []
         ),
         "dependency_lookup_cache": dependency_lookup_cache_support_summary(run),
+        "dependency_parent_coverage": dependency_parent_coverage_support_summary(run),
         "compatibility_cache": _compatibility_cache_evidence(run),
         "api_usage": api_usage_support_summary(run),
         "insights_summary": execution_run_insights_summary(run),
@@ -358,6 +359,36 @@ def dependency_lookup_cache_support_summary(run):
     }
 
 
+def dependency_parent_coverage_support_summary(run):
+    job = getattr(run, "job", None)
+    job_data = getattr(job, "data", None) if job is not None else None
+    if not isinstance(job_data, dict):
+        return {
+            "available": False,
+            "reason": "run_job_data_missing",
+            "source": "run_job_data.dependency_parent_coverage",
+        }
+    raw_summary = job_data.get("dependency_parent_coverage")
+    if not isinstance(raw_summary, dict):
+        return {
+            "available": False,
+            "reason": "dependency_parent_coverage_missing",
+            "source": "run_job_data.dependency_parent_coverage",
+        }
+    models = raw_summary.get("models")
+    if not isinstance(models, list):
+        models = []
+    return {
+        "available": True,
+        "source": "run_job_data.dependency_parent_coverage",
+        "row_count": int(raw_summary.get("row_count") or 0),
+        "blocked_row_count": int(raw_summary.get("blocked_row_count") or 0),
+        "missing_parent_count": int(raw_summary.get("missing_parent_count") or 0),
+        "model_count": int(raw_summary.get("model_count") or len(models)),
+        "models": models,
+    }
+
+
 def _api_usage_step_query_parameter_summary(run):
     steps = (
         run.steps.order_by("index", "kind")
@@ -475,6 +506,9 @@ def ingestion_support_summary(ingestion):
         "query_modes": execution_summary.get("query_modes", {}),
         "query_path_resolution": execution_summary.get("query_path_resolution", {}),
         "dependency_lookup_cache": dependency_lookup_cache_support_summary(
+            SimpleNamespace(job=ingestion.job)
+        ),
+        "dependency_parent_coverage": dependency_parent_coverage_support_summary(
             SimpleNamespace(job=ingestion.job)
         ),
         "analysis_summary": ingestion.get_analysis_summary(),
