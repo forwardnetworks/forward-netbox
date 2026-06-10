@@ -128,3 +128,63 @@ class SyncLoggingTest(TestCase):
             "dcim.device",
         )
         mock_cache_set.assert_called_once()
+
+    @patch("forward_netbox.utilities.logging.cache.set")
+    def test_increment_statistics_supports_bulk_amounts(self, mock_cache_set):
+        logger = SyncLogging(job=52)
+
+        logger.increment_statistics("dcim.interface", outcome="skipped", amount=3)
+
+        self.assertEqual(
+            logger.log_data["statistics"]["dcim.interface"],
+            {
+                "current": 3,
+                "total": 0,
+                "applied": 0,
+                "failed": 0,
+                "skipped": 3,
+                "unchanged": 0,
+            },
+        )
+        mock_cache_set.assert_called_once()
+
+    @patch("forward_netbox.utilities.logging.cache.set")
+    def test_add_dependency_parent_coverage_summary_persists_model_payload(
+        self, mock_cache_set
+    ):
+        logger = SyncLogging(job=52)
+
+        logger.add_dependency_parent_coverage_summary(
+            {
+                "available": True,
+                "model": "dcim.interface",
+                "row_count": 8,
+                "blocked_row_count": 3,
+                "missing_parent_count": 1,
+                "missing_parent_names": ["device-1"],
+                "groups": [
+                    {
+                        "parent_model": "dcim.device",
+                        "parent_field": "device",
+                        "parent_name": "device-1",
+                        "row_count": 3,
+                        "sample_rows": ["eth1/1", "eth1/2"],
+                    }
+                ],
+            }
+        )
+
+        self.assertTrue(logger.log_data["dependency_parent_coverage"]["available"])
+        self.assertEqual(
+            logger.log_data["dependency_parent_coverage"]["row_count"],
+            8,
+        )
+        self.assertEqual(
+            logger.log_data["dependency_parent_coverage"]["blocked_row_count"],
+            3,
+        )
+        self.assertEqual(
+            logger.log_data["dependency_parent_coverage"]["models"][0]["model"],
+            "dcim.interface",
+        )
+        mock_cache_set.assert_called_once()

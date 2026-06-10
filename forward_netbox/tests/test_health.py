@@ -236,6 +236,37 @@ class ForwardSyncHealthTest(TestCase):
         )
 
     def test_sync_health_summary_reports_local_state(self):
+        self.execution_job.data = {
+            **self.execution_job.data,
+            "dependency_parent_coverage": {
+                "available": True,
+                "source": "run_job_data.dependency_parent_coverage",
+                "row_count": 8,
+                "blocked_row_count": 3,
+                "missing_parent_count": 1,
+                "model_count": 1,
+                "models": [
+                    {
+                        "available": True,
+                        "model": "dcim.interface",
+                        "row_count": 8,
+                        "blocked_row_count": 3,
+                        "missing_parent_count": 1,
+                        "missing_parent_names": ["device-1"],
+                        "groups": [
+                            {
+                                "parent_model": "dcim.device",
+                                "parent_field": "device",
+                                "parent_name": "device-1",
+                                "row_count": 3,
+                                "sample_rows": ["eth1/1", "eth1/2"],
+                            }
+                        ],
+                    }
+                ],
+            },
+        }
+        self.execution_job.save(update_fields=["data"])
         with patch.object(ForwardSource, "get_client"):
             summary = sync_health_summary(self.sync)
 
@@ -333,6 +364,20 @@ class ForwardSyncHealthTest(TestCase):
         )
         self.assertTrue(
             summary["latest_ingestion"]["dependency_lookup_cache"]["available"]
+        )
+        self.assertTrue(
+            summary["latest_ingestion"]["dependency_parent_coverage"]["available"]
+        )
+        self.assertEqual(
+            summary["latest_ingestion"]["dependency_parent_coverage"]["row_count"],
+            8,
+        )
+        self.assertEqual(
+            summary["dependency_parent_coverage"]["missing_parent_count"], 1
+        )
+        self.assertEqual(
+            summary["dependency_parent_coverage"]["models"][0]["model"],
+            "dcim.interface",
         )
         self.assertEqual(
             summary["latest_ingestion"]["query_path_resolution"]["artifact_hit_count"],
@@ -660,11 +705,45 @@ class ForwardSyncHealthTest(TestCase):
         self.assertEqual(dependency_check["status"], "warn")
         self.assertIn("netbox_routing.bgppeer", dependency_check["message"])
 
+    def test_dependency_preflight_warns_for_interface_without_device_model(self):
+        sync = self._sync_with_enabled_models(
+            "health-sync-interface-no-device",
+            ["dcim.interface"],
+        )
+        ForwardIngestion.objects.create(
+            sync=sync,
+            snapshot_selector="latestProcessed",
+            snapshot_id="snapshot-dependency-device",
+            baseline_ready=True,
+        )
+
+        summary = sync_health_summary(sync)
+        preflight = summary["dependency_preflight"]
+
+        self.assertEqual(preflight["status"], "warn")
+        interface_warning = next(
+            item
+            for item in preflight["warnings"]
+            if item["selected_model"] == "dcim.interface"
+            and item["code"] == "parent_device_model_omitted"
+        )
+        self.assertEqual(interface_warning["omitted_models"], ["dcim.device"])
+        self.assertEqual(interface_warning["suggested_models"], ["dcim.device"])
+        self.assertIn("dcim.device", interface_warning["message"])
+        dependency_check = next(
+            item
+            for item in summary["checks"]
+            if item["name"] == "Scoped dependency preflight"
+        )
+        self.assertEqual(dependency_check["status"], "warn")
+        self.assertIn("dcim.device", dependency_check["message"])
+
     @override_settings(PLUGINS_CONFIG=BGP_PLUGIN_CONFIG)
     def test_dependency_preflight_passes_when_routing_models_are_enabled(self):
         sync = self._sync_with_enabled_models(
             "health-sync-interface-with-bgp",
             [
+                "dcim.device",
                 "dcim.interface",
                 "ipam.ipaddress",
                 "netbox_routing.bgppeer",

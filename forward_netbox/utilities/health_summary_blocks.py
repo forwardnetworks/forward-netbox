@@ -29,6 +29,9 @@ from .execution_ledger_metrics import recent_pushdown_trend_snapshots
 from .execution_ledger_serialization import (
     dependency_lookup_cache_support_summary as _dependency_lookup_cache_support_summary,
 )
+from .execution_ledger_serialization import (
+    dependency_parent_coverage_support_summary as _dependency_parent_coverage_support_summary,
+)
 from .execution_telemetry import _build_query_mode_summary
 from .forward_api import DEFAULT_NQE_PAGE_SIZE
 from .forward_api import MAX_NQE_PAGE_SIZE
@@ -38,6 +41,7 @@ from .runtime_guidance import configured_rq_default_timeout
 from .runtime_guidance import source_pushdown_alert_thresholds
 from .runtime_guidance import source_query_fetch_concurrency
 from .runtime_guidance import source_timeout_seconds
+from .sync_primitives import DEPENDENCY_PARENT_DEVICE_MODELS
 
 
 def _safe_int(value):
@@ -94,6 +98,8 @@ DEPENDENCY_PREFLIGHT_RULES = (
         ),
     },
 )
+
+PARENT_DEVICE_DEPENDENT_MODELS = DEPENDENCY_PARENT_DEVICE_MODELS
 
 DELETE_TERMINAL_STEP_STATUSES = {
     ForwardExecutionStepStatusChoices.STAGED,
@@ -211,6 +217,9 @@ def ingestion_summary(ingestion):
         "execution_summary": execution_summary,
         "workload_preview": ingestion.get_workload_summary(),
         "dependency_lookup_cache": _dependency_lookup_cache_support_summary(
+            SimpleNamespace(job=ingestion.job)
+        ),
+        "dependency_parent_coverage": _dependency_parent_coverage_support_summary(
             SimpleNamespace(job=ingestion.job)
         ),
         "query_path_resolution": query_path_resolution_summary(ingestion),
@@ -802,6 +811,8 @@ def dependency_preflight_summary(sync, enabled_models):
         selected_model = rule["selected_model"]
         if selected_model not in enabled_model_set:
             continue
+        if selected_model == "dcim.device" and not delete_or_prune:
+            continue
         omitted_models = [
             model
             for model in rule["omitted_models"]
@@ -826,6 +837,29 @@ def dependency_preflight_summary(sync, enabled_models):
                 },
             }
         )
+
+    if "dcim.device" not in enabled_model_set and "dcim.device" in configured_models:
+        for selected_model in sorted(PARENT_DEVICE_DEPENDENT_MODELS):
+            if selected_model not in enabled_model_set:
+                continue
+            warnings.append(
+                {
+                    "code": "parent_device_model_omitted",
+                    "status": "warn",
+                    "selected_model": selected_model,
+                    "omitted_models": ["dcim.device"],
+                    "suggested_models": ["dcim.device"],
+                    "message": (
+                        f"{selected_model} rows rely on dcim.device coverage in the "
+                        "same sync. Include dcim.device or expect child rows to be "
+                        "skipped when parent device rows are missing."
+                    ),
+                    "delete_dependency_rank": _delete_dependency_rank(selected_model),
+                    "omitted_delete_dependency_ranks": {
+                        "dcim.device": _delete_dependency_rank("dcim.device"),
+                    },
+                }
+            )
 
     if warnings:
         return {
