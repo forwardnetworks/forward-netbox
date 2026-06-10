@@ -13445,6 +13445,12 @@ class QueryParameterCompatibilityTest(TestCase):
             run_query_id="qid-1",
             commit_id="cid-1",
             execution_value="qid-1",
+            parameters={
+                "device_tag_include_tags": [],
+                "device_tag_include_match": "any",
+                "device_tag_exclude_tags": [],
+                "forward_netbox_shard_keys": [],
+            },
             merged_parameters=Mock(
                 return_value={
                     "device_tag_include_tags": [],
@@ -13482,6 +13488,47 @@ class QueryParameterCompatibilityTest(TestCase):
             },
         )
 
+    def test_apply_context_tag_parameters_strips_legacy_aliases(self):
+        sync = Mock()
+        fetcher = ForwardQueryFetcher(sync=sync, client=Mock(), logger_=Mock())
+        spec = Mock(
+            parameters={
+                "forward_netbox_shard_keys": [],
+                "device_tag_include_tags": [],
+                "device_tag_include_match": "any",
+                "device_tag_exclude_tags": [],
+            }
+        )
+        context = ForwardQueryContext(
+            network_id="n1",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="s1",
+            device_tag_include_tags=["Core"],
+            device_tag_include_match="all",
+            device_tag_exclude_tags=["Branch"],
+        )
+
+        parameters = fetcher._apply_context_tag_parameters(
+            spec,
+            {
+                "forward_netbox_shard_keys": [],
+                "device_tag_include": "Core",
+                "device_tag_exclude": "Branch",
+                "device_tag_prune_out_of_scope": True,
+            },
+            context,
+        )
+
+        self.assertEqual(
+            parameters,
+            {
+                "forward_netbox_shard_keys": [],
+                "device_tag_include_tags": ["Core"],
+                "device_tag_include_match": "all",
+                "device_tag_exclude_tags": ["Branch"],
+            },
+        )
+
     def test_query_fetch_does_not_push_context_tags_to_unparameterized_specs(self):
         sync = Mock()
         fetcher = ForwardQueryFetcher(sync=sync, client=Mock(), logger_=Mock())
@@ -13490,7 +13537,15 @@ class QueryParameterCompatibilityTest(TestCase):
             run_query_id="qid-plain",
             commit_id="cid-plain",
             execution_value="qid-plain",
-            merged_parameters=Mock(return_value={}),
+            parameters={"forward_netbox_shard_keys": []},
+            merged_parameters=Mock(
+                return_value={
+                    "forward_netbox_shard_keys": [],
+                    "device_tag_include_tags": ["Core", "DC"],
+                    "device_tag_include_match": "all",
+                    "device_tag_exclude_tags": ["Branch"],
+                }
+            ),
         )
         context = ForwardQueryContext(
             network_id="n1",
@@ -13512,8 +13567,29 @@ class QueryParameterCompatibilityTest(TestCase):
 
         self.assertEqual(
             fetcher._run_nqe_query.call_args.kwargs["parameters"],
-            {},
+            {"forward_netbox_shard_keys": []},
         )
+
+    def test_query_fetch_rejects_unsupported_parameters_after_merge(self):
+        sync = Mock()
+        fetcher = ForwardQueryFetcher(sync=sync, client=Mock(), logger_=Mock())
+        spec = Mock(
+            query_name="Forward IP Addresses",
+            parameters={"forward_netbox_shard_keys": []},
+        )
+
+        with self.assertRaisesRegex(
+            ForwardQueryError,
+            r"unsupported parameter\(s\): device_tag_include_tags",
+        ):
+            fetcher._validate_query_parameters(
+                "ipam.ipaddress",
+                spec,
+                {
+                    "forward_netbox_shard_keys": [],
+                    "device_tag_include_tags": ["Core"],
+                },
+            )
 
     def test_query_fetch_escapes_tag_scope_literals_in_scoped_query(self):
         source = ForwardSource.objects.create(
