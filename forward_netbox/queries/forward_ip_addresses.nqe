@@ -11,15 +11,16 @@ subinterface_ipv4(forward_netbox_shard_keys: List<String>) =
   foreach interface in device.interfaces
   foreach subinterface in interface.subinterfaces
   foreach address in subinterface.ipv4.addresses
-  where address.prefixLength >= 31 || address.ip != networkAddress(ipSubnet(address.ip, address.prefixLength))
-  where address.prefixLength >= 31 || address.ip != broadcastAddress(ipSubnet(address.ip, address.prefixLength))
+  let subnet = ipSubnet(address.ip, address.prefixLength)
+  where address.prefixLength >= 31 || address.ip != networkAddress(subnet)
+  where address.prefixLength >= 31 || address.ip != broadcastAddress(subnet)
   select {
     device: device.name,
     interface: interface.name,
     vrf: if isPresent(subinterface.networkInstanceName)
       then if subinterface.networkInstanceName != "default" then subinterface.networkInstanceName else null : String
       else null : String,
-    address: ipSubnet(address.ip, address.prefixLength),
+    address: subnet,
     host_ip: address.ip,
     prefix_length: address.prefixLength,
     status: "active"
@@ -33,14 +34,15 @@ subinterface_ipv6(forward_netbox_shard_keys: List<String>) =
   foreach interface in device.interfaces
   foreach subinterface in interface.subinterfaces
   foreach address in subinterface.ipv6.addresses
-  where address.prefixLength >= 127 || address.ip != networkAddress(ipSubnet(address.ip, address.prefixLength))
+  let subnet = ipSubnet(address.ip, address.prefixLength)
+  where address.prefixLength >= 127 || address.ip != networkAddress(subnet)
   select {
     device: device.name,
     interface: interface.name,
     vrf: if isPresent(subinterface.networkInstanceName)
       then if subinterface.networkInstanceName != "default" then subinterface.networkInstanceName else null : String
       else null : String,
-    address: ipSubnet(address.ip, address.prefixLength),
+    address: subnet,
     host_ip: address.ip,
     prefix_length: address.prefixLength,
     status: "active"
@@ -54,15 +56,16 @@ bridge_ipv4(forward_netbox_shard_keys: List<String>) =
   foreach interface in device.interfaces
   where isPresent(interface.bridge?.ipv4?.addresses)
   foreach address in interface.bridge.ipv4.addresses
-  where address.prefixLength >= 31 || address.ip != networkAddress(ipSubnet(address.ip, address.prefixLength))
-  where address.prefixLength >= 31 || address.ip != broadcastAddress(ipSubnet(address.ip, address.prefixLength))
+  let subnet = ipSubnet(address.ip, address.prefixLength)
+  where address.prefixLength >= 31 || address.ip != networkAddress(subnet)
+  where address.prefixLength >= 31 || address.ip != broadcastAddress(subnet)
   select {
     device: device.name,
     interface: interface.name,
     vrf: if isPresent(interface.bridge.networkInstanceName)
       then if interface.bridge.networkInstanceName != "default" then interface.bridge.networkInstanceName else null : String
       else null : String,
-    address: ipSubnet(address.ip, address.prefixLength),
+    address: subnet,
     host_ip: address.ip,
     prefix_length: address.prefixLength,
     status: "active"
@@ -76,14 +79,15 @@ bridge_ipv6(forward_netbox_shard_keys: List<String>) =
   foreach interface in device.interfaces
   where isPresent(interface.bridge?.ipv6?.addresses)
   foreach address in interface.bridge.ipv6.addresses
-  where address.prefixLength >= 127 || address.ip != networkAddress(ipSubnet(address.ip, address.prefixLength))
+  let subnet = ipSubnet(address.ip, address.prefixLength)
+  where address.prefixLength >= 127 || address.ip != networkAddress(subnet)
   select {
     device: device.name,
     interface: interface.name,
     vrf: if isPresent(interface.bridge.networkInstanceName)
       then if interface.bridge.networkInstanceName != "default" then interface.bridge.networkInstanceName else null : String
       else null : String,
-    address: ipSubnet(address.ip, address.prefixLength),
+    address: subnet,
     host_ip: address.ip,
     prefix_length: address.prefixLength,
     status: "active"
@@ -97,15 +101,16 @@ tunnel_ipv4(forward_netbox_shard_keys: List<String>) =
   foreach interface in device.interfaces
   where isPresent(interface.tunnel?.ipv4?.addresses)
   foreach address in interface.tunnel.ipv4.addresses
-  where address.prefixLength >= 31 || address.ip != networkAddress(ipSubnet(address.ip, address.prefixLength))
-  where address.prefixLength >= 31 || address.ip != broadcastAddress(ipSubnet(address.ip, address.prefixLength))
+  let subnet = ipSubnet(address.ip, address.prefixLength)
+  where address.prefixLength >= 31 || address.ip != networkAddress(subnet)
+  where address.prefixLength >= 31 || address.ip != broadcastAddress(subnet)
   select {
     device: device.name,
     interface: interface.name,
     vrf: if isPresent(interface.tunnel.networkInstanceName)
       then if interface.tunnel.networkInstanceName != "default" then interface.tunnel.networkInstanceName else null : String
       else null : String,
-    address: ipSubnet(address.ip, address.prefixLength),
+    address: subnet,
     host_ip: address.ip,
     prefix_length: address.prefixLength,
     status: "active"
@@ -119,14 +124,15 @@ tunnel_ipv6(forward_netbox_shard_keys: List<String>) =
   foreach interface in device.interfaces
   where isPresent(interface.tunnel?.ipv6?.addresses)
   foreach address in interface.tunnel.ipv6.addresses
-  where address.prefixLength >= 127 || address.ip != networkAddress(ipSubnet(address.ip, address.prefixLength))
+  let subnet = ipSubnet(address.ip, address.prefixLength)
+  where address.prefixLength >= 127 || address.ip != networkAddress(subnet)
   select {
     device: device.name,
     interface: interface.name,
     vrf: if isPresent(interface.tunnel.networkInstanceName)
       then if interface.tunnel.networkInstanceName != "default" then interface.tunnel.networkInstanceName else null : String
       else null : String,
-    address: ipSubnet(address.ip, address.prefixLength),
+    address: subnet,
     host_ip: address.ip,
     prefix_length: address.prefixLength,
     status: "active"
@@ -140,15 +146,16 @@ routed_vlan_ipv4(forward_netbox_shard_keys: List<String>) =
   foreach interface in device.interfaces
   where isPresent(interface.routedVlan?.ipv4?.addresses)
   foreach address in interface.routedVlan.ipv4.addresses
-  where address.prefixLength >= 31 || address.ip != networkAddress(ipSubnet(address.ip, address.prefixLength))
-  where address.prefixLength >= 31 || address.ip != broadcastAddress(ipSubnet(address.ip, address.prefixLength))
+  let subnet = ipSubnet(address.ip, address.prefixLength)
+  where address.prefixLength >= 31 || address.ip != networkAddress(subnet)
+  where address.prefixLength >= 31 || address.ip != broadcastAddress(subnet)
   select {
     device: device.name,
     interface: interface.name,
     vrf: if isPresent(interface.routedVlan.networkInstanceName)
       then if interface.routedVlan.networkInstanceName != "default" then interface.routedVlan.networkInstanceName else null : String
       else null : String,
-    address: ipSubnet(address.ip, address.prefixLength),
+    address: subnet,
     host_ip: address.ip,
     prefix_length: address.prefixLength,
     status: "active"
@@ -162,14 +169,15 @@ routed_vlan_ipv6(forward_netbox_shard_keys: List<String>) =
   foreach interface in device.interfaces
   where isPresent(interface.routedVlan?.ipv6?.addresses)
   foreach address in interface.routedVlan.ipv6.addresses
-  where address.prefixLength >= 127 || address.ip != networkAddress(ipSubnet(address.ip, address.prefixLength))
+  let subnet = ipSubnet(address.ip, address.prefixLength)
+  where address.prefixLength >= 127 || address.ip != networkAddress(subnet)
   select {
     device: device.name,
     interface: interface.name,
     vrf: if isPresent(interface.routedVlan.networkInstanceName)
       then if interface.routedVlan.networkInstanceName != "default" then interface.routedVlan.networkInstanceName else null : String
       else null : String,
-    address: ipSubnet(address.ip, address.prefixLength),
+    address: subnet,
     host_ip: address.ip,
     prefix_length: address.prefixLength,
     status: "active"
@@ -182,26 +190,8 @@ candidate_rows(forward_netbox_shard_keys: List<String>) =
 )
   select distinct row;
 
-importable_interfaces(forward_netbox_shard_keys: List<String>) =
-  foreach device in network.devices
-  where device.snapshotInfo.result == DeviceSnapshotResult.completed
-  where device.platform.vendor != Vendor.FORWARD_CUSTOM
-  where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
-  foreach interface in device.interfaces
-  select {
-    device: device.name,
-    interface: interface.name
-  };
-
-assignable_candidate_rows(forward_netbox_shard_keys: List<String>) =
-  foreach row in candidate_rows(forward_netbox_shard_keys)
-  foreach imported_interface in importable_interfaces(forward_netbox_shard_keys)
-  where imported_interface.device == row.device
-  where imported_interface.interface == row.interface
-  select distinct row;
-
 global_candidate_rows(forward_netbox_shard_keys: List<String>) =
-  foreach row in assignable_candidate_rows(forward_netbox_shard_keys)
+  foreach row in candidate_rows(forward_netbox_shard_keys)
   where !isPresent(row.vrf)
   select row;
 
@@ -225,7 +215,7 @@ global_rows(forward_netbox_shard_keys: List<String>) =
   };
 
 vrf_candidate_rows(forward_netbox_shard_keys: List<String>) =
-  foreach row in assignable_candidate_rows(forward_netbox_shard_keys)
+  foreach row in candidate_rows(forward_netbox_shard_keys)
   where isPresent(row.vrf)
   select row;
 

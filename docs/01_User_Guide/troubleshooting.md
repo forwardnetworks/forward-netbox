@@ -77,6 +77,12 @@ Checks:
   query binding mode, diff eligibility, data-file-dependent maps, worker/source
   timeout settings, latest validation, latest ingestion, latest execution run,
   and the current recovery recommendation without making live Forward API calls.
+  The `Export ZIP` control on the sync page packages the same support-bundle
+  evidence into a compressed archive, and accepts an optional password when the
+  bundle needs to be shared externally.
+  The bundle also carries live source health, live query-drift, and live
+  data-file health checks so support can work from a single artifact when the
+  issue is reported later.
   Use `Export Live Source Check` when you want the plugin to call Forward and
   export reachability diagnostics for the configured source/network/snapshot
   without including the network ID or snapshot ID in the export.
@@ -155,7 +161,10 @@ Checks:
   linked stage/merge jobs, retry counts, branch names, health summary, and last
   errors. Execution-run support bundles now also include compatibility-cache
   retirement evidence (legacy payload presence, active-run linkage, stale
-  payload detection, and prune recommendation).
+  payload detection, and prune recommendation). The `Export ZIP` control on the
+  sync and execution-run pages compresses the same payload and can be password
+  protected when the archive needs to be shared outside the current trust
+  boundary.
 - Review `core/jobs` plus ingestion issues for the matching timestamp window
   when the exported bundle points to a specific failed job.
 

@@ -1,4 +1,6 @@
+import io
 import json
+import zipfile
 from unittest.mock import patch
 
 from core.choices import JobStatusChoices
@@ -24,6 +26,41 @@ from forward_netbox.utilities.health import sync_health_summary
 
 
 class ForwardIngestionLogExportViewTest(TestCase):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls._live_diagnostics_patcher = patch(
+            "forward_netbox.utilities.execution_ledger_serialization.live_support_diagnostics",
+            return_value={
+                "available": True,
+                "source_health": {
+                    "available": True,
+                    "reachable": True,
+                    "checks": [],
+                },
+                "query_drift": {
+                    "available": True,
+                    "summary": {"status_counts": {"pass": 1}},
+                    "results": [],
+                    "error": "",
+                },
+                "data_file_health": {
+                    "enabled_data_file_map_count": 0,
+                    "required_data_files": [],
+                    "snapshot_selector": "latestProcessed",
+                    "checks": [],
+                    "results": [],
+                },
+                "enabled_map_count": 1,
+            },
+        )
+        cls._live_diagnostics_patcher.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._live_diagnostics_patcher.stop()
+        super().tearDownClass()
+
     @classmethod
     def setUpTestData(cls):
         User = get_user_model()
@@ -260,7 +297,11 @@ class ForwardIngestionLogExportViewTest(TestCase):
             + "?stage=merge"
         )
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.status_code,
+            200,
+            response.content.decode("utf-8", errors="replace"),
+        )
         self.assertIn("attachment;", response["Content-Disposition"])
         self.assertIn("forward-ingestion-", response["Content-Disposition"])
 
@@ -300,7 +341,11 @@ class ForwardIngestionLogExportViewTest(TestCase):
 
         response = self.client.get(self.ingestion.get_absolute_url())
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.status_code,
+            200,
+            response.content.decode("utf-8", errors="replace"),
+        )
         self.assertContains(response, "Change Explainability")
         self.assertContains(response, "ipam.prefix 1")
         self.assertContains(response, "vrf 1")
@@ -316,7 +361,11 @@ class ForwardIngestionLogExportViewTest(TestCase):
             headers={"HX-Request": "true"},
         )
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.status_code,
+            200,
+            response.content.decode("utf-8", errors="replace"),
+        )
         self.assertContains(response, 'id="change_explainability"')
         self.assertContains(response, "ipam.prefix 1")
         self.assertContains(response, "vrf 1")
@@ -332,7 +381,11 @@ class ForwardIngestionLogExportViewTest(TestCase):
             )
         )
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.status_code,
+            200,
+            response.content.decode("utf-8", errors="replace"),
+        )
         data = json.loads(response.content)
         self.assertEqual(
             data["sync"]["execution_state"]["execution_run_id"],
@@ -379,7 +432,11 @@ class ForwardIngestionLogExportViewTest(TestCase):
             )
         )
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.status_code,
+            200,
+            response.content.decode("utf-8", errors="replace"),
+        )
         data = json.loads(response.content)
         self.assertEqual(data["execution_plan"]["total_plan_items"], 99)
         self.assertEqual(data["execution_plan"]["plan_items_count"], 99)
@@ -462,7 +519,11 @@ class ForwardIngestionLogExportViewTest(TestCase):
             )
         )
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.status_code,
+            200,
+            response.content.decode("utf-8", errors="replace"),
+        )
         self.assertIn("attachment;", response["Content-Disposition"])
         self.assertIn(
             f"forward-execution-run-{self.execution_run.pk}-support-bundle.json",
@@ -774,7 +835,11 @@ class ForwardIngestionLogExportViewTest(TestCase):
             )
         )
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.status_code,
+            200,
+            response.content.decode("utf-8", errors="replace"),
+        )
         self.assertIn("attachment;", response["Content-Disposition"])
         self.assertIn(
             f"forward-sync-{self.sync.pk}-support-bundle.json",
@@ -805,6 +870,12 @@ class ForwardIngestionLogExportViewTest(TestCase):
             [{"field": "vrf", "count": 1}],
         )
         self.assertIn("optional_plugin_capabilities", data["execution_run"])
+        self.assertIn("health", data["execution_run"])
+        self.assertEqual(
+            data["execution_run"]["health"]["source"]["name"], self.source.name
+        )
+        self.assertIn("live_diagnostics", data["execution_run"])
+        self.assertTrue(data["execution_run"]["live_diagnostics"]["available"])
         self.assertIn(
             "aci.netbox_cisco_aci",
             data["execution_run"]["optional_plugin_capabilities"],
@@ -859,6 +930,76 @@ class ForwardIngestionLogExportViewTest(TestCase):
         self.assertIn("minimum_version", aci_capabilities)
         self.assertIn("version", aci_capabilities)
         self.assertIn("unsupported_version", aci_capabilities)
+
+    def test_sync_support_bundle_downloads_zip_bundle(self):
+        self.client.force_login(self.user)
+
+        response = self.client.post(
+            reverse(
+                "plugins:forward_netbox:forwardsync_support_bundle_zip",
+                kwargs={"pk": self.sync.pk},
+            ),
+            data={"password": ""},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("attachment;", response["Content-Disposition"])
+        self.assertIn(
+            f"forward-sync-{self.sync.pk}-support-bundle.zip",
+            response["Content-Disposition"],
+        )
+
+        with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+            names = archive.namelist()
+            self.assertEqual(
+                names,
+                [f"forward-sync-{self.sync.pk}-support-bundle.json"],
+            )
+            data = json.loads(archive.read(names[0]))
+
+        self.assertEqual(data["sync"]["pk"], self.sync.pk)
+        self.assertIn("live_diagnostics", data["execution_run"])
+        self.assertTrue(data["execution_run"]["live_diagnostics"]["available"])
+
+    def test_execution_run_support_bundle_downloads_password_protected_zip_bundle(
+        self,
+    ):
+        self.client.force_login(self.user)
+        password = "support-pass-123"
+
+        response = self.client.post(
+            reverse(
+                "plugins:forward_netbox:forwardexecutionrun_export_bundle_zip",
+                kwargs={"pk": self.execution_run.pk},
+            ),
+            data={"password": password},
+        )
+
+        self.assertEqual(
+            response.status_code,
+            200,
+            response.content.decode("utf-8", errors="replace"),
+        )
+        self.assertIn("attachment;", response["Content-Disposition"])
+        self.assertIn(
+            f"forward-execution-run-{self.execution_run.pk}-support-bundle.zip",
+            response["Content-Disposition"],
+        )
+
+        import pyzipper
+
+        with pyzipper.AESZipFile(io.BytesIO(response.content)) as archive:
+            archive.setpassword(password.encode("utf-8"))
+            names = archive.namelist()
+            self.assertEqual(
+                names,
+                [f"forward-execution-run-{self.execution_run.pk}-support-bundle.json"],
+            )
+            data = json.loads(archive.read(names[0]))
+
+        self.assertEqual(data["run"]["id"], self.execution_run.pk)
+        self.assertIn("health", data)
+        self.assertEqual(data["health"]["source"]["name"], self.source.name)
 
     def test_sync_support_bundle_uses_ledger_branch_state_when_cache_is_absent(self):
         self.sync.clear_branch_run_state()

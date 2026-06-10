@@ -8,6 +8,7 @@ from dcim.models import VirtualChassis
 from django.db.models import signals
 from django.utils import timezone
 from django.utils.module_loading import import_string
+from netbox_branching.choices import BranchStatusChoices
 
 from ..choices import ForwardExecutionRunStatusChoices
 from ..choices import ForwardExecutionStepStatusChoices
@@ -369,4 +370,10 @@ def cleanup_merged_branch(ingestion):
     branching_branch = ingestion.branch
     ingestion.branch = None
     ingestion.__class__.objects.filter(pk=ingestion.pk).update(branch=None)
+    # Branching keeps the in-memory instance stale while the merge completes.
+    # Reload the persisted row before deletion so the Branching delete guard
+    # sees the terminal merged state instead of the old merging status.
+    branching_branch = branching_branch.__class__.objects.get(pk=branching_branch.pk)
+    branching_branch.status = BranchStatusChoices.MERGED
+    branching_branch.save(update_fields=["status"])
     branching_branch.delete()
