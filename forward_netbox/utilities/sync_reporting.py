@@ -14,6 +14,7 @@ from ..exceptions import ForwardSearchError
 from ..exceptions import ForwardSyncDataError
 from .execution_ledger import touch_execution_step_progress
 from .json_safe import json_safe_value
+from .sync_primitives import dependency_parent_coverage_summary
 from .sync_primitives import prime_dependency_lookup_caches
 from .sync_state import get_branch_run_display_state
 from .sync_state import touch_branch_run_progress
@@ -257,6 +258,7 @@ def record_issue(
 
 def apply_model_rows(runner, model_string, rows):
     rows = list(rows)
+    total_rows = len(rows)
     if model_string == "dcim.interface":
         rows = sorted(rows, key=lambda row: bool(row.get("lag")))
     handler_name = f"_apply_{model_string.replace('.', '_')}"
@@ -275,6 +277,23 @@ def apply_model_rows(runner, model_string, rows):
         runner, model_string, rows
     )
     runner.logger.add_dependency_lookup_summary(dependency_lookup_summary)
+    dependency_parent_coverage = dependency_parent_coverage_summary(
+        runner,
+        model_string,
+        rows,
+    )
+    runner.logger.add_dependency_parent_coverage_summary(dependency_parent_coverage)
+    if dependency_parent_coverage.get("available"):
+        rows = _filter_dependency_parent_coverage_rows(
+            model_string,
+            rows,
+            dependency_parent_coverage,
+        )
+        _record_dependency_parent_coverage_issue(
+            runner,
+            model_string,
+            dependency_parent_coverage,
+        )
     state = get_branch_run_display_state(runner.sync)
     last_emit_at = 0.0
     processed_rows = 0
@@ -343,7 +362,7 @@ def apply_model_rows(runner, model_string, rows):
             activity_verb="Applying",
             model_string=model_string,
             processed_rows=processed_rows,
-            total_rows=len(rows),
+            total_rows=total_rows,
             state=state,
             last_emit_at=last_emit_at,
         )
@@ -354,6 +373,103 @@ def apply_model_rows(runner, model_string, rows):
     emit_aggregated_conflict_warning_summaries(runner, model_string)
     emit_aggregated_skip_warning_summaries(runner, model_string)
     runner.events_clearer.clear()
+
+
+def _filter_dependency_parent_coverage_rows(model_string, rows, summary):
+    blocked = {
+        (str(group.get("parent_field") or ""), str(group.get("parent_name") or ""))
+        for group in summary.get("groups") or []
+    }
+    if not blocked:
+        return rows
+    filtered_rows = []
+    for row in rows:
+        if _row_matches_missing_parent(model_string, row, blocked):
+            continue
+        filtered_rows.append(row)
+    return filtered_rows
+
+
+def _row_matches_missing_parent(model_string, row, blocked):
+    if model_string not in {
+        "dcim.interface",
+        "dcim.macaddress",
+        "dcim.cable",
+        "dcim.inventoryitem",
+        "dcim.module",
+        "dcim.virtualchassis",
+        "extras.taggeditem",
+        "ipam.fhrpgroup",
+        "ipam.ipaddress",
+        "netbox_peering_manager.peeringsession",
+        "netbox_routing.bgpaddressfamily",
+        "netbox_routing.bgppeer",
+        "netbox_routing.bgppeeraddressfamily",
+        "netbox_routing.ospfinstance",
+        "netbox_routing.ospfinterface",
+    }:
+        return False
+    for field in ("device", "remote_device"):
+        key = (field, str(row.get(field) or "").strip())
+        if key in blocked:
+            return True
+    return False
+
+
+def _record_dependency_parent_coverage_issue(runner, model_string, summary):
+    from ..exceptions import ForwardDependencySkipError
+
+    blocked_row_count = int(summary.get("blocked_row_count") or 0)
+    if blocked_row_count <= 0:
+        return
+    missing_names = [
+        f"`{name}`" for name in summary.get("missing_parent_names") or [] if name
+    ]
+    groups = summary.get("groups") or []
+    sample_rows = []
+    for group in groups:
+        sample_rows.extend(group.get("sample_rows") or [])
+    names_text = ", ".join(missing_names) if missing_names else "unknown parent"
+    plural = len(groups) != 1
+    message = (
+        f"Skipping {blocked_row_count} {model_string} row(s) because referenced "
+        f"device{'' if not plural else 's'} {names_text} "
+        f"{'were' if plural else 'was'} not imported."
+    )
+    context = {
+        "model": model_string,
+        "blocked_row_count": blocked_row_count,
+        "missing_parent_count": int(summary.get("missing_parent_count") or 0),
+        "missing_parent_names": summary.get("missing_parent_names") or [],
+        "missing_parent_fields": sorted(
+            {str(group.get("parent_field") or "") for group in groups if group}
+        ),
+        "sample_rows": sample_rows[:5],
+    }
+    record_issue(
+        runner,
+        model_string,
+        message,
+        {
+            "model": model_string,
+            "blocked_row_count": blocked_row_count,
+            "missing_parent_names": summary.get("missing_parent_names") or [],
+            "sample_rows": sample_rows[:5],
+        },
+        exception=ForwardDependencySkipError(
+            message,
+            model_string=model_string,
+            context=context,
+            data=sample_rows[0] if sample_rows else {},
+        ),
+        context=context,
+        log_level="info",
+    )
+    runner.logger.increment_statistics(
+        model_string,
+        outcome="skipped",
+        amount=blocked_row_count,
+    )
 
 
 def delete_model_rows(runner, model_string, rows):
