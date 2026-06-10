@@ -1758,6 +1758,90 @@ class SyntheticSyncScenarioHarnessTest(TestCase):
             [item["code"] for item in bundle["metrics"]["tuning_guidance"]],
         )
 
+    def test_support_bundle_replays_mixed_query_parameter_contract(self):
+        run = self._execution_run(status="running", next_step_index=2)
+        run.total_steps = 2
+        run.save(update_fields=["total_steps"])
+        job = self._job(instance=self.sync, status=JobStatusChoices.STATUS_COMPLETED)
+        Job.objects.filter(pk=job.pk).update(
+            data={
+                "forward_api_usage": {
+                    "api_requests_per_minute": 1800,
+                    "http_attempts": 4,
+                    "http_successes": 4,
+                    "http_failures": 0,
+                    "http_timeout_failures": 0,
+                    "http_transport_failures": 0,
+                    "http_status_failures": 0,
+                    "http_429_failures": 0,
+                    "http_retries": 0,
+                    "http_status_classes": {"2xx": 4},
+                    "throttle_sleep_seconds": 0.0,
+                    "usage_window_seconds": 12.0,
+                    "observed_http_attempts_per_minute": 20.0,
+                    "nqe_query_calls": 2,
+                    "nqe_diff_calls": 0,
+                    "nqe_pages": 3,
+                    "nqe_query_pages": 3,
+                    "nqe_diff_pages": 0,
+                    "read_cache_hits": 0,
+                    "read_cache_misses": 1,
+                    "read_cache_hit_rate": 0.0,
+                }
+            }
+        )
+        job.refresh_from_db()
+        run.job = job
+        run.save(update_fields=["job"])
+        ForwardExecutionStep.objects.create(
+            run=run,
+            index=1,
+            status=ForwardExecutionStepStatusChoices.MERGED,
+            model_string="ipam.prefix",
+            query_name="Forward IPv4 Prefixes",
+            execution_mode="query_id",
+            execution_value="query-prefix",
+            query_parameters={
+                "device_tag_include_tags": ["Prod_Core"],
+                "device_tag_include_match": "any",
+                "device_tag_exclude_tags": [],
+                "forward_netbox_shard_keys": [],
+            },
+            fetch_mode="nqe_parameters",
+            job=job,
+        )
+        ForwardExecutionStep.objects.create(
+            run=run,
+            index=2,
+            status=ForwardExecutionStepStatusChoices.PENDING,
+            model_string="ipam.ipaddress",
+            query_name="Forward IP Addresses",
+            execution_mode="query_id",
+            execution_value="query-ipaddress",
+            query_parameters={"forward_netbox_shard_keys": ["device-1"]},
+            fetch_mode="model",
+            job=job,
+        )
+
+        bundle = execution_run_support_bundle(run)
+        step_params = bundle["api_usage"]["step_query_parameters"]
+
+        self.assertTrue(step_params["available"])
+        self.assertEqual(step_params["step_count"], 2)
+        self.assertEqual(
+            step_params["top_steps"][0]["query_parameters"],
+            {
+                "device_tag_include_tags": ["Prod_Core"],
+                "device_tag_include_match": "any",
+                "device_tag_exclude_tags": [],
+                "forward_netbox_shard_keys": [],
+            },
+        )
+        self.assertEqual(
+            step_params["top_steps"][1]["query_parameters"],
+            {"forward_netbox_shard_keys": ["device-1"]},
+        )
+
     def test_duplicate_stage_job_cannot_reclaim_running_step(self):
         run = self._execution_run()
         original_job = self._job(instance=self.sync)
