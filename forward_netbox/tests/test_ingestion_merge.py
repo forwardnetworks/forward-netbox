@@ -8,6 +8,7 @@ from core.models import Job
 from django.contrib.contenttypes.models import ContentType
 from django.test import TestCase
 from django.utils import timezone
+from netbox_branching.choices import BranchStatusChoices
 from netbox_branching.models import Branch
 
 from forward_netbox.choices import ForwardExecutionRunStatusChoices
@@ -22,6 +23,7 @@ from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from forward_netbox.utilities.ingestion_merge import (
     AUTO_MERGE_STALE_MERGE_REQUEUE_LIMIT,
 )
+from forward_netbox.utilities.ingestion_merge import cleanup_merged_branch
 from forward_netbox.utilities.ingestion_merge import enqueue_merge_job
 from forward_netbox.utilities.ingestion_merge import maybe_enqueue_next_branch_stage
 from forward_netbox.utilities.ingestion_merge import record_change_totals
@@ -93,6 +95,57 @@ class ForwardIngestionMergeHelperTest(TestCase):
         self.assertTrue(ingestion.baseline_ready)
         self.assertEqual(self.sync.get_branch_run_state(), {})
         mock_update_run_from_branch_state.assert_not_called()
+
+    def test_cleanup_merged_branch_refreshes_stale_status_before_delete(self):
+        branch = Branch.objects.create(
+            name=f"merged-branch-{uuid4().hex[:12]}",
+            schema_id=f"merged_branch_{uuid4().hex[:12]}",
+            status=BranchStatusChoices.MERGING,
+        )
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-merged-branch",
+            branch=branch,
+        )
+        Branch.objects.filter(pk=branch.pk).update(status=BranchStatusChoices.MERGED)
+        branch.status = BranchStatusChoices.MERGING
+
+        cleanup_merged_branch(ingestion)
+
+        self.assertFalse(Branch.objects.filter(pk=branch.pk).exists())
+        ingestion.refresh_from_db()
+        self.assertIsNone(ingestion.branch)
+
+    def test_sync_merge_ingestion_deletes_stale_merged_branch(self):
+        branch = Branch.objects.create(
+            name=f"stale-merged-branch-{uuid4().hex[:12]}",
+            schema_id=f"stale_merged_branch_{uuid4().hex[:12]}",
+            status=BranchStatusChoices.MERGING,
+        )
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-stale-merged-branch",
+            branch=branch,
+        )
+        Branch.objects.filter(pk=branch.pk).update(status=BranchStatusChoices.MERGED)
+        branch.status = BranchStatusChoices.MERGING
+
+        with (
+            patch("forward_netbox.utilities.merge.merge_branch"),
+            patch(
+                "forward_netbox.utilities.ingestion_merge.suppress_branch_merge_side_effect_signals",
+                return_value=nullcontext(),
+            ),
+        ):
+            sync_merge_ingestion(ingestion)
+
+        self.assertFalse(Branch.objects.filter(pk=branch.pk).exists())
+        ingestion.refresh_from_db()
+        self.assertIsNone(ingestion.branch)
+        self.sync.refresh_from_db()
+        self.assertEqual(self.sync.status, ForwardSyncStatusChoices.COMPLETED)
 
     def test_can_queue_merge_falls_back_to_ledger_step(self):
         branch = Branch.objects.create(
