@@ -3917,15 +3917,19 @@ class SharedRuntimeTestGuardTaskTest(unittest.TestCase):
             compose_calls[0], ("forward-netbox-test", "down --remove-orphans -v")
         )
         self.assertEqual(
-            compose_calls[1], ("forward-netbox-test", "up -d postgres redis")
+            compose_calls[1], ("forward-netbox-test", "build netbox netbox-worker")
         )
-        self.assertEqual(compose_calls[2][0], "forward-netbox-test")
-        self.assertIn("exec -T postgres", compose_calls[2][1])
-        self.assertIn("pg_isready", compose_calls[2][1])
         self.assertEqual(compose_calls[3][0], "forward-netbox-test")
-        self.assertIn("run --rm -T netbox", compose_calls[3][1])
-        self.assertIn("forward_netbox.tests.test_sync", compose_calls[3][1])
-        self.assertEqual(len(compose_calls), 4)
+        self.assertEqual(
+            compose_calls[2], ("forward-netbox-test", "up -d postgres redis")
+        )
+        self.assertEqual(compose_calls[3][0], "forward-netbox-test")
+        self.assertIn("exec -T postgres", compose_calls[3][1])
+        self.assertIn("pg_isready", compose_calls[3][1])
+        self.assertEqual(compose_calls[4][0], "forward-netbox-test")
+        self.assertIn("run --rm -T netbox", compose_calls[4][1])
+        self.assertIn("forward_netbox.tests.test_sync", compose_calls[4][1])
+        self.assertEqual(len(compose_calls), 5)
 
     def test_test_isolated_can_remove_runtime_volume(self):
         context = self._context()

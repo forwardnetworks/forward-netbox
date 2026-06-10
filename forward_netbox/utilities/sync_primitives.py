@@ -750,6 +750,11 @@ def _prime_routing_bgp_identity_cache(runner, model_string, rows):
     }:
         return {}
 
+    from django.apps import apps
+
+    if not apps.is_installed("netbox_routing"):
+        return {}
+
     from dcim.models import Device
     from ipam.models import ASN
     from ipam.models import VRF
@@ -889,6 +894,11 @@ def _prime_routing_ospf_identity_cache(runner, model_string, rows):
         "netbox_routing.ospfinstance",
         "netbox_routing.ospfinterface",
     }:
+        return {}
+
+    from django.apps import apps
+
+    if not apps.is_installed("netbox_routing"):
         return {}
 
     OSPFInstance = runner._optional_model(
