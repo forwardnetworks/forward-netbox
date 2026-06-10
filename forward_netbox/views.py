@@ -6,6 +6,7 @@ from django.contrib.auth.mixins import LoginRequiredMixin
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models.functions import Greatest
+from django.http import HttpResponseBadRequest
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404
 from django.shortcuts import redirect
@@ -94,6 +95,7 @@ from .utilities.query_binding import live_query_binding_drift
 from .utilities.query_binding import publish_builtin_nqe_map_queries
 from .utilities.query_binding import restore_builtin_raw_query_bindings
 from .utilities.resumable_branching import enqueue_branch_stage_job
+from .utilities.support_bundle_archive import support_bundle_zip_response
 from .utilities.sync_state import get_execution_display_state
 
 
@@ -552,6 +554,10 @@ class ForwardSyncView(generic.ObjectView):
                 "plugins:forward_netbox:forwardsync_support_bundle",
                 kwargs={"pk": instance.pk},
             ),
+            "support_bundle_zip_url": reverse(
+                "plugins:forward_netbox:forwardsync_support_bundle_zip",
+                kwargs={"pk": instance.pk},
+            ),
         }
         if instance.last_ingestion:
             data.update(instance.last_ingestion.get_statistics())
@@ -610,6 +616,34 @@ class ForwardSyncSupportBundleView(BaseObjectView):
         sync = get_object_or_404(self.queryset, pk=pk)
         filename = f"forward-sync-{sync.pk}-support-bundle.json"
         return _download_json_response(_sync_support_bundle_payload(sync), filename)
+
+
+@register_model_view(ForwardSync, "support_bundle_zip", path="support-bundle-zip")
+class ForwardSyncSupportBundleZipView(BaseObjectView):
+    queryset = ForwardSync.objects.all()
+
+    def get_required_permission(self):
+        return "forward_netbox.view_forwardsync"
+
+    def get(self, request, pk):
+        sync = get_object_or_404(self.queryset, pk=pk)
+        return self._download(request, sync)
+
+    def post(self, request, pk):
+        sync = get_object_or_404(self.queryset, pk=pk)
+        return self._download(request, sync)
+
+    def _download(self, request, sync):
+        filename = f"forward-sync-{sync.pk}-support-bundle.zip"
+        try:
+            return support_bundle_zip_response(
+                _sync_support_bundle_payload(sync),
+                filename=filename,
+                json_filename=f"forward-sync-{sync.pk}-support-bundle.json",
+                password=request.POST.get("password") or request.GET.get("password"),
+            )
+        except RuntimeError as exc:
+            return HttpResponseBadRequest(str(exc))
 
 
 @register_model_view(ForwardSync, "health")
@@ -821,6 +855,10 @@ class ForwardExecutionRunView(generic.ObjectView):
                 "plugins:forward_netbox:forwardexecutionrun_export_bundle",
                 kwargs={"pk": instance.pk},
             ),
+            "support_bundle_zip_url": reverse(
+                "plugins:forward_netbox:forwardexecutionrun_export_bundle_zip",
+                kwargs={"pk": instance.pk},
+            ),
             "latest_execution_failure": execution_run_failure_summary(instance),
             "latest_execution_insights": execution_run_insights_summary(instance),
             "retryable_step": current_retryable_step(instance),
@@ -862,6 +900,38 @@ class ForwardExecutionRunSupportBundleView(BaseObjectView):
         run = get_object_or_404(self.queryset, pk=pk)
         filename = f"forward-execution-run-{run.pk}-support-bundle.json"
         return _download_json_response(execution_run_support_bundle(run), filename)
+
+
+@register_model_view(
+    ForwardExecutionRun,
+    "export_bundle_zip",
+    path="support-bundle-zip",
+)
+class ForwardExecutionRunSupportBundleZipView(BaseObjectView):
+    queryset = ForwardExecutionRun.objects.all()
+
+    def get_required_permission(self):
+        return "forward_netbox.view_forwardexecutionrun"
+
+    def get(self, request, pk):
+        run = get_object_or_404(self.queryset, pk=pk)
+        return self._download(request, run)
+
+    def post(self, request, pk):
+        run = get_object_or_404(self.queryset, pk=pk)
+        return self._download(request, run)
+
+    def _download(self, request, run):
+        filename = f"forward-execution-run-{run.pk}-support-bundle.zip"
+        try:
+            return support_bundle_zip_response(
+                execution_run_support_bundle(run),
+                filename=filename,
+                json_filename=f"forward-execution-run-{run.pk}-support-bundle.json",
+                password=request.POST.get("password") or request.GET.get("password"),
+            )
+        except RuntimeError as exc:
+            return HttpResponseBadRequest(str(exc))
 
 
 @register_model_view(ForwardExecutionRun, "reconcile")

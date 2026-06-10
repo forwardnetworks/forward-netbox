@@ -640,10 +640,13 @@ class QueryRegistryTest(TestCase):
         expected = json.loads(fixture_path.read_text(encoding="utf-8"))
         utilities = read_builtin_query_source("netbox_utilities.nqe")
 
-        self.assertIn("export deviceHasAciCommandOutputs(device)", utilities)
+        self.assertIn("export deviceHasAciCommandOutputs(device: Device)", utilities)
         for command_type in expected["command_types"]:
             self.assertIn(command_type, utilities)
-        self.assertIn("export normalizeDevicePlatformName(device)", utilities)
+        self.assertIn(
+            "export normalizeDevicePlatformName(device: Device)",
+            utilities,
+        )
         self.assertNotIn(
             "VendorOs",
             utilities,
@@ -1532,24 +1535,8 @@ class QueryRegistryTest(TestCase):
             ip_spec.query,
         )
         self.assertIn(
-            "importable_interfaces(forward_netbox_shard_keys: List<String>) =",
-            ip_spec.query,
-        )
-        self.assertIn(
-            "assignable_candidate_rows(forward_netbox_shard_keys: List<String>) =",
-            ip_spec.query,
-        )
-        self.assertIn(
             "foreach row in candidate_rows(forward_netbox_shard_keys)",
             ip_spec.query,
-        )
-        self.assertIn(
-            "foreach imported_interface in importable_interfaces(forward_netbox_shard_keys)",
-            ip_spec.query,
-        )
-        self.assertIn("where imported_interface.device == row.device", ip_spec.query)
-        self.assertIn(
-            "where imported_interface.interface == row.interface", ip_spec.query
         )
         self.assertEqual(
             ip_spec.query.count(

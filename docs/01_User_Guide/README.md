@@ -12,26 +12,27 @@ Install the plugin package, enable the required plugins, run the migrations, and
 Install the wheel from GitHub Releases into the same Python environment as NetBox:
 
 ```bash
-pip install /path/to/forward_netbox-1.3.5.4-py3-none-any.whl
+pip install /path/to/forward_netbox-1.3.5.5-py3-none-any.whl
 ```
 
 Alternatively, install directly from the GitHub source archive:
 
 ```bash
-pip install /path/to/forward_netbox-1.3.5.4.tar.gz
+pip install /path/to/forward_netbox-1.3.5.5.tar.gz
 ```
 
 If you mirror the package into a private Python index, pin the same release version:
 
 ```bash
-pip install --pre forward-netbox==1.3.5.4
+pip install --pre forward-netbox==1.3.5.5
 ```
 
 ## Release Compatibility
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v1.3.5.4` | `4.5.9` and `4.6.1` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Current release; repackages the `1.3.5.3` query-contract hardening on a fresh patch tag and keeps strict shipped-query parameter-contract validation, legacy tag alias stripping, and summary-only support-bundle previews. |
+| `v1.3.5.5` | `4.5.9` and `4.6.1` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Current release; adds compressed support-bundle ZIP downloads with optional password protection, and folds live source health, live query-drift, and live data-file diagnostics into the troubleshooting bundle so operator support can work from one artifact. |
+| `v1.3.5.4` | `4.5.9` and `4.6.1` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v1.3.5.5`; repackaged the `1.3.5.3` query-contract hardening on a fresh patch tag and kept strict shipped-query parameter-contract validation, legacy tag alias stripping, and summary-only support-bundle previews. |
 | `v1.3.5.3` | `4.5.9` and `4.6.1` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v1.3.5.4`; keeps the `1.3.5.2` claimed-step and payload compaction behavior, adds strict shipped-query parameter-contract validation, strips legacy tag aliases from runtime NQE payloads, and keeps support-bundle previews summary-only. |
 | `v1.3.5.1` | `4.5.9` and `4.6.1` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v1.3.5.2`; removes raw `model_results` from the sync telemetry summary and prevents unparameterized query IDs from receiving source-level tag parameters, which keeps the sync detail view responsive and preserves the saved-query-ID path compatibility. |
 | `v1.3.5` | `4.5.9` and `4.6.1` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v1.3.5.2`; keeps the 1.3.x saved-query-ID path parameter-compatible, tightens ACI platform detection with command-inventory signals, and preserves the lower-noise execution accounting used by the 1.3.x sync path |
@@ -83,7 +84,8 @@ pip install --pre forward-netbox==1.3.5.4
 
 | Release | Summary |
 | --- | --- |
-| `v1.3.5.4` | Republishes the `v1.3.5.3` query-contract hardening as the current patch release. |
+| `v1.3.5.5` | Adds compressed support-bundle ZIP downloads with optional password protection and folds live source/query-drift/data-file diagnostics into the troubleshooting bundle. |
+| `v1.3.5.4` | Republishes the `v1.3.5.3` query-contract hardening as the prior patch release. |
 | `v1.3.5.3` | Preserves the claimed-step and payload-compaction protections from `v1.3.5.2`, adds strict shipped-query parameter-contract validation, strips legacy tag aliases from runtime NQE payloads, and keeps support-bundle previews summary-only. |
 | `v1.3.5.2` | Prevents shard execution drift by tying resume/overlap workers to the claimed execution step and compacts sync execution payloads (`plan_items`, workload previews, and advisory branch summaries) so large runs remain user-visible but lightweight in UI/log exports. |
 | `v1.3.5.1` | Removes the raw `model_results` payload from sync telemetry summaries and stops unparameterized query IDs from inheriting source-level tag parameters, which keeps sync-detail rendering responsive while preserving the saved-query-ID path. |
