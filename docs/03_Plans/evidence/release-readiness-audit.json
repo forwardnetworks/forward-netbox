@@ -4,26 +4,34 @@
       "evidence": {
         "command": "forward_architecture_completion_audit",
         "parse_error": "",
-        "reason": "",
+        "reason": "architecture completion audit has outstanding checks (failed=0, needs_external_evidence=4)",
         "summary": {
           "all_repo_checks_green": true,
-          "completed": 16,
+          "completed": 12,
           "failed": 0,
-          "needs_external_evidence": 0
+          "needs_external_evidence": 4
         }
       },
-      "status": "passed"
+      "status": "failed"
     },
     "release_dataset_gate": {
       "evidence": {
         "allow_resumed_artifact": false,
         "artifact_path": "docs/03_Plans/evidence/field-scale-runtime-matrix.json",
-        "artifact_status": "passed",
+        "artifact_status": "failed",
         "dataset_label": "release-smoke",
-        "failed_step_codes": {},
-        "failed_steps": [],
+        "failed_step_codes": {
+          "run_a_branching_validate_only": "command_failed",
+          "run_b_branching_plan_only": "step_timeout",
+          "run_c_fast_bootstrap_validate_only": "command_failed"
+        },
+        "failed_steps": [
+          "run_a_branching_validate_only",
+          "run_b_branching_plan_only",
+          "run_c_fast_bootstrap_validate_only"
+        ],
         "fresh": true,
-        "generated_at": "2026-06-02T03:58:09.479301+00:00",
+        "generated_at": "2026-06-10T13:03:15.916384+00:00",
         "max_age_days": 7,
         "metadata": {
           "dataset_label": "release-smoke",
@@ -33,10 +41,10 @@
           "resume": false,
           "selected_step": "",
           "step_count": 3,
-          "step_timeout_seconds": 7200
+          "step_timeout_seconds": 1200
         },
         "missing_steps": [],
-        "reason": "",
+        "reason": "artifact status is `failed`; artifact has failing required matrix steps: run_a_branching_validate_only, run_b_branching_plan_only, run_c_fast_bootstrap_validate_only; failure codes: command_failed, step_timeout",
         "required_dataset_label": "release-smoke",
         "required_steps": [
           "run_a_branching_validate_only",
@@ -45,18 +53,27 @@
         ],
         "resumed": false
       },
-      "status": "passed"
+      "status": "failed"
     },
     "release_runtime_preflight": {
       "evidence": {
-        "credential_env_missing": [],
-        "dataset_label": "release-smoke",
-        "dataset_label_matches": true,
+        "credential_env_missing": [
+          "FORWARD_SMOKE_USERNAME",
+          "FORWARD_SMOKE_PASSWORD",
+          "FORWARD_SMOKE_NETWORK_ID"
+        ],
+        "dataset_label": "",
+        "dataset_label_matches": false,
         "docker_preflight": {
           "ok": true
         },
-        "missing_env": [],
-        "reason": "",
+        "missing_env": [
+          "FORWARD_SMOKE_USERNAME",
+          "FORWARD_SMOKE_PASSWORD",
+          "FORWARD_SMOKE_NETWORK_ID",
+          "FORWARD_SMOKE_DATASET_LABEL"
+        ],
+        "reason": "missing required env: FORWARD_SMOKE_USERNAME, FORWARD_SMOKE_PASSWORD, FORWARD_SMOKE_NETWORK_ID, FORWARD_SMOKE_DATASET_LABEL; FORWARD_SMOKE_DATASET_LABEL does not match required dataset label",
         "required_dataset_label": "release-smoke",
         "required_env": [
           "FORWARD_SMOKE_USERNAME",
@@ -65,14 +82,18 @@
           "FORWARD_SMOKE_SOURCE_NAME",
           "FORWARD_SMOKE_DATASET_LABEL"
         ],
-        "source_backed": true,
-        "source_name": "smoke-source"
+        "source_backed": false,
+        "source_name": ""
       },
-      "status": "passed"
+      "status": "failed"
     }
   },
   "dataset_label": "release-smoke",
-  "failed_checks": [],
-  "generated_at": "2026-06-06T23:10:32.264670+00:00",
-  "status": "passed"
+  "failed_checks": [
+    "release_runtime_preflight",
+    "release_dataset_gate",
+    "architecture_completion_gate"
+  ],
+  "generated_at": "2026-06-10T13:29:13.886898+00:00",
+  "status": "failed"
 }
