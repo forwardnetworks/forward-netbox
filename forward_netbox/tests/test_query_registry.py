@@ -32,6 +32,25 @@ from forward_netbox.utilities.query_registry import routing_import_diagnostic_qu
 from forward_netbox.utilities.query_registry import ROUTING_IMPORT_DIAGNOSTIC_QUERY_NAME
 
 
+def _declared_query_parameter_names(query: str) -> set[str]:
+    lines = query.splitlines()
+    seen_query_marker = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped == "@query":
+            seen_query_marker = True
+            continue
+        if not stripped or stripped.startswith("/*") or stripped.startswith("*"):
+            continue
+        match = re.match(r"^([A-Za-z_][\w]*)\((.*?)\)\s*=", stripped, flags=re.S)
+        if match and (seen_query_marker or "@query" not in query):
+            return {
+                param_match.group(1)
+                for param_match in re.finditer(r"([A-Za-z_][\w]*)\s*:", match.group(2))
+            }
+    return set()
+
+
 REQUIRED_FIELDS_BY_QUERY_NAME = {
     "Forward Locations": {"name", "slug", "status", "physical_address", "comments"},
     "Forward Device Vendors": {"name", "slug"},
@@ -740,6 +759,18 @@ class QueryRegistryTest(TestCase):
             )
             self.assertEqual(row["parameters"]["forward_netbox_shard_keys"], [])
 
+    def test_builtin_query_maps_match_declared_parameter_contract(self):
+        for row in builtin_nqe_map_rows():
+            declared = _declared_query_parameter_names(row["query"])
+            self.assertEqual(
+                set(row["parameters"].keys()),
+                declared,
+                msg=(
+                    f"{row['name']} should seed exactly the parameters declared "
+                    "in its NQE signature."
+                ),
+            )
+
     def test_sync_builtin_queries_declare_shard_parameter(self):
         filenames = {
             query["filename"]
@@ -1432,6 +1463,10 @@ class QueryRegistryTest(TestCase):
         self.assertEqual(
             ip_spec.coalesce_fields,
             (("address", "vrf"), ("address",)),
+        )
+        self.assertEqual(
+            ip_spec.parameters,
+            {"forward_netbox_shard_keys": []},
         )
 
     def test_prefix_queries_exclude_host_routes(self):
