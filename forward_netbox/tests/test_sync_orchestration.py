@@ -4,6 +4,7 @@ from unittest.mock import patch
 from core.choices import JobStatusChoices
 from core.models import Job
 from django.contrib.contenttypes.models import ContentType
+from django.core.exceptions import ValidationError
 from django.test import override_settings
 from django.test import TestCase
 from django.utils import timezone
@@ -59,6 +60,23 @@ class ForwardSyncOrchestrationHelperTest(TestCase):
 
         self.assertEqual(self.sync.status, ForwardSyncStatusChoices.COMPLETED)
         self.assertEqual(self.source.status, ForwardSourceStatusChoices.READY)
+
+    @patch("forward_netbox.utilities.multi_branch.ForwardMultiBranchExecutor")
+    def test_run_forward_sync_rejects_child_models_without_dcim_device(
+        self,
+        mock_executor_class,
+    ):
+        self.sync.parameters = {
+            "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+            "dcim.device": False,
+            "dcim.interface": True,
+        }
+
+        with self.assertRaises(ValidationError) as ctx:
+            run_forward_sync(self.sync)
+
+        self.assertIn("dcim.device", str(ctx.exception))
+        mock_executor_class.assert_not_called()
 
     @override_settings(RQ_DEFAULT_TIMEOUT=300)
     @patch.object(SyncLogging, "log_warning")
