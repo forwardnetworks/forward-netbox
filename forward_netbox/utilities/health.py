@@ -3,6 +3,9 @@ from collections import Counter
 from .execution_ledger import latest_execution_run
 from .execution_ledger_serialization import api_usage_support_summary
 from .execution_ledger_serialization import dependency_lookup_cache_support_summary
+from .execution_ledger_serialization import (
+    dependency_parent_coverage_support_summary,
+)
 from .forward_api import LATEST_PROCESSED_SNAPSHOT
 from .health_apply_fetch import apply_engine_summary as _apply_engine_summary_impl
 from .health_apply_fetch import fetch_contract_summary as _fetch_contract_summary_impl
@@ -120,6 +123,9 @@ def sync_health_summary(sync):
     compatibility_cache = _compatibility_cache_summary(sync, execution_run)
     density_learning = _density_learning_summary(sync)
     dependency_lookup_cache = dependency_lookup_cache_support_summary(execution_run)
+    dependency_parent_coverage = dependency_parent_coverage_support_summary(
+        execution_run
+    )
     latest_ingestion_summary = _ingestion_summary(latest_ingestion) or {}
     ingestion_dependency_lookup_cache = latest_ingestion_summary.get(
         "dependency_lookup_cache", {}
@@ -130,6 +136,17 @@ def sync_health_summary(sync):
         and dependency_lookup_cache.get("available")
     ):
         latest_ingestion_summary["dependency_lookup_cache"] = dependency_lookup_cache
+    ingestion_dependency_parent_coverage = latest_ingestion_summary.get(
+        "dependency_parent_coverage", {}
+    )
+    if (
+        isinstance(ingestion_dependency_parent_coverage, dict)
+        and not ingestion_dependency_parent_coverage.get("available")
+        and dependency_parent_coverage.get("available")
+    ):
+        latest_ingestion_summary["dependency_parent_coverage"] = (
+            dependency_parent_coverage
+        )
     query_drift = [local_query_binding_drift(query_map) for query_map in maps]
     query_drift_summary = _query_drift_summary(query_drift)
     next_run = _next_run_expectation(sync, maps, raw_maps)
@@ -168,6 +185,7 @@ def sync_health_summary(sync):
         "compatibility_cache": compatibility_cache,
         "density_learning": density_learning,
         "dependency_lookup_cache": dependency_lookup_cache,
+        "dependency_parent_coverage": dependency_parent_coverage,
         "optional_plugin_capabilities": optional_plugin_capabilities,
         "optional_plugin_capabilities_ui": {
             key.split(".", 1)[0]: value
