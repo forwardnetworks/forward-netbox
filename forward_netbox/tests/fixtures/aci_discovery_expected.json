@@ -52,6 +52,33 @@
       "forbid_raw_response_projection": true
     },
     {
+      "map_name": "Forward ACI APIC CIMC Inventory",
+      "filename": "forward_aci_apic_cimc_inventory.nqe",
+      "required_fields": [
+        "device",
+        "manufacturer",
+        "manufacturer_slug",
+        "name",
+        "part_id",
+        "serial",
+        "role",
+        "role_slug",
+        "role_color",
+        "status",
+        "discovered",
+        "description"
+      ],
+      "command_markers": [
+        "CommandType.CUSTOM",
+        "moquery -c eqptCh -a all",
+        "CISCO_APIC_CONTROLLER_DETAIL",
+        "regexMatches(chassis_command.response, chassisRegex)",
+        "chassisRegex",
+        "cimcVersion"
+      ],
+      "forbid_raw_response_projection": true
+    },
+    {
       "map_name": "Forward ACI Pods",
       "filename": "forward_aci_pods.nqe",
       "required_fields": [

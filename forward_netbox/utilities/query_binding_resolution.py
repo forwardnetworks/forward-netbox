@@ -61,6 +61,8 @@ def binding_matches_current_reference(
     query_map: ForwardNQEMap,
     binding: NQEMapBinding,
 ) -> bool:
+    if query_map.name and query_map.name == binding.query_name:
+        return True
     if query_map.query_path:
         return (
             query_map.query_path == binding.query_path
@@ -165,8 +167,10 @@ def local_query_binding_drift(query_map: ForwardNQEMap) -> dict:
                 "bundled query source without a live Forward repository lookup."
             ),
             remediation=(
-                "Prefer repository-path bindings for reproducible drift checks; "
-                "pin a commit if the direct query ID must remain."
+                "Use Refresh Query IDs on the sync Health page after a local "
+                "query change so the saved direct ID matches the current "
+                "validation-folder query; pin a commit if you need a fixed "
+                "Forward revision."
             ),
             expected_filename=expected_filename,
             expected_name=expected_name,
@@ -727,6 +731,23 @@ def publish_builtin_nqe_map_queries(
             ).select_related("netbox_model"),
         ),
     ]
+
+
+def refresh_query_id_bindings_from_repository_folder(
+    *,
+    client,
+    directory: str = "/forward_netbox_validation/",
+    repository: str = "org",
+    queryset=None,
+    pin_commit: bool = False,
+) -> list[NQEMapBinding]:
+    bindings = build_nqe_map_bindings(
+        client=client,
+        repository=repository,
+        directory=directory,
+        pin_commit=pin_commit,
+    )
+    return apply_nqe_map_bindings(bindings, queryset=queryset)
 
 
 def builtin_query_repository_sync_summary(

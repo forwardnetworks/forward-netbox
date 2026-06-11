@@ -1625,14 +1625,18 @@ def _collect_release_readiness_audit(
         max_age_days=max_age_days,
         artifact_path=artifact_path,
     )
+    validation_org_gate = _collect_validation_org_query_audit_evidence(context)
     architecture_gate = _collect_architecture_completion_gate(context)
     checks = {
         "release_runtime_preflight": preflight,
         "release_dataset_gate": dataset_gate,
+        "validation_org_query_audit": validation_org_gate,
         "architecture_completion_gate": architecture_gate,
     }
     failed_checks = [
-        name for name, payload in checks.items() if payload.get("status") != "passed"
+        name
+        for name, payload in checks.items()
+        if payload.get("status") not in {"passed", "skipped"}
     ]
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -1640,6 +1644,96 @@ def _collect_release_readiness_audit(
         "dataset_label": str(dataset_label or "").strip(),
         "failed_checks": failed_checks,
         "checks": checks,
+    }
+
+
+def _collect_validation_org_query_audit_evidence(context):
+    credential_env = (
+        "FORWARD_VALIDATION_USERNAME",
+        "FORWARD_VALIDATION_PASSWORD",
+        "FORWARD_VALIDATION_NETWORK_ID",
+    )
+    missing_env = [name for name in credential_env if not os.getenv(name, "").strip()]
+    if missing_env:
+        return {
+            "status": "skipped",
+            "evidence": {
+                "required_env": [
+                    *credential_env,
+                    "FORWARD_VALIDATION_SOURCE_NAME",
+                    "FORWARD_VALIDATION_URL",
+                ],
+                "missing_env": missing_env,
+                "reason": "validation org credentials are not configured",
+            },
+        }
+
+    source_name = str(
+        os.getenv("FORWARD_VALIDATION_SOURCE_NAME", "validation-source") or ""
+    ).strip()
+    url = str(os.getenv("FORWARD_VALIDATION_URL", "https://fwd.app") or "").strip()
+    username = str(os.getenv("FORWARD_VALIDATION_USERNAME", "") or "").strip()
+    password = str(os.getenv("FORWARD_VALIDATION_PASSWORD", "") or "").strip()
+    network_id = str(os.getenv("FORWARD_VALIDATION_NETWORK_ID", "") or "").strip()
+    repository = str(os.getenv("FORWARD_VALIDATION_REPOSITORY", "org") or "").strip()
+    directory = str(
+        os.getenv("FORWARD_VALIDATION_DIRECTORY", "/forward_netbox_validation/") or ""
+    ).strip()
+    command = (
+        "forward_validation_org_query_audit "
+        f'--source-name "{source_name}" '
+        f'--url "{url}" '
+        f'--username "{username}" '
+        f'--password "{password}" '
+        f'--network-id "{network_id}" '
+        f'--repository "{repository}" '
+        f'--directory "{directory}" '
+        "--fail-on-gap"
+    )
+    result = manage_py(context, command, warn=True, hide=True)
+    stdout = getattr(result, "stdout", "")
+    parse_error = ""
+    payload = {}
+    try:
+        payload = _parse_json_from_manage_output(stdout)
+    except (ValueError, json.JSONDecodeError) as exc:
+        parse_error = str(exc)
+
+    evidence = {
+        "command": command,
+        "source_name": source_name,
+        "url": url,
+        "repository": repository,
+        "directory": directory,
+        "parse_error": parse_error,
+    }
+    if not bool(getattr(result, "ok", False)):
+        failure_code, failure_hint = _classify_field_scale_step_failure(result)
+        return {
+            "status": "failed",
+            "evidence": {
+                **evidence,
+                "exit_code": int(getattr(result, "exited", 1) or 1),
+                "failure_code": str(failure_code or "command_failed"),
+                "failure_hint": str(
+                    failure_hint or "validation org query audit failed"
+                ),
+                "report": payload,
+            },
+        }
+
+    report_status = str(payload.get("status") or "").strip()
+    return {
+        "status": "passed" if report_status == "pass" else "failed",
+        "evidence": {
+            **evidence,
+            "report": payload,
+            "reason": (
+                ""
+                if report_status == "pass"
+                else "validation org query audit reported gaps"
+            ),
+        },
     }
 
 
@@ -3966,10 +4060,10 @@ def prune_compat_cache(context, sync_name="", dry_run=True, output_json=""):
         sensitive_check,
         harness_check,
         harness_test,
-        architecture_audit_check,
         lint,
         build,
         start,
+        architecture_audit_check,
         check,
         scenario_test_ci,
         ingestion_delete_regression_ci,

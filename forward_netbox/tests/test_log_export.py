@@ -41,6 +41,67 @@ class ForwardIngestionLogExportViewTest(TestCase):
                 "query_drift": {
                     "available": True,
                     "summary": {"status_counts": {"pass": 1}},
+                    "live_summary": {
+                        "total_maps": 1,
+                        "checked_maps": 1,
+                        "warn_count": 0,
+                        "info_count": 0,
+                        "pass_count": 1,
+                        "status_counts": {"live_repository_source_match": 1},
+                        "query_id_total": 1,
+                        "query_id_pass_count": 1,
+                        "query_id_warn_count": 0,
+                        "query_id_info_count": 0,
+                        "query_id_not_found_count": 0,
+                        "query_id_ambiguous_count": 0,
+                        "query_id_modified_count": 0,
+                        "query_id_unavailable_count": 0,
+                        "lookup_error_count": 0,
+                        "error": "",
+                    },
+                    "results": [],
+                    "error": "",
+                },
+                "data_file_health": {
+                    "enabled_data_file_map_count": 0,
+                    "required_data_files": [],
+                    "snapshot_selector": "latestProcessed",
+                    "checks": [],
+                    "results": [],
+                },
+                "enabled_map_count": 1,
+            },
+        )
+        cls._view_live_diagnostics_patcher = patch(
+            "forward_netbox.views.live_support_diagnostics",
+            return_value={
+                "available": True,
+                "source_health": {
+                    "available": True,
+                    "reachable": True,
+                    "checks": [],
+                },
+                "query_drift": {
+                    "available": True,
+                    "summary": {"status_counts": {"pass": 1}},
+                    "live_summary": {
+                        "total_maps": 1,
+                        "checked_maps": 1,
+                        "warn_count": 0,
+                        "info_count": 0,
+                        "pass_count": 1,
+                        "status_counts": {"live_repository_source_match": 1},
+                        "query_id_total": 1,
+                        "query_id_pass_count": 1,
+                        "query_id_warn_count": 0,
+                        "query_id_info_count": 0,
+                        "query_id_not_found_count": 0,
+                        "query_id_ambiguous_count": 0,
+                        "query_id_modified_count": 0,
+                        "query_id_unavailable_count": 0,
+                        "lookup_error_count": 0,
+                        "error": "",
+                    },
                     "results": [],
                     "error": "",
                 },
@@ -55,10 +116,12 @@ class ForwardIngestionLogExportViewTest(TestCase):
             },
         )
         cls._live_diagnostics_patcher.start()
+        cls._view_live_diagnostics_patcher.start()
 
     @classmethod
     def tearDownClass(cls):
         cls._live_diagnostics_patcher.stop()
+        cls._view_live_diagnostics_patcher.stop()
         super().tearDownClass()
 
     @classmethod
@@ -999,8 +1062,53 @@ class ForwardIngestionLogExportViewTest(TestCase):
             data = json.loads(archive.read(names[0]))
 
         self.assertEqual(data["sync"]["pk"], self.sync.pk)
+        self.assertIn("live_diagnostics", data)
+        self.assertTrue(data["live_diagnostics"]["available"])
+        self.assertEqual(
+            data["live_diagnostics"]["query_drift"]["live_summary"]["total_maps"],
+            1,
+        )
         self.assertIn("live_diagnostics", data["execution_run"])
         self.assertTrue(data["execution_run"]["live_diagnostics"]["available"])
+
+    def test_sync_support_bundle_downloads_zip_bundle_when_live_diagnostics_fail(
+        self,
+    ):
+        self._live_diagnostics_patcher.stop()
+        self._view_live_diagnostics_patcher.stop()
+        self.client.force_login(self.user)
+
+        try:
+            with patch.object(
+                ForwardSource,
+                "get_client",
+                side_effect=RuntimeError("Forward offline"),
+            ):
+                response = self.client.post(
+                    reverse(
+                        "plugins:forward_netbox:forwardsync_support_bundle_zip",
+                        kwargs={"pk": self.sync.pk},
+                    ),
+                    data={"password": ""},
+                )
+
+            self.assertEqual(response.status_code, 200)
+            with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+                names = archive.namelist()
+                self.assertEqual(
+                    names,
+                    [f"forward-sync-{self.sync.pk}-support-bundle.json"],
+                )
+                data = json.loads(archive.read(names[0]))
+
+            self.assertIn("live_diagnostics", data)
+            self.assertFalse(data["live_diagnostics"]["available"])
+            self.assertIn("Forward offline", data["live_diagnostics"]["message"])
+            self.assertIn("live_diagnostics", data["execution_run"])
+            self.assertFalse(data["execution_run"]["live_diagnostics"]["available"])
+        finally:
+            self._live_diagnostics_patcher.start()
+            self._view_live_diagnostics_patcher.start()
 
     def test_execution_run_support_bundle_downloads_password_protected_zip_bundle(
         self,

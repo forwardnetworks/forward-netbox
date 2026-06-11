@@ -87,6 +87,7 @@ ACI_INTEGRATION = OptionalPluginIntegration(
         "Forward ACI Pods",
         "Forward ACI Nodes",
         "Forward ACI APIC Nodes",
+        "Forward ACI APIC CIMC Inventory",
         "Forward ACI Tenants",
         "Forward ACI VRFs",
         "Forward ACI Bridge Domains",
@@ -116,6 +117,12 @@ ACI_INTEGRATION = OptionalPluginIntegration(
             "source": "APIC controller detail",
             "status": "current",
             "notes": ("Feeds APIC controller discovery rows.",),
+        },
+        {
+            "command_type": "CUSTOM",
+            "source": "APIC custom command: moquery -c eqptCh -a all",
+            "status": "current",
+            "notes": ("Feeds APIC server CIMC inventory rows.",),
         },
         {
             "command_type": "CISCO_ACI_FABRIC_NODES",

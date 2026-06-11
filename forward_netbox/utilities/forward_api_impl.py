@@ -115,6 +115,19 @@ def _commit_message_payload(message):
     }
 
 
+def _commit_id_for_nqe_execution(commit_id):
+    commit_id = str(commit_id or "").strip()
+    if not commit_id:
+        return ""
+    if commit_id.lower() == "head":
+        return ""
+    if len(commit_id) < 40 and all(
+        char in "0123456789abcdefABCDEF" for char in commit_id
+    ):
+        return ""
+    return commit_id
+
+
 class ForwardClient:
     def __init__(self, source):
         self.source = source
@@ -1191,8 +1204,9 @@ class ForwardClient:
             payload["queryOptions"]["columnFilters"] = column_filters
         if query_id:
             payload["queryId"] = query_id
-            if commit_id:
-                payload["commitId"] = commit_id
+            execution_commit_id = _commit_id_for_nqe_execution(commit_id)
+            if execution_commit_id:
+                payload["commitId"] = execution_commit_id
         else:
             payload["query"] = query
         return payload
@@ -1211,8 +1225,9 @@ class ForwardClient:
             payload["columnFilters"] = column_filters
         if query_id:
             payload["queryId"] = query_id
-            if commit_id:
-                payload["commitId"] = commit_id
+            execution_commit_id = _commit_id_for_nqe_execution(commit_id)
+            if execution_commit_id:
+                payload["commitId"] = execution_commit_id
         else:
             payload["query"] = query
         return payload

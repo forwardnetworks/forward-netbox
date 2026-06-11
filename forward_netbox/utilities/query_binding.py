@@ -18,3 +18,6 @@ from .query_binding_resolution import restore_builtin_raw_query_bindings  # noqa
 builtin_query_repository_sync_summary = (
     _query_binding_resolution.builtin_query_repository_sync_summary
 )
+refresh_query_id_bindings_from_repository_folder = (
+    _query_binding_resolution.refresh_query_id_bindings_from_repository_folder
+)
