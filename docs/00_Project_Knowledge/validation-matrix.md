@@ -5,7 +5,7 @@ Run the smallest gate that proves the change, then run the release gate before p
 | Change type | Required validation |
 | --- | --- |
 | Documentation only | `invoke harness-check`, `invoke harness-test`, `invoke docs` |
-| Query map or NQE helper change | `invoke harness-check`, `invoke harness-test`, `invoke lint`, `invoke test`, update built-in NQE reference |
+| Query map or NQE helper change | `invoke harness-check`, `invoke harness-test`, `invoke lint`, `invoke test`, update built-in NQE reference; verify bundled query publication/binding still matches the validation org folder when shipped paths change with `invoke validation-org-query-audit` or the matching management command |
 | Forward API client change | `invoke lint`, `invoke check`, `invoke test`; update API usage budget evaluation coverage when counters, pacing, retry, NQE pagination, or 429 handling change |
 | Sync planning or branch budget change | `invoke lint`, `invoke check`, `invoke scenario-test`, `invoke test`, local Docker sync smoke test |
 | Branching ledger, recovery, or scale behavior change | `invoke lint`, `invoke check`, `invoke scenario-test`, `invoke scale-chaos-test`, `invoke test`, `invoke playwright-test` when UI/API surfaces change; `scale-chaos-test` includes focused recovery and support-bundle export coverage, and `invoke scale-benchmark` should be run against the relevant execution run when runtime evidence exists |
@@ -131,6 +131,10 @@ Required proof:
 - A first enabled sync creates/updates only expected proven-path ACI rows.
 - Conservative contract maps execute as zero-row maps until promoted.
 - An immediate repeat sync is a no-op for unchanged ACI data.
+- The validation org query folder stays in sync with the bundled shipped maps;
+  any shipped query path missing from `/forward_netbox_validation`, or any
+  stale binding that no longer resolves to the committed query shape, fails the
+  gate before merge.
 
 Optional flags:
 - `--query-name "Forward Interfaces"` when multiple maps are bound to the model.

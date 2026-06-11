@@ -11,11 +11,11 @@
     {
       "code": "run_completion",
       "evidence": {
-        "next_step_index": 17,
+        "next_step_index": 5,
         "non_terminal_step_count": 0,
         "run_status": "completed",
         "sample_non_terminal_steps": [],
-        "total_steps": 16
+        "total_steps": 4
       },
       "message": "Execution run completed.",
       "status": "pass"
@@ -33,40 +33,84 @@
     {
       "code": "pushdown_efficiency",
       "evidence": {
-        "fallback_rate": 0.125,
-        "fallback_steps": 2,
-        "hotspot_models": [],
-        "model_fallback_guardrails": [],
-        "total_steps": 16
+        "fallback_rate": 1.0,
+        "fallback_steps": 4,
+        "hotspot_models": [
+          {
+            "fallback_rate": 1.0,
+            "fallback_steps": 2,
+            "model": "dcim.device",
+            "total_steps": 2
+          }
+        ],
+        "model_fallback_guardrails": [
+          {
+            "fallback_budget_threshold": 0.5,
+            "fallback_rate": 1.0,
+            "fallback_steps": 2,
+            "model": "dcim.device",
+            "total_steps": 2
+          }
+        ],
+        "total_steps": 4
       },
-      "message": "Fallback fetch occurred but is below warning threshold.",
-      "status": "info"
+      "message": "Fallback fetch rate exceeds the scale benchmark fail threshold.",
+      "status": "fail"
     },
     {
       "code": "pushdown_runtime",
       "evidence": {
-        "fallback_query_runtime_ms": 1484.0,
-        "fallback_runtime_share": 0.1073,
+        "fallback_query_runtime_ms": 2624.8,
+        "fallback_runtime_share": 1.0,
         "full_fallback_runtime_share": 0.0,
-        "total_query_runtime_ms": 13827.1
+        "total_query_runtime_ms": 2624.8
       },
-      "message": "Fallback fetch accounts for part of query runtime.",
-      "status": "info"
+      "message": "Fallback fetch accounts for a large share of query runtime.",
+      "status": "warn"
     },
     {
       "code": "fallback_pressure",
       "evidence": {
-        "fallback_rate": 0.125,
-        "fallback_steps": 2,
+        "fallback_rate": 1.0,
+        "fallback_steps": 4,
         "full_model_refetch_after_retry_count": 0,
         "no_shard_safe_filter_models": [
+          "dcim.device",
           "dcim.site",
           "ipam.vrf"
         ],
         "shard_scoped_fetch_failed_models": [],
         "top_models": [
           {
-            "fallback_query_runtime_ms": 730.0,
+            "fallback_query_runtime_ms": 1386.8,
+            "fallback_rate": 1.0,
+            "fallback_runtime_share": 1.0,
+            "fallback_steps": 2,
+            "full_model_refetch_after_retry_count": 0,
+            "model": "dcim.device",
+            "no_shard_safe_filter": true,
+            "partition_retry_count": 0,
+            "query_runtime_ms": 1386.8,
+            "reasons": [
+              {
+                "count": 2,
+                "reason": "model_fetch_contract_fallback",
+                "remediation": {
+                  "code": "add_or_enable_shard_fetch_contract",
+                  "layer": "planner_query_contract",
+                  "message": "The model used the full model fetch contract.",
+                  "suggestions": [
+                    "Confirm the model has a shard-safe fetch contract.",
+                    "Add deterministic NQE parameter support only if row shape stays unchanged."
+                  ]
+                }
+              }
+            ],
+            "shard_scoped_fetch_failed_count": 0,
+            "total_steps": 2
+          },
+          {
+            "fallback_query_runtime_ms": 631.0,
             "fallback_rate": 1.0,
             "fallback_runtime_share": 1.0,
             "fallback_steps": 1,
@@ -74,7 +118,7 @@
             "model": "dcim.site",
             "no_shard_safe_filter": true,
             "partition_retry_count": 0,
-            "query_runtime_ms": 730.0,
+            "query_runtime_ms": 631.0,
             "reasons": [
               {
                 "count": 1,
@@ -94,7 +138,7 @@
             "total_steps": 1
           },
           {
-            "fallback_query_runtime_ms": 754.0,
+            "fallback_query_runtime_ms": 607.0,
             "fallback_rate": 1.0,
             "fallback_runtime_share": 1.0,
             "fallback_steps": 1,
@@ -102,7 +146,7 @@
             "model": "ipam.vrf",
             "no_shard_safe_filter": true,
             "partition_retry_count": 0,
-            "query_runtime_ms": 754.0,
+            "query_runtime_ms": 607.0,
             "reasons": [
               {
                 "count": 1,
@@ -120,25 +164,11 @@
             ],
             "shard_scoped_fetch_failed_count": 0,
             "total_steps": 1
-          },
-          {
-            "fallback_query_runtime_ms": 0.0,
-            "fallback_rate": 0.0,
-            "fallback_runtime_share": 0.0,
-            "fallback_steps": 0,
-            "full_model_refetch_after_retry_count": 0,
-            "model": "dcim.device",
-            "no_shard_safe_filter": false,
-            "partition_retry_count": 0,
-            "query_runtime_ms": 12343.1,
-            "reasons": [],
-            "shard_scoped_fetch_failed_count": 0,
-            "total_steps": 14
           }
         ],
         "top_reasons": [
           {
-            "count": 2,
+            "count": 4,
             "reason": "model_fetch_contract_fallback",
             "remediation": {
               "code": "add_or_enable_shard_fetch_contract",
@@ -152,38 +182,34 @@
           }
         ]
       },
-      "message": "Fallback pressure exists but is below warning threshold.",
-      "status": "info"
+      "message": "Fallback pressure exceeds the scale benchmark fail threshold.",
+      "status": "fail"
     },
     {
       "code": "diff_utilization",
       "evidence": {
-        "diff_actual_ratio": 0.0,
+        "diff_actual_ratio": null,
         "diff_steps": 0,
-        "eligible_steps": 16,
-        "non_diff_reason_counts": {
-          "missing_or_ineligible_diff_baseline": 16
-        }
+        "eligible_steps": 0,
+        "non_diff_reason_counts": {}
       },
-      "message": "Diff utilization is below the benchmark warning threshold.",
-      "status": "warn"
+      "message": "No diff-eligible query-id/query-path steps were reported.",
+      "status": "info"
     },
     {
       "code": "diff_baseline_transition",
       "evidence": {
-        "action_code": "complete_baseline_then_use_newer_snapshot",
+        "action_code": "use_query_id_or_query_path_maps",
         "backend": "branching",
         "baseline_snapshot_ids": [],
-        "diff_capable_step_count": 16,
+        "diff_capable_step_count": 0,
         "diff_step_count": 0,
-        "non_diff_reason_counts": {
-          "missing_or_ineligible_diff_baseline": 16
-        },
-        "raw_or_non_diff_capable_step_count": 0,
+        "non_diff_reason_counts": {},
+        "raw_or_non_diff_capable_step_count": 4,
         "run_baseline_ready": true,
-        "transition_code": "missing_or_ineligible_diff_baseline"
+        "transition_code": "no_diff_capable_query_identity"
       },
-      "message": "Diff-capable query identity exists, but no eligible prior baseline was available for at least one step.",
+      "message": "No stage steps used query_id/query_path identity, so API diffs cannot be used for this run.",
       "status": "warn"
     },
     {
@@ -226,9 +252,9 @@
             "stage_next_eligible_shard_only": true
           }
         },
-        "total_observed_seconds": 4729.008,
-        "wait_seconds": 4119.102,
-        "wait_share": 0.871
+        "total_observed_seconds": 854.613,
+        "wait_seconds": 335.82,
+        "wait_share": 0.3929
       },
       "message": "Queue or merge wait is a material share of runtime.",
       "status": "warn"
@@ -240,7 +266,7 @@
           "adapter",
           "bulk_orm"
         ],
-        "step_count": 16
+        "step_count": 4
       },
       "message": "Apply-engine evidence is present.",
       "status": "pass"
@@ -256,20 +282,49 @@
     }
   ],
   "fallback_pressure": {
-    "fallback_query_runtime_ms": 1484.0,
-    "fallback_rate": 0.125,
-    "fallback_runtime_share": 0.1073,
-    "fallback_steps": 2,
+    "fallback_query_runtime_ms": 2624.8,
+    "fallback_rate": 1.0,
+    "fallback_runtime_share": 1.0,
+    "fallback_steps": 4,
     "full_model_refetch_after_retry_count": 0,
-    "message": "2/16 stage step(s) used fallback fetch.",
+    "message": "4/4 stage step(s) used fallback fetch.",
     "no_shard_safe_filter_models": [
+      "dcim.device",
       "dcim.site",
       "ipam.vrf"
     ],
     "partition_retry_count": 0,
     "ranked_models": [
       {
-        "fallback_query_runtime_ms": 730.0,
+        "fallback_query_runtime_ms": 1386.8,
+        "fallback_rate": 1.0,
+        "fallback_runtime_share": 1.0,
+        "fallback_steps": 2,
+        "full_model_refetch_after_retry_count": 0,
+        "model": "dcim.device",
+        "no_shard_safe_filter": true,
+        "partition_retry_count": 0,
+        "query_runtime_ms": 1386.8,
+        "reasons": [
+          {
+            "count": 2,
+            "reason": "model_fetch_contract_fallback",
+            "remediation": {
+              "code": "add_or_enable_shard_fetch_contract",
+              "layer": "planner_query_contract",
+              "message": "The model used the full model fetch contract.",
+              "suggestions": [
+                "Confirm the model has a shard-safe fetch contract.",
+                "Add deterministic NQE parameter support only if row shape stays unchanged."
+              ]
+            }
+          }
+        ],
+        "shard_scoped_fetch_failed_count": 0,
+        "total_steps": 2
+      },
+      {
+        "fallback_query_runtime_ms": 631.0,
         "fallback_rate": 1.0,
         "fallback_runtime_share": 1.0,
         "fallback_steps": 1,
@@ -277,7 +332,7 @@
         "model": "dcim.site",
         "no_shard_safe_filter": true,
         "partition_retry_count": 0,
-        "query_runtime_ms": 730.0,
+        "query_runtime_ms": 631.0,
         "reasons": [
           {
             "count": 1,
@@ -297,7 +352,7 @@
         "total_steps": 1
       },
       {
-        "fallback_query_runtime_ms": 754.0,
+        "fallback_query_runtime_ms": 607.0,
         "fallback_rate": 1.0,
         "fallback_runtime_share": 1.0,
         "fallback_steps": 1,
@@ -305,7 +360,7 @@
         "model": "ipam.vrf",
         "no_shard_safe_filter": true,
         "partition_retry_count": 0,
-        "query_runtime_ms": 754.0,
+        "query_runtime_ms": 607.0,
         "reasons": [
           {
             "count": 1,
@@ -323,20 +378,6 @@
         ],
         "shard_scoped_fetch_failed_count": 0,
         "total_steps": 1
-      },
-      {
-        "fallback_query_runtime_ms": 0.0,
-        "fallback_rate": 0.0,
-        "fallback_runtime_share": 0.0,
-        "fallback_steps": 0,
-        "full_model_refetch_after_retry_count": 0,
-        "model": "dcim.device",
-        "no_shard_safe_filter": false,
-        "partition_retry_count": 0,
-        "query_runtime_ms": 12343.1,
-        "reasons": [],
-        "shard_scoped_fetch_failed_count": 0,
-        "total_steps": 14
       }
     ],
     "shard_scoped_fetch_failed_count": 0,
@@ -344,7 +385,7 @@
     "status": "warn",
     "top_reasons": [
       {
-        "count": 2,
+        "count": 4,
         "reason": "model_fetch_contract_fallback",
         "remediation": {
           "code": "add_or_enable_shard_fetch_contract",
@@ -357,18 +398,28 @@
         }
       }
     ],
-    "total_query_runtime_ms": 13827.1,
-    "total_steps": 16
+    "total_query_runtime_ms": 2624.8,
+    "total_steps": 4
   },
   "first_order_actions": [
     {
-      "code": "review_diff_utilization",
-      "message": "Diff utilization is below the benchmark warning threshold.",
+      "code": "review_pushdown_efficiency",
+      "message": "Fallback fetch rate exceeds the scale benchmark fail threshold.",
+      "severity": "fail"
+    },
+    {
+      "code": "review_pushdown_runtime",
+      "message": "Fallback fetch accounts for a large share of query runtime.",
       "severity": "warn"
     },
     {
+      "code": "review_fallback_pressure",
+      "message": "Fallback pressure exceeds the scale benchmark fail threshold.",
+      "severity": "fail"
+    },
+    {
       "code": "review_diff_baseline_transition",
-      "message": "Diff-capable query identity exists, but no eligible prior baseline was available for at least one step.",
+      "message": "No stage steps used query_id/query_path identity, so API diffs cannot be used for this run.",
       "severity": "warn"
     },
     {
@@ -377,20 +428,20 @@
       "severity": "warn"
     }
   ],
-  "message": "Scale benchmark found warnings that need review before release.",
+  "message": "Scale benchmark found release-blocking evidence.",
   "run": {
     "backend": "branching",
     "baseline_ready": true,
-    "id": 57,
-    "next_step_index": 17,
+    "id": 55,
+    "next_step_index": 5,
     "status": "completed",
-    "total_steps": 16
+    "total_steps": 4
   },
-  "status": "warn",
+  "status": "fail",
   "summary": {
-    "actual_changes": 6138,
+    "actual_changes": 8658,
     "api_usage_status": "",
-    "applied_row_count": 10300,
+    "applied_row_count": 10557,
     "apply_engines": [
       "adapter",
       "bulk_orm"
@@ -399,14 +450,13 @@
     "estimated_changes": 10921,
     "failed_row_count": 0,
     "fetch_modes": [
-      "model",
-      "nqe_parameters"
+      "model"
     ],
     "fetched_row_count": 10921,
-    "query_runtime_ms": 13827.1,
-    "retry_count": 1,
+    "query_runtime_ms": 2624.8,
+    "retry_count": 0,
     "skipped_row_count": 0,
-    "step_count": 16
+    "step_count": 4
   },
   "thresholds": {
     "diff_warn_ratio": 0.8,

@@ -1,3 +1,4 @@
+from . import query_binding_resolution as _query_binding_resolution
 from .query_binding_resolution import apply_explicit_nqe_map_bindings  # noqa: F401
 from .query_binding_resolution import apply_nqe_map_bindings  # noqa: F401
 from .query_binding_resolution import binding_matches_current_reference  # noqa: F401
@@ -13,3 +14,7 @@ from .query_binding_resolution import publish_builtin_nqe_map_queries  # noqa: F
 from .query_binding_resolution import query_filename_from_path  # noqa: F401
 from .query_binding_resolution import query_path_from_filename  # noqa: F401
 from .query_binding_resolution import restore_builtin_raw_query_bindings  # noqa: F401
+
+builtin_query_repository_sync_summary = (
+    _query_binding_resolution.builtin_query_repository_sync_summary
+)

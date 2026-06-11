@@ -856,6 +856,25 @@
             <td>{{ health.large_run_tuning.adaptive_capacity.message|placeholder }}</td>
           </tr>
           <tr>
+            <th scope="row">{% trans "Scheduler overlap readiness" %}</th>
+            <td>
+              {{ health.large_run_tuning.scheduler_overlap_readiness.message|placeholder }}
+              {% with readiness=health.large_run_tuning.scheduler_overlap_readiness %}
+                {% if readiness.hotspot_models %}
+                  <ul class="mb-0 ps-3">
+                    {% for item in readiness.hotspot_models|slice:":3" %}
+                      <li>
+                        {{ item.model }}:
+                        {{ item.wait_seconds }}s wait,
+                        {{ item.wait_share }} share
+                      </li>
+                    {% endfor %}
+                  </ul>
+                {% endif %}
+              {% endwith %}
+            </td>
+          </tr>
+          <tr>
             <th scope="row">{% trans "Next tuning batch" %}</th>
             <td>
               {% with batch=health.large_run_tuning.adaptive_capacity.next_tuning_batch %}
@@ -906,12 +925,38 @@
             <td>{{ health.delete_wave.plan.delete_rows|placeholder }}</td>
           </tr>
           <tr>
+            <th scope="row">{% trans "Delete share" %}</th>
+            <td>{{ health.delete_wave.plan.delete_share|placeholder }}</td>
+          </tr>
+          <tr>
             <th scope="row">{% trans "Delete shards" %}</th>
             <td>{{ health.delete_wave.plan.delete_shards|placeholder }}</td>
           </tr>
           <tr>
+            <th scope="row">{% trans "Warning codes" %}</th>
+            <td>{{ health.delete_wave.warning_codes|join:", "|placeholder }}</td>
+          </tr>
+          <tr>
             <th scope="row">{% trans "Delete execution order" %}</th>
             <td>{{ health.delete_wave.plan.execution_order|join:", "|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "High-risk models" %}</th>
+            <td>
+              {% if health.delete_wave.high_risk_models %}
+                <ul class="mb-0 ps-3">
+                  {% for item in health.delete_wave.high_risk_models %}
+                    <li>
+                      {{ item.model }}:
+                      {{ item.reference_blocker_risk }},
+                      {{ item.delete_rows }} {% trans "rows" %}
+                    </li>
+                  {% endfor %}
+                </ul>
+              {% else %}
+                <span class="text-muted">{% trans "No elevated delete-risk models are recorded." %}</span>
+              {% endif %}
+            </td>
           </tr>
           <tr>
             <th scope="row">{% trans "Dependency skip issues" %}</th>
@@ -934,6 +979,14 @@
           <tr>
             <th scope="row">{% trans "Throughput summary" %}</th>
             <td>{{ health.throughput.message }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Queue / merge smoothing" %}</th>
+            <td>{{ health.throughput.throughput_smoothing.message|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Dominant wait component" %}</th>
+            <td>{{ health.throughput.scheduler_overlap_dominant_wait_component|placeholder }}</td>
           </tr>
           <tr>
             <th scope="row">{% trans "Current shard" %}</th>
