@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -29,9 +30,15 @@ from forward_netbox.utilities.model_contracts import (
 )
 from forward_netbox.utilities.plugin_integrations import integration_capability_summary
 from forward_netbox.utilities.plugin_integrations import integration_summary
+from forward_netbox.utilities.query_binding import (
+    builtin_query_repository_sync_summary,
+)
 from forward_netbox.utilities.query_registry import builtin_query_contract_summary
 from forward_netbox.utilities.query_registry import (
     optional_plugin_query_contract_summary,
+)
+from forward_netbox.utilities.validation_org_query import (
+    build_validation_org_query_source,
 )
 
 
@@ -74,6 +81,7 @@ class Command(BaseCommand):
         report = {
             "apply_engine_matrix": self._apply_engine_matrix(),
             "sync_evidence": self._sync_evidence(sync) if sync is not None else None,
+            "validation_org_query_sync": self._validation_org_query_sync(),
         }
         gaps = report["apply_engine_matrix"]["classification_gaps"]
 
@@ -233,3 +241,45 @@ class Command(BaseCommand):
             "sync_health_summary": sync_health_summary(sync),
             "latest_execution_run": run_summary,
         }
+
+    def _validation_org_query_sync(self):
+        username = (os.getenv("FORWARD_VALIDATION_USERNAME") or "").strip()
+        password = (os.getenv("FORWARD_VALIDATION_PASSWORD") or "").strip()
+        network_id = (os.getenv("FORWARD_VALIDATION_NETWORK_ID") or "").strip()
+        if not (username and password and network_id):
+            return {
+                "status": "skipped",
+                "reason": "Validation-org credentials are not configured.",
+                "repository": os.getenv("FORWARD_VALIDATION_REPOSITORY", "org"),
+                "directory": os.getenv(
+                    "FORWARD_VALIDATION_DIRECTORY", "/forward_netbox_validation/"
+                ),
+            }
+
+        source = build_validation_org_query_source(
+            source_name=os.getenv(
+                "FORWARD_VALIDATION_SOURCE_NAME", "validation-source"
+            ),
+            url=os.getenv("FORWARD_VALIDATION_URL", "https://fwd.app"),
+            username=username,
+            password=password,
+            network_id=network_id,
+        )
+        try:
+            source.validate_connection()
+            return builtin_query_repository_sync_summary(
+                client=source.get_client(),
+                repository=os.getenv("FORWARD_VALIDATION_REPOSITORY", "org"),
+                directory=os.getenv(
+                    "FORWARD_VALIDATION_DIRECTORY", "/forward_netbox_validation/"
+                ),
+            )
+        except Exception as exc:
+            return {
+                "status": "fail",
+                "repository": os.getenv("FORWARD_VALIDATION_REPOSITORY", "org"),
+                "directory": os.getenv(
+                    "FORWARD_VALIDATION_DIRECTORY", "/forward_netbox_validation/"
+                ),
+                "message": str(exc),
+            }

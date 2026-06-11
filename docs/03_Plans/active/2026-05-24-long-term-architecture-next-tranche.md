@@ -69,7 +69,9 @@ path is one native NetBox workflow with better economics underneath it:
    operator workflow or NQE contracts.
 
 The remaining work is targeted hardening, runtime economics, and release-grade
-proof.
+proof. As of the current evidence set, the P0 release-grade proof items below
+are green; what remains in this document is post-1.4 stretch work unless new
+runtime evidence regresses.
 
 ## What The Previous Architecture Missed
 
@@ -96,7 +98,7 @@ Remaining cost centers:
 
 ### P0: Close Field-Scale Evidence
 
-Status: `open_runtime_evidence_required`
+Status: `passed`
 
 Objective:
 
@@ -120,7 +122,7 @@ Completion signal:
 
 ### P0: Reduce Repeated Fallback
 
-Status: `open_evidence_driven`
+Status: `passed`
 
 Objective:
 
@@ -142,7 +144,7 @@ Completion signal:
 
 ### P0: Keep Runtime Capacity Honest
 
-Status: `active_guardrail`
+Status: `passed`
 
 Objective:
 
@@ -305,6 +307,20 @@ Do not spend engineering effort on:
    warranted.
 6. Keep capability-gated NetBox 4.6+/TurboBulk work under the existing
    apply-engine boundary.
+
+## 1.4 Feature-Complete Cutoff
+
+The current 1.4 feature set is complete enough to ship once release packaging
+and version publication are ready. The evidence that supports that cutoff is:
+
+- `docs/03_Plans/evidence/architecture-runtime-evidence.json`
+- `docs/03_Plans/evidence/architecture-completion-audit-current.json`
+- `docs/03_Plans/evidence/release-readiness-audit.json`
+- the current CI gate in `.github/workflows/ci.yml`
+
+The remaining P1/P2 items in this document are explicitly post-1.4 stretch
+work. They should be treated as follow-on hardening, not as a requirement for a
+1.4.0 tag unless new runtime evidence says otherwise.
 
 ## Validation
 

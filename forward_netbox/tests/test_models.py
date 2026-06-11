@@ -2186,6 +2186,79 @@ class ForwardSyncModelTest(TestCase):
             )
         )
 
+    def test_incremental_diff_baseline_skips_missing_snapshot_when_client_provided(
+        self,
+    ):
+        sync = ForwardSync.objects.create(
+            name="sync-diff-baseline-client",
+            source=self.source,
+            auto_merge=False,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+            },
+        )
+        ForwardIngestion.objects.create(
+            sync=sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="ui-harness-snapshot",
+            baseline_ready=True,
+        )
+        specs = [
+            QuerySpec(
+                model_string="dcim.device",
+                query_name="Device Query",
+                query_id="Q_device",
+            )
+        ]
+        client = Mock()
+        client.get_snapshots.return_value = [
+            {"id": "snapshot-current", "state": "PROCESSED"},
+            {"id": "snapshot-old", "state": "PROCESSED"},
+        ]
+
+        self.assertIsNone(
+            sync.incremental_diff_baseline(
+                specs=specs,
+                current_snapshot_id="snapshot-current",
+                client=client,
+            )
+        )
+
+    def test_incremental_diff_baseline_ignores_non_iterable_snapshot_payload(self):
+        sync = ForwardSync.objects.create(
+            name="sync-diff-baseline-client-mock",
+            source=self.source,
+            auto_merge=False,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+            },
+        )
+        ForwardIngestion.objects.create(
+            sync=sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="ui-harness-snapshot",
+            baseline_ready=True,
+        )
+        specs = [
+            QuerySpec(
+                model_string="dcim.device",
+                query_name="Device Query",
+                query_id="Q_device",
+            )
+        ]
+        client = Mock()
+        client.get_snapshots.return_value = Mock()
+
+        self.assertIsNone(
+            sync.incremental_diff_baseline(
+                specs=specs,
+                current_snapshot_id="snapshot-current",
+                client=client,
+            )
+        )
+
 
 class ForwardIngestionSnapshotSummaryTest(TestCase):
     def setUp(self):

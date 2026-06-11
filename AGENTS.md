@@ -1,6 +1,6 @@
 # Forward NetBox Agent Guide
 
-This repository is a NetBox plugin that syncs Forward Networks inventory into NetBox through Forward API/NQE and stages changes through `netbox_branching`.
+This repository is a NetBox plugin that syncs Forward inventory into NetBox through Forward API/NQE and stages changes through `netbox_branching`.
 
 ## Start Here
 

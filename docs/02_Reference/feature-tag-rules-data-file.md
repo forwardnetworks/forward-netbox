@@ -54,7 +54,7 @@ The initial optional query supports `record_type: structured_feature_tag_rule` w
 1. Upload and attach `netbox_feature_tag_rules.json` in Forward.
 2. Run or reprocess a Forward snapshot after the upload.
 3. Confirm the selected snapshot exposes `network.extensions.netbox_feature_tag_rules.value`.
-4. In NetBox, open `Plugins > Forward Networks > NQE Maps`.
+4. In NetBox, open `Plugins > Forward > NQE Maps`.
 5. Disable `Forward Device Feature Tags`.
 6. Enable `Forward Device Feature Tags with Rules`.
 7. For large datasets, copy the rules-aware query text into the Forward Org Repository and configure the NetBox NQE map to use the committed query ID.

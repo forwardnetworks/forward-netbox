@@ -1,6 +1,6 @@
 # Forward NetBox Architecture
 
-`forward_netbox` is a NetBox plugin with one primary workflow: fetch Forward Networks data through Forward API/NQE, transform rows into NetBox model operations, stage those operations in NetBox Branching branches, and optionally merge those branches.
+`forward_netbox` is a NetBox plugin with one primary workflow: fetch Forward data through Forward API/NQE, transform rows into NetBox model operations, stage those operations in NetBox Branching branches, and optionally merge those branches.
 
 ## Runtime Flow
 

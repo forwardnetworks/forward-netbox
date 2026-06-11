@@ -845,7 +845,10 @@ class ForwardSyncHealthTest(TestCase):
         self.assertEqual(delete_wave["status"], "warn")
         self.assertEqual(delete_wave["phase"], "apply_before_delete")
         self.assertEqual(delete_wave["plan"]["delete_rows"], 1250)
+        self.assertEqual(delete_wave["plan"]["delete_share"], 0.62)
         self.assertEqual(delete_wave["plan"]["execution_order"][0], "dcim.interface")
+        self.assertEqual(delete_wave["warning_codes"], ["delete_wave"])
+        self.assertEqual(delete_wave["high_risk_models"][0]["model"], "dcim.device")
         self.assertEqual(delete_wave["steps"]["delete_step_count"], 1)
         self.assertEqual(delete_wave["steps"]["pending_apply_step_count"], 1)
         self.assertEqual(
@@ -857,6 +860,95 @@ class ForwardSyncHealthTest(TestCase):
         )
         self.assertEqual(delete_check["status"], "warn")
         self.assertIn("planned after earlier apply shards", delete_check["message"])
+
+    def test_throughput_summary_surfaces_scheduler_overlap_readiness(self):
+        sync = self._sync_with_source_parameters(
+            "health-sync-overlap",
+            {
+                "active_worker_count": 4,
+                "database_headroom": "available",
+                "worker_headroom": "available",
+            },
+        )
+        now = timezone.now()
+        run = ForwardExecutionRun.objects.create(
+            sync=sync,
+            source=sync.source,
+            backend="branching",
+            status="running",
+            snapshot_selector="latestProcessed",
+            snapshot_id="snapshot-overlap",
+            total_steps=2,
+            next_step_index=2,
+        )
+        stage_job = Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardExecutionRun),
+            object_id=run.pk,
+            name="throughput-stage-job",
+            user=None,
+            status=JobStatusChoices.STATUS_COMPLETED,
+            job_id="323e4567-e89b-12d3-a456-426614174001",
+            created=now - timedelta(minutes=10),
+            started=now - timedelta(minutes=5),
+            completed=now - timedelta(minutes=3),
+        )
+        merge_job = Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardExecutionRun),
+            object_id=run.pk,
+            name="throughput-merge-job",
+            user=None,
+            status=JobStatusChoices.STATUS_COMPLETED,
+            job_id="423e4567-e89b-12d3-a456-426614174001",
+            created=now - timedelta(minutes=4),
+            started=now - timedelta(minutes=2),
+            completed=now - timedelta(minutes=1),
+        )
+        ForwardExecutionStep.objects.create(
+            run=run,
+            index=1,
+            kind="stage",
+            status="merged",
+            model_string="dcim.device",
+            operation="apply",
+            job=stage_job,
+            merge_job=merge_job,
+            created=now - timedelta(minutes=11),
+            started=now - timedelta(minutes=5),
+            completed=now - timedelta(minutes=3),
+        )
+        ForwardExecutionStep.objects.create(
+            run=run,
+            index=2,
+            kind="stage",
+            status="pending",
+            model_string="dcim.interface",
+            operation="apply",
+            created=now - timedelta(minutes=2),
+        )
+
+        summary = sync_health_summary(sync)
+        throughput = summary["throughput"]
+
+        self.assertIn("throughput_smoothing", throughput)
+        self.assertEqual(
+            throughput["throughput_smoothing"]["scheduler_overlap_readiness"]["status"],
+            "candidate",
+        )
+        self.assertTrue(
+            throughput["throughput_smoothing"]["scheduler_overlap_readiness"]["ready"]
+        )
+        self.assertEqual(
+            throughput["scheduler_overlap_status"],
+            "candidate",
+        )
+        self.assertEqual(
+            summary["large_run_tuning"]["scheduler_overlap_readiness"]["status"],
+            "candidate",
+        )
+        self.assertIn(
+            "scheduler overlap is a candidate",
+            throughput["scheduler_overlap_message"].lower(),
+        )
 
     @override_settings(PLUGINS_CONFIG=BGP_PLUGIN_CONFIG)
     def test_sync_health_view_renders_dependency_preflight_warning(self):
@@ -1323,13 +1415,19 @@ class ForwardSyncHealthTest(TestCase):
         self.assertContains(response, "Large Run Tuning")
         self.assertContains(response, "First actions")
         self.assertContains(response, "Backend advice")
+        self.assertContains(response, "Scheduler overlap readiness")
         self.assertContains(response, "Delete Wave")
+        self.assertContains(response, "Delete share")
+        self.assertContains(response, "Warning codes")
+        self.assertContains(response, "High-risk models")
         self.assertContains(response, "Compatibility Cache")
         self.assertContains(response, "Compatibility payload present")
         self.assertContains(response, "Density Learning")
         self.assertContains(response, "High confidence models")
         self.assertContains(response, "Run Throughput")
         self.assertContains(response, "Throughput summary")
+        self.assertContains(response, "Queue / merge smoothing")
+        self.assertContains(response, "Dominant wait component")
         self.assertContains(response, "Export Live Source Check")
         self.assertContains(response, "Export Live Query Drift Check")
         self.assertContains(response, "Export Live Data File Check")
