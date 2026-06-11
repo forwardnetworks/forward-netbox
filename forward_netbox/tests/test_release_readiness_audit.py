@@ -1,6 +1,7 @@
 import os
 import sys
 import types
+from importlib import import_module
 from unittest.mock import Mock
 from unittest.mock import patch
 
@@ -10,7 +11,7 @@ sys.modules.setdefault(
     "dotenv", types.SimpleNamespace(load_dotenv=lambda *args, **kwargs: None)
 )
 
-import tasks  # noqa: E402
+tasks = import_module("tasks")
 
 
 class ForwardReleaseReadinessAuditTest(TestCase):

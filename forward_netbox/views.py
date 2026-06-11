@@ -85,6 +85,7 @@ from .utilities.execution_ledger import reconcile_execution_run
 from .utilities.execution_ledger_metrics import pushdown_trend_history_for_sync
 from .utilities.execution_ledger_serialization import execution_run_failure_summary
 from .utilities.execution_ledger_serialization import execution_run_insights_summary
+from .utilities.execution_ledger_serialization import live_support_diagnostics
 from .utilities.health import live_data_file_health_check
 from .utilities.health import live_source_health_check
 from .utilities.health import sync_health_summary
@@ -93,6 +94,7 @@ from .utilities.query_binding import apply_explicit_nqe_map_bindings
 from .utilities.query_binding import build_nqe_map_bindings
 from .utilities.query_binding import live_query_binding_drift
 from .utilities.query_binding import publish_builtin_nqe_map_queries
+from .utilities.query_binding import refresh_query_id_bindings_from_repository_folder
 from .utilities.query_binding import restore_builtin_raw_query_bindings
 from .utilities.resumable_branching import enqueue_branch_stage_job
 from .utilities.support_bundle_archive import support_bundle_zip_response
@@ -257,6 +259,7 @@ def _sync_support_bundle_payload(sync):
         execution_state.get("state_source") if execution_state else None
     )
     health = sync_health_summary(sync)
+    live_diagnostics = live_support_diagnostics(sync, sync_health=health)
     return {
         "exported_at": timezone.now().isoformat(),
         "sync": {
@@ -273,6 +276,7 @@ def _sync_support_bundle_payload(sync):
         },
         "query_drift_summary": health.get("query_drift_summary", {}),
         "query_drift_results": health.get("query_modes", {}).get("local_drift", []),
+        "live_diagnostics": json_safe_value(live_diagnostics),
         "latest_ingestion": (
             {
                 "pk": latest_ingestion.pk,
@@ -656,7 +660,9 @@ class ForwardSyncHealthView(generic.ObjectView):
     )
 
     def get_extra_context(self, request, instance):
-        return {"health": sync_health_summary(instance)}
+        health = sync_health_summary(instance)
+        live_diagnostics = live_support_diagnostics(instance, sync_health=health)
+        return {"health": health, "live_diagnostics": json_safe_value(live_diagnostics)}
 
 
 @register_model_view(ForwardSync, "query_drift", path="query-drift")
@@ -690,6 +696,58 @@ class ForwardSyncQueryDriftView(BaseObjectView):
         }
         filename = f"forward-sync-{sync.pk}-live-query-drift.json"
         return _download_json_response(json_safe_value(payload), filename)
+
+
+@register_model_view(ForwardSync, "refresh_query_ids", path="refresh-query-ids")
+class ForwardSyncRefreshQueryIdsView(BaseObjectView):
+    queryset = ForwardSync.objects.all()
+
+    def get_required_permission(self):
+        return "forward_netbox.change_forwardnqemap"
+
+    def post(self, request, pk):
+        sync = get_object_or_404(self.queryset, pk=pk)
+        client = sync.source.get_client()
+        maps = [
+            query_map.pk
+            for query_map in sync.get_maps()
+            if sync.is_model_enabled(query_map.model_string)
+        ]
+        queryset = ForwardNQEMap.objects.filter(pk__in=maps).select_related(
+            "netbox_model"
+        )
+        results = refresh_query_id_bindings_from_repository_folder(
+            client=client,
+            directory="/forward_netbox_validation/",
+            repository="org",
+            queryset=queryset,
+            pin_commit=False,
+        )
+        refreshed = [result for result in results if result.matched]
+        skipped = [result for result in results if not result.matched]
+        if refreshed:
+            messages.success(
+                request,
+                _(
+                    "Refreshed %(count)s enabled NQE map(s) to canonical "
+                    "validation-folder query IDs."
+                )
+                % {"count": len(refreshed)},
+            )
+        if skipped:
+            messages.warning(
+                request,
+                _(
+                    "%(count)s NQE map(s) could not be refreshed automatically; "
+                    "export live query drift for details."
+                )
+                % {"count": len(skipped)},
+            )
+        if not refreshed and not skipped:
+            messages.info(request, _("No enabled NQE maps were available to refresh."))
+        return redirect(
+            reverse("plugins:forward_netbox:forwardsync_health", kwargs={"pk": sync.pk})
+        )
 
 
 @register_model_view(ForwardSync, "source_health", path="source-health")
