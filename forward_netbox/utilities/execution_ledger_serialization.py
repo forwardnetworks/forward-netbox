@@ -1,3 +1,4 @@
+from collections import Counter
 from types import SimpleNamespace
 
 from ..choices import ForwardExecutionRunStatusChoices
@@ -123,11 +124,63 @@ def live_support_diagnostics(sync, *, sync_health=None):
         "query_drift": {
             "available": True,
             "summary": sync_health.get("query_drift_summary", {}),
+            "live_summary": _live_query_drift_summary(
+                query_drift_results,
+                query_drift_error=query_drift_error,
+            ),
             "results": query_drift_results,
             "error": query_drift_error,
         },
         "data_file_health": data_file_health,
         "enabled_map_count": len(maps),
+    }
+
+
+def _live_query_drift_summary(query_drift_results, *, query_drift_error=""):
+    results = list(query_drift_results or [])
+    severity_counts = Counter(
+        str(item.get("severity") or "").strip() or "unknown" for item in results
+    )
+    status_counts = Counter(
+        str(item.get("live_status") or item.get("status") or "").strip() or "unknown"
+        for item in results
+    )
+    query_id_results = [item for item in results if item.get("mode") == "query_id"]
+    query_id_status_counts = Counter(
+        str(item.get("live_status") or item.get("status") or "").strip() or "unknown"
+        for item in query_id_results
+    )
+    return {
+        "total_maps": len(results),
+        "checked_maps": sum(1 for item in results if item.get("live_checked")),
+        "pass_count": int(severity_counts.get("pass", 0)),
+        "warn_count": int(severity_counts.get("warn", 0)),
+        "info_count": int(severity_counts.get("info", 0)),
+        "status_counts": dict(status_counts),
+        "query_id_total": len(query_id_results),
+        "query_id_pass_count": int(
+            sum(1 for item in query_id_results if item.get("severity") == "pass")
+        ),
+        "query_id_warn_count": int(
+            sum(1 for item in query_id_results if item.get("severity") == "warn")
+        ),
+        "query_id_info_count": int(
+            sum(1 for item in query_id_results if item.get("severity") == "info")
+        ),
+        "query_id_not_found_count": int(
+            query_id_status_counts.get("direct_query_id_not_found", 0)
+        ),
+        "query_id_ambiguous_count": int(
+            query_id_status_counts.get("direct_query_id_ambiguous", 0)
+        ),
+        "query_id_modified_count": int(
+            query_id_status_counts.get("live_repository_source_modified", 0)
+        ),
+        "query_id_unavailable_count": int(
+            query_id_status_counts.get("live_repository_source_unavailable", 0)
+        ),
+        "lookup_error_count": int(query_id_status_counts.get("live_lookup_failed", 0)),
+        "error": str(query_drift_error or "").strip(),
     }
 
 

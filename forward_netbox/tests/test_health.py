@@ -303,7 +303,7 @@ class ForwardSyncHealthTest(TestCase):
             1,
         )
         self.assertIn(
-            "repository-path",
+            "Refresh Query IDs",
             summary["query_drift_summary"]["remediation_actions"][0]["message"],
         )
         self.assertIn(
@@ -318,6 +318,18 @@ class ForwardSyncHealthTest(TestCase):
                 query_drift_summary=summary["query_drift_summary"],
             ),
         )
+        self.assertIn(
+            "Refresh Query IDs",
+            query_drift_check_message(
+                [
+                    {
+                        "severity": "info",
+                        "remediation": "Use Refresh Query IDs on the sync Health page after a local query change so the saved direct ID matches the current validation-folder query; pin a commit if you need a fixed Forward revision.",
+                    }
+                ],
+                query_drift_summary=summary["query_drift_summary"],
+            ),
+        )
         self.assertEqual(
             summary["query_modes"]["local_drift"][0]["status"],
             "direct_query_id_unverified",
@@ -327,8 +339,8 @@ class ForwardSyncHealthTest(TestCase):
             "latest_commit",
         )
         self.assertIn(
-            "latest committed Forward query revision",
-            summary["query_modes"]["local_drift"][0]["commit_message"],
+            "Refresh Query IDs",
+            summary["query_modes"]["local_drift"][0]["remediation"],
         )
         self.assertEqual(
             summary["query_modes"]["data_file_maps"][0]["model"],
@@ -1053,7 +1065,7 @@ class ForwardSyncHealthTest(TestCase):
             summary["optional_plugin_capabilities"]["aci.netbox_cisco_aci"][
                 "command_inventory_count"
             ],
-            16,
+            17,
         )
 
     @override_settings(RQ_DEFAULT_TIMEOUT=100)
@@ -1356,22 +1368,66 @@ class ForwardSyncHealthTest(TestCase):
     def test_sync_health_view_renders_diagnostics(self):
         self.client.force_login(self.user)
 
-        response = self.client.get(
-            reverse(
-                "plugins:forward_netbox:forwardsync_health",
-                kwargs={"pk": self.sync.pk},
+        live_diagnostics = {
+            "available": True,
+            "source_health": {"available": True, "reachable": True, "checks": []},
+            "query_drift": {
+                "available": True,
+                "summary": {"status_counts": {"pass": 1}},
+                "live_summary": {
+                    "total_maps": 2,
+                    "checked_maps": 2,
+                    "warn_count": 1,
+                    "info_count": 0,
+                    "pass_count": 1,
+                    "status_counts": {"live_repository_source_modified": 1},
+                    "query_id_total": 1,
+                    "query_id_pass_count": 0,
+                    "query_id_warn_count": 1,
+                    "query_id_info_count": 0,
+                    "query_id_not_found_count": 0,
+                    "query_id_ambiguous_count": 0,
+                    "query_id_modified_count": 1,
+                    "query_id_unavailable_count": 0,
+                    "lookup_error_count": 0,
+                    "error": "",
+                },
+                "results": [],
+                "error": "",
+            },
+            "data_file_health": {
+                "enabled_data_file_map_count": 0,
+                "required_data_files": [],
+                "snapshot_selector": "latestProcessed",
+                "checks": [],
+                "results": [],
+            },
+            "enabled_map_count": 2,
+        }
+
+        with patch(
+            "forward_netbox.views.live_support_diagnostics",
+            return_value=live_diagnostics,
+        ):
+            response = self.client.get(
+                reverse(
+                    "plugins:forward_netbox:forwardsync_health",
+                    kwargs={"pk": self.sync.pk},
+                )
             )
-        )
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Health Summary")
         self.assertContains(response, "Query Binding")
         self.assertContains(response, "Query Path Resolution")
         self.assertContains(response, "Local Query Drift")
+        self.assertContains(response, "Live Query Drift")
         self.assertContains(response, "Remediation")
         self.assertContains(response, "Commit")
         self.assertContains(response, "latest committed Forward query revision")
-        self.assertContains(response, "repository-path bindings")
+        self.assertContains(response, "Refresh Query IDs")
+        self.assertContains(response, "Direct query ID warnings")
+        self.assertContains(response, "sync mode")
         self.assertContains(response, "Apply Engines")
         self.assertContains(response, "Bulk ORM expansion")
         self.assertContains(response, "Parity gates")
@@ -1433,6 +1489,25 @@ class ForwardSyncHealthTest(TestCase):
         self.assertContains(response, "Export Live Data File Check")
         self.assertContains(response, "Health Sites")
         self.assertContains(response, "The next run is eligible to use Forward diffs")
+
+    def test_sync_health_view_renders_live_diagnostics_failure_message(self):
+        self.client.force_login(self.user)
+
+        with patch.object(
+            ForwardSource,
+            "get_client",
+            side_effect=RuntimeError("Forward offline"),
+        ):
+            response = self.client.get(
+                reverse(
+                    "plugins:forward_netbox:forwardsync_health",
+                    kwargs={"pk": self.sync.pk},
+                )
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Live Query Drift")
+        self.assertContains(response, "Forward offline")
 
     def test_live_source_health_check_reports_reachability_without_ids(self):
         client = Mock()
@@ -1611,6 +1686,37 @@ class ForwardSyncHealthTest(TestCase):
         self.assertEqual(path_result["live_query_id"], "Q_devices")
         self.assertEqual(path_result["requested_commit_id"], "head")
         self.assertEqual(path_result["commit_binding"], "latest_commit")
+
+    def test_sync_refresh_query_ids_posts_to_repair_action(self):
+        self.client.force_login(self.user)
+        result = Mock(matched=True)
+        client = Mock()
+        with patch.object(ForwardSource, "get_client", return_value=client), patch(
+            "forward_netbox.views.refresh_query_id_bindings_from_repository_folder",
+            return_value=[result],
+        ) as refresh_query_ids:
+            response = self.client.post(
+                reverse(
+                    "plugins:forward_netbox:forwardsync_refresh_query_ids",
+                    kwargs={"pk": self.sync.pk},
+                )
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            response["Location"],
+            reverse(
+                "plugins:forward_netbox:forwardsync_health",
+                kwargs={"pk": self.sync.pk},
+            ),
+        )
+        refresh_query_ids.assert_called_once()
+        self.assertEqual(refresh_query_ids.call_args.kwargs["client"], client)
+        self.assertEqual(
+            refresh_query_ids.call_args.kwargs["directory"],
+            "/forward_netbox_validation/",
+        )
+        self.assertFalse(refresh_query_ids.call_args.kwargs["pin_commit"])
 
     def test_ingestion_health_check_marks_non_blocking_issue_baseline_as_pass(self):
         ingestion = ForwardIngestion.objects.create(

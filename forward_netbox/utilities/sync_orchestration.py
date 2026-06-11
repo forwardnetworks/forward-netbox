@@ -18,6 +18,7 @@ from ..models import ForwardValidationRun
 from ..utilities.logging import SyncLogging
 from .api_usage import evaluate_forward_api_usage
 from .runtime_guidance import log_worker_timeout_guidance
+from .snapshot_freshness import latest_processed_catchup_decision
 from .sync_state import mark_branch_run_failed
 
 logger = logging.getLogger("forward_netbox.models")
@@ -250,3 +251,29 @@ def run_forward_sync(sync, job=None, *, max_changes_per_branch=None):
     finally:
         _record_forward_api_usage(sync, executor)
         _finalize_forward_sync(sync, job)
+        if sync.status == ForwardSyncStatusChoices.COMPLETED:
+            current_snapshot_id = ""
+            if "ingestions" in locals() and ingestions:
+                current_snapshot_id = str(
+                    getattr(ingestions[-1], "snapshot_id", "") or ""
+                ).strip()
+            if not current_snapshot_id:
+                current_ingestion = getattr(executor, "current_ingestion", None)
+                current_snapshot_id = str(
+                    getattr(current_ingestion, "snapshot_id", "") or ""
+                ).strip()
+            decision = latest_processed_catchup_decision(
+                sync,
+                current_snapshot_id=current_snapshot_id,
+                client=getattr(executor, "client", None),
+                current_job=job,
+            )
+            if decision["should_queue"]:
+                sync.logger.log_info(
+                    "Forward latestProcessed advanced from "
+                    f"`{decision['current_snapshot_id']}` to "
+                    f"`{decision['latest_processed_snapshot_id']}` during the run; "
+                    "queuing a catch-up sync.",
+                    obj=sync,
+                )
+                sync.enqueue_sync_job(adhoc=True, user=user)

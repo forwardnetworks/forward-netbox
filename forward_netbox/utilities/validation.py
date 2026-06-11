@@ -5,6 +5,10 @@ from ..choices import ForwardDriftPolicyBaselineChoices
 from ..choices import ForwardValidationStatusChoices
 from ..exceptions import ForwardSyncError
 from .query_fetch import ForwardQueryFetcher
+from .sync_primitives import DEPENDENCY_PARENT_DEVICE_MODELS
+
+
+FOUNDATIONAL_DEVICE_MODELS = ("dcim.platform", "dcim.devicetype")
 
 
 class ForwardValidationRunner:
@@ -108,12 +112,15 @@ class ForwardValidationRunner:
         )
 
     def _blocking_reasons(self, context, plan, model_results, policy):
-        if policy is None or not policy.enabled:
-            return []
         if self._forced_validation_override_applies(context, policy):
             return []
 
         reasons = []
+        reasons.extend(self._required_query_failure_reasons(model_results))
+
+        if policy is None or not policy.enabled:
+            return reasons
+
         if policy.require_processed_snapshot and not self._snapshot_is_processed(
             context
         ):
@@ -167,6 +174,40 @@ class ForwardValidationRunner:
             reasons.append(
                 f"Delete percentage exceeds policy limit {policy.max_deleted_percent}%."
             )
+        return reasons
+
+    def _required_query_failure_reasons(self, model_results):
+        enabled_models = set(self.sync.get_model_strings())
+        failed_models = {
+            str(result.get("model") or "")
+            for result in model_results or []
+            if int(result.get("failure_count") or 0) > 0
+        }
+        reasons = []
+
+        enabled_parent_device_models = sorted(
+            model
+            for model in DEPENDENCY_PARENT_DEVICE_MODELS
+            if model in enabled_models
+        )
+        if "dcim.device" in failed_models and enabled_parent_device_models:
+            reasons.append(
+                "`dcim.device` query failed while enabled child models depend on "
+                "device coverage: " + ", ".join(enabled_parent_device_models) + "."
+            )
+
+        failed_foundational_models = sorted(
+            model
+            for model in FOUNDATIONAL_DEVICE_MODELS
+            if model in failed_models and model in enabled_models
+        )
+        if "dcim.device" in enabled_models and failed_foundational_models:
+            reasons.append(
+                "Foundational device metadata query failed before `dcim.device`: "
+                + ", ".join(failed_foundational_models)
+                + "."
+            )
+
         return reasons
 
     def _forced_validation_override_applies(self, context, policy):

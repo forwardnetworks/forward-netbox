@@ -269,8 +269,9 @@ invoke sync-autorecover-monitor --sync-ids 50,51 --max-polls 6 --interval-second
   prerequisites before the matrix starts: required smoke env vars, expected
   dataset label, and Docker reachability.
 - `invoke release-readiness-audit --dataset-label=release-smoke` aggregates preflight,
-  dataset gate, and architecture-completion gate in one JSON artifact for
-  release sign-off evidence.
+  dataset gate, validation-org query audit when credentials are available, and
+  architecture-completion gate in one JSON artifact for release sign-off
+  evidence.
   Failed run entries now include `failure_code` / `failure_hint` so environment
   gates such as `docker_api_unreachable` are explicit instead of buried in raw
   command logs.
