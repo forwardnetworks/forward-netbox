@@ -1346,6 +1346,10 @@ class QueryRegistryTest(TestCase):
         self.assertIn("interface.interfaceType == IfaceType.IF_LOOPBACK", spec.query)
         self.assertIn('then "virtual"', spec.query)
         self.assertNotIn("ethernet_interfaces + loopback_interfaces", spec.query)
+        self.assertIn(
+            'description:\n      if isPresent(interface.description) && interface.description != ""',
+            spec.query,
+        )
 
     def test_inferred_interface_cable_query_uses_resolved_interface_links(self):
         spec = next(

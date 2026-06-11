@@ -718,6 +718,70 @@ class NQEMapBindingTest(TestCase):
             directory="/forward_netbox_validation/",
         )
 
+    def test_publish_builtin_queries_resolves_commit_id_for_existing_path(self):
+        netbox_model = ContentType.objects.get(app_label="dcim", model="device")
+        query_map = ForwardNQEMap.objects.create(
+            name="Forward Devices",
+            netbox_model=netbox_model,
+            query=read_builtin_query_source("forward_devices.nqe"),
+            query_repository="org",
+            query_path="/forward_netbox_validation/forward_devices",
+        )
+        client = Mock()
+        client.get_nqe_repository_query_index.return_value = {
+            "rows": [
+                {
+                    "queryId": "OQ_devices",
+                    "path": "/forward_netbox_validation/forward_devices",
+                }
+            ],
+            "by_path": {
+                "/forward_netbox_validation/forward_devices": {
+                    "queryId": "OQ_devices",
+                    "path": "/forward_netbox_validation/forward_devices",
+                }
+            },
+            "by_query_id": {
+                "OQ_devices": [
+                    {
+                        "queryId": "OQ_devices",
+                        "path": "/forward_netbox_validation/forward_devices",
+                    }
+                ]
+            },
+        }
+        client.get_nqe_query_history.return_value = [
+            {
+                "id": "commit-old",
+                "path": "/forward_netbox_validation/forward_devices",
+            },
+            {
+                "id": "commit-1",
+                "path": "/forward_netbox_validation/forward_devices",
+            },
+        ]
+        client.commit_org_nqe_queries.return_value = "commit-1"
+
+        results = publish_builtin_nqe_map_queries(
+            client=client,
+            directory="/forward_netbox_validation/",
+            queryset=ForwardNQEMap.objects.filter(pk=query_map.pk),
+            commit_message="Publish Forward NetBox NQE maps",
+            pin_commit=True,
+            overwrite=True,
+        )
+
+        client.edit_org_nqe_query.assert_called_once_with(
+            query_path="/forward_netbox_validation/forward_devices",
+            source_code=read_compiled_builtin_query_source("forward_devices.nqe"),
+            query_id="OQ_devices",
+            commit_id="commit-1",
+        )
+        self.assertTrue(any(result.matched for result in results))
+        query_map.refresh_from_db()
+        self.assertEqual(query_map.query_id, "OQ_devices")
+        self.assertEqual(query_map.commit_id, "commit-1")
+
     def test_apply_bindings_skips_ambiguous_same_model_maps(self):
         netbox_model = ContentType.objects.get(app_label="ipam", model="prefix")
         query_map = ForwardNQEMap.objects.create(

@@ -1,6 +1,6 @@
 /**
  * @intent Device interfaces collected by Forward
- * @description It provides a list of device interfaces collected by Forward Networks to be added
+ * @description It provides a list of device interfaces collected by Forward to be added
  * in NetBox using POST and PATCH requests to the /api/dcim/interfaces/ REST API endpoint.
  */
 
@@ -58,6 +58,9 @@ foreach interface in device.interfaces
     untagged_vlan: untagged_vlan,
     enabled: interface.operStatus == OperStatus.UP,
     mtu: interface.mtu,
-    description: if isPresent(interface.description) then interface.description else "",
+    description:
+      if isPresent(interface.description) && interface.description != ""
+        then interface.description
+      else null : String,
     speed: if isPresent(speed_mbps) then speed_mbps * 1000 else null : Integer
   };

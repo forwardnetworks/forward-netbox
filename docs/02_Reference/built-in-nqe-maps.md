@@ -611,7 +611,7 @@ The rules-aware query keeps matching on Forward structured protocol state while 
 ```nqe
 /**
  * @intent Device interfaces collected by Forward
- * @description It provides a list of device interfaces collected by Forward Networks to be added
+ * @description It provides a list of device interfaces collected by Forward to be added
  * in NetBox using POST and PATCH requests to the /api/dcim/interfaces/ REST API endpoint.
  */
 

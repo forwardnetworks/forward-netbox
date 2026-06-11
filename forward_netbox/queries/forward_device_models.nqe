@@ -1,6 +1,6 @@
 /**
  * @intent Device models found by Forward
- * @description It provides a list of device models collected by Forward Networks to be added
+ * @description It provides a list of device models collected by Forward to be added
  * in NetBox using POST requests to the /api/dcim/device-types/ REST API endpoint.
  */
 

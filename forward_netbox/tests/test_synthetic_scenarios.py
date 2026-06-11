@@ -209,6 +209,10 @@ class SyntheticSyncScenarioHarnessTest(TestCase):
         )
         ingestion = ForwardIngestion.objects.create(sync=self.sync)
         client = Mock()
+        client.get_snapshots.return_value = [
+            {"id": scenarios.SNAPSHOT_BEFORE, "state": "PROCESSED"},
+            {"id": scenarios.SNAPSHOT_AFTER, "state": "PROCESSED"},
+        ]
         client.get_latest_processed_snapshot.return_value = scenarios.snapshot(
             scenarios.SNAPSHOT_AFTER
         )
@@ -272,6 +276,10 @@ class SyntheticSyncScenarioHarnessTest(TestCase):
             {"name": slug_drop, "slug": slug_drop, "status": "active"},
         ]
         client = Mock()
+        client.get_snapshots.return_value = [
+            {"id": scenarios.SNAPSHOT_BEFORE, "state": "PROCESSED"},
+            {"id": scenarios.SNAPSHOT_AFTER, "state": "PROCESSED"},
+        ]
         client.get_snapshot_metrics.return_value = {}
         client.get_latest_processed_snapshot.side_effect = (
             lambda _network_id: scenarios.snapshot(current_snapshot["id"])

@@ -357,13 +357,19 @@ def delete_wave_check_message(delete_wave):
     message = str(delete_wave.get("message") or "").strip()
     plan = (delete_wave or {}).get("plan") or {}
     warnings = list(plan.get("warnings") or [])
+    warning_codes = list(delete_wave.get("warning_codes") or [])
     warning_preview = "; ".join(
         str(item.get("message") or "").strip()
         for item in warnings[:2]
         if str(item.get("message") or "").strip()
     )
+    suffix = ""
+    if warning_codes:
+        suffix = f" Warning codes: {', '.join(warning_codes)}."
     if warning_preview:
-        return f"{message} Warning: {warning_preview}"
+        suffix = f"{suffix} Warning: {warning_preview}"
+    if suffix:
+        return f"{message}{suffix}"
     return message or "Delete-wave diagnostics are unavailable."
 
 
@@ -377,10 +383,19 @@ def throughput_check_status(throughput):
 def throughput_check_message(throughput):
     if not throughput:
         return "Run-throughput diagnostics are unavailable."
-    return (
-        str(throughput.get("message") or "").strip()
-        or "Run-throughput diagnostics are unavailable."
-    )
+    message = str(throughput.get("message") or "").strip()
+    readiness = throughput.get("scheduler_overlap_readiness") or {}
+    readiness_message = str(readiness.get("message") or "").strip()
+    dominant_wait_component = str(
+        readiness.get("dominant_wait_component") or ""
+    ).strip()
+    if readiness_message and dominant_wait_component:
+        readiness_message = (
+            f"{readiness_message} Dominant wait component: {dominant_wait_component}."
+        )
+    if message and readiness_message:
+        return f"{message} {readiness_message}"
+    return message or readiness_message or "Run-throughput diagnostics are unavailable."
 
 
 def query_drift_check_status(query_drift):

@@ -1,6 +1,6 @@
 /**
  * @intent Devices collected by Forward
- * @description It provides a list of devices collected by Forward Networks to be added or
+ * @description It provides a list of devices collected by Forward to be added or
  * updated in NetBox using POST and PATCH requests to the /api/dcim/devices/ REST API endpoint.
  */
 

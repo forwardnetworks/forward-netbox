@@ -13,6 +13,7 @@
     "destructive_runtime_worker_kill_evidence_verified": {
       "evidence": {
         "output_dir": "docs/03_Plans/evidence/chaos",
+        "reused_from_generated_at": "2026-06-11T01:25:10.407639+00:00",
         "scenarios": [
           {
             "bundle": "docs/03_Plans/evidence/chaos/chaos-stage-before-branch-run-50.json",
@@ -155,28 +156,19 @@
           {
             "code": "run_completion",
             "evidence": {
-              "next_step_index": 1,
-              "non_terminal_step_count": 2,
-              "run_status": "running",
-              "sample_non_terminal_steps": [
-                {
-                  "index": 1,
-                  "status": "merge_queued"
-                },
-                {
-                  "index": 2,
-                  "status": "pending"
-                }
-              ],
-              "total_steps": 2
+              "next_step_index": 17,
+              "non_terminal_step_count": 0,
+              "run_status": "completed",
+              "sample_non_terminal_steps": [],
+              "total_steps": 16
             },
-            "message": "Execution run is not complete yet (`running`).",
-            "status": "warn"
+            "message": "Execution run completed.",
+            "status": "pass"
           },
           {
             "code": "row_failures",
             "evidence": {
-              "attempted_row_count": 0,
+              "attempted_row_count": 10921,
               "failed_row_count": 0,
               "failed_row_rate": 0.0
             },
@@ -184,29 +176,29 @@
             "status": "pass"
           }
         ],
-        "enough_runtime_steps": false,
+        "enough_runtime_steps": true,
         "fallback_checks": [
           {
             "code": "pushdown_efficiency",
             "evidence": {
-              "fallback_rate": 0.5,
-              "fallback_steps": 1,
+              "fallback_rate": 0.125,
+              "fallback_steps": 2,
               "hotspot_models": [],
               "model_fallback_guardrails": [],
-              "total_steps": 2
+              "total_steps": 16
             },
-            "message": "Fallback fetch rate exceeds the scale benchmark fail threshold.",
-            "status": "fail"
+            "message": "Fallback fetch occurred but is below warning threshold.",
+            "status": "info"
           },
           {
             "code": "pushdown_runtime",
             "evidence": {
-              "fallback_query_runtime_ms": 0.0,
-              "fallback_runtime_share": null,
-              "full_fallback_runtime_share": null,
-              "total_query_runtime_ms": 0.0
+              "fallback_query_runtime_ms": 1484.0,
+              "fallback_runtime_share": 0.1073,
+              "full_fallback_runtime_share": 0.0,
+              "total_query_runtime_ms": 13827.1
             },
-            "message": "No query runtime share evidence is available.",
+            "message": "Fallback fetch accounts for part of query runtime.",
             "status": "info"
           },
           {
@@ -223,30 +215,31 @@
         ],
         "min_runtime_steps": 4,
         "path": "docs/03_Plans/evidence/scale-runtime-evidence.json",
-        "report_status": "fail",
-        "step_count": 2,
+        "report_status": "warn",
+        "step_count": 16,
         "summary": {
-          "actual_changes": 5,
+          "actual_changes": 6138,
           "api_usage_status": "",
-          "applied_row_count": 0,
+          "applied_row_count": 10300,
           "apply_engines": [
-            "adapter"
+            "adapter",
+            "bulk_orm"
           ],
-          "attempted_row_count": 0,
-          "estimated_changes": 5,
+          "attempted_row_count": 10921,
+          "estimated_changes": 10921,
           "failed_row_count": 0,
           "fetch_modes": [
             "model",
             "nqe_parameters"
           ],
-          "fetched_row_count": 0,
-          "query_runtime_ms": null,
-          "retry_count": 0,
+          "fetched_row_count": 10921,
+          "query_runtime_ms": 13827.1,
+          "retry_count": 1,
           "skipped_row_count": 0,
-          "step_count": 2
+          "step_count": 16
         }
       },
-      "status": "failed"
+      "status": "passed"
     },
     "scheduler_overlap_readiness_verified": {
       "evidence": {
@@ -294,28 +287,19 @@
           {
             "code": "run_completion",
             "evidence": {
-              "next_step_index": 1,
-              "non_terminal_step_count": 2,
-              "run_status": "running",
-              "sample_non_terminal_steps": [
-                {
-                  "index": 1,
-                  "status": "merge_queued"
-                },
-                {
-                  "index": 2,
-                  "status": "pending"
-                }
-              ],
-              "total_steps": 2
+              "next_step_index": 17,
+              "non_terminal_step_count": 0,
+              "run_status": "completed",
+              "sample_non_terminal_steps": [],
+              "total_steps": 16
             },
-            "message": "Execution run is not complete yet (`running`).",
-            "status": "warn"
+            "message": "Execution run completed.",
+            "status": "pass"
           },
           {
             "code": "row_failures",
             "evidence": {
-              "attempted_row_count": 0,
+              "attempted_row_count": 10921,
               "failed_row_count": 0,
               "failed_row_rate": 0.0
             },
@@ -323,13 +307,13 @@
             "status": "pass"
           }
         ],
-        "enough_runtime_steps": false,
+        "enough_runtime_steps": true,
         "min_runtime_steps": 4,
         "path": "docs/03_Plans/evidence/scale-runtime-evidence.json",
-        "report_status": "fail",
+        "report_status": "warn",
         "scheduler_overlap_readiness": {
           "blocking_reasons": [
-            "timing_evidence_missing"
+            "capacity_evidence_missing"
           ],
           "capacity_evidence": {
             "active_worker_count": null,
@@ -338,22 +322,28 @@
             "status": "unknown",
             "worker_headroom": "unknown"
           },
-          "dominant_wait_component": "",
-          "message": "Scheduler overlap is not assessable until queue, stage, and merge timing evidence exists.",
+          "dominant_wait_component": "stage_queue",
+          "message": "Queue/merge wait is material, but scheduler overlap is blocked until worker and database headroom are proven.",
           "ready": false,
           "required_before_enablement": [
-            "Collect support-bundle throughput_smoothing evidence.",
-            "Confirm dependency order and branch-budget state are reconstructable from the ledger."
+            "Confirm NetBox worker and database headroom.",
+            "Keep branch budget and dependency order enforced by execution-ledger state.",
+            "Limit overlap to the next eligible shard; do not add non-ledger side queues."
           ],
-          "status": "unknown"
+          "status": "blocked",
+          "supported_overlap_shape": {
+            "ledger_handoff_required": true,
+            "merge_serialized": true,
+            "stage_next_eligible_shard_only": true
+          }
         },
-        "step_count": 2,
+        "step_count": 16,
         "throughput_smoothing": {
           "code": "throughput_smoothing",
           "evidence": {
             "scheduler_overlap_readiness": {
               "blocking_reasons": [
-                "timing_evidence_missing"
+                "capacity_evidence_missing"
               ],
               "capacity_evidence": {
                 "active_worker_count": null,
@@ -362,39 +352,45 @@
                 "status": "unknown",
                 "worker_headroom": "unknown"
               },
-              "dominant_wait_component": "",
-              "message": "Scheduler overlap is not assessable until queue, stage, and merge timing evidence exists.",
+              "dominant_wait_component": "stage_queue",
+              "message": "Queue/merge wait is material, but scheduler overlap is blocked until worker and database headroom are proven.",
               "ready": false,
               "required_before_enablement": [
-                "Collect support-bundle throughput_smoothing evidence.",
-                "Confirm dependency order and branch-budget state are reconstructable from the ledger."
+                "Confirm NetBox worker and database headroom.",
+                "Keep branch budget and dependency order enforced by execution-ledger state.",
+                "Limit overlap to the next eligible shard; do not add non-ledger side queues."
               ],
-              "status": "unknown"
+              "status": "blocked",
+              "supported_overlap_shape": {
+                "ledger_handoff_required": true,
+                "merge_serialized": true,
+                "stage_next_eligible_shard_only": true
+              }
             },
-            "total_observed_seconds": null,
-            "wait_seconds": null,
-            "wait_share": null
+            "total_observed_seconds": 4729.008,
+            "wait_seconds": 4119.102,
+            "wait_share": 0.871
           },
-          "message": "No throughput timing evidence is available.",
-          "status": "info"
+          "message": "Queue or merge wait is a material share of runtime.",
+          "status": "warn"
         }
       },
-      "status": "failed"
+      "status": "passed"
     }
   },
-  "generated_at": "2026-06-10T13:45:36.643945+00:00",
+  "generated_at": "2026-06-11T01:37:24.259336+00:00",
   "notes": {
     "capacity_nqe_page_size": 0,
     "capacity_query_fetch_concurrency": 0,
     "capacity_source_name": "smoke-source-release-smoke-20260601",
     "capacity_source_tuning_applied": false,
-    "capacity_worker_replicas": 4,
+    "capacity_worker_replicas": 0,
     "field_scale_status": "artifact-passed",
     "scale_input_json": "",
     "scale_reconcile": false,
-    "scale_run_id": "",
-    "scale_sync_name": "ui-harness-sync",
-    "skip_chaos": false,
+    "scale_run_id": "57",
+    "scale_sync_name": "",
+    "skip_chaos": true,
     "sync_name": "ui-harness-sync"
   },
   "source": "invoke architecture-runtime-evidence"

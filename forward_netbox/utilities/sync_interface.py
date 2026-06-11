@@ -223,9 +223,11 @@ def apply_dcim_interface(runner, row):
         "type": row["type"],
         "enabled": row["enabled"],
         "mtu": row.get("mtu") or None,
-        "description": row.get("description") or "",
         "speed": row.get("speed") or None,
     }
+    description = row.get("description")
+    if description not in (None, ""):
+        defaults["description"] = description
     if row.get("mode") in {"access", "tagged"}:
         defaults["mode"] = row["mode"]
         found_vlan, vlan = _interface_untagged_vlan(runner, device, row)
