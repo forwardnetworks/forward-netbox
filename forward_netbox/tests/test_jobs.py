@@ -1851,6 +1851,47 @@ class ForwardJobsTest(TestCase):
             1,
         )
 
+    def test_merge_forwardingestion_generic_error_logs_reason_and_fails_branch(self):
+        branch = Branch.objects.create(
+            name=f"merge-generic-error-{uuid4().hex[:12]}",
+            schema_id=f"merge_generic_error_{uuid4().hex[:12]}",
+        )
+        self.ingestion.branch = branch
+        self.ingestion.save(update_fields=["branch"])
+        branch.status = BranchStatusChoices.MERGING
+        branch.save(update_fields=["status", "last_updated"])
+        job = Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardIngestion),
+            object_id=self.ingestion.pk,
+            name="merge generic error job",
+            user=None,
+            status=JobStatusChoices.STATUS_PENDING,
+            job_id=uuid4(),
+            created=timezone.now(),
+            data={},
+        )
+
+        with (
+            patch.object(
+                ForwardIngestion,
+                "sync_merge",
+                side_effect=RuntimeError("post merge bookkeeping failed"),
+            ),
+            self.assertRaisesRegex(RuntimeError, "post merge bookkeeping failed"),
+        ):
+            merge_forwardingestion(job)
+
+        job.refresh_from_db()
+        branch.refresh_from_db()
+        self.sync.refresh_from_db()
+        messages = [entry[4] for entry in (job.data or {}).get("logs", [])]
+        self.assertEqual(job.status, JobStatusChoices.STATUS_ERRORED)
+        self.assertEqual(branch.status, BranchStatusChoices.FAILED)
+        self.assertEqual(self.sync.status, ForwardSyncStatusChoices.FAILED)
+        self.assertTrue(
+            any("post merge bookkeeping failed" in message for message in messages)
+        )
+
     def test_merge_forwardingestion_timeout_auto_requeues_merge_within_budget(self):
         execution_run = ForwardExecutionRun.objects.create(
             sync=self.sync,
