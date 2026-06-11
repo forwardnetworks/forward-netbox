@@ -5989,6 +5989,32 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertEqual(resolved, interface)
         self.assertEqual(len(lookup_queries), 0)
 
+    def test_dependency_lookup_cache_skips_optional_plugin_priming_failure(self):
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        runner._optional_model = Mock(
+            side_effect=ForwardQueryError("optional plugin missing")
+        )
+
+        summary = prime_dependency_lookup_caches(
+            runner,
+            "netbox_routing.bgppeer",
+            [
+                {
+                    "device": "device-1",
+                    "vrf": None,
+                    "local_asn": 64512,
+                    "neighbor_address": "192.0.2.1",
+                    "peer_asn": 64513,
+                }
+            ],
+        )
+
+        self.assertEqual(summary["routing_interface_alias_count"], 0)
+        self.assertNotIn("routing_bgp_router_count", summary)
+        self.assertNotIn("routing_bgp_scope_count", summary)
+
     def test_lookup_ipaddress_by_host_reuses_vrf_scoped_cache_after_first_resolution(
         self,
     ):
