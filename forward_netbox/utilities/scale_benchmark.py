@@ -28,6 +28,7 @@ def scale_benchmark_report(bundle, *, thresholds=None):
         _support_bundle_shape_check(bundle),
         _run_completion_check(run, steps),
         _row_failure_check(metrics, thresholds=thresholds),
+        _delete_dependency_plan_check(metrics),
         _pushdown_efficiency_check(metrics, thresholds=thresholds),
         _pushdown_runtime_check(metrics, thresholds=thresholds),
         _fallback_pressure_check(fallback_pressure, thresholds=thresholds),
@@ -176,6 +177,49 @@ def _row_failure_check(metrics, *, thresholds):
             "attempted_row_count": attempted,
             "failed_row_count": failed,
             "failed_row_rate": failed_rate,
+        },
+    }
+
+
+def _delete_dependency_plan_check(metrics):
+    delete_plan = (metrics or {}).get("delete_dependency_plan") or {}
+    delete_rows = int(delete_plan.get("delete_rows") or 0)
+    delete_shards = int(delete_plan.get("delete_shards") or 0)
+    warnings = list(delete_plan.get("warnings") or [])
+    execution_order = list(delete_plan.get("execution_order") or [])
+    if not delete_rows:
+        status = "pass"
+        message = "No delete-wave plan was reported."
+    elif warnings:
+        status = "warn"
+        message = (
+            f"Delete-heavy work spans {delete_rows} row(s) across {delete_shards} "
+            "shard(s); review delete ordering and reference-blocker warnings before merge."
+        )
+    else:
+        status = "info"
+        message = (
+            f"Delete-heavy work spans {delete_rows} row(s) across {delete_shards} "
+            "shard(s) with explicit dependency ordering."
+        )
+    return {
+        "code": "delete_dependency_plan",
+        "status": status,
+        "message": message,
+        "evidence": {
+            "delete_rows": delete_rows,
+            "delete_shards": delete_shards,
+            "delete_share": float(delete_plan.get("delete_share") or 0.0),
+            "max_delete_shard_changes": int(
+                delete_plan.get("max_delete_shard_changes") or 0
+            ),
+            "execution_order": execution_order,
+            "warning_codes": [
+                str(item.get("code") or "")
+                for item in warnings
+                if isinstance(item, dict)
+            ],
+            "model_count": int(delete_plan.get("delete_model_count") or 0),
         },
     }
 

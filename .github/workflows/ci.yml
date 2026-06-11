@@ -95,6 +95,31 @@ jobs:
             exec -T netbox bash -lc \
             "cd /opt/netbox/netbox && \
             python manage.py test --keepdb --noinput forward_netbox.tests"
+      - name: Validate validation-org query sync
+        env:
+          VAL_SRC: ${{ secrets.FORWARD_VALIDATION_SOURCE_NAME }}
+          FORWARD_VALIDATION_URL: ${{ secrets.FORWARD_VALIDATION_URL }}
+          VAL_USER: ${{ secrets.FORWARD_VALIDATION_USERNAME }}
+          VAL_PASS: ${{ secrets.FORWARD_VALIDATION_PASSWORD }}
+          VAL_NETID: ${{ secrets.FORWARD_VALIDATION_NETWORK_ID }}
+        if: >-
+          env.VAL_USER != '' && env.VAL_PASS != '' && env.VAL_NETID != ''
+        run: |
+          docker compose --project-name forward-netbox \
+            --project-directory development \
+            exec -T netbox bash -lc \
+            "cd /opt/netbox/netbox && \
+            source_name=\"${VAL_SRC:-validation-source}\" && \
+            validation_url=\"${FORWARD_VALIDATION_URL:-https://fwd.app}\" && \
+            python manage.py forward_validation_org_query_audit \
+            --source-name \"${source_name}\" \
+            --url \"${validation_url}\" \
+            --username \"${VAL_USER}\" \
+            --password \"${VAL_PASS}\" \
+            --network-id \"${VAL_NETID}\" \
+            --repository org \
+            --directory /forward_netbox_validation/ \
+            --fail-on-gap"
       - name: Build release artifacts
         run: python -m build
       - name: Show container logs on failure

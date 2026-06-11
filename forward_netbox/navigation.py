@@ -79,7 +79,7 @@ drift_policy = PluginMenuItem(
 )
 
 menu = PluginMenu(
-    label="Forward Networks",
+    label="Forward",
     icon_class="mdi mdi-cloud-sync",
     groups=(
         ("Data Sync", (source, sync, ingestion, execution_run, validation_run)),

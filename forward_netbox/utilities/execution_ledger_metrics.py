@@ -85,6 +85,10 @@ def execution_run_metrics(run, steps):
             getattr(run, "sync", None)
         ),
     )
+    delete_dependency_plan = (
+        dict(getattr(run, "plan_preview", None) or {}).get("delete_dependency_plan")
+        or {}
+    )
     pushdown_runtime = pushdown_runtime_summary(
         steps, alert_thresholds=alert_thresholds
     )
@@ -155,6 +159,7 @@ def execution_run_metrics(run, steps):
         "diff_utilization": diff_utilization,
         "diff_baseline_transition": diff_transition,
         "throughput_smoothing": throughput,
+        "delete_dependency_plan": delete_dependency_plan,
         "tuning_guidance": tuning_guidance,
         "operator_tuning_summary": operator_tuning_summary(
             bottleneck=bottleneck,

@@ -1,5 +1,6 @@
 import json
 import logging
+from collections.abc import Iterable
 
 from core.models import Job
 from django.conf import settings
@@ -487,6 +488,7 @@ class ForwardSync(ForwardPluginModelDocsMixin, JobsMixin, TagsMixin, ChangeLogge
         specs,
         current_snapshot_id,
         exclude_ingestion_id=None,
+        client=None,
     ):
         if self.get_snapshot_id() != LATEST_PROCESSED_SNAPSHOT:
             return None
@@ -499,7 +501,28 @@ class ForwardSync(ForwardPluginModelDocsMixin, JobsMixin, TagsMixin, ChangeLogge
             return None
         if baseline.snapshot_id == current_snapshot_id:
             return None
+        if client is not None and not self._baseline_snapshot_exists(
+            baseline.snapshot_id,
+            client=client,
+        ):
+            return None
         return baseline
+
+    def _baseline_snapshot_exists(self, snapshot_id, *, client):
+        network_id = self.get_network_id()
+        if not network_id:
+            return False
+        try:
+            snapshots = client.get_snapshots(network_id)
+        except Exception:
+            return False
+        if not isinstance(snapshots, Iterable) or isinstance(
+            snapshots, (str, bytes, dict)
+        ):
+            return False
+        return any(
+            str(snapshot.get("id") or "") == str(snapshot_id) for snapshot in snapshots
+        )
 
     def clean(self):
         super().clean()

@@ -155,11 +155,95 @@ class ScaleBenchmarkReportTest(TestCase):
         self.assertEqual(report["status"], "pass")
         self.assertEqual(report["summary"]["failed_row_count"], 0)
         checks = {item["code"]: item for item in report["checks"]}
+        self.assertEqual(checks["delete_dependency_plan"]["status"], "pass")
         self.assertEqual(
             checks["diff_baseline_transition"]["evidence"]["transition_code"],
             "api_diff_active",
         )
         self.assertEqual(checks["api_usage_budget"]["status"], "info")
+
+    def test_report_warns_on_delete_heavy_dependency_plan(self):
+        report = scale_benchmark_report(
+            {
+                "run": {
+                    "id": 13,
+                    "backend": "branching",
+                    "status": "completed",
+                    "total_steps": 2,
+                    "next_step_index": 3,
+                    "baseline_ready": True,
+                },
+                "metrics": {
+                    "step_count": 2,
+                    "attempted_row_count": 20,
+                    "failed_row_count": 0,
+                    "pushdown_efficiency": {
+                        "fallback_steps": 0,
+                        "total_steps": 2,
+                        "fallback_rate": 0.0,
+                    },
+                    "pushdown_runtime": {"fallback_runtime_share": 0.0},
+                    "diff_utilization": {},
+                    "diff_baseline_transition": {},
+                    "partition_retry_summary": {},
+                    "throughput_smoothing": {"wait_share": 0.0},
+                    "apply_engines": ["adapter"],
+                    "delete_dependency_plan": {
+                        "status": "high",
+                        "delete_rows": 1250,
+                        "delete_shards": 2,
+                        "delete_model_count": 2,
+                        "delete_share": 0.83,
+                        "max_delete_shard_changes": 900,
+                        "execution_order": ["dcim.interface", "dcim.device"],
+                        "models": {
+                            "dcim.interface": {
+                                "delete_rows": 250,
+                                "delete_shards": 1,
+                                "max_delete_shard_changes": 250,
+                                "dependency_rank": 1,
+                                "dependent_model_count": 0,
+                                "reference_blocker_risk": "low",
+                                "first_plan_index": 1,
+                                "last_plan_index": 1,
+                            },
+                            "dcim.device": {
+                                "delete_rows": 1000,
+                                "delete_shards": 1,
+                                "max_delete_shard_changes": 900,
+                                "dependency_rank": 7,
+                                "dependent_model_count": 6,
+                                "reference_blocker_risk": "high",
+                                "first_plan_index": 2,
+                                "last_plan_index": 2,
+                            },
+                        },
+                        "warnings": [
+                            {
+                                "code": "delete_wave",
+                                "severity": "warning",
+                                "message": "Delete work is a material share of this plan.",
+                            },
+                            {
+                                "code": "reference_blocker_risk",
+                                "severity": "warning",
+                                "models": ["dcim.device"],
+                                "message": "Some deleted models are dependency anchors.",
+                            },
+                        ],
+                    },
+                },
+                "steps": [{"index": 1, "status": "merged"}],
+            }
+        )
+
+        checks = {item["code"]: item for item in report["checks"]}
+        self.assertEqual(report["status"], "warn")
+        self.assertEqual(checks["delete_dependency_plan"]["status"], "warn")
+        self.assertIn(
+            "review_delete_dependency_plan",
+            {item["code"] for item in report["first_order_actions"]},
+        )
 
     def test_report_passes_api_usage_budget_evidence(self):
         report = scale_benchmark_report(

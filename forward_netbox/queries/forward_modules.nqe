@@ -1,7 +1,7 @@
 /**
  * @intent Forward Modules
  * @description It provides a list of chassis modules and similar replaceable hardware
- * collected by Forward Networks to be added or updated in NetBox using POST and PATCH
+ * collected by Forward to be added or updated in NetBox using POST and PATCH
  * requests to the /api/dcim/modules/ REST API endpoint.
  */
 
