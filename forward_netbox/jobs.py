@@ -11,6 +11,7 @@ from core.models import ObjectType
 from django.contrib.auth import get_user_model
 from netbox.context_managers import event_tracking
 from netbox_branching.choices import BranchStatusChoices
+from netbox_branching.models import Branch
 from rq.timeouts import JobTimeoutException
 from utilities.datetime import local_now
 from utilities.request import NetBoxFakeRequest
@@ -325,10 +326,8 @@ def merge_forwardingestion(job, remove_branch=True, *args, **kwargs):
         logger.exception(
             "Error during merge for ForwardIngestion %s: %s", ingestion.pk, exc
         )
-        safe_save_job_data(job, ingestion.sync)
         timeout = isinstance(exc, JobTimeoutException)
         merge_not_ready_retryable = _is_merge_not_ready_retryable(exc)
-        job.terminate(status=JobStatusChoices.STATUS_ERRORED)
         if timeout or merge_not_ready_retryable:
             message = (
                 "Forward merge job timed out. Increase RQ worker timeout and rerun the merge."
@@ -381,7 +380,15 @@ def merge_forwardingestion(job, remove_branch=True, *args, **kwargs):
                 )
                 if type(exc) in (SyncError, JobTimeoutException):
                     logger.warning(exc)
+                safe_save_job_data(job, ingestion.sync)
+                job.terminate(status=JobStatusChoices.STATUS_ERRORED)
                 return
+        else:
+            message = f"Forward merge job failed: {exc}"
+            if getattr(ingestion.sync, "logger", None) is None:
+                ingestion.sync.logger = SyncLogging(job=job.pk)
+            ingestion.sync.logger.log_failure(message, obj=ingestion)
+            _fail_nonretryable_merging_branch(ingestion, message)
 
         ForwardSync.objects.filter(pk=ingestion.sync.pk).update(
             status=(
@@ -396,6 +403,8 @@ def merge_forwardingestion(job, remove_branch=True, *args, **kwargs):
             else ForwardSyncStatusChoices.FAILED
         )
         update_run_from_branch_state(ingestion.sync)
+        safe_save_job_data(job, ingestion.sync)
+        job.terminate(status=JobStatusChoices.STATUS_ERRORED)
         if type(exc) in (SyncError, JobTimeoutException):
             logger.error(exc)
         else:
@@ -424,6 +433,24 @@ def _reset_merge_not_ready_branch_state(ingestion):
         return False
     branch.status = BranchStatusChoices.READY
     branch.save(update_fields=["status", "last_updated"])
+    return True
+
+
+def _fail_nonretryable_merging_branch(ingestion, message):
+    branch = getattr(ingestion, "branch", None)
+    if branch is None:
+        return False
+    if str(getattr(branch, "status", "") or "") != BranchStatusChoices.MERGING:
+        return False
+    Branch.objects.filter(pk=branch.pk).update(status=BranchStatusChoices.FAILED)
+    branch.status = BranchStatusChoices.FAILED
+    ingestion.sync.logger.log_failure(
+        (
+            "Marked Branching branch failed after non-retryable merge error: "
+            f"{message}"
+        ),
+        obj=ingestion,
+    )
     return True
 
 
