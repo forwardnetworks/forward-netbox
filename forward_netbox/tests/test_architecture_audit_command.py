@@ -1,6 +1,8 @@
 import json
+import os
 from io import StringIO
 from pathlib import Path
+from unittest.mock import Mock
 from unittest.mock import patch
 
 from django.apps import apps
@@ -41,6 +43,7 @@ class ForwardArchitectureAuditCommandTest(TestCase):
         call_command("forward_architecture_audit", stdout=stream)
         payload = json.loads(stream.getvalue())
         matrix = payload["apply_engine_matrix"]
+        validation_org_query_sync = payload["validation_org_query_sync"]
         self.assertIn("dcim.site", matrix["bulk_orm_safe_models"])
         self.assertIn("dcim.devicerole", matrix["bulk_orm_safe_models"])
         self.assertIn("dcim.platform", matrix["bulk_orm_safe_models"])
@@ -181,6 +184,11 @@ class ForwardArchitectureAuditCommandTest(TestCase):
             peering_capabilities["installed"],
             apps.is_installed("netbox_peering_manager"),
         )
+        self.assertEqual(validation_org_query_sync["status"], "skipped")
+        self.assertIn(
+            "Validation-org credentials are not configured.",
+            validation_org_query_sync["reason"],
+        )
         self.assertEqual(
             peering_capabilities["available"],
             bool(
@@ -218,6 +226,61 @@ class ForwardArchitectureAuditCommandTest(TestCase):
                     + list(aci_integration["future_models"])
                 ),
             )
+
+    @patch(
+        "forward_netbox.management.commands.forward_architecture_audit.builtin_query_repository_sync_summary"
+    )
+    @patch(
+        "forward_netbox.management.commands.forward_architecture_audit.build_validation_org_query_source"
+    )
+    def test_architecture_audit_includes_validation_org_query_sync_when_configured(
+        self,
+        build_validation_org_query_source,
+        builtin_query_repository_sync_summary,
+    ):
+        source = Mock()
+        source.validate_connection.return_value = None
+        source.get_client.return_value = Mock()
+        build_validation_org_query_source.return_value = source
+        builtin_query_repository_sync_summary.return_value = {
+            "status": "pass",
+            "repository": "org",
+            "directory": "/forward_netbox_validation/",
+            "query_count": 1,
+            "published_count": 1,
+            "matched_count": 1,
+            "missing_count": 0,
+            "stale_count": 0,
+            "lookup_error_count": 0,
+            "query_contract_summary": {"status": "pass", "gaps": []},
+            "matched": [],
+            "missing": [],
+            "stale": [],
+            "lookup_errors": [],
+            "gaps": [],
+        }
+
+        with patch.dict(
+            os.environ,
+            {
+                "FORWARD_VALIDATION_USERNAME": "user@example.com",
+                "FORWARD_VALIDATION_PASSWORD": "secret",
+                "FORWARD_VALIDATION_NETWORK_ID": "network-1",
+                "FORWARD_VALIDATION_SOURCE_NAME": "validation-source",
+                "FORWARD_VALIDATION_URL": "https://fwd.app",
+                "FORWARD_VALIDATION_REPOSITORY": "org",
+                "FORWARD_VALIDATION_DIRECTORY": "/forward_netbox_validation/",
+            },
+            clear=False,
+        ):
+            stream = StringIO()
+            call_command("forward_architecture_audit", stdout=stream)
+
+        payload = json.loads(stream.getvalue())
+        matrix = payload["apply_engine_matrix"]
+        self.assertEqual(payload["validation_org_query_sync"]["status"], "pass")
+        build_validation_org_query_source.assert_called_once()
+        builtin_query_repository_sync_summary.assert_called_once()
         self.assertIn(
             "aci.netbox_cisco_aci",
             matrix["optional_plugin_query_contract_registry"],

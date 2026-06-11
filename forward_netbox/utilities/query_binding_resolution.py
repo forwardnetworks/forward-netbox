@@ -4,6 +4,7 @@ from django.db import transaction
 
 from ..models import ForwardNQEMap
 from .query_registry import BUILTIN_SEEDED_QUERY_MAPS
+from .query_registry import query_contract_summary_for_maps
 from .query_registry import read_builtin_query_source
 from .query_registry import read_compiled_builtin_query_source
 
@@ -547,12 +548,40 @@ def build_nqe_map_bindings(
 
 
 def _committed_query_by_path(client, query_path: str, existing_query: dict | None):
-    if (
-        existing_query
-        and existing_query.get("queryId")
-        and existing_query.get("lastCommitId")
-    ):
+    existing_query = dict(existing_query or {})
+    query_id = str(
+        existing_query.get("queryId") or existing_query.get("query_id") or ""
+    ).strip()
+    commit_id = str(
+        existing_query.get("lastCommitId")
+        or existing_query.get("commitId")
+        or existing_query.get("last_commit_id")
+        or ""
+    ).strip()
+    if query_id and commit_id:
+        existing_query["queryId"] = query_id
+        existing_query["lastCommitId"] = commit_id
+        existing_query["path"] = str(existing_query.get("path") or query_path).strip()
         return existing_query
+    if query_id and not commit_id:
+        try:
+            history = client.get_nqe_query_history(query_id)
+        except Exception:
+            history = []
+        if history:
+            latest_history_entry = history[-1] or {}
+            latest_commit = str(
+                latest_history_entry.get("id")
+                or latest_history_entry.get("commitId")
+                or ""
+            ).strip()
+            if latest_commit:
+                existing_query["queryId"] = query_id
+                existing_query["lastCommitId"] = latest_commit
+                existing_query["path"] = str(
+                    existing_query.get("path") or query_path
+                ).strip()
+                return existing_query
     try:
         query = client.get_committed_nqe_query(
             repository="org",
@@ -562,13 +591,29 @@ def _committed_query_by_path(client, query_path: str, existing_query: dict | Non
     except Exception:
         return existing_query or {}
     last_commit = query.get("lastCommit") or {}
-    return {
-        "queryId": str(query.get("queryId") or "").strip(),
-        "lastCommitId": str(
-            query.get("lastCommitId") or last_commit.get("id") or ""
-        ).strip(),
-        "path": str(query.get("path") or query_path).strip(),
-    }
+    resolved_query_id = str(query.get("queryId") or "").strip()
+    resolved_commit_id = str(
+        query.get("lastCommitId") or last_commit.get("id") or ""
+    ).strip()
+    if resolved_query_id and not resolved_commit_id:
+        try:
+            history = client.get_nqe_query_history(resolved_query_id)
+        except Exception:
+            history = []
+        if history:
+            latest_history_entry = history[-1] or {}
+            resolved_commit_id = str(
+                latest_history_entry.get("id")
+                or latest_history_entry.get("commitId")
+                or ""
+            ).strip()
+    if resolved_query_id and resolved_commit_id:
+        return {
+            "queryId": resolved_query_id,
+            "lastCommitId": resolved_commit_id,
+            "path": str(query.get("path") or query_path).strip(),
+        }
+    return existing_query or {}
 
 
 def publish_builtin_nqe_map_queries(
@@ -682,6 +727,238 @@ def publish_builtin_nqe_map_queries(
             ).select_related("netbox_model"),
         ),
     ]
+
+
+def builtin_query_repository_sync_summary(
+    *,
+    client,
+    repository: str = "org",
+    directory: str = "/forward_netbox_validation/",
+    query_defaults: list[dict] | None = None,
+) -> dict:
+    selected_query_defaults = list(query_defaults or BUILTIN_SEEDED_QUERY_MAPS)
+    selected_models = sorted(
+        {
+            str(query_default["model_string"])
+            for query_default in selected_query_defaults
+        }
+    )
+    query_contract_summary = query_contract_summary_for_maps(
+        selected_query_defaults,
+        selected_models,
+    )
+
+    normalized_directory = str(directory or "/").strip() or "/"
+    if not normalized_directory.startswith("/"):
+        normalized_directory = f"/{normalized_directory}"
+    normalized_directory = normalized_directory.rstrip("/") or "/"
+
+    try:
+        query_index = client.get_nqe_repository_query_index(
+            repository=repository,
+            directory=normalized_directory,
+        )
+    except Exception as exc:
+        return {
+            "status": "fail",
+            "repository": repository,
+            "directory": normalized_directory,
+            "query_count": len(selected_query_defaults),
+            "published_count": 0,
+            "matched_count": 0,
+            "missing_count": len(selected_query_defaults),
+            "stale_count": 0,
+            "lookup_error_count": 1,
+            "query_contract_summary": query_contract_summary,
+            "matched": [],
+            "missing": [],
+            "stale": [],
+            "lookup_errors": [
+                {
+                    "code": "query_index_lookup_failed",
+                    "message": f"Forward repository query index lookup failed: {exc}",
+                    "repository": repository,
+                    "directory": normalized_directory,
+                }
+            ],
+            "gaps": [
+                {
+                    "code": "query_index_lookup_failed",
+                    "message": f"Forward repository query index lookup failed: {exc}",
+                    "repository": repository,
+                    "directory": normalized_directory,
+                    "remediation": (
+                        "Fix Forward repository connectivity or credentials before "
+                        "gating the validation org query sync."
+                    ),
+                },
+                *query_contract_summary.get("gaps", []),
+            ],
+        }
+
+    if not isinstance(query_index, dict):
+        query_index = {}
+    query_index_by_path = query_index.get("by_path") or {}
+    matched = []
+    missing = []
+    stale = []
+    source_unavailable = []
+    lookup_errors = []
+
+    for query_default in selected_query_defaults:
+        filename = str(query_default["filename"])
+        expected_path = query_path_from_filename(normalized_directory, filename)
+        expected_source = read_compiled_builtin_query_source(filename)
+        query_entry = query_index_by_path.get(expected_path)
+        if not query_entry:
+            missing.append(
+                {
+                    "code": "missing_published_query_path",
+                    "query_name": query_default["name"],
+                    "filename": filename,
+                    "expected_path": expected_path,
+                    "message": (
+                        "Bundled query path was not found in the validation org "
+                        "repository folder."
+                    ),
+                    "remediation": (
+                        "Publish the bundled query set to the validation org "
+                        "folder and re-run the gate."
+                    ),
+                }
+            )
+            continue
+
+        requested_commit_id = (
+            str(
+                query_entry.get("lastCommitId")
+                or (query_entry.get("lastCommit") or {}).get("id")
+                or "head"
+            ).strip()
+            or "head"
+        )
+        try:
+            committed_query = client.get_committed_nqe_query(
+                repository=repository,
+                query_path=expected_path,
+                commit_id=requested_commit_id,
+                query_index=query_index,
+            )
+        except Exception as exc:
+            lookup_errors.append(
+                {
+                    "code": "published_query_lookup_failed",
+                    "query_name": query_default["name"],
+                    "filename": filename,
+                    "expected_path": expected_path,
+                    "message": (
+                        f"Forward repository lookup failed for `{expected_path}`: {exc}"
+                    ),
+                    "remediation": (
+                        "Fix Forward repository connectivity or republish the "
+                        "bundled query set."
+                    ),
+                }
+            )
+            continue
+
+        source_code = _committed_query_source(committed_query)
+        if not source_code:
+            source_unavailable.append(
+                {
+                    "code": "published_query_source_unavailable",
+                    "query_name": query_default["name"],
+                    "filename": filename,
+                    "expected_path": expected_path,
+                    "live_query_id": str(committed_query.get("queryId") or "").strip(),
+                    "live_commit_id": str(
+                        committed_query.get("commitId")
+                        or committed_query.get("lastCommitId")
+                        or (committed_query.get("lastCommit") or {}).get("id")
+                        or ""
+                    ).strip(),
+                    "message": (
+                        "Forward repository query was found, but the API response "
+                        "did not include source text for comparison."
+                    ),
+                    "remediation": (
+                        "Republish the bundled query set or fix the repository "
+                        "API response so query source can be verified."
+                    ),
+                }
+            )
+            continue
+
+        source_matches = normalize_query_source(source_code) == normalize_query_source(
+            expected_source
+        )
+        if not source_matches:
+            stale.append(
+                {
+                    "code": "published_query_source_modified",
+                    "query_name": query_default["name"],
+                    "filename": filename,
+                    "expected_path": expected_path,
+                    "live_query_id": str(committed_query.get("queryId") or "").strip(),
+                    "live_commit_id": str(
+                        committed_query.get("commitId")
+                        or committed_query.get("lastCommitId")
+                        or (committed_query.get("lastCommit") or {}).get("id")
+                        or ""
+                    ).strip(),
+                    "message": (
+                        "Forward repository query source differs from the bundled "
+                        "compiled NQE source."
+                    ),
+                    "remediation": (
+                        "Republish the bundled query set into the validation org "
+                        "folder and re-run the gate."
+                    ),
+                }
+            )
+            continue
+
+        matched.append(
+            {
+                "query_name": query_default["name"],
+                "filename": filename,
+                "expected_path": expected_path,
+                "live_query_id": str(committed_query.get("queryId") or "").strip(),
+                "live_commit_id": str(
+                    committed_query.get("commitId")
+                    or committed_query.get("lastCommitId")
+                    or (committed_query.get("lastCommit") or {}).get("id")
+                    or ""
+                ).strip(),
+                "source_matches": True,
+            }
+        )
+
+    gaps = [
+        *query_contract_summary.get("gaps", []),
+        *missing,
+        *stale,
+        *lookup_errors,
+    ]
+    return {
+        "status": "pass" if not gaps else "fail",
+        "repository": repository,
+        "directory": normalized_directory,
+        "query_count": len(selected_query_defaults),
+        "published_count": len(matched),
+        "matched_count": len(matched),
+        "missing_count": len(missing),
+        "stale_count": len(stale),
+        "source_unavailable_count": len(source_unavailable),
+        "lookup_error_count": len(lookup_errors),
+        "query_contract_summary": query_contract_summary,
+        "matched": matched,
+        "missing": missing,
+        "stale": stale,
+        "source_unavailable": source_unavailable,
+        "lookup_errors": lookup_errors,
+        "gaps": gaps,
+    }
 
 
 @transaction.atomic

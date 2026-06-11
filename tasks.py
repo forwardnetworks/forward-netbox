@@ -2820,6 +2820,71 @@ def architecture_audit_check(context):
     architecture_audit.body(context, fail_on_gap=True)
 
 
+@task(name="validation-org-query-audit")
+def validation_org_query_audit(
+    context,
+    source_name="",
+    url="",
+    username="",
+    password="",
+    network_id="",
+    repository="org",
+    directory="/forward_netbox_validation/",
+    commit_message="",
+    repair=False,
+    fail_on_gap=False,
+    output_json="",
+):
+    flags = []
+    if source_name:
+        flags.append(f'--source-name "{source_name}"')
+    if url:
+        flags.append(f'--url "{url}"')
+    if username:
+        flags.append(f'--username "{username}"')
+    if password:
+        flags.append(f'--password "{password}"')
+    if network_id:
+        flags.append(f'--network-id "{network_id}"')
+    if repository:
+        flags.append(f'--repository "{repository}"')
+    if directory:
+        flags.append(f'--directory "{directory}"')
+    if commit_message:
+        flags.append(f'--commit-message "{commit_message}"')
+    if repair:
+        flags.append("--repair")
+    if fail_on_gap:
+        flags.append("--fail-on-gap")
+    if output_json:
+        flags.append(f'--output-json "{output_json}"')
+    manage_py(context, f"forward_validation_org_query_audit {' '.join(flags)}")
+
+
+@task(name="validation-org-query-audit-ci")
+def validation_org_query_audit_ci(context):
+    """Run the validation-org query audit when the required credentials exist."""
+    if not (
+        os.getenv("FORWARD_VALIDATION_USERNAME")
+        and os.getenv("FORWARD_VALIDATION_PASSWORD")
+        and os.getenv("FORWARD_VALIDATION_NETWORK_ID")
+    ):
+        return
+    validation_org_query_audit.body(
+        context,
+        source_name=os.getenv("FORWARD_VALIDATION_SOURCE_NAME", "validation-source"),
+        url=os.getenv("FORWARD_VALIDATION_URL", "https://fwd.app"),
+        username=os.getenv("FORWARD_VALIDATION_USERNAME", ""),
+        password=os.getenv("FORWARD_VALIDATION_PASSWORD", ""),
+        network_id=os.getenv("FORWARD_VALIDATION_NETWORK_ID", ""),
+        repository=os.getenv("FORWARD_VALIDATION_REPOSITORY", "org"),
+        directory=os.getenv(
+            "FORWARD_VALIDATION_DIRECTORY", "/forward_netbox_validation/"
+        ),
+        fail_on_gap=True,
+    )
+
+
 @task(name="architecture-completion-audit")
 def architecture_completion_audit(context, output_json=""):
     flags = []
@@ -3910,6 +3975,7 @@ def prune_compat_cache(context, sync_name="", dry_run=True, output_json=""):
         ingestion_delete_regression_ci,
         scale_chaos_test,
         test_ci,
+        validation_org_query_audit_ci,
         playwright_test,
         docs,
         package,

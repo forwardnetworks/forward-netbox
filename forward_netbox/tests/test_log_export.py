@@ -784,6 +784,7 @@ class ForwardIngestionLogExportViewTest(TestCase):
             "scheduler_overlap_readiness",
             data["metrics"]["throughput_smoothing"],
         )
+        self.assertIn("delete_dependency_plan", data["metrics"])
         self.assertIn("operator_tuning_summary", data["metrics"])
         action_codes = {
             item["code"]

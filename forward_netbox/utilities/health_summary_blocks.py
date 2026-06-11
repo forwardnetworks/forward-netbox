@@ -26,6 +26,8 @@ from .execution_ledger_metrics import pushdown_efficiency_summary
 from .execution_ledger_metrics import pushdown_runtime_summary
 from .execution_ledger_metrics import pushdown_tuning_guidance
 from .execution_ledger_metrics import recent_pushdown_trend_snapshots
+from .execution_ledger_metrics import scheduler_overlap_capacity_evidence
+from .execution_ledger_metrics import throughput_smoothing_summary
 from .execution_ledger_serialization import (
     dependency_lookup_cache_support_summary as _dependency_lookup_cache_support_summary,
 )
@@ -356,6 +358,7 @@ def large_run_tuning_summary(sync, *, capacity, query_pushdown, throughput=None)
     runtime_share = query_pushdown.get("runtime_share") or {}
     diff_utilization = query_pushdown.get("diff_utilization") or {}
     guidance = list(query_pushdown.get("tuning_guidance") or [])
+    scheduler_overlap_readiness = throughput.get("scheduler_overlap_readiness") or {}
     backend_advice = execution_backend_advice(
         runtime=runtime,
         capacity=capacity,
@@ -507,6 +510,7 @@ def large_run_tuning_summary(sync, *, capacity, query_pushdown, throughput=None)
         "worker_timeout_seconds": rq_timeout,
         "source_timeout_seconds": runtime.get("source_timeout_seconds"),
         "execution_backend_advice": backend_advice,
+        "scheduler_overlap_readiness": scheduler_overlap_readiness,
         "signals": {
             "execution_backend": runtime.get("execution_backend"),
             "fallback_rate": efficiency.get("fallback_rate"),
@@ -917,6 +921,8 @@ def delete_wave_summary(run, latest_ingestion=None):
             "plan": _empty_delete_dependency_plan(),
             "steps": _delete_wave_step_summary([]),
             "latest_ingestion": _delete_wave_ingestion_summary(latest_ingestion),
+            "warning_codes": [],
+            "high_risk_models": [],
         }
 
     plan = dict((run.plan_preview or {}).get("delete_dependency_plan") or {})
@@ -935,6 +941,14 @@ def delete_wave_summary(run, latest_ingestion=None):
         latest_ingestion_summary["dependency_skip_issues"]["count"]
     )
     warnings = list(plan.get("warnings") or [])
+    warning_codes = sorted(
+        {
+            str(item.get("code") or "").strip()
+            for item in warnings
+            if str(item.get("code") or "").strip()
+        }
+    )
+    high_risk_models = _delete_wave_high_risk_models(plan)
 
     if warnings or dependency_skip_count:
         status = "warn"
@@ -957,6 +971,8 @@ def delete_wave_summary(run, latest_ingestion=None):
         "plan": plan,
         "steps": step_summary,
         "latest_ingestion": latest_ingestion_summary,
+        "warning_codes": warning_codes,
+        "high_risk_models": high_risk_models,
     }
 
 
@@ -1079,6 +1095,32 @@ def _delete_wave_ingestion_summary(ingestion):
     }
 
 
+def _delete_wave_high_risk_models(plan):
+    risk_order = {"critical": 3, "high": 2, "medium": 1, "low": 0, "none": 0}
+    models = []
+    for model, details in (plan.get("models") or {}).items():
+        details = details or {}
+        risk = str(details.get("reference_blocker_risk") or "").strip().lower()
+        if not risk or risk in {"low", "none"}:
+            continue
+        models.append(
+            {
+                "model": model,
+                "reference_blocker_risk": risk,
+                "delete_rows": _safe_int(details.get("delete_rows")),
+                "delete_shards": _safe_int(details.get("delete_shards")),
+            }
+        )
+    models.sort(
+        key=lambda item: (
+            -risk_order.get(item["reference_blocker_risk"], -1),
+            -int(item["delete_rows"] or 0),
+            str(item["model"]),
+        )
+    )
+    return models[:5]
+
+
 def throughput_summary(sync, run, latest_ingestion=None, *, now=None):
     if run is None:
         return {
@@ -1106,6 +1148,36 @@ def throughput_summary(sync, run, latest_ingestion=None, *, now=None):
             "worker_timeout_seconds": configured_rq_default_timeout(),
             "query_fetch_concurrency": source_query_fetch_concurrency(sync),
             "nqe_page_size": _source_nqe_page_size(sync),
+            "throughput_smoothing": {
+                "status": "info",
+                "message": "Run-throughput smoothing evidence is unavailable until timing data exists.",
+                "totals": {},
+                "observed_counts": {},
+                "wait_seconds": None,
+                "total_observed_seconds": None,
+                "wait_share": None,
+                "hotspot_models": [],
+                "scheduler_overlap_readiness": {
+                    "status": "unknown",
+                    "ready": False,
+                    "dominant_wait_component": "",
+                    "capacity_evidence": scheduler_overlap_capacity_evidence(sync),
+                    "blocking_reasons": ["timing_evidence_missing"],
+                    "message": (
+                        "Scheduler overlap is not assessable until queue, stage, and merge timing evidence exists."
+                    ),
+                    "required_before_enablement": [
+                        "Collect support-bundle throughput_smoothing evidence.",
+                        "Confirm dependency order and branch-budget state are reconstructable from the ledger.",
+                    ],
+                },
+            },
+            "scheduler_overlap_readiness": {},
+            "scheduler_overlap_status": "unknown",
+            "scheduler_overlap_message": "Scheduler overlap readiness is unavailable until timing evidence exists.",
+            "scheduler_overlap_dominant_wait_component": "",
+            "scheduler_overlap_blocking_reasons": ["timing_evidence_missing"],
+            "scheduler_overlap_hotspot_models": [],
         }
 
     now = now or timezone.now()
@@ -1169,6 +1241,23 @@ def throughput_summary(sync, run, latest_ingestion=None, *, now=None):
             in {"model", "full_fallback", "diff_fallback"}
         ]
     )
+    throughput_smoothing = throughput_smoothing_summary(
+        [
+            {
+                "model": step.model_string,
+                "stage_queue_seconds": _stage_queue_seconds(step),
+                "stage_duration_seconds": step_duration_seconds(step),
+                "merge_queue_seconds": _merge_queue_seconds(step),
+                "merge_wait_seconds": _merge_wait_seconds(step),
+                "merge_duration_seconds": _merge_duration_seconds(step),
+            }
+            for step in steps
+        ],
+        capacity_evidence=scheduler_overlap_capacity_evidence(sync),
+    )
+    scheduler_overlap_readiness = (
+        throughput_smoothing.get("scheduler_overlap_readiness") or {}
+    )
 
     message = _throughput_message(
         completed_shards=completed_shards,
@@ -1229,7 +1318,56 @@ def throughput_summary(sync, run, latest_ingestion=None, *, now=None):
         "worker_timeout_seconds": configured_rq_default_timeout(),
         "query_fetch_concurrency": source_query_fetch_concurrency(sync),
         "nqe_page_size": _source_nqe_page_size(sync),
+        "throughput_smoothing": throughput_smoothing,
+        "scheduler_overlap_readiness": scheduler_overlap_readiness,
+        "scheduler_overlap_status": scheduler_overlap_readiness.get(
+            "status", "unknown"
+        ),
+        "scheduler_overlap_message": scheduler_overlap_readiness.get(
+            "message",
+            "Scheduler overlap readiness is unavailable until timing evidence exists.",
+        ),
+        "scheduler_overlap_dominant_wait_component": scheduler_overlap_readiness.get(
+            "dominant_wait_component", ""
+        ),
+        "scheduler_overlap_blocking_reasons": list(
+            scheduler_overlap_readiness.get("blocking_reasons") or []
+        ),
+        "scheduler_overlap_hotspot_models": list(
+            scheduler_overlap_readiness.get("hotspot_models") or []
+        ),
     }
+
+
+def _stage_queue_seconds(step):
+    job = getattr(step, "job", None)
+    queued_at = getattr(job, "created", None) or getattr(step, "created", None)
+    started_at = getattr(job, "started", None) or getattr(step, "started", None)
+    return _seconds_between(queued_at, started_at)
+
+
+def _merge_queue_seconds(step):
+    merge_job = getattr(step, "merge_job", None)
+    return _seconds_between(
+        getattr(merge_job, "created", None),
+        getattr(merge_job, "started", None),
+    )
+
+
+def _merge_wait_seconds(step):
+    merge_job = getattr(step, "merge_job", None)
+    return _seconds_between(
+        getattr(step, "completed", None),
+        getattr(merge_job, "started", None),
+    )
+
+
+def _merge_duration_seconds(step):
+    merge_job = getattr(step, "merge_job", None)
+    return _seconds_between(
+        getattr(merge_job, "started", None),
+        getattr(merge_job, "completed", None),
+    )
 
 
 def _active_execution_step(steps):

@@ -3685,6 +3685,11 @@ class ForwardMultiBranchExecutorAdaptiveSplitTest(TestCase):
                 query_name="Forward Prefixes",
                 execution_mode="query_id",
                 execution_value="Q_prefixes",
+                fetch_mode="nqe_parameters",
+                fetch_key_family="prefix",
+                fetch_parameters={"forward_netbox_shard_keys": ["10.0.0.0/24"]},
+                query_parameters={},
+                fetch_column_filters=[],
             ),
             BranchPlanItem(
                 index=2,
@@ -3699,6 +3704,11 @@ class ForwardMultiBranchExecutorAdaptiveSplitTest(TestCase):
                 query_name="Forward Prefixes",
                 execution_mode="query_id",
                 execution_value="Q_prefixes",
+                fetch_mode="nqe_parameters",
+                fetch_key_family="prefix",
+                fetch_parameters={"forward_netbox_shard_keys": ["10.0.1.0/24"]},
+                query_parameters={},
+                fetch_column_filters=[],
             ),
         ]
         executor = ForwardMultiBranchExecutor(
@@ -3714,8 +3724,8 @@ class ForwardMultiBranchExecutorAdaptiveSplitTest(TestCase):
                 "model": "ipam.prefix",
                 "label": "persisted prefix shard",
                 "query_name": "Forward Prefixes",
-                "execution_value": "Q_prefixes",
-                "execution_mode": "query_id",
+                "execution_value": "Forward Prefixes",
+                "execution_mode": "query",
                 "operation": "mixed",
                 "estimated_changes": 2,
                 "sync_mode": "full",
@@ -3723,13 +3733,11 @@ class ForwardMultiBranchExecutorAdaptiveSplitTest(TestCase):
                     "prefix=10.0.0.0/24",
                     "prefix=10.0.1.0/24",
                 ],
-                "fetch_mode": "nqe_parameters",
-                "fetch_key_family": "prefix",
-                "fetch_parameters": {
-                    "forward_netbox_shard_keys": ["10.0.0.0/24", "10.0.1.0/24"]
-                },
-                "query_parameters": {},
-                "fetch_column_filters": [],
+                "fetch_mode": "model",
+                "fetch_key_family": "",
+                "fetch_parameters": {},
+                "query_parameters": {"device_tag_include_tags": ["legacy"]},
+                "fetch_column_filters": [{"columnName": "legacy"}],
             },
             46,
         )
@@ -3744,6 +3752,163 @@ class ForwardMultiBranchExecutorAdaptiveSplitTest(TestCase):
             {"prefix=10.0.0.0/24", "prefix=10.0.1.0/24"},
         )
         self.assertEqual(selected.fetch_mode, "nqe_parameters")
+        self.assertEqual(selected.execution_mode, "query_id")
+        self.assertEqual(selected.execution_value, "Q_prefixes")
+        self.assertEqual(selected.query_name, "Forward Prefixes")
+        self.assertEqual(selected.fetch_key_family, "prefix")
+
+    def test_select_plan_item_accepts_legacy_execution_value_when_query_name_matches(
+        self,
+    ):
+        plan = [
+            BranchPlanItem(
+                index=26,
+                model_string="ipam.prefix",
+                label="prefix shard",
+                estimated_changes=1,
+                upsert_rows=[{"prefix": "10.0.0.0/24"}],
+                delete_rows=[],
+                sync_mode="full",
+                coalesce_fields=[["prefix"]],
+                shard_keys=("prefix=10.0.0.0/24",),
+                query_name="Forward IPv6 Prefixes",
+                execution_mode="query_id",
+                execution_value="Q_ipv6_prefixes",
+                operation="apply",
+            )
+        ]
+        executor = ForwardMultiBranchExecutor(
+            sync=self.sync,
+            client=Mock(),
+            logger_=Mock(),
+        )
+
+        selected = executor._select_plan_item(
+            plan,
+            {
+                "index": 26,
+                "model": "ipam.prefix",
+                "label": "prefix shard",
+                "query_name": "Forward IPv6 Prefixes",
+                "execution_value": "Forward IPv6 Prefixes",
+                "execution_mode": "query_id",
+                "operation": "apply",
+                "estimated_changes": 1,
+                "sync_mode": "full",
+                "shard_keys": ["prefix=10.0.0.0/24"],
+                "fetch_mode": "nqe_parameters",
+                "fetch_key_family": "prefix",
+                "fetch_parameters": {"forward_netbox_shard_keys": ["10.0.0.0/24"]},
+                "query_parameters": {},
+                "fetch_column_filters": [],
+            },
+            26,
+        )
+
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected.index, 26)
+
+    def test_select_plan_item_falls_back_to_matching_shard_keys_for_legacy_label_changes(
+        self,
+    ):
+        plan = [
+            BranchPlanItem(
+                index=26,
+                model_string="ipam.prefix",
+                label="prefix shard",
+                estimated_changes=1,
+                upsert_rows=[{"prefix": "10.0.0.0/24"}],
+                delete_rows=[],
+                sync_mode="full",
+                coalesce_fields=[["prefix"]],
+                shard_keys=("prefix=10.0.0.0/24",),
+                query_name="Forward IPv4 Prefixes",
+                execution_mode="query_id",
+                execution_value="Q_ipv4_prefixes",
+                operation="apply",
+            )
+        ]
+        executor = ForwardMultiBranchExecutor(
+            sync=self.sync,
+            client=Mock(),
+            logger_=Mock(),
+        )
+
+        selected = executor._select_plan_item(
+            plan,
+            {
+                "index": 26,
+                "model": "ipam.prefix",
+                "label": "prefix shard",
+                "query_name": "Forward IPv6 Prefixes",
+                "execution_value": "Forward IPv6 Prefixes",
+                "execution_mode": "query_id",
+                "operation": "apply",
+                "estimated_changes": 1,
+                "sync_mode": "full",
+                "shard_keys": ["prefix=10.0.0.0/24"],
+                "fetch_mode": "nqe_parameters",
+                "fetch_key_family": "prefix",
+                "fetch_parameters": {"forward_netbox_shard_keys": ["10.0.0.0/24"]},
+                "query_parameters": {},
+                "fetch_column_filters": [],
+            },
+            26,
+        )
+
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected.index, 26)
+
+    def test_select_plan_item_falls_back_to_claimed_index_when_metadata_drifted(
+        self,
+    ):
+        plan = [
+            BranchPlanItem(
+                index=26,
+                model_string="ipam.prefix",
+                label="prefix shard",
+                estimated_changes=1,
+                upsert_rows=[{"prefix": "10.0.0.0/24"}],
+                delete_rows=[],
+                sync_mode="full",
+                coalesce_fields=[["prefix"]],
+                shard_keys=("prefix=10.0.0.0/24",),
+                query_name="Forward IPv4 Prefixes",
+                execution_mode="query_id",
+                execution_value="Q_ipv4_prefixes",
+                operation="apply",
+            )
+        ]
+        executor = ForwardMultiBranchExecutor(
+            sync=self.sync,
+            client=Mock(),
+            logger_=Mock(),
+        )
+
+        selected = executor._select_plan_item(
+            plan,
+            {
+                "index": 26,
+                "model": "ipam.prefix",
+                "label": "prefix shard",
+                "query_name": "Forward IPv6 Prefixes",
+                "execution_value": "Forward IPv6 Prefixes",
+                "execution_mode": "query_id",
+                "operation": "apply",
+                "estimated_changes": 1,
+                "sync_mode": "full",
+                "shard_keys": ["prefix=10.0.99.0/24"],
+                "fetch_mode": "nqe_parameters",
+                "fetch_key_family": "prefix",
+                "fetch_parameters": {"forward_netbox_shard_keys": ["10.0.99.0/24"]},
+                "query_parameters": {},
+                "fetch_column_filters": [],
+            },
+            26,
+        )
+
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected.index, 26)
 
     @override_settings(RQ_DEFAULT_TIMEOUT=300)
     def test_load_execution_context_warns_for_large_plan_with_short_worker_timeout(
@@ -8092,6 +8257,41 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertEqual(self._update_statements(queries), [])
         self.assertEqual(ObjectChange.objects.count(), before_count)
 
+    def test_apply_dcim_interface_preserves_existing_description_when_source_is_blank(
+        self,
+    ):
+        device = self._create_device("device-1")
+        Interface.objects.create(
+            device=device,
+            name="Ethernet1/2",
+            type="1000base-t",
+            enabled=True,
+            mtu=1500,
+            description="uplink",
+            speed=1000000,
+        )
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "device": "device-1",
+            "name": "Ethernet1/2",
+            "type": "1000base-t",
+            "enabled": True,
+            "mtu": 1500,
+            "description": "",
+            "speed": 1000000,
+        }
+
+        before_count = ObjectChange.objects.count()
+        with CaptureQueriesContext(connection) as queries:
+            runner._apply_dcim_interface(row)
+
+        interface = Interface.objects.get(device=device, name="Ethernet1/2")
+        self.assertEqual(interface.description, "uplink")
+        self.assertEqual(self._update_statements(queries), [])
+        self.assertEqual(ObjectChange.objects.count(), before_count)
+
     def test_apply_dcim_interface_skips_rows_with_missing_parent_device_once(self):
         runner = ForwardSyncRunner(
             sync=self.sync, ingestion=None, client=None, logger_=Mock()
@@ -10667,6 +10867,10 @@ class ForwardSyncRunnerTest(TestCase):
         )
         ingestion = ForwardIngestion.objects.create(sync=self.sync)
         client = Mock()
+        client.get_snapshots.return_value = [
+            {"id": "snapshot-before", "state": "PROCESSED"},
+            {"id": "snapshot-after", "state": "PROCESSED"},
+        ]
         client.get_latest_processed_snapshot.return_value = {
             "id": "snapshot-after",
             "processedAt": "2026-03-31T12:15:00Z",
@@ -10700,6 +10904,7 @@ class ForwardSyncRunnerTest(TestCase):
         runner._delete_model_rows = Mock()
 
         self.sync.get_model_strings = lambda: ["dcim.site"]
+        self.sync.get_snapshot_id = lambda: LATEST_PROCESSED_SNAPSHOT
         self.sync.resolve_snapshot_id = lambda client=None: "snapshot-after"
         self.sync.incremental_diff_baseline = Mock(
             return_value=Mock(snapshot_id="snapshot-before")
@@ -10904,7 +11109,11 @@ class ForwardSyncRunnerTest(TestCase):
         runner._delete_model_rows = Mock()
 
         self.sync.get_model_strings = lambda: ["dcim.site"]
+        self.sync.get_snapshot_id = lambda: LATEST_PROCESSED_SNAPSHOT
         self.sync.resolve_snapshot_id = lambda client=None: "snapshot-after"
+        self.sync.incremental_diff_baseline = Mock(
+            return_value=Mock(snapshot_id="snapshot-before")
+        )
 
         with patch(
             "forward_netbox.utilities.sync_execution.get_query_specs",

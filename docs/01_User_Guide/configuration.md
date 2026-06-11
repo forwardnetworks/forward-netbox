@@ -282,7 +282,7 @@ The repository query files are also linked directly under [`forward_netbox/queri
 
 If you want Forward to own the modular source instead of storing raw NQE inside NetBox:
 
-1. In NetBox, open `Plugins > Forward Networks > NQE Maps`.
+1. In NetBox, open `Plugins > Forward > NQE Maps`.
 2. Select the maps to publish and bind. To publish every visible built-in map,
    use the table header checkbox, then click the native `Edit Selected` bulk
    action.
@@ -308,7 +308,7 @@ If you prefer to manage the query files in Forward directly:
 
 1. Upload the query set, including `netbox_utilities`, into an Org Repository folder.
 2. Commit the folder in Forward.
-3. In NetBox, open `Plugins > Forward Networks > NQE Maps`.
+3. In NetBox, open `Plugins > Forward > NQE Maps`.
 4. Select the maps to bind. To bind every visible map, use the table header
    checkbox, then click the native `Edit Selected` bulk action.
 5. In the bulk edit form, set `Query Bulk Operation` to `Use repository query
@@ -340,6 +340,10 @@ there is no direct query-ID selector in the native bulk edit form. Repository
 paths are portable across Forward orgs; the plugin resolves each path to the
 correct query ID from the selected `Forward Source` during sync and diff
 execution.
+
+Use `invoke validation-org-query-audit` when you want to verify that the
+bundled query set is still published in the validation org repository folder
+and that the committed source still matches the repo copy.
 
 For a single map, the equivalent API shape is:
 
@@ -634,7 +638,7 @@ Create a `Forward Sync` to bind a source, a NetBox model selection, and the inge
 - `Fast bootstrap` syncs create a branchless ingestion and write rows directly through the same NetBox adapters after validation.
 - Each ingestion records both the selected snapshot mode and the resolved snapshot ID used for the run.
 - Snapshot metrics returned by Forward are stored on the ingestion for later review.
-- `NQE Maps` are managed globally under `Plugins > Forward Networks > NQE Maps`.
+- `NQE Maps` are managed globally under `Plugins > Forward > NQE Maps`.
 - For each enabled NetBox model:
   - enabled custom maps for that model take precedence
   - otherwise enabled built-in maps for that model are used

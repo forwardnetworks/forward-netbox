@@ -433,6 +433,36 @@ class ForwardMultiBranchExecutor:
         item = self._select_plan_item(plan, persisted_item, next_plan_index)
         if item is None:
             if expected_plan_index is not None:
+                persisted_summary = {
+                    "model": (persisted_item or {}).get("model"),
+                    "query_name": (persisted_item or {}).get("query_name"),
+                    "execution_value": (persisted_item or {}).get("execution_value"),
+                    "operation": (persisted_item or {}).get("operation"),
+                    "shard_key_count": len(
+                        (persisted_item or {}).get("shard_keys") or []
+                    ),
+                }
+                candidate_summaries = [
+                    {
+                        "index": int(candidate.index),
+                        "model": candidate.model_string,
+                        "query_name": candidate.query_name,
+                        "execution_value": candidate.execution_value,
+                        "operation": candidate.operation,
+                        "shard_key_count": len(candidate.shard_keys or ()),
+                    }
+                    for candidate in plan
+                    if candidate.model_string == (persisted_item or {}).get("model")
+                ]
+                self.logger.log_warning(
+                    (
+                        "Unable to resolve execution shard for claimed index "
+                        f"{int(expected_plan_index)} with persisted plan item {persisted_summary}. "
+                        f"Candidate shard count: {len(candidate_summaries)}; "
+                        f"candidates: {candidate_summaries[:3]}"
+                    ),
+                    obj=self.sync,
+                )
                 raise SyncError(
                     "Unable to resolve execution shard for claimed index "
                     f"{int(expected_plan_index)}."
@@ -539,18 +569,24 @@ class ForwardMultiBranchExecutor:
             return None
         shard_keys = set(persisted_item.get("shard_keys") or [])
         persisted_operation = persisted_item.get("operation")
-        candidates = [
-            item
-            for item in plan
-            if item.model_string == persisted_item.get("model")
-            and item.query_name == persisted_item.get("query_name", item.query_name)
-            and item.execution_value
-            == persisted_item.get("execution_value", item.execution_value)
-            and (
-                persisted_operation in ("", None, "mixed")
-                or item.operation == persisted_operation
-            )
-        ]
+        persisted_query_name = persisted_item.get("query_name")
+        persisted_execution_value = persisted_item.get("execution_value")
+        candidates = []
+        for item in plan:
+            if item.model_string != persisted_item.get("model"):
+                continue
+            if persisted_query_name and item.query_name != persisted_query_name:
+                continue
+            if persisted_execution_value:
+                candidate_values = {item.execution_value, item.query_name}
+                if persisted_execution_value not in candidate_values:
+                    continue
+            if (
+                persisted_operation not in ("", None, "mixed")
+                and item.operation != persisted_operation
+            ):
+                continue
+            candidates.append(item)
         if shard_keys:
             for item in candidates:
                 if set(item.shard_keys or ()) == shard_keys:
@@ -574,6 +610,42 @@ class ForwardMultiBranchExecutor:
                 persisted_item.get("estimated_changes") or 0
             ):
                 return item
+        if not candidates:
+            broad_candidates = [
+                item
+                for item in plan
+                if item.model_string == persisted_item.get("model")
+                and (
+                    persisted_operation in ("", None, "mixed")
+                    or item.operation == persisted_operation
+                )
+            ]
+            if shard_keys:
+                for item in broad_candidates:
+                    if set(item.shard_keys or ()) == shard_keys:
+                        return item
+            if len(broad_candidates) == 1:
+                return broad_candidates[0]
+            if shard_keys and broad_candidates:
+                subset_candidates = [
+                    item
+                    for item in broad_candidates
+                    if item.shard_keys
+                    and set(item.shard_keys or ()).issubset(shard_keys)
+                ]
+                if subset_candidates:
+                    return self._combine_persisted_plan_candidates(
+                        persisted_item,
+                        subset_candidates,
+                        index,
+                    )
+            for item in broad_candidates:
+                if int(item.estimated_changes) == int(
+                    persisted_item.get("estimated_changes") or 0
+                ):
+                    return item
+        if 1 <= int(index) <= len(plan):
+            return plan[int(index) - 1]
         return None
 
     def _combine_persisted_plan_candidates(self, persisted_item, candidates, index):
@@ -601,39 +673,25 @@ class ForwardMultiBranchExecutor:
             estimated_changes=estimated_changes,
             upsert_rows=upsert_rows,
             delete_rows=delete_rows,
-            sync_mode=persisted_item.get("sync_mode") or first.sync_mode,
+            sync_mode=first.sync_mode,
             coalesce_fields=first.coalesce_fields,
             shard_keys=tuple(sorted(shard_keys)),
-            query_name=persisted_item.get("query_name") or first.query_name,
-            execution_mode=(
-                persisted_item.get("execution_mode") or first.execution_mode
-            ),
-            execution_value=(
-                persisted_item.get("execution_value") or first.execution_value
-            ),
+            query_name=first.query_name,
+            execution_mode=first.execution_mode,
+            execution_value=first.execution_value,
             query_runtime_ms=(
                 query_runtime_ms if has_runtime else first.query_runtime_ms
             ),
-            baseline_snapshot_id=(
-                persisted_item.get("baseline_snapshot_id") or first.baseline_snapshot_id
-            ),
-            apply_engine=persisted_item.get("apply_engine") or first.apply_engine,
+            baseline_snapshot_id=first.baseline_snapshot_id,
+            apply_engine=first.apply_engine,
             apply_engine_reason=first.apply_engine_reason,
             apply_engine_decision=first.apply_engine_decision,
-            fetch_mode=persisted_item.get("fetch_mode") or first.fetch_mode,
-            fetch_key_family=(
-                persisted_item.get("fetch_key_family") or first.fetch_key_family
-            ),
-            fetch_parameters=(
-                persisted_item.get("fetch_parameters") or first.fetch_parameters
-            ),
-            query_parameters=(
-                persisted_item.get("query_parameters") or first.query_parameters
-            ),
-            fetch_column_filters=(
-                persisted_item.get("fetch_column_filters") or first.fetch_column_filters
-            ),
-            operation=persisted_item.get("operation") or first.operation,
+            fetch_mode=first.fetch_mode,
+            fetch_key_family=first.fetch_key_family,
+            fetch_parameters=first.fetch_parameters,
+            query_parameters=first.query_parameters,
+            fetch_column_filters=first.fetch_column_filters,
+            operation=first.operation,
         )
 
     def _with_global_index(self, item, index):
