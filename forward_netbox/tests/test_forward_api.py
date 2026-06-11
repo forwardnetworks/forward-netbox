@@ -664,6 +664,50 @@ class ForwardClientTest(TestCase):
         self.client._request.assert_called_once()
         self.assertEqual(self.client._request.call_args.args[1], "/nqe")
 
+    def test_run_nqe_query_omits_abbreviated_hex_commit_id(self):
+        self.client._request = Mock(
+            return_value=self._response(
+                {
+                    "items": [{"fields": {"n": 1}}],
+                    "totalNumItems": 1,
+                }
+            )
+        )
+
+        rows = self.client.run_nqe_query(
+            query_id="Q_devices",
+            commit_id="1a2b",
+            network_id="network-1",
+            snapshot_id="snapshot-1",
+        )
+
+        self.assertEqual(rows, [{"n": 1}])
+        json_body = self.client._request.call_args.kwargs["json_body"]
+        self.assertEqual(json_body["queryId"], "Q_devices")
+        self.assertNotIn("commitId", json_body)
+
+    def test_run_nqe_query_omits_head_commit_id(self):
+        self.client._request = Mock(
+            return_value=self._response(
+                {
+                    "items": [{"fields": {"n": 1}}],
+                    "totalNumItems": 1,
+                }
+            )
+        )
+
+        rows = self.client.run_nqe_query(
+            query_id="Q_devices",
+            commit_id="head",
+            network_id="network-1",
+            snapshot_id="snapshot-1",
+        )
+
+        self.assertEqual(rows, [{"n": 1}])
+        json_body = self.client._request.call_args.kwargs["json_body"]
+        self.assertEqual(json_body["queryId"], "Q_devices")
+        self.assertNotIn("commitId", json_body)
+
     def test_run_nqe_query_async_polls_and_fetches_result(self):
         client = ForwardClient(
             SimpleNamespace(

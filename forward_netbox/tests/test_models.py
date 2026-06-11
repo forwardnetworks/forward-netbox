@@ -1973,6 +1973,111 @@ class ForwardSyncModelTest(TestCase):
 
         self.assertEqual(reasons, [])
 
+    def test_validation_blocks_failed_device_query_when_child_models_depend_on_devices(
+        self,
+    ):
+        policy = ForwardDriftPolicy.objects.create(
+            name="policy-child-parent-query-failure",
+            block_on_query_errors=False,
+        )
+        sync = ForwardSync.objects.create(
+            name="sync-child-parent-query-failure",
+            source=self.source,
+            drift_policy=policy,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+                "dcim.interface": True,
+            },
+        )
+        runner = ForwardValidationRunner(
+            sync=sync,
+            client=None,
+            logger_=Mock(),
+        )
+
+        reasons = runner._blocking_reasons(
+            {
+                "snapshot_selector": LATEST_PROCESSED_SNAPSHOT,
+                "snapshot_id": "snapshot-device-failure",
+                "snapshot_info": {"state": "PROCESSED"},
+                "snapshot_metrics": {},
+            },
+            plan=[],
+            model_results=[
+                {
+                    "model": "dcim.device",
+                    "failure_count": 1,
+                    "row_count": 0,
+                    "delete_count": 0,
+                }
+            ],
+            policy=policy,
+        )
+
+        self.assertEqual(len(reasons), 1)
+        self.assertIn(
+            "`dcim.device` query failed while enabled child models depend on "
+            "device coverage:",
+            reasons[0],
+        )
+        self.assertIn("dcim.interface", reasons[0])
+
+    def test_validation_blocks_failed_device_metadata_query_before_devices(self):
+        policy = ForwardDriftPolicy.objects.create(
+            name="policy-device-metadata-query-failure",
+            block_on_query_errors=False,
+        )
+        sync = ForwardSync.objects.create(
+            name="sync-device-metadata-query-failure",
+            source=self.source,
+            drift_policy=policy,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.platform": True,
+                "dcim.devicetype": True,
+                "dcim.device": True,
+            },
+        )
+        runner = ForwardValidationRunner(
+            sync=sync,
+            client=None,
+            logger_=Mock(),
+        )
+
+        reasons = runner._blocking_reasons(
+            {
+                "snapshot_selector": LATEST_PROCESSED_SNAPSHOT,
+                "snapshot_id": "snapshot-metadata-failure",
+                "snapshot_info": {"state": "PROCESSED"},
+                "snapshot_metrics": {},
+            },
+            plan=[],
+            model_results=[
+                {
+                    "model": "dcim.platform",
+                    "failure_count": 1,
+                    "row_count": 0,
+                    "delete_count": 0,
+                },
+                {
+                    "model": "dcim.devicetype",
+                    "failure_count": 1,
+                    "row_count": 0,
+                    "delete_count": 0,
+                },
+            ],
+            policy=policy,
+        )
+
+        self.assertEqual(
+            reasons,
+            [
+                "Foundational device metadata query failed before `dcim.device`: "
+                "dcim.devicetype, dcim.platform."
+            ],
+        )
+
     @patch("forward_netbox.models.Job.enqueue")
     @patch.object(ForwardSync, "sync", autospec=True)
     def test_recurring_reschedule_preserves_last_terminal_status(
