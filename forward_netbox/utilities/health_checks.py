@@ -436,7 +436,8 @@ def query_drift_check_message(query_drift, *, query_drift_summary=None):
     if info_count:
         return (
             f"{info_count} enabled direct-query-ID map(s) require live Forward "
-            f"repository lookup for full drift verification.{remediation_preview}"
+            f"repository lookup for full drift verification; use Refresh Query "
+            f"IDs after local query edits to keep saved IDs aligned.{remediation_preview}"
         )
     return f"Enabled maps match local bundled query metadata.{remediation_preview}"
 

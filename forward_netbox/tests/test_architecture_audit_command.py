@@ -98,6 +98,7 @@ class ForwardArchitectureAuditCommandTest(TestCase):
             [
                 "CISCO_APIC_SWITCH",
                 "CISCO_APIC_CONTROLLER_DETAIL",
+                "CUSTOM",
                 "CISCO_ACI_FABRIC_NODES",
                 "CISCO_ACI_FABRIC_VRFS",
                 "CISCO_ACI_NODE_TYPE",
@@ -164,8 +165,8 @@ class ForwardArchitectureAuditCommandTest(TestCase):
         self.assertEqual(aci_capabilities["supported_model_count"], 12)
         self.assertEqual(aci_capabilities["discovery_model_count"], 10)
         self.assertEqual(aci_capabilities["future_model_count"], 5)
-        self.assertEqual(aci_capabilities["query_map_count"], 13)
-        self.assertEqual(aci_capabilities["command_inventory_count"], 16)
+        self.assertEqual(aci_capabilities["query_map_count"], 14)
+        self.assertEqual(aci_capabilities["command_inventory_count"], 17)
         self.assertEqual(routing_integration["display_name"], "NetBox Routing")
         self.assertEqual(peering_integration["display_name"], "NetBox Peering Manager")
         self.assertEqual(routing_capabilities["display_name"], "NetBox Routing")

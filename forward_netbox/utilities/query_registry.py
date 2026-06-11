@@ -440,6 +440,12 @@ BUILTIN_OPTIONAL_QUERY_MAPS = [
         "enabled": False,
     },
     {
+        "model_string": "dcim.inventoryitem",
+        "name": "Forward ACI APIC CIMC Inventory",
+        "filename": "forward_aci_apic_cimc_inventory.nqe",
+        "enabled": False,
+    },
+    {
         "model_string": "netbox_cisco_aci.acitenant",
         "name": "Forward ACI Tenants",
         "filename": "forward_aci_tenants.nqe",

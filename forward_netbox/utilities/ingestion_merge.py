@@ -24,6 +24,7 @@ from .execution_ledger import mark_run_completed
 from .execution_ledger import prepare_stage_step_retry
 from .resumable_branching import enqueue_branch_stage_job
 from .resumable_branching import update_plan_item_state
+from .snapshot_freshness import latest_processed_catchup_decision
 from .sync_state import get_branch_run_display_state
 from .sync_state import has_pending_branch_run
 
@@ -155,6 +156,24 @@ def sync_merge_ingestion(ingestion, *, mark_baseline_ready=None, remove_branch=T
         status=forwardsync.status,
         last_synced=forwardsync.last_synced,
     )
+    if forwardsync.status == ForwardSyncStatusChoices.COMPLETED:
+        decision = latest_processed_catchup_decision(
+            forwardsync,
+            current_snapshot_id=getattr(ingestion, "snapshot_id", ""),
+            current_job=ingestion.merge_job,
+        )
+        if decision["should_queue"]:
+            forwardsync.logger.log_info(
+                "Forward latestProcessed advanced from "
+                f"`{decision['current_snapshot_id']}` to "
+                f"`{decision['latest_processed_snapshot_id']}` during the run; "
+                "queuing a catch-up sync.",
+                obj=forwardsync,
+            )
+            forwardsync.enqueue_sync_job(
+                adhoc=True,
+                user=getattr(ingestion.merge_job, "user", None),
+            )
 
 
 def enqueue_merge_job(ingestion, user, remove_branch=False):
