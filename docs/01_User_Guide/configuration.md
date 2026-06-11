@@ -211,7 +211,7 @@ For large routing datasets, publish the routing NQE into the Forward NQE library
 Optional Cisco ACI sync requires the `netbox-cisco-aci` plugin. When that
 plugin is installed and migrated, the map list exposes disabled `Forward ACI
 Fabrics`, `Forward ACI Pods`, `Forward ACI Nodes`, `Forward ACI Tenants`,
-`Forward ACI APIC Nodes`,
+`Forward ACI APIC Nodes`, `Forward ACI APIC CIMC Inventory`,
 `Forward ACI VRFs`, `Forward ACI Bridge Domains`, `Forward ACI Application
 Profiles`, `Forward ACI Endpoint Groups`, `Forward ACI Contracts`,
 `Forward ACI Filters`, `Forward ACI L3Outs`, and `Forward ACI Static Port
@@ -219,13 +219,15 @@ Bindings` maps. Enable them only when you want Forward to create or update the
 plugin's ACI inventory and policy objects. The ACI maps use Forward
 saved-query/raw-query execution and `forward_netbox_shard_keys`; they do not
 use sync-time column filters or per-tenant/per-node Forward API calls. The
-fabric/pod/node, tenant/VRF, and filter maps parse selected command output in
-NQE and emit normalized fields instead of raw command responses. A separate
-`Forward ACI Command Inventory` discovery map reports bounded APIC/ACI command
-family presence without exposing raw payloads. Bridge domain, application
-profile, EPG, contract, L3Out, and static binding maps are seeded disabled as
-conservative no-op contracts until their bounded parser identity and
-repeat-sync behavior are proven.
+fabric/pod/node, tenant/VRF, filter, and APIC CIMC inventory maps parse
+selected command output in NQE and emit normalized fields instead of raw command
+responses. The APIC CIMC inventory map targets native `dcim.inventoryitem` rows
+and requires the APIC custom command `moquery -c eqptCh -a all` to be collected
+by Forward. A separate `Forward ACI Command Inventory` discovery map reports
+bounded APIC/ACI command family presence without exposing raw payloads. Bridge
+domain, application profile, EPG, contract, L3Out, and static binding maps are
+seeded disabled as conservative no-op contracts until their bounded parser
+identity and repeat-sync behavior are proven.
 
 Large datasets should prefer saved queries plus `latestProcessed`. That keeps the first run as a full baseline, then lets later runs use Forward `nqe-diffs` directly. The current built-ins also collapse NetBox identities in NQE where the source emits many raw rows for one object, such as prefix, IP, MAC, and VLAN records.
 
@@ -253,6 +255,7 @@ The current built-in map set is:
 - `Forward ACI Pods` (optional `netbox_cisco_aci.acipod`)
 - `Forward ACI Nodes` (optional `netbox_cisco_aci.acinode`)
 - `Forward ACI APIC Nodes` (optional `netbox_cisco_aci.acinode`)
+- `Forward ACI APIC CIMC Inventory` (native `dcim.inventoryitem`)
 - `Forward ACI Tenants` (optional `netbox_cisco_aci.acitenant`)
 - `Forward ACI VRFs` (optional `netbox_cisco_aci.acivrf`)
 - `Forward ACI Bridge Domains` (optional `netbox_cisco_aci.acibridgedomain`)

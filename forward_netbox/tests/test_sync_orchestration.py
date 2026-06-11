@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from unittest.mock import Mock
 from unittest.mock import patch
 
 from core.choices import JobStatusChoices
@@ -12,10 +13,14 @@ from django.utils import timezone
 from forward_netbox.choices import ForwardExecutionBackendChoices
 from forward_netbox.choices import ForwardSourceStatusChoices
 from forward_netbox.choices import ForwardSyncStatusChoices
+from forward_netbox.exceptions import ForwardClientError
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from forward_netbox.utilities.logging import SyncLogging
+from forward_netbox.utilities.snapshot_freshness import (
+    latest_processed_catchup_decision,
+)
 from forward_netbox.utilities.sync_orchestration import _finalize_forward_sync
 from forward_netbox.utilities.sync_orchestration import _prepare_forward_sync
 from forward_netbox.utilities.sync_orchestration import _record_forward_api_usage
@@ -52,6 +57,10 @@ class ForwardSyncOrchestrationHelperTest(TestCase):
     ):
         mock_executor = mock_executor_class.return_value
         mock_executor.run.return_value = []
+        mock_executor.current_ingestion = SimpleNamespace(snapshot_id="snapshot-1")
+        mock_executor.client = SimpleNamespace(
+            get_latest_processed_snapshot_id=Mock(return_value="snapshot-1")
+        )
 
         run_forward_sync(self.sync)
 
@@ -88,6 +97,10 @@ class ForwardSyncOrchestrationHelperTest(TestCase):
     ):
         mock_executor = mock_executor_class.return_value
         mock_executor.run.return_value = []
+        mock_executor.current_ingestion = SimpleNamespace(snapshot_id="snapshot-1")
+        mock_executor.client = SimpleNamespace(
+            get_latest_processed_snapshot_id=Mock(return_value="snapshot-1")
+        )
 
         run_forward_sync(self.sync)
 
@@ -109,10 +122,69 @@ class ForwardSyncOrchestrationHelperTest(TestCase):
         self.sync.save(update_fields=["parameters"])
         mock_executor = mock_executor_class.return_value
         mock_executor.run.return_value = []
+        mock_executor.current_ingestion = SimpleNamespace(snapshot_id="snapshot-1")
+        mock_executor.client = SimpleNamespace(
+            get_latest_processed_snapshot_id=Mock(return_value="snapshot-1")
+        )
 
         run_forward_sync(self.sync)
 
         mock_executor.run.assert_called_once_with()
+        self.sync.refresh_from_db()
+        self.assertEqual(self.sync.status, ForwardSyncStatusChoices.COMPLETED)
+
+    def test_latest_processed_catchup_decision_skips_when_snapshot_is_current(self):
+        self.sync.status = ForwardSyncStatusChoices.COMPLETED
+        self.sync.save(update_fields=["status"])
+        client = SimpleNamespace(
+            get_latest_processed_snapshot_id=Mock(return_value="snapshot-1")
+        )
+
+        decision = latest_processed_catchup_decision(
+            self.sync,
+            current_snapshot_id="snapshot-1",
+            client=client,
+        )
+
+        self.assertFalse(decision["should_queue"])
+        self.assertEqual(decision["reason"], "already_current")
+
+    def test_latest_processed_catchup_decision_ignores_lookup_failure(self):
+        self.sync.status = ForwardSyncStatusChoices.COMPLETED
+        self.sync.save(update_fields=["status"])
+        client = SimpleNamespace(
+            get_latest_processed_snapshot_id=Mock(
+                side_effect=ForwardClientError("boom")
+            )
+        )
+
+        decision = latest_processed_catchup_decision(
+            self.sync,
+            current_snapshot_id="snapshot-1",
+            client=client,
+        )
+
+        self.assertFalse(decision["should_queue"])
+        self.assertEqual(decision["reason"], "latest_processed_lookup_failed")
+
+    @patch("forward_netbox.utilities.multi_branch.ForwardMultiBranchExecutor")
+    def test_run_forward_sync_queues_catchup_when_latest_processed_advances(
+        self,
+        mock_executor_class,
+    ):
+        self.sync.status = ForwardSyncStatusChoices.READY_TO_MERGE
+        self.sync.save(update_fields=["status"])
+        mock_executor = mock_executor_class.return_value
+        mock_executor.run.return_value = []
+        mock_executor.current_ingestion = SimpleNamespace(snapshot_id="snapshot-old")
+        mock_executor.client = SimpleNamespace(
+            get_latest_processed_snapshot_id=Mock(return_value="snapshot-new")
+        )
+
+        with patch.object(self.sync, "enqueue_sync_job") as mock_enqueue_sync_job:
+            run_forward_sync(self.sync)
+
+        mock_enqueue_sync_job.assert_called_once_with(adhoc=True, user=None)
         self.sync.refresh_from_db()
         self.assertEqual(self.sync.status, ForwardSyncStatusChoices.COMPLETED)
 

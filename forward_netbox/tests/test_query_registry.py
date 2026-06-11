@@ -136,6 +136,20 @@ REQUIRED_FIELDS_BY_QUERY_NAME = {
         "discovered",
         "description",
     },
+    "Forward ACI APIC CIMC Inventory": {
+        "device",
+        "manufacturer",
+        "manufacturer_slug",
+        "name",
+        "part_id",
+        "serial",
+        "role",
+        "role_slug",
+        "role_color",
+        "status",
+        "discovered",
+        "description",
+    },
     "Forward Modules": {
         "device",
         "module_bay",
@@ -1065,6 +1079,7 @@ class QueryRegistryTest(TestCase):
         pod_row = rows[("netbox_cisco_aci.acipod", "Forward ACI Pods")]
         node_row = rows[("netbox_cisco_aci.acinode", "Forward ACI Nodes")]
         apic_node_row = rows[("netbox_cisco_aci.acinode", "Forward ACI APIC Nodes")]
+        cimc_row = rows[("dcim.inventoryitem", "Forward ACI APIC CIMC Inventory")]
         tenant_row = rows[("netbox_cisco_aci.acitenant", "Forward ACI Tenants")]
         vrf_row = rows[("netbox_cisco_aci.acivrf", "Forward ACI VRFs")]
         bd_row = rows[
@@ -1091,6 +1106,7 @@ class QueryRegistryTest(TestCase):
             pod_row,
             node_row,
             apic_node_row,
+            cimc_row,
             tenant_row,
             vrf_row,
             bd_row,
@@ -1118,6 +1134,14 @@ class QueryRegistryTest(TestCase):
         self.assertIn("apicNodeRegex", apic_node_row["query"])
         self.assertIn("In-Band IPv4 Address", apic_node_row["query"])
         self.assertIn("Pod I[Dd]", apic_node_row["query"])
+        self.assertIn("CommandType.CUSTOM", cimc_row["query"])
+        self.assertIn('commandText == "moquery -c eqptCh -a all"', cimc_row["query"])
+        self.assertIn("CISCO_APIC_CONTROLLER_DETAIL", cimc_row["query"])
+        self.assertIn(
+            "regexMatches(chassis_command.response, chassisRegex)", cimc_row["query"]
+        )
+        self.assertIn("cimcVersion", cimc_row["query"])
+        self.assertIn("device: node.node_name", cimc_row["query"])
         self.assertIn("CISCO_ACI_FABRIC_VRFS", tenant_row["query"])
         self.assertIn("tenant_name:", vrf_row["query"])
         self.assertIn("where false", bd_row["query"])

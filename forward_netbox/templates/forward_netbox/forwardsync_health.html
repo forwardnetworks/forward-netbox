@@ -459,13 +459,76 @@
       </div>
     </div>
     <div class="card">
+      <h5 class="card-header">{% trans "Live Query Drift" %}</h5>
+      <div class="card-body">
+        {% with live_query_drift=live_diagnostics.query_drift %}
+          {% if live_diagnostics.available and live_query_drift.available %}
+            <table class="table table-hover attr-table">
+              <tr>
+                <th scope="row">{% trans "Maps checked" %}</th>
+                <td>{{ live_query_drift.live_summary.total_maps|placeholder }}</td>
+              </tr>
+              <tr>
+                <th scope="row">{% trans "Live checked" %}</th>
+                <td>{{ live_query_drift.live_summary.checked_maps|placeholder }}</td>
+              </tr>
+              <tr>
+                <th scope="row">{% trans "Warn / info / pass" %}</th>
+                <td>
+                  {{ live_query_drift.live_summary.warn_count }}/{{ live_query_drift.live_summary.info_count }}/{{ live_query_drift.live_summary.pass_count }}
+                </td>
+              </tr>
+              <tr>
+                <th scope="row">{% trans "Direct query ID warnings" %}</th>
+                <td>
+                  {{ live_query_drift.live_summary.query_id_warn_count|placeholder }}
+                  {% if live_query_drift.live_summary.query_id_not_found_count or live_query_drift.live_summary.query_id_ambiguous_count or live_query_drift.live_summary.query_id_modified_count %}
+                    <span class="text-muted">
+                      (
+                      {% trans "not found" %}: {{ live_query_drift.live_summary.query_id_not_found_count|placeholder }},
+                      {% trans "ambiguous" %}: {{ live_query_drift.live_summary.query_id_ambiguous_count|placeholder }},
+                      {% trans "modified" %}: {{ live_query_drift.live_summary.query_id_modified_count|placeholder }}
+                      )
+                    </span>
+                  {% endif %}
+                </td>
+              </tr>
+              <tr>
+                <th scope="row">{% trans "Lookup errors" %}</th>
+                <td>{{ live_query_drift.live_summary.lookup_error_count|placeholder }}</td>
+              </tr>
+            </table>
+            {% if live_query_drift.live_summary.error %}
+              <p class="text-warning mb-0">
+                {% trans "Live query drift summary error" %}: {{ live_query_drift.live_summary.error }}
+              </p>
+            {% endif %}
+          {% else %}
+            <p class="text-muted mb-0">
+              {% if live_diagnostics.message %}
+                {{ live_diagnostics.message }}
+              {% else %}
+                {% trans "Live Forward query-drift diagnostics are unavailable." %}
+              {% endif %}
+            </p>
+          {% endif %}
+        {% endwith %}
+      </div>
+    </div>
+    <div class="card">
       <h5 class="card-header">{% trans "Local Query Drift" %}</h5>
       <div class="card-body border-bottom">
         <a class="btn btn-sm btn-outline-primary" href="{% url 'plugins:forward_netbox:forwardsync_query_drift' pk=object.pk %}">
           {% trans "Export Live Query Drift Check" %}
         </a>
+        <form method="post" action="{% url 'plugins:forward_netbox:forwardsync_refresh_query_ids' pk=object.pk %}" class="d-inline ms-2">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-sm btn-outline-secondary">
+            {% trans "Refresh Query IDs" %}
+          </button>
+        </form>
         <span class="text-muted ms-2">
-          {% trans "Calls Forward with this source and exports repository/query-ID drift diagnostics." %}
+          {% trans "Export diagnostics, or refresh enabled maps to the canonical validation-folder query IDs." %}
         </span>
       </div>
       <div class="table-responsive">
@@ -798,7 +861,7 @@
             <th scope="row">{% trans "Latest ingestion" %}</th>
             <td>
               {% if health.latest_ingestion %}
-                {{ health.latest_ingestion.name }}{% if health.latest_ingestion.baseline_ready %} ({% trans "baseline ready" %}){% endif %}
+                {{ health.latest_ingestion.name }}{% if health.latest_ingestion.baseline_ready %} ({% trans "baseline ready" %}{% if health.latest_ingestion.sync_mode %}, {% trans "sync mode" %}: {{ health.latest_ingestion.sync_mode }}{% endif %}){% elif health.latest_ingestion.sync_mode %} ({% trans "sync mode" %}: {{ health.latest_ingestion.sync_mode }}){% endif %}
               {% else %}
                 {{ ""|placeholder }}
               {% endif %}
