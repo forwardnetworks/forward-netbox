@@ -10,7 +10,7 @@ sys.modules.setdefault(
     "dotenv", types.SimpleNamespace(load_dotenv=lambda *args, **kwargs: None)
 )
 
-import tasks
+import tasks  # noqa: E402
 
 
 class ForwardReleaseReadinessAuditTest(TestCase):
