@@ -95,7 +95,7 @@ Exact model aliases take precedence over part-number aliases. Conflicting derive
 1. Upload and attach `netbox_device_type_aliases.json` in Forward.
 2. Run or reprocess a Forward snapshot after the upload.
 3. Confirm the selected snapshot exposes `network.extensions.netbox_device_type_aliases.value`.
-4. In NetBox, open `Plugins > Forward Networks > NQE Maps`.
+4. In NetBox, open `Plugins > Forward > NQE Maps`.
 5. Disable `Forward Device Models` and enable `Forward Device Models with NetBox Device Type Aliases`.
 6. Disable `Forward Devices` and enable `Forward Devices with NetBox Device Type Aliases`.
 7. For large datasets, copy the alias-aware query text into the Forward Org Repository and configure the NetBox NQE maps to use the committed query IDs.

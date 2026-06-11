@@ -918,6 +918,7 @@ class ForwardQueryFetcher:
             specs=specs,
             current_snapshot_id=context.snapshot_id,
             exclude_ingestion_id=getattr(context, "ingestion_id", None),
+            client=self.client,
         )
         self._incremental_baseline_cache[cache_key] = baseline
         return baseline
