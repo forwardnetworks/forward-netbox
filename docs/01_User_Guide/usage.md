@@ -10,7 +10,7 @@ Use this flow to validate a new installation from the UI.
 
 ### 1. Create A Source
 
-Open `Plugins > Forward Networks > Sources > Add`.
+Open `Plugins > Forward > Sources > Add`.
 
 Fill in:
 
@@ -33,7 +33,7 @@ Expected result:
 
 ### 2. Review Built-In NQE Maps
 
-Open `Plugins > Forward Networks > NQE Maps`.
+Open `Plugins > Forward > NQE Maps`.
 
 Expected result:
 
@@ -45,7 +45,7 @@ Expected result:
 
 ### 3. Create A Sync
 
-Open `Plugins > Forward Networks > Syncs > Add`.
+Open `Plugins > Forward > Syncs > Add`.
 
 Recommended first pass:
 

@@ -1,12 +1,13 @@
 # Forward NetBox Plugin
 
-`forward_netbox` is a NetBox plugin that syncs Forward Networks inventory into NetBox through direct Forward API connectivity and NQE while preserving the branch-backed sync, diff, and merge workflow. Large trusted baselines can optionally use the fast bootstrap backend before returning to the normal Branching workflow.
+`forward_netbox` is a NetBox plugin that syncs Forward inventory into NetBox through direct Forward API connectivity and NQE while preserving the branch-backed sync, diff, and merge workflow. Large trusted baselines can optionally use the fast bootstrap backend before returning to the normal Branching workflow.
 
 ## Release Compatibility
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v1.3.6` | `4.5.9` and `4.6.1` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Current release; enforces a hard parent-device sync contract so child models cannot run without `dcim.device`, which prevents stale sync configs from skipping the device shard and breaking dependent imports. |
+| `v1.4.0` | `4.5.9` and `4.6.1` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Current release; keeps the hard parent-device sync contract, exposes scheduler-overlap and delete-wave evidence in the health/support surfaces, and carries the 1.4 production-hardening tranche forward as the release line. |
+| `v1.3.6` | `4.5.9` and `4.6.1` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v1.4.0`; enforces a hard parent-device sync contract so child models cannot run without `dcim.device`, which prevents stale sync configs from skipping the device shard and breaking dependent imports. |
 | `v1.3.5.5` | `4.5.9` and `4.6.1` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v1.3.6`; adds compressed support-bundle ZIP downloads with optional password protection, and folds live source health, live query-drift, and live data-file diagnostics into the troubleshooting bundle so operator support can work from one artifact. |
 | `v1.3.5.4` | `4.5.9` and `4.6.1` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v1.3.5.5`; repackaged the `1.3.5.3` query-contract hardening on a fresh patch tag and kept strict shipped-query parameter-contract validation, legacy tag alias stripping, and summary-only support-bundle previews. |
 | `v1.3.5.3` | `4.5.9` and `4.6.1` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v1.3.5.4`; keeps the `1.3.5.2` claimed-step and payload compaction behavior, adds strict shipped-query parameter-contract validation, strips legacy tag aliases from runtime NQE payloads, and keeps support-bundle previews summary-only. |
@@ -60,6 +61,7 @@
 
 | Release | Summary |
 | --- | --- |
+| `v1.4.0` | Publishes the feature-complete 1.4 tranche as the current release line, carrying the parent-device contract plus scheduler-overlap and delete-wave visibility into the release package and support surfaces. |
 | `v1.3.6` | Enforces a hard parent-device sync contract so child models cannot run without `dcim.device`, preventing stale sync configs from skipping the device shard and breaking dependent imports. |
 | `v1.3.5.5` | Adds compressed support-bundle ZIP downloads with optional password protection and folds live source/query-drift/data-file diagnostics into the troubleshooting bundle. |
 | `v1.3.5.4` | Republishes the `v1.3.5.3` query-contract hardening as the prior patch release. |
@@ -130,7 +132,7 @@
 
 ## Support Disclaimer
 
-This repository is provided for use at your own risk. It is an unsupported release and is not an officially supported Forward Networks product. There is no warranty, support commitment, or compatibility guarantee beyond the version table above.
+This repository is provided for use at your own risk. It is an unsupported release and is not an officially supported Forward product. There is no warranty, support commitment, or compatibility guarantee beyond the version table above.
 
 ## Features
 

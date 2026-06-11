@@ -109,6 +109,7 @@ def run_sync_stage(runner):
                 specs=specs,
                 current_snapshot_id=snapshot_id,
                 exclude_ingestion_id=runner.ingestion.pk,
+                client=runner.client,
             )
             if (
                 latest_baseline is not None
