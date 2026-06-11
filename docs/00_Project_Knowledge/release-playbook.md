@@ -88,6 +88,9 @@ invoke release-readiness-audit --dataset-label=release-smoke
 `release-dataset-gate` fails when the field-scale artifact is stale, not
 `passed`, not labeled as the release-validation dataset, missing required matrix steps, or
 produced with `resume=True`.
+When validation credentials are available, `release-readiness-audit` also runs
+the validation-org query audit so the shipped query set is compared against the
+live validation folder before publish.
 When local runtime dependencies are unavailable, matrix evidence now records
 `preflight_failure_code` (for example `docker_api_unreachable`) before running
 the three smoke steps.

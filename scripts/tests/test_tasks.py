@@ -3106,6 +3106,11 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
             ),
             patch.object(
                 tasks,
+                "_collect_validation_org_query_audit_evidence",
+                return_value={"status": "passed", "evidence": {}},
+            ),
+            patch.object(
+                tasks,
                 "manage_py",
                 return_value=SimpleNamespace(
                     ok=True,
@@ -3126,6 +3131,10 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
             audit["checks"]["architecture_completion_gate"]["status"],
             "passed",
         )
+        self.assertEqual(
+            audit["checks"]["validation_org_query_audit"]["status"],
+            "passed",
+        )
 
     def test_release_readiness_audit_fails_when_architecture_command_fails(self):
         context = self._context()
@@ -3139,6 +3148,11 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
                 tasks,
                 "_collect_release_dataset_gate_evidence",
                 return_value={"status": "failed", "evidence": {"reason": "y"}},
+            ),
+            patch.object(
+                tasks,
+                "_collect_validation_org_query_audit_evidence",
+                return_value={"status": "passed", "evidence": {}},
             ),
             patch.object(
                 tasks,
