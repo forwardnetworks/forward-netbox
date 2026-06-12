@@ -95,6 +95,59 @@ APPLY_DEPENDENCY_MODEL_RANK = {
     model_string: index
     for index, model_string in enumerate(APPLY_DEPENDENCY_MODEL_ORDER)
 }
+APPLY_PARENT_MODEL_DEPENDENCIES = {
+    "dcim.device": (
+        "dcim.site",
+        "dcim.manufacturer",
+        "dcim.devicerole",
+        "dcim.platform",
+        "dcim.devicetype",
+    ),
+    "dcim.virtualchassis": ("dcim.device",),
+    "extras.taggeditem": ("dcim.device",),
+    "dcim.interface": ("dcim.device",),
+    "dcim.module": ("dcim.device",),
+    "dcim.inventoryitem": ("dcim.device",),
+    "ipam.ipaddress": ("dcim.device", "dcim.interface"),
+    "ipam.fhrpgroup": ("dcim.device", "dcim.interface"),
+    "dcim.macaddress": ("dcim.device", "dcim.interface"),
+    "dcim.cable": ("dcim.device", "dcim.interface"),
+    "netbox_routing.ospfinstance": ("dcim.device", "ipam.vrf"),
+    "netbox_routing.ospfinterface": (
+        "dcim.device",
+        "dcim.interface",
+        "netbox_routing.ospfinstance",
+    ),
+    "netbox_routing.bgppeer": ("dcim.device", "ipam.vrf"),
+    "netbox_routing.bgpaddressfamily": ("dcim.device", "ipam.vrf"),
+    "netbox_routing.bgppeeraddressfamily": (
+        "dcim.device",
+        "ipam.vrf",
+        "netbox_routing.bgppeer",
+    ),
+    "netbox_peering_manager.peeringsession": (
+        "dcim.device",
+        "netbox_routing.bgppeer",
+    ),
+    "netbox_cisco_aci.acipod": ("netbox_cisco_aci.acifabric",),
+    "netbox_cisco_aci.acinode": ("netbox_cisco_aci.acipod",),
+    "netbox_cisco_aci.acitenant": ("netbox_cisco_aci.acifabric",),
+    "netbox_cisco_aci.acivrf": ("netbox_cisco_aci.acitenant",),
+    "netbox_cisco_aci.acibridgedomain": ("netbox_cisco_aci.acivrf",),
+    "netbox_cisco_aci.aciappprofile": ("netbox_cisco_aci.acitenant",),
+    "netbox_cisco_aci.aciendpointgroup": (
+        "netbox_cisco_aci.aciappprofile",
+        "netbox_cisco_aci.acibridgedomain",
+    ),
+    "netbox_cisco_aci.acicontract": ("netbox_cisco_aci.acitenant",),
+    "netbox_cisco_aci.acifilter": ("netbox_cisco_aci.acitenant",),
+    "netbox_cisco_aci.acil3out": ("netbox_cisco_aci.acitenant",),
+    "netbox_cisco_aci.acistaticportbinding": (
+        "dcim.device",
+        "dcim.interface",
+        "netbox_cisco_aci.aciendpointgroup",
+    ),
+}
 DELETE_DEPENDENCY_MODEL_ORDER = (
     "dcim.cable",
     "ipam.fhrpgroup",
@@ -138,6 +191,68 @@ DELETE_DEPENDENCY_MODEL_RANK = {
     model_string: index
     for index, model_string in enumerate(DELETE_DEPENDENCY_MODEL_ORDER)
 }
+
+
+def apply_parent_dependency_contracts():
+    return {
+        model_string: tuple(parent_models)
+        for model_string, parent_models in sorted(
+            APPLY_PARENT_MODEL_DEPENDENCIES.items()
+        )
+    }
+
+
+def apply_dependency_dry_run(enabled_models) -> dict:
+    enabled_models = sorted(str(model) for model in (enabled_models or []) if model)
+    enabled_model_set = set(enabled_models)
+    supported_model_set = set(FORWARD_SUPPORTED_MODELS)
+    model_entries = []
+    missing_dependencies = []
+    for model_string in enabled_models:
+        parent_models = tuple(APPLY_PARENT_MODEL_DEPENDENCIES.get(model_string, ()))
+        missing_parent_models = [
+            parent_model
+            for parent_model in parent_models
+            if parent_model in supported_model_set
+            and parent_model not in enabled_model_set
+        ]
+        entry = {
+            "model": model_string,
+            "apply_rank": APPLY_DEPENDENCY_MODEL_RANK.get(model_string),
+            "parent_models": list(parent_models),
+            "missing_parent_models": missing_parent_models,
+            "status": "warn" if missing_parent_models else "pass",
+        }
+        model_entries.append(entry)
+        for parent_model in missing_parent_models:
+            missing_dependencies.append(
+                {
+                    "model": model_string,
+                    "parent_model": parent_model,
+                    "model_apply_rank": APPLY_DEPENDENCY_MODEL_RANK.get(model_string),
+                    "parent_apply_rank": APPLY_DEPENDENCY_MODEL_RANK.get(parent_model),
+                    "message": (
+                        f"{model_string} is enabled without parent model "
+                        f"{parent_model}; child rows may be skipped when the parent "
+                        "does not already exist in NetBox."
+                    ),
+                }
+            )
+    return {
+        "available": True,
+        "status": "warn" if missing_dependencies else "pass",
+        "message": (
+            f"{len(missing_dependencies)} apply dependency gap(s) found."
+            if missing_dependencies
+            else "Enabled models satisfy declared apply parent dependencies."
+        ),
+        "enabled_models": enabled_models,
+        "model_count": len(model_entries),
+        "missing_dependency_count": len(missing_dependencies),
+        "models": model_entries,
+        "missing_dependencies": missing_dependencies,
+    }
+
 
 DEVICE_SHARD_MODELS = {
     "dcim.cable",

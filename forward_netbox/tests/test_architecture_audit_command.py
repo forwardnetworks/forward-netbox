@@ -65,7 +65,14 @@ class ForwardArchitectureAuditCommandTest(TestCase):
             "peering.netbox_peering_manager"
         ]
         self.assertIn("aci.netbox_cisco_aci", matrix["optional_plugin_capabilities"])
+        self.assertIn(
+            "aci.netbox_cisco_aci",
+            matrix["optional_plugin_adapter_contracts"],
+        )
         aci_capabilities = matrix["optional_plugin_capabilities"][
+            "aci.netbox_cisco_aci"
+        ]
+        aci_adapter_contract = matrix["optional_plugin_adapter_contracts"][
             "aci.netbox_cisco_aci"
         ]
         self.assertIn("routing.netbox_routing", matrix["optional_plugin_capabilities"])
@@ -85,6 +92,11 @@ class ForwardArchitectureAuditCommandTest(TestCase):
             "netbox_cisco_aci.acinode",
             aci_integration["supported_models"],
         )
+        self.assertNotIn(
+            "dcim.inventoryitem",
+            aci_integration["supported_models"],
+        )
+        self.assertEqual(aci_integration["native_models"], ["dcim.inventoryitem"])
         self.assertIn(
             "netbox_cisco_aci.aciendpointgroup",
             aci_integration["supported_models"],
@@ -163,10 +175,30 @@ class ForwardArchitectureAuditCommandTest(TestCase):
         self.assertFalse(aci_capabilities["unsupported_version"])
         self.assertEqual(aci_capabilities["required_model_count"], 12)
         self.assertEqual(aci_capabilities["supported_model_count"], 12)
+        self.assertEqual(aci_capabilities["native_model_count"], 1)
+        self.assertEqual(aci_capabilities["native_models"], ["dcim.inventoryitem"])
         self.assertEqual(aci_capabilities["discovery_model_count"], 10)
         self.assertEqual(aci_capabilities["future_model_count"], 5)
         self.assertEqual(aci_capabilities["query_map_count"], 14)
         self.assertEqual(aci_capabilities["command_inventory_count"], 17)
+        self.assertEqual(aci_adapter_contract["status"], "pass")
+        self.assertEqual(aci_adapter_contract["gaps"], [])
+        self.assertEqual(
+            aci_adapter_contract["adapter_module"],
+            "forward_netbox.utilities.sync_aci",
+        )
+        self.assertEqual(
+            matrix["optional_plugin_adapter_contracts"]["routing.netbox_routing"][
+                "status"
+            ],
+            "pass",
+        )
+        self.assertEqual(
+            matrix["optional_plugin_adapter_contracts"][
+                "peering.netbox_peering_manager"
+            ]["status"],
+            "pass",
+        )
         self.assertEqual(routing_integration["display_name"], "NetBox Routing")
         self.assertEqual(peering_integration["display_name"], "NetBox Peering Manager")
         self.assertEqual(routing_capabilities["display_name"], "NetBox Routing")
@@ -297,6 +329,20 @@ class ForwardArchitectureAuditCommandTest(TestCase):
             ],
             "nqe_parameters",
         )
+        cimc_query_contract = optional_query_contract_registry["models"][
+            "dcim.inventoryitem"
+        ]
+        self.assertEqual(cimc_query_contract["fetch_mode"], "nqe_parameters")
+        self.assertEqual(cimc_query_contract["query_count"], 1)
+        self.assertEqual(
+            cimc_query_contract["queries"][0]["query_name"],
+            "Forward ACI APIC CIMC Inventory",
+        )
+        self.assertFalse(cimc_query_contract["queries"][0]["enabled_by_default"])
+        self.assertTrue(cimc_query_contract["queries"][0]["declares_shard_parameter"])
+        self.assertTrue(
+            cimc_query_contract["queries"][0]["seeds_empty_shard_parameter"]
+        )
         self.assertEqual(
             matrix["adapter_blockers"]["dcim.interface"],
             "relationship_side_effects",
@@ -335,6 +381,12 @@ class ForwardArchitectureAuditCommandTest(TestCase):
             ]["aci.netbox_cisco_aci"],
             [],
         )
+        self.assertEqual(
+            matrix["classification_gaps"]["optional_plugin_adapter_contract_gaps"][
+                "aci.netbox_cisco_aci"
+            ],
+            [],
+        )
         self.assertEqual(matrix["model_contract_registry"]["status"], "pass")
         self.assertEqual(matrix["query_contract_registry"]["status"], "pass")
         self.assertEqual(
@@ -345,6 +397,17 @@ class ForwardArchitectureAuditCommandTest(TestCase):
         interface_contract = matrix["model_contract_registry"]["contracts"][
             "dcim.interface"
         ]
+        for model_string, contract in matrix["model_contract_registry"][
+            "contracts"
+        ].items():
+            self.assertEqual(contract["field_ownership"]["model"], model_string)
+            self.assertIn(
+                contract["field_ownership"]["blank_update_policy"],
+                {
+                    "authoritative_for_declared_fields",
+                    "preserve_configured_fields",
+                },
+            )
         self.assertEqual(interface_contract["model"], "dcim.interface")
         self.assertEqual(
             interface_contract["fetch_contract"]["fetch_mode"],
@@ -357,6 +420,26 @@ class ForwardArchitectureAuditCommandTest(TestCase):
         self.assertEqual(
             interface_contract["apply_engine_blocker_code"],
             "relationship_side_effects",
+        )
+        self.assertEqual(
+            interface_contract["preserve_existing_on_blank_fields"],
+            ["description", "mtu", "speed"],
+        )
+        self.assertEqual(
+            interface_contract["field_ownership"]["preserve_existing_on_blank_fields"],
+            ["description", "mtu", "speed"],
+        )
+        self.assertEqual(
+            matrix["model_contract_registry"]["contracts"]["dcim.device"][
+                "preserve_existing_on_blank_fields"
+            ],
+            ["serial"],
+        )
+        self.assertEqual(
+            matrix["model_contract_registry"]["contracts"]["dcim.inventoryitem"][
+                "preserve_existing_on_blank_fields"
+            ],
+            ["asset_tag", "description", "label", "part_id", "serial"],
         )
         self.assertIsNotNone(interface_contract["delete_dependency_rank"])
         self.assertIn("device", interface_contract["support_diagnostic_fields"])
