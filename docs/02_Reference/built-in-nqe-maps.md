@@ -166,7 +166,10 @@ export isAciNxosVersion(platform_os: String, platform_os_version: String) =
 
 export normalizePlatformName(platform_os: String, platform_os_version: String) =
   if matches(toLowerCase(platformOsName(platform_os)), "*apic*")
-    || matches(toLowerCase(platformOsName(platform_os)), "*nxos_aci*")
+  then "APIC"
+  else if matches(toLowerCase(platformOsName(platform_os)), "*cimc*")
+  then "CIMC"
+  else if matches(toLowerCase(platformOsName(platform_os)), "*nxos_aci*")
     || isAciNxosVersion(platform_os, platform_os_version)
   then "ACI"
   else platformOsName(platform_os);
