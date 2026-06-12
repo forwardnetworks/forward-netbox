@@ -1,7 +1,6 @@
 import logging
 
 from ..exceptions import ForwardQueryError
-from .module_readiness import module_bay_import_row
 from .sync_aci import apply_netbox_cisco_aci_aciappprofile
 from .sync_aci import apply_netbox_cisco_aci_acibridgedomain
 from .sync_aci import apply_netbox_cisco_aci_acicontract
@@ -701,23 +700,7 @@ class ForwardSyncRunnerAdapterMixin:
         return sync_lookup_module_bay(self, device, module_bay_name)
 
     def _ensure_module_bay(self, device, row):
-        module_bay = self._lookup_module_bay(device, row["module_bay"])
-        if module_bay is not None:
-            return module_bay
-        import_row = module_bay_import_row(row)
-        values = {
-            "name": import_row["name"],
-            "label": import_row["label"],
-            "position": import_row["position"],
-            "description": import_row["description"],
-        }
-        if any(
-            field.name == "enabled" for field in device.modulebays.model._meta.fields
-        ):
-            values["enabled"] = True
-        module_bay = device.modulebays.create(**values)
-        self._module_bay_by_device_name_cache[(device.pk, module_bay.name)] = module_bay
-        return module_bay
+        return self._lookup_module_bay(device, row["module_bay"])
 
     def _content_type_for(self, model):
         return sync_content_type_for(self, model)
