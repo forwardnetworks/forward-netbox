@@ -9,7 +9,7 @@ This matrix summarizes how the shipped Forward NQE maps populate each NetBox mod
 | `dcim.site` | `Forward Locations` | `network.locations` filtered by collected device locations | Exact | Site names/slugs are shaped in NQE. |
 | `dcim.manufacturer` | `Forward Device Vendors` | `device.platform.vendor` | Exact | One manufacturer per Forward vendor enum, with built-in names and slugs canonicalized in NQE. |
 | `dcim.devicerole` | `Forward Device Types` | `device.platform.deviceType` | Best-fit | Forward device type is used as the NetBox device role. |
-| `dcim.platform` | `Forward Platforms` | `device.platform.os` plus vendor | Exact | Platform slugs are shaped in NQE. |
+| `dcim.platform` | `Forward Platforms` | `device.platform.os` plus vendor | Exact | Platform slugs are shaped in NQE. APIC controllers stay on `APIC`, CIMC-managed hardware stays on `CIMC`, and ACI switches stay on `ACI`. |
 | `dcim.devicetype` | `Forward Device Models` | `device.platform.model` plus vendor | Best-fit | Forward model is used as both model and part number. |
 | `dcim.device` | `Forward Devices` | `network.devices` | Exact | Device lookup is by NetBox device name. |
 | `dcim.virtualchassis` | `Forward Virtual Chassis` | None by default | Exact only when customized | The bundled map is conservative and emits no rows. Forward HA peer relationships such as vPC, MLAG, and active/standby clusters are separate control-plane relationships, not native NetBox virtual chassis membership. |
