@@ -89,11 +89,17 @@ class ValidationOrgQueryAuditTest(TestCase):
             )
 
         self.assertEqual(report["status"], "pass")
+        self.assertEqual(report["gate_status"], "proved")
+        self.assertEqual(
+            report["gate_message"],
+            "Validation org query folder matches bundled compiled NQE source.",
+        )
         self.assertEqual(report["query_count"], 2)
         self.assertEqual(report["matched_count"], 2)
         self.assertEqual(report["missing_count"], 0)
         self.assertEqual(report["stale_count"], 0)
         self.assertEqual(report["lookup_error_count"], 0)
+        self.assertEqual(report["remediation_action_counts"], {})
         self.assertEqual(report["query_contract_summary"]["status"], "pass")
         client.get_nqe_repository_query_index.assert_called_once_with(
             repository="org",
@@ -144,10 +150,15 @@ class ValidationOrgQueryAuditTest(TestCase):
             )
 
         self.assertEqual(report["status"], "fail")
+        self.assertEqual(report["gate_status"], "unproved")
         self.assertEqual(report["missing_count"], 1)
         self.assertEqual(report["stale_count"], 1)
         self.assertEqual(report["matched_count"], 0)
         self.assertEqual(len(report["gaps"]), 2)
+        self.assertEqual(
+            report["remediation_action_counts"],
+            {"publish_bundled_queries": 2},
+        )
         self.assertEqual(
             report["missing"][0]["expected_path"],
             "/forward_netbox_validation/forward_interfaces",
@@ -157,7 +168,7 @@ class ValidationOrgQueryAuditTest(TestCase):
             "/forward_netbox_validation/forward_devices",
         )
 
-    def test_builtin_query_repository_sync_summary_treats_missing_source_as_warning(
+    def test_builtin_query_repository_sync_summary_treats_missing_source_as_gap(
         self,
     ):
         query_defaults = self._query_defaults()
@@ -200,12 +211,21 @@ class ValidationOrgQueryAuditTest(TestCase):
                 query_defaults=query_defaults[:1],
             )
 
-        self.assertEqual(report["status"], "pass")
+        self.assertEqual(report["status"], "fail")
+        self.assertEqual(report["gate_status"], "unproved")
         self.assertEqual(report["missing_count"], 0)
         self.assertEqual(report["stale_count"], 0)
         self.assertEqual(report["source_unavailable_count"], 1)
         self.assertEqual(report["matched_count"], 0)
-        self.assertEqual(report["gaps"], [])
+        self.assertEqual(len(report["gaps"]), 1)
+        self.assertEqual(
+            report["gaps"][0]["code"],
+            "published_query_source_unavailable",
+        )
+        self.assertEqual(
+            report["remediation_action_counts"],
+            {"publish_bundled_queries": 1},
+        )
         self.assertEqual(
             report["source_unavailable"][0]["expected_path"],
             "/forward_netbox_validation/forward_devices",

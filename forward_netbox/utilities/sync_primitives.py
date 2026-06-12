@@ -7,6 +7,7 @@ from django.db.models.deletion import ProtectedError
 from ..exceptions import ForwardDependencySkipError
 from ..exceptions import ForwardQueryError
 from ..exceptions import ForwardSearchError
+from .sync_contracts import preserve_existing_on_blank_fields_for_model
 
 
 DEPENDENCY_LOOKUP_PAIR_CHUNK_SIZE = 500
@@ -122,7 +123,10 @@ def coalesce_update_or_create(
                 raise
 
     update_fields = []
-    for field, value in update_values.items():
+    for field, value in _authoritative_update_values(
+        model._meta.label_lower,
+        update_values,
+    ).items():
         if not _model_field_value_matches(model, obj, field, value):
             setattr(obj, field, value)
             update_fields.append(field)
@@ -134,6 +138,17 @@ def coalesce_update_or_create(
     if return_change:
         return obj, False, bool(update_fields)
     return obj, False
+
+
+def _authoritative_update_values(model_string, update_values):
+    preserved_fields = preserve_existing_on_blank_fields_for_model(model_string)
+    if not preserved_fields:
+        return dict(update_values)
+    return {
+        field: value
+        for field, value in update_values.items()
+        if not (field in preserved_fields and value in ("", None))
+    }
 
 
 def _model_field_value_matches(model, obj, field_name, value):
