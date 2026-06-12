@@ -866,9 +866,14 @@ def builtin_query_repository_sync_summary(
             )
             continue
 
+        committed_query_basis = _committed_query_by_path(
+            client, expected_path, query_entry
+        )
         requested_commit_id = (
             str(
-                query_entry.get("lastCommitId")
+                committed_query_basis.get("lastCommitId")
+                or (committed_query_basis.get("lastCommit") or {}).get("id")
+                or query_entry.get("lastCommitId")
                 or (query_entry.get("lastCommit") or {}).get("id")
                 or "head"
             ).strip()
