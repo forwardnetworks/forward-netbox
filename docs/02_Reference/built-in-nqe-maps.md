@@ -1375,9 +1375,9 @@ For routing maps on large datasets, publish the NQE into the Forward NQE library
 
 - `dcim.inventoryitem` remains the default best-fit path for generic components.
 - `dcim.module` is enabled by default and remains beta; set the feature flag to `False` only when you want bay-aware hardware kept in inventory items instead of modules.
-- The module path uses native NetBox model operations to create missing module bays from the NQE `module_bay` field when `dcim.module` is enabled. Those bay creations are part of the normal Branching diff.
-- Before enabling module sync, run `python manage.py forward_module_readiness --sync-name "<sync name>"` to generate a readiness summary and an optional native NetBox module-bay import CSV for missing bays.
-- `dcim.module` uses a default branch density of 2 changes per NQE row because a new row can create both a module bay and a module.
+- The module path requires module bays to already exist on the target device. Rows whose `module_bay` value is missing in NetBox are skipped with a non-blocking warning instead of creating `dcim.modulebay` side effects during module sync.
+- Before enabling module sync, run `python manage.py forward_module_readiness --sync-name "<sync name>"` to generate a readiness summary and native NetBox module-bay import CSV for missing bays.
+- `dcim.module` uses a conservative branch density because module rows still depend on device, module type, and bay readiness.
 - SFP/transceiver rows remain in the inventory-item path by default; do not enable module import expecting optics to become NetBox modules unless the query is customized for device types that expose matching module bays.
 - Optional routing maps are visible unless `enable_bgp_sync` is false, and they still require the target optional NetBox plugins to be installed.
 - BGP policy objects such as route maps, prefix lists, and communities are not part of the normalized built-in path. Those objects require a separate config-derived query layer with vendor-specific contracts.

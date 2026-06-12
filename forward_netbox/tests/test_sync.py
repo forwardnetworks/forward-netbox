@@ -8525,6 +8525,47 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertEqual(lag.mtu, 9000)
         self.assertEqual(lag.description, "aggregate")
 
+    def test_apply_dcim_interface_lag_member_preserves_parent_description(self):
+        device = self._create_device("device-1")
+        lag = Interface.objects.create(
+            device=device,
+            name="po8",
+            type="lag",
+            enabled=True,
+            mtu=9000,
+            description="existing aggregate",
+        )
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "device": "device-1",
+            "name": "eth1/10",
+            "type": "1000base-t",
+            "lag": "po8",
+            "enabled": True,
+            "mtu": 9000,
+            "description": "",
+            "speed": 1000000,
+        }
+
+        runner._apply_dcim_interface(row)
+        lag.refresh_from_db()
+        self.assertEqual(lag.description, "existing aggregate")
+        self.assertEqual(lag.mtu, 9000)
+
+        before_count = ObjectChange.objects.count()
+        with CaptureQueriesContext(connection) as queries:
+            runner._apply_dcim_interface(row)
+
+        lag.refresh_from_db()
+        member = Interface.objects.get(device=device, name="eth1/10")
+        self.assertEqual(member.lag, lag)
+        self.assertEqual(lag.description, "existing aggregate")
+        self.assertEqual(lag.mtu, 9000)
+        self.assertEqual(self._update_statements(queries), [])
+        self.assertEqual(ObjectChange.objects.count(), before_count)
+
     def test_apply_dcim_interface_removes_existing_cable_before_lag_conversion(self):
         device = self._create_device("device-1")
         remote_device = self._create_device("device-2")
@@ -9172,7 +9213,9 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertEqual(module.serial, "SN-1")
         self.assertEqual(module.asset_tag, "AT-1")
 
-    def test_apply_dcim_module_creates_missing_module_bay_natively(self):
+    def test_apply_dcim_module_skips_missing_module_bay_without_side_effect_create(
+        self,
+    ):
         device = self._create_device("device-a")
         runner = ForwardSyncRunner(
             sync=self.sync, ingestion=None, client=None, logger_=Mock()
@@ -9187,13 +9230,21 @@ class ForwardSyncRunnerTest(TestCase):
             "status": "active",
         }
 
-        runner._apply_dcim_module(row)
+        before_count = ObjectChange.objects.count()
+        result = runner._apply_dcim_module(row)
 
-        module_bay = ModuleBay.objects.get(device=device, name="Slot 2")
-        module = Module.objects.get(device=device, module_bay=module_bay)
-        self.assertEqual(module_bay.label, "Slot 2")
-        self.assertEqual(module_bay.position, "2")
-        self.assertEqual(module.module_type.model, "Line Card 1")
+        self.assertFalse(result)
+        self.assertFalse(
+            ModuleBay.objects.filter(device=device, name="Slot 2").exists()
+        )
+        self.assertFalse(Module.objects.filter(device=device).exists())
+        self.assertEqual(ObjectChange.objects.count(), before_count)
+        self.assertEqual(
+            runner._aggregated_skip_warning_counts[
+                ("dcim.module", "missing-module-bay")
+            ],
+            1,
+        )
 
     def test_apply_dcim_module_reuses_existing_module_bay_and_module_type(self):
         device = self._create_device("device-a")
