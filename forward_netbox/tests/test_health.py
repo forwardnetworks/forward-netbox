@@ -23,6 +23,7 @@ from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.models import ForwardValidationRun
 from forward_netbox.utilities.branch_budget import BRANCH_RUN_STATE_PARAMETER
+from forward_netbox.utilities.branch_budget import BranchPlanItem
 from forward_netbox.utilities.health import live_data_file_health_check
 from forward_netbox.utilities.health import live_source_health_check
 from forward_netbox.utilities.health import sync_health_summary
@@ -1760,6 +1761,111 @@ class ForwardSyncHealthTest(TestCase):
             "/forward_netbox_validation/",
         )
         self.assertFalse(refresh_query_ids.call_args.kwargs["pin_commit"])
+
+    def test_sync_detail_surfaces_query_drift_and_dependency_preview_actions(self):
+        self.client.force_login(self.user)
+
+        response = self.client.get(self.sync.get_absolute_url())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Query Drift")
+        self.assertContains(response, "Refresh Query IDs")
+        self.assertContains(response, "Preview Dependencies")
+        self.assertContains(
+            response,
+            reverse(
+                "plugins:forward_netbox:forwardsync_dependency_preview",
+                kwargs={"pk": self.sync.pk},
+            ),
+        )
+
+    def _mock_dependency_preview_planner(self):
+        planner = Mock()
+        planner.build_plan.return_value = (
+            {
+                "network_id": "test-network",
+                "snapshot_id": "snapshot-1",
+                "snapshot_selector": "latestProcessed",
+            },
+            [
+                BranchPlanItem(
+                    index=1,
+                    model_string="dcim.device",
+                    label="Devices",
+                    estimated_changes=3,
+                    upsert_rows=[{"name": "device-a"}, {"name": "device-b"}],
+                    delete_rows=[{"name": "device-c"}],
+                    sync_mode="diff",
+                    query_name="forward_devices",
+                    execution_mode="query_id",
+                    fetch_mode="diff",
+                )
+            ],
+        )
+        planner.model_results = [
+            {
+                "model": "dcim.device",
+                "query_name": "forward_devices",
+                "execution_mode": "query_id",
+                "fetch_mode": "diff",
+                "row_count": 2,
+                "delete_count": 1,
+                "estimated_changes": 3,
+                "runtime_ms": 42.0,
+            }
+        ]
+        return planner
+
+    def test_sync_dependency_preview_renders_plan_summary(self):
+        self.client.force_login(self.user)
+        planner = self._mock_dependency_preview_planner()
+        client = Mock()
+
+        with patch.object(ForwardSource, "get_client", return_value=client), patch(
+            "forward_netbox.views.ForwardMultiBranchPlanner",
+            return_value=planner,
+        ):
+            response = self.client.get(
+                reverse(
+                    "plugins:forward_netbox:forwardsync_dependency_preview",
+                    kwargs={"pk": self.sync.pk},
+                )
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Dependency Dry Run")
+        self.assertContains(response, "Delete Dependency Plan")
+        self.assertContains(response, "dcim.device")
+
+    def test_sync_dependency_preview_uses_planner_without_ingestion_side_effects(self):
+        self.client.force_login(self.user)
+        planner = self._mock_dependency_preview_planner()
+        client = Mock()
+        ingestion_count = ForwardIngestion.objects.count()
+
+        with patch.object(ForwardSource, "get_client", return_value=client), patch(
+            "forward_netbox.views.ForwardMultiBranchPlanner",
+            return_value=planner,
+        ) as planner_class:
+            response = self.client.get(
+                reverse(
+                    "plugins:forward_netbox:forwardsync_dependency_preview",
+                    kwargs={"pk": self.sync.pk},
+                )
+                + "?format=json"
+            )
+
+        self.assertEqual(response.status_code, 200)
+        planner_class.assert_called_once()
+        planner.build_plan.assert_called_once()
+        self.assertEqual(ForwardIngestion.objects.count(), ingestion_count)
+        data = json.loads(response.content)
+        self.assertEqual(data["plan_preview"]["planned_shards"], 1)
+        self.assertEqual(data["plan_preview"]["estimated_changes"], 3)
+        self.assertEqual(data["plan_items_count"], 1)
+        self.assertEqual(data["plan_items"][0]["model"], "dcim.device")
+        self.assertNotIn("upsert_rows", data["plan_items"][0])
+        self.assertNotIn("delete_rows", data["plan_items"][0])
 
     def test_ingestion_health_check_marks_non_blocking_issue_baseline_as_pass(self):
         ingestion = ForwardIngestion.objects.create(

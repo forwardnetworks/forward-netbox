@@ -86,10 +86,12 @@ from .utilities.execution_ledger_metrics import pushdown_trend_history_for_sync
 from .utilities.execution_ledger_serialization import execution_run_failure_summary
 from .utilities.execution_ledger_serialization import execution_run_insights_summary
 from .utilities.execution_ledger_serialization import live_support_diagnostics
+from .utilities.execution_telemetry import build_plan_preview
 from .utilities.health import live_data_file_health_check
 from .utilities.health import live_source_health_check
 from .utilities.health import sync_health_summary
 from .utilities.json_safe import json_safe_value
+from .utilities.multi_branch import ForwardMultiBranchPlanner
 from .utilities.query_binding import apply_explicit_nqe_map_bindings
 from .utilities.query_binding import build_nqe_map_bindings
 from .utilities.query_binding import live_query_binding_drift
@@ -306,6 +308,79 @@ def _download_json_response(payload, filename):
     response = JsonResponse(payload, json_dumps_params={"indent": 2}, safe=True)
     response["Content-Disposition"] = f'attachment; filename="{filename}"'
     return response
+
+
+def _dependency_plan_item_summary(item):
+    return {
+        "index": item.index,
+        "model": item.model_string,
+        "label": item.label,
+        "estimated_changes": item.estimated_changes,
+        "upsert_count": len(item.upsert_rows),
+        "delete_count": len(item.delete_rows),
+        "operation": item.operation,
+        "sync_mode": item.sync_mode,
+        "query_name": item.query_name,
+        "execution_mode": item.execution_mode or "unknown",
+        "fetch_mode": item.fetch_mode or "unknown",
+        "fetch_key_family": item.fetch_key_family or "",
+        "query_runtime_ms": item.query_runtime_ms,
+        "apply_engine": item.apply_engine,
+        "shard_key_count": len(item.shard_keys or ()),
+    }
+
+
+def _dependency_model_result_summary(result):
+    return {
+        "model": result.get("model") or "",
+        "query_name": result.get("query_name") or "",
+        "execution_mode": result.get("execution_mode") or "unknown",
+        "fetch_mode": result.get("fetch_mode") or "unknown",
+        "row_count": int(result.get("row_count") or 0),
+        "delete_count": int(result.get("delete_count") or 0),
+        "estimated_changes": int(result.get("estimated_changes") or 0),
+        "runtime_ms": float(result.get("runtime_ms") or 0.0),
+    }
+
+
+def _dependency_dry_run_payload(sync):
+    max_changes_per_branch = sync.get_max_changes_per_branch()
+    planner = ForwardMultiBranchPlanner(
+        sync,
+        sync.source.get_client(),
+        sync.logger,
+    )
+    context, plan = planner.build_plan(
+        max_changes_per_branch=max_changes_per_branch,
+        model_change_density=sync.get_model_change_density(),
+        model_change_density_profile=sync.get_model_change_density_profile(),
+    )
+    plan_preview = build_plan_preview(
+        plan,
+        max_changes_per_branch=max_changes_per_branch,
+    )
+    plan_items = [_dependency_plan_item_summary(item) for item in plan]
+    return {
+        "generated_at": timezone.now().isoformat(),
+        "sync": {
+            "pk": sync.pk,
+            "name": sync.name,
+            "source": sync.source_id,
+            "max_changes_per_branch": max_changes_per_branch,
+        },
+        "context": {
+            "network_id": context.get("network_id"),
+            "snapshot_id": context.get("snapshot_id"),
+            "snapshot_selector": context.get("snapshot_selector"),
+        },
+        "plan_preview": plan_preview,
+        "plan_items_count": len(plan_items),
+        "plan_items_truncated": len(plan_items) > _EXECUTION_PLAN_ITEM_LIMIT,
+        "plan_items": plan_items[:_EXECUTION_PLAN_ITEM_LIMIT],
+        "model_results": [
+            _dependency_model_result_summary(result) for result in planner.model_results
+        ],
+    }
 
 
 @register_model_view(ForwardSource, "list", path="", detail=False)
@@ -547,12 +622,23 @@ class ForwardSyncView(generic.ObjectView):
     template_name = "forward_netbox/forwardsync.html"
 
     def get_extra_context(self, request, instance):
+        health = sync_health_summary(instance)
         data = {
             "last_ingestion": instance.last_ingestion,
             "latest_validation_run": instance.latest_validation_run,
             "enabled_models": instance.enabled_models(),
+            "query_drift_summary": health.get("query_drift_summary", {}),
+            "query_drift_results": health.get("query_modes", {}).get("local_drift", []),
             "latest_execution_failure": execution_run_failure_summary(
                 latest_execution_run(instance)
+            ),
+            "dependency_preview_url": reverse(
+                "plugins:forward_netbox:forwardsync_dependency_preview",
+                kwargs={"pk": instance.pk},
+            ),
+            "health_url": reverse(
+                "plugins:forward_netbox:forwardsync_health",
+                kwargs={"pk": instance.pk},
             ),
             "support_bundle_url": reverse(
                 "plugins:forward_netbox:forwardsync_support_bundle",
@@ -566,6 +652,39 @@ class ForwardSyncView(generic.ObjectView):
         if instance.last_ingestion:
             data.update(instance.last_ingestion.get_statistics())
         return data
+
+
+@register_model_view(ForwardSync, "dependency_preview", path="dependency-preview")
+class ForwardSyncDependencyPreviewView(BaseObjectView):
+    queryset = ForwardSync.objects.all()
+    template_name = "forward_netbox/forwardsync_dependency_preview.html"
+
+    def get_required_permission(self):
+        return "forward_netbox.run_forwardsync"
+
+    def get(self, request, pk):
+        sync = get_object_or_404(self.queryset, pk=pk)
+        try:
+            payload = _dependency_dry_run_payload(sync)
+        except Exception as exc:
+            messages.error(
+                request,
+                _("Dependency preview failed: %(error)s") % {"error": exc},
+            )
+            return redirect(sync.get_absolute_url())
+        if request.GET.get("format") == "json":
+            filename = f"forward-sync-{sync.pk}-dependency-preview.json"
+            return _download_json_response(json_safe_value(payload), filename)
+        return render(
+            request,
+            self.template_name,
+            {
+                "object": sync,
+                "payload": json_safe_value(payload),
+                "plan_preview": payload["plan_preview"],
+                "plan_items": payload["plan_items"],
+            },
+        )
 
 
 @register_model_view(ForwardSync, "run")

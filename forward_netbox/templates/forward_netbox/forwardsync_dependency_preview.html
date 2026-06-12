@@ -1,0 +1,129 @@
+{% extends 'generic/object.html' %}
+{% load helpers %}
+{% load i18n %}
+
+{% block title %}{{ object }} - {% trans "Dependency Preview" %}{% endblock %}
+
+{% block extra_controls %}
+  <a class="btn btn-outline-secondary" href="{{ object.get_absolute_url }}">
+    <i class="mdi mdi-arrow-left" aria-hidden="true"></i>&nbsp;{% trans "Sync" %}
+  </a>
+  <a class="btn btn-outline-secondary" href="{% url 'plugins:forward_netbox:forwardsync_dependency_preview' pk=object.pk %}?format=json">
+    <i class="mdi mdi-download" aria-hidden="true"></i>&nbsp;{% trans "Export JSON" %}
+  </a>
+{% endblock extra_controls %}
+
+{% block content %}
+<div class="row mb-3">
+  <div class="col col-md-5">
+    <div class="card">
+      <h5 class="card-header">{% trans "Dependency Dry Run" %}</h5>
+      <div class="card-body">
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">{% trans "Snapshot" %}</th>
+            <td>{{ payload.context.snapshot_id|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Selector" %}</th>
+            <td>{{ payload.context.snapshot_selector|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Planned shards" %}</th>
+            <td>{{ plan_preview.planned_shards|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Estimated changes" %}</th>
+            <td>{{ plan_preview.estimated_changes|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Models" %}</th>
+            <td>{{ plan_preview.model_count|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Retry risk" %}</th>
+            <td>{{ plan_preview.retry_risk|placeholder }}</td>
+          </tr>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <h5 class="card-header">{% trans "Delete Dependency Plan" %}</h5>
+      <div class="card-body">
+        {% with delete_plan=plan_preview.delete_dependency_plan %}
+          <table class="table table-hover attr-table">
+            <tr>
+              <th scope="row">{% trans "Status" %}</th>
+              <td>{{ delete_plan.status|placeholder }}</td>
+            </tr>
+            <tr>
+              <th scope="row">{% trans "Delete rows" %}</th>
+              <td>{{ delete_plan.delete_rows|placeholder }}</td>
+            </tr>
+            <tr>
+              <th scope="row">{% trans "Delete shards" %}</th>
+              <td>{{ delete_plan.delete_shards|placeholder }}</td>
+            </tr>
+            <tr>
+              <th scope="row">{% trans "Max delete shard" %}</th>
+              <td>{{ delete_plan.max_delete_shard_changes|placeholder }}</td>
+            </tr>
+          </table>
+          {% if delete_plan.warnings %}
+            <ul class="mb-0 ps-3">
+              {% for warning in delete_plan.warnings %}
+                <li>{{ warning }}</li>
+              {% endfor %}
+            </ul>
+          {% endif %}
+        {% endwith %}
+      </div>
+    </div>
+  </div>
+  <div class="col col-md-7">
+    <div class="card">
+      <h5 class="card-header">{% trans "Planned Shards" %}</h5>
+      <div class="table-responsive">
+        <table class="table table-hover">
+          <thead>
+            <tr>
+              <th>{% trans "Index" %}</th>
+              <th>{% trans "Model" %}</th>
+              <th>{% trans "Changes" %}</th>
+              <th>{% trans "Upserts" %}</th>
+              <th>{% trans "Deletes" %}</th>
+              <th>{% trans "Fetch" %}</th>
+              <th>{% trans "Engine" %}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in plan_items %}
+              <tr>
+                <td>{{ item.index }}</td>
+                <td>{{ item.model }}</td>
+                <td>{{ item.estimated_changes }}</td>
+                <td>{{ item.upsert_count }}</td>
+                <td>{{ item.delete_count }}</td>
+                <td>{{ item.fetch_mode }}</td>
+                <td>{{ item.apply_engine }}</td>
+              </tr>
+            {% empty %}
+              <tr>
+                <td colspan="7" class="text-muted">{% trans "No branch work is needed." %}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% if payload.plan_items_truncated %}
+        <div class="card-footer text-muted">
+          {% blocktrans with count=payload.plan_items_count %}Showing first planned shards from {{ count }} total.{% endblocktrans %}
+        </div>
+      {% endif %}
+    </div>
+    <div class="card">
+      {% include 'extras/inc/configcontext_data.html' with title="Plan Preview" data=payload format="json" copyid="forward-sync-dependency-preview" %}
+    </div>
+  </div>
+</div>
+{% endblock %}
