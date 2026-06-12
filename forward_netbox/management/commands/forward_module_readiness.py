@@ -115,9 +115,9 @@ class Command(BaseCommand):
         else:
             self.stdout.write(
                 self.style.WARNING(
-                    "Missing module bays will be created in the native Branching diff "
-                    "when dcim.module is enabled. Import the generated CSV first only "
-                    "if you want to pre-stage bays through native NetBox import."
+                    "Missing module bays must be imported before dcim.module sync. "
+                    "Import the generated CSV through native NetBox import, rerun "
+                    "this readiness check, then enable module sync when it reports ready."
                 )
             )
 
