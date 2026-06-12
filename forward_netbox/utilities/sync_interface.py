@@ -255,18 +255,27 @@ def apply_dcim_interface(runner, row):
                 },
                 data=row,
             )
-        lag, _ = runner._upsert_values_from_defaults(
+        create_values = {
+            "device": device,
+            "name": row["lag"],
+            "type": "lag",
+            "enabled": True,
+            "mtu": None,
+            "description": "",
+            "speed": None,
+        }
+        update_values = {
+            "device": device,
+            "name": row["lag"],
+            "type": "lag",
+            "enabled": True,
+        }
+        lag, _ = runner._upsert_row(
             "dcim.interface",
             Interface,
-            values={
-                "device": device,
-                "name": row["lag"],
-                "type": "lag",
-                "enabled": True,
-                "mtu": None,
-                "description": "",
-                "speed": None,
-            },
+            row={"device": device, "name": row["lag"]},
+            create_values=create_values,
+            update_values=update_values,
             coalesce_sets=runner._coalesce_sets_for(
                 "dcim.interface",
                 [("device", "name")],
