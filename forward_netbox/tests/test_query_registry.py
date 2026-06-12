@@ -141,11 +141,15 @@ REQUIRED_FIELDS_BY_QUERY_NAME = {
         "manufacturer",
         "manufacturer_slug",
         "name",
+        "label",
         "part_id",
         "serial",
+        "asset_tag",
         "role",
         "role_slug",
         "role_color",
+        "part_type",
+        "module_component",
         "status",
         "discovered",
         "description",
@@ -861,6 +865,20 @@ class QueryRegistryTest(TestCase):
             aci_summary["models"]["netbox_cisco_aci.acifabric"]["fetch_mode"],
             "nqe_parameters",
         )
+        self.assertEqual(
+            aci_summary["models"]["dcim.inventoryitem"]["fetch_mode"],
+            "nqe_parameters",
+        )
+        cimc_queries = aci_summary["models"]["dcim.inventoryitem"]["queries"]
+        self.assertEqual(len(cimc_queries), 1)
+        self.assertEqual(
+            cimc_queries[0]["query_name"], "Forward ACI APIC CIMC Inventory"
+        )
+        self.assertFalse(cimc_queries[0]["enabled_by_default"])
+        self.assertTrue(cimc_queries[0]["declares_shard_parameter"])
+        self.assertTrue(cimc_queries[0]["seeds_empty_shard_parameter"])
+        self.assertTrue(cimc_queries[0]["has_empty_shard_guard"])
+        self.assertTrue(cimc_queries[0]["has_positive_shard_predicate"])
         self.assertEqual(
             aci_summary["models"]["netbox_cisco_aci.acicontract"]["query_count"],
             1,

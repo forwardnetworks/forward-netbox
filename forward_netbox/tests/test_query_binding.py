@@ -334,6 +334,7 @@ class NQEMapBindingTest(TestCase):
         self.assertEqual(drift["severity"], "info")
         self.assertEqual(drift["commit_binding"], "latest_commit")
         self.assertIn("Refresh Query IDs", drift["remediation"])
+        self.assertEqual(drift["remediation_action"], "refresh_query_ids")
 
     def test_live_query_binding_drift_reports_repository_source_match(self):
         netbox_model = ContentType.objects.get(app_label="dcim", model="device")
@@ -473,7 +474,8 @@ class NQEMapBindingTest(TestCase):
         self.assertEqual(drift["status"], "direct_query_id_unverified")
         self.assertEqual(drift["severity"], "warn")
         self.assertEqual(drift["live_status"], "direct_query_id_not_found")
-        self.assertIn("repository path", drift["remediation"])
+        self.assertIn("Refresh Query IDs", drift["remediation"])
+        self.assertEqual(drift["remediation_action"], "refresh_query_ids")
 
     def test_publish_builtin_queries_adds_sources_commits_and_binds_selected_maps(self):
         netbox_model = ContentType.objects.get(app_label="dcim", model="device")

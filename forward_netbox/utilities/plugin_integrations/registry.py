@@ -1,6 +1,7 @@
 from dataclasses import asdict
 from dataclasses import dataclass
 from dataclasses import field
+from importlib import import_module
 from importlib import metadata
 
 from django.apps import apps
@@ -16,11 +17,13 @@ class OptionalPluginIntegration:
     display_name: str
     required_models: tuple[str, ...]
     supported_models: tuple[str, ...]
+    native_models: tuple[str, ...] = ()
     discovery_models: tuple[str, ...] = ()
     future_models: tuple[str, ...] = ()
     query_maps: tuple[str, ...] = ()
     command_inventory: tuple[dict, ...] = ()
     package_names: tuple[str, ...] = ()
+    adapter_module: str = ""
     minimum_package_version: str | None = None
     enabled_by_default: bool = False
     status: str = "candidate"
@@ -63,6 +66,7 @@ ACI_INTEGRATION = OptionalPluginIntegration(
         "netbox_cisco_aci.acil3out",
         "netbox_cisco_aci.acistaticportbinding",
     ),
+    native_models=("dcim.inventoryitem",),
     discovery_models=(
         "netbox_cisco_aci.acibridgedomainsubnet",
         "netbox_cisco_aci.aciendpointsecuritygroup",
@@ -104,6 +108,7 @@ ACI_INTEGRATION = OptionalPluginIntegration(
         "netbox-aci-plugin",
         "netbox-aci",
     ),
+    adapter_module="forward_netbox.utilities.sync_aci",
     minimum_package_version="0.2.2",
     command_inventory=(
         {
@@ -257,6 +262,7 @@ ROUTING_INTEGRATION = OptionalPluginIntegration(
         "Forward OSPF Interfaces",
     ),
     package_names=("netbox-routing", "netbox_routing"),
+    adapter_module="forward_netbox.utilities.sync_routing_impl",
     enabled_by_default=False,
     status="beta_surface",
     notes=(
@@ -278,6 +284,7 @@ PEERING_INTEGRATION = OptionalPluginIntegration(
     supported_models=("netbox_peering_manager.peeringsession",),
     query_maps=("Forward Peering Sessions",),
     package_names=("netbox-peering-manager", "netbox_peering_manager"),
+    adapter_module="forward_netbox.utilities.sync_routing_impl",
     enabled_by_default=False,
     status="beta_surface",
     notes=(
@@ -317,6 +324,13 @@ def integration_summary():
 def integration_capability_summary():
     return {
         integration.key: _integration_capability_summary(integration)
+        for integration in OPTIONAL_PLUGIN_INTEGRATIONS
+    }
+
+
+def integration_adapter_contract_summary():
+    return {
+        integration.key: _integration_adapter_contract_summary(integration)
         for integration in OPTIONAL_PLUGIN_INTEGRATIONS
     }
 
@@ -361,21 +375,102 @@ def _integration_capability_summary(integration: OptionalPluginIntegration):
         ),
         "required_model_count": len(integration.required_models),
         "supported_model_count": len(integration.supported_models),
+        "native_model_count": len(integration.native_models),
         "discovery_model_count": len(integration.discovery_models),
         "future_model_count": len(integration.future_models),
         "query_map_count": len(integration.query_maps),
         "command_inventory_count": len(integration.command_inventory),
         "command_inventory": list(integration.command_inventory),
+        "adapter_contract": _integration_adapter_contract_summary(integration),
         "required_models_present": required_models_present,
         "required_models_missing": required_models_missing,
         "supported_models_present": supported_models_present,
         "supported_models_missing": supported_models_missing,
+        "native_models": sorted(integration.native_models),
         "discovery_models_present": discovery_models_present,
         "discovery_models_missing": discovery_models_missing,
         "future_models_present": future_models_present,
         "future_models_missing": future_models_missing,
         "missing_required": required_models_missing,
         "missing_optional": missing_optional,
+    }
+
+
+def _integration_adapter_contract_summary(integration: OptionalPluginIntegration):
+    models = list(integration.supported_models)
+    if not integration.adapter_module:
+        return {
+            "available": False,
+            "status": "missing_adapter_module",
+            "adapter_module": "",
+            "model_count": len(models),
+            "models": [],
+            "gaps": [
+                {
+                    "code": "missing_adapter_module",
+                    "message": "Integration does not declare an adapter module.",
+                }
+            ],
+        }
+    try:
+        module = import_module(integration.adapter_module)
+    except Exception as exc:
+        return {
+            "available": False,
+            "status": "adapter_module_import_failed",
+            "adapter_module": integration.adapter_module,
+            "model_count": len(models),
+            "models": [],
+            "gaps": [
+                {
+                    "code": "adapter_module_import_failed",
+                    "message": f"Could not import adapter module: {exc}",
+                }
+            ],
+        }
+    entries = []
+    gaps = []
+    for model_string in models:
+        function_suffix = model_string.replace(".", "_")
+        apply_name = f"apply_{function_suffix}"
+        delete_name = f"delete_{function_suffix}"
+        has_apply = callable(getattr(module, apply_name, None))
+        has_delete = callable(getattr(module, delete_name, None))
+        entry = {
+            "model": model_string,
+            "adapter_module": integration.adapter_module,
+            "apply_function": apply_name,
+            "delete_function": delete_name,
+            "has_apply": has_apply,
+            "has_delete": has_delete,
+            "status": "pass" if has_apply and has_delete else "fail",
+        }
+        entries.append(entry)
+        if not has_apply:
+            gaps.append(
+                {
+                    "code": "missing_apply_adapter",
+                    "model": model_string,
+                    "adapter_module": integration.adapter_module,
+                    "function": apply_name,
+                }
+            )
+        if not has_delete:
+            gaps.append(
+                {
+                    "code": "missing_delete_adapter",
+                    "model": model_string,
+                    "adapter_module": integration.adapter_module,
+                    "function": delete_name,
+                }
+            )
+    return {
+        "available": True,
+        "status": "pass" if not gaps else "fail",
+        "adapter_module": integration.adapter_module,
+        "model_count": len(entries),
+        "models": entries,
+        "gaps": gaps,
     }
 
 
