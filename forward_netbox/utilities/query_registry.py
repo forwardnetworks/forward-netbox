@@ -639,9 +639,12 @@ def optional_plugin_query_contract_summary(model_strings=None) -> dict[str, Any]
             for query_default in BUILTIN_OPTIONAL_QUERY_MAPS
             if query_default["name"] in integration.query_maps
         ]
+        integration_model_strings = tuple(
+            sorted(set(integration.supported_models).union(integration.native_models))
+        )
         summary[integration.key] = query_contract_summary_for_maps(
             integration_query_defaults,
-            model_strings or integration.supported_models,
+            model_strings or integration_model_strings,
         )
     return summary
 

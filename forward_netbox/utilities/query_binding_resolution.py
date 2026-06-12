@@ -117,6 +117,7 @@ def local_query_binding_drift(query_map: ForwardNQEMap) -> dict:
                 "Switch the map to a repository path or direct query ID before "
                 "relying on diff execution."
             ),
+            remediation_action="restore_builtin_query_binding",
             expected_filename=expected_filename,
             expected_name=expected_name,
         )
@@ -152,6 +153,7 @@ def local_query_binding_drift(query_map: ForwardNQEMap) -> dict:
                 "Bind the map to the bundled query path for this model or restore "
                 "the correct shipped map before syncing."
             ),
+            remediation_action="restore_builtin_query_binding",
             expected_filename=expected_filename,
             expected_name=expected_name,
             current_filename=current_filename,
@@ -172,6 +174,7 @@ def local_query_binding_drift(query_map: ForwardNQEMap) -> dict:
                 "validation-folder query; pin a commit if you need a fixed "
                 "Forward revision."
             ),
+            remediation_action="refresh_query_ids",
             expected_filename=expected_filename,
             expected_name=expected_name,
         )
@@ -291,9 +294,11 @@ def _live_drift_for_query_id(
             "live_status": "direct_query_id_not_found",
             "live_message": message,
             "remediation": (
-                "Bind this map to a repository path or re-publish the query so the "
-                "direct ID can be resolved consistently."
+                "Use Refresh Query IDs on the sync Health page to bind this map "
+                "to the canonical validation-folder query ID; export live query "
+                "drift if the refresh cannot find a match."
             ),
+            "remediation_action": "refresh_query_ids",
         }
     if len(matches) > 1:
         return {
@@ -306,9 +311,11 @@ def _live_drift_for_query_id(
                 "repository path to make drift checks deterministic."
             ),
             "remediation": (
-                "Convert the map to a repository path binding so the direct query "
-                "ID no longer depends on repository lookup order."
+                "Use Refresh Query IDs on the sync Health page to bind this map "
+                "to the canonical validation-folder query ID, or convert the map "
+                "to a repository path binding if the direct ID remains ambiguous."
             ),
+            "remediation_action": "refresh_query_ids",
         }
 
     repository, query = matches[0]
@@ -413,6 +420,7 @@ def _query_drift_result(
     severity: str,
     message: str,
     remediation: str = "",
+    remediation_action: str = "",
     expected_filename: str = "",
     expected_name: str = "",
     current_filename: str = "",
@@ -427,6 +435,7 @@ def _query_drift_result(
         "severity": severity,
         "message": message,
         "remediation": remediation,
+        "remediation_action": remediation_action,
         "expected_name": expected_name,
         "expected_filename": expected_filename,
         "current_filename": current_filename,
@@ -782,6 +791,10 @@ def builtin_query_repository_sync_summary(
     except Exception as exc:
         return {
             "status": "fail",
+            "gate_status": "unproved",
+            "gate_message": (
+                "Validation org query folder does not prove bundled NQE freshness."
+            ),
             "repository": repository,
             "directory": normalized_directory,
             "query_count": len(selected_query_defaults),
@@ -789,11 +802,14 @@ def builtin_query_repository_sync_summary(
             "matched_count": 0,
             "missing_count": len(selected_query_defaults),
             "stale_count": 0,
+            "source_unavailable_count": 0,
             "lookup_error_count": 1,
+            "remediation_action_counts": {"fix_forward_repository_lookup": 1},
             "query_contract_summary": query_contract_summary,
             "matched": [],
             "missing": [],
             "stale": [],
+            "source_unavailable": [],
             "lookup_errors": [
                 {
                     "code": "query_index_lookup_failed",
@@ -959,10 +975,18 @@ def builtin_query_repository_sync_summary(
         *query_contract_summary.get("gaps", []),
         *missing,
         *stale,
+        *source_unavailable,
         *lookup_errors,
     ]
+    remediation_action_counts = _remediation_action_counts(gaps)
     return {
         "status": "pass" if not gaps else "fail",
+        "gate_status": "proved" if not gaps else "unproved",
+        "gate_message": (
+            "Validation org query folder matches bundled compiled NQE source."
+            if not gaps
+            else "Validation org query folder does not prove bundled NQE freshness."
+        ),
         "repository": repository,
         "directory": normalized_directory,
         "query_count": len(selected_query_defaults),
@@ -972,6 +996,7 @@ def builtin_query_repository_sync_summary(
         "stale_count": len(stale),
         "source_unavailable_count": len(source_unavailable),
         "lookup_error_count": len(lookup_errors),
+        "remediation_action_counts": remediation_action_counts,
         "query_contract_summary": query_contract_summary,
         "matched": matched,
         "missing": missing,
@@ -980,6 +1005,23 @@ def builtin_query_repository_sync_summary(
         "lookup_errors": lookup_errors,
         "gaps": gaps,
     }
+
+
+def _remediation_action_counts(gaps: list[dict]) -> dict[str, int]:
+    action_by_code = {
+        "missing_published_query_path": "publish_bundled_queries",
+        "published_query_source_modified": "publish_bundled_queries",
+        "published_query_source_unavailable": "publish_bundled_queries",
+        "published_query_lookup_failed": "fix_forward_repository_lookup",
+        "query_index_lookup_failed": "fix_forward_repository_lookup",
+    }
+    counts: dict[str, int] = {}
+    for gap in gaps or []:
+        action = action_by_code.get(str((gap or {}).get("code") or "").strip())
+        if not action:
+            action = "fix_query_contract"
+        counts[action] = counts.get(action, 0) + 1
+    return counts
 
 
 @transaction.atomic

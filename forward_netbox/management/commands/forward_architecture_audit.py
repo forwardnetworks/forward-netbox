@@ -28,6 +28,9 @@ from forward_netbox.utilities.model_contracts import architecture_fetch_contract
 from forward_netbox.utilities.model_contracts import (
     architecture_unclassified_supported_models,
 )
+from forward_netbox.utilities.plugin_integrations import (
+    integration_adapter_contract_summary,
+)
 from forward_netbox.utilities.plugin_integrations import integration_capability_summary
 from forward_netbox.utilities.plugin_integrations import integration_summary
 from forward_netbox.utilities.query_binding import (
@@ -114,6 +117,7 @@ class Command(BaseCommand):
             FORWARD_SUPPORTED_MODELS
         )
         optional_query_contract_summary = optional_plugin_query_contract_summary()
+        optional_adapter_contract_summary = integration_adapter_contract_summary()
         model_contract_registry = architecture_contract_summary(
             FORWARD_SUPPORTED_MODELS
         )
@@ -139,6 +143,7 @@ class Command(BaseCommand):
         return {
             "optional_plugin_integrations": integration_summary(),
             "optional_plugin_capabilities": integration_capability_summary(),
+            "optional_plugin_adapter_contracts": optional_adapter_contract_summary,
             "bulk_orm_safe_models": architecture_bulk_orm_safe_models(
                 FORWARD_SUPPORTED_MODELS
             ),
@@ -175,6 +180,10 @@ class Command(BaseCommand):
                 "optional_plugin_query_contract_registry_gaps": {
                     key: summary["gaps"]
                     for key, summary in optional_query_contract_summary.items()
+                },
+                "optional_plugin_adapter_contract_gaps": {
+                    key: summary["gaps"]
+                    for key, summary in optional_adapter_contract_summary.items()
                 },
             },
         }

@@ -8,6 +8,7 @@ class ModelSyncContract:
     required_fields: tuple[str, ...]
     allowed_coalesce_fields: tuple[str, ...]
     default_coalesce_fields: tuple[tuple[str, ...], ...]
+    preserve_existing_on_blank_fields: tuple[str, ...] = ()
 
 
 MODEL_SYNC_CONTRACTS: dict[str, ModelSyncContract] = {
@@ -55,6 +56,7 @@ MODEL_SYNC_CONTRACTS: dict[str, ModelSyncContract] = {
         ),
         allowed_coalesce_fields=("name",),
         default_coalesce_fields=(("name",),),
+        preserve_existing_on_blank_fields=("serial",),
     ),
     "dcim.virtualchassis": ModelSyncContract(
         required_fields=("device", "vc_name", "vc_domain"),
@@ -70,6 +72,7 @@ MODEL_SYNC_CONTRACTS: dict[str, ModelSyncContract] = {
         required_fields=("device", "name", "type", "enabled"),
         allowed_coalesce_fields=("device", "name"),
         default_coalesce_fields=(("device", "name"),),
+        preserve_existing_on_blank_fields=("description", "mtu", "speed"),
     ),
     "dcim.cable": ModelSyncContract(
         required_fields=(
@@ -129,6 +132,7 @@ MODEL_SYNC_CONTRACTS: dict[str, ModelSyncContract] = {
             ("protocol", "group_id", "address", "vrf"),
             ("protocol", "group_id", "address"),
         ),
+        preserve_existing_on_blank_fields=("comments",),
     ),
     "dcim.inventoryitem": ModelSyncContract(
         required_fields=(
@@ -145,6 +149,13 @@ MODEL_SYNC_CONTRACTS: dict[str, ModelSyncContract] = {
             ("device", "name", "part_id"),
             ("device", "name"),
         ),
+        preserve_existing_on_blank_fields=(
+            "asset_tag",
+            "description",
+            "label",
+            "part_id",
+            "serial",
+        ),
     ),
     "dcim.module": ModelSyncContract(
         required_fields=(
@@ -158,6 +169,7 @@ MODEL_SYNC_CONTRACTS: dict[str, ModelSyncContract] = {
         ),
         allowed_coalesce_fields=("device", "module_bay"),
         default_coalesce_fields=(("device", "module_bay"),),
+        preserve_existing_on_blank_fields=("asset_tag", "serial"),
     ),
     "netbox_routing.bgprouter": ModelSyncContract(
         required_fields=(
@@ -392,6 +404,36 @@ def contract_for_model(model_string: str) -> ModelSyncContract:
 def default_coalesce_fields_for_model(model_string: str) -> list[list[str]]:
     contract = contract_for_model(model_string)
     return [list(field_set) for field_set in contract.default_coalesce_fields]
+
+
+def preserve_existing_on_blank_fields_for_model(model_string: str) -> set[str]:
+    contract = MODEL_SYNC_CONTRACTS.get(model_string)
+    if contract is None:
+        return set()
+    return set(contract.preserve_existing_on_blank_fields)
+
+
+def field_ownership_for_model(model_string: str) -> dict:
+    contract = contract_for_model(model_string)
+    identity_fields = sorted(
+        {
+            field_name
+            for field_set in contract.default_coalesce_fields
+            for field_name in field_set
+        }
+    )
+    preserve_fields = sorted(contract.preserve_existing_on_blank_fields)
+    return {
+        "model": model_string,
+        "identity_fields": identity_fields,
+        "required_fields": sorted(contract.required_fields),
+        "preserve_existing_on_blank_fields": preserve_fields,
+        "blank_update_policy": (
+            "preserve_configured_fields"
+            if preserve_fields
+            else "authoritative_for_declared_fields"
+        ),
+    }
 
 
 def normalize_coalesce_fields(

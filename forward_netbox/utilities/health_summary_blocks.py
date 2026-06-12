@@ -12,6 +12,7 @@ from ..choices import ForwardDiffFallbackModeChoices
 from ..choices import ForwardExecutionBackendChoices
 from ..choices import ForwardExecutionStepKindChoices
 from ..choices import ForwardExecutionStepStatusChoices
+from .branch_budget import apply_dependency_dry_run
 from .branch_budget import BRANCH_RUN_STATE_PARAMETER
 from .branch_budget import DEFAULT_MODEL_CHANGE_DENSITY
 from .density_learning import density_profile_summary
@@ -809,6 +810,7 @@ def dependency_preflight_summary(sync, enabled_models):
     enabled_model_set = set(enabled_models)
     configured_models = set(forward_configured_models())
     delete_or_prune = _delete_or_prune_evidence(sync)
+    apply_dry_run = apply_dependency_dry_run(enabled_models)
     warnings = []
 
     for rule in DEPENDENCY_PREFLIGHT_RULES:
@@ -876,15 +878,21 @@ def dependency_preflight_summary(sync, enabled_models):
             "enabled_models": enabled_models,
             "delete_or_prune_possible": bool(delete_or_prune),
             "delete_or_prune_evidence": delete_or_prune,
+            "apply_dry_run": apply_dry_run,
             "warnings": warnings,
         }
 
     return {
-        "status": "pass",
-        "message": "No scoped dependency warnings were found for enabled models.",
+        "status": "warn" if apply_dry_run.get("status") == "warn" else "pass",
+        "message": (
+            apply_dry_run.get("message")
+            if apply_dry_run.get("status") == "warn"
+            else "No scoped dependency warnings were found for enabled models."
+        ),
         "enabled_models": enabled_models,
         "delete_or_prune_possible": bool(delete_or_prune),
         "delete_or_prune_evidence": delete_or_prune,
+        "apply_dry_run": apply_dry_run,
         "warnings": [],
     }
 
