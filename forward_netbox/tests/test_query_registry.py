@@ -608,7 +608,7 @@ class QueryRegistryTest(TestCase):
             },
         )
 
-    def test_platform_queries_normalize_aci_vendor_platforms(self):
+    def test_platform_queries_normalize_aci_apic_and_cimc_platforms(self):
         normalized_query_names = [
             ("dcim.platform", "Forward Platforms"),
             ("dcim.device", "Forward Devices"),
@@ -631,9 +631,44 @@ class QueryRegistryTest(TestCase):
             "dcim.platform", "Forward Platforms"
         )
         self.assertIn(
+            "normalizeDevicePlatformName(device)",
+            platform_spec.query,
+        )
+        utilities = read_builtin_query_source("netbox_utilities.nqe")
+        self.assertIn(
+            "export isApicPlatform(platform_os: String)",
+            utilities,
+            msg="ACI/APIC platform split helper missing.",
+        )
+        self.assertIn(
+            'then "APIC"',
+            utilities,
+            msg="APIC platforms should remain distinct from ACI switch platforms.",
+        )
+        self.assertIn(
+            "export isCimcPlatform(platform_os: String)",
+            utilities,
+            msg="CIMC platform detection missing from the shared NQE helper.",
+        )
+        self.assertIn(
+            'then "CIMC"',
+            utilities,
+            msg="CIMC platforms should remain distinct from APIC and ACI platforms.",
+        )
+        self.assertIn(
+            'then "ACI"',
+            utilities,
+            msg="ACI switch platforms should still normalize to ACI.",
+        )
+        self.assertIn(
             'matches(toLowerCase(platformOsName(platform_os)), "*apic*")',
             platform_spec.query,
-            msg="ACI alias normalization logic missing `apic` detection.",
+            msg="APIC platform detection missing from the shared NQE helper.",
+        )
+        self.assertIn(
+            'matches(toLowerCase(platformOsName(platform_os)), "*cimc*")',
+            platform_spec.query,
+            msg="CIMC platform detection missing from the shared NQE helper.",
         )
         self.assertIn(
             'matches(toLowerCase(platformOsName(platform_os)), "*nxos_aci*")',

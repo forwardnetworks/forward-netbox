@@ -34,6 +34,11 @@
     {% endif %}
   {% endif %}
   {% if perms.forward_netbox.view_forwardsync %}
+    {% if perms.forward_netbox.run_forwardsync %}
+      <a class="btn btn-outline-secondary" href="{{ dependency_preview_url }}">
+        <i class="mdi mdi-clipboard-search" aria-hidden="true"></i>&nbsp;{% trans "Preview Dependencies" %}
+      </a>
+    {% endif %}
     <a class="btn btn-outline-secondary" href="{{ support_bundle_url }}">
       <i class="mdi mdi-download" aria-hidden="true"></i>&nbsp;{% trans "Export Support Bundle" %}
     </a>
@@ -160,6 +165,48 @@
       {% endwith %}
     {% endwith %}
     {% include 'forward_netbox/inc/execution_failure_banner.html' with failure_summary=latest_execution_failure support_bundle_url=support_bundle_url %}
+    <div class="card">
+      <h5 class="card-header">{% trans "Query Drift" %}</h5>
+      <div class="card-body">
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">{% trans "Maps assessed" %}</th>
+            <td>{{ query_drift_summary.total_maps|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Warn / info / pass" %}</th>
+            <td>{{ query_drift_summary.warn_count }}/{{ query_drift_summary.info_count }}/{{ query_drift_summary.pass_count }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Status" %}</th>
+            <td>
+              {% if query_drift_summary.warn_count %}
+                <span class="badge text-bg-warning">{% trans "Needs Review" %}</span>
+              {% elif query_drift_summary.info_count %}
+                <span class="badge text-bg-info">{% trans "Informational" %}</span>
+              {% elif query_drift_summary.pass_count %}
+                <span class="badge text-bg-success">{% trans "Current" %}</span>
+              {% else %}
+                <span class="badge text-bg-secondary">{% trans "Unavailable" %}</span>
+              {% endif %}
+            </td>
+          </tr>
+        </table>
+        <div class="d-flex flex-wrap gap-2">
+          <a class="btn btn-sm btn-outline-primary" href="{{ health_url }}">
+            <i class="mdi mdi-heart-pulse" aria-hidden="true"></i>&nbsp;{% trans "Health" %}
+          </a>
+          {% if perms.forward_netbox.change_forwardnqemap %}
+            <form method="post" action="{% url 'plugins:forward_netbox:forwardsync_refresh_query_ids' pk=object.pk %}">
+              {% csrf_token %}
+              <button type="submit" class="btn btn-sm btn-outline-secondary">
+                <i class="mdi mdi-source-branch-sync" aria-hidden="true"></i>&nbsp;{% trans "Refresh Query IDs" %}
+              </button>
+            </form>
+          {% endif %}
+        </div>
+      </div>
+    </div>
     <div class="card">
       <h5 class="card-header">{% trans "Enabled Models" %}</h5>
       <div class="card-body">
