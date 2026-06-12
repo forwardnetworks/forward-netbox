@@ -222,9 +222,11 @@ def apply_dcim_interface(runner, row):
         "name": row["name"],
         "type": row["type"],
         "enabled": row["enabled"],
-        "mtu": row.get("mtu") or None,
-        "speed": row.get("speed") or None,
     }
+    if row.get("mtu") not in ("", None):
+        defaults["mtu"] = row["mtu"]
+    if row.get("speed") not in ("", None):
+        defaults["speed"] = row["speed"]
     description = row.get("description")
     if description not in (None, ""):
         defaults["description"] = description
