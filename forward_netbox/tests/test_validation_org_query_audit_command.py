@@ -107,6 +107,57 @@ class ValidationOrgQueryAuditTest(TestCase):
         )
         self.assertEqual(client.get_committed_nqe_query.call_count, 2)
 
+    def test_builtin_query_repository_sync_summary_resolves_commit_from_history(self):
+        query_defaults = self._query_defaults()
+        client = Mock()
+        client.get_nqe_repository_query_index.return_value = {
+            "rows": [
+                {
+                    "queryId": "Q_devices",
+                    "path": "/forward_netbox_validation/forward_devices",
+                }
+            ],
+            "by_path": {
+                "/forward_netbox_validation/forward_devices": {
+                    "queryId": "Q_devices",
+                    "path": "/forward_netbox_validation/forward_devices",
+                }
+            },
+        }
+        client.get_nqe_query_history.return_value = [{"id": "commit-history"}]
+        client.get_committed_nqe_query.return_value = {
+            "queryId": "Q_devices",
+            "sourceCode": read_compiled_builtin_query_source("forward_devices.nqe"),
+            "lastCommitId": "commit-history",
+            "path": "/forward_netbox_validation/forward_devices",
+        }
+
+        with patch(
+            "forward_netbox.utilities.query_binding_resolution.query_contract_summary_for_maps"
+        ) as query_contract_summary_for_maps:
+            query_contract_summary_for_maps.return_value = {
+                "status": "pass",
+                "model_count": 1,
+                "models": {},
+                "gaps": [],
+            }
+            report = builtin_query_repository_sync_summary(
+                client=client,
+                repository="org",
+                directory="/forward_netbox_validation/",
+                query_defaults=query_defaults[:1],
+            )
+
+        self.assertEqual(report["status"], "pass")
+        self.assertEqual(report["matched_count"], 1)
+        client.get_nqe_query_history.assert_called_once_with("Q_devices")
+        client.get_committed_nqe_query.assert_called_once_with(
+            repository="org",
+            query_path="/forward_netbox_validation/forward_devices",
+            commit_id="commit-history",
+            query_index=client.get_nqe_repository_query_index.return_value,
+        )
+
     def test_builtin_query_repository_sync_summary_reports_missing_and_stale(self):
         query_defaults = self._query_defaults()
         client = Mock()
