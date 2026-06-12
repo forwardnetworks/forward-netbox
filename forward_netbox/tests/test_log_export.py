@@ -57,6 +57,8 @@ class ForwardIngestionLogExportViewTest(TestCase):
                         "query_id_modified_count": 0,
                         "query_id_unavailable_count": 0,
                         "lookup_error_count": 0,
+                        "remediation_action_counts": {},
+                        "refresh_query_ids_count": 0,
                         "error": "",
                     },
                     "results": [],
@@ -100,6 +102,8 @@ class ForwardIngestionLogExportViewTest(TestCase):
                         "query_id_modified_count": 0,
                         "query_id_unavailable_count": 0,
                         "lookup_error_count": 0,
+                        "remediation_action_counts": {},
+                        "refresh_query_ids_count": 0,
                         "error": "",
                     },
                     "results": [],
@@ -718,6 +722,14 @@ class ForwardIngestionLogExportViewTest(TestCase):
         self.assertTrue(data["insights_summary"]["available"])
         self.assertEqual(data["insights_summary"]["http_attempts"], 11)
         self.assertEqual(data["insights_summary"]["nqe_diff_calls"], 2)
+        self.assertIn("diagnosis_summary", data)
+        self.assertTrue(data["diagnosis_summary"]["available"])
+        self.assertIn(
+            data["diagnosis_summary"]["status"],
+            {"healthy", "review_recommended", "action_required"},
+        )
+        self.assertIn("primary_action", data["diagnosis_summary"])
+        self.assertNotIn("raw_data", json.dumps(data["diagnosis_summary"]))
         self.assertEqual(
             data["insights_summary"]["execution_mode_counts"],
             [["query_path", 1]],

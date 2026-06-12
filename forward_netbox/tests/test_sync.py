@@ -76,6 +76,8 @@ from forward_netbox.utilities.apply_engine import UNCLASSIFIED_SUPPORTED_MODELS
 from forward_netbox.utilities.apply_engine_bulk import (
     bulk_orm_apply_tree_models,
 )
+from forward_netbox.utilities.branch_budget import APPLY_DEPENDENCY_MODEL_RANK
+from forward_netbox.utilities.branch_budget import apply_parent_dependency_contracts
 from forward_netbox.utilities.branch_budget import branch_budget_density_policy_summary
 from forward_netbox.utilities.branch_budget import BranchPlanItem
 from forward_netbox.utilities.branch_budget import BranchWorkload
@@ -795,6 +797,25 @@ class ForwardBranchBudgetPlanTest(TestCase):
             ],
         )
         self.assertTrue(all(item.operation == "apply" for item in plan))
+
+    def test_apply_parent_dependency_contracts_are_ranked_before_children(self):
+        missing_ranks = []
+        inverted_ranks = []
+        for child_model, parent_models in apply_parent_dependency_contracts().items():
+            child_rank = APPLY_DEPENDENCY_MODEL_RANK.get(child_model)
+            if child_rank is None:
+                missing_ranks.append(child_model)
+                continue
+            for parent_model in parent_models:
+                parent_rank = APPLY_DEPENDENCY_MODEL_RANK.get(parent_model)
+                if parent_rank is None:
+                    missing_ranks.append(parent_model)
+                    continue
+                if parent_rank >= child_rank:
+                    inverted_ranks.append((parent_model, child_model))
+
+        self.assertEqual(missing_ranks, [])
+        self.assertEqual(inverted_ranks, [])
 
     def test_branch_plan_runs_prune_deletes_in_dependency_order(self):
         plan = build_branch_plan_with_density(
@@ -8431,6 +8452,38 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertEqual(self._update_statements(queries), [])
         self.assertEqual(ObjectChange.objects.count(), before_count)
 
+    def test_apply_dcim_device_sparse_row_preserves_existing_serial(self):
+        device = self._create_device("device-serial-preserve")
+        device.serial = "SERIAL-1"
+        device.save(update_fields=["serial"])
+        row = {
+            "name": device.name,
+            "site": device.site.name,
+            "site_slug": device.site.slug,
+            "role": device.role.name,
+            "role_slug": device.role.slug,
+            "role_color": device.role.color,
+            "manufacturer": device.device_type.manufacturer.name,
+            "manufacturer_slug": device.device_type.manufacturer.slug,
+            "device_type": device.device_type.model,
+            "device_type_slug": device.device_type.slug,
+            "platform": None,
+            "status": device.status,
+            "serial": "",
+        }
+
+        before_count = ObjectChange.objects.count()
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        with CaptureQueriesContext(connection) as queries:
+            runner._apply_dcim_device(row)
+
+        device.refresh_from_db()
+        self.assertEqual(device.serial, "SERIAL-1")
+        self.assertEqual(self._update_statements(queries), [])
+        self.assertEqual(ObjectChange.objects.count(), before_count)
+
     def test_apply_dcim_interface_keeps_import_when_untagged_vlan_missing(self):
         device = self._create_device("device-1")
         existing_vlan = VLAN.objects.create(
@@ -8565,6 +8618,54 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertEqual(lag.mtu, 9000)
         self.assertEqual(self._update_statements(queries), [])
         self.assertEqual(ObjectChange.objects.count(), before_count)
+
+    def test_apply_dcim_interface_sparse_row_preserves_existing_owned_fields(self):
+        device = self._create_device("device-1")
+        interface = Interface.objects.create(
+            device=device,
+            name="eth1/20",
+            type="1000base-t",
+            enabled=True,
+            mtu=9000,
+            speed=1000000,
+            description="server uplink",
+        )
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        sparse_row = {
+            "device": "device-1",
+            "name": "eth1/20",
+            "type": "1000base-t",
+            "lag": None,
+            "enabled": True,
+            "description": "",
+        }
+
+        before_count = ObjectChange.objects.count()
+        with CaptureQueriesContext(connection) as queries:
+            runner._apply_dcim_interface(sparse_row)
+
+        interface.refresh_from_db()
+        self.assertEqual(interface.description, "server uplink")
+        self.assertEqual(interface.mtu, 9000)
+        self.assertEqual(interface.speed, 1000000)
+        self.assertEqual(self._update_statements(queries), [])
+        self.assertEqual(ObjectChange.objects.count(), before_count)
+
+        runner._apply_dcim_interface(
+            {
+                **sparse_row,
+                "description": "new server uplink",
+                "mtu": 9216,
+                "speed": 25000000,
+            }
+        )
+
+        interface.refresh_from_db()
+        self.assertEqual(interface.description, "new server uplink")
+        self.assertEqual(interface.mtu, 9216)
+        self.assertEqual(interface.speed, 25000000)
 
     def test_apply_dcim_interface_removes_existing_cable_before_lag_conversion(self):
         device = self._create_device("device-1")
@@ -8799,6 +8900,65 @@ class ForwardSyncRunnerTest(TestCase):
         )
         self.assertEqual(ObjectChange.objects.count(), before_count)
         self.assertEqual(self._update_statements(queries), [])
+
+    def test_apply_dcim_inventoryitem_sparse_row_preserves_owned_fields(self):
+        device = self._create_device("device-inventory-preserve")
+        role = InventoryItemRole.objects.create(
+            name="POWER SUPPLY",
+            slug="power-supply",
+            color="ff9800",
+        )
+        manufacturer, _ = Manufacturer.objects.get_or_create(
+            slug="vendor-1",
+            defaults={"name": "vendor-1"},
+        )
+        InventoryItem.objects.create(
+            device=device,
+            name="Power Supply 1",
+            manufacturer=manufacturer,
+            label="PSU 1",
+            part_id="PSU-1",
+            serial="SN-1",
+            asset_tag="ASSET-1",
+            role=role,
+            status="active",
+            discovered=True,
+            description="Version: V01",
+        )
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "device": device.name,
+            "manufacturer": "vendor-1",
+            "manufacturer_slug": "vendor-1",
+            "name": "Power Supply 1",
+            "label": "",
+            "part_id": "",
+            "serial": "",
+            "asset_tag": None,
+            "role": role.name,
+            "role_slug": role.slug,
+            "role_color": role.color,
+            "part_type": "POWER SUPPLY",
+            "module_component": False,
+            "status": "active",
+            "discovered": True,
+            "description": "",
+        }
+
+        before_count = ObjectChange.objects.count()
+        with CaptureQueriesContext(connection) as queries:
+            runner._apply_dcim_inventoryitem(row)
+
+        item = InventoryItem.objects.get(device=device, name="Power Supply 1")
+        self.assertEqual(item.label, "PSU 1")
+        self.assertEqual(item.part_id, "PSU-1")
+        self.assertEqual(item.serial, "SN-1")
+        self.assertEqual(item.asset_tag, "ASSET-1")
+        self.assertEqual(item.description, "Version: V01")
+        self.assertEqual(self._update_statements(queries), [])
+        self.assertEqual(ObjectChange.objects.count(), before_count)
 
     def test_apply_dcim_cable_creates_cable_between_interfaces(self):
         device = self._create_device("device-a")
@@ -9297,6 +9457,53 @@ class ForwardSyncRunnerTest(TestCase):
             ).count(),
             1,
         )
+
+    def test_apply_dcim_module_sparse_row_preserves_owned_fields(self):
+        device = self._create_device("device-module-preserve")
+        manufacturer = Manufacturer.objects.get(slug="vendor-1")
+        module_type = ModuleType.objects.create(
+            manufacturer=manufacturer,
+            model="Line Card 1",
+            part_number="LC-1",
+            description="",
+            comments="",
+        )
+        module_bay = self._create_module_bay(device)
+        module = Module.objects.create(
+            device=device,
+            module_bay=module_bay,
+            module_type=module_type,
+            status="active",
+            serial="SN-1",
+            asset_tag="AT-1",
+            description="line card",
+            comments="",
+        )
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "device": device.name,
+            "module_bay": "Slot 1",
+            "manufacturer": "vendor-1",
+            "manufacturer_slug": "vendor-1",
+            "model": "Line Card 1",
+            "part_number": "LC-1",
+            "status": "active",
+            "serial": "",
+            "asset_tag": None,
+            "description": "",
+        }
+
+        before_count = ObjectChange.objects.count()
+        with CaptureQueriesContext(connection) as queries:
+            runner._apply_dcim_module(row)
+
+        module.refresh_from_db()
+        self.assertEqual(module.serial, "SN-1")
+        self.assertEqual(module.asset_tag, "AT-1")
+        self.assertEqual(self._update_statements(queries), [])
+        self.assertEqual(ObjectChange.objects.count(), before_count)
 
     def test_apply_dcim_module_repeat_sync_is_noop(self):
         device = self._create_device("device-module-noop")

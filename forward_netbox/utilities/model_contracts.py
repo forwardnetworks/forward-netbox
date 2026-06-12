@@ -8,6 +8,7 @@ from .apply_engine import BULK_ORM_SPEC_MODELS
 from .branch_budget import DELETE_DEPENDENCY_MODEL_RANK
 from .branch_budget import shard_fetch_capability_for_model
 from .sync_contracts import contract_for_model
+from .sync_contracts import field_ownership_for_model
 
 
 @dataclass(frozen=True)
@@ -16,6 +17,8 @@ class ForwardModelArchitectureContract:
     required_fields: tuple[str, ...]
     allowed_coalesce_fields: tuple[str, ...]
     default_coalesce_fields: tuple[tuple[str, ...], ...]
+    preserve_existing_on_blank_fields: tuple[str, ...]
+    field_ownership: dict
     fetch_contract: dict
     delete_dependency_rank: int | None
     apply_engine_classification: str
@@ -32,6 +35,10 @@ class ForwardModelArchitectureContract:
             "default_coalesce_fields": [
                 list(field_set) for field_set in self.default_coalesce_fields
             ],
+            "preserve_existing_on_blank_fields": list(
+                self.preserve_existing_on_blank_fields
+            ),
+            "field_ownership": dict(self.field_ownership),
             "fetch_contract": dict(self.fetch_contract),
             "delete_dependency_rank": self.delete_dependency_rank,
             "apply_engine_classification": self.apply_engine_classification,
@@ -60,6 +67,10 @@ def architecture_contract_for_model(model_string: str):
             tuple(field_name for field_name in field_set)
             for field_set in sync_contract.default_coalesce_fields
         ),
+        preserve_existing_on_blank_fields=tuple(
+            sync_contract.preserve_existing_on_blank_fields
+        ),
+        field_ownership=field_ownership_for_model(model_string),
         fetch_contract=fetch_contract,
         delete_dependency_rank=DELETE_DEPENDENCY_MODEL_RANK.get(model_string),
         apply_engine_classification=APPLY_ENGINE_MODEL_CLASSIFICATIONS.get(
@@ -234,6 +245,23 @@ def architecture_contract_gaps(model_strings=None):
                     model_string,
                     "missing_support_diagnostic_fields",
                     "Contract does not define support-safe diagnostic fields.",
+                )
+            )
+        field_ownership = contract.get("field_ownership") or {}
+        if field_ownership.get("model") != model_string:
+            gaps.append(
+                _gap(
+                    model_string,
+                    "missing_field_ownership",
+                    "Contract does not expose field ownership metadata.",
+                )
+            )
+        if not field_ownership.get("blank_update_policy"):
+            gaps.append(
+                _gap(
+                    model_string,
+                    "missing_blank_update_policy",
+                    "Field ownership does not define blank-update behavior.",
                 )
             )
     return gaps
