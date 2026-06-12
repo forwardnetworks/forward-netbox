@@ -306,6 +306,10 @@ class ForwardSyncHealthTest(TestCase):
             "Refresh Query IDs",
             summary["query_drift_summary"]["remediation_actions"][0]["message"],
         )
+        self.assertEqual(
+            summary["query_drift_summary"]["remediation_action_codes"][0],
+            {"action": "refresh_query_ids", "count": 1},
+        )
         self.assertIn(
             "Top remediation:",
             query_drift_check_message(
@@ -341,6 +345,10 @@ class ForwardSyncHealthTest(TestCase):
         self.assertIn(
             "Refresh Query IDs",
             summary["query_modes"]["local_drift"][0]["remediation"],
+        )
+        self.assertEqual(
+            summary["query_modes"]["local_drift"][0]["remediation_action"],
+            "refresh_query_ids",
         )
         self.assertEqual(
             summary["query_modes"]["data_file_maps"][0]["model"],
@@ -733,6 +741,23 @@ class ForwardSyncHealthTest(TestCase):
         preflight = summary["dependency_preflight"]
 
         self.assertEqual(preflight["status"], "warn")
+        self.assertEqual(preflight["apply_dry_run"]["status"], "warn")
+        self.assertIn(
+            {
+                "model": "dcim.interface",
+                "parent_model": "dcim.device",
+                "model_apply_rank": preflight["apply_dry_run"]["missing_dependencies"][
+                    0
+                ]["model_apply_rank"],
+                "parent_apply_rank": preflight["apply_dry_run"]["missing_dependencies"][
+                    0
+                ]["parent_apply_rank"],
+                "message": preflight["apply_dry_run"]["missing_dependencies"][0][
+                    "message"
+                ],
+            },
+            preflight["apply_dry_run"]["missing_dependencies"],
+        )
         interface_warning = next(
             item
             for item in preflight["warnings"]
@@ -755,8 +780,14 @@ class ForwardSyncHealthTest(TestCase):
         sync = self._sync_with_enabled_models(
             "health-sync-interface-with-bgp",
             [
+                "dcim.site",
+                "dcim.manufacturer",
+                "dcim.devicerole",
+                "dcim.platform",
+                "dcim.devicetype",
                 "dcim.device",
                 "dcim.interface",
+                "ipam.vrf",
                 "ipam.ipaddress",
                 "netbox_routing.bgppeer",
                 "netbox_routing.bgppeeraddressfamily",
@@ -767,6 +798,16 @@ class ForwardSyncHealthTest(TestCase):
         summary = sync_health_summary(sync)
 
         self.assertEqual(summary["dependency_preflight"]["status"], "pass")
+        self.assertEqual(
+            summary["dependency_preflight"]["apply_dry_run"]["status"],
+            "pass",
+        )
+        self.assertEqual(
+            summary["dependency_preflight"]["apply_dry_run"][
+                "missing_dependency_count"
+            ],
+            0,
+        )
         self.assertEqual(summary["dependency_preflight"]["warnings"], [])
         dependency_check = next(
             item
@@ -1390,6 +1431,8 @@ class ForwardSyncHealthTest(TestCase):
                     "query_id_modified_count": 1,
                     "query_id_unavailable_count": 0,
                     "lookup_error_count": 0,
+                    "remediation_action_counts": {"refresh_query_ids": 1},
+                    "refresh_query_ids_count": 1,
                     "error": "",
                 },
                 "results": [],

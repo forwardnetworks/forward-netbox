@@ -28,6 +28,24 @@ def execution_run_support_bundle(run, *, recommendation_fn):
 
         sync_health = sync_health_summary(sync)
         live_diagnostics = live_support_diagnostics(sync, sync_health=sync_health)
+    dependency_lookup_cache = dependency_lookup_cache_support_summary(run)
+    dependency_parent_coverage = dependency_parent_coverage_support_summary(run)
+    api_usage = api_usage_support_summary(run)
+    recovery_recommendation = recommendation_fn(run)
+    metrics = execution_run_metrics(run, step_list)
+    failure_summary = execution_run_failure_summary(run, step_list)
+    diagnosis_summary = support_bundle_diagnosis_summary(
+        run=run,
+        sync_health=sync_health,
+        latest_ingestion_summary=latest_ingestion_summary,
+        live_diagnostics=live_diagnostics,
+        dependency_lookup_cache=dependency_lookup_cache,
+        dependency_parent_coverage=dependency_parent_coverage,
+        api_usage=api_usage,
+        recovery_recommendation=recovery_recommendation,
+        metrics=metrics,
+        failure_summary=failure_summary,
+    )
     return {
         "run": run.as_support_summary(),
         "run_job": job_summary(run.job),
@@ -55,16 +73,17 @@ def execution_run_support_bundle(run, *, recommendation_fn):
             if isinstance(sync_health, dict)
             else []
         ),
-        "dependency_lookup_cache": dependency_lookup_cache_support_summary(run),
-        "dependency_parent_coverage": dependency_parent_coverage_support_summary(run),
+        "dependency_lookup_cache": dependency_lookup_cache,
+        "dependency_parent_coverage": dependency_parent_coverage,
         "compatibility_cache": _compatibility_cache_evidence(run),
-        "api_usage": api_usage_support_summary(run),
+        "api_usage": api_usage,
         "insights_summary": execution_run_insights_summary(run),
         "live_diagnostics": live_diagnostics,
-        "recovery_recommendation": recommendation_fn(run),
+        "diagnosis_summary": diagnosis_summary,
+        "recovery_recommendation": recovery_recommendation,
         "recovery_policy_summary": _recovery_policy_summary(run),
-        "metrics": execution_run_metrics(run, step_list),
-        "failure_summary": execution_run_failure_summary(run, step_list),
+        "metrics": metrics,
+        "failure_summary": failure_summary,
         "steps": [
             {
                 **step.as_support_summary(),
@@ -77,6 +96,191 @@ def execution_run_support_bundle(run, *, recommendation_fn):
             for step in step_list
         ],
     }
+
+
+def support_bundle_diagnosis_summary(
+    *,
+    run,
+    sync_health,
+    latest_ingestion_summary,
+    live_diagnostics,
+    dependency_lookup_cache,
+    dependency_parent_coverage,
+    api_usage,
+    recovery_recommendation,
+    metrics,
+    failure_summary,
+):
+    signals = []
+    if (failure_summary or {}).get("available"):
+        signals.append(
+            _diagnosis_signal(
+                "failed_step",
+                "danger",
+                (failure_summary or {}).get("message") or "Execution step failed.",
+                action="inspect_failed_step",
+                evidence={
+                    "model": (failure_summary or {}).get("model", ""),
+                    "step_index": (failure_summary or {}).get("step_index"),
+                    "status": (failure_summary or {}).get("status", ""),
+                    "query_id": (failure_summary or {}).get("query_id", ""),
+                    "query_path": (failure_summary or {}).get("query_path", ""),
+                },
+            )
+        )
+
+    recovery_action = str((recovery_recommendation or {}).get("action") or "").strip()
+    if recovery_action and recovery_action not in {
+        "complete",
+        "monitor",
+        "none",
+        "wait",
+    }:
+        signals.append(
+            _diagnosis_signal(
+                "recovery_action",
+                _diagnosis_severity(
+                    (recovery_recommendation or {}).get("severity") or "warning"
+                ),
+                (recovery_recommendation or {}).get("message")
+                or "Recovery action is available.",
+                action=recovery_action,
+                evidence={
+                    "step_index": (recovery_recommendation or {}).get("step_index"),
+                    "step_status": (recovery_recommendation or {}).get("step_status"),
+                },
+            )
+        )
+
+    local_query_actions = (
+        ((sync_health or {}).get("query_drift_summary") or {}).get(
+            "remediation_action_codes"
+        )
+        or ((sync_health or {}).get("query_drift_summary") or {}).get(
+            "remediation_actions"
+        )
+        or []
+    )
+    live_query_summary = ((live_diagnostics or {}).get("query_drift") or {}).get(
+        "live_summary"
+    ) or {}
+    refresh_count = int(live_query_summary.get("refresh_query_ids_count") or 0)
+    if local_query_actions or refresh_count:
+        signals.append(
+            _diagnosis_signal(
+                "query_governance",
+                "warning",
+                "Query binding drift or query ID refresh evidence is present.",
+                action="refresh_query_ids",
+                evidence={
+                    "local_remediation_actions": local_query_actions,
+                    "live_refresh_query_ids_count": refresh_count,
+                    "live_warn_count": int(live_query_summary.get("warn_count") or 0),
+                },
+            )
+        )
+
+    if (dependency_parent_coverage or {}).get("available") and int(
+        (dependency_parent_coverage or {}).get("missing_parent_count") or 0
+    ):
+        signals.append(
+            _diagnosis_signal(
+                "dependency_parent_coverage",
+                "warning",
+                "Some child rows had missing parent evidence before apply.",
+                action="run_dependency_dry_run",
+                evidence={
+                    "missing_parent_count": int(
+                        (dependency_parent_coverage or {}).get("missing_parent_count")
+                        or 0
+                    ),
+                    "blocked_row_count": int(
+                        (dependency_parent_coverage or {}).get("blocked_row_count") or 0
+                    ),
+                    "model_count": int(
+                        (dependency_parent_coverage or {}).get("model_count") or 0
+                    ),
+                },
+            )
+        )
+
+    api_budget = (api_usage or {}).get("budget") or {}
+    if (api_usage or {}).get("available") and api_budget.get("status") == "failed":
+        signals.append(
+            _diagnosis_signal(
+                "forward_api_budget",
+                "danger",
+                "Forward API usage exceeded the configured safety budget.",
+                action="reduce_api_pressure",
+                evidence={
+                    "failure_reasons": api_budget.get("failure_reasons") or [],
+                    "warnings": api_budget.get("warnings") or [],
+                },
+            )
+        )
+
+    issue_count = int((latest_ingestion_summary or {}).get("issue_count") or 0)
+    if issue_count:
+        issue_models = sorted(
+            {
+                str(issue.get("model") or "")
+                for issue in (latest_ingestion_summary or {}).get("issues") or []
+                if issue.get("model")
+            }
+        )
+        signals.append(
+            _diagnosis_signal(
+                "ingestion_issues",
+                "warning",
+                f"Latest ingestion recorded {issue_count} issue(s).",
+                action="inspect_ingestion_issues",
+                evidence={"issue_count": issue_count, "models": issue_models[:10]},
+            )
+        )
+
+    status = "healthy"
+    severity = "info"
+    if any(signal["severity"] == "danger" for signal in signals):
+        status = "action_required"
+        severity = "danger"
+    elif signals:
+        status = "review_recommended"
+        severity = "warning"
+    elif not (metrics or {}).get("available", True) and not (sync_health or {}):
+        status = "insufficient_evidence"
+        severity = "info"
+    return {
+        "available": True,
+        "status": status,
+        "severity": severity,
+        "signal_count": len(signals),
+        "primary_action": signals[0]["action"] if signals else "none",
+        "message": (
+            signals[0]["message"]
+            if signals
+            else "No support-bundle diagnosis signals require action."
+        ),
+        "signals": signals,
+    }
+
+
+def _diagnosis_signal(code, severity, message, *, action, evidence):
+    return {
+        "code": code,
+        "severity": _diagnosis_severity(severity),
+        "message": str(message or "").strip(),
+        "action": str(action or "").strip(),
+        "evidence": evidence or {},
+    }
+
+
+def _diagnosis_severity(value):
+    value = str(value or "").strip().lower()
+    if value in {"danger", "error", "fail", "failed"}:
+        return "danger"
+    if value in {"warning", "warn"}:
+        return "warning"
+    return "info"
 
 
 def live_support_diagnostics(sync, *, sync_health=None):
@@ -150,6 +354,11 @@ def _live_query_drift_summary(query_drift_results, *, query_drift_error=""):
         str(item.get("live_status") or item.get("status") or "").strip() or "unknown"
         for item in query_id_results
     )
+    remediation_action_counts = Counter(
+        str(item.get("remediation_action") or "").strip()
+        for item in results
+        if item.get("severity") != "pass" and item.get("remediation_action")
+    )
     return {
         "total_maps": len(results),
         "checked_maps": sum(1 for item in results if item.get("live_checked")),
@@ -180,6 +389,10 @@ def _live_query_drift_summary(query_drift_results, *, query_drift_error=""):
             query_id_status_counts.get("live_repository_source_unavailable", 0)
         ),
         "lookup_error_count": int(query_id_status_counts.get("live_lookup_failed", 0)),
+        "remediation_action_counts": dict(sorted(remediation_action_counts.items())),
+        "refresh_query_ids_count": int(
+            remediation_action_counts.get("refresh_query_ids", 0)
+        ),
         "error": str(query_drift_error or "").strip(),
     }
 

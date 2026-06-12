@@ -689,6 +689,7 @@ def _query_drift_check_message(query_drift):
 def _query_drift_summary(query_drift):
     status_counts = {}
     remediation_actions = {}
+    remediation_action_codes = {}
     for item in query_drift or []:
         if not isinstance(item, dict):
             continue
@@ -699,10 +700,21 @@ def _query_drift_summary(query_drift):
             remediation_actions[remediation] = (
                 remediation_actions.get(remediation, 0) + 1
             )
+        remediation_action = str(item.get("remediation_action") or "").strip()
+        if remediation_action and item.get("severity") != "pass":
+            remediation_action_codes[remediation_action] = (
+                remediation_action_codes.get(remediation_action, 0) + 1
+            )
     remediation_action_list = [
         {"message": message, "count": count}
         for message, count in sorted(
             remediation_actions.items(), key=lambda item: (-item[1], item[0])
+        )
+    ]
+    remediation_action_code_list = [
+        {"action": action, "count": count}
+        for action, count in sorted(
+            remediation_action_codes.items(), key=lambda item: (-item[1], item[0])
         )
     ]
     total = sum(status_counts.values())
@@ -711,6 +723,7 @@ def _query_drift_summary(query_drift):
         "total_maps": total,
         "status_counts": dict(sorted(status_counts.items())),
         "remediation_actions": remediation_action_list,
+        "remediation_action_codes": remediation_action_code_list,
         "warn_count": sum(
             1
             for item in query_drift or []
