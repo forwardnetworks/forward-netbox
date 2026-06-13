@@ -321,6 +321,26 @@ class ForwardIngestionLogExportViewTest(TestCase):
             total_steps=1,
             next_step_index=1,
         )
+        cls.execution_run.plan_preview = {
+            "delete_dependency_plan": {
+                "status": "planned",
+                "delete_rows": 3,
+                "delete_shards": 1,
+                "delete_model_count": 1,
+                "delete_share": 0.5,
+                "max_delete_shard_changes": 3,
+                "execution_order": ["dcim.site"],
+                "models": {
+                    "dcim.site": {
+                        "delete_rows": 3,
+                        "delete_shards": 1,
+                        "reference_blocker_risk": "low",
+                    }
+                },
+                "warnings": [{"code": "delete_wave"}],
+            }
+        }
+        cls.execution_run.save(update_fields=["plan_preview"])
         cls.execution_step = ForwardExecutionStep.objects.create(
             run=cls.execution_run,
             index=1,
@@ -667,6 +687,19 @@ class ForwardIngestionLogExportViewTest(TestCase):
                 "total_query_path_specs"
             ],
             1,
+        )
+        self.assertTrue(data["latest_ingestion"]["delete_wave"]["available"])
+        self.assertEqual(
+            data["latest_ingestion"]["delete_wave"]["phase"],
+            "apply_before_delete",
+        )
+        self.assertEqual(
+            data["latest_ingestion"]["delete_wave"]["plan"]["delete_rows"],
+            3,
+        )
+        self.assertEqual(
+            data["latest_ingestion"]["delete_wave"]["latest_ingestion"]["id"],
+            self.ingestion.pk,
         )
         self.assertTrue(
             data["latest_ingestion"]["dependency_lookup_cache"]["available"]

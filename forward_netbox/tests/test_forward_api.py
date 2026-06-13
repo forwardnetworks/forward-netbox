@@ -624,54 +624,59 @@ class ForwardClientTest(TestCase):
 
     def test_run_nqe_query_returns_single_page_by_default(self):
         self.client._request = Mock(
-            return_value=self._response(
-                {
-                    "items": [
-                        {"fields": {"n": 1}},
-                        {"fields": {"n": 2}},
-                    ],
-                    "totalNumItems": 5,
-                }
-            )
-        )
-
-        rows = self.client.run_nqe_query(query="select {n: 1}")
-
-        self.assertEqual(rows, [{"n": 1}, {"n": 2}])
-        self.client._request.assert_called_once()
-        self.assertEqual(
-            self.client._request.call_args.kwargs["json_body"]["queryOptions"]["limit"],
-            10000,
-        )
-
-    def test_run_nqe_query_uses_sync_endpoint_when_async_disabled(self):
-        self.client._request = Mock(
-            return_value=self._response(
-                {
-                    "items": [{"fields": {"n": 1}}],
-                    "totalNumItems": 1,
-                }
-            )
+            side_effect=[
+                self._response(
+                    {"executionKey": "X_123", "status": "COMPLETED", "outcome": "OK"}
+                ),
+                self._response(
+                    {
+                        "items": [
+                            {"fields": {"n": 1}},
+                            {"fields": {"n": 2}},
+                        ],
+                        "totalNumItems": 5,
+                    }
+                ),
+            ]
         )
 
         rows = self.client.run_nqe_query(
-            query_id="Q_devices",
+            query="select {n: 1}",
             network_id="network-1",
             snapshot_id="snapshot-1",
         )
 
-        self.assertEqual(rows, [{"n": 1}])
-        self.client._request.assert_called_once()
-        self.assertEqual(self.client._request.call_args.args[1], "/nqe")
+        self.assertEqual(rows, [{"n": 1}, {"n": 2}])
+        self.assertEqual(self.client._request.call_count, 2)
+        self.assertEqual(
+            [call.args for call in self.client._request.call_args_list],
+            [
+                ("POST", "/networks/network-1/nqe-executions"),
+                ("GET", "/networks/network-1/nqe-executions/X_123/result"),
+            ],
+        )
+        self.assertEqual(
+            self.client._request.call_args_list[0].kwargs["params"],
+            {"snapshotId": "snapshot-1"},
+        )
+        self.assertEqual(
+            self.client._request.call_args_list[0].kwargs["json_body"],
+            {"query": "select {n: 1}", "parameters": {}},
+        )
 
     def test_run_nqe_query_omits_abbreviated_hex_commit_id(self):
         self.client._request = Mock(
-            return_value=self._response(
-                {
-                    "items": [{"fields": {"n": 1}}],
-                    "totalNumItems": 1,
-                }
-            )
+            side_effect=[
+                self._response(
+                    {"executionKey": "X_123", "status": "COMPLETED", "outcome": "OK"}
+                ),
+                self._response(
+                    {
+                        "items": [{"fields": {"n": 1}}],
+                        "totalNumItems": 1,
+                    }
+                ),
+            ]
         )
 
         rows = self.client.run_nqe_query(
@@ -682,18 +687,23 @@ class ForwardClientTest(TestCase):
         )
 
         self.assertEqual(rows, [{"n": 1}])
-        json_body = self.client._request.call_args.kwargs["json_body"]
+        json_body = self.client._request.call_args_list[0].kwargs["json_body"]
         self.assertEqual(json_body["queryId"], "Q_devices")
         self.assertNotIn("commitId", json_body)
 
     def test_run_nqe_query_omits_head_commit_id(self):
         self.client._request = Mock(
-            return_value=self._response(
-                {
-                    "items": [{"fields": {"n": 1}}],
-                    "totalNumItems": 1,
-                }
-            )
+            side_effect=[
+                self._response(
+                    {"executionKey": "X_123", "status": "COMPLETED", "outcome": "OK"}
+                ),
+                self._response(
+                    {
+                        "items": [{"fields": {"n": 1}}],
+                        "totalNumItems": 1,
+                    }
+                ),
+            ]
         )
 
         rows = self.client.run_nqe_query(
@@ -704,7 +714,7 @@ class ForwardClientTest(TestCase):
         )
 
         self.assertEqual(rows, [{"n": 1}])
-        json_body = self.client._request.call_args.kwargs["json_body"]
+        json_body = self.client._request.call_args_list[0].kwargs["json_body"]
         self.assertEqual(json_body["queryId"], "Q_devices")
         self.assertNotIn("commitId", json_body)
 
@@ -715,7 +725,6 @@ class ForwardClientTest(TestCase):
                 parameters={
                     "username": "user@example.com",
                     "password": "secret",
-                    "nqe_async_enabled": True,
                     "nqe_async_poll_interval_seconds": 0,
                 },
             )
@@ -796,7 +805,6 @@ class ForwardClientTest(TestCase):
                 parameters={
                     "username": "user@example.com",
                     "password": "secret",
-                    "nqe_async_enabled": True,
                     "nqe_async_poll_interval_seconds": 0,
                 },
             )
@@ -852,7 +860,6 @@ class ForwardClientTest(TestCase):
                 parameters={
                     "username": "user@example.com",
                     "password": "secret",
-                    "nqe_async_enabled": True,
                     "nqe_async_poll_interval_seconds": 0,
                 },
             )
@@ -886,7 +893,6 @@ class ForwardClientTest(TestCase):
                 parameters={
                     "username": "user@example.com",
                     "password": "secret",
-                    "nqe_async_enabled": True,
                     "nqe_async_poll_interval_seconds": 0,
                     "nqe_async_max_polls": 2,
                 },
@@ -911,36 +917,52 @@ class ForwardClientTest(TestCase):
             )
         self.assertEqual(client._request.call_count, 3)
 
-    def test_run_nqe_query_async_falls_back_without_snapshot(self):
+    def test_run_nqe_query_async_requires_snapshot_id(self):
         client = ForwardClient(
             SimpleNamespace(
                 url="https://fwd.app",
                 parameters={
                     "username": "user@example.com",
                     "password": "secret",
-                    "nqe_async_enabled": True,
                     "nqe_async_poll_interval_seconds": 0,
                 },
             )
         )
-        client._request = Mock(
-            return_value=self._response(
-                {
-                    "items": [{"fields": {"n": 1}}],
-                    "totalNumItems": 1,
-                }
+        with self.assertRaisesRegex(
+            ForwardClientError,
+            "Async NQE requires both `network_id` and `snapshot_id`.",
+        ):
+            client.run_nqe_query(query_id="Q_devices", network_id="network-1")
+
+    def test_run_nqe_query_async_requires_json_item_format(self):
+        client = ForwardClient(
+            SimpleNamespace(
+                url="https://fwd.app",
+                parameters={
+                    "username": "user@example.com",
+                    "password": "secret",
+                    "nqe_async_poll_interval_seconds": 0,
+                },
             )
         )
 
-        rows = client.run_nqe_query(query_id="Q_devices", network_id="network-1")
-
-        self.assertEqual(rows, [{"n": 1}])
-        self.assertEqual(client._request.call_args.args[1], "/nqe")
-        self.assertEqual(client.api_usage_summary()["nqe_async_query_calls"], 0)
+        with self.assertRaisesRegex(
+            ForwardClientError,
+            "Async NQE only supports JSON item format.",
+        ):
+            client.run_nqe_query(
+                query_id="Q_devices",
+                network_id="network-1",
+                snapshot_id="snapshot-1",
+                item_format="CSV",
+            )
 
     def test_run_nqe_query_fetch_all_pages_until_total_num_items(self):
         self.client._request = Mock(
             side_effect=[
+                self._response(
+                    {"executionKey": "X_123", "status": "COMPLETED", "outcome": "OK"}
+                ),
                 self._response(
                     {
                         "items": [
@@ -972,6 +994,8 @@ class ForwardClientTest(TestCase):
 
         rows = self.client.run_nqe_query(
             query="select {n: 1}",
+            network_id="network-1",
+            snapshot_id="snapshot-1",
             limit=2,
             fetch_all=True,
         )
@@ -986,21 +1010,28 @@ class ForwardClientTest(TestCase):
                 {"n": 5},
             ],
         )
-        self.assertEqual(self.client._request.call_count, 3)
+        self.assertEqual(self.client._request.call_count, 4)
         self.assertEqual(
             [
-                call.kwargs["json_body"]["queryOptions"]["offset"]
+                call.kwargs["params"]["offset"]
                 for call in self.client._request.call_args_list
+                if call.args[1].endswith("/result")
             ],
             [0, 2, 4],
         )
         self.assertEqual(self.client.api_usage_summary()["nqe_query_calls"], 1)
         self.assertEqual(self.client.api_usage_summary()["nqe_pages"], 3)
         self.assertEqual(self.client.api_usage_summary()["nqe_query_pages"], 3)
+        self.assertEqual(self.client.api_usage_summary()["nqe_async_query_calls"], 1)
+        self.assertEqual(self.client.api_usage_summary()["nqe_async_trigger_calls"], 1)
+        self.assertEqual(self.client.api_usage_summary()["nqe_async_result_calls"], 3)
 
     def test_run_nqe_query_fetch_all_without_total_num_items_stops_on_short_page(self):
         self.client._request = Mock(
             side_effect=[
+                self._response(
+                    {"executionKey": "X_123", "status": "COMPLETED", "outcome": "OK"}
+                ),
                 self._response(
                     {
                         "items": [
@@ -1021,16 +1052,21 @@ class ForwardClientTest(TestCase):
 
         rows = self.client.run_nqe_query(
             query="select {n: 1}",
+            network_id="network-1",
+            snapshot_id="snapshot-1",
             limit=2,
             fetch_all=True,
         )
 
         self.assertEqual(rows, [{"n": 1}, {"n": 2}, {"n": 3}])
-        self.assertEqual(self.client._request.call_count, 2)
+        self.assertEqual(self.client._request.call_count, 3)
 
     def test_run_nqe_query_fetch_all_raises_if_api_ends_early(self):
         self.client._request = Mock(
             side_effect=[
+                self._response(
+                    {"executionKey": "X_123", "status": "COMPLETED", "outcome": "OK"}
+                ),
                 self._response(
                     {
                         "items": [
@@ -1051,10 +1087,12 @@ class ForwardClientTest(TestCase):
 
         with self.assertRaisesRegex(
             ForwardClientError,
-            "Forward NQE pagination ended early: fetched 2 rows but API reported 5.",
+            "Forward async NQE result pagination ended early: fetched 2 rows but API reported 5.",
         ):
             self.client.run_nqe_query(
                 query="select {n: 1}",
+                network_id="network-1",
+                snapshot_id="snapshot-1",
                 limit=2,
                 fetch_all=True,
             )
@@ -1062,6 +1100,9 @@ class ForwardClientTest(TestCase):
     def test_run_nqe_query_fetch_all_preserves_column_filters(self):
         self.client._request = Mock(
             side_effect=[
+                self._response(
+                    {"executionKey": "X_123", "status": "COMPLETED", "outcome": "OK"}
+                ),
                 self._response(
                     {
                         "items": [
@@ -1084,23 +1125,34 @@ class ForwardClientTest(TestCase):
         rows = self.client.run_nqe_query(
             query_id="Q_devices",
             column_filters=[{"column": "name", "operator": "contains", "value": "sw"}],
+            network_id="network-1",
+            snapshot_id="snapshot-1",
             limit=1,
             fetch_all=True,
         )
 
         self.assertEqual(rows, [{"n": 1}, {"n": 2}])
-        self.assertEqual(self.client._request.call_count, 2)
-        for call in self.client._request.call_args_list:
-            self.assertEqual(call.kwargs["json_body"]["queryId"], "Q_devices")
-            self.assertEqual(
-                call.kwargs["json_body"]["queryOptions"]["columnFilters"],
-                [{"column": "name", "operator": "contains", "value": "sw"}],
-            )
+        self.assertEqual(self.client._request.call_count, 3)
+        self.assertEqual(
+            self.client._request.call_args_list[0].kwargs["json_body"]["queryId"],
+            "Q_devices",
+        )
+        self.assertEqual(
+            self.client._request.call_args_list[0].kwargs["json_body"]["columnFilters"],
+            [{"column": "name", "operator": "contains", "value": "sw"}],
+        )
+        self.assertEqual(
+            [call.kwargs["params"] for call in self.client._request.call_args_list[1:]],
+            [{"offset": 0, "limit": 1}, {"offset": 1, "limit": 1}],
+        )
 
     def test_run_nqe_query_fetch_all_raises_when_page_limit_exceeded(self):
         self.client.nqe_fetch_all_max_pages = 2
         self.client._request = Mock(
             side_effect=[
+                self._response(
+                    {"executionKey": "X_123", "status": "COMPLETED", "outcome": "OK"}
+                ),
                 self._response(
                     {
                         "items": [
@@ -1120,14 +1172,16 @@ class ForwardClientTest(TestCase):
 
         with self.assertRaisesRegex(
             ForwardClientError,
-            "Forward NQE pagination exceeded 2 page\\(s\\)",
+            "Forward async NQE result pagination exceeded 2 page\\(s\\)",
         ):
             self.client.run_nqe_query(
                 query_id="Q_devices",
+                network_id="network-1",
+                snapshot_id="snapshot-1",
                 limit=1,
                 fetch_all=True,
             )
-        self.assertEqual(self.client._request.call_count, 2)
+        self.assertEqual(self.client._request.call_count, 3)
 
     def test_run_nqe_query_fetch_all_raises_on_identical_full_pages(self):
         self.client.nqe_fetch_all_max_pages = 10
@@ -1135,6 +1189,9 @@ class ForwardClientTest(TestCase):
         self.client._request = Mock(
             side_effect=[
                 self._response(
+                    {"executionKey": "X_123", "status": "COMPLETED", "outcome": "OK"}
+                ),
+                self._response(
                     {
                         "items": [
                             {"fields": {"n": 1}},
@@ -1163,14 +1220,16 @@ class ForwardClientTest(TestCase):
 
         with self.assertRaisesRegex(
             ForwardClientError,
-            "Forward NQE pagination did not advance",
+            "Forward async NQE result pagination did not advance",
         ):
             self.client.run_nqe_query(
                 query_id="Q_devices",
+                network_id="network-1",
+                snapshot_id="snapshot-1",
                 limit=2,
                 fetch_all=True,
             )
-        self.assertEqual(self.client._request.call_count, 3)
+        self.assertEqual(self.client._request.call_count, 4)
 
     def test_snapshot_reads_are_cached_per_client(self):
         self.client._request = Mock(
