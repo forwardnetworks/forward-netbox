@@ -68,6 +68,10 @@ Create a `Forward Source` for each Forward deployment or tenant you want to sync
   - Runs additional diagnostics queries for importability summaries (IP/routing diagnostics).
   - Defaults to enabled.
   - Disable on very large runs to reduce query overhead during ingestion.
+- `Async NQE`
+  - Uses Forward's async NQE execution API when the source is pointed at Forward 26.6 or newer.
+  - `nqe_async_poll_interval_seconds` defaults to `1.0`; `nqe_async_max_polls` defaults to `1200`.
+  - Async mode only runs when the sync has a network, a processed snapshot, and a JSON response format.
 - `Verify`
   - Only shown for custom deployments.
   - Leave enabled unless the custom deployment uses a self-signed certificate.
