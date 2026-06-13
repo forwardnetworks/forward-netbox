@@ -39,7 +39,6 @@ FORWARD_API_RATE_LIMIT_CACHE_TIMEOUT_SECONDS = 120
 FORWARD_API_RATE_LIMIT_LOCK_TIMEOUT_SECONDS = 5
 DEFAULT_QUERY_PREFLIGHT_ENABLED = True
 DEFAULT_QUERY_DIAGNOSTICS_ENABLED = True
-DEFAULT_NQE_ASYNC_ENABLED = False
 DEFAULT_NQE_ASYNC_POLL_INTERVAL_SECONDS = 1.0
 DEFAULT_NQE_ASYNC_MAX_POLLS = 1200
 MAX_NQE_ASYNC_POLL_INTERVAL_SECONDS = 60.0
@@ -143,10 +142,6 @@ class ForwardClient:
             self._coerce_nqe_identical_full_page_streak_limit(
                 params.get("nqe_identical_full_page_streak_limit")
             )
-        )
-        self.nqe_async_enabled = self._coerce_bool(
-            params.get("nqe_async_enabled"),
-            DEFAULT_NQE_ASYNC_ENABLED,
         )
         self.nqe_async_poll_interval_seconds = (
             self._coerce_nqe_async_poll_interval_seconds(
@@ -1166,51 +1161,6 @@ class ForwardClient:
             )
         return parsed_rows, data.get("totalNumRows")
 
-    def _nqe_async_query_available(
-        self,
-        *,
-        network_id,
-        snapshot_id,
-        item_format,
-    ):
-        return (
-            self.nqe_async_enabled
-            and bool(network_id)
-            and bool(snapshot_id)
-            and str(item_format or "JSON").upper() == "JSON"
-        )
-
-    def _nqe_query_payload(
-        self,
-        *,
-        query=None,
-        query_id=None,
-        commit_id=None,
-        parameters=None,
-        limit=None,
-        offset=0,
-        item_format="JSON",
-        column_filters=None,
-    ):
-        payload = {
-            "parameters": parameters or {},
-            "queryOptions": {
-                "limit": limit,
-                "offset": offset,
-                "itemFormat": item_format,
-            },
-        }
-        if column_filters:
-            payload["queryOptions"]["columnFilters"] = column_filters
-        if query_id:
-            payload["queryId"] = query_id
-            execution_commit_id = _commit_id_for_nqe_execution(commit_id)
-            if execution_commit_id:
-                payload["commitId"] = execution_commit_id
-        else:
-            payload["query"] = query
-        return payload
-
     def _nqe_async_execution_payload(
         self,
         *,
@@ -1364,115 +1314,25 @@ class ForwardClient:
             limit = self.nqe_page_size
         if limit < 1:
             raise ForwardClientError("`limit` must be at least 1.")
+        if not network_id or not snapshot_id:
+            raise ForwardClientError(
+                "Async NQE requires both `network_id` and `snapshot_id`."
+            )
+        if str(item_format or "JSON").upper() != "JSON":
+            raise ForwardClientError("Async NQE only supports JSON item format.")
 
-        if self._nqe_async_query_available(
+        return self._run_nqe_query_async(
+            query=query,
+            query_id=query_id,
+            commit_id=commit_id,
             network_id=network_id,
             snapshot_id=snapshot_id,
-            item_format=item_format,
-        ):
-            return self._run_nqe_query_async(
-                query=query,
-                query_id=query_id,
-                commit_id=commit_id,
-                network_id=network_id,
-                snapshot_id=snapshot_id,
-                parameters=parameters,
-                limit=limit,
-                offset=offset,
-                column_filters=column_filters,
-                fetch_all=fetch_all,
-            )
-
-        def fetch_page(page_offset):
-            self._record_api_usage("nqe_pages")
-            self._record_api_usage("nqe_query_pages")
-            payload = self._nqe_query_payload(
-                query=query,
-                query_id=query_id,
-                commit_id=commit_id,
-                parameters=parameters,
-                limit=limit,
-                offset=page_offset,
-                item_format=item_format,
-                column_filters=column_filters,
-            )
-            req_params = {}
-            if network_id:
-                req_params["networkId"] = network_id
-            if snapshot_id:
-                req_params["snapshotId"] = snapshot_id
-
-            response = self._request(
-                "POST",
-                "/nqe",
-                params=req_params,
-                json_body=payload,
-            )
-
-            return self._parse_nqe_records(response.json() or {})
-
-        self._record_api_usage("nqe_query_calls")
-        records, total_num_items = fetch_page(offset)
-        if not fetch_all:
-            return records
-
-        all_records = list(records)
-        expected_total = int(total_num_items) if total_num_items is not None else None
-        last_page_size = len(records)
-        fetched_pages = 1
-        identical_full_page_streak = 0
-        previous_full_page_signature = (
-            self._page_signature(records)
-            if expected_total is None and len(records) == limit
-            else None
+            parameters=parameters,
+            limit=limit,
+            offset=offset,
+            column_filters=column_filters,
+            fetch_all=fetch_all,
         )
-
-        while True:
-            if expected_total is not None and len(all_records) >= expected_total:
-                return all_records
-            if expected_total is None and last_page_size < limit:
-                return all_records
-            if fetched_pages >= self.nqe_fetch_all_max_pages:
-                raise ForwardClientError(
-                    "Forward NQE pagination exceeded "
-                    f"{self.nqe_fetch_all_max_pages} page(s) while fetching "
-                    f"`{query_id or '<raw-query>'}`."
-                )
-
-            next_offset = offset + len(all_records)
-            page_records, page_total = fetch_page(next_offset)
-            fetched_pages += 1
-            if expected_total is None and page_total is not None:
-                expected_total = int(page_total)
-            last_page_size = len(page_records)
-            if expected_total is None and last_page_size == limit and page_records:
-                signature = self._page_signature(page_records)
-                if signature == previous_full_page_signature:
-                    identical_full_page_streak += 1
-                else:
-                    identical_full_page_streak = 0
-                previous_full_page_signature = signature
-                if (
-                    identical_full_page_streak
-                    >= self.nqe_identical_full_page_streak_limit
-                ):
-                    raise ForwardClientError(
-                        "Forward NQE pagination did not advance; received "
-                        f"{identical_full_page_streak + 1} identical full page(s) "
-                        f"for `{query_id or '<raw-query>'}`. "
-                        "Verify Forward API pagination for this query."
-                    )
-            else:
-                identical_full_page_streak = 0
-                previous_full_page_signature = None
-            if not page_records:
-                if expected_total is not None and len(all_records) < expected_total:
-                    raise ForwardClientError(
-                        "Forward NQE pagination ended early: "
-                        f"fetched {len(all_records)} rows but API reported {expected_total}."
-                    )
-                return all_records
-            all_records.extend(page_records)
 
     def _run_nqe_query_async(
         self,

@@ -10,6 +10,8 @@ from ..choices import ForwardSourceDeploymentChoices
 from ..utilities.forward_api import DEFAULT_FORWARD_SAAS_API_REQUESTS_PER_MINUTE
 from ..utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from ..utilities.forward_api import MAX_FORWARD_API_REQUESTS_PER_MINUTE
+from ..utilities.forward_api import MAX_NQE_ASYNC_MAX_POLLS
+from ..utilities.forward_api import MAX_NQE_ASYNC_POLL_INTERVAL_SECONDS
 from ..utilities.forward_api import MAX_NQE_FETCH_ALL_MAX_PAGES
 from ..utilities.forward_api import MAX_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT
 from ..utilities.forward_api import MAX_NQE_PAGE_SIZE
@@ -41,6 +43,8 @@ def clean_forward_source(source):
             "query_fetch_concurrency",
             "nqe_fetch_all_max_pages",
             "nqe_identical_full_page_streak_limit",
+            "nqe_async_poll_interval_seconds",
+            "nqe_async_max_polls",
             "query_preflight_enabled",
             "query_preflight_row_limit",
             "query_diagnostics_enabled",
@@ -210,6 +214,41 @@ def clean_forward_source(source):
         parameters.get("query_diagnostics_enabled"), bool
     ):
         raise ValidationError(_("`query_diagnostics_enabled` must be a boolean."))
+    if parameters.get("nqe_async_poll_interval_seconds") is not None:
+        try:
+            nqe_async_poll_interval_seconds = float(
+                parameters.get("nqe_async_poll_interval_seconds")
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValidationError(
+                _("`nqe_async_poll_interval_seconds` must be a number.")
+            ) from exc
+        if (
+            nqe_async_poll_interval_seconds < 0.0
+            or nqe_async_poll_interval_seconds > MAX_NQE_ASYNC_POLL_INTERVAL_SECONDS
+        ):
+            raise ValidationError(
+                _(
+                    "`nqe_async_poll_interval_seconds` must be between 0 and "
+                    f"{MAX_NQE_ASYNC_POLL_INTERVAL_SECONDS}."
+                )
+            )
+        parameters["nqe_async_poll_interval_seconds"] = nqe_async_poll_interval_seconds
+    if parameters.get("nqe_async_max_polls") is not None:
+        try:
+            nqe_async_max_polls = int(parameters.get("nqe_async_max_polls"))
+        except (TypeError, ValueError) as exc:
+            raise ValidationError(
+                _("`nqe_async_max_polls` must be an integer.")
+            ) from exc
+        if nqe_async_max_polls < 1 or nqe_async_max_polls > MAX_NQE_ASYNC_MAX_POLLS:
+            raise ValidationError(
+                _(
+                    "`nqe_async_max_polls` must be between 1 and "
+                    f"{MAX_NQE_ASYNC_MAX_POLLS}."
+                )
+            )
+        parameters["nqe_async_max_polls"] = nqe_async_max_polls
     for key in (
         "pushdown_fallback_warn_rate",
         "pushdown_runtime_fallback_warn_share",
