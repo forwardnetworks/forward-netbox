@@ -31,6 +31,8 @@ from .utilities.branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
 from .utilities.forward_api import DEFAULT_FORWARD_API_REQUESTS_PER_MINUTE
 from .utilities.forward_api import DEFAULT_FORWARD_API_TIMEOUT_SECONDS
 from .utilities.forward_api import DEFAULT_FORWARD_SAAS_API_REQUESTS_PER_MINUTE
+from .utilities.forward_api import DEFAULT_NQE_ASYNC_MAX_POLLS
+from .utilities.forward_api import DEFAULT_NQE_ASYNC_POLL_INTERVAL_SECONDS
 from .utilities.forward_api import DEFAULT_NQE_FETCH_ALL_MAX_PAGES
 from .utilities.forward_api import DEFAULT_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT
 from .utilities.forward_api import DEFAULT_NQE_PAGE_SIZE
@@ -40,6 +42,8 @@ from .utilities.forward_api import DEFAULT_QUERY_PREFLIGHT_ENABLED
 from .utilities.forward_api import FORWARD_SAAS_API_HARD_BLOCK_REQUESTS_PER_MINUTE
 from .utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from .utilities.forward_api import MAX_FORWARD_API_REQUESTS_PER_MINUTE
+from .utilities.forward_api import MAX_NQE_ASYNC_MAX_POLLS
+from .utilities.forward_api import MAX_NQE_ASYNC_POLL_INTERVAL_SECONDS
 from .utilities.forward_api import MAX_NQE_FETCH_ALL_MAX_PAGES
 from .utilities.forward_api import MAX_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT
 from .utilities.forward_api import MAX_NQE_PAGE_SIZE
@@ -297,6 +301,28 @@ class ForwardSourceForm(NetBoxModelForm):
                 "Disable to reduce query overhead during large ingestion runs."
             ),
         )
+        self.fields["nqe_async_poll_interval_seconds"] = forms.FloatField(
+            required=False,
+            min_value=0.0,
+            max_value=MAX_NQE_ASYNC_POLL_INTERVAL_SECONDS,
+            label="Async NQE Poll Interval",
+            help_text=(
+                "Seconds between async status polls. "
+                f"Default: {DEFAULT_NQE_ASYNC_POLL_INTERVAL_SECONDS}."
+            ),
+            widget=forms.NumberInput(attrs={"class": "form-control", "step": "0.1"}),
+        )
+        self.fields["nqe_async_max_polls"] = forms.IntegerField(
+            required=False,
+            min_value=1,
+            max_value=MAX_NQE_ASYNC_MAX_POLLS,
+            label="Async NQE Max Polls",
+            help_text=(
+                "Maximum async status polls before the query fails fast. "
+                f"Default: {DEFAULT_NQE_ASYNC_MAX_POLLS}."
+            ),
+            widget=forms.NumberInput(attrs={"class": "form-control"}),
+        )
         self.fields["pushdown_fallback_warn_rate"] = forms.FloatField(
             required=False,
             min_value=0.0,
@@ -479,6 +505,14 @@ class ForwardSourceForm(NetBoxModelForm):
                 "query_diagnostics_enabled", DEFAULT_QUERY_DIAGNOSTICS_ENABLED
             )
         )
+        self.fields["nqe_async_poll_interval_seconds"].initial = (
+            parameters.get("nqe_async_poll_interval_seconds")
+            if parameters.get("nqe_async_poll_interval_seconds") not in ("", None)
+            else DEFAULT_NQE_ASYNC_POLL_INTERVAL_SECONDS
+        )
+        self.fields["nqe_async_max_polls"].initial = (
+            parameters.get("nqe_async_max_polls") or DEFAULT_NQE_ASYNC_MAX_POLLS
+        )
         self.fields["pushdown_fallback_warn_rate"].initial = (
             parameters.get("pushdown_fallback_warn_rate")
             if parameters.get("pushdown_fallback_warn_rate") not in ("", None)
@@ -555,6 +589,8 @@ class ForwardSourceForm(NetBoxModelForm):
                     "query_preflight_enabled",
                     "query_preflight_row_limit",
                     "query_diagnostics_enabled",
+                    "nqe_async_poll_interval_seconds",
+                    "nqe_async_max_polls",
                     "pushdown_fallback_warn_rate",
                     "pushdown_runtime_fallback_warn_share",
                     "pushdown_diff_warn_ratio",
@@ -582,6 +618,8 @@ class ForwardSourceForm(NetBoxModelForm):
                     "query_preflight_enabled",
                     "query_preflight_row_limit",
                     "query_diagnostics_enabled",
+                    "nqe_async_poll_interval_seconds",
+                    "nqe_async_max_polls",
                     "pushdown_fallback_warn_rate",
                     "pushdown_runtime_fallback_warn_share",
                     "pushdown_diff_warn_ratio",
@@ -677,6 +715,19 @@ class ForwardSourceForm(NetBoxModelForm):
                     "query_diagnostics_enabled", DEFAULT_QUERY_DIAGNOSTICS_ENABLED
                 )
             ),
+            "nqe_async_poll_interval_seconds": (
+                cleaned.get("nqe_async_poll_interval_seconds")
+                if cleaned.get("nqe_async_poll_interval_seconds") is not None
+                else (
+                    existing_parameters.get("nqe_async_poll_interval_seconds")
+                    if existing_parameters.get("nqe_async_poll_interval_seconds")
+                    not in ("", None)
+                    else DEFAULT_NQE_ASYNC_POLL_INTERVAL_SECONDS
+                )
+            ),
+            "nqe_async_max_polls": cleaned.get("nqe_async_max_polls")
+            or existing_parameters.get("nqe_async_max_polls")
+            or DEFAULT_NQE_ASYNC_MAX_POLLS,
             "pushdown_fallback_warn_rate": (
                 cleaned.get("pushdown_fallback_warn_rate")
                 if cleaned.get("pushdown_fallback_warn_rate") is not None
@@ -842,6 +893,19 @@ class ForwardSourceForm(NetBoxModelForm):
                     "query_diagnostics_enabled", DEFAULT_QUERY_DIAGNOSTICS_ENABLED
                 )
             ),
+            "nqe_async_poll_interval_seconds": (
+                self.cleaned_data.get("nqe_async_poll_interval_seconds")
+                if self.cleaned_data.get("nqe_async_poll_interval_seconds") is not None
+                else (
+                    existing_parameters.get("nqe_async_poll_interval_seconds")
+                    if existing_parameters.get("nqe_async_poll_interval_seconds")
+                    not in ("", None)
+                    else DEFAULT_NQE_ASYNC_POLL_INTERVAL_SECONDS
+                )
+            ),
+            "nqe_async_max_polls": self.cleaned_data.get("nqe_async_max_polls")
+            or existing_parameters.get("nqe_async_max_polls")
+            or DEFAULT_NQE_ASYNC_MAX_POLLS,
             "pushdown_fallback_warn_rate": (
                 self.cleaned_data.get("pushdown_fallback_warn_rate")
                 if self.cleaned_data.get("pushdown_fallback_warn_rate") is not None

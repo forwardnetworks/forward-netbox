@@ -296,6 +296,31 @@ class ForwardSyncFormTest(TestCase):
         )
 
     @patch("forward_netbox.forms.ForwardSource.validate_connection")
+    def test_source_form_persists_nqe_async_settings(self, _mock_validate_connection):
+        form = ForwardSourceForm(
+            data={
+                "name": "source-async",
+                "type": ForwardSourceDeploymentChoices.SAAS,
+                "username": "user@example.com",
+                "password": "secret",
+                "network_id": "test-network",
+                "timeout": 1200,
+                "nqe_page_size": 10000,
+                "nqe_async_poll_interval_seconds": 0.5,
+                "nqe_async_max_polls": 600,
+                "verify": True,
+            }
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+        source = form.save()
+        self.assertEqual(
+            source.parameters["nqe_async_poll_interval_seconds"],
+            0.5,
+        )
+        self.assertEqual(source.parameters["nqe_async_max_polls"], 600)
+
+    @patch("forward_netbox.forms.ForwardSource.validate_connection")
     def test_source_form_defaults_saas_api_requests_per_minute(
         self, _mock_validate_connection
     ):
