@@ -1560,7 +1560,7 @@ class ForwardClientTest(TestCase):
         self.client._request.assert_called_once_with(
             "GET",
             "/nqe/repos/org/commits/commit-1/queries",
-            params={"path": "/netbox/forward_devices"},
+            params={"path": "/netbox/forward_devices", "with": "sourceCode"},
         )
 
     def test_get_committed_nqe_query_uses_repository_index_for_fwd_head(self):
@@ -1618,7 +1618,7 @@ class ForwardClientTest(TestCase):
         self.client._request.assert_called_once_with(
             "GET",
             "/nqe/repos/org/commits/head/queries",
-            params={"path": "/netbox/forward_devices"},
+            params={"path": "/netbox/forward_devices", "with": "sourceCode"},
         )
 
     def test_get_committed_nqe_query_uses_org_query_list_for_head(self):
