@@ -4,7 +4,6 @@ from .forward_api_impl import DEFAULT_FORWARD_API_RETRIES  # noqa: F401
 from .forward_api_impl import DEFAULT_FORWARD_API_RETRY_BACKOFF_SECONDS  # noqa: F401
 from .forward_api_impl import DEFAULT_FORWARD_API_TIMEOUT_SECONDS  # noqa: F401
 from .forward_api_impl import DEFAULT_FORWARD_SAAS_API_REQUESTS_PER_MINUTE  # noqa: F401
-from .forward_api_impl import DEFAULT_NQE_ASYNC_ENABLED  # noqa: F401
 from .forward_api_impl import DEFAULT_NQE_ASYNC_MAX_POLLS  # noqa: F401
 from .forward_api_impl import DEFAULT_NQE_ASYNC_POLL_INTERVAL_SECONDS  # noqa: F401
 from .forward_api_impl import DEFAULT_NQE_FETCH_ALL_MAX_PAGES  # noqa: F401

@@ -48,6 +48,8 @@ from forward_netbox.utilities.execution_telemetry import (
 from forward_netbox.utilities.execution_telemetry import build_plan_preview
 from forward_netbox.utilities.execution_telemetry import build_sync_execution_summary
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
+from forward_netbox.utilities.forward_api import MAX_NQE_ASYNC_MAX_POLLS
+from forward_netbox.utilities.forward_api import MAX_NQE_ASYNC_POLL_INTERVAL_SECONDS
 from forward_netbox.utilities.query_registry import builtin_nqe_map_rows
 from forward_netbox.utilities.query_registry import QuerySpec
 from forward_netbox.utilities.sync_state import clear_branch_run_state
@@ -196,6 +198,27 @@ class ForwardSyncModelTest(TestCase):
 
         self.assertEqual(source.parameters["api_requests_per_minute"], 1800)
 
+    def test_source_preserves_nqe_async_parameters(self):
+        source = ForwardSource(
+            name="source-nqe-async",
+            type="saas",
+            url="https://fwd.app",
+            parameters={
+                "username": "user@example.com",
+                "password": "secret",
+                "verify": True,
+                "timeout": 1200,
+                "network_id": "test-network",
+                "nqe_async_poll_interval_seconds": "0.5",
+                "nqe_async_max_polls": "600",
+            },
+        )
+
+        source.clean()
+
+        self.assertEqual(source.parameters["nqe_async_poll_interval_seconds"], 0.5)
+        self.assertEqual(source.parameters["nqe_async_max_polls"], 600)
+
     def test_source_rejects_invalid_api_requests_per_minute(self):
         source = ForwardSource(
             name="source-invalid-api-rpm",
@@ -216,6 +239,53 @@ class ForwardSyncModelTest(TestCase):
 
         self.assertIn(
             "`api_requests_per_minute` must be between 0 and 60000.",
+            str(ctx.exception),
+        )
+
+    def test_source_rejects_invalid_nqe_async_poll_interval_seconds(self):
+        source = ForwardSource(
+            name="source-invalid-nqe-async-interval",
+            type="saas",
+            url="https://fwd.app",
+            parameters={
+                "username": "user@example.com",
+                "password": "secret",
+                "verify": True,
+                "timeout": 1200,
+                "network_id": "test-network",
+                "nqe_async_poll_interval_seconds": MAX_NQE_ASYNC_POLL_INTERVAL_SECONDS
+                + 1.0,
+            },
+        )
+
+        with self.assertRaises(ValidationError) as ctx:
+            source.clean()
+
+        self.assertIn(
+            "`nqe_async_poll_interval_seconds` must be between 0 and",
+            str(ctx.exception),
+        )
+
+    def test_source_rejects_invalid_nqe_async_max_polls(self):
+        source = ForwardSource(
+            name="source-invalid-nqe-async-max-polls",
+            type="saas",
+            url="https://fwd.app",
+            parameters={
+                "username": "user@example.com",
+                "password": "secret",
+                "verify": True,
+                "timeout": 1200,
+                "network_id": "test-network",
+                "nqe_async_max_polls": MAX_NQE_ASYNC_MAX_POLLS + 1,
+            },
+        )
+
+        with self.assertRaises(ValidationError) as ctx:
+            source.clean()
+
+        self.assertIn(
+            "`nqe_async_max_polls` must be between 1 and",
             str(ctx.exception),
         )
 
