@@ -753,6 +753,7 @@ def ingestion_support_summary(ingestion):
         return None
     issues = list(ingestion.issues.order_by("timestamp")[:25])
     execution_summary = ingestion.get_execution_summary()
+    delete_wave = _ingestion_delete_wave_summary(ingestion)
     return {
         "id": ingestion.pk,
         "name": ingestion.name,
@@ -778,6 +779,7 @@ def ingestion_support_summary(ingestion):
             SimpleNamespace(job=ingestion.job)
         ),
         "analysis_summary": ingestion.get_analysis_summary(),
+        "delete_wave": delete_wave,
         "issue_count": ingestion.issues.count(),
         "issues": [
             {
@@ -791,6 +793,51 @@ def ingestion_support_summary(ingestion):
             for issue in issues
         ],
     }
+
+
+def _ingestion_delete_wave_summary(ingestion):
+    sync = getattr(ingestion, "sync", None)
+    if sync is None:
+        return {
+            "available": False,
+            "status": "info",
+            "phase": "unavailable",
+            "message": "No sync is available for delete-wave visibility.",
+            "plan": {},
+            "steps": {},
+            "latest_ingestion": {
+                "id": ingestion.pk,
+                "deleted_change_count": int(ingestion.deleted_change_count or 0),
+                "dependency_skip_issues": {"count": 0, "models": {}},
+            },
+            "warning_codes": [],
+            "high_risk_models": [],
+        }
+
+    try:
+        from .execution_ledger import latest_execution_run
+        from .health_summary_blocks import delete_wave_summary
+
+        return delete_wave_summary(latest_execution_run(sync), ingestion)
+    except Exception as exc:
+        return {
+            "available": False,
+            "status": "info",
+            "phase": "unavailable",
+            "message": (
+                "Delete-wave evidence could not be summarized for this ingestion: "
+                f"{exc}"
+            ),
+            "plan": {},
+            "steps": {},
+            "latest_ingestion": {
+                "id": ingestion.pk,
+                "deleted_change_count": int(ingestion.deleted_change_count or 0),
+                "dependency_skip_issues": {"count": 0, "models": {}},
+            },
+            "warning_codes": [],
+            "high_risk_models": [],
+        }
 
 
 def _compatibility_cache_evidence(run):
