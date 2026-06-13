@@ -962,7 +962,7 @@ class ForwardClient:
         response = self._request(
             "GET",
             f"/nqe/repos/{repository}/commits/{quote(commit_id, safe='')}/queries",
-            params={"path": query_path},
+            params={"path": query_path, "with": "sourceCode"},
         )
         data = response.json() or {}
         if not isinstance(data, dict):
