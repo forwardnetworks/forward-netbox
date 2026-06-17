@@ -46,6 +46,79 @@ MERGE_HEARTBEAT_SECONDS = 60
 MERGE_LOG_ROW_INTERVAL = 5000
 MERGE_LOG_SECONDS = 300
 
+# Models the plugin never syncs directly: their branch changes are NetBox
+# component-replication side effects. Creating a Device or Module instantiates
+# ModuleBay rows from the device/module type's templates. ModuleBay has a custom
+# MPTT save() that takes an UPDATE path when Branching deserializes the create
+# with a pk, so the row never lands in main and every such change fails the
+# merge with NotUpdated ("Save with update_fields did not affect any rows").
+# This is a NetBox Branching <-> MPTT-ModuleBay limitation, not a plugin sync
+# failure; one device with module bays can emit dozens of identical failures
+# plus cascading module failures. Collapse them into a single actionable summary
+# that points at the out-of-band remediation (forward_module_readiness) instead
+# of flooding the ingestion issues list. Device/interface sync is unaffected.
+REPLICATION_SIDE_EFFECT_MODELS = frozenset({"dcim.modulebay"})
+
+MODULE_BAY_MERGE_REMEDIATION = (
+    "{count} module-bay change(s) could not be merged because NetBox Branching "
+    "cannot create MPTT module bays during a merge (a NetBox limitation, not a "
+    "data error). The affected module bays were not created, so any modules "
+    "targeting them were skipped. Run the `forward_module_readiness` management "
+    "command and import the generated module-bay CSV directly into NetBox, then "
+    "re-run module sync. Device and interface sync are unaffected."
+)
+
+
+class _MergeIssueRecorder:
+    """Record merge-time change failures as ForwardIngestionIssue rows.
+
+    Failures for models the plugin syncs directly are recorded one issue per
+    change. Failures for replication side-effect models (see
+    REPLICATION_SIDE_EFFECT_MODELS) are collapsed into a single actionable
+    summary issue at ``flush()`` time, so one device's worth of unmergeable
+    module bays does not flood the list with dozens of identical rows.
+    """
+
+    def __init__(self, ingestion, sync_logger):
+        self._ingestion = ingestion
+        self._sync_logger = sync_logger
+        self._side_effect_counts: Counter = Counter()
+        self._side_effect_samples: dict[str, str] = {}
+
+    def record(self, *, model_string, message, exc):
+        if model_string in REPLICATION_SIDE_EFFECT_MODELS:
+            self._side_effect_counts[model_string] += 1
+            self._side_effect_samples.setdefault(model_string, str(exc))
+            logger.debug(message, exc_info=True)
+            return
+        logger.error(message, exc_info=True)
+        if self._sync_logger:
+            self._sync_logger.log_failure(message)
+        ForwardIngestionIssue.objects.create(
+            ingestion=self._ingestion,
+            phase=ForwardIngestionPhaseChoices.MERGE,
+            model=model_string,
+            message=message,
+            exception=exc.__class__.__name__,
+            raw_data={"traceback": traceback.format_exc()},
+        )
+
+    def flush(self):
+        for model_string, count in self._side_effect_counts.items():
+            summary = MODULE_BAY_MERGE_REMEDIATION.format(count=count)
+            if self._sync_logger:
+                self._sync_logger.log_warning(summary)
+            ForwardIngestionIssue.objects.create(
+                ingestion=self._ingestion,
+                phase=ForwardIngestionPhaseChoices.MERGE,
+                model=model_string,
+                message=summary,
+                exception="ModuleBayMergeUnsupported",
+                raw_data={
+                    "sample_error": self._side_effect_samples.get(model_string, "")
+                },
+            )
+
 
 def merge_branch(
     ingestion: "ForwardIngestion", sync_logger: "SyncLogging | None" = None
@@ -86,6 +159,7 @@ def merge_branch(
 
     models_touched = set()
     failed = 0
+    issue_recorder = _MergeIssueRecorder(ingestion, sync_logger)
 
     processed = 0
     last_heartbeat_at = time.monotonic()
@@ -116,16 +190,8 @@ def merge_branch(
                     f"Failed to apply change {change.pk} "
                     f"({change.action} {model_string}: {change.changed_object_id}): {exc}"
                 )
-                logger.error(message, exc_info=True)
-                if sync_logger:
-                    sync_logger.log_failure(message)
-                ForwardIngestionIssue.objects.create(
-                    ingestion=ingestion,
-                    phase=ForwardIngestionPhaseChoices.MERGE,
-                    model=model_string,
-                    message=message,
-                    exception=exc.__class__.__name__,
-                    raw_data={"traceback": traceback.format_exc()},
+                issue_recorder.record(
+                    model_string=model_string, message=message, exc=exc
                 )
             last_heartbeat_at, last_log_at = _report_merge_progress(
                 ingestion,
@@ -139,6 +205,8 @@ def merge_branch(
             )
     finally:
         post_save.disconnect(handler, sender=ObjectChange_)
+
+    issue_recorder.flush()
 
     if models_touched:
         strategy_class = get_merge_strategy(branch.merge_strategy)
