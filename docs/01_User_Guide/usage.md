@@ -181,6 +181,9 @@ The built-in `Forward Modules` map is enabled by default. The native `dcim.modul
 
 NetBox modules require matching module bays on the device. When `dcim.module` is enabled, module rows whose bays do not already exist are skipped with a non-blocking warning. This keeps Branching merges deterministic and avoids creating module-bay side effects inside the module shard. Before enabling the model, run the readiness helper against the same Forward Sync you plan to use:
 
+!!! note "Why module bays must be imported out-of-band"
+    `dcim.modulebay` is an MPTT (nested) model. NetBox Branching cannot create module bays during a merge — a module bay created inside a branch fails to apply to `main` with `Save with update_fields did not affect any rows`. This is a NetBox limitation, not a data error. So module bays are imported directly into NetBox (out of band) via the readiness CSV below, not synced through a branch. If a sync still creates new devices whose device type defines module-bay templates, NetBox auto-instantiates those bays inside the branch and they cannot merge; the plugin collapses every such failure for an ingestion into a **single** `dcim.modulebay` merge issue (`ModuleBayMergeUnsupported`) that points back to this readiness workflow, rather than one issue per bay. Device and interface sync are unaffected.
+
 ```bash
 python manage.py forward_module_readiness --sync-name "Forward Sync"
 ```
