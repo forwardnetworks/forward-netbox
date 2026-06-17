@@ -6380,6 +6380,33 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertEqual(self._update_statements(queries), [])
         self.assertEqual(ObjectChange.objects.count(), before_count)
 
+    def test_ensure_platform_preserves_manufacturer_for_aci_family(self):
+        cisco = Manufacturer.objects.create(name="Cisco", slug="cisco")
+        Manufacturer.objects.create(name="F5", slug="f5")
+        platform = Platform.objects.create(
+            name="ACI",
+            slug="aci",
+            manufacturer=cisco,
+        )
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "name": "ACI",
+            "slug": "aci",
+            "manufacturer": "F5",
+            "manufacturer_slug": "f5",
+        }
+
+        before_count = ObjectChange.objects.count()
+        with CaptureQueriesContext(connection):
+            result = runner._ensure_platform(row)
+
+        platform.refresh_from_db()
+        self.assertEqual(result.pk, platform.pk)
+        self.assertEqual(platform.manufacturer_id, cisco.pk)
+        self.assertEqual(ObjectChange.objects.count(), before_count)
+
     def test_apply_dcim_manufacturer_repeat_sync_is_noop(self):
         Manufacturer.objects.create(name="vendor-2", slug="vendor-2")
         runner = ForwardSyncRunner(
@@ -8303,6 +8330,50 @@ class ForwardSyncRunnerTest(TestCase):
         )
         self.assertEqual(self._update_statements(queries), [])
         self.assertEqual(ObjectChange.objects.count(), before_count)
+
+    def test_apply_dcim_interface_update_records_object_change(self):
+        """Adapter-path UPDATES must go through the Branching framework
+        (per-row save → post_save → ObjectChange) so the change is visible in
+        Branching diff review. Guards against any future attempt to batch
+        updates via bulk_update, which skips post_save and silently drops the
+        changelog. Update-side load is reduced by fetching fewer rows (NQE
+        diffs), never by bypassing per-row writes."""
+        device = self._create_device("device-1")
+        Interface.objects.create(
+            device=device,
+            name="Ethernet1/1",
+            type="1000base-t",
+            enabled=True,
+            mtu=1500,
+            description="before",
+            speed=1000000,
+        )
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        interface_type = ObjectType.objects.get_for_model(Interface)
+        row = {
+            "device": "device-1",
+            "name": "Ethernet1/1",
+            "type": "1000base-t",
+            "enabled": True,
+            "mtu": 9000,
+            "description": "after",
+            "speed": 1000000,
+        }
+
+        before_update_changes = ObjectChange.objects.filter(
+            changed_object_type=interface_type, action="update"
+        ).count()
+        runner._apply_model_rows("dcim.interface", [row])
+
+        interface = Interface.objects.get(device=device, name="Ethernet1/1")
+        self.assertEqual(interface.mtu, 9000)
+        self.assertEqual(interface.description, "after")
+        after_update_changes = ObjectChange.objects.filter(
+            changed_object_type=interface_type, action="update"
+        ).count()
+        self.assertEqual(after_update_changes, before_update_changes + 1)
 
     def test_apply_dcim_interface_preserves_existing_description_when_source_is_blank(
         self,
