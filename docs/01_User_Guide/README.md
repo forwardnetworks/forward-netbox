@@ -14,26 +14,27 @@ Forward 26.6 is the baseline for async NQE.
 Install the wheel from GitHub Releases into the same Python environment as NetBox:
 
 ```bash
-pip install /path/to/forward_netbox-1.5.0-py3-none-any.whl
+pip install /path/to/forward_netbox-1.5.0.1-py3-none-any.whl
 ```
 
 Alternatively, install directly from the GitHub source archive:
 
 ```bash
-pip install /path/to/forward_netbox-1.5.0.tar.gz
+pip install /path/to/forward_netbox-1.5.0.1.tar.gz
 ```
 
 If you mirror the package into a private Python index, pin the same release version:
 
 ```bash
-pip install forward-netbox==1.5.0
+pip install forward-netbox==1.5.0.1
 ```
 
 ## Release Compatibility
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v1.5.0` | `4.5.9` and `4.6.2` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Current release; hardens ingest throughput via adaptive async-NQE poll backoff, ndjson streaming, webhook/event-rule signal suppression during the apply loop, targeted validation (skips DB-hitting uniqueness checks on existing objects in both simple and tree-model bulk paths), and async advanced-reachability trigger (FWD-53559). Full test suite green on NetBox 4.5.9 (1092/0/0) and 4.6.2 (1092/0/26 routing-plugin version-gated). |
+| `v1.5.0.1` | `4.5.9` and `4.6.2` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Current release; fixes platform NQE query using `normalizePlatformName` to avoid evaluation failures on unsupported vendor/OS combinations, adds `--overwrite` flag to the validation-org repair command, and hardens the NQE org-publish commit loop to retry after 409 INVALID_CHANGE_PATH. |
+| `v1.5.0` | `4.5.9` and `4.6.2` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v1.5.0.1`; hardens ingest throughput via adaptive async-NQE poll backoff, ndjson streaming, webhook/event-rule signal suppression during the apply loop, targeted validation (skips DB-hitting uniqueness checks on existing objects in both simple and tree-model bulk paths), and async advanced-reachability trigger (FWD-53559). Full test suite green on NetBox 4.5.9 (1092/0/0) and 4.6.2 (1092/0/26 routing-plugin version-gated). |
 | `v1.4.3` | `4.5.9` and `4.6.2` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v1.5.0`; hardens query-path provenance by requiring source-backed query-id repair at preflight, enforces async NQE source parsing for 26.6 execution paths, proves CIMC/APIC custom-command updates in source and keeps the 1.4 production-hardening line intact. |
 | `v1.4.2` | `4.5.9` and `4.6.2` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v1.4.3`; adds CIMC platform separation, visible query-drift repair and dependency preview on the sync detail page, and keeps the module-bay merge hardening plus parent-interface description preservation from the prior patch line. |
 | `v1.4.1.1` | `4.5.9` and `4.6.1` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v1.4.2`; prevents optional `dcim.module` sync from emitting merge-breaking `dcim.modulebay` side-effect creates when module bays are missing and prevents LAG member rows from clearing existing parent interface descriptions. |
@@ -94,6 +95,7 @@ pip install forward-netbox==1.5.0
 
 | Release | Summary |
 | --- | --- |
+| `v1.5.0.1` | Fixes platform NQE query (`normalizePlatformName`), adds `--overwrite` to validation-org repair, hardens org-publish commit to retry on 409 INVALID_CHANGE_PATH. |
 | `v1.5.0` | Hardens ingest throughput: adaptive async-NQE poll backoff, ndjson streaming, webhook/event-rule signal suppression during apply, targeted validation on existing objects (skips DB-hitting uniqueness checks in both bulk engine paths), and async advanced-reachability trigger (FWD-53559). Full suite green on NetBox 4.5.9 and 4.6.2. |
 | `v1.4.3` | Hardens query provenance with source-backed query-id repair during preflight, adds async execution path readiness for 26.6 with resilient NDJSON/JSONL result handling, and proves CIMC/APIC platform/type updates from command-source evidence while preserving prior 1.4 protections. |
 | `v1.4.2` | Adds CIMC platform separation, visible query-drift repair and dependency preview on the sync detail page, and keeps module-bay merge hardening plus parent-interface description preservation. |
