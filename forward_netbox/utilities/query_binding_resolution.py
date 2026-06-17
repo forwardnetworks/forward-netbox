@@ -703,6 +703,8 @@ def publish_builtin_nqe_map_queries(
                 query_path,
                 existing_query,
             )
+            if _committed_query_source(committed_query).strip() == source_code.strip():
+                continue
             client.edit_org_nqe_query(
                 query_path=query_path,
                 source_code=source_code,
