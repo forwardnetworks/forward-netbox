@@ -1245,3 +1245,82 @@ class ForwardIngestionMergeHelperTest(TestCase):
         sync_logger.log_info.assert_not_called()
         self.assertEqual(heartbeat_at, 100.0)
         self.assertEqual(log_at, 100.0)
+
+
+class MergeIssueRecorderTest(TestCase):
+    def setUp(self):
+        self.source = ForwardSource.objects.create(
+            name="source-merge-issue-recorder",
+            type="saas",
+            url="https://fwd.app",
+            parameters={
+                "username": "user@example.com",
+                "password": "secret",
+                "verify": True,
+                "timeout": 1200,
+                "network_id": "test-network",
+            },
+        )
+        self.sync = ForwardSync.objects.create(
+            name="sync-merge-issue-recorder",
+            source=self.source,
+            parameters={"snapshot_id": LATEST_PROCESSED_SNAPSHOT, "dcim.module": True},
+        )
+        self.ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-merge-issue",
+        )
+
+    def test_module_bay_failures_collapse_into_single_actionable_issue(self):
+        from forward_netbox.utilities.merge import _MergeIssueRecorder
+
+        recorder = _MergeIssueRecorder(self.ingestion, None)
+        exc = Exception("Save with update_fields did not affect any rows.")
+        for index in range(5):
+            recorder.record(
+                model_string="dcim.modulebay",
+                message=f"Failed to apply change {index} (create dcim.modulebay: {index})",
+                exc=exc,
+            )
+
+        # Nothing is recorded until flush — failures accumulate.
+        self.assertEqual(self.ingestion.issues.count(), 0)
+
+        recorder.flush()
+
+        issues = list(self.ingestion.issues.all())
+        self.assertEqual(len(issues), 1)
+        issue = issues[0]
+        self.assertEqual(issue.model, "dcim.modulebay")
+        self.assertEqual(issue.exception, "ModuleBayMergeUnsupported")
+        self.assertIn("5 module-bay change", issue.message)
+        self.assertIn("forward_module_readiness", issue.message)
+        self.assertEqual(
+            issue.raw_data.get("sample_error"),
+            "Save with update_fields did not affect any rows.",
+        )
+
+    def test_synced_model_failures_recorded_per_change(self):
+        from forward_netbox.utilities.merge import _MergeIssueRecorder
+
+        recorder = _MergeIssueRecorder(self.ingestion, None)
+        recorder.record(
+            model_string="dcim.device",
+            message="Failed to apply change 1 (create dcim.device: 1)",
+            exc=ValueError("boom"),
+        )
+        recorder.record(
+            model_string="dcim.device",
+            message="Failed to apply change 2 (create dcim.device: 2)",
+            exc=ValueError("boom2"),
+        )
+        recorder.flush()
+
+        device_issues = list(self.ingestion.issues.filter(model="dcim.device"))
+        self.assertEqual(len(device_issues), 2)
+        self.assertEqual(device_issues[0].exception, "ValueError")
+        # No spurious aggregated module-bay issue when none occurred.
+        self.assertFalse(
+            self.ingestion.issues.filter(exception="ModuleBayMergeUnsupported").exists()
+        )
