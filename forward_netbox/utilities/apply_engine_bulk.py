@@ -294,7 +294,10 @@ def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str,
                 setattr(existing, field_name, incoming)
                 changed = True
         if changed and getattr(existing, "pk", None) is not None:
-            existing.full_clean()
+            # Existing objects already satisfy DB constraints; skip
+            # validate_unique/validate_constraints (both issue DB queries).
+            existing.clean_fields()
+            existing.clean()
             update_objects.append(existing)
             runner.logger.increment_statistics(model_string, outcome="applied")
             runner.events_clearer.increment()

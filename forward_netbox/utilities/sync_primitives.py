@@ -131,8 +131,18 @@ def coalesce_update_or_create(
             setattr(obj, field, value)
             update_fields.append(field)
     if update_fields:
-        obj.full_clean()
-        obj.save(update_fields=update_fields)
+        adapter_queue = getattr(runner, "_adapter_update_queue", None)
+        if adapter_queue is not None:
+            pk = getattr(obj, "pk")
+            existing_entry = adapter_queue.get(pk)
+            if existing_entry is not None:
+                _, prev_fields = existing_entry
+                adapter_queue[pk] = (obj, prev_fields | set(update_fields))
+            else:
+                adapter_queue[pk] = (obj, set(update_fields))
+        else:
+            obj.full_clean()
+            obj.save(update_fields=update_fields)
     remember_lookup_object(runner, obj)
     _remember_unique_lookups(runner, model, lookups, obj)
     if return_change:
