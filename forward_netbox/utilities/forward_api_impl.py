@@ -1,4 +1,5 @@
 import hashlib
+import io
 import json
 import threading
 import time
@@ -479,12 +480,13 @@ class ForwardClient:
             return f"{base_url}{path}"
         return f"{base_url}/api{path}"
 
-    def _headers(self):
-        return {
-            "Accept": "application/json",
+    def _headers(self, *, accept=None):
+        headers = {
+            "Accept": accept or "application/json",
             "Content-Type": "application/json",
             "User-Agent": "forward-netbox/0.8.6.3",
         }
+        return headers
 
     def _auth(self):
         if self.username and self.password:
@@ -569,7 +571,7 @@ class ForwardClient:
             mounts[f"{protocol}://"] = httpx.HTTPTransport(proxy=proxy_url)
         return mounts or None
 
-    def _request(self, method, path, *, params=None, json_body=None):
+    def _request(self, method, path, *, params=None, json_body=None, headers=None):
         url = self._api_url(path)
         last_connectivity_error = None
         for attempt in range(self.retries + 1):
@@ -586,7 +588,7 @@ class ForwardClient:
                         url,
                         params=params,
                         json=json_body,
-                        headers=self._headers(),
+                        headers={**self._headers(), **(headers or {})},
                         auth=self._auth(),
                     )
                 response.raise_for_status()
@@ -791,6 +793,76 @@ class ForwardClient:
             self._shared_read_cache_set(shared_cache_key, dict(metrics))
         return metrics
 
+    def trigger_snapshot_reachability(self, network_id, snapshot_id):
+        """Trigger advanced reachability computation for a snapshot (FWD-53559).
+
+        POSTs to start computation, then polls until the job reaches a terminal
+        state. Returns the final status payload. Raises ForwardClientError on
+        failure or timeout.
+        """
+        network_id = str(network_id or "").strip()
+        snapshot_id = str(snapshot_id or "").strip()
+        if not network_id or not snapshot_id:
+            raise ForwardClientError(
+                "trigger_snapshot_reachability requires both network_id and snapshot_id."
+            )
+        self._record_api_usage("reachability_trigger_calls")
+        response = self._request(
+            "POST",
+            "/networks/{network_id}/snapshots/{snapshot_id}/reachability".format(
+                network_id=quote(str(network_id), safe=""),
+                snapshot_id=quote(str(snapshot_id), safe=""),
+            ),
+        )
+        data = response.json() or {}
+        job_key = str(
+            data.get("jobKey") or data.get("executionKey") or data.get("id") or ""
+        ).strip()
+        state = str(data.get("status") or "").strip().upper()
+        if state in ("COMPLETED", "DONE", "READY") or not job_key:
+            return data
+        return self._wait_for_reachability_completion(
+            network_id=network_id,
+            snapshot_id=snapshot_id,
+            job_key=job_key,
+            status=data,
+        )
+
+    def _wait_for_reachability_completion(
+        self, *, network_id, snapshot_id, job_key, status
+    ):
+        current_status = status or {}
+        poll_ceiling = self.nqe_async_poll_interval_seconds
+        for poll_index in range(self.nqe_async_max_polls + 1):
+            state = str(current_status.get("status") or "").strip().upper()
+            if state in ("COMPLETED", "DONE", "READY"):
+                return current_status
+            if state in ("FAILED", "ERROR"):
+                error = current_status.get("error") or current_status
+                raise ForwardClientError(
+                    f"Forward reachability computation failed for snapshot "
+                    f"`{snapshot_id}`: {error}"
+                )
+            if poll_index >= self.nqe_async_max_polls:
+                break
+            if poll_ceiling:
+                sleep_seconds = min(poll_ceiling, 0.1 * (2 ** poll_index))
+                time.sleep(sleep_seconds)
+            self._record_api_usage("reachability_status_calls")
+            response = self._request(
+                "GET",
+                "/networks/{network_id}/snapshots/{snapshot_id}/reachability/{job_key}".format(
+                    network_id=quote(str(network_id), safe=""),
+                    snapshot_id=quote(str(snapshot_id), safe=""),
+                    job_key=quote(str(job_key), safe=""),
+                ),
+            )
+            current_status = response.json() or {}
+        raise ForwardClientError(
+            f"Forward reachability computation did not complete after "
+            f"{self.nqe_async_max_polls} poll(s) for snapshot `{snapshot_id}`."
+        )
+
     def get_org_nqe_queries(self, *, directory="/"):
         directory = _normalize_nqe_directory(directory)
         shared_cache_key = self._shared_read_cache_key(
@@ -908,6 +980,7 @@ class ForwardClient:
         query_path="",
         commit_id="head",
         query_index: dict | None = None,
+        require_source_code=False,
     ):
         repository = _normalize_nqe_repository(repository)
         query_path = _normalize_nqe_query_path(query_path)
@@ -925,28 +998,45 @@ class ForwardClient:
                     query_index = {}
             indexed_query = (query_index.get("by_path") or {}).get(query_path)
             if indexed_query and indexed_query.get("queryId"):
-                query = dict(indexed_query)
-                query.setdefault("repository", repository)
-                query.setdefault("intent", "")
-                query.setdefault("lastCommitId", "")
-                self._committed_nqe_query_cache[(repository, query_path, commit_id)] = (
-                    dict(query)
+                # Ensure source code is available when requested for canonicality checks.
+                # Some API responses return directory rows without source text.
+                has_source = any(
+                    indexed_query.get(key) for key in ("sourceCode", "source", "query")
                 )
-                shared_cache_key = self._shared_read_cache_key(
-                    "committed-nqe-query",
-                    repository,
-                    query_path,
-                    commit_id,
-                    self._shared_query_read_generation(),
+                if not require_source_code or has_source:
+                    query = dict(indexed_query)
+                    query.setdefault("repository", repository)
+                    query.setdefault("intent", "")
+                    query.setdefault("lastCommitId", "")
+                    cache_key = (
+                        repository,
+                        query_path,
+                        commit_id,
+                        bool(require_source_code),
+                    )
+                    self._committed_nqe_query_cache[cache_key] = dict(query)
+                    shared_cache_key = self._shared_read_cache_key(
+                        "committed-nqe-query",
+                        repository,
+                        query_path,
+                        commit_id,
+                        bool(require_source_code),
+                        self._shared_query_read_generation(),
+                    )
+                    self._shared_read_cache_set(shared_cache_key, dict(query))
+                    return query
+                commit_id = (
+                    str(indexed_query.get("lastCommitId") or commit_id).strip()
+                    or "head"
                 )
-                self._shared_read_cache_set(shared_cache_key, dict(query))
-                return query
-        cache_key = (repository, query_path, commit_id)
+
+        cache_key = (repository, query_path, commit_id, bool(require_source_code))
         shared_cache_key = self._shared_read_cache_key(
             "committed-nqe-query",
             repository,
             query_path,
             commit_id,
+            bool(require_source_code),
             self._shared_query_read_generation(),
         )
         cached_query = self._committed_nqe_query_cache.get(cache_key)
@@ -1145,6 +1235,24 @@ class ForwardClient:
                 records.append(json.loads(json.dumps(item)))
         return records, data.get("totalNumItems")
 
+    def _parse_nqe_lines(self, text):
+        records = []
+        for line in io.StringIO(str(text or "")):
+            line = line.rstrip("\r\n")
+            if not line:
+                continue
+            records.append(json.loads(line))
+        return records, None
+
+    def _parse_nqe_async_result(self, response):
+        content_type = str(
+            (getattr(response, "headers", {}) or {}).get("content-type") or ""
+        ).lower()
+        if "jsonl" in content_type or "ndjson" in content_type:
+            return self._parse_nqe_lines(getattr(response, "text", ""))
+        payload = response.json() or {}
+        return self._parse_nqe_records(payload)
+
     def _parse_nqe_diff_rows(self, data):
         rows = data.get("rows") or []
         parsed_rows = []
@@ -1246,6 +1354,7 @@ class ForwardClient:
 
     def _wait_for_nqe_async_completion(self, *, network_id, execution_key, status):
         current_status = status or {}
+        poll_ceiling = self.nqe_async_poll_interval_seconds
         for poll_index in range(self.nqe_async_max_polls + 1):
             state = self._nqe_async_status_state(current_status)
             outcome = self._nqe_async_outcome(current_status)
@@ -1259,8 +1368,12 @@ class ForwardClient:
                 )
             if poll_index >= self.nqe_async_max_polls:
                 break
-            if self.nqe_async_poll_interval_seconds:
-                time.sleep(self.nqe_async_poll_interval_seconds)
+            if poll_ceiling:
+                # Exponential backoff: 0.1s → 0.2 → 0.4 → 0.8 → ceiling.
+                # Fast queries return in <0.1s; slow ones plateau at the
+                # configured ceiling so the poll budget stays meaningful.
+                sleep_seconds = min(poll_ceiling, 0.1 * (2 ** poll_index))
+                time.sleep(sleep_seconds)
             current_status = self._get_nqe_async_status(
                 network_id=network_id,
                 execution_key=execution_key,
@@ -1288,8 +1401,11 @@ class ForwardClient:
                 execution_key=quote(str(execution_key), safe=""),
             ),
             params={"offset": offset, "limit": limit},
+            headers={
+                "Accept": "application/x-ndjson, application/jsonl;q=0.9, application/json;q=0.1"
+            },
         )
-        return self._parse_nqe_records(response.json() or {})
+        return self._parse_nqe_async_result(response)
 
     def run_nqe_query(
         self,
