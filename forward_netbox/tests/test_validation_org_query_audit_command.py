@@ -410,6 +410,43 @@ class ValidationOrgQueryAuditTest(TestCase):
         builtin_query_repository_sync_summary.assert_called_once()
         self.assertIn('"status": "pass"', stream.getvalue())
 
+    def test_command_repair_with_overwrite_flag_passes_overwrite_true(self):
+        source_client = Mock()
+        source_client.get_nqe_repository_query_index.return_value = {
+            "rows": [],
+            "by_path": {},
+        }
+
+        with patch(
+            "forward_netbox.management.commands.forward_validation_org_query_audit.ForwardSource.validate_connection"
+        ), patch(
+            "forward_netbox.management.commands.forward_validation_org_query_audit.ForwardSource.get_client",
+            return_value=source_client,
+        ), patch(
+            "forward_netbox.management.commands.forward_validation_org_query_audit.publish_builtin_nqe_map_queries"
+        ) as publish_builtin_nqe_map_queries, patch(
+            "forward_netbox.management.commands.forward_validation_org_query_audit.builtin_query_repository_sync_summary"
+        ) as builtin_query_repository_sync_summary:
+            publish_builtin_nqe_map_queries.return_value = []
+            builtin_query_repository_sync_summary.return_value = {
+                "status": "pass",
+                "gaps": [],
+                "gate_status": "proved",
+            }
+
+            call_command(
+                "forward_validation_org_query_audit",
+                "--url", "https://fwd.app",
+                "--username", "user@example.com",
+                "--password", "secret",
+                "--network-id", "network-1",
+                "--repair",
+                "--overwrite",
+            )
+
+        publish_builtin_nqe_map_queries.assert_called_once()
+        self.assertTrue(publish_builtin_nqe_map_queries.call_args.kwargs["overwrite"])
+
     def test_command_fail_on_gap_raises(self):
         source_client = Mock()
         source_client.get_nqe_repository_query_index.return_value = {
