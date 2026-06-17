@@ -100,16 +100,15 @@ Ordered by ROI. Each tranche is independently shippable.
 
 ### Tranche B — fetch/apply pipelining and update batching (medium)
 
-4. **Batch updates on the adapter path.** ✅ DONE
-   `apply_model_rows` activates `runner._adapter_update_queue = {}` before the
-   row loop. `coalesce_update_or_create` checks for the queue and enqueues
-   `(obj, fields)` instead of calling `save()`. After the loop, objects are
-   flushed via `bulk_update(batch_size=1000)` grouped by dirty-field set.
-   Creates and relationship side-effects remain per-row.
-
-   Semantics note: update failures in the flush phase abort the batch for that
-   field-set group, not individual rows. Row-level rollback applies only to
-   in-loop operations (creates, M2M, etc.).
+4. **Batch updates on the adapter path.** ❌ REVERTED — wrong approach.
+   Batching updates via `bulk_update` skips Django `post_save`, which skips
+   `ObjectChange` creation and therefore removes the update from Branching diff
+   review. **Updates must go through the Branching framework** (per-row
+   `save()` → signals → changelog). Bulk fast-path writes are acceptable only
+   for **initial load** (creates / `FAST_BOOTSTRAP`), not for updates.
+   The correct way to cut update-side load is to **fetch fewer rows** (NQE
+   diffs — see "Server Load Reduction" below), never to bypass per-row writes.
+   Guarded by `test_apply_dcim_interface_update_records_object_change`.
 
 5. **Suppress webhook / event-rule signals during the apply loop.** ✅ DONE
    `suppress_ingest_side_effect_signals()` in `ingestion_merge.py` is the
@@ -158,6 +157,49 @@ Ordered by ROI. Each tranche is independently shippable.
     can feed directly into the update queue without a full intermediate list,
     overlapping fetch and apply for large result sets.
 
+## Server Load Reduction (Forward API / NQE)
+
+Distinct goal from write speed: minimize load on the Forward server. The write
+path (NetBox-side) and the read path (Forward-side) are optimized separately.
+Updates write through the Branching framework per-row (for change review); the
+read-side savings come from fetching less and calling the API less.
+
+Levers and current state:
+
+1. **Parameterized, committed query_ids.** ✅ Present.
+   Specs carry `query_id` / `resolved_query_id` + `merged_parameters`
+   (`query_registry.py:41-83`). Raw query text is resolved to a committed
+   `queryId` via the org repo. Required so NQE diffs are eligible.
+   - TODO: audit all built-in maps so every query resolves to a `query_id`
+     (any raw-text-only query disqualifies that model from diffs → forces full
+     fetch every sync).
+
+2. **Async NQE executions.** ✅ Done.
+   `/nqe-executions` trigger → backoff poll → ndjson result.
+
+3. **NQE diffs for updates.** ✅ Wired, verify coverage.
+   When a baseline ingestion exists and the spec has `run_query_id`,
+   `sync_execution.py:130` runs `run_nqe_diff` against
+   `/nqe-diffs/{before}/{after}` and fetches only changed rows. Diff rows split
+   into upserts + deletes. Falls back to full only when no `query_id` or no
+   baseline.
+   - This is the primary update-side load reduction. Confirm on live ORG that
+     re-syncs actually take the diff path (not full) for the high-cardinality
+     models.
+
+4. **Only call the API when necessary.** ⚠️ Gap.
+   Read cache (snapshot metrics, org queries) and latest-processed catch-up
+   exist. But when the current snapshot equals the last successful baseline
+   snapshot, `sync_execution.py:116` still runs **full** queries for every
+   model — re-fetching unchanged data.
+   - TODO: when `current_snapshot == latest_baseline.snapshot` and the sync is
+     not an explicit/forced re-run, **skip query execution entirely** (no-op
+     sync, mark completed). Gate behind an `adhoc`/force flag so manual
+     re-syncs still work. Biggest single API-load win for scheduled syncs on a
+     stable snapshot.
+   - TODO: avoid re-fetching the snapshot list + metrics when already cached for
+     the run.
+
 ## Validation
 
 - `python -m pytest forward_netbox/tests/test_forward_api.py` (poll backoff,
@@ -196,10 +238,13 @@ Ordered by ROI. Each tranche is independently shippable.
 - ipaddress before interface for bulk promotion: higher impact-to-risk ratio.
   However, GenericFK complexity in `apply_ipam_ipaddress` blocks a clean bulk
   spec; deferred until B4 batch-update proves stable in production.
-- B4 update-batch semantics: update failures abort the bulk_update batch for
-  that field-set group, not individual rows. Per-row transaction.atomic() covers
-  only in-loop operations (creates, M2M). Accepted trade-off given signal
-  suppression already removes most per-row overhead.
+- **Updates go through the Branching framework, always.** Per-row `save()` so
+  `post_save` fires and `ObjectChange` records the update for Branching diff
+  review. Never batch updates via `bulk_update` (it skips signals → no
+  changelog). Bulk fast-path is for initial load (creates / FAST_BOOTSTRAP)
+  only. B4 (batch updates on the adapter path) was implemented then reverted
+  for this reason. Update-side load is reduced by fetching fewer rows (NQE
+  diffs), not by changing how writes happen.
 - B6 targeted validation applied to bulk engine UPDATE path only; CREATE path
   keeps full_clean() to catch uniqueness violations on new objects.
 - D9 reachability trigger implemented at the client layer; sync-runner wiring
