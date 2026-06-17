@@ -32,7 +32,9 @@ from .fetch_artifacts import load_runtime_artifact
 from .fetch_artifacts import sanitize_fetch_artifact_metadata
 from .fetch_artifacts import save_fetch_artifact
 from .fetch_artifacts import save_runtime_artifact
+from .forward_api import build_device_tag_scope_where
 from .forward_api import DEFAULT_QUERY_FETCH_CONCURRENCY
+from .forward_api import LATEST_COLLECTED_SNAPSHOT
 from .forward_api import LATEST_PROCESSED_SNAPSHOT
 from .forward_api import MAX_QUERY_FETCH_CONCURRENCY
 from .model_contracts import architecture_default_coalesce_fields_for_model
@@ -491,20 +493,14 @@ class ForwardQueryFetcher:
     ) -> tuple[set[str], set[str]]:
         if not include_tags and not exclude_tags:
             return set(), set()
+        scope_where = build_device_tag_scope_where(
+            include_tags, exclude_tags, include_match
+        )
         where = [
             "where device.snapshotInfo.result == DeviceSnapshotResult.completed",
             "where device.platform.vendor != Vendor.FORWARD_CUSTOM",
+            *scope_where,
         ]
-        include_exprs = [
-            f"{_nqe_string_literal(tag)} in device.tagNames" for tag in include_tags
-        ]
-        if include_exprs:
-            if include_match == "all":
-                where.extend([f"where {expr}" for expr in include_exprs])
-            else:
-                where.append(f"where ({' || '.join(include_exprs)})")
-        for tag in exclude_tags:
-            where.append(f"where !({_nqe_string_literal(tag)} in device.tagNames)")
         query = "\n".join(
             [
                 "foreach device in network.devices",
@@ -541,12 +537,82 @@ class ForwardQueryFetcher:
             site_slug = slugify(site)
             if site_slug:
                 sites.add(site_slug)
-        self.logger.log_info(
-            f"Resolved device tag scope with {len(names)} matched devices "
-            f"(include={include_tags or ['-']}, include_match={include_match}, exclude={exclude_tags or ['-']}).",
-            obj=self.sync,
-        )
+        if names:
+            self.logger.log_info(
+                f"Resolved device tag scope with {len(names)} matched devices "
+                f"(include={include_tags or ['-']}, include_match={include_match}, "
+                f"exclude={exclude_tags or ['-']}).",
+                obj=self.sync,
+            )
+        else:
+            self._warn_if_scope_all_backfilled(
+                network_id=network_id,
+                snapshot_id=snapshot_id,
+                scope_where=scope_where,
+                include_tags=include_tags,
+                exclude_tags=exclude_tags,
+                include_match=include_match,
+            )
         return names, sites
+
+    def _warn_if_scope_all_backfilled(
+        self,
+        *,
+        network_id: str,
+        snapshot_id: str,
+        scope_where: list[str],
+        include_tags: list[str],
+        exclude_tags: list[str],
+        include_match: str,
+    ) -> None:
+        """Distinguish "tag matched nothing" from "every match was backfilled".
+
+        Re-probes the same tag scope without the ``completed`` collection filter.
+        When that returns devices, the scope matches real devices that were all
+        backfilled (collection canceled), so the sync would silently apply zero
+        changes. Emit a warning so the cause is visible and point at the
+        latestCollected selector. Best-effort: probe failures are swallowed so
+        they never mask the (already-empty) scope result.
+        """
+        scope_label = (
+            f"include={include_tags or ['-']}, include_match={include_match}, "
+            f"exclude={exclude_tags or ['-']}"
+        )
+        probe_query = "\n".join(
+            [
+                "foreach device in network.devices",
+                "where device.platform.vendor != Vendor.FORWARD_CUSTOM",
+                *scope_where,
+                "select {name: device.name}",
+            ]
+        )
+        try:
+            probe_rows = self.client.run_nqe_query(
+                query=probe_query,
+                network_id=network_id,
+                snapshot_id=snapshot_id,
+                limit=1,
+                fetch_all=False,
+            )
+        except (ForwardClientError, ForwardConnectivityError, ForwardQueryError):
+            probe_rows = []
+        any_backfilled = any(str(row.get("name") or "").strip() for row in probe_rows)
+        if any_backfilled:
+            self.logger.log_warning(
+                "Resolved device tag scope with 0 collected devices "
+                f"({scope_label}) in snapshot {snapshot_id}, but matching devices "
+                "exist that were backfilled because collection was canceled. "
+                "Nothing will sync from this snapshot. Switch the sync snapshot "
+                "selector to `latestCollected` to fall back to the most recent "
+                "snapshot with collected devices, pin a specific snapshot, or "
+                "re-run collection in Forward.",
+                obj=self.sync,
+            )
+        else:
+            self.logger.log_info(
+                f"Resolved device tag scope with 0 matched devices ({scope_label}).",
+                obj=self.sync,
+            )
 
     def run_preflight(
         self,
@@ -1476,7 +1542,11 @@ class ForwardQueryFetcher:
         snapshot_id: str,
         branch_run_state: dict[str, Any],
     ) -> dict[str, Any]:
-        if snapshot_selector == snapshot_id or branch_run_state:
+        if (
+            snapshot_selector == snapshot_id
+            or snapshot_selector == LATEST_COLLECTED_SNAPSHOT
+            or branch_run_state
+        ):
             for snapshot in self.client.get_snapshots(network_id):
                 if snapshot["id"] == snapshot_id:
                     return {

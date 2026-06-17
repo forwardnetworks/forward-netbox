@@ -4,6 +4,7 @@ from ..exceptions import ForwardConnectivityError
 from ..exceptions import ForwardQueryError
 from ..exceptions import ForwardSyncDataError
 from .apply_engine import select_apply_engine
+from .forward_api import LATEST_COLLECTED_SNAPSHOT
 from .ingestion_merge import suppress_ingest_side_effect_signals
 from .model_contracts import architecture_default_coalesce_fields_for_model
 from .query_registry import get_query_specs
@@ -29,7 +30,14 @@ def run_sync_stage(runner):
         )
 
     snapshot_info = {}
-    if snapshot_selector == snapshot_id:
+    # latestCollected resolves to a concrete snapshot that is not the
+    # latestProcessed snapshot, so look its metadata up by id alongside a fixed
+    # selector. Only the plain latestProcessed selector reads the latest
+    # processed snapshot directly.
+    if (
+        snapshot_selector == snapshot_id
+        or snapshot_selector == LATEST_COLLECTED_SNAPSHOT
+    ):
         for snapshot in runner.client.get_snapshots(network_id):
             if snapshot["id"] == snapshot_id:
                 snapshot_info = {

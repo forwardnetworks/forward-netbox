@@ -40,6 +40,7 @@ from .utilities.forward_api import DEFAULT_QUERY_DIAGNOSTICS_ENABLED
 from .utilities.forward_api import DEFAULT_QUERY_FETCH_CONCURRENCY
 from .utilities.forward_api import DEFAULT_QUERY_PREFLIGHT_ENABLED
 from .utilities.forward_api import FORWARD_SAAS_API_HARD_BLOCK_REQUESTS_PER_MINUTE
+from .utilities.forward_api import LATEST_COLLECTED_SNAPSHOT
 from .utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from .utilities.forward_api import MAX_FORWARD_API_REQUESTS_PER_MINUTE
 from .utilities.forward_api import MAX_NQE_ASYNC_MAX_POLLS
@@ -76,6 +77,8 @@ def _snapshot_selected_choice(selected_value):
     choices = []
     if selected_value == LATEST_PROCESSED_SNAPSHOT:
         choices.append((LATEST_PROCESSED_SNAPSHOT, "latestProcessed"))
+    elif selected_value == LATEST_COLLECTED_SNAPSHOT:
+        choices.append((LATEST_COLLECTED_SNAPSHOT, "latestCollected (skip backfilled)"))
     elif selected_value:
         choices.append((selected_value, selected_value))
     return choices
@@ -1173,7 +1176,11 @@ class ForwardSyncForm(NetBoxModelForm):
             )
         snapshot_id = cleaned.get("snapshot_id") or LATEST_PROCESSED_SNAPSHOT
         self.fields["snapshot_id"].choices = _snapshot_selected_choice(snapshot_id)
-        if source and snapshot_id != LATEST_PROCESSED_SNAPSHOT:
+        dynamic_snapshot_selectors = {
+            LATEST_PROCESSED_SNAPSHOT,
+            LATEST_COLLECTED_SNAPSHOT,
+        }
+        if source and snapshot_id not in dynamic_snapshot_selectors:
             snapshot_ids = {
                 snapshot["id"]
                 for snapshot in source.get_client().get_snapshots(network_id)
