@@ -357,19 +357,34 @@ class ForwardSyncRunnerAdapterMixin:
             manufacturer = self._ensure_manufacturer(
                 {"name": row["manufacturer"], "slug": row["manufacturer_slug"]}
             )
-        platform_values = {
+        coalesce_sets = self._coalesce_sets_for(
+            "dcim.platform",
+            [("slug",), ("name",)],
+        )
+        create_values = {
             "name": row["name"],
             "slug": row["slug"],
             "manufacturer": manufacturer,
         }
-        platform, _ = self._upsert_values_from_defaults(
+        # Preserve existing manufacturer on UPDATE — only set it on CREATE so
+        # operators can override the NQE-sourced manufacturer in NetBox without
+        # the next sync overwriting their change.
+        update_values = {
+            "name": row["name"],
+            "slug": row["slug"],
+        }
+        lookups = [
+            sync_coalesce_lookup(create_values, *coalesce_set)
+            for coalesce_set in coalesce_sets
+        ]
+        lookups = [lk for lk in lookups if lk]
+        platform, _ = sync_coalesce_upsert(
+            self,
             "dcim.platform",
             Platform,
-            values=platform_values,
-            coalesce_sets=self._coalesce_sets_for(
-                "dcim.platform",
-                [("slug",), ("name",)],
-            ),
+            coalesce_lookups=lookups,
+            create_values=create_values,
+            update_values=update_values,
         )
         return platform
 
