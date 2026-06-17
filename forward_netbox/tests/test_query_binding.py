@@ -820,6 +820,10 @@ class NQEMapBindingTest(TestCase):
                 ]
             },
         }
+        # _committed_query_by_path falls back to get_nqe_query_history when the
+        # map record has no commit_id; return empty so it proceeds to
+        # get_committed_nqe_query where the source comparison is made.
+        client.get_nqe_query_history.return_value = []
         # Committed source matches bundled compiled source — no edit needed.
         client.get_committed_nqe_query.return_value = {
             "queryId": "OQ_devices",

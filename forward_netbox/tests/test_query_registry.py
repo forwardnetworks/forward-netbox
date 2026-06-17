@@ -609,12 +609,14 @@ class QueryRegistryTest(TestCase):
         )
 
     def test_platform_queries_normalize_aci_apic_and_cimc_platforms(self):
-        normalized_query_names = [
-            ("dcim.platform", "Forward Platforms"),
+        # Forward Devices queries delegate to normalizeDevicePlatformName; the
+        # platform query calls normalizePlatformName directly (more robust for
+        # unsupported vendor/OS combos that lack a full device context).
+        device_query_names = [
             ("dcim.device", "Forward Devices"),
             ("dcim.device", "Forward Devices with NetBox Device Type Aliases"),
         ]
-        for model_string, query_name in normalized_query_names:
+        for model_string, query_name in device_query_names:
             spec = get_seeded_builtin_query_spec(model_string, query_name)
             self.assertIn(
                 "normalizeDevicePlatformName(device)",
@@ -630,9 +632,17 @@ class QueryRegistryTest(TestCase):
         platform_spec = get_seeded_builtin_query_spec(
             "dcim.platform", "Forward Platforms"
         )
+        # Forward Platforms calls normalizePlatformName directly so it works for
+        # ACI/APIC/CIMC devices whose vendor enum may not resolve via device context.
         self.assertIn(
+            "normalizePlatformName(toString(device.platform.os),",
+            platform_spec.query,
+            msg="Forward Platforms no longer calls normalizePlatformName directly.",
+        )
+        self.assertNotIn(
             "normalizeDevicePlatformName(device)",
             platform_spec.query,
+            msg="Forward Platforms should not use normalizeDevicePlatformName — it must call normalizePlatformName directly.",
         )
         utilities = read_builtin_query_source("netbox_utilities.nqe")
         self.assertIn(
