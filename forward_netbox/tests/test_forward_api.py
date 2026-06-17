@@ -58,6 +58,87 @@ class ForwardClientTest(TestCase):
         response.json.return_value = data
         return response
 
+    def test_get_latest_collected_snapshot_id_skips_backfilled_newest_first(self):
+        self.client.get_snapshots = Mock(
+            return_value=[
+                {"id": "snap-old", "state": "PROCESSED", "processed_at": "2026-06-15"},
+                {"id": "snap-new", "state": "PROCESSED", "processed_at": "2026-06-17"},
+                {"id": "snap-mid", "state": "PROCESSED", "processed_at": "2026-06-16"},
+                {"id": "snap-unprocessed", "state": "PROCESSING", "processed_at": ""},
+            ]
+        )
+        # snap-new (newest) is all-backfilled -> probe returns nothing;
+        # snap-mid has a collected in-scope device.
+        probe_results = {
+            "snap-new": [],
+            "snap-mid": [{"name": "device-1"}],
+        }
+        self.client.run_nqe_query = Mock(
+            side_effect=lambda **kwargs: probe_results.get(kwargs["snapshot_id"], [])
+        )
+
+        snapshot_id = self.client.get_latest_collected_snapshot_id(
+            "net-1", include_tags=["Prod_Core"], include_match="any"
+        )
+
+        self.assertEqual(snapshot_id, "snap-mid")
+        probed = [
+            call.kwargs["snapshot_id"] for call in self.client.run_nqe_query.mock_calls
+        ]
+        # Newest first, unprocessed skipped, stops once collected snapshot found.
+        self.assertEqual(probed, ["snap-new", "snap-mid"])
+        # Probe carries the completed filter and the tag scope.
+        probe_query = self.client.run_nqe_query.mock_calls[0].kwargs["query"]
+        self.assertIn("DeviceSnapshotResult.completed", probe_query)
+        self.assertIn('"Prod_Core" in device.tagNames', probe_query)
+
+    def test_get_latest_collected_snapshot_id_raises_when_all_backfilled(self):
+        self.client.get_snapshots = Mock(
+            return_value=[
+                {"id": "snap-a", "state": "PROCESSED", "processed_at": "2026-06-17"},
+                {"id": "snap-b", "state": "PROCESSED", "processed_at": "2026-06-16"},
+            ]
+        )
+        self.client.run_nqe_query = Mock(return_value=[])
+
+        with self.assertRaises(ForwardClientError) as ctx:
+            self.client.get_latest_collected_snapshot_id(
+                "net-1", include_tags=["Prod_Core"]
+            )
+
+        self.assertIn("backfilled", str(ctx.exception).lower())
+        self.assertEqual(self.client.run_nqe_query.call_count, 2)
+
+    def test_get_latest_collected_snapshot_id_respects_scan_limit(self):
+        self.client.get_snapshots = Mock(
+            return_value=[
+                {
+                    "id": f"snap-{i}",
+                    "state": "PROCESSED",
+                    "processed_at": f"2026-06-{20 - i:02d}",
+                }
+                for i in range(5)
+            ]
+        )
+        self.client.run_nqe_query = Mock(return_value=[])
+
+        with self.assertRaises(ForwardClientError):
+            self.client.get_latest_collected_snapshot_id("net-1", scan_limit=2)
+
+        self.assertEqual(self.client.run_nqe_query.call_count, 2)
+
+    def test_get_latest_collected_snapshot_id_raises_without_processed_snapshots(self):
+        self.client.get_snapshots = Mock(
+            return_value=[{"id": "snap-x", "state": "PROCESSING", "processed_at": ""}]
+        )
+        self.client.run_nqe_query = Mock(return_value=[])
+
+        with self.assertRaises(ForwardClientError) as ctx:
+            self.client.get_latest_collected_snapshot_id("net-1")
+
+        self.assertIn("processed snapshot", str(ctx.exception).lower())
+        self.client.run_nqe_query.assert_not_called()
+
     def test_api_request_rate_limit_defaults_for_forward_saas(self):
         self.assertEqual(self.client.api_requests_per_minute, 1800)
         self.assertAlmostEqual(self.client._api_request_min_interval, 1 / 30)
