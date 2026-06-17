@@ -116,11 +116,13 @@ Ordered by ROI. Each tranche is independently shippable.
    phase delegate to it. Disconnects `assign_virtualchassis_master`,
    `sync_cached_scope_fields`, and `notify_object_changed` for the duration.
 
-6. **Targeted validation instead of full `full_clean()`.** ✅ DONE (bulk engine)
-   `apply_engine_bulk.py` UPDATE path now calls `clean_fields()` + `clean()`
-   instead of `full_clean()` for existing objects, skipping the DB-hitting
-   `validate_unique()` and `validate_constraints()`. CREATE path keeps
-   `full_clean()` since new objects need uniqueness validation.
+6. **Targeted validation instead of full `full_clean()`.** ✅ DONE (both bulk engine paths)
+   `apply_engine_bulk.py` UPDATE path in both `bulk_orm_apply_simple_models` and
+   `bulk_orm_apply_tree_models` now calls `clean_fields()` + `clean()` instead of
+   `full_clean()` for existing objects, skipping the DB-hitting `validate_unique()`
+   and `validate_constraints()`. CREATE path keeps `full_clean()` since new objects
+   need uniqueness validation. Covered by `test_bulk_orm_update_uses_targeted_validation_not_full_clean`
+   and `test_bulk_orm_create_uses_full_clean`.
 
 ### Tranche C — extend bulk coverage up the priority list (higher effort)
 
