@@ -857,7 +857,7 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
         )
 
         try:
-            from extras.signals import notify_object_changed
+            from extras.signals import notify_object_changed  # noqa: F401
         except ImportError:
             self.skipTest("notify_object_changed not available in this NetBox version")
 
