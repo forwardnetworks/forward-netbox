@@ -2105,7 +2105,9 @@ class ForwardClientTest(TestCase):
         )
         self.client._request = Mock(
             side_effect=[
-                ForwardClientError(f"Forward API request failed with HTTP 409: {conflict_body}"),
+                ForwardClientError(
+                    f"Forward API request failed with HTTP 409: {conflict_body}"
+                ),
                 self._response({}),
                 self._response("commit-2"),
             ]
@@ -2120,7 +2122,9 @@ class ForwardClientTest(TestCase):
         calls = self.client._request.call_args_list
         # First call: original paths (both)
         self.assertIn("/netbox/forward_devices", calls[0].kwargs["json_body"]["paths"])
-        self.assertIn("/netbox/forward_interfaces", calls[0].kwargs["json_body"]["paths"])
+        self.assertIn(
+            "/netbox/forward_interfaces", calls[0].kwargs["json_body"]["paths"]
+        )
         # Retry call: no-change path stripped, changed path kept
         retry_paths = calls[1].kwargs["json_body"]["paths"]
         self.assertNotIn("/netbox/forward_devices", retry_paths)
@@ -2128,7 +2132,9 @@ class ForwardClientTest(TestCase):
 
     def test_commit_org_nqe_queries_reraises_non_409_client_errors(self):
         self.client._request = Mock(
-            side_effect=ForwardClientError("Forward API request failed with HTTP 500: server error")
+            side_effect=ForwardClientError(
+                "Forward API request failed with HTTP 500: server error"
+            )
         )
 
         with self.assertRaises(ForwardClientError) as ctx:
@@ -2139,7 +2145,9 @@ class ForwardClientTest(TestCase):
 
         self.assertIn("HTTP 500", str(ctx.exception))
 
-    def test_commit_org_nqe_queries_reraises_409_without_invalid_change_path_reason(self):
+    def test_commit_org_nqe_queries_reraises_409_without_invalid_change_path_reason(
+        self,
+    ):
         self.client._request = Mock(
             side_effect=ForwardClientError(
                 'Forward API request failed with HTTP 409: {"reason": "CONFLICT"}'
