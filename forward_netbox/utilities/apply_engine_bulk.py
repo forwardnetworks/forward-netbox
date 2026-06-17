@@ -811,7 +811,10 @@ def bulk_orm_apply_tree_models(
                     setattr(existing, field_name, incoming)
                     changed = True
             if changed:
-                existing.full_clean()
+                # Existing objects already satisfy DB constraints; skip
+                # validate_unique/validate_constraints (both issue DB queries).
+                existing.clean_fields()
+                existing.clean()
                 existing.save()
                 runner.logger.increment_statistics(model_string, outcome="applied")
                 runner.events_clearer.increment()

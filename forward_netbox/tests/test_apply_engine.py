@@ -743,3 +743,144 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
 
         self.assertEqual(sync.parameters["max_changes_per_branch"], 42)
         self.assertEqual(sync.get_max_changes_per_branch(), 42)
+
+    def test_bulk_orm_update_uses_targeted_validation_not_full_clean(self):
+        """B6: bulk engine UPDATE path calls clean_fields() + clean() instead
+        of full_clean(). For existing objects, validate_unique() and
+        validate_constraints() (the extra steps in full_clean()) hit the DB
+        unnecessarily. Targeted validation skips them while preserving field-
+        and model-level validation.
+
+        Uses dcim.site (bulk_orm_apply_simple_models path). Lookup by slug
+        finds the existing site; renaming it triggers the UPDATE code path."""
+        self.sync.parameters["enable_bulk_orm"] = True
+        self.sync.save(update_fields=["parameters"])
+        Site.objects.create(name="Paris", slug="paris")
+        runner = self._runner()
+        engine = select_apply_engine(
+            sync=self.sync,
+            model_string="dcim.site",
+            backend="branching",
+        )
+
+        full_clean_calls = []
+        clean_fields_calls = []
+        clean_calls = []
+        original_full_clean = Site.full_clean
+        original_clean_fields = Site.clean_fields
+        original_clean = Site.clean
+
+        def tracking_full_clean(self_obj, *args, **kwargs):
+            full_clean_calls.append(self_obj.slug)
+            return original_full_clean(self_obj, *args, **kwargs)
+
+        def tracking_clean_fields(self_obj, *args, **kwargs):
+            clean_fields_calls.append(self_obj.slug)
+            return original_clean_fields(self_obj, *args, **kwargs)
+
+        def tracking_clean(self_obj, *args, **kwargs):
+            clean_calls.append(self_obj.slug)
+            return original_clean(self_obj, *args, **kwargs)
+
+        with (
+            patch.object(Site, "full_clean", tracking_full_clean),
+            patch.object(Site, "clean_fields", tracking_clean_fields),
+            patch.object(Site, "clean", tracking_clean),
+        ):
+            # Lookup is by slug "paris" → finds existing; name change triggers UPDATE path.
+            engine.apply_upserts(
+                runner,
+                "dcim.site",
+                [{"name": "Paris-Renamed", "slug": "paris"}],
+            )
+
+        self.assertNotIn(
+            "paris",
+            full_clean_calls,
+            "Bulk UPDATE must NOT call full_clean() on existing objects — "
+            "full_clean() runs validate_unique() which issues extra DB queries.",
+        )
+        self.assertIn(
+            "paris",
+            clean_fields_calls,
+            "Bulk UPDATE must call clean_fields() for field-level validation.",
+        )
+        self.assertIn(
+            "paris",
+            clean_calls,
+            "Bulk UPDATE must call clean() for model-level validation.",
+        )
+
+    def test_bulk_orm_create_uses_full_clean(self):
+        """Bulk CREATE path must keep full_clean() — new objects need
+        validate_unique() to catch uniqueness violations before insertion."""
+        self.sync.parameters["enable_bulk_orm"] = True
+        self.sync.save(update_fields=["parameters"])
+        runner = self._runner()
+        engine = select_apply_engine(
+            sync=self.sync,
+            model_string="dcim.site",
+            backend="branching",
+        )
+
+        full_clean_calls = []
+        original_full_clean = Site.full_clean
+
+        def tracking_full_clean(self_obj, *args, **kwargs):
+            full_clean_calls.append(self_obj.name)
+            return original_full_clean(self_obj, *args, **kwargs)
+
+        with patch.object(Site, "full_clean", tracking_full_clean):
+            engine.apply_upserts(
+                runner,
+                "dcim.site",
+                [{"name": "Tokyo", "slug": "tokyo"}],
+            )
+
+        self.assertIn(
+            "Tokyo",
+            full_clean_calls,
+            "Bulk CREATE must call full_clean() to catch uniqueness violations.",
+        )
+
+    def test_suppress_ingest_signals_disconnects_notify_object_changed(self):
+        """suppress_ingest_side_effect_signals() must disconnect
+        notify_object_changed from post_save so notification DB queries don't
+        fire per-object during ingest. Verified by comparing the post_save
+        receiver count before, inside, and after the context manager — inside
+        the context, the count must be lower (notify_object_changed removed),
+        and it must be restored on exit."""
+        from django.db.models import signals as django_signals
+
+        from forward_netbox.utilities.ingestion_merge import (
+            suppress_ingest_side_effect_signals,
+        )
+
+        try:
+            from extras.signals import notify_object_changed
+        except ImportError:
+            self.skipTest("notify_object_changed not available in this NetBox version")
+
+        def live_receiver_count():
+            django_signals.post_save._clear_dead_receivers()
+            return len(django_signals.post_save.receivers)
+
+        receivers_before = live_receiver_count()
+
+        with suppress_ingest_side_effect_signals():
+            receivers_inside = live_receiver_count()
+
+        receivers_after = live_receiver_count()
+
+        self.assertLess(
+            receivers_inside,
+            receivers_before,
+            "Inside suppress_ingest_side_effect_signals(), post_save must have "
+            "fewer receivers (notify_object_changed + others disconnected).",
+        )
+        self.assertEqual(
+            receivers_after,
+            receivers_before,
+            "After suppress_ingest_side_effect_signals() exits, post_save "
+            "receivers must be fully restored.",
+        )
