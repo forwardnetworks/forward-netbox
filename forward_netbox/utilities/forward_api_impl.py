@@ -1204,6 +1204,8 @@ class ForwardClient:
         return commit_id
 
     def commit_org_nqe_queries(self, *, query_paths, message):
+        import json as _json
+
         query_paths = [
             _normalize_nqe_query_path(query_path)
             for query_path in query_paths
@@ -1212,15 +1214,51 @@ class ForwardClient:
         if not query_paths:
             return ""
         self._invalidate_nqe_query_read_caches()
-        self._request(
-            "POST",
-            "/nqe/repos/org/commits",
-            json_body={
-                "paths": query_paths,
-                "accessSettings": [],
-                "message": _commit_message_payload(message),
-            },
-        )
+        try:
+            self._request(
+                "POST",
+                "/nqe/repos/org/commits",
+                json_body={
+                    "paths": query_paths,
+                    "accessSettings": [],
+                    "message": _commit_message_payload(message),
+                },
+            )
+        except ForwardClientError as exc:
+            msg = str(exc)
+            if "HTTP 409" not in msg or "INVALID_CHANGE_PATH" not in msg:
+                raise
+            # Some paths had no staged changes (API accepted the edit but content
+            # was already identical). Parse the no-change paths and retry without
+            # them so the real changes still get committed.
+            try:
+                json_start = msg.index("{")
+                body = _json.loads(msg[json_start:])
+                no_change_text = body.get("message", "")
+                prefix = "User has no changes at the following paths: "
+                if prefix in no_change_text:
+                    no_change_paths = {
+                        p.strip()
+                        for p in no_change_text[
+                            no_change_text.index(prefix) + len(prefix) :
+                        ].rstrip(".").split(",")
+                    }
+                    query_paths = [
+                        p for p in query_paths if p not in no_change_paths
+                    ]
+            except (ValueError, KeyError):
+                raise exc
+            if not query_paths:
+                return self.get_org_nqe_head_commit_id()
+            self._request(
+                "POST",
+                "/nqe/repos/org/commits",
+                json_body={
+                    "paths": query_paths,
+                    "accessSettings": [],
+                    "message": _commit_message_payload(message),
+                },
+            )
         return self.get_org_nqe_head_commit_id()
 
     def _parse_nqe_records(self, data):
