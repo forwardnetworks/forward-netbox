@@ -204,7 +204,9 @@ def run_sync_stage(runner):
                     )
                     engine.apply_upserts(runner, model_string, rows)
                     model_delete_rows.extend(delete_rows)
-                stats = runner.logger.log_data.get("statistics", {}).get(model_string, {})
+                stats = runner.logger.log_data.get("statistics", {}).get(
+                    model_string, {}
+                )
                 runner.logger.log_info(
                     f"Completed {model_string}: applied={stats.get('applied', 0)} failed={stats.get('failed', 0)} skipped={stats.get('skipped', 0)} total={stats.get('total', 0)}.",
                     obj=runner.sync,
