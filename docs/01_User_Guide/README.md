@@ -14,26 +14,28 @@ Forward 26.6 is the baseline for async NQE.
 Install the wheel from GitHub Releases into the same Python environment as NetBox:
 
 ```bash
-pip install /path/to/forward_netbox-1.4.2-py3-none-any.whl
+pip install /path/to/forward_netbox-1.5.0-py3-none-any.whl
 ```
 
 Alternatively, install directly from the GitHub source archive:
 
 ```bash
-pip install /path/to/forward_netbox-1.4.2.tar.gz
+pip install /path/to/forward_netbox-1.5.0.tar.gz
 ```
 
 If you mirror the package into a private Python index, pin the same release version:
 
 ```bash
-pip install --pre forward-netbox==1.4.2
+pip install forward-netbox==1.5.0
 ```
 
 ## Release Compatibility
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v1.4.2` | `4.5.9` and `4.6.2` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Current release; adds CIMC platform separation, visible query-drift repair and dependency preview on the sync detail page, and keeps the module-bay merge hardening plus parent-interface description preservation from the prior patch line. |
+| `v1.5.0` | `4.5.9` and `4.6.2` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Current release; hardens ingest throughput via adaptive async-NQE poll backoff, ndjson streaming, webhook/event-rule signal suppression during the apply loop, targeted validation (skips DB-hitting uniqueness checks on existing objects in both simple and tree-model bulk paths), and async advanced-reachability trigger (FWD-53559). Full test suite green on NetBox 4.5.9 (1092/0/0) and 4.6.2 (1092/0/26 routing-plugin version-gated). |
+| `v1.4.3` | `4.5.9` and `4.6.2` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v1.5.0`; hardens query-path provenance by requiring source-backed query-id repair at preflight, enforces async NQE source parsing for 26.6 execution paths, proves CIMC/APIC custom-command updates in source and keeps the 1.4 production-hardening line intact. |
+| `v1.4.2` | `4.5.9` and `4.6.2` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v1.4.3`; adds CIMC platform separation, visible query-drift repair and dependency preview on the sync detail page, and keeps the module-bay merge hardening plus parent-interface description preservation from the prior patch line. |
 | `v1.4.1.1` | `4.5.9` and `4.6.1` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v1.4.2`; prevents optional `dcim.module` sync from emitting merge-breaking `dcim.modulebay` side-effect creates when module bays are missing and prevents LAG member rows from clearing existing parent interface descriptions. |
 | `v1.4.1` | `4.5.9` and `4.6.1` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v1.4.2`; keeps the hard parent-device sync contract, adds query-ID drift remediation plus support-bundle diagnostics, and carries the 1.4 production-hardening tranche forward as the release line. |
 | `v1.4.0` | `4.5.9` and `4.6.1` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v1.4.1`; enforces a hard parent-device sync contract so child models cannot run without `dcim.device`, which prevents stale sync configs from skipping the device shard and breaking dependent imports. |
@@ -92,6 +94,8 @@ pip install --pre forward-netbox==1.4.2
 
 | Release | Summary |
 | --- | --- |
+| `v1.5.0` | Hardens ingest throughput: adaptive async-NQE poll backoff, ndjson streaming, webhook/event-rule signal suppression during apply, targeted validation on existing objects (skips DB-hitting uniqueness checks in both bulk engine paths), and async advanced-reachability trigger (FWD-53559). Full suite green on NetBox 4.5.9 and 4.6.2. |
+| `v1.4.3` | Hardens query provenance with source-backed query-id repair during preflight, adds async execution path readiness for 26.6 with resilient NDJSON/JSONL result handling, and proves CIMC/APIC platform/type updates from command-source evidence while preserving prior 1.4 protections. |
 | `v1.4.2` | Adds CIMC platform separation, visible query-drift repair and dependency preview on the sync detail page, and keeps module-bay merge hardening plus parent-interface description preservation. |
 | `v1.4.1.1` | Prevents optional module sync from creating `dcim.modulebay` side-effect changes during merge, skips missing module bays with a readiness/import warning, and keeps LAG member rows from clearing existing parent interface descriptions. |
 | `v1.4.1` | Publishes the 1.4 patch release line with query-ID drift remediation and support-bundle diagnostics on top of the parent-device contract and release surfaces. |
