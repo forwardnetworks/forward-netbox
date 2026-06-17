@@ -787,6 +787,59 @@ class NQEMapBindingTest(TestCase):
         self.assertEqual(query_map.query_id, "OQ_devices")
         self.assertEqual(query_map.commit_id, "commit-1")
 
+    def test_publish_builtin_queries_skips_edit_when_overwrite_source_unchanged(self):
+        netbox_model = ContentType.objects.get(app_label="dcim", model="device")
+        compiled_source = read_compiled_builtin_query_source("forward_devices.nqe")
+        query_map = ForwardNQEMap.objects.create(
+            name="Forward Devices",
+            netbox_model=netbox_model,
+            query=read_builtin_query_source("forward_devices.nqe"),
+            query_repository="org",
+            query_path="/forward_netbox_validation/forward_devices",
+        )
+        client = Mock()
+        client.get_nqe_repository_query_index.return_value = {
+            "rows": [
+                {
+                    "queryId": "OQ_devices",
+                    "path": "/forward_netbox_validation/forward_devices",
+                }
+            ],
+            "by_path": {
+                "/forward_netbox_validation/forward_devices": {
+                    "queryId": "OQ_devices",
+                    "path": "/forward_netbox_validation/forward_devices",
+                }
+            },
+            "by_query_id": {
+                "OQ_devices": [
+                    {
+                        "queryId": "OQ_devices",
+                        "path": "/forward_netbox_validation/forward_devices",
+                    }
+                ]
+            },
+        }
+        # Committed source matches bundled compiled source — no edit needed.
+        client.get_committed_nqe_query.return_value = {
+            "queryId": "OQ_devices",
+            "query": compiled_source,
+            "lastCommitId": "commit-1",
+            "path": "/forward_netbox_validation/forward_devices",
+        }
+
+        publish_builtin_nqe_map_queries(
+            client=client,
+            directory="/forward_netbox_validation/",
+            queryset=ForwardNQEMap.objects.filter(pk=query_map.pk),
+            commit_message="Publish",
+            pin_commit=False,
+            overwrite=True,
+        )
+
+        client.edit_org_nqe_query.assert_not_called()
+        client.commit_org_nqe_queries.assert_not_called()
+
     def test_refresh_query_ids_uses_map_name_to_resolve_same_model_candidates(self):
         netbox_model = ContentType.objects.get(app_label="dcim", model="device")
         query_map = ForwardNQEMap.objects.create(
