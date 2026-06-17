@@ -71,6 +71,14 @@ class Command(BaseCommand):
             ),
         )
         parser.add_argument(
+            "--overwrite",
+            action="store_true",
+            help=(
+                "When combined with --repair, overwrite existing queries that "
+                "differ from the bundled source (not just publish missing ones)."
+            ),
+        )
+        parser.add_argument(
             "--output-json",
             default="",
             help="Optional path to write the report JSON.",
@@ -94,7 +102,7 @@ class Command(BaseCommand):
                 client=client,
                 directory=options["directory"],
                 queryset=ForwardNQEMap.objects.select_related("netbox_model"),
-                overwrite=False,
+                overwrite=bool(options.get("overwrite")),
                 commit_message=options["commit_message"],
                 pin_commit=True,
             )
