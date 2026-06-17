@@ -9,6 +9,7 @@ from ..choices import ForwardExecutionBackendChoices
 from ..choices import ForwardSyncStatusChoices
 from ..exceptions import ForwardSyncError
 from .branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
+from .forward_api import LATEST_COLLECTED_SNAPSHOT
 from .forward_api import LATEST_PROCESSED_SNAPSHOT
 from .resumable_branching import enqueue_branch_stage_job
 from .sync_state import get_max_changes_per_branch as get_state_max_changes_per_branch
@@ -39,15 +40,47 @@ def normalize_forward_sync(sync):
     sync.parameters = parameters
 
 
+def _device_tag_scope(sync):
+    """Return (include_tags, exclude_tags, include_match) from the source params.
+
+    Mirrors the normalization used by the live query fetch path so the
+    latestCollected probe scopes to the same devices the sync would fetch.
+    """
+    source_parameters = dict(getattr(sync.source, "parameters", {}) or {})
+    include_tags = source_parameters.get("device_tag_include_tags") or []
+    exclude_tags = source_parameters.get("device_tag_exclude_tags") or []
+    if not include_tags and source_parameters.get("device_tag_include"):
+        include_tags = [source_parameters.get("device_tag_include")]
+    if not exclude_tags and source_parameters.get("device_tag_exclude"):
+        exclude_tags = [source_parameters.get("device_tag_exclude")]
+    include_tags = [str(tag).strip() for tag in include_tags if str(tag).strip()]
+    exclude_tags = [str(tag).strip() for tag in exclude_tags if str(tag).strip()]
+    include_match = str(
+        source_parameters.get("device_tag_include_match") or "any"
+    ).strip()
+    if include_match not in {"any", "all"}:
+        include_match = "any"
+    return include_tags, exclude_tags, include_match
+
+
 def resolve_snapshot_id(sync, client=None):
     snapshot_id = sync.get_snapshot_id()
-    if snapshot_id != LATEST_PROCESSED_SNAPSHOT:
+    if snapshot_id not in {LATEST_PROCESSED_SNAPSHOT, LATEST_COLLECTED_SNAPSHOT}:
         return snapshot_id
     client = client or sync.source.get_client()
     network_id = sync.get_network_id()
     if not network_id:
         raise ForwardSyncError(
-            "Forward sync requires a network on the source before resolving latestProcessed."
+            "Forward sync requires a network on the source before resolving "
+            f"{snapshot_id}."
+        )
+    if snapshot_id == LATEST_COLLECTED_SNAPSHOT:
+        include_tags, exclude_tags, include_match = _device_tag_scope(sync)
+        return client.get_latest_collected_snapshot_id(
+            network_id,
+            include_tags=include_tags,
+            exclude_tags=exclude_tags,
+            include_match=include_match,
         )
     return client.get_latest_processed_snapshot_id(network_id)
 

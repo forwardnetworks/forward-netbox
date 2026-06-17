@@ -1991,6 +1991,59 @@ class ForwardMultiBranchPlannerPreflightTest(TestCase):
             ["dcim.interface", "dcim.macaddress"],
         )
 
+    def test_resolve_scoped_tag_scope_warns_when_all_in_scope_backfilled(self):
+        client = Mock()
+        logger = Mock()
+        fetcher = ForwardQueryFetcher(sync=self.sync, client=client, logger_=logger)
+
+        def run_nqe(**kwargs):
+            # Main scope query applies the completed filter -> no collected rows.
+            if kwargs.get("fetch_all"):
+                return []
+            # Backfill probe (no completed filter) -> matching devices exist.
+            return [{"name": "backfilled-device"}]
+
+        client.run_nqe_query = Mock(side_effect=run_nqe)
+
+        names, sites = fetcher._resolve_scoped_tag_scope(
+            network_id="net-1",
+            snapshot_id="snap-1",
+            include_tags=["N.Patel"],
+            exclude_tags=[],
+            include_match="any",
+        )
+
+        self.assertEqual(names, set())
+        self.assertEqual(sites, set())
+        self.assertTrue(logger.log_warning.called)
+        warning_message = logger.log_warning.call_args.args[0]
+        self.assertIn("backfilled", warning_message.lower())
+        self.assertIn("latestCollected", warning_message)
+        # The plain "0 matched devices" info line must not fire in this case.
+        info_messages = [c.args[0] for c in logger.log_info.call_args_list]
+        self.assertFalse(any("0 matched devices" in msg for msg in info_messages))
+
+    def test_resolve_scoped_tag_scope_info_when_tag_matches_nothing(self):
+        client = Mock()
+        logger = Mock()
+        fetcher = ForwardQueryFetcher(sync=self.sync, client=client, logger_=logger)
+        # Both the scope query and the backfill probe return nothing -> the tag
+        # genuinely matches no devices; emit info, not a backfill warning.
+        client.run_nqe_query = Mock(return_value=[])
+
+        names, _sites = fetcher._resolve_scoped_tag_scope(
+            network_id="net-1",
+            snapshot_id="snap-1",
+            include_tags=["Nonexistent"],
+            exclude_tags=[],
+            include_match="any",
+        )
+
+        self.assertEqual(names, set())
+        self.assertFalse(logger.log_warning.called)
+        info_messages = [c.args[0] for c in logger.log_info.call_args_list]
+        self.assertTrue(any("0 matched devices" in msg for msg in info_messages))
+
     def test_fetch_workloads_can_skip_diagnostic_passes(self):
         client = Mock()
         logger = Mock()

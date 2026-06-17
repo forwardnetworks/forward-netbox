@@ -45,6 +45,7 @@ from forward_netbox.utilities.execution_ledger import discard_stage_branch_for_r
 from forward_netbox.utilities.execution_ledger import execution_run_support_bundle
 from forward_netbox.utilities.execution_ledger import prepare_stage_step_retry
 from forward_netbox.utilities.execution_ledger import reconcile_execution_run
+from forward_netbox.utilities.forward_api import LATEST_COLLECTED_SNAPSHOT
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from forward_netbox.utilities.query_binding import builtin_filename_to_query_default
 from forward_netbox.utilities.query_binding import query_filename_from_path
@@ -581,7 +582,12 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
                 "id": LATEST_PROCESSED_SNAPSHOT,
                 "name": "latestProcessed",
                 "display": "latestProcessed",
-            }
+            },
+            {
+                "id": LATEST_COLLECTED_SNAPSHOT,
+                "name": "latestCollected",
+                "display": "latestCollected (skip backfilled / collection-canceled)",
+            },
         ]
         try:
             source = ForwardSource.objects.get(pk=source_id)
