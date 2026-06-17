@@ -436,10 +436,14 @@ class ValidationOrgQueryAuditTest(TestCase):
 
             call_command(
                 "forward_validation_org_query_audit",
-                "--url", "https://fwd.app",
-                "--username", "user@example.com",
-                "--password", "secret",
-                "--network-id", "network-1",
+                "--url",
+                "https://fwd.app",
+                "--username",
+                "user@example.com",
+                "--password",
+                "secret",
+                "--network-id",
+                "network-1",
                 "--repair",
                 "--overwrite",
             )
