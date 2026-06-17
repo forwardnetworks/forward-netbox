@@ -846,7 +846,7 @@ class ForwardClient:
             if poll_index >= self.nqe_async_max_polls:
                 break
             if poll_ceiling:
-                sleep_seconds = min(poll_ceiling, 0.1 * (2 ** poll_index))
+                sleep_seconds = min(poll_ceiling, 0.1 * (2**poll_index))
                 time.sleep(sleep_seconds)
             self._record_api_usage("reachability_status_calls")
             response = self._request(
@@ -1372,7 +1372,7 @@ class ForwardClient:
                 # Exponential backoff: 0.1s → 0.2 → 0.4 → 0.8 → ceiling.
                 # Fast queries return in <0.1s; slow ones plateau at the
                 # configured ceiling so the poll budget stays meaningful.
-                sleep_seconds = min(poll_ceiling, 0.1 * (2 ** poll_index))
+                sleep_seconds = min(poll_ceiling, 0.1 * (2**poll_index))
                 time.sleep(sleep_seconds)
             current_status = self._get_nqe_async_status(
                 network_id=network_id,
