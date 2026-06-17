@@ -8332,12 +8332,18 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertEqual(ObjectChange.objects.count(), before_count)
 
     def test_apply_dcim_interface_update_records_object_change(self):
-        """Adapter-path UPDATES must go through the Branching framework
-        (per-row save → post_save → ObjectChange) so the change is visible in
-        Branching diff review. Guards against any future attempt to batch
-        updates via bulk_update, which skips post_save and silently drops the
-        changelog. Update-side load is reduced by fetching fewer rows (NQE
-        diffs), never by bypassing per-row writes."""
+        """Adapter-path UPDATES must go through per-row save() so that
+        post_save fires and the Branching framework can record the change.
+        Guards against bulk_update, which skips post_save and silently drops
+        the changelog. Update-side load is reduced by fetching fewer rows (NQE
+        diffs), never by bypassing per-row writes.
+
+        Note: ObjectChange creation also requires a web request in thread-local
+        storage (NetBox's handle_changed_object returns early when
+        current_request is None). We verify the invariant by asserting that
+        per-row save() is called — the mechanism that allows signals to fire —
+        rather than checking the ObjectChange count, which depends on request
+        context unavailable in unit tests."""
         device = self._create_device("device-1")
         Interface.objects.create(
             device=device,
@@ -8351,7 +8357,6 @@ class ForwardSyncRunnerTest(TestCase):
         runner = ForwardSyncRunner(
             sync=self.sync, ingestion=None, client=None, logger_=Mock()
         )
-        interface_type = ObjectType.objects.get_for_model(Interface)
         row = {
             "device": "device-1",
             "name": "Ethernet1/1",
@@ -8362,18 +8367,30 @@ class ForwardSyncRunnerTest(TestCase):
             "speed": 1000000,
         }
 
-        before_update_changes = ObjectChange.objects.filter(
-            changed_object_type=interface_type, action="update"
-        ).count()
-        runner._apply_model_rows("dcim.interface", [row])
+        from django.db.models.signals import post_save
+
+        post_save_fired = []
+
+        def capture_post_save(sender, instance, created, **kwargs):
+            if sender is Interface and not created:
+                post_save_fired.append(instance)
+
+        post_save.connect(capture_post_save, sender=Interface)
+        try:
+            runner._apply_model_rows("dcim.interface", [row])
+        finally:
+            post_save.disconnect(capture_post_save, sender=Interface)
 
         interface = Interface.objects.get(device=device, name="Ethernet1/1")
         self.assertEqual(interface.mtu, 9000)
         self.assertEqual(interface.description, "after")
-        after_update_changes = ObjectChange.objects.filter(
-            changed_object_type=interface_type, action="update"
-        ).count()
-        self.assertEqual(after_update_changes, before_update_changes + 1)
+        self.assertEqual(
+            len(post_save_fired),
+            1,
+            "post_save must fire once for the interface update so that "
+            "signals (including ObjectChange creation) can run. If this "
+            "fails, an update is using bulk_update which skips post_save.",
+        )
 
     def test_apply_dcim_interface_preserves_existing_description_when_source_is_blank(
         self,
