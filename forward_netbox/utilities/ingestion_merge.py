@@ -68,6 +68,7 @@ def suppress_ingest_side_effect_signals():
 
     try:
         from extras.signals import notify_object_changed as _notify_object_changed
+
         _notify_sender = None
         disconnect_pairs.append((_notify_object_changed, _notify_sender))
     except ImportError:  # pragma: no cover

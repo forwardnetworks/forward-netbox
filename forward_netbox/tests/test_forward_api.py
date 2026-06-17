@@ -1001,7 +1001,9 @@ class ForwardClientTest(TestCase):
             ]
         )
 
-        with patch("forward_netbox.utilities.forward_api_impl.time.sleep") as mock_sleep:
+        with patch(
+            "forward_netbox.utilities.forward_api_impl.time.sleep"
+        ) as mock_sleep:
             client.run_nqe_query(
                 query_id="Q_devices",
                 network_id="network-1",
@@ -1040,7 +1042,9 @@ class ForwardClientTest(TestCase):
             ]
         )
 
-        with patch("forward_netbox.utilities.forward_api_impl.time.sleep") as mock_sleep:
+        with patch(
+            "forward_netbox.utilities.forward_api_impl.time.sleep"
+        ) as mock_sleep:
             client.run_nqe_query(
                 query_id="Q_devices",
                 network_id="network-1",
@@ -2157,7 +2161,9 @@ class ForwardClientTest(TestCase):
             ]
         )
         with patch("forward_netbox.utilities.forward_api_impl.time.sleep"):
-            with self.assertRaisesRegex(ForwardClientError, "reachability computation failed"):
+            with self.assertRaisesRegex(
+                ForwardClientError, "reachability computation failed"
+            ):
                 self.client.trigger_snapshot_reachability(
                     network_id="net-1", snapshot_id="snap-1"
                 )
