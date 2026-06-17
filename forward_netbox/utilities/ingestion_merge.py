@@ -41,24 +41,59 @@ AUTO_MERGE_STALE_MERGE_REQUEUE_LIMIT = 4
 
 
 @contextmanager
-def suppress_branch_merge_side_effect_signals():
+def suppress_ingest_side_effect_signals():
+    """Suppress per-object post_save side effects that produce redundant work
+    during bulk ingest (apply and merge phases).
+
+    Suppressed:
+    - assign_virtualchassis_master (dcim): recalculates VC master on every
+      VirtualChassis save; meaningless mid-ingest, safe to defer.
+    - sync_cached_scope_fields (dcim): recalculates Site scope cache on every
+      Site save; batched naturally after ingest.
+    - notify_object_changed (extras): creates Notification rows per save for
+      subscribers; no operator subscribes to ingest-driven churn and the lookup
+      fires a DB query per object even with no subscribers.
+
+    Does NOT suppress core.signals.handle_changed_object (ObjectChange /
+    Branching diff tracking) — that is intentional and required for Branching
+    review.
+    """
     from dcim.signals import assign_virtualchassis_master
 
-    signals.post_save.disconnect(
-        assign_virtualchassis_master,
-        sender=VirtualChassis,
-    )
+    disconnect_pairs = [
+        (assign_virtualchassis_master, VirtualChassis),
+    ]
     if sync_cached_scope_fields is not None:
-        signals.post_save.disconnect(sync_cached_scope_fields, sender=Site)
+        disconnect_pairs.append((sync_cached_scope_fields, Site))
+
+    try:
+        from extras.signals import notify_object_changed as _notify_object_changed
+        _notify_sender = None
+        disconnect_pairs.append((_notify_object_changed, _notify_sender))
+    except ImportError:  # pragma: no cover
+        pass
+
+    for handler, sender in disconnect_pairs:
+        if sender is None:
+            signals.post_save.disconnect(handler)
+            signals.pre_delete.disconnect(handler)
+        else:
+            signals.post_save.disconnect(handler, sender=sender)
     try:
         yield
     finally:
-        signals.post_save.connect(
-            assign_virtualchassis_master,
-            sender=VirtualChassis,
-        )
-        if sync_cached_scope_fields is not None:
-            signals.post_save.connect(sync_cached_scope_fields, sender=Site)
+        for handler, sender in disconnect_pairs:
+            if sender is None:
+                signals.post_save.connect(handler)
+                signals.pre_delete.connect(handler)
+            else:
+                signals.post_save.connect(handler, sender=sender)
+
+
+@contextmanager
+def suppress_branch_merge_side_effect_signals():
+    with suppress_ingest_side_effect_signals():
+        yield
 
 
 def sync_merge_ingestion(ingestion, *, mark_baseline_ready=None, remove_branch=True):
