@@ -1,8 +1,10 @@
 from dataclasses import dataclass
 
+from django.apps import apps
 from django.db import transaction
 
 from ..models import ForwardNQEMap
+from .plugin_integrations.registry import optional_integration_for_model
 from .query_registry import BUILTIN_SEEDED_QUERY_MAPS
 from .query_registry import query_contract_summary_for_maps
 from .query_registry import read_builtin_query_source
@@ -38,6 +40,20 @@ def builtin_query_defaults_by_model() -> dict[str, list[dict]]:
             [],
         ).append(query_default)
     return query_defaults_by_model
+
+
+def builtin_query_defaults_for_validation(
+    query_defaults: list[dict] | None = None,
+) -> list[dict]:
+    selected_query_defaults = list(query_defaults or BUILTIN_SEEDED_QUERY_MAPS)
+    filtered_query_defaults = []
+    for query_default in selected_query_defaults:
+        model_string = str(query_default.get("model_string") or "").strip()
+        integration = optional_integration_for_model(model_string)
+        if integration and not apps.is_installed(integration.app_label):
+            continue
+        filtered_query_defaults.append(query_default)
+    return filtered_query_defaults
 
 
 def query_filename_from_path(query_path: str) -> str:
@@ -766,7 +782,7 @@ def builtin_query_repository_sync_summary(
     directory: str = "/forward_netbox_validation/",
     query_defaults: list[dict] | None = None,
 ) -> dict:
-    selected_query_defaults = list(query_defaults or BUILTIN_SEEDED_QUERY_MAPS)
+    selected_query_defaults = builtin_query_defaults_for_validation(query_defaults)
     selected_models = sorted(
         {
             str(query_default["model_string"])
