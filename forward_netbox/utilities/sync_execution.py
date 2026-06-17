@@ -4,6 +4,7 @@ from ..exceptions import ForwardConnectivityError
 from ..exceptions import ForwardQueryError
 from ..exceptions import ForwardSyncDataError
 from .apply_engine import select_apply_engine
+from .ingestion_merge import suppress_ingest_side_effect_signals
 from .model_contracts import architecture_default_coalesce_fields_for_model
 from .query_registry import get_query_specs
 from .query_registry import resolve_query_specs_for_client
@@ -85,164 +86,165 @@ def run_sync_stage(runner):
     used_full = False
     used_diff = False
 
-    for model_string in runner.sync.get_model_strings():
-        runner.logger.log_info(
-            f"Starting model ingestion for {model_string}.", obj=runner.sync
-        )
-        try:
-            specs = get_query_specs(model_string, maps=maps)
-            specs = resolve_query_specs_for_client(specs, runner.client)
-            if specs:
-                runner._model_coalesce_fields[model_string] = [
-                    list(field_set) for field_set in specs[0].coalesce_fields
-                ] or architecture_default_coalesce_fields_for_model(model_string)
-            else:
-                runner._model_coalesce_fields[model_string] = (
-                    architecture_default_coalesce_fields_for_model(model_string)
-                )
-            runner.logger.init_statistics(model_string, 0)
-            model_delete_rows = pending_deletes.setdefault(model_string, [])
-            latest_baseline = runner.sync.latest_baseline_ingestion(
-                exclude_ingestion_id=runner.ingestion.pk
+    with suppress_ingest_side_effect_signals():
+        for model_string in runner.sync.get_model_strings():
+            runner.logger.log_info(
+                f"Starting model ingestion for {model_string}.", obj=runner.sync
             )
-            model_baseline = runner.sync.incremental_diff_baseline(
-                specs=specs,
-                current_snapshot_id=snapshot_id,
-                exclude_ingestion_id=runner.ingestion.pk,
-                client=runner.client,
-            )
-            if (
-                latest_baseline is not None
-                and latest_baseline.snapshot_id == snapshot_id
-                and any(spec.run_query_id for spec in specs)
-            ):
-                runner.logger.log_info(
-                    f"Forward diffs require a newer processed snapshot than the latest baseline; "
-                    f"baseline ingestion `{latest_baseline.pk}` already matches snapshot `{snapshot_id}`, "
-                    f"so running full query execution for {model_string} instead.",
-                    obj=runner.sync,
+            try:
+                specs = get_query_specs(model_string, maps=maps)
+                specs = resolve_query_specs_for_client(specs, runner.client)
+                if specs:
+                    runner._model_coalesce_fields[model_string] = [
+                        list(field_set) for field_set in specs[0].coalesce_fields
+                    ] or architecture_default_coalesce_fields_for_model(model_string)
+                else:
+                    runner._model_coalesce_fields[model_string] = (
+                        architecture_default_coalesce_fields_for_model(model_string)
+                    )
+                runner.logger.init_statistics(model_string, 0)
+                model_delete_rows = pending_deletes.setdefault(model_string, [])
+                latest_baseline = runner.sync.latest_baseline_ingestion(
+                    exclude_ingestion_id=runner.ingestion.pk
                 )
-            for spec in specs:
-                rows = []
-                delete_rows = []
-                if model_baseline is not None and spec.run_query_id:
-                    try:
+                model_baseline = runner.sync.incremental_diff_baseline(
+                    specs=specs,
+                    current_snapshot_id=snapshot_id,
+                    exclude_ingestion_id=runner.ingestion.pk,
+                    client=runner.client,
+                )
+                if (
+                    latest_baseline is not None
+                    and latest_baseline.snapshot_id == snapshot_id
+                    and any(spec.run_query_id for spec in specs)
+                ):
+                    runner.logger.log_info(
+                        f"Forward diffs require a newer processed snapshot than the latest baseline; "
+                        f"baseline ingestion `{latest_baseline.pk}` already matches snapshot `{snapshot_id}`, "
+                        f"so running full query execution for {model_string} instead.",
+                        obj=runner.sync,
+                    )
+                for spec in specs:
+                    rows = []
+                    delete_rows = []
+                    if model_baseline is not None and spec.run_query_id:
+                        try:
+                            runner.logger.log_info(
+                                f"Running Forward NQE diff `{spec.execution_value}` for {model_string} "
+                                f"between snapshots `{model_baseline.snapshot_id}` and `{snapshot_id}`.",
+                                obj=runner.sync,
+                            )
+                            diff_rows = runner.client.run_nqe_diff(
+                                query_id=spec.run_query_id,
+                                commit_id=spec.commit_id,
+                                parameters=spec.merged_parameters(query_parameters),
+                                before_snapshot_id=model_baseline.snapshot_id,
+                                after_snapshot_id=snapshot_id,
+                                fetch_all=True,
+                            )
+                            rows, delete_rows = runner._split_diff_rows(
+                                model_string, diff_rows
+                            )
+                            used_diff = True
+                            runner.logger.log_info(
+                                f"Fetched {len(diff_rows)} diff rows for {model_string} from query_id `{spec.execution_value}`.",
+                                obj=runner.sync,
+                            )
+                        except (ForwardClientError, ForwardConnectivityError) as exc:
+                            runner.logger.log_warning(
+                                f"Forward NQE diff failed for {model_string} using `{spec.execution_value}`; falling back to full query execution: {exc}",
+                                obj=runner.sync,
+                            )
+                            model_baseline = None
+
+                    if model_baseline is None or not spec.run_query_id:
+                        if model_baseline is not None and not spec.run_query_id:
+                            runner.logger.log_warning(
+                                f"Forward diffs require a query_id; `{spec.execution_value}` is still raw query text, so running a full query for {model_string} instead.",
+                                obj=runner.sync,
+                            )
                         runner.logger.log_info(
-                            f"Running Forward NQE diff `{spec.execution_value}` for {model_string} "
-                            f"between snapshots `{model_baseline.snapshot_id}` and `{snapshot_id}`.",
+                            f"Running Forward {spec.execution_mode} `{spec.execution_value}` for {model_string}.",
                             obj=runner.sync,
                         )
-                        diff_rows = runner.client.run_nqe_diff(
+                        rows = runner.client.run_nqe_query(
+                            query=spec.query,
                             query_id=spec.run_query_id,
                             commit_id=spec.commit_id,
+                            network_id=network_id,
+                            snapshot_id=snapshot_id,
                             parameters=spec.merged_parameters(query_parameters),
-                            before_snapshot_id=model_baseline.snapshot_id,
-                            after_snapshot_id=snapshot_id,
                             fetch_all=True,
                         )
-                        rows, delete_rows = runner._split_diff_rows(
-                            model_string, diff_rows
-                        )
-                        used_diff = True
+                        used_full = True
                         runner.logger.log_info(
-                            f"Fetched {len(diff_rows)} diff rows for {model_string} from query_id `{spec.execution_value}`.",
+                            f"Fetched {len(rows)} rows for {model_string} from {spec.execution_mode} `{spec.execution_value}`.",
                             obj=runner.sync,
                         )
-                    except (ForwardClientError, ForwardConnectivityError) as exc:
-                        runner.logger.log_warning(
-                            f"Forward NQE diff failed for {model_string} using `{spec.execution_value}`; falling back to full query execution: {exc}",
-                            obj=runner.sync,
-                        )
-                        model_baseline = None
 
-                if model_baseline is None or not spec.run_query_id:
-                    if model_baseline is not None and not spec.run_query_id:
-                        runner.logger.log_warning(
-                            f"Forward diffs require a query_id; `{spec.execution_value}` is still raw query text, so running a full query for {model_string} instead.",
-                            obj=runner.sync,
+                    for row in rows:
+                        validate_row_shape_for_model(
+                            model_string,
+                            row,
+                            runner._model_coalesce_fields[model_string],
                         )
-                    runner.logger.log_info(
-                        f"Running Forward {spec.execution_mode} `{spec.execution_value}` for {model_string}.",
-                        obj=runner.sync,
+                    for row in delete_rows:
+                        validate_row_shape_for_model(
+                            model_string,
+                            row,
+                            runner._model_coalesce_fields[model_string],
+                        )
+                    runner.logger.add_statistics_total(
+                        model_string, len(rows) + len(delete_rows)
                     )
-                    rows = runner.client.run_nqe_query(
-                        query=spec.query,
-                        query_id=spec.run_query_id,
-                        commit_id=spec.commit_id,
-                        network_id=network_id,
-                        snapshot_id=snapshot_id,
-                        parameters=spec.merged_parameters(query_parameters),
-                        fetch_all=True,
+                    engine = select_apply_engine(
+                        sync=runner.sync,
+                        model_string=model_string,
+                        backend=ForwardExecutionBackendChoices.BRANCHING,
                     )
-                    used_full = True
-                    runner.logger.log_info(
-                        f"Fetched {len(rows)} rows for {model_string} from {spec.execution_mode} `{spec.execution_value}`.",
-                        obj=runner.sync,
-                    )
-
-                for row in rows:
-                    validate_row_shape_for_model(
-                        model_string,
-                        row,
-                        runner._model_coalesce_fields[model_string],
-                    )
-                for row in delete_rows:
-                    validate_row_shape_for_model(
-                        model_string,
-                        row,
-                        runner._model_coalesce_fields[model_string],
-                    )
-                runner.logger.add_statistics_total(
-                    model_string, len(rows) + len(delete_rows)
+                    engine.apply_upserts(runner, model_string, rows)
+                    model_delete_rows.extend(delete_rows)
+                stats = runner.logger.log_data.get("statistics", {}).get(model_string, {})
+                runner.logger.log_info(
+                    f"Completed {model_string}: applied={stats.get('applied', 0)} failed={stats.get('failed', 0)} skipped={stats.get('skipped', 0)} total={stats.get('total', 0)}.",
+                    obj=runner.sync,
                 )
+            except ForwardQueryError as exc:
+                runner._record_issue(
+                    model_string,
+                    str(exc),
+                    {},
+                    exception=exc,
+                )
+                runner.logger.log_warning(
+                    f"Aborted {model_string} due to validation failure: {exc}",
+                    obj=runner.sync,
+                )
+                continue
+            except ForwardSyncDataError as exc:
+                runner.logger.log_warning(
+                    f"Aborted {model_string} after row failure: {exc}",
+                    obj=runner.sync,
+                )
+                continue
+
+        for model_string in reversed(runner.sync.get_model_strings()):
+            delete_rows = pending_deletes.get(model_string, [])
+            if not delete_rows:
+                continue
+            try:
                 engine = select_apply_engine(
                     sync=runner.sync,
                     model_string=model_string,
                     backend=ForwardExecutionBackendChoices.BRANCHING,
                 )
-                engine.apply_upserts(runner, model_string, rows)
-                model_delete_rows.extend(delete_rows)
-            stats = runner.logger.log_data.get("statistics", {}).get(model_string, {})
-            runner.logger.log_info(
-                f"Completed {model_string}: applied={stats.get('applied', 0)} failed={stats.get('failed', 0)} skipped={stats.get('skipped', 0)} total={stats.get('total', 0)}.",
-                obj=runner.sync,
-            )
-        except ForwardQueryError as exc:
-            runner._record_issue(
-                model_string,
-                str(exc),
-                {},
-                exception=exc,
-            )
-            runner.logger.log_warning(
-                f"Aborted {model_string} due to validation failure: {exc}",
-                obj=runner.sync,
-            )
-            continue
-        except ForwardSyncDataError as exc:
-            runner.logger.log_warning(
-                f"Aborted {model_string} after row failure: {exc}",
-                obj=runner.sync,
-            )
-            continue
-
-    for model_string in reversed(runner.sync.get_model_strings()):
-        delete_rows = pending_deletes.get(model_string, [])
-        if not delete_rows:
-            continue
-        try:
-            engine = select_apply_engine(
-                sync=runner.sync,
-                model_string=model_string,
-                backend=ForwardExecutionBackendChoices.BRANCHING,
-            )
-            engine.apply_deletes(runner, model_string, delete_rows)
-        except ForwardSyncDataError as exc:
-            runner.logger.log_warning(
-                f"Aborted delete phase for {model_string} after row failure: {exc}",
-                obj=runner.sync,
-            )
-            continue
+                engine.apply_deletes(runner, model_string, delete_rows)
+            except ForwardSyncDataError as exc:
+                runner.logger.log_warning(
+                    f"Aborted delete phase for {model_string} after row failure: {exc}",
+                    obj=runner.sync,
+                )
+                continue
 
     if used_diff and used_full:
         runner.ingestion.sync_mode = "hybrid"

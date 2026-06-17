@@ -1,0 +1,605 @@
+{
+  "directory": "/forward_netbox_validation",
+  "gaps": [],
+  "gate_message": "Validation org query folder matches bundled compiled NQE source.",
+  "gate_status": "proved",
+  "lookup_error_count": 0,
+  "lookup_errors": [],
+  "matched": [
+    {
+      "expected_path": "/forward_netbox_validation/forward_locations",
+      "filename": "forward_locations.nqe",
+      "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
+      "live_query_id": "Q_d2c808e527da7c7b8b6fcef045ce8b0e32b5508b",
+      "query_name": "Forward Locations",
+      "source_matches": true
+    },
+    {
+      "expected_path": "/forward_netbox_validation/forward_device_vendors",
+      "filename": "forward_device_vendors.nqe",
+      "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
+      "live_query_id": "Q_ee27fb7a74b4074f7736391e10093d953f7a454f",
+      "query_name": "Forward Device Vendors",
+      "source_matches": true
+    },
+    {
+      "expected_path": "/forward_netbox_validation/forward_device_types",
+      "filename": "forward_device_types.nqe",
+      "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
+      "live_query_id": "Q_bb37a81ebfd7d401861b0313a1e0c0fefc40991b",
+      "query_name": "Forward Device Types",
+      "source_matches": true
+    },
+    {
+      "expected_path": "/forward_netbox_validation/forward_platforms",
+      "filename": "forward_platforms.nqe",
+      "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
+      "live_query_id": "Q_45f742fd80a8029a0ee28fc9d5a876e0f667818d",
+      "query_name": "Forward Platforms",
+      "source_matches": true
+    },
+    {
+      "expected_path": "/forward_netbox_validation/forward_device_models",
+      "filename": "forward_device_models.nqe",
+      "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
+      "live_query_id": "Q_8c4604c92864a2db73fd8ef6368dc0ca68c799df",
+      "query_name": "Forward Device Models",
+      "source_matches": true
+    },
+    {
+      "expected_path": "/forward_netbox_validation/forward_devices",
+      "filename": "forward_devices.nqe",
+      "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
+      "live_query_id": "Q_8ffcf388c59811c6acc5652a735b5bc63a0b78ba",
+      "query_name": "Forward Devices",
+      "source_matches": true
+    },
+    {
+      "expected_path": "/forward_netbox_validation/forward_virtual_chassis",
+      "filename": "forward_virtual_chassis.nqe",
+      "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
+      "live_query_id": "Q_dde667371bd5475f9849becd57c175c1e459070d",
+      "query_name": "Forward Virtual Chassis",
+      "source_matches": true
+    },
+    {
+      "expected_path": "/forward_netbox_validation/forward_device_feature_tags",
+      "filename": "forward_device_feature_tags.nqe",
+      "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
+      "live_query_id": "Q_13f7d492df81e7f58cd26e3141e7644bd43c5d19",
+      "query_name": "Forward Device Feature Tags",
+      "source_matches": true
+    },
+    {
+      "expected_path": "/forward_netbox_validation/forward_interfaces",
+      "filename": "forward_interfaces.nqe",
+      "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
+      "live_query_id": "Q_5073ff598f8e318a924cd99bbc628f7a6bd07329",
+      "query_name": "Forward Interfaces",
+      "source_matches": true
+    },
+    {
+      "expected_path": "/forward_netbox_validation/forward_inferred_interface_cables",
+      "filename": "forward_inferred_interface_cables.nqe",
+      "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
+      "live_query_id": "Q_f258a2ed5645b8e23db35bd1cdcdcb02433c9fc4",
+      "query_name": "Forward Inferred Interface Cables",
+      "source_matches": true
+    },
+    {
+      "expected_path": "/forward_netbox_validation/forward_mac_addresses",
+      "filename": "forward_mac_addresses.nqe",
+      "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
+      "live_query_id": "Q_6138424e15ae5401565f6def033889e8b5495d19",
+      "query_name": "Forward MAC Addresses",
+      "source_matches": true
+    },
+    {
+      "expected_path": "/forward_netbox_validation/forward_vlans",
+      "filename": "forward_vlans.nqe",
+      "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
+      "live_query_id": "Q_13ddf9f530e222f94b3360eafc94e5af14c48769",
+      "query_name": "Forward VLANs",
+      "source_matches": true
+    },
+    {
+      "expected_path": "/forward_netbox_validation/forward_vrfs",
+      "filename": "forward_vrfs.nqe",
+      "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
+      "live_query_id": "Q_5152e0e3b054b2b25fd7ddacf280032adf740744",
+      "query_name": "Forward VRFs",
+      "source_matches": true
+    },
+    {
+      "expected_path": "/forward_netbox_validation/forward_prefixes_ipv4",
+      "filename": "forward_prefixes_ipv4.nqe",
+      "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
+      "live_query_id": "Q_6a7fd7f122d3b4899e176c553652273631430367",
+      "query_name": "Forward IPv4 Prefixes",
+      "source_matches": true
+    },
+    {
+      "expected_path": "/forward_netbox_validation/forward_prefixes_ipv6",
+      "filename": "forward_prefixes_ipv6.nqe",
+      "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
+      "live_query_id": "Q_31b4961369cca23fdf559e3e11290c6668b4bc16",
+      "query_name": "Forward IPv6 Prefixes",
+      "source_matches": true
+    },
+    {
+      "expected_path": "/forward_netbox_validation/forward_ip_addresses",
+      "filename": "forward_ip_addresses.nqe",
+      "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
+      "live_query_id": "Q_5c98cafd1fe2fc53cc78dcbaea3f45f25b14f41e",
+      "query_name": "Forward IP Addresses",
+      "source_matches": true
+    },
+    {
+      "expected_path": "/forward_netbox_validation/forward_hsrp_groups",
+      "filename": "forward_hsrp_groups.nqe",
+      "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
+      "live_query_id": "Q_af62ebb70c7592e7d531729253fb7810cbf9f5e8",
+      "query_name": "Forward HSRP Groups",
+      "source_matches": true
+    },
+    {
+      "expected_path": "/forward_netbox_validation/forward_inventory_items",
+      "filename": "forward_inventory_items.nqe",
+      "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
+      "live_query_id": "Q_d313963e6ceac113010a5f5ebe29ccb1314f77bd",
+      "query_name": "Forward Inventory Items",
+      "source_matches": true
+    },
+    {
+      "expected_path": "/forward_netbox_validation/forward_device_models_with_netbox_aliases",
+      "filename": "forward_device_models_with_netbox_aliases.nqe",
+      "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
+      "live_query_id": "Q_3748acdd688b718ebe5774a8e7bd180df1120cac",
+      "query_name": "Forward Device Models with NetBox Device Type Aliases",
+      "source_matches": true
+    },
+    {
+      "expected_path": "/forward_netbox_validation/forward_devices_with_netbox_aliases",
+      "filename": "forward_devices_with_netbox_aliases.nqe",
+      "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
+      "live_query_id": "Q_d731a345bf424ef5b81bc62bca99741b6262cb89",
+      "query_name": "Forward Devices with NetBox Device Type Aliases",
+      "source_matches": true
+    },
+    {
+      "expected_path": "/forward_netbox_validation/forward_aci_command_inventory",
+      "filename": "forward_aci_command_inventory.nqe",
+      "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
+      "live_query_id": "Q_f1702b67d264b6692b54b3305cf5361a2be1d74d",
+      "query_name": "Forward ACI Command Inventory",
+      "source_matches": true
+    },
+    {
+      "expected_path": "/forward_netbox_validation/forward_device_feature_tags_with_rules",
+      "filename": "forward_device_feature_tags_with_rules.nqe",
+      "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
+      "live_query_id": "Q_5ae0b59b4799678519acc2bcc04c6da42db782ef",
+      "query_name": "Forward Device Feature Tags with Rules",
+      "source_matches": true
+    },
+    {
+      "expected_path": "/forward_netbox_validation/forward_modules",
+      "filename": "forward_modules.nqe",
+      "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
+      "live_query_id": "Q_f610a210bb70eae65e381c5d60bd8e3b29bed90f",
+      "query_name": "Forward Modules",
+      "source_matches": true
+    },
+    {
+      "expected_path": "/forward_netbox_validation/forward_aci_apic_cimc_inventory",
+      "filename": "forward_aci_apic_cimc_inventory.nqe",
+      "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
+      "live_query_id": "Q_bcbbe395125f883112be6f75416cc4f720944d95",
+      "query_name": "Forward ACI APIC CIMC Inventory",
+      "source_matches": true
+    }
+  ],
+  "matched_count": 24,
+  "missing": [],
+  "missing_count": 0,
+  "published_count": 24,
+  "query_contract_summary": {
+    "gaps": [],
+    "model_count": 18,
+    "models": {
+      "dcim.cable": {
+        "fetch_mode": "nqe_parameters",
+        "key_family": "device",
+        "model": "dcim.cable",
+        "queries": [
+          {
+            "declares_shard_parameter": true,
+            "enabled_by_default": true,
+            "filename": "forward_inferred_interface_cables.nqe",
+            "has_empty_shard_guard": true,
+            "has_positive_shard_predicate": true,
+            "model": "dcim.cable",
+            "query_name": "Forward Inferred Interface Cables",
+            "seeds_empty_shard_parameter": true
+          }
+        ],
+        "query_count": 1
+      },
+      "dcim.device": {
+        "fetch_mode": "nqe_parameters",
+        "key_family": "name",
+        "model": "dcim.device",
+        "queries": [
+          {
+            "declares_shard_parameter": true,
+            "enabled_by_default": true,
+            "filename": "forward_devices.nqe",
+            "has_empty_shard_guard": true,
+            "has_positive_shard_predicate": true,
+            "model": "dcim.device",
+            "query_name": "Forward Devices",
+            "seeds_empty_shard_parameter": true
+          },
+          {
+            "declares_shard_parameter": true,
+            "enabled_by_default": false,
+            "filename": "forward_devices_with_netbox_aliases.nqe",
+            "has_empty_shard_guard": true,
+            "has_positive_shard_predicate": true,
+            "model": "dcim.device",
+            "query_name": "Forward Devices with NetBox Device Type Aliases",
+            "seeds_empty_shard_parameter": true
+          },
+          {
+            "declares_shard_parameter": true,
+            "enabled_by_default": false,
+            "filename": "forward_aci_command_inventory.nqe",
+            "has_empty_shard_guard": true,
+            "has_positive_shard_predicate": true,
+            "model": "dcim.device",
+            "query_name": "Forward ACI Command Inventory",
+            "seeds_empty_shard_parameter": true
+          }
+        ],
+        "query_count": 3
+      },
+      "dcim.devicerole": {
+        "fetch_mode": "nqe_parameters",
+        "key_family": "slug,name",
+        "model": "dcim.devicerole",
+        "queries": [
+          {
+            "declares_shard_parameter": true,
+            "enabled_by_default": true,
+            "filename": "forward_device_types.nqe",
+            "has_empty_shard_guard": true,
+            "has_positive_shard_predicate": true,
+            "model": "dcim.devicerole",
+            "query_name": "Forward Device Types",
+            "seeds_empty_shard_parameter": true
+          }
+        ],
+        "query_count": 1
+      },
+      "dcim.devicetype": {
+        "fetch_mode": "nqe_parameters",
+        "key_family": "slug,model",
+        "model": "dcim.devicetype",
+        "queries": [
+          {
+            "declares_shard_parameter": true,
+            "enabled_by_default": true,
+            "filename": "forward_device_models.nqe",
+            "has_empty_shard_guard": true,
+            "has_positive_shard_predicate": true,
+            "model": "dcim.devicetype",
+            "query_name": "Forward Device Models",
+            "seeds_empty_shard_parameter": true
+          },
+          {
+            "declares_shard_parameter": true,
+            "enabled_by_default": false,
+            "filename": "forward_device_models_with_netbox_aliases.nqe",
+            "has_empty_shard_guard": true,
+            "has_positive_shard_predicate": true,
+            "model": "dcim.devicetype",
+            "query_name": "Forward Device Models with NetBox Device Type Aliases",
+            "seeds_empty_shard_parameter": true
+          }
+        ],
+        "query_count": 2
+      },
+      "dcim.interface": {
+        "fetch_mode": "nqe_parameters",
+        "key_family": "device",
+        "model": "dcim.interface",
+        "queries": [
+          {
+            "declares_shard_parameter": true,
+            "enabled_by_default": true,
+            "filename": "forward_interfaces.nqe",
+            "has_empty_shard_guard": true,
+            "has_positive_shard_predicate": true,
+            "model": "dcim.interface",
+            "query_name": "Forward Interfaces",
+            "seeds_empty_shard_parameter": true
+          }
+        ],
+        "query_count": 1
+      },
+      "dcim.inventoryitem": {
+        "fetch_mode": "nqe_parameters",
+        "key_family": "device",
+        "model": "dcim.inventoryitem",
+        "queries": [
+          {
+            "declares_shard_parameter": true,
+            "enabled_by_default": true,
+            "filename": "forward_inventory_items.nqe",
+            "has_empty_shard_guard": true,
+            "has_positive_shard_predicate": true,
+            "model": "dcim.inventoryitem",
+            "query_name": "Forward Inventory Items",
+            "seeds_empty_shard_parameter": true
+          },
+          {
+            "declares_shard_parameter": true,
+            "enabled_by_default": false,
+            "filename": "forward_aci_apic_cimc_inventory.nqe",
+            "has_empty_shard_guard": true,
+            "has_positive_shard_predicate": true,
+            "model": "dcim.inventoryitem",
+            "query_name": "Forward ACI APIC CIMC Inventory",
+            "seeds_empty_shard_parameter": true
+          }
+        ],
+        "query_count": 2
+      },
+      "dcim.macaddress": {
+        "fetch_mode": "nqe_parameters",
+        "key_family": "device",
+        "model": "dcim.macaddress",
+        "queries": [
+          {
+            "declares_shard_parameter": true,
+            "enabled_by_default": true,
+            "filename": "forward_mac_addresses.nqe",
+            "has_empty_shard_guard": true,
+            "has_positive_shard_predicate": true,
+            "model": "dcim.macaddress",
+            "query_name": "Forward MAC Addresses",
+            "seeds_empty_shard_parameter": true
+          }
+        ],
+        "query_count": 1
+      },
+      "dcim.manufacturer": {
+        "fetch_mode": "nqe_parameters",
+        "key_family": "slug,name",
+        "model": "dcim.manufacturer",
+        "queries": [
+          {
+            "declares_shard_parameter": true,
+            "enabled_by_default": true,
+            "filename": "forward_device_vendors.nqe",
+            "has_empty_shard_guard": true,
+            "has_positive_shard_predicate": true,
+            "model": "dcim.manufacturer",
+            "query_name": "Forward Device Vendors",
+            "seeds_empty_shard_parameter": true
+          }
+        ],
+        "query_count": 1
+      },
+      "dcim.module": {
+        "fetch_mode": "nqe_parameters",
+        "key_family": "device",
+        "model": "dcim.module",
+        "queries": [
+          {
+            "declares_shard_parameter": true,
+            "enabled_by_default": true,
+            "filename": "forward_modules.nqe",
+            "has_empty_shard_guard": true,
+            "has_positive_shard_predicate": true,
+            "model": "dcim.module",
+            "query_name": "Forward Modules",
+            "seeds_empty_shard_parameter": true
+          }
+        ],
+        "query_count": 1
+      },
+      "dcim.platform": {
+        "fetch_mode": "nqe_parameters",
+        "key_family": "slug,name",
+        "model": "dcim.platform",
+        "queries": [
+          {
+            "declares_shard_parameter": true,
+            "enabled_by_default": true,
+            "filename": "forward_platforms.nqe",
+            "has_empty_shard_guard": true,
+            "has_positive_shard_predicate": true,
+            "model": "dcim.platform",
+            "query_name": "Forward Platforms",
+            "seeds_empty_shard_parameter": true
+          }
+        ],
+        "query_count": 1
+      },
+      "dcim.site": {
+        "fetch_mode": "nqe_parameters",
+        "key_family": "slug,name",
+        "model": "dcim.site",
+        "queries": [
+          {
+            "declares_shard_parameter": true,
+            "enabled_by_default": true,
+            "filename": "forward_locations.nqe",
+            "has_empty_shard_guard": true,
+            "has_positive_shard_predicate": true,
+            "model": "dcim.site",
+            "query_name": "Forward Locations",
+            "seeds_empty_shard_parameter": true
+          }
+        ],
+        "query_count": 1
+      },
+      "dcim.virtualchassis": {
+        "fetch_mode": "nqe_parameters",
+        "key_family": "name",
+        "model": "dcim.virtualchassis",
+        "queries": [
+          {
+            "declares_shard_parameter": true,
+            "enabled_by_default": true,
+            "filename": "forward_virtual_chassis.nqe",
+            "has_empty_shard_guard": true,
+            "has_positive_shard_predicate": true,
+            "model": "dcim.virtualchassis",
+            "query_name": "Forward Virtual Chassis",
+            "seeds_empty_shard_parameter": true
+          }
+        ],
+        "query_count": 1
+      },
+      "extras.taggeditem": {
+        "fetch_mode": "nqe_parameters",
+        "key_family": "device",
+        "model": "extras.taggeditem",
+        "queries": [
+          {
+            "declares_shard_parameter": true,
+            "enabled_by_default": true,
+            "filename": "forward_device_feature_tags.nqe",
+            "has_empty_shard_guard": true,
+            "has_positive_shard_predicate": true,
+            "model": "extras.taggeditem",
+            "query_name": "Forward Device Feature Tags",
+            "seeds_empty_shard_parameter": true
+          },
+          {
+            "declares_shard_parameter": true,
+            "enabled_by_default": false,
+            "filename": "forward_device_feature_tags_with_rules.nqe",
+            "has_empty_shard_guard": true,
+            "has_positive_shard_predicate": true,
+            "model": "extras.taggeditem",
+            "query_name": "Forward Device Feature Tags with Rules",
+            "seeds_empty_shard_parameter": true
+          }
+        ],
+        "query_count": 2
+      },
+      "ipam.fhrpgroup": {
+        "fetch_mode": "nqe_parameters",
+        "key_family": "device",
+        "model": "ipam.fhrpgroup",
+        "queries": [
+          {
+            "declares_shard_parameter": true,
+            "enabled_by_default": true,
+            "filename": "forward_hsrp_groups.nqe",
+            "has_empty_shard_guard": true,
+            "has_positive_shard_predicate": true,
+            "model": "ipam.fhrpgroup",
+            "query_name": "Forward HSRP Groups",
+            "seeds_empty_shard_parameter": true
+          }
+        ],
+        "query_count": 1
+      },
+      "ipam.ipaddress": {
+        "fetch_mode": "nqe_parameters",
+        "key_family": "device",
+        "model": "ipam.ipaddress",
+        "queries": [
+          {
+            "declares_shard_parameter": true,
+            "enabled_by_default": true,
+            "filename": "forward_ip_addresses.nqe",
+            "has_empty_shard_guard": true,
+            "has_positive_shard_predicate": true,
+            "model": "ipam.ipaddress",
+            "query_name": "Forward IP Addresses",
+            "seeds_empty_shard_parameter": true
+          }
+        ],
+        "query_count": 1
+      },
+      "ipam.prefix": {
+        "fetch_mode": "nqe_parameters",
+        "key_family": "prefix",
+        "model": "ipam.prefix",
+        "queries": [
+          {
+            "declares_shard_parameter": true,
+            "enabled_by_default": true,
+            "filename": "forward_prefixes_ipv4.nqe",
+            "has_empty_shard_guard": true,
+            "has_positive_shard_predicate": true,
+            "model": "ipam.prefix",
+            "query_name": "Forward IPv4 Prefixes",
+            "seeds_empty_shard_parameter": true
+          },
+          {
+            "declares_shard_parameter": true,
+            "enabled_by_default": true,
+            "filename": "forward_prefixes_ipv6.nqe",
+            "has_empty_shard_guard": true,
+            "has_positive_shard_predicate": true,
+            "model": "ipam.prefix",
+            "query_name": "Forward IPv6 Prefixes",
+            "seeds_empty_shard_parameter": true
+          }
+        ],
+        "query_count": 2
+      },
+      "ipam.vlan": {
+        "fetch_mode": "nqe_parameters",
+        "key_family": "vid",
+        "model": "ipam.vlan",
+        "queries": [
+          {
+            "declares_shard_parameter": true,
+            "enabled_by_default": true,
+            "filename": "forward_vlans.nqe",
+            "has_empty_shard_guard": true,
+            "has_positive_shard_predicate": true,
+            "model": "ipam.vlan",
+            "query_name": "Forward VLANs",
+            "seeds_empty_shard_parameter": true
+          }
+        ],
+        "query_count": 1
+      },
+      "ipam.vrf": {
+        "fetch_mode": "nqe_parameters",
+        "key_family": "rd,name",
+        "model": "ipam.vrf",
+        "queries": [
+          {
+            "declares_shard_parameter": true,
+            "enabled_by_default": true,
+            "filename": "forward_vrfs.nqe",
+            "has_empty_shard_guard": true,
+            "has_positive_shard_predicate": true,
+            "model": "ipam.vrf",
+            "query_name": "Forward VRFs",
+            "seeds_empty_shard_parameter": true
+          }
+        ],
+        "query_count": 1
+      }
+    },
+    "status": "pass"
+  },
+  "query_count": 24,
+  "remediation_action_counts": {},
+  "repository": "org",
+  "source_unavailable": [],
+  "source_unavailable_count": 0,
+  "stale": [],
+  "stale_count": 0,
+  "status": "pass"
+}
