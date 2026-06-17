@@ -2098,6 +2098,60 @@ class ForwardClientTest(TestCase):
         )
         self.client._request.assert_any_call("GET", "/nqe/repos/org/commits/head")
 
+    def test_commit_org_nqe_queries_retries_after_409_invalid_change_path(self):
+        conflict_body = (
+            '{"message": "User has no changes at the following paths: '
+            '/netbox/forward_devices.", "reason": "INVALID_CHANGE_PATH"}'
+        )
+        self.client._request = Mock(
+            side_effect=[
+                ForwardClientError(f"Forward API request failed with HTTP 409: {conflict_body}"),
+                self._response({}),
+                self._response("commit-2"),
+            ]
+        )
+
+        commit_id = self.client.commit_org_nqe_queries(
+            query_paths=["/netbox/forward_devices", "/netbox/forward_interfaces"],
+            message="Publish test queries",
+        )
+
+        self.assertEqual(commit_id, "commit-2")
+        calls = self.client._request.call_args_list
+        # First call: original paths (both)
+        self.assertIn("/netbox/forward_devices", calls[0].kwargs["json_body"]["paths"])
+        self.assertIn("/netbox/forward_interfaces", calls[0].kwargs["json_body"]["paths"])
+        # Retry call: no-change path stripped, changed path kept
+        retry_paths = calls[1].kwargs["json_body"]["paths"]
+        self.assertNotIn("/netbox/forward_devices", retry_paths)
+        self.assertIn("/netbox/forward_interfaces", retry_paths)
+
+    def test_commit_org_nqe_queries_reraises_non_409_client_errors(self):
+        self.client._request = Mock(
+            side_effect=ForwardClientError("Forward API request failed with HTTP 500: server error")
+        )
+
+        with self.assertRaises(ForwardClientError) as ctx:
+            self.client.commit_org_nqe_queries(
+                query_paths=["/netbox/forward_devices"],
+                message="Publish test queries",
+            )
+
+        self.assertIn("HTTP 500", str(ctx.exception))
+
+    def test_commit_org_nqe_queries_reraises_409_without_invalid_change_path_reason(self):
+        self.client._request = Mock(
+            side_effect=ForwardClientError(
+                'Forward API request failed with HTTP 409: {"reason": "CONFLICT"}'
+            )
+        )
+
+        with self.assertRaises(ForwardClientError):
+            self.client.commit_org_nqe_queries(
+                query_paths=["/netbox/forward_devices"],
+                message="Publish test queries",
+            )
+
     def test_nqe_mutations_invalidate_cached_head_commit(self):
         shared_cache = FakeSharedCache()
         self.client._request = Mock(
