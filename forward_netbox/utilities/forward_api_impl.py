@@ -1241,11 +1241,11 @@ class ForwardClient:
                         p.strip()
                         for p in no_change_text[
                             no_change_text.index(prefix) + len(prefix) :
-                        ].rstrip(".").split(",")
+                        ]
+                        .rstrip(".")
+                        .split(",")
                     }
-                    query_paths = [
-                        p for p in query_paths if p not in no_change_paths
-                    ]
+                    query_paths = [p for p in query_paths if p not in no_change_paths]
             except (ValueError, KeyError):
                 raise exc
             if not query_paths:
