@@ -641,6 +641,7 @@ def _committed_query_by_path(client, query_path: str, existing_query: dict | Non
             "queryId": resolved_query_id,
             "lastCommitId": resolved_commit_id,
             "path": str(query.get("path") or query_path).strip(),
+            "query": _committed_query_source(query),
         }
     return existing_query or {}
 
