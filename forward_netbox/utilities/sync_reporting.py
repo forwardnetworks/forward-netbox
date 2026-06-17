@@ -297,7 +297,6 @@ def apply_model_rows(runner, model_string, rows):
     state = get_branch_run_display_state(runner.sync)
     last_emit_at = 0.0
     processed_rows = 0
-    runner._adapter_update_queue = {}
     for row in rows:
         processed_rows += 1
         try:
@@ -367,19 +366,6 @@ def apply_model_rows(runner, model_string, rows):
             state=state,
             last_emit_at=last_emit_at,
         )
-    adapter_queue = getattr(runner, "_adapter_update_queue", None)
-    if adapter_queue:
-        objects_by_fields = {}
-        for _pk, (obj, fields) in adapter_queue.items():
-            key = frozenset(fields)
-            objects_by_fields.setdefault(key, []).append(obj)
-        for fields, objects in objects_by_fields.items():
-            model_cls = objects[0].__class__
-            with transaction.atomic():
-                model_cls.objects.bulk_update(
-                    objects, fields=list(fields), batch_size=1000
-                )
-    runner._adapter_update_queue = None
     runner.logger.log_info(
         f"Finished applying rows for {model_string}.",
         obj=runner.sync,
