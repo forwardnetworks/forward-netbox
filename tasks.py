@@ -2788,7 +2788,7 @@ def playwright_test(context):
 
 @task
 def package(context):
-    context.run(f"{shlex.quote(sys.executable)} -m build")
+    context.run(f"{shlex.quote(sys.executable)} -m build --wheel")
 
 
 @task
