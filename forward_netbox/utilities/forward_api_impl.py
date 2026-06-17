@@ -21,6 +21,10 @@ except Exception:  # pragma: no cover - Django is always present in NetBox.
     django_cache = None
 
 LATEST_PROCESSED_SNAPSHOT = "latestProcessed"
+LATEST_COLLECTED_SNAPSHOT = "latestCollected"
+# How many of the most recent processed snapshots to scan when resolving the
+# latestCollected selector before giving up.
+DEFAULT_LATEST_COLLECTED_SCAN_LIMIT = 10
 DEFAULT_FORWARD_API_TIMEOUT_SECONDS = 1200
 DEFAULT_FORWARD_API_RETRIES = 2
 DEFAULT_FORWARD_API_RETRY_BACKOFF_SECONDS = 2
@@ -126,6 +130,33 @@ def _commit_id_for_nqe_execution(commit_id):
     ):
         return ""
     return commit_id
+
+
+def _nqe_string_literal(value: str) -> str:
+    return json.dumps(value)
+
+
+def build_device_tag_scope_where(include_tags, exclude_tags, include_match):
+    """Return NQE ``where`` clause lines for a device tag scope.
+
+    The returned lines are intended to follow the shared base filters
+    (``snapshotInfo.result == completed`` and the FORWARD_CUSTOM vendor guard);
+    they do not include those filters themselves. Shared by the live tag-scope
+    resolver, the tag-scope preview, and the latestCollected snapshot probe so
+    every path builds an identical scope predicate.
+    """
+    clauses: list[str] = []
+    include_exprs = [
+        f"{_nqe_string_literal(tag)} in device.tagNames" for tag in include_tags
+    ]
+    if include_exprs:
+        if include_match == "all":
+            clauses.extend(f"where {expr}" for expr in include_exprs)
+        else:
+            clauses.append(f"where ({' || '.join(include_exprs)})")
+    for tag in exclude_tags:
+        clauses.append(f"where !({_nqe_string_literal(tag)} in device.tagNames)")
+    return clauses
 
 
 class ForwardClient:
@@ -769,6 +800,111 @@ class ForwardClient:
                 "Forward latestProcessed snapshot response did not include an ID."
             )
         return snapshot_id
+
+    def _processed_snapshots_newest_first(self, network_id):
+        """Return processed snapshots for a network, newest processed first."""
+        snapshots = [
+            dict(snapshot)
+            for snapshot in self.get_snapshots(network_id)
+            if str(snapshot.get("state", "")).strip().upper() == "PROCESSED"
+        ]
+        snapshots.sort(
+            key=lambda snapshot: (
+                str(snapshot.get("processed_at") or "").strip(),
+                str(snapshot.get("created_at") or "").strip(),
+                str(snapshot.get("id") or "").strip(),
+            ),
+            reverse=True,
+        )
+        return snapshots
+
+    def get_latest_collected_snapshot_id(
+        self,
+        network_id,
+        *,
+        include_tags=None,
+        exclude_tags=None,
+        include_match="any",
+        scan_limit=DEFAULT_LATEST_COLLECTED_SCAN_LIMIT,
+    ):
+        """Resolve the newest processed snapshot that has a freshly-collected
+        in-scope device.
+
+        Walks the most recent processed snapshots (newest first, bounded by
+        ``scan_limit``) and returns the first whose device-tag scope contains at
+        least one device with ``snapshotInfo.result == completed``. This skips
+        snapshots where the in-scope devices were backfilled because collection
+        was canceled. Raises ``ForwardClientError`` when no scanned snapshot has
+        a collected in-scope device.
+        """
+        network_id = str(network_id or "").strip()
+        if not network_id:
+            raise ForwardClientError(
+                "get_latest_collected_snapshot_id requires a network_id."
+            )
+        include_tags = [
+            str(tag).strip() for tag in (include_tags or []) if str(tag).strip()
+        ]
+        exclude_tags = [
+            str(tag).strip() for tag in (exclude_tags or []) if str(tag).strip()
+        ]
+        if include_match not in {"any", "all"}:
+            include_match = "any"
+        try:
+            scan_limit = int(scan_limit)
+        except (TypeError, ValueError):
+            scan_limit = DEFAULT_LATEST_COLLECTED_SCAN_LIMIT
+        if scan_limit < 1:
+            scan_limit = 1
+
+        scope_where = build_device_tag_scope_where(
+            include_tags, exclude_tags, include_match
+        )
+        probe_query = "\n".join(
+            [
+                "foreach device in network.devices",
+                "where device.snapshotInfo.result == DeviceSnapshotResult.completed",
+                "where device.platform.vendor != Vendor.FORWARD_CUSTOM",
+                *scope_where,
+                "select {name: device.name}",
+            ]
+        )
+
+        snapshots = self._processed_snapshots_newest_first(network_id)
+        if not snapshots:
+            raise ForwardClientError(
+                "No processed snapshot is available for the configured network "
+                "to resolve the latestCollected selector."
+            )
+
+        scanned = 0
+        for snapshot in snapshots[:scan_limit]:
+            snapshot_id = str(snapshot.get("id") or "").strip()
+            if not snapshot_id:
+                continue
+            scanned += 1
+            rows = self.run_nqe_query(
+                query=probe_query,
+                network_id=network_id,
+                snapshot_id=snapshot_id,
+                limit=1,
+                fetch_all=False,
+            )
+            if any(str(row.get("name") or "").strip() for row in rows):
+                return snapshot_id
+
+        scope_hint = (
+            f" matching device tag scope (include={include_tags or ['-']}, "
+            f"include_match={include_match}, exclude={exclude_tags or ['-']})"
+            if (include_tags or exclude_tags)
+            else ""
+        )
+        raise ForwardClientError(
+            f"None of the {scanned} most recent processed snapshot(s) have a "
+            f"collected device{scope_hint}; every in-scope device appears "
+            "backfilled (collection canceled). Pin a specific snapshot, widen "
+            "the device tag scope, or re-run collection in Forward."
+        )
 
     def get_snapshot_metrics(self, snapshot_id):
         snapshot_id = str(snapshot_id or "").strip()
