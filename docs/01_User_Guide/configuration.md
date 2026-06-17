@@ -589,6 +589,7 @@ Create a `Forward Sync` to bind a source, a NetBox model selection, and the inge
   - Select a specific snapshot from the source network, or leave the default `latestProcessed` option.
   - The selected snapshot is what NQE runs against.
   - `latestProcessed` resolves at runtime to the network's latest processed snapshot.
+  - `latestCollected` resolves at runtime to the most recent processed snapshot that still has a freshly-collected in-scope device. It scans the most recent processed snapshots newest-first (up to 10) and skips any whose in-scope devices were all backfilled because collection was canceled. Use this when the network's newest snapshot can be a collection-canceled backfill and you do not want to sync stale backfilled data. If the sync has a device tag scope on the source, the scan only considers devices in that scope. If none of the scanned snapshots has a collected in-scope device, the run fails with a clear error instead of silently syncing nothing.
 - Model toggles
   - Enable or disable individual NetBox models for the sync.
   - The checked models define what this sync runs.
@@ -635,6 +636,8 @@ Create a `Forward Sync` to bind a source, a NetBox model selection, and the inge
 - Syncs always use the `Network` selected on the source.
 - Syncs run NQE against the selected `Snapshot`.
 - The default snapshot selector is `latestProcessed`, which resolves to the latest processed snapshot in the source network at runtime.
+- `latestCollected` is an alternative selector that skips snapshots whose in-scope devices were all backfilled (collection canceled) and resolves to the most recent snapshot that actually collected an in-scope device. Because the resolved snapshot can change between runs, `latestCollected` always runs a full fetch rather than a Forward `nqe-diff`.
+- All built-in queries only ingest devices whose snapshot collection `result` is `completed`; backfilled (collection-canceled) devices are intentionally excluded. When a `latestProcessed` run finds that every in-scope device in the snapshot is backfilled, the run logs a warning and applies zero changes — switch the sync to `latestCollected`, pin a known-good snapshot, or re-run collection in Forward.
 - `Branching` syncs use native multi-branch execution.
 - Each Branching shard is a native NetBox Branching branch.
 - `Auto merge` controls whether Branching shards advance automatically or pause for review after each shard.
