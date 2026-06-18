@@ -1,0 +1,82 @@
+{% extends 'generic/object.html' %}
+{% load helpers %}
+{% load i18n %}
+
+{% block title %}{{ object }} - {% trans "Scope Reconciliation" %}{% endblock %}
+
+{% block extra_controls %}
+  <a class="btn btn-outline-secondary" href="{{ object.get_absolute_url }}">
+    <i class="mdi mdi-arrow-left" aria-hidden="true"></i>&nbsp;{% trans "Sync" %}
+  </a>
+{% endblock extra_controls %}
+
+{% block content %}
+<div class="row mb-3">
+  <div class="col col-md-6">
+    <div class="card">
+      <h5 class="card-header">{% trans "Device Scope Reconciliation" %}</h5>
+      <div class="card-body">
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">{% trans "Include tags" %}</th>
+            <td>{{ payload.include_tags|join:", "|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "NetBox devices" %}</th>
+            <td>{{ payload.netbox_device_count }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "In scope (collected)" %}</th>
+            <td>{{ payload.forward_in_scope_completed }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Tagged but backfilled" %}</th>
+            <td>{{ payload.forward_tagged_backfilled }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Out of scope (orphans)" %}</th>
+            <td>
+              {% if payload.netbox_out_of_scope %}
+                <span class="badge text-bg-warning">{{ payload.netbox_out_of_scope }}</span>
+              {% else %}
+                <span class="badge text-bg-success">0</span>
+              {% endif %}
+            </td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "In scope, missing from NetBox" %}</th>
+            <td>{{ payload.forward_missing_in_netbox }}</td>
+          </tr>
+        </table>
+      </div>
+      <div class="card-footer text-end">
+        <form method="post"
+              action="{% url 'plugins:forward_netbox:forwardsync_prune_orphans' pk=object.pk %}"
+              onsubmit="return confirm('{% blocktrans with count=payload.netbox_out_of_scope %}Delete {{ count }} out-of-scope device(s)? This also removes their interfaces and IP addresses.{% endblocktrans %}');">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-danger"{% if not payload.netbox_out_of_scope %} disabled{% endif %}>
+            <i class="mdi mdi-trash-can-outline" aria-hidden="true"></i>&nbsp;{% trans "Prune orphans" %}
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+  <div class="col col-md-6">
+    <div class="card">
+      <h5 class="card-header">{% trans "Out-of-Scope Sample" %}</h5>
+      <div class="card-body">
+        {% if payload.out_of_scope_sample %}
+          <ul class="mb-0">
+            {% for name in payload.out_of_scope_sample %}<li><code>{{ name }}</code></li>{% endfor %}
+          </ul>
+          {% if payload.netbox_out_of_scope > payload.out_of_scope_sample|length %}
+            <p class="text-muted mt-2 mb-0">{% blocktrans with shown=payload.out_of_scope_sample|length total=payload.netbox_out_of_scope %}Showing {{ shown }} of {{ total }}.{% endblocktrans %}</p>
+          {% endif %}
+        {% else %}
+          <p class="text-muted mb-0">{% trans "No out-of-scope devices." %}</p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock content %}
