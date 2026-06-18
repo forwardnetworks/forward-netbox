@@ -13,6 +13,7 @@ from dcim.models import Site
 from django.contrib.contenttypes.models import ContentType
 from django.test import TestCase
 from ipam.models import IPAddress
+from ipam.models import Prefix
 from ipam.models import VLAN
 from ipam.models import VRF
 
@@ -28,6 +29,7 @@ from forward_netbox.utilities.apply_engine import ADAPTER_REQUIRED_MODELS
 from forward_netbox.utilities.apply_engine import BULK_ORM_ENABLED_MODELS
 from forward_netbox.utilities.apply_engine import BULK_ORM_ENABLED_MODELS_WITHOUT_SPECS
 from forward_netbox.utilities.apply_engine import select_apply_engine
+from forward_netbox.utilities.apply_engine_bulk import bulk_orm_apply_simple_models
 
 
 class ForwardBulkOrmApplyEngineTest(TestCase):
@@ -989,6 +991,33 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
             clean_calls,
             "Bulk UPDATE must call clean() for model-level validation.",
         )
+
+    def test_bulk_prefix_vrf_ensure_does_not_clobber_existing_vrf(self):
+        """Ensuring VRFs exist for prefix FK resolution must CREATE missing VRFs
+        only — never upsert. An existing VRF's rd/description/enforce_unique
+        (set by the ipam.vrf map) must survive a prefix bulk apply that
+        references it, and a missing VRF is created on demand."""
+        VRF.objects.create(
+            name="blue", rd="65000:1", description="prod", enforce_unique=True
+        )
+        runner = self._runner()
+        bulk_orm_apply_simple_models(
+            runner,
+            "ipam.prefix",
+            [
+                {"prefix": "10.0.0.0/24", "vrf": "blue", "status": "active"},
+                {"prefix": "10.1.0.0/24", "vrf": "green", "status": "active"},
+            ],
+        )
+
+        blue = VRF.objects.get(name="blue")
+        self.assertEqual(blue.rd, "65000:1")
+        self.assertEqual(blue.description, "prod")
+        self.assertTrue(blue.enforce_unique)
+        # Missing VRF created on demand and bound.
+        green = VRF.objects.get(name="green")
+        self.assertEqual(Prefix.objects.get(prefix="10.0.0.0/24").vrf_id, blue.pk)
+        self.assertEqual(Prefix.objects.get(prefix="10.1.0.0/24").vrf_id, green.pk)
 
     def test_bulk_orm_create_uses_full_clean(self):
         """Bulk CREATE path must keep full_clean() — new objects need
