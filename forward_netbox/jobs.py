@@ -233,6 +233,60 @@ def validate_forwardsync(job, *args, **kwargs):
             raise
 
 
+def prune_forward_orphans(job, *args, **kwargs):
+    """Background prune of out-of-scope NetBox devices for a sync.
+
+    Run as a job because deleting many devices cascades to their interfaces and
+    IP addresses (plus change-logging signals) and easily exceeds an HTTP gateway
+    timeout on large fabrics.
+    """
+    from .utilities.scope_reconciliation import EmptyForwardScopeError
+    from .utilities.scope_reconciliation import prune_orphan_devices
+
+    sync = ForwardSync.objects.get(pk=job.object_id)
+    try:
+        job.start()
+        result = prune_orphan_devices(sync)
+        job.data = {
+            "pruned_device_count": result.get("pruned_device_count", 0),
+            "out_of_scope_sample": result.get("out_of_scope_sample", []),
+        }
+        job.save(update_fields=["data"])
+        job.terminate()
+    except EmptyForwardScopeError as exc:
+        job.data = {"error": str(exc)}
+        job.save(update_fields=["data"])
+        job.terminate(status=JobStatusChoices.STATUS_ERRORED)
+        logger.error(exc)
+    except Exception as exc:
+        job.terminate(status=JobStatusChoices.STATUS_ERRORED)
+        if type(exc) in (SyncError, JobTimeoutException):
+            logger.error(exc)
+        else:
+            raise
+
+
+def create_forward_module_bays(job, *args, **kwargs):
+    """Background creation of missing module bays for a sync (out-of-band ORM)."""
+    from .utilities.module_readiness import compute_module_readiness_for_sync
+    from .utilities.module_readiness import create_missing_module_bays
+
+    sync = ForwardSync.objects.get(pk=job.object_id)
+    try:
+        job.start()
+        report = compute_module_readiness_for_sync(sync)
+        result = create_missing_module_bays(report)
+        job.data = result
+        job.save(update_fields=["data"])
+        job.terminate()
+    except Exception as exc:
+        job.terminate(status=JobStatusChoices.STATUS_ERRORED)
+        if type(exc) in (SyncError, JobTimeoutException):
+            logger.error(exc)
+        else:
+            raise
+
+
 def merge_forwardingestion(job, remove_branch=True, *args, **kwargs):
     ingestion = ForwardIngestion.objects.get(pk=job.object_id)
     try:
