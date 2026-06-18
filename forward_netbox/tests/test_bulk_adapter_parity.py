@@ -7,6 +7,7 @@ from dcim.models import DeviceType
 from dcim.models import Interface
 from dcim.models import MACAddress
 from dcim.models import Manufacturer
+from dcim.models import Platform
 from dcim.models import Site
 from dcim.models import VirtualChassis
 from django.contrib.contenttypes.models import ContentType
@@ -14,17 +15,27 @@ from django.db import connection
 from django.db import transaction
 from django.test import TestCase
 from ipam.models import IPAddress
+from ipam.models import VLAN
+from ipam.models import VRF
 
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.utilities.apply_engine_bulk import bulk_orm_apply_interface
 from forward_netbox.utilities.apply_engine_bulk import bulk_orm_apply_ipaddress
 from forward_netbox.utilities.apply_engine_bulk import bulk_orm_apply_macaddress
+from forward_netbox.utilities.apply_engine_bulk import bulk_orm_apply_simple_models
 from forward_netbox.utilities.apply_engine_bulk import bulk_orm_apply_virtualchassis
 from forward_netbox.utilities.sync import ForwardSyncRunner
+from forward_netbox.utilities.sync_core_models import apply_dcim_devicerole
+from forward_netbox.utilities.sync_core_models import apply_dcim_devicetype
+from forward_netbox.utilities.sync_core_models import apply_dcim_manufacturer
+from forward_netbox.utilities.sync_core_models import apply_dcim_platform
+from forward_netbox.utilities.sync_core_models import apply_dcim_site
 from forward_netbox.utilities.sync_interface import apply_dcim_interface
 from forward_netbox.utilities.sync_interface import apply_dcim_macaddress
 from forward_netbox.utilities.sync_ipam import apply_ipam_ipaddress
+from forward_netbox.utilities.sync_ipam import apply_ipam_vlan
+from forward_netbox.utilities.sync_ipam import apply_ipam_vrf
 
 
 class BulkAdapterParityTest(TestCase):
@@ -348,4 +359,170 @@ class BulkAdapterParityTest(TestCase):
             mock_update.assert_not_called()
         self.assertEqual(
             self._outcomes(runner, "dcim.virtualchassis"), {"unchanged": 1}
+        )
+
+    # --- Simple/tree default-bulk model parity (create + update) ---------------
+
+    def _assert_simple_parity(self, *, model_string, seed, rows, adapter_fn, capture):
+        def adapter_apply(runner):
+            for row in rows:
+                adapter_fn(runner, row)
+
+        return self._run_both_and_compare(
+            seed=seed,
+            adapter_apply=adapter_apply,
+            bulk_apply=lambda runner: bulk_orm_apply_simple_models(
+                runner, model_string, rows
+            ),
+            capture=capture,
+        )
+
+    def test_site_bulk_matches_adapter(self):
+        rows = [
+            {"name": "S-new", "slug": "s-new"},
+            {"name": "S-updated", "slug": "s-up"},
+        ]
+        self._assert_simple_parity(
+            model_string="dcim.site",
+            seed=lambda: Site.objects.create(name="S-old", slug="s-up"),
+            rows=rows,
+            adapter_fn=apply_dcim_site,
+            capture=lambda: [(s.slug, s.name) for s in Site.objects.order_by("slug")],
+        )
+
+    def test_manufacturer_bulk_matches_adapter(self):
+        rows = [
+            {"name": "Mfr-new", "slug": "mfr-new"},
+            {"name": "Mfr-updated", "slug": "mfr-up"},
+        ]
+        self._assert_simple_parity(
+            model_string="dcim.manufacturer",
+            seed=lambda: Manufacturer.objects.create(name="Mfr-old", slug="mfr-up"),
+            rows=rows,
+            adapter_fn=apply_dcim_manufacturer,
+            capture=lambda: [
+                (m.slug, m.name) for m in Manufacturer.objects.order_by("slug")
+            ],
+        )
+
+    def test_devicerole_bulk_matches_adapter(self):
+        rows = [
+            {"name": "Role-new", "slug": "role-new", "color": "222222"},
+            {"name": "Role-updated", "slug": "role-up", "color": "333333"},
+        ]
+        self._assert_simple_parity(
+            model_string="dcim.devicerole",
+            seed=lambda: DeviceRole.objects.create(
+                name="Role-old", slug="role-up", color="111111"
+            ),
+            rows=rows,
+            adapter_fn=apply_dcim_devicerole,
+            capture=lambda: [
+                (r.slug, r.name, r.color) for r in DeviceRole.objects.order_by("slug")
+            ],
+        )
+
+    def test_platform_bulk_matches_adapter(self):
+        def seed():
+            Manufacturer.objects.create(name="Cisco", slug="cisco")
+            Platform.objects.create(name="P-old", slug="p-up")
+
+        rows = [
+            {
+                "name": "P-new",
+                "slug": "p-new",
+                "manufacturer": "Cisco",
+                "manufacturer_slug": "cisco",
+            },
+            {
+                "name": "P-updated",
+                "slug": "p-up",
+                "manufacturer": "Cisco",
+                "manufacturer_slug": "cisco",
+            },
+        ]
+        self._assert_simple_parity(
+            model_string="dcim.platform",
+            seed=seed,
+            rows=rows,
+            adapter_fn=apply_dcim_platform,
+            capture=lambda: [
+                (p.slug, p.name, p.manufacturer.slug if p.manufacturer else None)
+                for p in Platform.objects.order_by("slug")
+            ],
+        )
+
+    def test_devicetype_bulk_matches_adapter(self):
+        def seed():
+            Manufacturer.objects.create(name="Cisco", slug="cisco")
+
+        rows = [
+            {
+                "model": "DT-new",
+                "device_type": "DT-new",
+                "slug": "dt-new",
+                "device_type_slug": "dt-new",
+                "manufacturer": "Cisco",
+                "manufacturer_slug": "cisco",
+            },
+        ]
+        self._assert_simple_parity(
+            model_string="dcim.devicetype",
+            seed=seed,
+            rows=rows,
+            adapter_fn=apply_dcim_devicetype,
+            capture=lambda: [
+                (dt.slug, dt.model, dt.manufacturer.slug if dt.manufacturer else None)
+                for dt in DeviceType.objects.order_by("slug")
+            ],
+        )
+
+    def test_vlan_bulk_matches_adapter(self):
+        def seed():
+            Site.objects.create(name="VlanSite", slug="vlan-site")
+
+        rows = [
+            {
+                "name": "V10",
+                "vid": 10,
+                "status": "active",
+                "site": "VlanSite",
+                "site_slug": "vlan-site",
+            }
+        ]
+        self._assert_simple_parity(
+            model_string="ipam.vlan",
+            seed=seed,
+            rows=rows,
+            adapter_fn=apply_ipam_vlan,
+            capture=lambda: [
+                (v.vid, v.name, v.status, v.site.slug if v.site else None)
+                for v in VLAN.objects.order_by("vid")
+            ],
+        )
+
+    def test_vrf_bulk_matches_adapter(self):
+        rows = [
+            {
+                "name": "VRF-A",
+                "rd": "65000:1",
+                "description": "prod",
+                "enforce_unique": False,
+            },
+            {
+                "name": "VRF-B",
+                "rd": "",
+                "description": "",
+                "enforce_unique": True,
+            },
+        ]
+        self._assert_simple_parity(
+            model_string="ipam.vrf",
+            seed=lambda: None,
+            rows=rows,
+            adapter_fn=apply_ipam_vrf,
+            capture=lambda: [
+                (v.name, v.rd, v.description, v.enforce_unique)
+                for v in VRF.objects.order_by("name")
+            ],
         )
