@@ -765,7 +765,11 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
         )
 
         self.assertFalse(runner._apply_model_rows.called)
-        self.assertEqual(Platform.objects.get(slug="nxos").manufacturer.slug, "juniper")
+        # Manufacturer is create-only: an existing platform keeps its manufacturer
+        # on update (parity with the adapter, which lets operators override the
+        # NQE-sourced manufacturer without the next sync clobbering it). The newly
+        # created platform still gets its manufacturer set.
+        self.assertEqual(Platform.objects.get(slug="nxos").manufacturer.slug, "cisco")
         self.assertEqual(Platform.objects.get(slug="iosxr").manufacturer.slug, "cisco")
 
     def test_bulk_orm_counts_unchanged_platform_rows_as_unchanged(self):
