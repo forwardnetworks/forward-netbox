@@ -170,22 +170,27 @@ def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str,
             if manufacturer.name
         }
     if model_string == "ipam.prefix":
-        vrf_rows = [
-            {
-                "name": row.get("vrf"),
-                "rd": None,
-                "description": "",
-                "enforce_unique": False,
-            }
-            for row in rows
-            if row.get("vrf")
-        ]
-        bulk_orm_apply_simple_models(runner, "ipam.vrf", vrf_rows)
-        vrf_names = {
-            row.get("name") for row in vrf_rows if row.get("name") not in ("", None)
+        requested_vrf_names = {
+            row.get("vrf") for row in rows if row.get("vrf") not in ("", None)
         }
+        existing_vrf_names = set(
+            VRF.objects.filter(name__in=requested_vrf_names).values_list(
+                "name", flat=True
+            )
+        )
+        # Create only VRFs that do not exist yet. Upserting here would rewrite an
+        # existing VRF's rd/description/enforce_unique with these empty defaults,
+        # clobbering values set by the ipam.vrf map.
+        missing_vrf_rows = [
+            {"name": name, "rd": None, "description": "", "enforce_unique": False}
+            for name in sorted(requested_vrf_names - existing_vrf_names)
+        ]
+        if missing_vrf_rows:
+            bulk_orm_apply_simple_models(runner, "ipam.vrf", missing_vrf_rows)
         vrf_by_name = {
-            vrf.name: vrf for vrf in VRF.objects.filter(name__in=vrf_names) if vrf.name
+            vrf.name: vrf
+            for vrf in VRF.objects.filter(name__in=requested_vrf_names)
+            if vrf.name
         }
 
     lookup_values = {field_name: [] for field_name in lookup_fields}
