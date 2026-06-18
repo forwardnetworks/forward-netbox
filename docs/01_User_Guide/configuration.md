@@ -527,7 +527,11 @@ written to NetBox by default. Enable `Apply Device Scope Tags`
 with its scope include tag(s). This lets you filter the NetBox device list by
 scope and visually identify out-of-scope leftovers (which only the
 `forward_device_scope_reconciliation_audit` command surfaces otherwise). The tag
-is added only when missing, so steady-state re-syncs do not churn.
+is added only when missing, so steady-state re-syncs do not churn. Scope tagging
+applies when there is a single include tag or the include match mode is `all`
+(every in-scope device then carries every include tag). With multiple include
+tags in `any` match mode, tagging is skipped with a warning, because a device may
+match only one tag and the device row does not carry its Forward tag names.
 
 Branching runs are staged as resumable NetBox jobs. The initial sync job records
 the snapshot, validation result, branch plan, and next shard in the sync state.

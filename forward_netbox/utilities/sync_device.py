@@ -117,7 +117,23 @@ def _scope_tags(runner):
         runner._scope_tags_cache = []
         return runner._scope_tags_cache
 
-    include_tags, _exclude_tags, _include_match = device_tag_scope(runner.sync)
+    include_tags, _exclude_tags, include_match = device_tag_scope(runner.sync)
+    # Every in-scope device carries every include tag only when matching is
+    # "all" (or there is a single include tag). With multiple include tags in
+    # "any" mode a device may match just one, and the device row does not carry
+    # its Forward tag names, so applying all of them would mis-tag. Skip rather
+    # than tag a device with a tag it does not actually have.
+    if len(include_tags) > 1 and include_match != "all":
+        runner.logger.log_warning(
+            "Skipping device scope tagging: apply_device_scope_tags with "
+            "multiple include tags in 'any' match mode cannot determine which "
+            "tag each device carries. Use a single include tag or 'all' match "
+            "mode to enable scope tagging.",
+            obj=runner.sync,
+        )
+        runner._scope_tags_cache = []
+        return runner._scope_tags_cache
+
     tags = []
     for name in include_tags:
         slug = slugify(name) or slugify(name.replace(".", "-"))
