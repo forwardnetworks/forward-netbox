@@ -386,6 +386,37 @@ Remediation:
   `device_tag_prune_out_of_scope` on the sync. Review `out_of_scope_sample`
   first — pruning issues deletes.
 
+## APIC CIMC Inventory Is Empty
+
+Symptoms:
+
+- The `Forward ACI APIC CIMC Inventory` map is enabled but produces zero
+  `dcim.inventoryitem` rows, even though APIC devices are present.
+
+Cause:
+
+- That map parses the `moquery -c eqptCh -a all` APIC custom command. It yields
+  nothing unless that command was collected on a **completed** (non-backfilled)
+  APIC device in the resolved snapshot.
+
+Checks:
+
+- Run the read-only readiness audit:
+
+  ```
+  python manage.py forward_apic_cimc_readiness_audit --sync-name "<sync_name>"
+  ```
+
+  It reports the APIC device count, how many carry the controller-detail and
+  `eqptCh` commands, and `cimc_inventory_ready`. If `with_eqptch_command` is
+  greater than zero but `completed_with_eqptch` is zero, the command exists only
+  on a backfilled snapshot. Add `--fail-on-missing` for monitoring.
+
+Remediation:
+
+- Add `moquery -c eqptCh -a all` as a recurring custom command on the APICs in
+  Forward so it is collected into a completed snapshot, then re-run the sync.
+
 ## Collect Logs And Issue Evidence
 
 Use these commands when a customer reports a failed or hanging sync.
