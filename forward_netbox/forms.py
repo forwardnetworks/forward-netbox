@@ -423,6 +423,15 @@ class ForwardSourceForm(NetBoxModelForm):
                 "candidates during full query execution."
             ),
         )
+        self.fields["apply_device_scope_tags"] = forms.BooleanField(
+            required=False,
+            label="Apply Device Scope Tags",
+            help_text=(
+                "When enabled, each synced device is tagged in NetBox with its "
+                "Forward device-scope include tag(s), so in-scope devices can be "
+                "filtered in NetBox."
+            ),
+        )
         _configure_api_select(
             self.fields["network_id"].widget,
             {
@@ -572,6 +581,9 @@ class ForwardSourceForm(NetBoxModelForm):
         self.fields["device_tag_prune_out_of_scope"].initial = bool(
             parameters.get("device_tag_prune_out_of_scope")
         )
+        self.fields["apply_device_scope_tags"].initial = bool(
+            parameters.get("apply_device_scope_tags")
+        )
 
         if self.source_type == ForwardSourceDeploymentChoices.SAAS:
             self.fields["url"].initial = "https://fwd.app"
@@ -602,6 +614,7 @@ class ForwardSourceForm(NetBoxModelForm):
                     "device_tag_exclude_tags",
                     "device_tag_filter_mode",
                     "device_tag_prune_out_of_scope",
+                    "apply_device_scope_tags",
                     name="Parameters",
                 )
             )
@@ -631,6 +644,7 @@ class ForwardSourceForm(NetBoxModelForm):
                     "device_tag_exclude_tags",
                     "device_tag_filter_mode",
                     "device_tag_prune_out_of_scope",
+                    "apply_device_scope_tags",
                     name="Parameters",
                 )
             )
@@ -775,6 +789,7 @@ class ForwardSourceForm(NetBoxModelForm):
             "device_tag_prune_out_of_scope": bool(
                 cleaned.get("device_tag_prune_out_of_scope")
             ),
+            "apply_device_scope_tags": bool(cleaned.get("apply_device_scope_tags")),
         }
         self.instance.type = source_type
         self.instance.url = (
@@ -953,6 +968,9 @@ class ForwardSourceForm(NetBoxModelForm):
             ),
             "device_tag_prune_out_of_scope": bool(
                 self.cleaned_data.get("device_tag_prune_out_of_scope")
+            ),
+            "apply_device_scope_tags": bool(
+                self.cleaned_data.get("apply_device_scope_tags")
             ),
         }
         self.instance.status = ForwardSourceStatusChoices.NEW

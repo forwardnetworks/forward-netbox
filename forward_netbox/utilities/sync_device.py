@@ -99,6 +99,41 @@ def apply_dcim_virtualchassis(runner, row):
     return vc
 
 
+def _scope_tags(runner):
+    """Resolve (and cache) the NetBox Tag objects for the sync's device-scope
+    include tags, ensuring each exists. Returns [] unless the opt-in
+    ``apply_device_scope_tags`` source parameter is set."""
+    cached = getattr(runner, "_scope_tags_cache", None)
+    if cached is not None:
+        return cached
+
+    from django.utils.text import slugify
+    from extras.models import Tag
+
+    from .sync_facade import device_tag_scope
+
+    source_parameters = getattr(runner.sync.source, "parameters", None) or {}
+    if not source_parameters.get("apply_device_scope_tags"):
+        runner._scope_tags_cache = []
+        return runner._scope_tags_cache
+
+    include_tags, _exclude_tags, _include_match = device_tag_scope(runner.sync)
+    tags = []
+    for name in include_tags:
+        slug = slugify(name) or slugify(name.replace(".", "-"))
+        if not slug:
+            continue
+        tag, _ = runner._upsert_values_from_defaults(
+            "extras.taggeditem",
+            Tag,
+            values={"name": name, "slug": slug, "color": "9e9e9e"},
+            coalesce_sets=[("slug",), ("name",)],
+        )
+        tags.append(tag)
+    runner._scope_tags_cache = tags
+    return tags
+
+
 def apply_dcim_device(runner, row):
     from dcim.models import Device
 
@@ -152,7 +187,7 @@ def apply_dcim_device(runner, row):
             ),
         )
 
-    runner._upsert_values_from_defaults(
+    device, _ = runner._upsert_values_from_defaults(
         "dcim.device",
         Device,
         values=defaults,
@@ -161,3 +196,11 @@ def apply_dcim_device(runner, row):
             [("name",)],
         ),
     )
+
+    scope_tags = _scope_tags(runner)
+    if scope_tags:
+        from .sync_interface import _device_add_tag
+
+        for tag in scope_tags:
+            _device_add_tag(runner, device, tag)
+    return True
