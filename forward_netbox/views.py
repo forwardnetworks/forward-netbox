@@ -783,30 +783,27 @@ class ForwardSyncPruneOrphansView(BaseObjectView):
         )
 
     def post(self, request, pk):
-        from .utilities.scope_reconciliation import EmptyForwardScopeError
-        from .utilities.scope_reconciliation import prune_orphan_devices
+        # Pruning cascades device deletes (interfaces, IPs, change-log signals)
+        # and can far exceed an HTTP gateway timeout on large fabrics, so it runs
+        # as a background job rather than synchronously in the request.
+        from core.models import Job
+        from django.utils.module_loading import import_string
 
         sync = get_object_or_404(self.queryset, pk=pk)
-        try:
-            result = prune_orphan_devices(sync)
-        except EmptyForwardScopeError as exc:
-            messages.error(request, str(exc))
-            return redirect(sync.get_absolute_url())
-        except Exception as exc:
-            messages.error(
-                request,
-                _("Orphan prune failed: %(error)s") % {"error": exc},
+        job = Job.enqueue(
+            import_string("forward_netbox.jobs.prune_forward_orphans"),
+            instance=sync,
+            user=request.user,
+            name=f"{sync.name} - prune orphans",
+        )
+        messages.success(
+            request,
+            _(
+                "Queued job #%(pk)d to prune out-of-scope devices. Watch the Jobs "
+                "tab for the result."
             )
-            return redirect(sync.get_absolute_url())
-        count = result["pruned_device_count"]
-        if count:
-            messages.success(
-                request,
-                _("Pruned %(count)d out-of-scope device(s) from NetBox.")
-                % {"count": count},
-            )
-        else:
-            messages.info(request, _("No out-of-scope devices to prune."))
+            % {"pk": job.pk},
+        )
         return redirect(sync.get_absolute_url())
 
 
@@ -858,46 +855,26 @@ class ForwardSyncCreateModuleBaysView(BaseObjectView):
         )
 
     def post(self, request, pk):
-        from .utilities.module_readiness import compute_module_readiness_for_sync
-        from .utilities.module_readiness import create_missing_module_bays
+        # Creating many module bays (with full_clean + save per bay) can exceed an
+        # HTTP gateway timeout on large fabrics, so it runs as a background job.
+        from core.models import Job
+        from django.utils.module_loading import import_string
 
         sync = get_object_or_404(self.queryset, pk=pk)
-        try:
-            report = compute_module_readiness_for_sync(sync)
-            result = create_missing_module_bays(report)
-        except Exception as exc:
-            messages.error(
-                request,
-                _("Creating module bays failed: %(error)s") % {"error": exc},
+        job = Job.enqueue(
+            import_string("forward_netbox.jobs.create_forward_module_bays"),
+            instance=sync,
+            user=request.user,
+            name=f"{sync.name} - create module bays",
+        )
+        messages.success(
+            request,
+            _(
+                "Queued job #%(pk)d to create missing module bays. Watch the Jobs "
+                "tab for the result."
             )
-            return redirect(sync.get_absolute_url())
-        created = result["created"]
-        if created:
-            messages.success(
-                request,
-                _(
-                    "Created %(count)d module bay(s). Re-run the sync to import "
-                    "modules into them."
-                )
-                % {"count": created},
-            )
-        else:
-            messages.info(
-                request,
-                _(
-                    "No missing module bays to create (already ready or none in "
-                    "scope)."
-                ),
-            )
-        if result["skipped_missing_device"]:
-            messages.warning(
-                request,
-                _(
-                    "Skipped %(count)d bay(s) whose device is not yet in NetBox; "
-                    "sync devices first."
-                )
-                % {"count": result["skipped_missing_device"]},
-            )
+            % {"pk": job.pk},
+        )
         return redirect(sync.get_absolute_url())
 
 

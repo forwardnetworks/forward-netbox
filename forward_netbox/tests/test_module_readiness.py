@@ -67,6 +67,22 @@ class ModuleReadinessUtilityTest(TestCase):
         )
         self.assertEqual(report.missing_device_names, ("device-b",))
 
+    def test_ready_ignores_missing_device_rows(self):
+        # All bays for present devices exist; the only gaps are rows for devices
+        # not in NetBox. Module sync is ready — those rows just skip.
+        report = summarize_module_readiness(
+            [
+                {"device": "device-a", "module_bay": "Slot 1"},
+                {"device": "device-b", "module_bay": "Slot 1"},
+                {"device": "device-c", "module_bay": "Slot 1"},
+            ],
+            existing_devices={"device-a"},
+            existing_module_bays={("device-a", "Slot 1")},
+        )
+        self.assertEqual(report.missing_bay_rows, 0)
+        self.assertEqual(report.missing_device_rows, 2)
+        self.assertTrue(report.ready)
+
     def test_derive_module_bay_position_uses_trailing_number_only(self):
         self.assertEqual(derive_module_bay_position("Slot 27"), "27")
         self.assertEqual(derive_module_bay_position("Supervisor A"), "")
