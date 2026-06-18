@@ -99,3 +99,42 @@ class ForwardDeviceScopeReconciliationAuditCommandTest(TestCase):
         rows = [{"name": "dev-a", "completed": True}]
         with self.assertRaises(SystemExit):
             self._run(rows, **{"fail_on_drift": True})
+
+    def test_prune_orphans_dry_run_keeps_devices(self):
+        # dev-a completed in scope, dev-c tagged-but-backfilled, dev-d stale.
+        self._make_devices("dev-a", "dev-c", "dev-d")
+        rows = [
+            {"name": "dev-a", "completed": True},
+            {"name": "dev-c", "completed": False},
+        ]
+        payload = self._run(rows, **{"prune_orphans": True})
+        self.assertTrue(payload["prune_requested"])
+        self.assertFalse(payload["prune_applied"])
+        self.assertEqual(payload["prune_candidate_count"], 1)
+        self.assertNotIn("pruned_device_count", payload)
+        # Nothing deleted in a dry run.
+        self.assertTrue(Device.objects.filter(name="dev-d").exists())
+        self.assertTrue(Device.objects.filter(name="dev-c").exists())
+
+    def test_prune_orphans_refuses_on_empty_forward_scope(self):
+        # Forward returned 0 scoped devices (failed/empty query) — pruning would
+        # treat every NetBox device as an orphan, so it must refuse and delete
+        # nothing.
+        self._make_devices("dev-a", "dev-b")
+        with self.assertRaises(SystemExit):
+            self._run([], **{"prune_orphans": True, "apply": True})
+        self.assertEqual(Device.objects.count(), 2)
+
+    def test_prune_orphans_apply_deletes_only_out_of_scope(self):
+        self._make_devices("dev-a", "dev-c", "dev-d")
+        rows = [
+            {"name": "dev-a", "completed": True},
+            {"name": "dev-c", "completed": False},
+        ]
+        payload = self._run(rows, **{"prune_orphans": True, "apply": True})
+        self.assertTrue(payload["prune_applied"])
+        self.assertEqual(payload["pruned_device_count"], 1)
+        # Only the untagged stale device is gone; in-scope and backfilled remain.
+        self.assertFalse(Device.objects.filter(name="dev-d").exists())
+        self.assertTrue(Device.objects.filter(name="dev-a").exists())
+        self.assertTrue(Device.objects.filter(name="dev-c").exists())
