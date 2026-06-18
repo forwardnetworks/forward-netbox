@@ -637,6 +637,7 @@ Create a `Forward Sync` to bind a source, a NetBox model selection, and the inge
 - Syncs run NQE against the selected `Snapshot`.
 - The default snapshot selector is `latestProcessed`, which resolves to the latest processed snapshot in the source network at runtime.
 - `latestCollected` is an alternative selector that skips snapshots whose in-scope devices were all backfilled (collection canceled) and resolves to the most recent snapshot that actually collected an in-scope device. Because the resolved snapshot can change between runs, `latestCollected` always runs a full fetch rather than a Forward `nqe-diff`.
+- Both dynamic selectors get end-of-run catch-up: if a newer snapshot (newest processed for `latestProcessed`, or newest with a collected in-scope device for `latestCollected`) appears while a run is in progress, the plugin queues a follow-up sync automatically instead of waiting for the next scheduled interval.
 - All built-in queries only ingest devices whose snapshot collection `result` is `completed`; backfilled (collection-canceled) devices are intentionally excluded. When a `latestProcessed` run finds that every in-scope device in the snapshot is backfilled, the run logs a warning and applies zero changes — switch the sync to `latestCollected`, pin a known-good snapshot, or re-run collection in Forward.
 - `Branching` syncs use native multi-branch execution.
 - Each Branching shard is a native NetBox Branching branch.
