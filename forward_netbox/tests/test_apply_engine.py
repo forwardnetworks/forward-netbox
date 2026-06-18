@@ -12,6 +12,7 @@ from dcim.models import Platform
 from dcim.models import Site
 from django.contrib.contenttypes.models import ContentType
 from django.test import TestCase
+from ipam.models import IPAddress
 from ipam.models import VLAN
 from ipam.models import VRF
 
@@ -441,6 +442,99 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
                     "model_contract_requires_adapter",
                 )
                 self.assertTrue(bulk_rejection.get("blocker_code"))
+
+    def _ipaddress_runner(self):
+        runner = self._runner()
+        runner._ipaddress_assignment_skip_reason = lambda address: None
+        runner._record_aggregated_skip_warning = Mock()
+        runner._lookup_interface = lambda device, name: None
+        runner._ensure_vrf = Mock()
+        return runner
+
+    def _device_with_interface(self):
+        mfr = Manufacturer.objects.create(name="MfrIP", slug="mfr-ip")
+        dt = DeviceType.objects.create(manufacturer=mfr, model="dt-ip", slug="dt-ip")
+        role = DeviceRole.objects.create(name="RoleIP", slug="role-ip")
+        site = Site.objects.create(name="SiteIP", slug="site-ip")
+        device = Device.objects.create(
+            name="ip-dev", device_type=dt, role=role, site=site
+        )
+        interface = Interface.objects.create(
+            device=device, name="Ethernet1", type="1000base-t"
+        )
+        return device, interface
+
+    def test_bulk_orm_ipaddress_requires_allowlist_then_creates_and_updates(self):
+        device, interface = self._device_with_interface()
+        interface_ct = ContentType.objects.get_for_model(Interface)
+        # Pre-existing IP to be updated (status + assignment).
+        existing = IPAddress.objects.create(address="10.0.0.5/24", status="deprecated")
+
+        self.sync.parameters["enable_bulk_orm"] = True
+        self.sync.parameters["bulk_orm_models"] = ["ipam.ipaddress"]
+        self.sync.save(update_fields=["parameters"])
+
+        engine = select_apply_engine(
+            sync=self.sync, model_string="ipam.ipaddress", backend="branching"
+        )
+        self.assertEqual(engine.decision.selected_engine, "bulk_orm")
+
+        runner = self._ipaddress_runner()
+        engine.apply_upserts(
+            runner,
+            "ipam.ipaddress",
+            [
+                {
+                    "device": "ip-dev",
+                    "interface": "Ethernet1",
+                    "address": "10.0.0.10/24",
+                    "status": "active",
+                    "vrf": None,
+                },
+                {
+                    "device": "ip-dev",
+                    "interface": "Ethernet1",
+                    "address": "10.0.0.5/24",
+                    "status": "active",
+                    "vrf": None,
+                },
+            ],
+        )
+
+        self.assertFalse(runner._apply_model_rows.called)
+        created = IPAddress.objects.get(address="10.0.0.10/24")
+        self.assertEqual(created.assigned_object_type_id, interface_ct.pk)
+        self.assertEqual(created.assigned_object_id, interface.pk)
+        existing.refresh_from_db()
+        self.assertEqual(existing.status, "active")
+        self.assertEqual(existing.assigned_object_id, interface.pk)
+
+    def test_bulk_orm_ipaddress_skips_missing_interface(self):
+        self._device_with_interface()
+        self.sync.parameters["enable_bulk_orm"] = True
+        self.sync.parameters["bulk_orm_models"] = ["ipam.ipaddress"]
+        self.sync.save(update_fields=["parameters"])
+
+        engine = select_apply_engine(
+            sync=self.sync, model_string="ipam.ipaddress", backend="branching"
+        )
+        runner = self._ipaddress_runner()
+        engine.apply_upserts(
+            runner,
+            "ipam.ipaddress",
+            [
+                {
+                    "device": "ip-dev",
+                    "interface": "Ethernet99",
+                    "address": "10.0.0.20/24",
+                    "status": "active",
+                    "vrf": None,
+                }
+            ],
+        )
+
+        self.assertFalse(IPAddress.objects.filter(address="10.0.0.20/24").exists())
+        runner._record_aggregated_skip_warning.assert_called_once()
 
     def test_bulk_orm_creates_and_updates_vrfs(self):
         self.sync.parameters["enable_bulk_orm"] = True

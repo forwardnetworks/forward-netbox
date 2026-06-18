@@ -28,7 +28,7 @@ BULK_ORM_ENABLED_MODELS = {
     "ipam.vlan",
     "ipam.vrf",
 }
-EXPERIMENTAL_BULK_ORM_MODELS = {"ipam.prefix"}
+EXPERIMENTAL_BULK_ORM_MODELS = {"ipam.prefix", "ipam.ipaddress"}
 
 BULK_ORM_SPEC_MODELS = {
     "dcim.site",
@@ -41,6 +41,7 @@ BULK_ORM_SPEC_MODELS = {
     "ipam.vlan",
     "ipam.vrf",
     "ipam.prefix",
+    "ipam.ipaddress",
 }
 BULK_ORM_PARITY_GATES = (
     {
@@ -226,7 +227,6 @@ ADAPTER_REQUIRED_MODELS = {
     "dcim.module",
     "extras.taggeditem",
     "ipam.fhrpgroup",
-    "ipam.ipaddress",
     "ipam.prefix",
     "netbox_peering_manager.peeringsession",
     "netbox_routing.bgpaddressfamily",
@@ -290,13 +290,6 @@ ADAPTER_MODEL_BLOCKERS = {
         "blocker_reason": (
             "Tagged item writes use generic relation semantics and adapter-level "
             "dedupe/skip behavior."
-        ),
-    },
-    "ipam.ipaddress": {
-        "blocker_code": "ipam_parent_prefix_semantics",
-        "blocker_reason": (
-            "IP address writes require parent-prefix/role checks and conditional "
-            "skip logic tied to adapter diagnostics."
         ),
     },
     "ipam.fhrpgroup": {
