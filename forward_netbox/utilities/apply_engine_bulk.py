@@ -635,7 +635,7 @@ def bulk_orm_apply_interface(runner, rows: list[dict[str, Any]]):
             device = devices_by_name.get(device_name) or runner._get_device_by_name(
                 device_name
             )
-        except ObjectDoesNotExist as exc:
+        except ObjectDoesNotExist:
             key = (device_name,)
             if runner._dependency_failed("dcim.device", key):
                 runner.logger.increment_statistics("dcim.interface", outcome="skipped")
@@ -820,7 +820,7 @@ def bulk_orm_apply_ipaddress(runner, rows: list[dict[str, Any]]):
             device = devices_by_name.get(device_name) or runner._get_device_by_name(
                 device_name
             )
-        except ObjectDoesNotExist as exc:
+        except ObjectDoesNotExist:
             key = (device_name,)
             if runner._dependency_failed("dcim.device", key):
                 runner.logger.increment_statistics("ipam.ipaddress", outcome="skipped")
