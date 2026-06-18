@@ -48,7 +48,10 @@ class ForwardArchitectureAuditCommandTest(TestCase):
         self.assertIn("dcim.devicerole", matrix["bulk_orm_safe_models"])
         self.assertIn("dcim.platform", matrix["bulk_orm_safe_models"])
         self.assertIn("dcim.virtualchassis", matrix["bulk_orm_safe_models"])
-        self.assertIn("dcim.interface", matrix["adapter_required_models"])
+        self.assertIn("dcim.cable", matrix["adapter_required_models"])
+        # dcim.interface is now an experimental bulk-ORM opt-in candidate, no
+        # longer hard adapter-required.
+        self.assertNotIn("dcim.interface", matrix["adapter_required_models"])
         self.assertIn("netbox_cisco_aci.acinode", matrix["adapter_required_models"])
         self.assertNotIn("dcim.virtualchassis", matrix["adapter_required_models"])
         self.assertIn("aci.netbox_cisco_aci", matrix["optional_plugin_integrations"])
@@ -344,8 +347,8 @@ class ForwardArchitectureAuditCommandTest(TestCase):
             cimc_query_contract["queries"][0]["seeds_empty_shard_parameter"]
         )
         self.assertEqual(
-            matrix["adapter_blockers"]["dcim.interface"],
-            "relationship_side_effects",
+            matrix["adapter_blockers"]["dcim.cable"],
+            "relationship_identity_directionality",
         )
         self.assertEqual(
             matrix["classification_gaps"]["unclassified_supported_models"],
@@ -415,12 +418,9 @@ class ForwardArchitectureAuditCommandTest(TestCase):
         )
         self.assertEqual(
             interface_contract["apply_engine_classification"],
-            "adapter_required",
+            "bulk_orm_experimental_candidate",
         )
-        self.assertEqual(
-            interface_contract["apply_engine_blocker_code"],
-            "relationship_side_effects",
-        )
+        self.assertFalse(interface_contract["apply_engine_blocker_code"])
         self.assertEqual(
             interface_contract["preserve_existing_on_blank_fields"],
             ["description", "mtu", "speed"],
