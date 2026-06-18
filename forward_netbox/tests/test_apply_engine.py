@@ -536,6 +536,91 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
         self.assertFalse(IPAddress.objects.filter(address="10.0.0.20/24").exists())
         runner._record_aggregated_skip_warning.assert_called_once()
 
+    def _interface_runner(self):
+        runner = self._runner()
+        runner._lookup_interface = lambda device, name: Interface.objects.filter(
+            device=device, name=name
+        ).first()
+        return runner
+
+    def test_bulk_orm_interface_creates_and_updates_plain(self):
+        device, _ = self._device_with_interface()
+        Interface.objects.create(
+            device=device, name="Ethernet2", type="1000base-t", description="old"
+        )
+        self.sync.parameters["enable_bulk_orm"] = True
+        self.sync.parameters["bulk_orm_models"] = ["dcim.interface"]
+        self.sync.save(update_fields=["parameters"])
+
+        engine = select_apply_engine(
+            sync=self.sync, model_string="dcim.interface", backend="branching"
+        )
+        self.assertEqual(engine.decision.selected_engine, "bulk_orm")
+
+        runner = self._interface_runner()
+        engine.apply_upserts(
+            runner,
+            "dcim.interface",
+            [
+                {
+                    "device": "ip-dev",
+                    "name": "Ethernet3",
+                    "type": "1000base-t",
+                    "enabled": True,
+                    "mtu": 1500,
+                },
+                {
+                    "device": "ip-dev",
+                    "name": "Ethernet2",
+                    "type": "1000base-t",
+                    "enabled": True,
+                    "description": "new",
+                },
+            ],
+        )
+
+        created = Interface.objects.get(device=device, name="Ethernet3")
+        self.assertEqual(created.mtu, 1500)
+        self.assertTrue(created.enabled)
+        self.assertEqual(
+            Interface.objects.get(device=device, name="Ethernet2").description, "new"
+        )
+
+    def test_bulk_orm_interface_delegates_lag_rows_to_adapter(self):
+        device, _ = self._device_with_interface()
+        self.sync.parameters["enable_bulk_orm"] = True
+        self.sync.parameters["bulk_orm_models"] = ["dcim.interface"]
+        self.sync.save(update_fields=["parameters"])
+
+        engine = select_apply_engine(
+            sync=self.sync, model_string="dcim.interface", backend="branching"
+        )
+        runner = self._interface_runner()
+        lag_row = {
+            "device": "ip-dev",
+            "name": "Ethernet4",
+            "type": "1000base-t",
+            "enabled": True,
+            "lag": "Port-Channel1",
+        }
+        plain_row = {
+            "device": "ip-dev",
+            "name": "Ethernet5",
+            "type": "1000base-t",
+            "enabled": True,
+        }
+
+        with patch(
+            "forward_netbox.utilities.sync_interface.apply_dcim_interface"
+        ) as mock_adapter:
+            engine.apply_upserts(runner, "dcim.interface", [lag_row, plain_row])
+
+        # LAG-membership row delegated to adapter; plain row batched.
+        mock_adapter.assert_called_once_with(runner, lag_row)
+        self.assertTrue(
+            Interface.objects.filter(device=device, name="Ethernet5").exists()
+        )
+
     def test_bulk_orm_creates_and_updates_vrfs(self):
         self.sync.parameters["enable_bulk_orm"] = True
         self.sync.save(update_fields=["parameters"])

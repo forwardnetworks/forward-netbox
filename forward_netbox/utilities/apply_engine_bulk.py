@@ -11,6 +11,8 @@ def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str,
         return bulk_orm_apply_virtualchassis(runner, rows)
     if model_string == "ipam.ipaddress":
         return bulk_orm_apply_ipaddress(runner, rows)
+    if model_string == "dcim.interface":
+        return bulk_orm_apply_interface(runner, rows)
 
     from dcim.models import DeviceType
     from dcim.models import DeviceRole
@@ -503,6 +505,171 @@ def bulk_orm_apply_macaddress(runner, rows: list[dict[str, Any]]):
             MACAddress.objects.bulk_update(
                 list(update_objects.values()),
                 fields=["assigned_object_type", "assigned_object_id"],
+                batch_size=1000,
+            )
+
+    runner.events_clearer.clear()
+    return True
+
+
+def bulk_orm_apply_interface(runner, rows: list[dict[str, Any]]):
+    """Batched apply for dcim.interface (experimental, opt-in).
+
+    Plain interfaces are resolved with adapter-parity semantics (device skip/
+    fail, optional mtu/speed/description, access/tagged mode + untagged VLAN) and
+    written with bulk_create/bulk_update. Rows with LAG interdependencies — LAG
+    membership (``lag``) or converting an interface to type ``lag`` while it
+    still has a cable — are delegated row-by-row to the adapter
+    ``apply_dcim_interface`` so their parent-ordering and cable side-effects keep
+    exact parity. Existing rows load from the DB, so fields absent from a row are
+    written back unchanged (no clearing), matching the adapter upsert.
+    """
+    from dcim.models import Device
+    from dcim.models import Interface
+    from django.core.exceptions import ObjectDoesNotExist
+    from django.db import transaction
+
+    from ..exceptions import ForwardDependencySkipError
+    from ..exceptions import ForwardSearchError
+    from .sync_interface import _interface_untagged_vlan
+    from .sync_interface import apply_dcim_interface
+
+    update_field_names = [
+        "type",
+        "enabled",
+        "mtu",
+        "speed",
+        "description",
+        "mode",
+        "untagged_vlan",
+    ]
+
+    device_names = {row.get("device") for row in rows if row.get("device")}
+    devices_by_name = {
+        device.name: device for device in Device.objects.filter(name__in=device_names)
+    }
+
+    create_objects = {}
+    update_objects = {}
+
+    def _delegate_to_adapter(row):
+        # Hard LAG/cable cases keep exact adapter semantics (parent ensure,
+        # cable removal). Mirror the runner's row-error handling.
+        try:
+            apply_dcim_interface(runner, row)
+            runner.logger.increment_statistics("dcim.interface", outcome="applied")
+        except ForwardDependencySkipError as exc:
+            runner.logger.increment_statistics("dcim.interface", outcome="skipped")
+            runner._record_issue(
+                "dcim.interface",
+                str(exc),
+                row,
+                exception=exc,
+                context=getattr(exc, "context", None),
+                defaults=getattr(exc, "defaults", None),
+            )
+        except (ForwardSearchError, Exception) as exc:  # noqa: BLE001
+            runner._mark_dependency_failed("dcim.interface", row)
+            runner.logger.increment_statistics("dcim.interface", outcome="failed")
+            runner._record_issue(
+                "dcim.interface",
+                str(exc),
+                row,
+                exception=exc,
+                context=getattr(exc, "context", None),
+                defaults=getattr(exc, "defaults", None),
+            )
+
+    for row in rows:
+        device_name = row.get("device")
+        try:
+            device = devices_by_name.get(device_name) or runner._get_device_by_name(
+                device_name
+            )
+        except ObjectDoesNotExist as exc:
+            key = (device_name,)
+            if runner._dependency_failed("dcim.device", key):
+                runner.logger.increment_statistics("dcim.interface", outcome="skipped")
+                runner._record_issue(
+                    "dcim.interface",
+                    f"Skipping interface `{row.get('name')}` because dependency "
+                    f"`dcim.device` failed for {key}.",
+                    row,
+                    exception=ForwardDependencySkipError(
+                        "dependency dcim.device failed",
+                        model_string="dcim.interface",
+                    ),
+                )
+                continue
+            runner._mark_dependency_failed("dcim.interface", row)
+            runner.logger.increment_statistics("dcim.interface", outcome="failed")
+            runner._record_issue(
+                "dcim.interface",
+                f"Unable to find device `{device_name}` for interface "
+                f"`{row.get('name')}`.",
+                row,
+                exception=ForwardSearchError(
+                    f"device {device_name} not found",
+                    model_string="dcim.interface",
+                ),
+            )
+            continue
+
+        existing = runner._lookup_interface(device, row["name"])
+
+        # Delegate LAG-interdependent rows to the adapter for exact parity.
+        needs_adapter = bool(row.get("lag")) or (
+            row.get("type") == "lag"
+            and existing is not None
+            and getattr(existing, "cable", None) is not None
+        )
+        if needs_adapter:
+            _delegate_to_adapter(row)
+            continue
+
+        defaults = {
+            "device": device,
+            "name": row["name"],
+            "type": row["type"],
+            "enabled": row["enabled"],
+        }
+        if row.get("mtu") not in ("", None):
+            defaults["mtu"] = row["mtu"]
+        if row.get("speed") not in ("", None):
+            defaults["speed"] = row["speed"]
+        if row.get("description") not in (None, ""):
+            defaults["description"] = row["description"]
+        if row.get("mode") in {"access", "tagged"}:
+            defaults["mode"] = row["mode"]
+            found_vlan, vlan = _interface_untagged_vlan(runner, device, row)
+            if found_vlan:
+                defaults["untagged_vlan"] = vlan
+
+        if existing is None:
+            key = (device.pk, row["name"])
+            interface = create_objects.get(key)
+            if interface is None:
+                interface = Interface(**defaults)
+                interface.full_clean()
+                create_objects[key] = interface
+        else:
+            for field, value in defaults.items():
+                setattr(existing, field, value)
+            existing.full_clean()
+            if getattr(existing, "pk", None):
+                update_objects[existing.pk] = existing
+        runner.logger.increment_statistics("dcim.interface", outcome="applied")
+        runner.events_clearer.increment()
+
+    with transaction.atomic():
+        if create_objects:
+            Interface.objects.bulk_create(
+                list(create_objects.values()), batch_size=1000
+            )
+        if update_objects:
+            Interface.objects.bulk_update(
+                list(update_objects.values()),
+                fields=update_field_names,
                 batch_size=1000,
             )
 
