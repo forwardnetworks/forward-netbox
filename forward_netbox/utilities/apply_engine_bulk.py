@@ -9,6 +9,8 @@ def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str,
         return bulk_orm_apply_macaddress(runner, rows)
     if model_string == "dcim.virtualchassis":
         return bulk_orm_apply_virtualchassis(runner, rows)
+    if model_string == "ipam.ipaddress":
+        return bulk_orm_apply_ipaddress(runner, rows)
 
     from dcim.models import DeviceType
     from dcim.models import DeviceRole
@@ -501,6 +503,219 @@ def bulk_orm_apply_macaddress(runner, rows: list[dict[str, Any]]):
             MACAddress.objects.bulk_update(
                 list(update_objects.values()),
                 fields=["assigned_object_type", "assigned_object_id"],
+                batch_size=1000,
+            )
+
+    runner.events_clearer.clear()
+    return True
+
+
+def bulk_orm_apply_ipaddress(runner, rows: list[dict[str, Any]]):
+    """Batched apply for ipam.ipaddress with adapter-parity semantics.
+
+    Mirrors ``apply_ipam_ipaddress`` (sync_ipam.py) row-for-row — device and
+    interface resolution, dependency skip/fail, network-id/broadcast skips, VRF
+    ensure, and the null-VRF net_host vs (address, vrf) coalesce — but collects
+    resolved IPAddress objects and writes them with bulk_create/bulk_update at
+    the end instead of saving per row. Experimental: enabled only when
+    `ipam.ipaddress` is explicitly listed in the sync's `bulk_orm_models`.
+    """
+    import operator
+    from functools import reduce
+    from ipaddress import ip_interface
+
+    from dcim.models import Device
+    from dcim.models import Interface
+    from ipam.models import IPAddress
+    from django.core.exceptions import ObjectDoesNotExist
+    from django.db import transaction
+    from django.db.models import Q
+
+    from ..exceptions import ForwardDependencySkipError
+    from ..exceptions import ForwardSearchError
+
+    interface_ct = runner._content_type_for(Interface)
+    update_field_names = [
+        "address",
+        "vrf",
+        "status",
+        "assigned_object_type",
+        "assigned_object_id",
+    ]
+
+    device_names = {row.get("device") for row in rows if row.get("device")}
+    interface_names = {row.get("interface") for row in rows if row.get("interface")}
+    devices_by_name = {
+        device.name: device for device in Device.objects.filter(name__in=device_names)
+    }
+    interfaces_by_key = {
+        (interface.device.name, interface.name): interface
+        for interface in Interface.objects.select_related("device").filter(
+            device__name__in=device_names, name__in=interface_names
+        )
+    }
+
+    # Pre-ensure VRFs once (the adapter ensures-or-creates per row).
+    vrf_by_name = {}
+    for vrf_name in {row.get("vrf") for row in rows if row.get("vrf")}:
+        vrf_by_name[vrf_name] = runner._ensure_vrf(
+            {
+                "name": vrf_name,
+                "rd": None,
+                "description": "",
+                "enforce_unique": False,
+            },
+            update_existing=False,
+        )
+
+    # Pre-fetch existing IPs keyed by (host_ip, vrf_id) for net_host coalesce.
+    host_ips = set()
+    for row in rows:
+        try:
+            host_ips.add(str(ip_interface(row["address"]).ip))
+        except (KeyError, ValueError):
+            continue
+    existing_by_key = {}
+    if host_ips:
+        host_filter = reduce(
+            operator.or_, (Q(address__net_host=host) for host in host_ips)
+        )
+        for ip in IPAddress.objects.filter(host_filter):
+            existing_by_key[(str(ip.address.ip), ip.vrf_id)] = ip
+
+    create_objects = {}
+    update_objects = {}
+
+    for row in rows:
+        device_name = row.get("device")
+        interface_name = row.get("interface")
+        try:
+            device = devices_by_name.get(device_name) or runner._get_device_by_name(
+                device_name
+            )
+        except ObjectDoesNotExist as exc:
+            key = (device_name,)
+            if runner._dependency_failed("dcim.device", key):
+                runner.logger.increment_statistics("ipam.ipaddress", outcome="skipped")
+                runner._record_issue(
+                    "ipam.ipaddress",
+                    f"Skipping IP assignment because dependency `dcim.device` "
+                    f"failed for {key}.",
+                    row,
+                    exception=ForwardDependencySkipError(
+                        "dependency dcim.device failed",
+                        model_string="ipam.ipaddress",
+                    ),
+                )
+                continue
+            runner._mark_dependency_failed("ipam.ipaddress", row)
+            runner.logger.increment_statistics("ipam.ipaddress", outcome="failed")
+            runner._record_issue(
+                "ipam.ipaddress",
+                f"Unable to find device `{device_name}` for IP assignment.",
+                row,
+                exception=ForwardSearchError(
+                    f"device {device_name} not found",
+                    model_string="ipam.ipaddress",
+                ),
+            )
+            continue
+
+        interface = interfaces_by_key.get(
+            (device.name, interface_name)
+        ) or runner._lookup_interface(device, interface_name)
+        if interface is None:
+            key = (device.name, interface_name)
+            if runner._dependency_failed("dcim.interface", key):
+                runner.logger.increment_statistics("ipam.ipaddress", outcome="skipped")
+                runner._record_issue(
+                    "ipam.ipaddress",
+                    f"Skipping IP assignment because dependency `dcim.interface` "
+                    f"failed for {key}.",
+                    row,
+                    exception=ForwardDependencySkipError(
+                        "dependency dcim.interface failed",
+                        model_string="ipam.ipaddress",
+                    ),
+                )
+                continue
+            runner._record_aggregated_skip_warning(
+                model_string="ipam.ipaddress",
+                reason="missing-interface",
+                warning_message=(
+                    f"Skipping IP address `{row['address']}` on `{device.name}` "
+                    f"`{interface_name}` because the target interface was not "
+                    "imported."
+                ),
+            )
+            continue
+
+        skip_reason = runner._ipaddress_assignment_skip_reason(row["address"])
+        if skip_reason:
+            reason_label = {
+                "network-id": "subnet network IDs",
+                "broadcast-address": "broadcast addresses",
+            }[skip_reason]
+            runner._record_aggregated_skip_warning(
+                model_string="ipam.ipaddress",
+                reason=skip_reason,
+                warning_message=(
+                    f"Skipping IP address `{row['address']}` on `{device.name}` "
+                    f"`{interface_name}` because NetBox cannot assign "
+                    f"{reason_label} to interfaces."
+                ),
+            )
+            continue
+
+        vrf = vrf_by_name.get(row.get("vrf")) if row.get("vrf") else None
+        vrf_id = vrf.pk if vrf is not None else None
+        host_ip = str(ip_interface(row["address"]).ip)
+        lookup_key = (host_ip, vrf_id)
+
+        ip = existing_by_key.get(lookup_key) or create_objects.get(lookup_key)
+        if ip is None:
+            ip = IPAddress(
+                address=row["address"],
+                vrf=vrf,
+                status=row["status"],
+                assigned_object_type=interface_ct,
+                assigned_object_id=interface.pk,
+            )
+            ip.full_clean()
+            create_objects[lookup_key] = ip
+            existing_by_key[lookup_key] = ip
+        else:
+            changed = False
+            if str(ip.address) != str(row["address"]):
+                ip.address = row["address"]
+                changed = True
+            if ip.vrf_id != vrf_id:
+                ip.vrf = vrf
+                changed = True
+            if ip.status != row["status"]:
+                ip.status = row["status"]
+                changed = True
+            if ip.assigned_object_type_id != interface_ct.pk:
+                ip.assigned_object_type = interface_ct
+                changed = True
+            if ip.assigned_object_id != interface.pk:
+                ip.assigned_object_id = interface.pk
+                changed = True
+            if changed and getattr(ip, "pk", None):
+                ip.full_clean()
+                update_objects[ip.pk] = ip
+        runner.logger.increment_statistics("ipam.ipaddress", outcome="applied")
+        runner.events_clearer.increment()
+
+    with transaction.atomic():
+        if create_objects:
+            IPAddress.objects.bulk_create(
+                list(create_objects.values()), batch_size=1000
+            )
+        if update_objects:
+            IPAddress.objects.bulk_update(
+                list(update_objects.values()),
+                fields=update_field_names,
                 batch_size=1000,
             )
 

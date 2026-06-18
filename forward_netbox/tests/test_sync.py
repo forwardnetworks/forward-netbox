@@ -71,6 +71,7 @@ from forward_netbox.utilities.apply_engine import APPLY_ENGINE_MODEL_CLASSIFICAT
 from forward_netbox.utilities.apply_engine import BULK_ORM_ENABLED_MODELS
 from forward_netbox.utilities.apply_engine import BULK_ORM_ENABLED_MODELS_WITHOUT_SPECS
 from forward_netbox.utilities.apply_engine import bulk_orm_expansion_summary
+from forward_netbox.utilities.apply_engine import EXPERIMENTAL_BULK_ORM_MODELS
 from forward_netbox.utilities.apply_engine import select_apply_engine
 from forward_netbox.utilities.apply_engine import UNCLASSIFIED_SUPPORTED_MODELS
 from forward_netbox.utilities.apply_engine_bulk import (
@@ -12878,6 +12879,17 @@ class ForwardSyncRunnerTest(TestCase):
                     decision.reason_code,
                     "bulk_orm_enabled_safe_model_set",
                 )
+            elif (
+                model_string in EXPERIMENTAL_BULK_ORM_MODELS
+                and model_string not in ADAPTER_REQUIRED_MODELS
+            ):
+                # Experimental opt-in models stay on adapter until explicitly
+                # allowlisted in the sync's bulk_orm_models.
+                self.assertEqual(decision.selected_engine, "adapter")
+                self.assertEqual(
+                    decision.reason_code,
+                    "bulk_orm_model_not_allowlisted",
+                )
             elif model_string in ADAPTER_REQUIRED_MODELS:
                 self.assertEqual(decision.selected_engine, "adapter")
                 self.assertEqual(
@@ -12890,7 +12902,10 @@ class ForwardSyncRunnerTest(TestCase):
     def test_bulk_orm_expansion_summary_requires_parity_for_blocked_models(self):
         summary = bulk_orm_expansion_summary(FORWARD_SUPPORTED_MODELS)
 
-        self.assertEqual(summary["status"], "blocked_pending_parity")
+        # ipam.ipaddress is now an experimental opt-in candidate, so the summary
+        # surfaces experimental candidates rather than reporting all non-safe
+        # models as hard-blocked.
+        self.assertEqual(summary["status"], "experimental_candidates")
         self.assertIn("dcim.site", summary["safe_models"])
         self.assertGreater(summary["blocked_model_count"], 0)
         self.assertGreater(len(summary["promotion_lanes"]), 0)
