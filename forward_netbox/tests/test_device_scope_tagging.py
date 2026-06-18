@@ -14,9 +14,11 @@ class DeviceScopeTaggingTest(TestCase):
     """When apply_device_scope_tags is enabled, synced devices are tagged in
     NetBox with their Forward device-scope include tag(s)."""
 
-    def _source(self, *, apply_scope_tags):
+    def _source(
+        self, *, apply_scope_tags, include_tags=("N.Patel",), include_match="any"
+    ):
         return ForwardSource.objects.create(
-            name=f"scope-src-{apply_scope_tags}",
+            name=f"scope-src-{ForwardSource.objects.count()}",
             type="saas",
             url="https://fwd.app",
             status="ready",
@@ -25,8 +27,8 @@ class DeviceScopeTaggingTest(TestCase):
                 "password": "p",
                 "verify": True,
                 "network_id": "net-1",
-                "device_tag_include_tags": ["N.Patel"],
-                "device_tag_include_match": "any",
+                "device_tag_include_tags": list(include_tags),
+                "device_tag_include_match": include_match,
                 "apply_device_scope_tags": apply_scope_tags,
             },
         )
@@ -85,3 +87,35 @@ class DeviceScopeTaggingTest(TestCase):
 
         device = Device.objects.get(name="dev-1")
         self.assertEqual(device.tags.filter(name="N.Patel").count(), 1)
+
+    def test_multi_tag_any_mode_skips_tagging(self):
+        # In "any" mode with multiple include tags, a device may match only one;
+        # the row does not carry its Forward tags, so tagging is skipped to avoid
+        # applying a tag the device does not have.
+        source = self._source(
+            apply_scope_tags=True,
+            include_tags=["TagA", "TagB"],
+            include_match="any",
+        )
+        runner = self._runner(source)
+        apply_dcim_device(runner, self._row())
+
+        device = Device.objects.get(name="dev-1")
+        self.assertEqual(list(device.tags.all()), [])
+        self.assertFalse(Tag.objects.filter(name__in=["TagA", "TagB"]).exists())
+
+    def test_multi_tag_all_mode_applies_all(self):
+        # In "all" mode every in-scope device carries every include tag, so all
+        # are applied.
+        source = self._source(
+            apply_scope_tags=True,
+            include_tags=["TagA", "TagB"],
+            include_match="all",
+        )
+        runner = self._runner(source)
+        apply_dcim_device(runner, self._row())
+
+        device = Device.objects.get(name="dev-1")
+        self.assertEqual(
+            sorted(device.tags.values_list("name", flat=True)), ["TagA", "TagB"]
+        )
