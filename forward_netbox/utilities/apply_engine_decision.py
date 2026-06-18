@@ -28,7 +28,7 @@ BULK_ORM_ENABLED_MODELS = {
     "ipam.vlan",
     "ipam.vrf",
 }
-EXPERIMENTAL_BULK_ORM_MODELS = {"ipam.prefix", "ipam.ipaddress"}
+EXPERIMENTAL_BULK_ORM_MODELS = {"ipam.prefix", "ipam.ipaddress", "dcim.interface"}
 
 BULK_ORM_SPEC_MODELS = {
     "dcim.site",
@@ -42,6 +42,7 @@ BULK_ORM_SPEC_MODELS = {
     "ipam.vrf",
     "ipam.prefix",
     "ipam.ipaddress",
+    "dcim.interface",
 }
 BULK_ORM_PARITY_GATES = (
     {
@@ -222,7 +223,6 @@ BULK_ORM_PERFORMANCE_IMPACT_PRIORITY = {
 ADAPTER_REQUIRED_MODELS = {
     "dcim.cable",
     "dcim.device",
-    "dcim.interface",
     "dcim.inventoryitem",
     "dcim.module",
     "extras.taggeditem",
@@ -262,13 +262,6 @@ ADAPTER_MODEL_BLOCKERS = {
         "blocker_reason": (
             "Device writes depend on staged manufacturer/site/device-type/role "
             "resolution and model-level validation sequencing."
-        ),
-    },
-    "dcim.interface": {
-        "blocker_code": "relationship_side_effects",
-        "blocker_reason": (
-            "Interface writes include LAG/member behavior, cable relationships, and "
-            "row-level merge semantics that require adapter-specific logic."
         ),
     },
     "dcim.inventoryitem": {

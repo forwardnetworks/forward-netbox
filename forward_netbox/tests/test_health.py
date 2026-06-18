@@ -1363,7 +1363,7 @@ class ForwardSyncHealthTest(TestCase):
         # Once explicitly allowlisted, the experimental model is no longer held
         # back as not-allowlisted.
         self.sync.parameters["enable_bulk_orm"] = True
-        self.sync.parameters["bulk_orm_models"] = ["ipam.ipaddress"]
+        self.sync.parameters["bulk_orm_models"] = ["ipam.ipaddress", "dcim.interface"]
         self.sync.save(update_fields=["parameters"])
 
         summary = sync_health_summary(self.sync)
