@@ -371,9 +371,16 @@ Cause:
   were backfilled (collection canceled) are also excluded from the current
   allowlist, so they linger too (but are real, not orphans).
 
-Checks:
+Checks (UI):
 
-- Run the read-only reconciliation audit to break the count down:
+- On the sync detail page, click **Scope Reconciliation**. It runs the same
+  check live and shows the counts — in-scope (collected), tagged-but-backfilled,
+  and out-of-scope (orphans) — with a sample of the orphan names. The **Prune
+  orphans** button on that page deletes them (confirmation first).
+
+Checks (CLI):
+
+- Or run the read-only reconciliation audit:
 
   ```
   python manage.py forward_device_scope_reconciliation_audit --sync-name "<sync_name>"
@@ -385,7 +392,7 @@ Checks:
 
 Remediation:
 
-- Review `out_of_scope_sample`, then delete the orphans with the same command:
+- Use the **Prune orphans** button on the Scope Reconciliation page, or the CLI:
 
   ```
   python manage.py forward_device_scope_reconciliation_audit \
