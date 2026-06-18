@@ -483,15 +483,26 @@ def bulk_orm_apply_macaddress(runner, rows: list[dict[str, Any]]):
                 assigned_object_type=interface_content_type,
                 assigned_object_id=interface.pk,
             )
+            mac.full_clean()
             create_objects[mac_key] = mac
             macs_by_address[mac_key] = mac
-        else:
-            mac.assigned_object_type = interface_content_type
-            mac.assigned_object_id = interface.pk
-            if getattr(mac, "pk", None):
-                update_objects[mac.pk] = mac
+            runner.logger.increment_statistics("dcim.macaddress", outcome="applied")
+            runner.events_clearer.increment()
+            continue
 
+        # Existing MAC: only write when the interface assignment actually
+        # changes, otherwise every sync re-PATCHes unchanged rows.
+        if (
+            mac.assigned_object_type_id == interface_content_type.pk
+            and mac.assigned_object_id == interface.pk
+        ):
+            runner.logger.increment_statistics("dcim.macaddress", outcome="unchanged")
+            continue
+        mac.assigned_object_type = interface_content_type
+        mac.assigned_object_id = interface.pk
         mac.full_clean()
+        if getattr(mac, "pk", None):
+            update_objects[mac.pk] = mac
         runner.logger.increment_statistics("dcim.macaddress", outcome="applied")
         runner.events_clearer.increment()
 
@@ -510,6 +521,19 @@ def bulk_orm_apply_macaddress(runner, rows: list[dict[str, Any]]):
 
     runner.events_clearer.clear()
     return True
+
+
+def _interface_field_differs(existing, field, value) -> bool:
+    """Return True if ``value`` differs from ``existing``'s stored ``field``.
+
+    Relations are compared by id (``<field>_id``) so an incoming related
+    instance does not trigger a lazy DB fetch just to compare equality.
+    """
+    field_obj = existing._meta.get_field(field)
+    if field_obj.is_relation:
+        incoming_id = value.pk if value is not None else None
+        return getattr(existing, f"{field}_id") != incoming_id
+    return getattr(existing, field) != value
 
 
 def bulk_orm_apply_interface(runner, rows: list[dict[str, Any]]):
@@ -652,12 +676,23 @@ def bulk_orm_apply_interface(runner, rows: list[dict[str, Any]]):
                 interface = Interface(**defaults)
                 interface.full_clean()
                 create_objects[key] = interface
-        else:
-            for field, value in defaults.items():
+            runner.logger.increment_statistics("dcim.interface", outcome="applied")
+            runner.events_clearer.increment()
+            continue
+
+        # Existing interface: only write when a field actually changes,
+        # otherwise every sync re-PATCHes unchanged interfaces.
+        changed = False
+        for field, value in defaults.items():
+            if _interface_field_differs(existing, field, value):
                 setattr(existing, field, value)
-            existing.full_clean()
-            if getattr(existing, "pk", None):
-                update_objects[existing.pk] = existing
+                changed = True
+        if not changed:
+            runner.logger.increment_statistics("dcim.interface", outcome="unchanged")
+            continue
+        existing.full_clean()
+        if getattr(existing, "pk", None):
+            update_objects[existing.pk] = existing
         runner.logger.increment_statistics("dcim.interface", outcome="applied")
         runner.events_clearer.increment()
 
@@ -851,26 +886,32 @@ def bulk_orm_apply_ipaddress(runner, rows: list[dict[str, Any]]):
             ip.full_clean()
             create_objects[lookup_key] = ip
             existing_by_key[lookup_key] = ip
-        else:
-            changed = False
-            if str(ip.address) != str(row["address"]):
-                ip.address = row["address"]
-                changed = True
-            if ip.vrf_id != vrf_id:
-                ip.vrf = vrf
-                changed = True
-            if ip.status != row["status"]:
-                ip.status = row["status"]
-                changed = True
-            if ip.assigned_object_type_id != interface_ct.pk:
-                ip.assigned_object_type = interface_ct
-                changed = True
-            if ip.assigned_object_id != interface.pk:
-                ip.assigned_object_id = interface.pk
-                changed = True
-            if changed and getattr(ip, "pk", None):
-                ip.full_clean()
-                update_objects[ip.pk] = ip
+            runner.logger.increment_statistics("ipam.ipaddress", outcome="applied")
+            runner.events_clearer.increment()
+            continue
+
+        changed = False
+        if str(ip.address) != str(row["address"]):
+            ip.address = row["address"]
+            changed = True
+        if ip.vrf_id != vrf_id:
+            ip.vrf = vrf
+            changed = True
+        if ip.status != row["status"]:
+            ip.status = row["status"]
+            changed = True
+        if ip.assigned_object_type_id != interface_ct.pk:
+            ip.assigned_object_type = interface_ct
+            changed = True
+        if ip.assigned_object_id != interface.pk:
+            ip.assigned_object_id = interface.pk
+            changed = True
+        if not changed:
+            runner.logger.increment_statistics("ipam.ipaddress", outcome="unchanged")
+            continue
+        if getattr(ip, "pk", None):
+            ip.full_clean()
+            update_objects[ip.pk] = ip
         runner.logger.increment_statistics("ipam.ipaddress", outcome="applied")
         runner.events_clearer.increment()
 
