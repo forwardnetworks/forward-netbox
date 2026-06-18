@@ -39,6 +39,12 @@
         <i class="mdi mdi-clipboard-search" aria-hidden="true"></i>&nbsp;{% trans "Preview Dependencies" %}
       </a>
     {% endif %}
+    <a class="btn btn-outline-secondary" href="{{ scope_reconciliation_url }}">
+      <i class="mdi mdi-scale-balance" aria-hidden="true"></i>&nbsp;{% trans "Scope Reconciliation" %}
+    </a>
+    <a class="btn btn-outline-secondary" href="{{ module_readiness_url }}">
+      <i class="mdi mdi-server-network" aria-hidden="true"></i>&nbsp;{% trans "Module Readiness" %}
+    </a>
     <a class="btn btn-outline-secondary" href="{{ support_bundle_url }}">
       <i class="mdi mdi-download" aria-hidden="true"></i>&nbsp;{% trans "Export Support Bundle" %}
     </a>
