@@ -49,8 +49,9 @@ class ForwardArchitectureAuditCommandTest(TestCase):
         self.assertIn("dcim.platform", matrix["bulk_orm_safe_models"])
         self.assertIn("dcim.virtualchassis", matrix["bulk_orm_safe_models"])
         self.assertIn("dcim.cable", matrix["adapter_required_models"])
-        # dcim.interface is now an experimental bulk-ORM opt-in candidate, no
-        # longer hard adapter-required.
+        # dcim.interface is now in the default bulk-ORM safe set, no longer
+        # adapter-required.
+        self.assertIn("dcim.interface", matrix["bulk_orm_safe_models"])
         self.assertNotIn("dcim.interface", matrix["adapter_required_models"])
         self.assertIn("netbox_cisco_aci.acinode", matrix["adapter_required_models"])
         self.assertNotIn("dcim.virtualchassis", matrix["adapter_required_models"])
@@ -418,7 +419,7 @@ class ForwardArchitectureAuditCommandTest(TestCase):
         )
         self.assertEqual(
             interface_contract["apply_engine_classification"],
-            "bulk_orm_experimental_candidate",
+            "bulk_orm_candidate",
         )
         self.assertFalse(interface_contract["apply_engine_blocker_code"])
         self.assertEqual(
@@ -446,7 +447,7 @@ class ForwardArchitectureAuditCommandTest(TestCase):
         self.assertIn("name", interface_contract["support_diagnostic_fields"])
         self.assertEqual(
             matrix["bulk_orm_expansion"]["status"],
-            "experimental_candidates",
+            "blocked_pending_parity",
         )
         self.assertGreaterEqual(
             len(matrix["bulk_orm_expansion"]["parity_gates"]),

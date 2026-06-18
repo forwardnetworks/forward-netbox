@@ -12902,11 +12902,14 @@ class ForwardSyncRunnerTest(TestCase):
     def test_bulk_orm_expansion_summary_requires_parity_for_blocked_models(self):
         summary = bulk_orm_expansion_summary(FORWARD_SUPPORTED_MODELS)
 
-        # ipam.ipaddress is now an experimental opt-in candidate, so the summary
-        # surfaces experimental candidates rather than reporting all non-safe
-        # models as hard-blocked.
-        self.assertEqual(summary["status"], "experimental_candidates")
+        # ipam.ipaddress and dcim.interface were promoted to the default safe
+        # set. The only remaining experimental model (ipam.prefix) is also
+        # adapter-required, so there are no promotable experimental candidates
+        # and the summary reports the remaining models as blocked pending parity.
+        self.assertEqual(summary["status"], "blocked_pending_parity")
         self.assertIn("dcim.site", summary["safe_models"])
+        self.assertIn("dcim.interface", summary["safe_models"])
+        self.assertIn("ipam.ipaddress", summary["safe_models"])
         self.assertGreater(summary["blocked_model_count"], 0)
         self.assertGreater(len(summary["promotion_lanes"]), 0)
         self.assertEqual(

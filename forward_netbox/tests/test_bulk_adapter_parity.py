@@ -189,6 +189,45 @@ class BulkAdapterParityTest(TestCase):
         names = {row[0] for row in state}
         self.assertIn("Ethernet2", names)
 
+    def test_interface_lag_membership_bulk_matches_adapter(self):
+        # LAG-membership rows are delegated by the bulk path to the adapter; this
+        # proves the hybrid batch+delegate split yields the same state (parent
+        # LAG ensured, member's lag FK set) as running everything via the adapter.
+        rows = [
+            {
+                "device": "dev-p",
+                "name": "Ethernet1",
+                "type": "1000base-t",
+                "enabled": True,
+                "lag": "Po1",
+            }
+        ]
+
+        def seed():
+            pass
+
+        def capture():
+            return [
+                (iface.name, iface.type, iface.lag.name if iface.lag else None)
+                for iface in Interface.objects.filter(device=self.device).order_by(
+                    "name"
+                )
+            ]
+
+        def adapter_apply(runner):
+            for row in rows:
+                apply_dcim_interface(runner, row)
+
+        state = self._run_both_and_compare(
+            seed=seed,
+            adapter_apply=adapter_apply,
+            bulk_apply=lambda runner: bulk_orm_apply_interface(runner, rows),
+            capture=capture,
+        )
+        by_name = {row[0]: row for row in state}
+        self.assertEqual(by_name["Po1"][1], "lag")
+        self.assertEqual(by_name["Ethernet1"][2], "Po1")
+
     def test_macaddress_bulk_matches_adapter(self):
         interface_ct = ContentType.objects.get_for_model(Interface)
         rows = [
