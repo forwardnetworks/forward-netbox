@@ -607,7 +607,7 @@ Create a `Forward Sync` to bind a source, a NetBox model selection, and the inge
   - Uses the plugin's current parity-tested bulk ORM safe set for eligible models.
   - `Branching` and `Fast bootstrap` both auto-enable the same safe set when unset; set this explicitly to `false` to force adapter-only behavior.
   - Models with dependency, relationship, IPAM hierarchy, or plugin-specific contracts remain on the adapter path even when this is enabled.
-  - Current safe set: `dcim.site`, `dcim.manufacturer`, `dcim.devicerole`, `dcim.platform`, `dcim.devicetype`, `dcim.macaddress`, `dcim.virtualchassis`, `ipam.vlan`, and `ipam.vrf`.
+  - Current safe set: `dcim.site`, `dcim.manufacturer`, `dcim.devicerole`, `dcim.platform`, `dcim.devicetype`, `dcim.macaddress`, `dcim.virtualchassis`, `ipam.vlan`, `ipam.vrf`, and the two highest-volume models `dcim.interface` and `ipam.ipaddress` (promoted to the safe set with adapter-vs-bulk parity tests and compare-before-write).
 - `bulk_orm_models` (advanced parameter)
   - Optional sync parameter list that narrows the safe bulk-ORM model set for this sync.
   - Leave this unset to use the plugin's current parity-tested safe set.

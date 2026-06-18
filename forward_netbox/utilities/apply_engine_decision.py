@@ -27,8 +27,13 @@ BULK_ORM_ENABLED_MODELS = {
     "dcim.virtualchassis",
     "ipam.vlan",
     "ipam.vrf",
+    # Promoted to the default safe set: both carry adapter-parity tests and
+    # compare-before-write (no churn). These are the two highest-volume models,
+    # so default bulk gives the largest ingest speedup.
+    "dcim.interface",
+    "ipam.ipaddress",
 }
-EXPERIMENTAL_BULK_ORM_MODELS = {"ipam.prefix", "ipam.ipaddress", "dcim.interface"}
+EXPERIMENTAL_BULK_ORM_MODELS = {"ipam.prefix"}
 
 BULK_ORM_SPEC_MODELS = {
     "dcim.site",
@@ -415,10 +420,9 @@ ADAPTER_MODEL_BLOCKERS = {
 }
 
 APPLY_ENGINE_MODEL_CLASSIFICATIONS = {
-    **{
-        model_string: "bulk_orm_candidate"
-        for model_string in SIMPLE_BULK_CANDIDATE_MODELS
-    },
+    # All default-enabled bulk models (simple + the promoted custom-spec models
+    # interface/ipaddress) classify as bulk_orm_candidate.
+    **{model_string: "bulk_orm_candidate" for model_string in BULK_ORM_ENABLED_MODELS},
     **{
         model_string: "bulk_orm_experimental_candidate"
         for model_string in EXPERIMENTAL_BULK_ORM_MODELS
