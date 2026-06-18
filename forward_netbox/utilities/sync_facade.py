@@ -40,7 +40,7 @@ def normalize_forward_sync(sync):
     sync.parameters = parameters
 
 
-def _device_tag_scope(sync):
+def device_tag_scope(sync):
     """Return (include_tags, exclude_tags, include_match) from the source params.
 
     Mirrors the normalization used by the live query fetch path so the
@@ -75,7 +75,7 @@ def resolve_snapshot_id(sync, client=None):
             f"{snapshot_id}."
         )
     if snapshot_id == LATEST_COLLECTED_SNAPSHOT:
-        include_tags, exclude_tags, include_match = _device_tag_scope(sync)
+        include_tags, exclude_tags, include_match = device_tag_scope(sync)
         return client.get_latest_collected_snapshot_id(
             network_id,
             include_tags=include_tags,

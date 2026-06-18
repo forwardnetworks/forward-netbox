@@ -269,8 +269,9 @@ def run_forward_sync(sync, job=None, *, max_changes_per_branch=None):
                 current_job=job,
             )
             if decision["should_queue"]:
+                selector = decision.get("snapshot_selector") or "latestProcessed"
                 sync.logger.log_info(
-                    "Forward latestProcessed advanced from "
+                    f"Forward {selector} advanced from "
                     f"`{decision['current_snapshot_id']}` to "
                     f"`{decision['latest_processed_snapshot_id']}` during the run; "
                     "queuing a catch-up sync.",
