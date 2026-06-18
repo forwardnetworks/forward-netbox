@@ -28,7 +28,12 @@ class ModuleReadinessReport:
 
     @property
     def ready(self) -> bool:
-        return self.missing_bay_rows == 0 and self.missing_device_rows == 0
+        # Readiness is about module BAYS: dcim.module sync is safe once every
+        # module row's bay exists. Rows whose device is not in NetBox
+        # (missing_device_rows) simply skip with a non-blocking warning — they are
+        # a device-scope concern, not a module-readiness blocker — so they do not
+        # hold readiness "No". They are still reported separately.
+        return self.missing_bay_rows == 0
 
     def as_dict(self) -> dict[str, int | bool | tuple[str, ...]]:
         return {

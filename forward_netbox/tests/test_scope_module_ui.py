@@ -1,6 +1,7 @@
 from unittest.mock import Mock
 from unittest.mock import patch
 
+from core.models import Job
 from dcim.models import Device
 from dcim.models import DeviceRole
 from dcim.models import DeviceType
@@ -12,6 +13,8 @@ from django.test import Client
 from django.test import TestCase
 from django.urls import reverse
 
+from forward_netbox.jobs import create_forward_module_bays
+from forward_netbox.jobs import prune_forward_orphans
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.utilities.module_readiness import compute_module_readiness_for_sync
@@ -103,7 +106,7 @@ class ScopeModuleUiTest(TestCase):
                 )
             )
             self.assertEqual(resp.status_code, 200)
-            # POST prune deletes the orphan (dev-stale), keeps dev-a.
+            # POST enqueues a background prune job (no synchronous delete).
             resp = client.post(
                 reverse(
                     "plugins:forward_netbox:forwardsync_prune_orphans",
@@ -111,6 +114,12 @@ class ScopeModuleUiTest(TestCase):
                 )
             )
             self.assertEqual(resp.status_code, 302)
+            job = Job.objects.filter(name__icontains="prune orphans").latest("pk")
+            self.assertEqual(job.object_id, self.sync.pk)
+            # Devices are still present until the job runs.
+            self.assertTrue(Device.objects.filter(name="dev-stale").exists())
+            # Run the job: the orphan is pruned, the in-scope device kept.
+            prune_forward_orphans(job)
         self.assertTrue(Device.objects.filter(name="dev-a").exists())
         self.assertFalse(Device.objects.filter(name="dev-stale").exists())
 
@@ -128,6 +137,7 @@ class ScopeModuleUiTest(TestCase):
                 )
             )
             self.assertEqual(resp.status_code, 200)
+            # POST enqueues a background create-bays job.
             resp = client.post(
                 reverse(
                     "plugins:forward_netbox:forwardsync_create_module_bays",
@@ -135,6 +145,10 @@ class ScopeModuleUiTest(TestCase):
                 )
             )
             self.assertEqual(resp.status_code, 302)
+            job = Job.objects.filter(name__icontains="create module bays").latest("pk")
+            self.assertEqual(job.object_id, self.sync.pk)
+            # Bays are created when the job runs.
+            create_forward_module_bays(job)
         self.assertEqual(
             ModuleBay.objects.filter(device__name="dev-m", name="Slot 1").count(), 1
         )

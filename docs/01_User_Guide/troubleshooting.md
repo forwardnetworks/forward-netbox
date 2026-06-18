@@ -376,7 +376,10 @@ Checks (UI):
 - On the sync detail page, click **Scope Reconciliation**. It runs the same
   check live and shows the counts — in-scope (collected), tagged-but-backfilled,
   and out-of-scope (orphans) — with a sample of the orphan names. The **Prune
-  orphans** button on that page deletes them (confirmation first).
+  orphans** button on that page queues a background job to delete them
+  (confirmation first); watch the sync's **Jobs** tab for the result. It runs as
+  a job because deleting many devices cascades to their interfaces and IPs and
+  would otherwise exceed an HTTP gateway timeout on large fabrics.
 
 Checks (CLI):
 
