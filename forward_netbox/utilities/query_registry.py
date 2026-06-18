@@ -327,8 +327,13 @@ BUILTIN_QUERY_MAPS = [
     },
     {
         "model_string": "ipam.ipaddress",
-        "name": "Forward IP Addresses",
-        "filename": "forward_ip_addresses.nqe",
+        "name": "Forward IPv4 IP Addresses",
+        "filename": "forward_ip_addresses_ipv4.nqe",
+    },
+    {
+        "model_string": "ipam.ipaddress",
+        "name": "Forward IPv6 IP Addresses",
+        "filename": "forward_ip_addresses_ipv6.nqe",
     },
     {
         "model_string": "ipam.fhrpgroup",

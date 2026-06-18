@@ -36,7 +36,8 @@ When a sync uses the local device tag filter mode, the plugin now passes the sel
 | Forward VRFs | `ipam.vrf` | [`forward_vrfs.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_vrfs.nqe) |
 | Forward IPv4 Prefixes | `ipam.prefix` | [`forward_prefixes_ipv4.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_prefixes_ipv4.nqe) |
 | Forward IPv6 Prefixes | `ipam.prefix` | [`forward_prefixes_ipv6.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_prefixes_ipv6.nqe) |
-| Forward IP Addresses | `ipam.ipaddress` | [`forward_ip_addresses.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_ip_addresses.nqe) |
+| Forward IPv4 IP Addresses | `ipam.ipaddress` | [`forward_ip_addresses_ipv4.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_ip_addresses_ipv4.nqe) |
+| Forward IPv6 IP Addresses | `ipam.ipaddress` | [`forward_ip_addresses_ipv6.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_ip_addresses_ipv6.nqe) |
 | Forward HSRP Groups | `ipam.fhrpgroup` | [`forward_hsrp_groups.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_hsrp_groups.nqe) |
 | Forward Inventory Items | `dcim.inventoryitem` | [`forward_inventory_items.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_inventory_items.nqe) |
 | Forward ACI Fabrics | `netbox_cisco_aci.acifabric` | [`forward_aci_fabrics.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_fabrics.nqe) |
@@ -910,13 +911,18 @@ The IPv6 prefix map accepts the built-in shard key parameter and the selected
 device tag include/exclude parameters so scoped imports avoid collecting
 prefixes from devices outside the selected Forward tag scope.
 
-## Forward IP Addresses
+## Forward IPv4 IP Addresses / Forward IPv6 IP Addresses
 
 - `NetBox Model`: `ipam.ipaddress`
 - Expected fields: `device`, `interface`, `vrf`, `address`, `status`
-- Query file: [`forward_ip_addresses.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_ip_addresses.nqe)
+- Query files: [`forward_ip_addresses_ipv4.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_ip_addresses_ipv4.nqe), [`forward_ip_addresses_ipv6.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_ip_addresses_ipv6.nqe)
 
-The shipped query combines rows from subinterfaces, bridge interfaces, tunnels, and routed VLAN interfaces, filters those candidates through the importable Forward interface set, applies a final `select distinct` over the merged result, and then projects a single deterministic row per NetBox IP identity. VRF-scoped rows keep the normal `(address, vrf)` identity. Global-table rows are canonicalized by bare host IP so the plugin does not try to create multiple global IP objects for the same host with different masks; when that happens, the most specific mask wins. It still skips subnet network IDs and IPv4 broadcast addresses that NetBox cannot assign to interfaces, while preserving point-to-point endpoint prefixes such as IPv4 `/31` and IPv6 `/127`. These rows are skipped rather than rewritten because there is no NetBox-native host address to infer safely from the device configuration. If an IP row still targets an interface that was not imported, the NetBox adapter records an aggregated skip warning instead of treating the row as a fatal sync failure.
+IP addresses ship as two independent built-in maps — one for IPv4 and one for
+IPv6 — so each address family can be enabled or disabled on its own, matching the
+split IPv4/IPv6 prefix maps. (Earlier releases shipped a single combined
+`Forward IP Addresses` map; on upgrade the plugin removes that built-in map and
+seeds the two family maps in its place. A user-customized override of the old map
+is left untouched.) Each map combines rows from subinterfaces, bridge interfaces, tunnels, and routed VLAN interfaces for its address family, filters those candidates through the importable Forward interface set, applies a final `select distinct` over the merged result, and then projects a single deterministic row per NetBox IP identity. VRF-scoped rows keep the normal `(address, vrf)` identity. Global-table rows are canonicalized by bare host IP so the plugin does not try to create multiple global IP objects for the same host with different masks; when that happens, the most specific mask wins. The IPv4 map skips subnet network IDs and broadcast addresses that NetBox cannot assign to interfaces; the IPv6 map skips subnet-router anycast (network) addresses. Both preserve point-to-point endpoint prefixes such as IPv4 `/31` and IPv6 `/127`. These rows are skipped rather than rewritten because there is no NetBox-native host address to infer safely from the device configuration. If an IP row still targets an interface that was not imported, the NetBox adapter records an aggregated skip warning instead of treating the row as a fatal sync failure.
 
 For shard-scoped Branching retries, the plugin applies native Forward column
 filters and then enforces the shard boundary again in NetBox before applying
@@ -932,7 +938,8 @@ not have a covering imported prefix in the same VRF. This is advisory visibility
 for source or query coverage gaps; it does not create parent prefixes or mutate
 the IP address row.
 
-- [`forward_ip_addresses.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_ip_addresses.nqe)
+- [`forward_ip_addresses_ipv4.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_ip_addresses_ipv4.nqe)
+- [`forward_ip_addresses_ipv6.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_ip_addresses_ipv6.nqe)
 
 ## Forward HSRP Groups
 
