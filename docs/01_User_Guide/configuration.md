@@ -521,6 +521,14 @@ from devices outside the selected Forward tag scope. Custom org queries that
 declare the same parameters receive the same source-side scope; custom queries
 that do not declare them continue to rely on local row filtering.
 
+The device-scope tag (e.g. `Prod_Core`) is a Forward-side selector and is not
+written to NetBox by default. Enable `Apply Device Scope Tags`
+(`apply_device_scope_tags`) on the source to tag each synced device in NetBox
+with its scope include tag(s). This lets you filter the NetBox device list by
+scope and visually identify out-of-scope leftovers (which only the
+`forward_device_scope_reconciliation_audit` command surfaces otherwise). The tag
+is added only when missing, so steady-state re-syncs do not churn.
+
 Branching runs are staged as resumable NetBox jobs. The initial sync job records
 the snapshot, validation result, branch plan, and next shard in the sync state.
 Each shard and merge then runs as its own NetBox background job. Newer releases

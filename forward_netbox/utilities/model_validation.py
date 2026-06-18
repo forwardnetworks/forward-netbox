@@ -58,6 +58,7 @@ def clean_forward_source(source):
             "device_tag_include_match",
             "device_tag_filter_mode",
             "device_tag_prune_out_of_scope",
+            "apply_device_scope_tags",
         }
     )
     if invalid:
