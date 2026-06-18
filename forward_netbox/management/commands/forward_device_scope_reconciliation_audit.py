@@ -3,6 +3,7 @@ import json
 from dcim.models import Device
 from django.core.management.base import BaseCommand
 from django.core.management.base import CommandError
+from django.db import transaction
 
 from forward_netbox.models import ForwardSync
 from forward_netbox.utilities.forward_api import build_device_tag_scope_where
@@ -28,6 +29,20 @@ class Command(BaseCommand):
             "--fail-on-drift",
             action="store_true",
             help="Exit non-zero when NetBox holds devices outside the tag scope.",
+        )
+        parser.add_argument(
+            "--prune-orphans",
+            action="store_true",
+            help=(
+                "Delete the out-of-scope NetBox devices (those not tagged in the "
+                "Forward result). Reports what would be deleted unless --apply is "
+                "also passed. Tagged-but-backfilled devices are never pruned."
+            ),
+        )
+        parser.add_argument(
+            "--apply",
+            action="store_true",
+            help="With --prune-orphans, actually delete instead of dry-run.",
         )
 
     def handle(self, *args, **options):
@@ -111,13 +126,49 @@ class Command(BaseCommand):
                 else (
                     f"{len(out_of_scope)} NetBox devices are not in the Forward "
                     "tag scope (neither collected nor backfilled under this tag). "
-                    "These are typically leftovers from an earlier, broader sync. "
-                    "Enable `device_tag_prune_out_of_scope` on the sync to delete "
-                    "them automatically, or remove them after reviewing the "
-                    "out_of_scope_sample."
+                    "These are leftovers from an earlier, broader sync. "
+                    "`device_tag_prune_out_of_scope` does NOT remove them (it only "
+                    "deletes rows the sync query returns, and these are absent from "
+                    "the result). Review `out_of_scope_sample`, then re-run with "
+                    "`--prune-orphans --apply` to delete them."
                 )
             ),
         }
+
+        if options["prune_orphans"] and out_of_scope:
+            payload["prune_requested"] = True
+            payload["prune_applied"] = False
+            payload["prune_candidate_count"] = len(out_of_scope)
+            # Safety guard: if the Forward query returned no scoped devices, every
+            # NetBox device looks out-of-scope. That is almost always a failed or
+            # empty query, not "delete everything" — refuse to prune.
+            if not tagged_names:
+                payload["prune_aborted"] = "forward-scope-empty"
+                payload["prune_abort_reason"] = (
+                    "The Forward scope query returned 0 devices; refusing to prune "
+                    "because every NetBox device would be treated as an orphan. "
+                    "Check connectivity, the snapshot, and the tag scope, then retry."
+                )
+                self.stdout.write(json.dumps(payload, indent=2, default=str))
+                raise SystemExit(2)
+            if options["apply"]:
+                payload["prune_applied"] = True
+                deleted_total = 0
+                with transaction.atomic():
+                    # Delete in batches so a very large orphan set does not build a
+                    # single oversized IN clause.
+                    orphans = sorted(out_of_scope)
+                    for start in range(0, len(orphans), 500):
+                        batch = orphans[start : start + 500]
+                        deleted, _ = Device.objects.filter(name__in=batch).delete()
+                        deleted_total += deleted
+                payload["pruned_object_count"] = deleted_total
+                payload["pruned_device_count"] = len(out_of_scope)
+            else:
+                payload["prune_dry_run_note"] = (
+                    "Dry run: re-run with --apply to delete these devices."
+                )
+
         self.stdout.write(json.dumps(payload, indent=2, default=str))
 
         if options["fail_on_drift"] and out_of_scope:
