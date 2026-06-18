@@ -8,6 +8,7 @@ from dcim.models import Interface
 from dcim.models import MACAddress
 from dcim.models import Manufacturer
 from dcim.models import Site
+from django.contrib.contenttypes.models import ContentType
 from django.db import connection
 from django.db import transaction
 from django.test import TestCase
@@ -20,6 +21,7 @@ from forward_netbox.utilities.apply_engine_bulk import bulk_orm_apply_ipaddress
 from forward_netbox.utilities.apply_engine_bulk import bulk_orm_apply_macaddress
 from forward_netbox.utilities.sync import ForwardSyncRunner
 from forward_netbox.utilities.sync_interface import apply_dcim_interface
+from forward_netbox.utilities.sync_interface import apply_dcim_macaddress
 from forward_netbox.utilities.sync_ipam import apply_ipam_ipaddress
 
 
@@ -184,6 +186,49 @@ class BulkAdapterParityTest(TestCase):
         )
         names = {row[0] for row in state}
         self.assertIn("Ethernet2", names)
+
+    def test_macaddress_bulk_matches_adapter(self):
+        interface_ct = ContentType.objects.get_for_model(Interface)
+        rows = [
+            {"device": "dev-p", "interface": "Ethernet1", "mac": "00:11:22:33:44:01"},
+            {"device": "dev-p", "interface": "Ethernet1", "mac": "00:11:22:33:44:02"},
+        ]
+
+        def seed():
+            # Existing MAC assigned to a different interface — the row reassigns
+            # it to Ethernet1 (the update path); the other row is a create.
+            other = Interface.objects.create(
+                device=self.device, name="Eth-seed", type="1000base-t"
+            )
+            MACAddress.objects.create(
+                mac_address="00:11:22:33:44:02",
+                assigned_object_type=interface_ct,
+                assigned_object_id=other.pk,
+            )
+
+        def capture():
+            return [
+                (
+                    str(mac.mac_address),
+                    mac.assigned_object_id,
+                    mac.assigned_object_type_id,
+                )
+                for mac in MACAddress.objects.order_by("mac_address")
+            ]
+
+        def adapter_apply(runner):
+            for row in rows:
+                apply_dcim_macaddress(runner, row)
+
+        state = self._run_both_and_compare(
+            seed=seed,
+            adapter_apply=adapter_apply,
+            bulk_apply=lambda runner: bulk_orm_apply_macaddress(runner, rows),
+            capture=capture,
+        )
+        # Both MACs now point at Ethernet1.
+        self.assertEqual(len(state), 2)
+        self.assertTrue(all(row[1] == self.interface.pk for row in state))
 
     def _outcomes(self, runner, model_string):
         counts = {}
