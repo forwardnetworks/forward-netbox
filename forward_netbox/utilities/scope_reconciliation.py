@@ -1,11 +1,7 @@
-"""Shared device-scope reconciliation + orphan prune logic.
-
-Used by both the `forward_device_scope_reconciliation_audit` management command
-and the sync-detail UI panel so the CLI and UI always agree.
-"""
-
-from __future__ import annotations
-
+# Shared device-scope reconciliation + orphan prune logic.
+#
+# Used by both the forward_device_scope_reconciliation_audit management command
+# and the sync-detail UI panel so the CLI and UI always agree.
 from dcim.models import Device
 from django.db import transaction
 
