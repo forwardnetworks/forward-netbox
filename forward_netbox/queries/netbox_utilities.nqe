@@ -83,6 +83,15 @@ export normalizePlatformName(platform_os: String, platform_os_version: String) =
   then "ACI"
   else platformOsName(platform_os);
 
+export deviceIsApicController(device: Device) =
+  isPresent(
+    max(
+      foreach command in device.outputs.commands
+      where command.commandType == CommandType.CISCO_APIC_CONTROLLER_DETAIL
+      select command.commandType
+    )
+  );
+
 export deviceHasAciCommandOutputs(device: Device) =
   isPresent(
     max(
@@ -118,7 +127,7 @@ export isAciDevice(device: Device) =
   || deviceHasAciCommandOutputs(device);
 
 export normalizeDevicePlatformName(device: Device) =
-  if isApicPlatform(toString(device.platform.os))
+  if isApicPlatform(toString(device.platform.os)) || deviceIsApicController(device)
   then "APIC"
   else if isCimcPlatform(toString(device.platform.os))
   then "CIMC"
