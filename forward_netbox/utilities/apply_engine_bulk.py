@@ -1124,6 +1124,14 @@ def bulk_orm_apply_virtualchassis(runner, rows: list[dict[str, Any]]):
             )
             continue
 
+        if device.virtual_chassis_id == vc.pk and device.vc_position == position:
+            # Already a member at this position — don't re-PATCH every sync.
+            occupied_positions[position_key] = device
+            runner.logger.increment_statistics(
+                "dcim.virtualchassis",
+                outcome="unchanged",
+            )
+            continue
         device.virtual_chassis = vc
         device.vc_position = position
         device.full_clean()
