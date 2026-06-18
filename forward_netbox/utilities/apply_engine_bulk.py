@@ -23,6 +23,8 @@ def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str,
     from ipam.models import Prefix
     from ipam.models import VRF
 
+    from .sync_primitives import _model_field_value_matches
+
     specs = {
         "dcim.site": {
             "model": Site,
@@ -299,7 +301,11 @@ def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str,
         changed = False
         for field_name in fields:
             incoming = values.get(field_name)
-            if getattr(existing, field_name) != incoming:
+            # Use the adapter's value matcher: it compares relations by id and
+            # special-cases typed fields (e.g. ipam.prefix IPNetwork vs string),
+            # so a re-applied row does not churn just because the stored type
+            # differs from the incoming string.
+            if not _model_field_value_matches(model, existing, field_name, incoming):
                 setattr(existing, field_name, incoming)
                 changed = True
         if changed and getattr(existing, "pk", None) is not None:
