@@ -807,8 +807,12 @@ def bulk_orm_apply_ipaddress(runner, rows: list[dict[str, Any]]):
         host_filter = reduce(
             operator.or_, (Q(address__net_host=host) for host in host_ips)
         )
-        for ip in IPAddress.objects.filter(host_filter):
-            existing_by_key[(str(ip.address.ip), ip.vrf_id)] = ip
+        # order_by("pk") + first-wins so a duplicate global IP (same host, same
+        # VRF) resolves to the lowest pk deterministically.
+        for ip in IPAddress.objects.filter(host_filter).order_by("pk"):
+            key = (str(ip.address.ip), ip.vrf_id)
+            if key not in existing_by_key:
+                existing_by_key[key] = ip
 
     create_objects = {}
     update_objects = {}
@@ -935,7 +939,12 @@ def bulk_orm_apply_ipaddress(runner, rows: list[dict[str, Any]]):
             runner.logger.increment_statistics("ipam.ipaddress", outcome="unchanged")
             continue
         if getattr(ip, "pk", None):
-            ip.full_clean()
+            # Field-level validation only on update. IPAddress.clean() runs the
+            # global-duplicate check, which would raise when a pre-existing
+            # duplicate global IP exists for the same host; the adapter updates via
+            # save(update_fields=...) with no clean() at all, so skipping clean()
+            # here keeps the two engines consistent and avoids failing the row.
+            ip.clean_fields()
             update_objects[ip.pk] = ip
         runner.logger.increment_statistics("ipam.ipaddress", outcome="applied")
         runner.events_clearer.increment()
