@@ -480,7 +480,7 @@ class ForwardSyncHealthTest(TestCase):
         )
         self.assertEqual(
             summary["apply_engines"]["bulk_orm_expansion"]["status"],
-            "experimental_candidates",
+            "blocked_pending_parity",
         )
         self.assertGreater(
             summary["apply_engines"]["bulk_orm_expansion"]["blocked_model_count"],
@@ -1346,15 +1346,17 @@ class ForwardSyncHealthTest(TestCase):
         self.assertEqual(adaptive["decision"], "insufficient_evidence")
         self.assertEqual(adaptive["capacity_evidence"]["status"], "unknown")
 
-    def test_experimental_bulk_orm_model_stays_on_adapter_until_allowlisted(self):
-        # With bulk enabled but no explicit allowlist, experimental opt-in models
-        # (e.g. ipam.ipaddress) must stay on the adapter, surfaced as
-        # `bulk_orm_model_not_allowlisted` rather than silently going bulk.
+    def test_promoted_bulk_orm_models_run_without_allowlist(self):
+        # ipam.ipaddress and dcim.interface were promoted to the default safe
+        # set, so with bulk enabled they run bulk without an explicit allowlist
+        # and are not held back as `bulk_orm_model_not_allowlisted`. (The only
+        # remaining experimental model, ipam.prefix, is adapter-blocked, so the
+        # not-allowlisted gate no longer applies to any built-in model.)
         self.sync.parameters["enable_bulk_orm"] = True
         self.sync.save(update_fields=["parameters"])
 
         summary = sync_health_summary(self.sync)
-        self.assertIn(
+        self.assertNotIn(
             "bulk_orm_model_not_allowlisted",
             summary["apply_engines"]["global_fallback_reasons"],
         )
