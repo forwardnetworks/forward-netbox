@@ -8,7 +8,7 @@ class NetboxForwardConfig(PluginConfig):
     name = "forward_netbox"
     verbose_name = "NetBox Forward Plugin"
     description = "Sync Forward data into NetBox using built-in NQE queries."
-    version = "1.5.4"
+    version = "1.5.5"
     base_url = "forward"
     min_version = "4.5.0"
 

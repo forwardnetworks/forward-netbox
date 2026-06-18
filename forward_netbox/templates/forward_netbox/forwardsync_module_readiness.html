@@ -1,0 +1,82 @@
+{% extends 'generic/object.html' %}
+{% load helpers %}
+{% load i18n %}
+
+{% block title %}{{ object }} - {% trans "Module Readiness" %}{% endblock %}
+
+{% block extra_controls %}
+  <a class="btn btn-outline-secondary" href="{{ object.get_absolute_url }}">
+    <i class="mdi mdi-arrow-left" aria-hidden="true"></i>&nbsp;{% trans "Sync" %}
+  </a>
+{% endblock extra_controls %}
+
+{% block content %}
+<div class="row mb-3">
+  <div class="col col-md-6">
+    <div class="card">
+      <h5 class="card-header">{% trans "Module Bay Readiness" %}</h5>
+      <div class="card-body">
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">{% trans "Module rows" %}</th>
+            <td>{{ payload.candidate_rows }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Bays already present" %}</th>
+            <td>{{ payload.existing_bay_rows }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Missing bays" %}</th>
+            <td>
+              {% if payload.unique_missing_bays %}
+                <span class="badge text-bg-warning">{{ payload.unique_missing_bays }}</span>
+              {% else %}
+                <span class="badge text-bg-success">0</span>
+              {% endif %}
+            </td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Rows skipped (no device in NetBox)" %}</th>
+            <td>{{ payload.missing_device_rows }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Ready" %}</th>
+            <td>
+              {% if payload.ready %}
+                <span class="badge text-bg-success">{% trans "Yes" %}</span>
+              {% else %}
+                <span class="badge text-bg-warning">{% trans "No" %}</span>
+              {% endif %}
+            </td>
+          </tr>
+        </table>
+      </div>
+      <div class="card-footer text-end">
+        <form method="post"
+              action="{% url 'plugins:forward_netbox:forwardsync_create_module_bays' pk=object.pk %}"
+              onsubmit="return confirm('{% blocktrans with count=payload.unique_missing_bays %}Create {{ count }} module bay(s) in NetBox?{% endblocktrans %}');">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-primary"{% if not payload.unique_missing_bays %} disabled{% endif %}>
+            <i class="mdi mdi-plus-box-outline" aria-hidden="true"></i>&nbsp;{% trans "Create missing module bays" %}
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+  <div class="col col-md-6">
+    <div class="card">
+      <h5 class="card-header">{% trans "Devices Not Yet in NetBox" %}</h5>
+      <div class="card-body">
+        {% if missing_device_names %}
+          <p class="text-muted">{% trans "These devices have module rows but are not in NetBox yet; sync devices first." %}</p>
+          <ul class="mb-0">
+            {% for name in missing_device_names|slice:":25" %}<li><code>{{ name }}</code></li>{% endfor %}
+          </ul>
+        {% else %}
+          <p class="text-muted mb-0">{% trans "All module-row devices exist in NetBox." %}</p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock content %}
