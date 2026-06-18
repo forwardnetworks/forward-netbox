@@ -50,6 +50,12 @@ Default-off opt-in means no production impact until enabled.
 
 ## Decision Log
 
+- Multi-tag "any" guard: tagging applies only with a single include tag or
+  "all" match mode (where every in-scope device carries every include tag). In
+  "any" mode with multiple tags a device may match just one, and the device row
+  does not carry its Forward tag names, so tagging is skipped with a warning
+  rather than risk applying a tag the device does not have.
+
 - Tag during `apply_dcim_device` (single adapter path; device is always
   adapter-required) rather than a separate post-sync pass — keeps the tag write
   next to the device write and reuses the device object already in hand.
