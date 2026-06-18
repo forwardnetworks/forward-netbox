@@ -454,23 +454,47 @@ def apply_ipam_ipaddress(runner, row):
     )
     if vrf is None:
         host_ip = row.get("host_ip") or str(ip_interface(row["address"]).ip)
-        lookup = {
-            "address__net_host": host_ip,
-            "vrf__isnull": True,
-        }
-        existing = runner._get_unique_or_raise(IPAddress, lookup)
+        desired_type = runner._content_type_for(Interface)
+        # A reused /30 link range can leave several global (VRF-less) IPs with the
+        # same host. _get_unique_or_raise would fail the row; instead resolve
+        # deterministically — prefer the copy already on this interface, else the
+        # lowest pk — and warn so the duplicate is visible without breaking sync.
+        global_matches = list(
+            IPAddress.objects.filter(
+                address__net_host=host_ip, vrf__isnull=True
+            ).order_by("pk")
+        )
+        if len(global_matches) > 1:
+            runner._record_aggregated_skip_warning(
+                model_string="ipam.ipaddress",
+                reason="duplicate-global-ip",
+                warning_message=(
+                    f"Multiple global IP addresses exist for `{host_ip}`; assigning "
+                    f"`{row['address']}` to `{device.name}` `{row['interface']}` to "
+                    "one of them. Deduplicate the global table to remove the others."
+                ),
+            )
+        existing = next(
+            (
+                match
+                for match in global_matches
+                if match.assigned_object_type_id == desired_type.pk
+                and match.assigned_object_id == interface.pk
+            ),
+            global_matches[0] if global_matches else None,
+        )
         if existing is None:
             existing = IPAddress(
                 address=row["address"],
                 vrf=None,
                 status=row["status"],
-                assigned_object_type=runner._content_type_for(Interface),
+                assigned_object_type=desired_type,
                 assigned_object_id=interface.pk,
             )
             existing.full_clean()
             existing.save()
             return True
-        desired_assigned_object_type = runner._content_type_for(Interface)
+        desired_assigned_object_type = desired_type
         update_fields = []
         if str(existing.address) != str(row["address"]):
             existing.address = row["address"]
