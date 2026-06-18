@@ -641,13 +641,14 @@ class ForwardSync(ForwardPluginModelDocsMixin, JobsMixin, TagsMixin, ChangeLogge
     def enqueue_validation_job(self, adhoc=False, user=None):
         return enqueue_forward_validation_job(self, adhoc=adhoc, user=user)
 
-    def sync(self, job=None, *, max_changes_per_branch=None):
+    def sync(self, job=None, *, max_changes_per_branch=None, adhoc=False):
         from .utilities.sync_orchestration import run_forward_sync
 
         run_forward_sync(
             self,
             job=job,
             max_changes_per_branch=max_changes_per_branch,
+            adhoc=adhoc,
         )
 
 

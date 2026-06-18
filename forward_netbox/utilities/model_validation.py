@@ -328,6 +328,7 @@ def clean_forward_sync(sync):
             "enable_bulk_orm",
             "bulk_orm_models",
             "scheduler_overlap",
+            "skip_unchanged_snapshot",
             "diff_fallback_mode",
             BRANCH_RUN_STATE_PARAMETER,
             MODEL_CHANGE_DENSITY_PARAMETER,
@@ -352,6 +353,9 @@ def clean_forward_sync(sync):
     parameters["auto_merge"] = bool(parameters.get("auto_merge", sync.auto_merge))
     parameters["scheduler_overlap"] = bool(
         parameters.get("scheduler_overlap", False) and parameters["auto_merge"]
+    )
+    parameters["skip_unchanged_snapshot"] = bool(
+        parameters.get("skip_unchanged_snapshot", False)
     )
     diff_fallback_mode = parameters.get(
         "diff_fallback_mode",
