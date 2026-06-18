@@ -129,3 +129,89 @@ def write_module_bay_import_csv(path: Path, rows: Iterable[dict[str, str]]) -> N
             writer.writerow(
                 {field: row.get(field, "") for field in MODULE_BAY_IMPORT_FIELDS}
             )
+
+
+def fetch_module_rows_for_sync(sync) -> list[dict]:
+    """Run the sync's dcim.module query specs and return the raw Forward rows."""
+    from .query_registry import get_query_specs
+    from .query_registry import get_seeded_builtin_query_spec
+    from .query_registry import resolve_query_specs_for_client
+
+    client = sync.source.get_client()
+    network_id = sync.get_network_id()
+    snapshot_id = sync.resolve_snapshot_id(client)
+    specs = get_query_specs("dcim.module", maps=sync.get_maps())
+    if not specs:
+        specs = [get_seeded_builtin_query_spec("dcim.module", "Forward Modules")]
+    specs = resolve_query_specs_for_client(specs, client)
+
+    rows: list[dict] = []
+    for spec in specs:
+        rows.extend(
+            client.run_nqe_query(
+                query=spec.query,
+                query_id=spec.run_query_id,
+                commit_id=spec.commit_id,
+                network_id=network_id,
+                snapshot_id=snapshot_id,
+                parameters=spec.merged_parameters(sync.get_query_parameters()),
+                fetch_all=True,
+            )
+        )
+    return rows
+
+
+def compute_module_readiness_for_sync(sync) -> ModuleReadinessReport:
+    """Live module-readiness report for a sync (which module bays are missing)."""
+    from dcim.models import Device
+    from dcim.models.device_components import ModuleBay
+
+    rows = fetch_module_rows_for_sync(sync)
+    return summarize_module_readiness(
+        rows,
+        existing_devices=set(Device.objects.values_list("name", flat=True)),
+        existing_module_bays=set(ModuleBay.objects.values_list("device__name", "name")),
+    )
+
+
+def create_missing_module_bays(report: ModuleReadinessReport) -> dict:
+    """Create the missing module bays directly in NetBox (out-of-band ORM).
+
+    This is the same effect as importing the readiness CSV — module bays are
+    MPTT, but a plain ``.save()`` outside a Branching merge creates them fine.
+    Idempotent: bays that already exist are skipped.
+    """
+    from dcim.models import Device
+    from dcim.models.device_components import ModuleBay
+    from django.db import transaction
+
+    wanted_devices = {row["device"] for row in report.module_bay_import_rows}
+    devices_by_name = {
+        device.name: device for device in Device.objects.filter(name__in=wanted_devices)
+    }
+
+    created = 0
+    skipped_missing_device = 0
+    with transaction.atomic():
+        for row in report.module_bay_import_rows:
+            device = devices_by_name.get(row["device"])
+            if device is None:
+                skipped_missing_device += 1
+                continue
+            if ModuleBay.objects.filter(device=device, name=row["name"]).exists():
+                continue
+            module_bay = ModuleBay(
+                device=device,
+                name=row["name"],
+                label=row.get("label", ""),
+                position=row.get("position", "") or "",
+                description=row.get("description", ""),
+            )
+            module_bay.full_clean()
+            module_bay.save()
+            created += 1
+    return {
+        "candidate_bays": len(report.module_bay_import_rows),
+        "created": created,
+        "skipped_missing_device": skipped_missing_device,
+    }
