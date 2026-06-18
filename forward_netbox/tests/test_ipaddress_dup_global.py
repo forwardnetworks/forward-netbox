@@ -89,3 +89,37 @@ class IpAddressDuplicateGlobalTest(TestCase):
         self.assertEqual(
             IPAddress.objects.filter(address__net_host="192.168.1.1").count(), 2
         )
+
+    def test_duplicate_global_ip_bulk_does_not_fail(self):
+        from forward_netbox.utilities.apply_engine_bulk import (
+            bulk_orm_apply_ipaddress,
+        )
+
+        ct = ContentType.objects.get_for_model(Interface)
+        other = Interface.objects.create(
+            device=self.device, name="Ethernet8", type="1000base-t"
+        )
+        ip_low = IPAddress.objects.create(address="192.168.1.1/30")
+        IPAddress.objects.create(
+            address="192.168.1.1/30",
+            assigned_object_type=ct,
+            assigned_object_id=other.pk,
+        )
+        rows = [
+            {
+                "device": "dev-d",
+                "interface": "Ethernet1",
+                "address": "192.168.1.1/30",
+                "status": "active",
+                "vrf": None,
+            }
+        ]
+        # Must not raise "Duplicate IP address found in global table" on update.
+        bulk_orm_apply_ipaddress(self._runner(), rows)
+        ip_low.refresh_from_db()
+        # The lowest-pk duplicate is chosen and assigned (deterministic); no new
+        # copy is created.
+        self.assertEqual(ip_low.assigned_object_id, self.interface.pk)
+        self.assertEqual(
+            IPAddress.objects.filter(address__net_host="192.168.1.1").count(), 2
+        )
