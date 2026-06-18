@@ -1019,6 +1019,30 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
         self.assertEqual(Prefix.objects.get(prefix="10.0.0.0/24").vrf_id, blue.pk)
         self.assertEqual(Prefix.objects.get(prefix="10.1.0.0/24").vrf_id, green.pk)
 
+    def test_bulk_simple_models_reapply_fk_no_churn(self):
+        """The bulk simple-models update comparison compares relations by id (via
+        the shared value matcher), so re-applying an unchanged row with an FK
+        does not re-write it or lazily refetch the related object."""
+        Site.objects.create(name="VlanSite", slug="vlan-site")
+        rows = [
+            {
+                "name": "V10",
+                "vid": 10,
+                "status": "active",
+                "site": "VlanSite",
+                "site_slug": "vlan-site",
+            }
+        ]
+        bulk_orm_apply_simple_models(self._runner(), "ipam.vlan", rows)  # create
+
+        runner2 = self._runner()
+        with patch.object(VLAN.objects, "bulk_update") as mock_update:
+            bulk_orm_apply_simple_models(runner2, "ipam.vlan", rows)
+            mock_update.assert_not_called()
+        runner2.logger.increment_statistics.assert_any_call(
+            "ipam.vlan", outcome="unchanged"
+        )
+
     def test_bulk_orm_create_uses_full_clean(self):
         """Bulk CREATE path must keep full_clean() — new objects need
         validate_unique() to catch uniqueness violations before insertion."""
