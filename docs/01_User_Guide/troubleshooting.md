@@ -364,9 +364,12 @@ Cause:
 
 - The device scope is enforced as an allowlist of devices that are **tagged and
   collected (`completed`)** in the resolved snapshot. Devices imported by an
-  earlier, broader sync are not deleted automatically — out-of-scope pruning is
-  opt-in. Tagged devices that were backfilled (collection canceled) are also
-  excluded from the current allowlist, so they linger from a prior run.
+  earlier, broader sync are **orphans**: they are no longer in the scoped Forward
+  result at all, so the sync never sees them. `device_tag_prune_out_of_scope`
+  does **not** remove them — it only deletes rows the sync query *returns* that
+  fall outside scope, and orphans are absent from the result. Tagged devices that
+  were backfilled (collection canceled) are also excluded from the current
+  allowlist, so they linger too (but are real, not orphans).
 
 Checks:
 
@@ -382,9 +385,18 @@ Checks:
 
 Remediation:
 
-- To delete out-of-scope devices on each run, enable
-  `device_tag_prune_out_of_scope` on the sync. Review `out_of_scope_sample`
-  first — pruning issues deletes.
+- Review `out_of_scope_sample`, then delete the orphans with the same command:
+
+  ```
+  python manage.py forward_device_scope_reconciliation_audit \
+    --sync-name "<sync_name>" --prune-orphans          # dry run: reports count
+  python manage.py forward_device_scope_reconciliation_audit \
+    --sync-name "<sync_name>" --prune-orphans --apply  # deletes the orphans
+  ```
+
+  Only devices not tagged in the Forward result are removed; tagged-but-backfilled
+  devices are kept. Deletion cascades to each device's interfaces and IPs, so
+  review the dry run first.
 
 ## APIC CIMC Inventory Is Empty
 
