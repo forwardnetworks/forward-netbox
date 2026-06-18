@@ -1,9 +1,11 @@
 from unittest.mock import Mock
+from unittest.mock import patch
 
 from dcim.models import Device
 from dcim.models import DeviceRole
 from dcim.models import DeviceType
 from dcim.models import Interface
+from dcim.models import MACAddress
 from dcim.models import Manufacturer
 from dcim.models import Site
 from django.db import connection
@@ -15,6 +17,7 @@ from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.utilities.apply_engine_bulk import bulk_orm_apply_interface
 from forward_netbox.utilities.apply_engine_bulk import bulk_orm_apply_ipaddress
+from forward_netbox.utilities.apply_engine_bulk import bulk_orm_apply_macaddress
 from forward_netbox.utilities.sync import ForwardSyncRunner
 from forward_netbox.utilities.sync_interface import apply_dcim_interface
 from forward_netbox.utilities.sync_ipam import apply_ipam_ipaddress
@@ -181,3 +184,63 @@ class BulkAdapterParityTest(TestCase):
         )
         names = {row[0] for row in state}
         self.assertIn("Ethernet2", names)
+
+    def _outcomes(self, runner, model_string):
+        counts = {}
+        for call in runner.logger.increment_statistics.call_args_list:
+            args, kwargs = call
+            if args and args[0] == model_string:
+                counts[kwargs.get("outcome")] = counts.get(kwargs.get("outcome"), 0) + 1
+        return counts
+
+    def test_interface_reapply_makes_no_writes(self):
+        rows = [
+            {
+                "device": "dev-p",
+                "name": "Ethernet1",
+                "type": "1000base-t",
+                "enabled": False,
+                "description": "uplink",
+            }
+        ]
+        bulk_orm_apply_interface(self._runner(), rows)  # first apply mutates
+
+        runner = self._runner()
+        with patch.object(Interface.objects, "bulk_update") as mock_update:
+            bulk_orm_apply_interface(runner, rows)
+            mock_update.assert_not_called()
+        self.assertEqual(self._outcomes(runner, "dcim.interface"), {"unchanged": 1})
+
+    def test_macaddress_reapply_makes_no_writes(self):
+        rows = [
+            {
+                "device": "dev-p",
+                "interface": "Ethernet1",
+                "mac": "00:11:22:33:44:55",
+            }
+        ]
+        bulk_orm_apply_macaddress(self._runner(), rows)  # first apply creates
+
+        runner = self._runner()
+        with patch.object(MACAddress.objects, "bulk_update") as mock_update:
+            bulk_orm_apply_macaddress(runner, rows)
+            mock_update.assert_not_called()
+        self.assertEqual(self._outcomes(runner, "dcim.macaddress"), {"unchanged": 1})
+
+    def test_ipaddress_reapply_makes_no_writes(self):
+        rows = [
+            {
+                "device": "dev-p",
+                "interface": "Ethernet1",
+                "address": "10.9.9.9/24",
+                "status": "active",
+                "vrf": None,
+            }
+        ]
+        bulk_orm_apply_ipaddress(self._runner(), rows)  # first apply creates
+
+        runner = self._runner()
+        with patch.object(IPAddress.objects, "bulk_update") as mock_update:
+            bulk_orm_apply_ipaddress(runner, rows)
+            mock_update.assert_not_called()
+        self.assertEqual(self._outcomes(runner, "ipam.ipaddress"), {"unchanged": 1})

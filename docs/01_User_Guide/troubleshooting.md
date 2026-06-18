@@ -353,6 +353,39 @@ Checks:
 - Confirm the plugin is enabled in `PLUGINS`.
 - Run migrations again and re-open the plugin menu.
 
+## NetBox Has More Devices Than Expected
+
+Symptoms:
+
+- A tag-scoped sync (e.g. scoped to `N.Patel`) leaves more devices in NetBox
+  than the tag should match.
+
+Cause:
+
+- The device scope is enforced as an allowlist of devices that are **tagged and
+  collected (`completed`)** in the resolved snapshot. Devices imported by an
+  earlier, broader sync are not deleted automatically — out-of-scope pruning is
+  opt-in. Tagged devices that were backfilled (collection canceled) are also
+  excluded from the current allowlist, so they linger from a prior run.
+
+Checks:
+
+- Run the read-only reconciliation audit to break the count down:
+
+  ```
+  python manage.py forward_device_scope_reconciliation_audit --sync-name "<sync_name>"
+  ```
+
+  It reports `forward_in_scope_completed` (expected), `netbox_out_of_scope`
+  (stale leftovers), and `netbox_present_backfilled` (tagged but not collected
+  this snapshot), with capped name samples. Add `--fail-on-drift` for monitoring.
+
+Remediation:
+
+- To delete out-of-scope devices on each run, enable
+  `device_tag_prune_out_of_scope` on the sync. Review `out_of_scope_sample`
+  first — pruning issues deletes.
+
 ## Collect Logs And Issue Evidence
 
 Use these commands when a customer reports a failed or hanging sync.
