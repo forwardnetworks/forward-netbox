@@ -1,5 +1,13 @@
 from typing import Any
 
+# Fields the bulk engines must set on CREATE but preserve on UPDATE, matching the
+# adapter's intent. dcim.platform.manufacturer is preserved so operators can
+# override the NQE-sourced manufacturer in NetBox without the next sync
+# overwriting their change (see ForwardSyncRunner._ensure_platform).
+CREATE_ONLY_UPDATE_FIELDS_BY_MODEL = {
+    "dcim.platform": frozenset({"manufacturer"}),
+}
+
 
 def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str, Any]]):
     from django.db import transaction
@@ -24,6 +32,10 @@ def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str,
     from ipam.models import VRF
 
     from .sync_primitives import _model_field_value_matches
+
+    create_only_fields = CREATE_ONLY_UPDATE_FIELDS_BY_MODEL.get(
+        model_string, frozenset()
+    )
 
     specs = {
         "dcim.site": {
@@ -300,6 +312,8 @@ def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str,
             continue
         changed = False
         for field_name in fields:
+            if field_name in create_only_fields:
+                continue
             incoming = values.get(field_name)
             # Use the adapter's value matcher: it compares relations by id and
             # special-cases typed fields (e.g. ipam.prefix IPNetwork vs string),
@@ -1196,6 +1210,12 @@ def bulk_orm_apply_tree_models(
     from django.db import transaction
     from django.db.models import Q
 
+    from .sync_primitives import _model_field_value_matches
+
+    create_only_fields = CREATE_ONLY_UPDATE_FIELDS_BY_MODEL.get(
+        model_string, frozenset()
+    )
+
     with transaction.atomic():
         lookup_values = {
             field_name: []
@@ -1248,8 +1268,12 @@ def bulk_orm_apply_tree_models(
 
             changed = False
             for field_name in fields:
+                if field_name in create_only_fields:
+                    continue
                 incoming = values.get(field_name)
-                if getattr(existing, field_name) != incoming:
+                if not _model_field_value_matches(
+                    model, existing, field_name, incoming
+                ):
                     setattr(existing, field_name, incoming)
                     changed = True
             if changed:
