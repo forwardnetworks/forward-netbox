@@ -2,7 +2,11 @@ from core.choices import JobStatusChoices
 
 from ..choices import ForwardSyncStatusChoices
 from ..exceptions import ForwardClientError
+from ..exceptions import ForwardConnectivityError
+from ..exceptions import ForwardQueryError
+from .forward_api import LATEST_COLLECTED_SNAPSHOT
 from .forward_api import LATEST_PROCESSED_SNAPSHOT
+from .sync_facade import device_tag_scope
 
 
 ACTIVE_JOB_STATUSES = {
@@ -10,6 +14,29 @@ ACTIVE_JOB_STATUSES = {
     JobStatusChoices.STATUS_PENDING,
     JobStatusChoices.STATUS_RUNNING,
 }
+
+DYNAMIC_SNAPSHOT_SELECTORS = {LATEST_PROCESSED_SNAPSHOT, LATEST_COLLECTED_SNAPSHOT}
+
+
+def _resolve_latest_snapshot_id(sync, selector, network_id, client):
+    """Resolve the catch-up target snapshot for a dynamic selector.
+
+    latestProcessed -> newest processed snapshot. latestCollected -> newest
+    snapshot with a freshly-collected in-scope device (scoped to the source
+    device-tag filter, same as the sync's own resolution).
+    """
+    if selector == LATEST_COLLECTED_SNAPSHOT:
+        include_tags, exclude_tags, include_match = device_tag_scope(sync)
+        return str(
+            client.get_latest_collected_snapshot_id(
+                network_id,
+                include_tags=include_tags,
+                exclude_tags=exclude_tags,
+                include_match=include_match,
+            )
+            or ""
+        ).strip()
+    return str(client.get_latest_processed_snapshot_id(network_id) or "").strip()
 
 
 def latest_processed_catchup_decision(
@@ -19,13 +46,15 @@ def latest_processed_catchup_decision(
     client=None,
     current_job=None,
 ):
+    selector = sync.get_snapshot_id()
     decision = {
         "should_queue": False,
         "reason": "",
+        "snapshot_selector": selector,
         "current_snapshot_id": str(current_snapshot_id or "").strip(),
         "latest_processed_snapshot_id": "",
     }
-    if sync.get_snapshot_id() != LATEST_PROCESSED_SNAPSHOT:
+    if selector not in DYNAMIC_SNAPSHOT_SELECTORS:
         decision["reason"] = "fixed_snapshot_selector"
         return decision
     if sync.status != ForwardSyncStatusChoices.COMPLETED:
@@ -57,17 +86,19 @@ def latest_processed_catchup_decision(
 
     client = client or sync.source.get_client()
     try:
-        latest_processed_snapshot_id = str(
-            client.get_latest_processed_snapshot_id(network_id) or ""
-        ).strip()
-    except ForwardClientError:
+        latest_snapshot_id = _resolve_latest_snapshot_id(
+            sync, selector, network_id, client
+        )
+    except (ForwardClientError, ForwardConnectivityError, ForwardQueryError):
+        # latestCollected raises when no recent snapshot has a collected in-scope
+        # device; treat that like a failed lookup (no catch-up) rather than error.
         decision["reason"] = "latest_processed_lookup_failed"
         return decision
-    decision["latest_processed_snapshot_id"] = latest_processed_snapshot_id
-    if not latest_processed_snapshot_id:
+    decision["latest_processed_snapshot_id"] = latest_snapshot_id
+    if not latest_snapshot_id:
         decision["reason"] = "missing_latest_processed_snapshot_id"
         return decision
-    if latest_processed_snapshot_id == decision["current_snapshot_id"]:
+    if latest_snapshot_id == decision["current_snapshot_id"]:
         decision["reason"] = "already_current"
         return decision
 
