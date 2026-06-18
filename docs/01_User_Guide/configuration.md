@@ -252,7 +252,8 @@ The current built-in map set is:
 - `Forward VRFs`
 - `Forward IPv4 Prefixes`
 - `Forward IPv6 Prefixes`
-- `Forward IP Addresses`
+- `Forward IPv4 IP Addresses`
+- `Forward IPv6 IP Addresses`
 - `Forward HSRP Groups` (optional `ipam.fhrpgroup`)
 - `Forward Inventory Items`
 - `Forward ACI Fabrics` (optional `netbox_cisco_aci.acifabric`)
