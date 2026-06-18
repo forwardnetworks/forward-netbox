@@ -21,13 +21,13 @@ from forward_netbox.utilities.logging import SyncLogging
 from forward_netbox.utilities.snapshot_freshness import (
     latest_processed_catchup_decision,
 )
-from forward_netbox.utilities.sync_orchestration import (
-    should_skip_unchanged_snapshot,
-)
 from forward_netbox.utilities.sync_orchestration import _finalize_forward_sync
 from forward_netbox.utilities.sync_orchestration import _prepare_forward_sync
 from forward_netbox.utilities.sync_orchestration import _record_forward_api_usage
 from forward_netbox.utilities.sync_orchestration import run_forward_sync
+from forward_netbox.utilities.sync_orchestration import (
+    should_skip_unchanged_snapshot,
+)
 
 
 class ForwardSyncOrchestrationHelperTest(TestCase):
