@@ -115,6 +115,33 @@ def _finalize_forward_sync(sync, job):
         job.save(update_fields=["data"])
 
 
+def should_skip_unchanged_snapshot(sync, *, adhoc=False, client=None):
+    """Return the resolved snapshot id when a scheduled run can no-op.
+
+    Opt-in (per-sync ``skip_unchanged_snapshot`` parameter, default off). When
+    enabled and the run is not an adhoc/manual run, and the snapshot the sync
+    would target equals the snapshot of the last eligible baseline ingestion,
+    there is nothing new to fetch — re-running would do full query work just to
+    produce zero changes. Returns the snapshot id to skip on, or ``None`` to run
+    normally. Any resolution error falls through to a normal run.
+    """
+    if adhoc:
+        return None
+    if not (sync.parameters or {}).get("skip_unchanged_snapshot"):
+        return None
+    baseline = sync.latest_baseline_ingestion()
+    baseline_snapshot = str(getattr(baseline, "snapshot_id", "") or "").strip()
+    if not baseline_snapshot:
+        return None
+    try:
+        current_snapshot = str(sync.resolve_snapshot_id(client) or "").strip()
+    except Exception:
+        return None
+    if current_snapshot and current_snapshot == baseline_snapshot:
+        return current_snapshot
+    return None
+
+
 def _record_forward_api_usage(sync, executor):
     client = getattr(executor, "client", None)
     summary_method = getattr(client, "api_usage_summary", None)
@@ -148,7 +175,7 @@ def _record_forward_api_usage(sync, executor):
     )
 
 
-def run_forward_sync(sync, job=None, *, max_changes_per_branch=None):
+def run_forward_sync(sync, job=None, *, max_changes_per_branch=None, adhoc=False):
     from .fast_bootstrap_executor import ForwardFastBootstrapExecutor
     from .multi_branch import ForwardMultiBranchExecutor
 
@@ -176,6 +203,18 @@ def run_forward_sync(sync, job=None, *, max_changes_per_branch=None):
         raise SyncError(
             "Cannot initiate sync; a Forward ingestion is already in progress."
         )
+
+    skip_snapshot = should_skip_unchanged_snapshot(sync, adhoc=adhoc)
+    if skip_snapshot:
+        sync.status = ForwardSyncStatusChoices.COMPLETED
+        sync.logger.log_success(
+            f"Snapshot `{skip_snapshot}` is unchanged since the last baseline "
+            "ingestion; skipping query execution (no-op). Run the sync manually "
+            "to force a re-sync.",
+            obj=sync,
+        )
+        _finalize_forward_sync(sync, job)
+        return
 
     user = _prepare_forward_sync(sync, job=job)
     if max_changes_per_branch is None:

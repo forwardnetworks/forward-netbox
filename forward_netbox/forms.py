@@ -1045,6 +1045,15 @@ class ForwardSyncForm(NetBoxModelForm):
             "serialized by the execution ledger."
         ),
     )
+    skip_unchanged_snapshot = forms.BooleanField(
+        required=False,
+        label="Skip scheduled runs on an unchanged snapshot",
+        help_text=(
+            "When a scheduled run would target the same snapshot as the last "
+            "successful baseline, skip query execution entirely (no-op) to reduce "
+            "Forward API load. Manual/adhoc runs always execute. Off by default."
+        ),
+    )
     diff_fallback_mode = forms.ChoiceField(
         choices=tuple(
             (value, label)
@@ -1116,6 +1125,10 @@ class ForwardSyncForm(NetBoxModelForm):
             "scheduler_overlap",
             False,
         )
+        self.fields["skip_unchanged_snapshot"].initial = parameters.get(
+            "skip_unchanged_snapshot",
+            False,
+        )
         self.fields["diff_fallback_mode"].initial = parameters.get(
             "diff_fallback_mode",
             ForwardDiffFallbackModeChoices.ALLOW_FALLBACK,
@@ -1153,6 +1166,7 @@ class ForwardSyncForm(NetBoxModelForm):
                 "auto_merge",
                 "enable_bulk_orm",
                 "scheduler_overlap",
+                "skip_unchanged_snapshot",
                 "diff_fallback_mode",
                 "scheduled",
                 "interval",
@@ -1210,6 +1224,9 @@ class ForwardSyncForm(NetBoxModelForm):
                 cleaned.get("scheduler_overlap", False)
                 and cleaned.get("auto_merge", False)
             ),
+            "skip_unchanged_snapshot": bool(
+                cleaned.get("skip_unchanged_snapshot", False)
+            ),
             "diff_fallback_mode": cleaned.get("diff_fallback_mode")
             or ForwardDiffFallbackModeChoices.ALLOW_FALLBACK,
         }
@@ -1236,6 +1253,9 @@ class ForwardSyncForm(NetBoxModelForm):
             "scheduler_overlap": bool(
                 self.cleaned_data.get("scheduler_overlap", False)
                 and self.cleaned_data.get("auto_merge", False)
+            ),
+            "skip_unchanged_snapshot": bool(
+                self.cleaned_data.get("skip_unchanged_snapshot", False)
             ),
             "diff_fallback_mode": self.cleaned_data.get("diff_fallback_mode")
             or ForwardDiffFallbackModeChoices.ALLOW_FALLBACK,
