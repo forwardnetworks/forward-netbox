@@ -8,6 +8,7 @@ from dcim.models import Interface
 from dcim.models import MACAddress
 from dcim.models import Manufacturer
 from dcim.models import Site
+from dcim.models import VirtualChassis
 from django.contrib.contenttypes.models import ContentType
 from django.db import connection
 from django.db import transaction
@@ -19,6 +20,7 @@ from forward_netbox.models import ForwardSync
 from forward_netbox.utilities.apply_engine_bulk import bulk_orm_apply_interface
 from forward_netbox.utilities.apply_engine_bulk import bulk_orm_apply_ipaddress
 from forward_netbox.utilities.apply_engine_bulk import bulk_orm_apply_macaddress
+from forward_netbox.utilities.apply_engine_bulk import bulk_orm_apply_virtualchassis
 from forward_netbox.utilities.sync import ForwardSyncRunner
 from forward_netbox.utilities.sync_interface import apply_dcim_interface
 from forward_netbox.utilities.sync_interface import apply_dcim_macaddress
@@ -289,3 +291,22 @@ class BulkAdapterParityTest(TestCase):
             bulk_orm_apply_ipaddress(runner, rows)
             mock_update.assert_not_called()
         self.assertEqual(self._outcomes(runner, "ipam.ipaddress"), {"unchanged": 1})
+
+    def test_virtualchassis_reapply_makes_no_writes(self):
+        rows = [
+            {
+                "vc_name": "vc-1",
+                "vc_domain": "d1",
+                "device": "dev-p",
+                "vc_position": 1,
+            }
+        ]
+        bulk_orm_apply_virtualchassis(self._runner(), rows)  # first apply assigns
+
+        runner = self._runner()
+        with patch.object(Device.objects, "bulk_update") as mock_update:
+            bulk_orm_apply_virtualchassis(runner, rows)
+            mock_update.assert_not_called()
+        self.assertEqual(
+            self._outcomes(runner, "dcim.virtualchassis"), {"unchanged": 1}
+        )
