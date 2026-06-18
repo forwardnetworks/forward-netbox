@@ -199,8 +199,9 @@ def sync_merge_ingestion(ingestion, *, mark_baseline_ready=None, remove_branch=T
             current_job=ingestion.merge_job,
         )
         if decision["should_queue"]:
+            selector = decision.get("snapshot_selector") or "latestProcessed"
             forwardsync.logger.log_info(
-                "Forward latestProcessed advanced from "
+                f"Forward {selector} advanced from "
                 f"`{decision['current_snapshot_id']}` to "
                 f"`{decision['latest_processed_snapshot_id']}` during the run; "
                 "queuing a catch-up sync.",

@@ -167,6 +167,62 @@ class ForwardSyncOrchestrationHelperTest(TestCase):
         self.assertFalse(decision["should_queue"])
         self.assertEqual(decision["reason"], "latest_processed_lookup_failed")
 
+    def test_latest_collected_catchup_queues_when_collected_snapshot_advances(self):
+        from forward_netbox.utilities.forward_api import LATEST_COLLECTED_SNAPSHOT
+
+        self.sync.parameters = {
+            **self.sync.parameters,
+            "snapshot_id": LATEST_COLLECTED_SNAPSHOT,
+        }
+        self.sync.status = ForwardSyncStatusChoices.COMPLETED
+        self.sync.save(update_fields=["parameters", "status"])
+        client = SimpleNamespace(
+            get_latest_collected_snapshot_id=Mock(
+                return_value="snapshot-collected-new"
+            ),
+            get_latest_processed_snapshot_id=Mock(return_value="snapshot-processed"),
+        )
+
+        decision = latest_processed_catchup_decision(
+            self.sync,
+            current_snapshot_id="snapshot-collected-old",
+            client=client,
+        )
+
+        self.assertTrue(decision["should_queue"])
+        self.assertEqual(decision["reason"], "latest_processed_advanced")
+        self.assertEqual(decision["snapshot_selector"], LATEST_COLLECTED_SNAPSHOT)
+        self.assertEqual(
+            decision["latest_processed_snapshot_id"], "snapshot-collected-new"
+        )
+        # latestCollected must resolve via the collected probe, not latestProcessed.
+        client.get_latest_collected_snapshot_id.assert_called_once()
+        client.get_latest_processed_snapshot_id.assert_not_called()
+
+    def test_latest_collected_catchup_skips_when_probe_finds_no_collected(self):
+        from forward_netbox.utilities.forward_api import LATEST_COLLECTED_SNAPSHOT
+
+        self.sync.parameters = {
+            **self.sync.parameters,
+            "snapshot_id": LATEST_COLLECTED_SNAPSHOT,
+        }
+        self.sync.status = ForwardSyncStatusChoices.COMPLETED
+        self.sync.save(update_fields=["parameters", "status"])
+        client = SimpleNamespace(
+            get_latest_collected_snapshot_id=Mock(
+                side_effect=ForwardClientError("all backfilled")
+            )
+        )
+
+        decision = latest_processed_catchup_decision(
+            self.sync,
+            current_snapshot_id="snapshot-collected-old",
+            client=client,
+        )
+
+        self.assertFalse(decision["should_queue"])
+        self.assertEqual(decision["reason"], "latest_processed_lookup_failed")
+
     @patch("forward_netbox.utilities.multi_branch.ForwardMultiBranchExecutor")
     def test_run_forward_sync_queues_catchup_when_latest_processed_advances(
         self,
