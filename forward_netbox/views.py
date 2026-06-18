@@ -648,6 +648,14 @@ class ForwardSyncView(generic.ObjectView):
                 "plugins:forward_netbox:forwardsync_support_bundle_zip",
                 kwargs={"pk": instance.pk},
             ),
+            "scope_reconciliation_url": reverse(
+                "plugins:forward_netbox:forwardsync_scope_reconciliation",
+                kwargs={"pk": instance.pk},
+            ),
+            "module_readiness_url": reverse(
+                "plugins:forward_netbox:forwardsync_module_readiness",
+                kwargs={"pk": instance.pk},
+            ),
         }
         if instance.last_ingestion:
             data.update(instance.last_ingestion.get_statistics())
@@ -725,6 +733,171 @@ class ForwardStartValidationView(BaseObjectView):
         sync = get_object_or_404(self.queryset, pk=pk)
         job = sync.enqueue_validation_job(user=request.user, adhoc=True)
         messages.success(request, f"Queued job #{job.pk} to validate {sync}.")
+        return redirect(sync.get_absolute_url())
+
+
+@register_model_view(ForwardSync, "scope_reconciliation", path="scope-reconciliation")
+class ForwardSyncScopeReconciliationView(BaseObjectView):
+    queryset = ForwardSync.objects.all()
+    template_name = "forward_netbox/forwardsync_scope_reconciliation.html"
+
+    def get_required_permission(self):
+        return "forward_netbox.view_forwardsync"
+
+    def get(self, request, pk):
+        from .utilities.scope_reconciliation import compute_scope_reconciliation
+
+        sync = get_object_or_404(self.queryset, pk=pk)
+        try:
+            report = compute_scope_reconciliation(sync)
+        except Exception as exc:
+            messages.error(
+                request,
+                _("Scope reconciliation failed: %(error)s") % {"error": exc},
+            )
+            return redirect(sync.get_absolute_url())
+        payload = {
+            key: value for key, value in report.items() if not key.startswith("_")
+        }
+        return render(
+            request,
+            self.template_name,
+            {"object": sync, "payload": payload},
+        )
+
+
+@register_model_view(ForwardSync, "prune_orphans", path="prune-orphans")
+class ForwardSyncPruneOrphansView(BaseObjectView):
+    queryset = ForwardSync.objects.all()
+
+    def get_required_permission(self):
+        return "dcim.delete_device"
+
+    def get(self, request, pk):
+        sync = get_object_or_404(self.queryset, pk=pk)
+        return redirect(
+            reverse(
+                "plugins:forward_netbox:forwardsync_scope_reconciliation",
+                kwargs={"pk": sync.pk},
+            )
+        )
+
+    def post(self, request, pk):
+        from .utilities.scope_reconciliation import EmptyForwardScopeError
+        from .utilities.scope_reconciliation import prune_orphan_devices
+
+        sync = get_object_or_404(self.queryset, pk=pk)
+        try:
+            result = prune_orphan_devices(sync)
+        except EmptyForwardScopeError as exc:
+            messages.error(request, str(exc))
+            return redirect(sync.get_absolute_url())
+        except Exception as exc:
+            messages.error(
+                request,
+                _("Orphan prune failed: %(error)s") % {"error": exc},
+            )
+            return redirect(sync.get_absolute_url())
+        count = result["pruned_device_count"]
+        if count:
+            messages.success(
+                request,
+                _("Pruned %(count)d out-of-scope device(s) from NetBox.")
+                % {"count": count},
+            )
+        else:
+            messages.info(request, _("No out-of-scope devices to prune."))
+        return redirect(sync.get_absolute_url())
+
+
+@register_model_view(ForwardSync, "module_readiness", path="module-readiness")
+class ForwardSyncModuleReadinessView(BaseObjectView):
+    queryset = ForwardSync.objects.all()
+    template_name = "forward_netbox/forwardsync_module_readiness.html"
+
+    def get_required_permission(self):
+        return "forward_netbox.view_forwardsync"
+
+    def get(self, request, pk):
+        from .utilities.module_readiness import compute_module_readiness_for_sync
+
+        sync = get_object_or_404(self.queryset, pk=pk)
+        try:
+            report = compute_module_readiness_for_sync(sync)
+        except Exception as exc:
+            messages.error(
+                request,
+                _("Module readiness check failed: %(error)s") % {"error": exc},
+            )
+            return redirect(sync.get_absolute_url())
+        return render(
+            request,
+            self.template_name,
+            {
+                "object": sync,
+                "payload": report.as_dict(),
+                "missing_device_names": report.missing_device_names,
+            },
+        )
+
+
+@register_model_view(ForwardSync, "create_module_bays", path="create-module-bays")
+class ForwardSyncCreateModuleBaysView(BaseObjectView):
+    queryset = ForwardSync.objects.all()
+
+    def get_required_permission(self):
+        return "dcim.add_modulebay"
+
+    def get(self, request, pk):
+        sync = get_object_or_404(self.queryset, pk=pk)
+        return redirect(
+            reverse(
+                "plugins:forward_netbox:forwardsync_module_readiness",
+                kwargs={"pk": sync.pk},
+            )
+        )
+
+    def post(self, request, pk):
+        from .utilities.module_readiness import compute_module_readiness_for_sync
+        from .utilities.module_readiness import create_missing_module_bays
+
+        sync = get_object_or_404(self.queryset, pk=pk)
+        try:
+            report = compute_module_readiness_for_sync(sync)
+            result = create_missing_module_bays(report)
+        except Exception as exc:
+            messages.error(
+                request,
+                _("Creating module bays failed: %(error)s") % {"error": exc},
+            )
+            return redirect(sync.get_absolute_url())
+        created = result["created"]
+        if created:
+            messages.success(
+                request,
+                _(
+                    "Created %(count)d module bay(s). Re-run the sync to import "
+                    "modules into them."
+                )
+                % {"count": created},
+            )
+        else:
+            messages.info(
+                request,
+                _(
+                    "No missing module bays to create (already ready or none in "
+                    "scope)."
+                ),
+            )
+        if result["skipped_missing_device"]:
+            messages.warning(
+                request,
+                _(
+                    "Skipped %(count)d bay(s) whose device is not yet in NetBox; "
+                    "sync devices first."
+                )
+                % {"count": result["skipped_missing_device"]},
+            )
         return redirect(sync.get_absolute_url())
 
 

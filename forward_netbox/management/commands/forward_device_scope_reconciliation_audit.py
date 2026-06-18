@@ -1,17 +1,11 @@
 import json
 
-from dcim.models import Device
 from django.core.management.base import BaseCommand
 from django.core.management.base import CommandError
-from django.db import transaction
 
 from forward_netbox.models import ForwardSync
-from forward_netbox.utilities.forward_api import build_device_tag_scope_where
-from forward_netbox.utilities.sync_facade import device_tag_scope
-
-# Cap on how many example names are echoed per bucket so the report stays small
-# on large fabrics.
-SAMPLE_LIMIT = 25
+from forward_netbox.utilities.scope_reconciliation import compute_scope_reconciliation
+from forward_netbox.utilities.scope_reconciliation import prune_orphan_devices
 
 
 class Command(BaseCommand):
@@ -52,96 +46,33 @@ class Command(BaseCommand):
         if sync is None:
             raise CommandError("No sync found for the requested selector.")
 
-        network_id = sync.get_network_id()
-        if not network_id:
+        if not sync.get_network_id():
             raise CommandError("Sync source has no network configured.")
 
-        include_tags, exclude_tags, include_match = device_tag_scope(sync)
-        scope_where = build_device_tag_scope_where(
-            include_tags, exclude_tags, include_match
-        )
-
-        client = sync.source.get_client()
-        snapshot_id = sync.resolve_snapshot_id(client)
-        query = "\n".join(
-            [
-                "foreach device in network.devices",
-                "where device.platform.vendor != Vendor.FORWARD_CUSTOM",
-                *scope_where,
-                "select {",
-                "  name: device.name,",
-                "  completed: device.snapshotInfo.result "
-                "== DeviceSnapshotResult.completed",
-                "}",
-            ]
-        )
-        rows = client.run_nqe_query(
-            query=query,
-            network_id=network_id,
-            snapshot_id=snapshot_id,
-            fetch_all=True,
-        )
-
-        tagged_names = {
-            str(row.get("name") or "").strip()
-            for row in rows
-            if str(row.get("name") or "").strip()
-        }
-        completed_names = {
-            str(row.get("name") or "").strip()
-            for row in rows
-            if row.get("completed") and str(row.get("name") or "").strip()
-        }
-        backfilled_names = tagged_names - completed_names
-
-        netbox_names = {
-            name
-            for name in Device.objects.values_list("name", flat=True)
-            if (name or "").strip()
-        }
-
-        out_of_scope = netbox_names - tagged_names
-        present_backfilled = netbox_names & backfilled_names
-        missing_in_netbox = completed_names - netbox_names
-
+        report = compute_scope_reconciliation(sync)
+        out_of_scope = report["_out_of_scope"]
+        tagged_names = report["_tagged_names"]
         payload = {
-            "sync_id": sync.pk,
-            "sync_name": sync.name,
-            "snapshot_selector": sync.get_snapshot_id(),
-            "include_tags": sorted(include_tags),
-            "exclude_tags": sorted(exclude_tags),
-            "include_match": include_match,
-            "netbox_device_count": len(netbox_names),
-            "forward_in_scope_completed": len(completed_names),
-            "forward_tagged_backfilled": len(backfilled_names),
-            "netbox_present_backfilled": len(present_backfilled),
-            "netbox_out_of_scope": len(out_of_scope),
-            "forward_missing_in_netbox": len(missing_in_netbox),
-            "out_of_scope_sample": sorted(out_of_scope)[:SAMPLE_LIMIT],
-            "present_backfilled_sample": sorted(present_backfilled)[:SAMPLE_LIMIT],
-            "missing_in_netbox_sample": sorted(missing_in_netbox)[:SAMPLE_LIMIT],
-            "remediation": (
-                ""
-                if not out_of_scope
-                else (
-                    f"{len(out_of_scope)} NetBox devices are not in the Forward "
-                    "tag scope (neither collected nor backfilled under this tag). "
-                    "These are leftovers from an earlier, broader sync. "
-                    "`device_tag_prune_out_of_scope` does NOT remove them (it only "
-                    "deletes rows the sync query returns, and these are absent from "
-                    "the result). Review `out_of_scope_sample`, then re-run with "
-                    "`--prune-orphans --apply` to delete them."
-                )
-            ),
+            key: value for key, value in report.items() if not key.startswith("_")
         }
+        payload["remediation"] = (
+            ""
+            if not out_of_scope
+            else (
+                f"{len(out_of_scope)} NetBox devices are not in the Forward "
+                "tag scope (neither collected nor backfilled under this tag). "
+                "These are leftovers from an earlier, broader sync. "
+                "`device_tag_prune_out_of_scope` does NOT remove them (it only "
+                "deletes rows the sync query returns, and these are absent from "
+                "the result). Review `out_of_scope_sample`, then re-run with "
+                "`--prune-orphans --apply` to delete them."
+            )
+        )
 
         if options["prune_orphans"] and out_of_scope:
             payload["prune_requested"] = True
             payload["prune_applied"] = False
             payload["prune_candidate_count"] = len(out_of_scope)
-            # Safety guard: if the Forward query returned no scoped devices, every
-            # NetBox device looks out-of-scope. That is almost always a failed or
-            # empty query, not "delete everything" — refuse to prune.
             if not tagged_names:
                 payload["prune_aborted"] = "forward-scope-empty"
                 payload["prune_abort_reason"] = (
@@ -152,18 +83,10 @@ class Command(BaseCommand):
                 self.stdout.write(json.dumps(payload, indent=2, default=str))
                 raise SystemExit(2)
             if options["apply"]:
+                result = prune_orphan_devices(sync, report=report)
                 payload["prune_applied"] = True
-                deleted_total = 0
-                with transaction.atomic():
-                    # Delete in batches so a very large orphan set does not build a
-                    # single oversized IN clause.
-                    orphans = sorted(out_of_scope)
-                    for start in range(0, len(orphans), 500):
-                        batch = orphans[start : start + 500]
-                        deleted, _ = Device.objects.filter(name__in=batch).delete()
-                        deleted_total += deleted
-                payload["pruned_object_count"] = deleted_total
-                payload["pruned_device_count"] = len(out_of_scope)
+                payload["pruned_object_count"] = result["pruned_object_count"]
+                payload["pruned_device_count"] = result["pruned_device_count"]
             else:
                 payload["prune_dry_run_note"] = (
                     "Dry run: re-run with --apply to delete these devices."
