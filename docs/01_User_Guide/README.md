@@ -14,26 +14,27 @@ Forward 26.6 is the baseline for async NQE.
 Install the wheel from GitHub Releases into the same Python environment as NetBox:
 
 ```bash
-pip install /path/to/forward_netbox-1.5.5-py3-none-any.whl
+pip install /path/to/forward_netbox-1.5.6-py3-none-any.whl
 ```
 
 Alternatively, install directly from the GitHub source archive:
 
 ```bash
-pip install /path/to/forward_netbox-1.5.5.tar.gz
+pip install /path/to/forward_netbox-1.5.6.tar.gz
 ```
 
 If you mirror the package into a private Python index, pin the same release version:
 
 ```bash
-pip install forward-netbox==1.5.5
+pip install forward-netbox==1.5.6
 ```
 
 ## Release Compatibility
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v1.5.5` | `4.5.9` and `4.6.2` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Current release; surfaces the orphan-prune and module-bay readiness workflows in the sync detail UI (no CLI or CSV): a **Scope Reconciliation** page with a **Prune orphans** button, and a **Module Readiness** page with a **Create missing module bays** button that creates the bays directly in NetBox. |
+| `v1.5.6` | `4.5.9` and `4.6.2` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Current release; fixes an `ipam.ipaddress` sync failure (`Ambiguous coalesce lookup`) when a reused /30 link range leaves duplicate global (VRF-less) IPs for the same host — the adapter now resolves to one deterministically (preferring the copy already on the synced interface) and warns, instead of failing the row. |
+| `v1.5.5` | `4.5.9` and `4.6.2` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v1.5.6`; surfaces the orphan-prune and module-bay readiness workflows in the sync detail UI (no CLI or CSV): a **Scope Reconciliation** page with a **Prune orphans** button, and a **Module Readiness** page with a **Create missing module bays** button that creates the bays directly in NetBox. |
 | `v1.5.4` | `4.5.9` and `4.6.2` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v1.5.5`; adds `--prune-orphans`/`--apply` to `forward_device_scope_reconciliation_audit` to delete stale out-of-scope (orphan) NetBox devices left by an earlier broader sync that `device_tag_prune_out_of_scope` cannot reach (orphans are absent from the scoped Forward result). Dry-run by default; tagged-but-backfilled devices are preserved. |
 | `v1.5.3` | `4.5.9` and `4.6.2` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v1.5.4`; classifies APIC controllers onto the `APIC` platform (distinct from ACI switches) so controller and switch software versions model separately; splits IP address import into independent `Forward IPv4 IP Addresses` and `Forward IPv6 IP Addresses` maps (a migration removes the combined map) so address families toggle independently; promotes `dcim.interface` and `ipam.ipaddress` into the default bulk-ORM safe set and removes bulk-apply update churn across every bulk model so steady-state syncs issue no redundant writes; preserves operator platform-manufacturer overrides on bulk update; and adds the opt-in `Apply Device Scope Tags` source option plus the `forward_device_scope_reconciliation_audit` and `forward_apic_cimc_readiness_audit` commands. |
 | `v1.5.2` | `4.5.9` and `4.6.2` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v1.5.3`; collapses the flood of `dcim.modulebay` branch-merge failures (a NetBox Branching/MPTT limitation when a new device's module bays are auto-instantiated in a branch) into a single actionable `ModuleBayMergeUnsupported` ingestion issue that points at the `forward_module_readiness` import workflow. Device and interface sync are unaffected. |
