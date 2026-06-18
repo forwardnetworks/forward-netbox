@@ -126,7 +126,7 @@ def sync_forwardsync(job, *args, **kwargs):
 
     try:
         job.start()
-        sync.sync(job=job)
+        sync.sync(job=job, adhoc=bool(kwargs.get("adhoc")))
         safe_save_job_data(job, sync)
         job.terminate()
     except Exception as exc:

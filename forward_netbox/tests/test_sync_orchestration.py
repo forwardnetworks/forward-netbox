@@ -21,6 +21,9 @@ from forward_netbox.utilities.logging import SyncLogging
 from forward_netbox.utilities.snapshot_freshness import (
     latest_processed_catchup_decision,
 )
+from forward_netbox.utilities.sync_orchestration import (
+    should_skip_unchanged_snapshot,
+)
 from forward_netbox.utilities.sync_orchestration import _finalize_forward_sync
 from forward_netbox.utilities.sync_orchestration import _prepare_forward_sync
 from forward_netbox.utilities.sync_orchestration import _record_forward_api_usage
@@ -315,3 +318,97 @@ class ForwardSyncOrchestrationHelperTest(TestCase):
             "Forward API usage summary: api_usage_status=passed http_attempts=7",
             self.sync.logger.log_data["logs"][0][4],
         )
+
+
+class SkipUnchangedSnapshotTest(TestCase):
+    def setUp(self):
+        self.source = ForwardSource.objects.create(
+            name="source-skip-unchanged",
+            type="saas",
+            url="https://fwd.app",
+            parameters={
+                "username": "user@example.com",
+                "password": "secret",
+                "verify": True,
+                "timeout": 1200,
+                "network_id": "test-network",
+            },
+        )
+        self.sync = ForwardSync.objects.create(
+            name="sync-skip-unchanged",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+                "skip_unchanged_snapshot": True,
+            },
+        )
+
+    def _set_baseline(self, snapshot_id):
+        self.sync.latest_baseline_ingestion = Mock(
+            return_value=SimpleNamespace(snapshot_id=snapshot_id, pk=42)
+        )
+
+    def test_skips_scheduled_run_when_snapshot_matches_baseline(self):
+        self._set_baseline("snapshot-1")
+        self.sync.resolve_snapshot_id = Mock(return_value="snapshot-1")
+
+        result = should_skip_unchanged_snapshot(self.sync, adhoc=False, client=object())
+
+        self.assertEqual(result, "snapshot-1")
+
+    def test_does_not_skip_adhoc_run(self):
+        self._set_baseline("snapshot-1")
+        self.sync.resolve_snapshot_id = Mock(return_value="snapshot-1")
+
+        self.assertIsNone(
+            should_skip_unchanged_snapshot(self.sync, adhoc=True, client=object())
+        )
+
+    def test_does_not_skip_when_flag_off(self):
+        self.sync.parameters = {
+            **self.sync.parameters,
+            "skip_unchanged_snapshot": False,
+        }
+        self.sync.save(update_fields=["parameters"])
+        self._set_baseline("snapshot-1")
+        self.sync.resolve_snapshot_id = Mock(return_value="snapshot-1")
+
+        self.assertIsNone(
+            should_skip_unchanged_snapshot(self.sync, adhoc=False, client=object())
+        )
+
+    def test_does_not_skip_when_no_baseline(self):
+        self.sync.latest_baseline_ingestion = Mock(return_value=None)
+        self.sync.resolve_snapshot_id = Mock(return_value="snapshot-1")
+
+        self.assertIsNone(
+            should_skip_unchanged_snapshot(self.sync, adhoc=False, client=object())
+        )
+
+    def test_does_not_skip_when_snapshot_advanced(self):
+        self._set_baseline("snapshot-1")
+        self.sync.resolve_snapshot_id = Mock(return_value="snapshot-2")
+
+        self.assertIsNone(
+            should_skip_unchanged_snapshot(self.sync, adhoc=False, client=object())
+        )
+
+    def test_does_not_skip_when_resolution_fails(self):
+        self._set_baseline("snapshot-1")
+        self.sync.resolve_snapshot_id = Mock(side_effect=RuntimeError("boom"))
+
+        self.assertIsNone(
+            should_skip_unchanged_snapshot(self.sync, adhoc=False, client=object())
+        )
+
+    @patch("forward_netbox.utilities.multi_branch.ForwardMultiBranchExecutor")
+    def test_run_forward_sync_noops_without_executing(self, mock_executor_class):
+        self._set_baseline("snapshot-1")
+        self.sync.resolve_snapshot_id = Mock(return_value="snapshot-1")
+
+        run_forward_sync(self.sync, adhoc=False)
+
+        mock_executor_class.assert_not_called()
+        self.sync.refresh_from_db()
+        self.assertEqual(self.sync.status, ForwardSyncStatusChoices.COMPLETED)
