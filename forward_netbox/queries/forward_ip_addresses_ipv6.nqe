@@ -1,0 +1,149 @@
+/**
+ * @intent Forward IPv6 IP Addresses
+ * @description Raw NQE for NetBox IPv6 address rows derived from Forward interface L3 state.
+ */
+
+subinterface_ipv6(forward_netbox_shard_keys: List<String>) =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
+  foreach interface in device.interfaces
+  foreach subinterface in interface.subinterfaces
+  foreach address in subinterface.ipv6.addresses
+  let subnet = ipSubnet(address.ip, address.prefixLength)
+  where address.prefixLength >= 127 || address.ip != networkAddress(subnet)
+  select {
+    device: device.name,
+    interface: interface.name,
+    vrf: if isPresent(subinterface.networkInstanceName)
+      then if subinterface.networkInstanceName != "default" then subinterface.networkInstanceName else null : String
+      else null : String,
+    address: subnet,
+    host_ip: address.ip,
+    prefix_length: address.prefixLength,
+    status: "active"
+  };
+
+bridge_ipv6(forward_netbox_shard_keys: List<String>) =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
+  foreach interface in device.interfaces
+  where isPresent(interface.bridge?.ipv6?.addresses)
+  foreach address in interface.bridge.ipv6.addresses
+  let subnet = ipSubnet(address.ip, address.prefixLength)
+  where address.prefixLength >= 127 || address.ip != networkAddress(subnet)
+  select {
+    device: device.name,
+    interface: interface.name,
+    vrf: if isPresent(interface.bridge.networkInstanceName)
+      then if interface.bridge.networkInstanceName != "default" then interface.bridge.networkInstanceName else null : String
+      else null : String,
+    address: subnet,
+    host_ip: address.ip,
+    prefix_length: address.prefixLength,
+    status: "active"
+  };
+
+tunnel_ipv6(forward_netbox_shard_keys: List<String>) =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
+  foreach interface in device.interfaces
+  where isPresent(interface.tunnel?.ipv6?.addresses)
+  foreach address in interface.tunnel.ipv6.addresses
+  let subnet = ipSubnet(address.ip, address.prefixLength)
+  where address.prefixLength >= 127 || address.ip != networkAddress(subnet)
+  select {
+    device: device.name,
+    interface: interface.name,
+    vrf: if isPresent(interface.tunnel.networkInstanceName)
+      then if interface.tunnel.networkInstanceName != "default" then interface.tunnel.networkInstanceName else null : String
+      else null : String,
+    address: subnet,
+    host_ip: address.ip,
+    prefix_length: address.prefixLength,
+    status: "active"
+  };
+
+routed_vlan_ipv6(forward_netbox_shard_keys: List<String>) =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
+  foreach interface in device.interfaces
+  where isPresent(interface.routedVlan?.ipv6?.addresses)
+  foreach address in interface.routedVlan.ipv6.addresses
+  let subnet = ipSubnet(address.ip, address.prefixLength)
+  where address.prefixLength >= 127 || address.ip != networkAddress(subnet)
+  select {
+    device: device.name,
+    interface: interface.name,
+    vrf: if isPresent(interface.routedVlan.networkInstanceName)
+      then if interface.routedVlan.networkInstanceName != "default" then interface.routedVlan.networkInstanceName else null : String
+      else null : String,
+    address: subnet,
+    host_ip: address.ip,
+    prefix_length: address.prefixLength,
+    status: "active"
+  };
+
+candidate_rows(forward_netbox_shard_keys: List<String>) =
+  foreach row in (
+  subinterface_ipv6(forward_netbox_shard_keys) + bridge_ipv6(forward_netbox_shard_keys)
+    + tunnel_ipv6(forward_netbox_shard_keys) + routed_vlan_ipv6(forward_netbox_shard_keys)
+)
+  select distinct row;
+
+global_candidate_rows(forward_netbox_shard_keys: List<String>) =
+  foreach row in candidate_rows(forward_netbox_shard_keys)
+  where !isPresent(row.vrf)
+  select row;
+
+global_rows(forward_netbox_shard_keys: List<String>) =
+  foreach row in global_candidate_rows(forward_netbox_shard_keys)
+  group row as grouped_rows by row.host_ip as host_ip
+  let chosen_prefix_length = max(foreach candidate in grouped_rows
+    select candidate.prefix_length)
+  let chosen_device = min(foreach candidate in grouped_rows
+    where candidate.prefix_length == chosen_prefix_length
+    select candidate.device)
+  let chosen_interface = min(foreach candidate in grouped_rows
+    where candidate.prefix_length == chosen_prefix_length
+    select candidate.interface)
+  select {
+    device: chosen_device,
+    interface: chosen_interface,
+    vrf: null : String,
+    address: ipSubnet(host_ip, chosen_prefix_length),
+    status: "active"
+  };
+
+vrf_candidate_rows(forward_netbox_shard_keys: List<String>) =
+  foreach row in candidate_rows(forward_netbox_shard_keys)
+  where isPresent(row.vrf)
+  select row;
+
+vrf_rows(forward_netbox_shard_keys: List<String>) =
+  foreach row in vrf_candidate_rows(forward_netbox_shard_keys)
+  group row as grouped_rows by {address: row.address, vrf: row.vrf} as key
+  let chosen_device = min(foreach candidate in grouped_rows
+    select candidate.device)
+  let chosen_interface = min(foreach candidate in grouped_rows
+    where candidate.device == chosen_device
+    select candidate.interface)
+  select {
+    device: chosen_device,
+    interface: chosen_interface,
+    vrf: key.vrf,
+    address: key.address,
+    status: "active"
+  };
+
+@query
+f(forward_netbox_shard_keys: List<String>) =
+foreach row in (global_rows(forward_netbox_shard_keys) + vrf_rows(forward_netbox_shard_keys))
+select distinct row;

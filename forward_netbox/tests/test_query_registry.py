@@ -109,7 +109,8 @@ REQUIRED_FIELDS_BY_QUERY_NAME = {
     "Forward VRFs": {"name", "rd", "description", "enforce_unique"},
     "Forward IPv4 Prefixes": {"vrf", "prefix", "status"},
     "Forward IPv6 Prefixes": {"vrf", "prefix", "status"},
-    "Forward IP Addresses": {"device", "interface", "vrf", "address", "status"},
+    "Forward IPv4 IP Addresses": {"device", "interface", "vrf", "address", "status"},
+    "Forward IPv6 IP Addresses": {"device", "interface", "vrf", "address", "status"},
     "Forward HSRP Groups": {
         "protocol",
         "group_id",
@@ -710,6 +711,39 @@ class QueryRegistryTest(TestCase):
             "export normalizeDevicePlatformName(device: Device)",
             utilities,
         )
+        # APIC controllers carry CISCO_APIC_CONTROLLER_DETAIL, which also trips
+        # deviceHasAciCommandOutputs. The controller check must take precedence
+        # so controllers land on "APIC" (distinct version) rather than "ACI".
+        self.assertIn(
+            "export deviceIsApicController(device: Device)",
+            utilities,
+            msg="APIC controller detection helper missing.",
+        )
+        self.assertIn(
+            "CommandType.CISCO_APIC_CONTROLLER_DETAIL",
+            utilities,
+        )
+        controller_branch = (
+            "if isApicPlatform(toString(device.platform.os)) "
+            "|| deviceIsApicController(device)"
+        )
+        # The controller check is the FIRST branch of normalizeDevicePlatformName
+        # (paired with isApicPlatform → "APIC"), so it structurally precedes the
+        # isAciDevice/command-output fallback that would otherwise win.
+        self.assertIn(
+            controller_branch,
+            utilities,
+            msg="normalizeDevicePlatformName must classify APIC controllers as "
+            "APIC before the ACI command-output fallback.",
+        )
+        device_platform_body = utilities[
+            utilities.index("export normalizeDevicePlatformName(device: Device)") :
+        ]
+        self.assertLess(
+            device_platform_body.index(controller_branch),
+            device_platform_body.index('then "ACI"'),
+            msg="APIC controller branch must precede the ACI branch.",
+        )
         self.assertNotIn(
             "VendorOs",
             utilities,
@@ -765,7 +799,8 @@ class QueryRegistryTest(TestCase):
 
         for query_name in (
             "Forward Interfaces",
-            "Forward IP Addresses",
+            "Forward IPv4 IP Addresses",
+            "Forward IPv6 IP Addresses",
             "Forward MAC Addresses",
             "Forward Modules",
             "Forward BGP Peers",
@@ -1601,40 +1636,62 @@ class QueryRegistryTest(TestCase):
             self.assertIn("tag in device_tag_include_tags", spec.query)
 
     def test_ipaddress_query_excludes_unassignable_interface_addresses(self):
-        ip_spec = next(spec for spec in BUILTIN_QUERY_SPECS["ipam.ipaddress"])
+        specs = {
+            spec.query_name: spec for spec in BUILTIN_QUERY_SPECS["ipam.ipaddress"]
+        }
+        ipv4_spec = specs["Forward IPv4 IP Addresses"]
+        ipv6_spec = specs["Forward IPv6 IP Addresses"]
 
+        # IPv4: four address sources (subinterface, bridge, tunnel, routed VLAN),
+        # each excluding network and broadcast addresses; no IPv6 boundary checks.
         self.assertEqual(
-            ip_spec.query.count(
+            ipv4_spec.query.count(
                 "where address.prefixLength >= 31 || address.ip != networkAddress"
             ),
             4,
         )
         self.assertEqual(
-            ip_spec.query.count(
+            ipv4_spec.query.count(
                 "where address.prefixLength >= 31 || address.ip != broadcastAddress"
             ),
             4,
         )
-        self.assertIn("host_ip: address.ip", ip_spec.query)
-        self.assertIn("prefix_length: address.prefixLength", ip_spec.query)
-        self.assertIn(
-            "group row as grouped_rows by row.host_ip as host_ip",
-            ip_spec.query,
-        )
-        self.assertIn(
-            "let chosen_prefix_length = max(foreach candidate in grouped_rows",
-            ip_spec.query,
-        )
-        self.assertIn(
-            "foreach row in candidate_rows(forward_netbox_shard_keys)",
-            ip_spec.query,
-        )
         self.assertEqual(
-            ip_spec.query.count(
+            ipv4_spec.query.count(
+                "where address.prefixLength >= 127 || address.ip != networkAddress"
+            ),
+            0,
+        )
+
+        # IPv6: four address sources excluding the subnet-router anycast address;
+        # IPv6 has no broadcast, so no broadcast checks.
+        self.assertEqual(
+            ipv6_spec.query.count(
                 "where address.prefixLength >= 127 || address.ip != networkAddress"
             ),
             4,
         )
+        self.assertEqual(
+            ipv6_spec.query.count("broadcastAddress"),
+            0,
+        )
+
+        # Both families keep the host-IP dedup/aggregation pipeline.
+        for spec in (ipv4_spec, ipv6_spec):
+            self.assertIn("host_ip: address.ip", spec.query)
+            self.assertIn("prefix_length: address.prefixLength", spec.query)
+            self.assertIn(
+                "group row as grouped_rows by row.host_ip as host_ip",
+                spec.query,
+            )
+            self.assertIn(
+                "let chosen_prefix_length = max(foreach candidate in grouped_rows",
+                spec.query,
+            )
+            self.assertIn(
+                "foreach row in candidate_rows(forward_netbox_shard_keys)",
+                spec.query,
+            )
 
     def test_ipaddress_unassignable_diagnostic_query_is_not_seeded_as_import_map(
         self,
