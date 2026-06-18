@@ -624,6 +624,11 @@ Create a `Forward Sync` to bind a source, a NetBox model selection, and the inge
   - When enabled, the execution ledger may pre-stage one eligible next shard while the current shard is merging.
   - Merges remain serialized. The plugin does not run multiple branch merges at the same time.
   - Leave disabled unless support evidence shows merge/queue wait is the bottleneck and the NetBox workers/database have capacity headroom.
+- `Skip scheduled runs on an unchanged snapshot`
+  - Optional Forward API load reduction. Off by default.
+  - When a scheduled run would target the same snapshot as the last successful baseline ingestion, the plugin skips query execution entirely (a no-op completion) instead of re-fetching unchanged data for every model.
+  - Manual/adhoc runs always execute, so you can force a re-sync (for example after editing objects directly in NetBox on the same snapshot).
+  - Best for scheduled syncs on a stable snapshot; pairs well with `latestProcessed`/`latestCollected`, which advance the snapshot when new data is collected.
 - `Diff fallback mode`
   - `Allow full fallback` (default) keeps runs moving when a diff-eligible map cannot run as a diff and must temporarily fall back to full query execution.
   - `Require diff` enforces diff-only execution once a baseline exists.
