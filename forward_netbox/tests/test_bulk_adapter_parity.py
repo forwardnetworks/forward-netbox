@@ -9,10 +9,8 @@ from dcim.models import MACAddress
 from dcim.models import Manufacturer
 from dcim.models import Platform
 from dcim.models import Site
-from dcim.models import VirtualChassis
 from django.contrib.contenttypes.models import ContentType
 from django.db import connection
-from django.db import transaction
 from django.test import TestCase
 from ipam.models import IPAddress
 from ipam.models import VLAN
