@@ -446,7 +446,7 @@ class ForwardArchitectureAuditCommandTest(TestCase):
         self.assertIn("name", interface_contract["support_diagnostic_fields"])
         self.assertEqual(
             matrix["bulk_orm_expansion"]["status"],
-            "blocked_pending_parity",
+            "experimental_candidates",
         )
         self.assertGreaterEqual(
             len(matrix["bulk_orm_expansion"]["parity_gates"]),
