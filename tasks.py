@@ -504,6 +504,41 @@ def harness_check(context):
     context.run(f"{shlex.quote(sys.executable)} scripts/check_harness.py")
 
 
+@task(
+    help={
+        "version": "Target version, e.g. 1.5.11",
+        "summary": "One-line release summary for the compatibility tables",
+        "notes_file": "Path to the GitHub release body",
+        "write": "Write the prepare edits and run the local CI mirror",
+        "publish": "Branch + push (rollout). Off by default.",
+        "finish": "After CI is green: FF main, tag, GitHub release (rollout)",
+    }
+)
+def release(
+    context,
+    version,
+    summary="",
+    notes_file="",
+    write=False,
+    publish=False,
+    finish=False,
+):
+    """Run the release flow (scripts/release.py). Default is prepare + verify;
+    rollout only happens with --publish/--finish."""
+    args = [shlex.quote(sys.executable), "scripts/release.py", shlex.quote(version)]
+    if summary:
+        args += ["--summary", shlex.quote(summary)]
+    if notes_file:
+        args += ["--notes-file", shlex.quote(notes_file)]
+    if write:
+        args.append("--write")
+    if publish:
+        args.append("--publish")
+    if finish:
+        args.append("--finish")
+    context.run(" ".join(args))
+
+
 @task(name="harness-test")
 def harness_test(context):
     context.run(
