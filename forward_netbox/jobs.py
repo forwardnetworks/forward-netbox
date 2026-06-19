@@ -266,6 +266,25 @@ def prune_forward_orphans(job, *args, **kwargs):
             raise
 
 
+def refresh_forward_device_analysis(job, *args, **kwargs):
+    """Background refresh of per-device Forward analysis (reachability proxy,
+    connectivity-degree blast radius, CVE exposure) into ForwardDeviceAnalysis."""
+    from .utilities.device_analysis import refresh_device_analysis
+
+    sync = ForwardSync.objects.get(pk=job.object_id)
+    try:
+        job.start()
+        job.data = refresh_device_analysis(sync)
+        job.save(update_fields=["data"])
+        job.terminate()
+    except Exception as exc:
+        job.terminate(status=JobStatusChoices.STATUS_ERRORED)
+        if type(exc) in (SyncError, JobTimeoutException):
+            logger.error(exc)
+        else:
+            raise
+
+
 def tag_forward_backfilled_devices(job, *args, **kwargs):
     """Background sync of the ``forward-backfilled`` tag for a sync.
 
