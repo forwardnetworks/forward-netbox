@@ -24,7 +24,7 @@ Create a Forward data file with:
 - NQE name: `netbox_device_type_aliases`
 - File type: `JSON`
 
-Attach the data file to the Forward network used by the sync, then run or reprocess a Forward snapshot. Forward's interactive inventory-query/report paths can evaluate against latest data files immediately after upload. The public `/api/nqe` path used by the plugin runs against the selected snapshot, so the selected sync snapshot must include the uploaded data file value before aliases affect plugin results.
+Attach the data file to the Forward network used by the sync, then run or reprocess a Forward snapshot. Forward's interactive inventory-query/report paths can evaluate against latest data files immediately after upload. The Forward NQE execution API used by the plugin runs against the selected snapshot, so the selected sync snapshot must include the uploaded data file value before aliases affect plugin results.
 
 If this data file is not uploaded, attached, and visible in the selected snapshot, do not enable the alias-aware NQE maps for plugin syncs. Forward's NQE schema only exposes data files that exist for the network, so a query that references a missing data file will fail validation. The default maps remain the fallback.
 

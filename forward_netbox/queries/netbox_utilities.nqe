@@ -119,12 +119,28 @@ export deviceHasAciCommandOutputs(device: Device) =
     )
   );
 
+export isApicControllerCommandOutputs(device: Device) =
+  isPresent(
+    max(
+      foreach command in device.outputs.commands
+      where command.commandType in [
+        CommandType.CISCO_APIC_SWITCH,
+        CommandType.CISCO_APIC_CONTROLLER_DETAIL
+      ]
+      select command.commandType
+    )
+  );
+
 export isAciDevice(device: Device) =
   normalizePlatformName(
     toString(device.platform.os),
     if isPresent(device.platform.osVersion) then device.platform.osVersion else ""
   ) == "ACI"
-  || deviceHasAciCommandOutputs(device);
+  || (
+    !isApicPlatform(toString(device.platform.os))
+    && !isApicControllerCommandOutputs(device)
+    && deviceHasAciCommandOutputs(device)
+  );
 
 export normalizeDevicePlatformName(device: Device) =
   if isApicPlatform(toString(device.platform.os)) || deviceIsApicController(device)

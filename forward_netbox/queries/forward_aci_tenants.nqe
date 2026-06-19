@@ -1,11 +1,11 @@
 /**
  * @intent Forward ACI Tenants
- * @description Discovers ACI tenants from ACI fabric VRF command output.
+ * @description Discovers ACI tenants from the APIC fvCtx custom command output.
  */
 
 import "netbox_utilities";
 
-vrfRegex = re`(?:^|\R)\s*(?<tenant>[^:\s]+):(?<vrf_name>\S+)\s+Tenant\s+(?<vrf_vnid:Integer>\d+)\s+(?<context_id:Integer>\d+)\s+(?<status>\S+)`;
+ctxRegex = re`(?:^|\R)#\s+fv\.Ctx\s*\R(?:\s*[^\r\n]*\R)*?\s*dn\s*:\s*uni/tn-(?<tenant_name>[^/\s]+)/ctx-(?<vrf_name>[^\r\n/]+)\R`;
 
 aciFabricName(device) =
   if isPresent(device.locationName) && length(device.locationName) > 0
@@ -18,15 +18,16 @@ foreach device in network.devices
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
 foreach command in device.outputs.commands
-where command.commandType == CommandType.CISCO_ACI_FABRIC_VRFS
-foreach vrf_match in regexMatches(command.response, vrfRegex)
-let vrf = vrf_match.data
+where command.commandType == CommandType.CUSTOM
+where matches(toLowerCase(command.commandText), "moquery -c fvctx*")
+foreach ctx_match in regexMatches(command.response, ctxRegex)
+let ctx = ctx_match.data
 let fabric_name = aciFabricName(device)
 where isEmpty(forward_netbox_shard_keys)
   || fabric_name in forward_netbox_shard_keys
-  || vrf.tenant in forward_netbox_shard_keys
+  || ctx.tenant_name in forward_netbox_shard_keys
 select distinct {
   fabric_name: fabric_name,
-  name: vrf.tenant,
+  name: ctx.tenant_name,
   description: "Forward observed ACI tenant"
 };
