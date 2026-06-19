@@ -1598,7 +1598,9 @@ class QueryRegistryTest(TestCase):
             {"forward_netbox_shard_keys": []},
         )
 
-    def test_prefix_queries_exclude_host_routes(self):
+    def test_prefix_queries_derive_connected_subnets(self):
+        # Prefixes derive from connected interface subnets (not routing tables),
+        # exclude host addresses, and still respect the device tag + shard scope.
         ipv4_spec = next(
             spec
             for spec in BUILTIN_QUERY_SPECS["ipam.prefix"]
@@ -1610,11 +1612,13 @@ class QueryRegistryTest(TestCase):
             if spec.query_name == "Forward IPv6 Prefixes"
         )
 
-        self.assertIn("where length(entry.prefix) < 32", ipv4_spec.query)
-        self.assertNotIn("length(entry.prefix) <= 32", ipv4_spec.query)
-        self.assertIn('ipAddress("0.0.0.0")', ipv4_spec.query)
-        self.assertIn('ipAddress("127.0.0.0")', ipv4_spec.query)
-        self.assertIn("where length(entry.prefix) < 128", ipv6_spec.query)
+        # Connected derivation, not routing-table entries.
+        self.assertIn("subinterface.ipv4.addresses", ipv4_spec.query)
+        self.assertNotIn("ipv4Unicast", ipv4_spec.query)
+        self.assertIn("where address.prefixLength < 32", ipv4_spec.query)
+        self.assertIn("subinterface.ipv6.addresses", ipv6_spec.query)
+        self.assertNotIn("ipv6Unicast", ipv6_spec.query)
+        self.assertIn("where address.prefixLength < 128", ipv6_spec.query)
         for spec in (ipv4_spec, ipv6_spec):
             self.assertEqual(
                 spec.parameters,
@@ -1630,7 +1634,7 @@ class QueryRegistryTest(TestCase):
                 spec.query,
             )
             self.assertIn(
-                "toString(prefix) in forward_netbox_shard_keys",
+                "toString(row.prefix) in forward_netbox_shard_keys",
                 spec.query,
             )
             self.assertIn("tag in device_tag_include_tags", spec.query)
