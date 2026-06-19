@@ -44,8 +44,13 @@ def _run_summary(ingestion):
         + int(ingestion.updated_change_count)
         + int(ingestion.deleted_change_count)
     )
+    try:
+        url = ingestion.get_absolute_url()
+    except Exception:  # pragma: no cover - defensive
+        url = None
     return {
         "id": ingestion.pk,
+        "url": url,
         "created": ingestion.created.isoformat() if ingestion.created else None,
         "snapshot_selector": ingestion.snapshot_selector,
         "snapshot_id": ingestion.snapshot_id,
