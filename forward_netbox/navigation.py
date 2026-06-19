@@ -78,11 +78,18 @@ drift_policy = PluginMenuItem(
     permissions=["forward_netbox.view_forwarddriftpolicy"],
 )
 
+device_analysis = PluginMenuItem(
+    link="plugins:forward_netbox:forwarddeviceanalysis_list",
+    link_text=_("Device Analysis"),
+    permissions=["forward_netbox.view_forwarddeviceanalysis"],
+)
+
 menu = PluginMenu(
     label="Forward",
     icon_class="mdi mdi-cloud-sync",
     groups=(
         ("Data Sync", (source, sync, ingestion, execution_run, validation_run)),
+        ("Analysis", (device_analysis,)),
         ("Configuration", (nqe_map, drift_policy)),
     ),
 )
