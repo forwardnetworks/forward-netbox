@@ -63,6 +63,16 @@ urlpatterns = (
         include(get_model_urls("forward_netbox", "forwarddriftpolicy")),
     ),
     path(
+        "device-analysis/",
+        include(
+            get_model_urls("forward_netbox", "forwarddeviceanalysis", detail=False)
+        ),
+    ),
+    path(
+        "device-analysis/<int:pk>/",
+        include(get_model_urls("forward_netbox", "forwarddeviceanalysis")),
+    ),
+    path(
         "validation-run/",
         include(get_model_urls("forward_netbox", "forwardvalidationrun", detail=False)),
     ),

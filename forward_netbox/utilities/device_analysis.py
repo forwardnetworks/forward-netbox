@@ -53,23 +53,24 @@ def refresh_device_analysis(sync) -> dict:
     from forward_netbox.models import ForwardDeviceAnalysis
 
     rows, snapshot_id = fetch_device_analysis_rows(sync)
-    netbox_names = set(
-        name
-        for name in Device.objects.values_list("name", flat=True)
-        if (name or "").strip()
-    )
+    device_by_name = {
+        device.name: device
+        for device in Device.objects.all()
+        if (device.name or "").strip()
+    }
 
-    seen = set()
+    seen_device_ids = set()
     upserted = 0
     with transaction.atomic():
         for row in rows:
             name = str(row.get("name") or "").strip()
-            if not name or name not in netbox_names:
+            device = device_by_name.get(name)
+            if device is None:
                 continue
-            seen.add(name)
+            seen_device_ids.add(device.pk)
             ForwardDeviceAnalysis.objects.update_or_create(
                 sync=sync,
-                device_name=name,
+                device=device,
                 defaults={
                     "reachable": bool(row.get("reachable")),
                     "blast_radius": _coerce_int(row.get("blast_radius")),
@@ -81,7 +82,7 @@ def refresh_device_analysis(sync) -> dict:
             )
             upserted += 1
         stale = ForwardDeviceAnalysis.objects.filter(sync=sync).exclude(
-            device_name__in=seen
+            device_id__in=seen_device_ids
         )
         removed = stale.count()
         stale.delete()

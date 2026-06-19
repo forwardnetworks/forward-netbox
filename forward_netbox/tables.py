@@ -8,6 +8,7 @@ from netbox.tables import columns
 from netbox.tables import NetBoxTable
 from netbox_branching.models import ChangeDiff
 
+from .models import ForwardDeviceAnalysis
 from .models import ForwardDriftPolicy
 from .models import ForwardExecutionRun
 from .models import ForwardExecutionStep
@@ -152,6 +153,37 @@ class ForwardIngestionTable(NetBoxTable):
         model = ForwardIngestion
         fields = ("name", "sync", "branch", "validation_run", "user", "changes")
         default_columns = ("name", "sync", "branch", "user", "changes")
+
+
+class ForwardDeviceAnalysisTable(NetBoxTable):
+    device = tables.Column(linkify=True)
+    sync = tables.Column(linkify=True)
+    reachable = columns.BooleanColumn()
+    # Read-only overlay: no edit view, so only offer delete in the row actions.
+    actions = columns.ActionsColumn(actions=("delete",))
+
+    class Meta(NetBoxTable.Meta):
+        model = ForwardDeviceAnalysis
+        fields = (
+            "pk",
+            "device",
+            "sync",
+            "reachable",
+            "blast_radius",
+            "cve_count",
+            "up_interfaces",
+            "detail",
+            "snapshot_id",
+            "last_updated",
+        )
+        default_columns = (
+            "device",
+            "sync",
+            "reachable",
+            "blast_radius",
+            "cve_count",
+            "up_interfaces",
+        )
 
 
 class ForwardDriftPolicyTable(NetBoxTable):

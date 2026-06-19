@@ -27,6 +27,7 @@ let upInterfaces =
          select i.name)
 let physicalLinks =
   length(foreach i in device.interfaces
+         where i.operStatus == OperStatus.UP
          foreach l in i.links
          select l)
 let vulnerabilities =

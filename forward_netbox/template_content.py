@@ -16,8 +16,8 @@ class ForwardDeviceAnalysisPanel(PluginTemplateExtension):
         from forward_netbox.models import ForwardDeviceAnalysis
 
         analysis = (
-            ForwardDeviceAnalysis.objects.filter(device_name=device.name)
-            .order_by("-updated")
+            ForwardDeviceAnalysis.objects.filter(device=device)
+            .order_by("-last_updated")
             .first()
         )
         if analysis is None:
