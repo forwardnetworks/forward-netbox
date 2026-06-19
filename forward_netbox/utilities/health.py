@@ -122,6 +122,7 @@ def sync_health_summary(sync):
     )
     compatibility_cache = _compatibility_cache_summary(sync, execution_run)
     density_learning = _density_learning_summary(sync)
+    collection_gap = _collection_gap_summary(sync)
     dependency_lookup_cache = dependency_lookup_cache_support_summary(execution_run)
     dependency_parent_coverage = dependency_parent_coverage_support_summary(
         execution_run
@@ -184,6 +185,7 @@ def sync_health_summary(sync):
         "throughput": throughput,
         "compatibility_cache": compatibility_cache,
         "density_learning": density_learning,
+        "collection_gap": collection_gap,
         "dependency_lookup_cache": dependency_lookup_cache,
         "dependency_parent_coverage": dependency_parent_coverage,
         "optional_plugin_capabilities": optional_plugin_capabilities,
@@ -503,6 +505,45 @@ def _compatibility_cache_summary(sync, run=None):
 
 def _density_learning_summary(sync):
     return _density_learning_summary_impl(sync)
+
+
+def _collection_gap_summary(sync):
+    """Collection-gap signal from the persisted ``forward-backfilled`` tag.
+
+    Counts devices the Tag backfilled devices action flagged (in scope but not
+    freshly collected in the latest snapshot). Uses the stored tag — a cheap DB
+    count — rather than a live Forward query, so it never blocks the health
+    summary. A non-zero count usually points at a Forward collection gap
+    (unreachable / canceled collection), not a plugin problem.
+    """
+    from dcim.models import Device
+
+    from .scope_reconciliation import BACKFILLED_TAG_SLUG
+
+    count = Device.objects.filter(tags__slug=BACKFILLED_TAG_SLUG).count()
+    if count == 0:
+        return {
+            "available": True,
+            "status": "info",
+            "backfilled_count": 0,
+            "tag_slug": BACKFILLED_TAG_SLUG,
+            "message": (
+                "No devices flagged forward-backfilled. Run Tag backfilled devices "
+                "from Scope Reconciliation to refresh this signal."
+            ),
+        }
+    return {
+        "available": True,
+        "status": "warn",
+        "backfilled_count": count,
+        "tag_slug": BACKFILLED_TAG_SLUG,
+        "message": (
+            f"{count} device(s) tagged forward-backfilled — in scope but not "
+            "freshly collected in the latest snapshot. Investigate Forward "
+            "collection for these devices (filter the device list by the "
+            "forward-backfilled tag)."
+        ),
+    }
 
 
 def _dependency_preflight_summary(sync, enabled_models):
