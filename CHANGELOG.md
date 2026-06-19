@@ -2,6 +2,14 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v1.7.0
+
+ACI bridge domain and L3Out NQE maps; query publish hardening
+
+## v1.7.0
+
+ACI bridge domain and L3Out NQE maps; query publish hardening
+
 ## v1.6.2 — 2026-06-19
 
 completes the 1.6.1 line (1.6.1 was yanked — its PyPI build predated these): device tag scope now covers VLANs/VRFs and prefixes derive from connected interface subnets; the FHRP group churn (delete+recreate every sync) is fixed by identity-bucket sharding; device analysis is a first-class model with a fleet list view, REST API, and an Open in Forward deep-link.
