@@ -271,11 +271,25 @@ class ScopeModuleUiTest(TestCase):
         rows = ForwardDeviceAnalysis.objects.filter(sync=self.sync)
         self.assertEqual(rows.count(), 1)
         analysis = rows.get()
-        self.assertEqual(analysis.device_name, "dev-an")
+        self.assertEqual(analysis.device.name, "dev-an")
         self.assertTrue(analysis.reachable)
         self.assertEqual(analysis.blast_radius, 7)
         self.assertEqual(analysis.cve_count, 2)
         self.assertEqual(analysis.up_interfaces, 5)
+
+        # List view + device-detail panel render the stored analysis.
+        list_resp = client.get(
+            reverse("plugins:forward_netbox:forwarddeviceanalysis_list")
+        )
+        self.assertEqual(list_resp.status_code, 200)
+        self.assertContains(list_resp, "dev-an")
+
+        from forward_netbox.template_content import ForwardDeviceAnalysisPanel
+
+        panel = ForwardDeviceAnalysisPanel(
+            context={"object": analysis.device, "request": None}
+        )
+        self.assertIn("Forward Analysis", panel.right_page())
 
     def test_module_readiness_view_and_create(self):
         self._device("dev-m")

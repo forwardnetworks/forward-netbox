@@ -121,6 +121,27 @@ def record_timeout_issue(ingestion, phase, message):
     )
 
 
+def _maybe_enqueue_device_analysis_refresh(sync):
+    """Opt-in: after a successful sync, refresh the device-analysis overlay.
+
+    Enabled per sync via the ``auto_refresh_device_analysis`` parameter. Never
+    lets an analysis-refresh problem affect the sync result.
+    """
+    if not (sync.parameters or {}).get("auto_refresh_device_analysis"):
+        return
+    try:
+        from django.utils.module_loading import import_string
+
+        Job.enqueue(
+            import_string("forward_netbox.jobs.refresh_forward_device_analysis"),
+            instance=sync,
+            user=sync.user,
+            name=f"{sync.name} - refresh device analysis (auto)",
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Auto device-analysis refresh enqueue failed: %s", exc)
+
+
 def sync_forwardsync(job, *args, **kwargs):
     sync = ForwardSync.objects.get(pk=job.object_id)
 
@@ -128,6 +149,7 @@ def sync_forwardsync(job, *args, **kwargs):
         job.start()
         sync.sync(job=job, adhoc=bool(kwargs.get("adhoc")))
         safe_save_job_data(job, sync)
+        _maybe_enqueue_device_analysis_refresh(sync)
         job.terminate()
     except Exception as exc:
         safe_save_job_data(job, sync)
