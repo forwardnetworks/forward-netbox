@@ -1347,11 +1347,11 @@ class ForwardSyncHealthTest(TestCase):
         self.assertEqual(adaptive["capacity_evidence"]["status"], "unknown")
 
     def test_promoted_bulk_orm_models_run_without_allowlist(self):
-        # ipam.ipaddress and dcim.interface were promoted to the default safe
-        # set, so with bulk enabled they run bulk without an explicit allowlist
-        # and are not held back as `bulk_orm_model_not_allowlisted`. (The only
-        # remaining experimental model, ipam.prefix, is adapter-blocked, so the
-        # not-allowlisted gate no longer applies to any built-in model.)
+        # ipam.ipaddress, dcim.interface, and ipam.prefix are all in the default
+        # safe set now, so with bulk enabled they run bulk without an explicit
+        # allowlist and are not held back as `bulk_orm_model_not_allowlisted`.
+        # There are no remaining experimental models, so the not-allowlisted gate
+        # no longer applies to any built-in model.
         self.sync.parameters["enable_bulk_orm"] = True
         self.sync.save(update_fields=["parameters"])
 

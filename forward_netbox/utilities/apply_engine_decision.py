@@ -32,8 +32,13 @@ BULK_ORM_ENABLED_MODELS = {
     # so default bulk gives the largest ingest speedup.
     "dcim.interface",
     "ipam.ipaddress",
+    # Promoted: ipam.prefix runs through the per-object tree apply path, so the
+    # NetBox post_save hierarchy signal (handle_prefix_saved) still maintains
+    # `_depth`/`_children` exactly like the adapter. Null-VRF identity and the
+    # canonical-CIDR lookup key are handled in the bulk lookup builders.
+    "ipam.prefix",
 }
-EXPERIMENTAL_BULK_ORM_MODELS = {"ipam.prefix"}
+EXPERIMENTAL_BULK_ORM_MODELS = set()
 
 BULK_ORM_SPEC_MODELS = {
     "dcim.site",
@@ -232,7 +237,6 @@ ADAPTER_REQUIRED_MODELS = {
     "dcim.module",
     "extras.taggeditem",
     "ipam.fhrpgroup",
-    "ipam.prefix",
     "netbox_peering_manager.peeringsession",
     "netbox_routing.bgpaddressfamily",
     "netbox_routing.bgppeer",
@@ -295,13 +299,6 @@ ADAPTER_MODEL_BLOCKERS = {
         "blocker_reason": (
             "FHRP group writes create group assignments and VIP generic relations "
             "that require adapter sequencing and row-level dependency handling."
-        ),
-    },
-    "ipam.prefix": {
-        "blocker_code": "ipam_hierarchy_semantics",
-        "blocker_reason": (
-            "Prefix writes include hierarchy/relationship semantics and skip paths "
-            "that are currently enforced in adapters."
         ),
     },
     "netbox_peering_manager.peeringsession": {
