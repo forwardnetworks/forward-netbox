@@ -93,6 +93,11 @@ def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str,
             "fields": ("prefix", "vrf", "status"),
             "lookup_fields": ("prefix",),
             "lookup_sets": (("prefix", "vrf"),),
+            # vrf is part of the prefix identity but legitimately null (global
+            # table). It must encode as a sentinel in the lookup key, not bail to
+            # None (which would never match an existing null-VRF prefix and create
+            # a duplicate).
+            "nullable_lookup_fields": ("vrf",),
         },
     }
     spec = specs.get(model_string)
@@ -104,6 +109,7 @@ def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str,
     required = tuple(spec["required"])
     lookup_fields = tuple(spec["lookup_fields"])
     lookup_sets = tuple(tuple(lookup_set) for lookup_set in spec["lookup_sets"])
+    nullable_lookup_fields = tuple(spec.get("nullable_lookup_fields", ()))
 
     site_by_slug = {}
     site_by_name = {}
@@ -263,7 +269,10 @@ def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str,
     if not normalized_rows:
         return True
 
-    if model_string in {"dcim.devicerole", "dcim.platform"}:
+    if model_string in {"dcim.devicerole", "dcim.platform", "ipam.prefix"}:
+        # Per-object save path. ipam.prefix relies on this so NetBox's post_save
+        # hierarchy signal recomputes `_depth`/`_children` (bulk_create would skip
+        # it), keeping parity with the adapter.
         return bulk_orm_apply_tree_models(
             runner=runner,
             model_string=model_string,
@@ -271,6 +280,7 @@ def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str,
             fields=fields,
             lookup_sets=lookup_sets,
             normalized_rows=normalized_rows,
+            nullable_lookup_fields=nullable_lookup_fields,
         )
 
     existing_qs = model.objects.none()
@@ -284,7 +294,12 @@ def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str,
     existing_by_lookup = {lookup_set: {} for lookup_set in lookup_sets}
     for obj in existing_qs:
         for lookup_set in lookup_sets:
-            key = lookup_key_from_object(obj, lookup_set)
+            key = lookup_key_from_object(
+                obj,
+                lookup_set,
+                model_string=model_string,
+                nullable_fields=nullable_lookup_fields,
+            )
             if key is not None:
                 existing_by_lookup[lookup_set][key] = obj
 
@@ -293,7 +308,12 @@ def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str,
     for values in normalized_rows:
         existing = None
         for lookup_set in lookup_sets:
-            key = lookup_key_from_values(values, lookup_set)
+            key = lookup_key_from_values(
+                values,
+                lookup_set,
+                model_string=model_string,
+                nullable_fields=nullable_lookup_fields,
+            )
             if key is None:
                 continue
             existing = existing_by_lookup[lookup_set].get(key)
@@ -304,7 +324,12 @@ def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str,
             obj.full_clean()
             create_objects.append(obj)
             for lookup_set in lookup_sets:
-                key = lookup_key_from_values(values, lookup_set)
+                key = lookup_key_from_values(
+                    values,
+                    lookup_set,
+                    model_string=model_string,
+                    nullable_fields=nullable_lookup_fields,
+                )
                 if key is not None:
                     existing_by_lookup[lookup_set][key] = obj
             runner.logger.increment_statistics(model_string, outcome="applied")
@@ -1184,21 +1209,60 @@ def bulk_orm_apply_virtualchassis(runner, rows: list[dict[str, Any]]):
     return True
 
 
-def lookup_key_from_object(obj, lookup_set):
-    values = []
+# Encodes a null value for a nullable identity field (e.g. ipam.prefix global
+# table where vrf is None) so it still forms a stable, matchable lookup key
+# instead of bailing to None (which would create duplicates).
+LOOKUP_NULL_SENTINEL = "\x00null"
+
+
+def lookup_key_from_object(obj, lookup_set, *, model_string=None, nullable_fields=()):
+    return _build_lookup_key(
+        lambda field_name: getattr(obj, field_name, None),
+        lookup_set,
+        model_string,
+        nullable_fields,
+    )
+
+
+def lookup_key_from_values(
+    values, lookup_set, *, model_string=None, nullable_fields=()
+):
+    return _build_lookup_key(values.get, lookup_set, model_string, nullable_fields)
+
+
+def _build_lookup_key(getter, lookup_set, model_string, nullable_fields):
+    parts = []
     for field_name in lookup_set:
-        value = getattr(obj, field_name, None)
-        values.append(lookup_key_value(value))
-    if any(value in ("", None) for value in values):
-        return None
-    return "|".join(str(value) for value in values)
+        value = _normalize_lookup_component(
+            model_string, field_name, getter(field_name)
+        )
+        if value in ("", None):
+            if field_name in nullable_fields:
+                parts.append(LOOKUP_NULL_SENTINEL)
+                continue
+            return None
+        parts.append(str(value))
+    return "|".join(parts)
 
 
-def lookup_key_from_values(values, lookup_set):
-    parts = [lookup_key_value(values.get(field_name)) for field_name in lookup_set]
-    if any(value in ("", None) for value in parts):
-        return None
-    return "|".join(str(value) for value in parts)
+def _normalize_lookup_component(model_string, field_name, value):
+    if hasattr(value, "pk"):
+        return value.pk
+    # NetBox stores ipam.prefix as a canonical CIDR IPNetwork (host bits cleared
+    # on save), while incoming rows are raw strings — normalize both sides so the
+    # lookup key matches regardless of input form.
+    if (
+        model_string == "ipam.prefix"
+        and field_name == "prefix"
+        and value not in ("", None)
+    ):
+        import netaddr
+
+        try:
+            return str(netaddr.IPNetwork(str(value)).cidr)
+        except (ValueError, netaddr.AddrFormatError):
+            return value
+    return value
 
 
 def lookup_key_value(value):
@@ -1215,6 +1279,7 @@ def bulk_orm_apply_tree_models(
     fields: tuple[str, ...],
     lookup_sets: tuple[tuple[str, ...], ...],
     normalized_rows: list[dict[str, Any]],
+    nullable_lookup_fields: tuple[str, ...] = (),
 ):
     from django.db import transaction
     from django.db.models import Q
@@ -1249,14 +1314,24 @@ def bulk_orm_apply_tree_models(
         lookup_cache = {lookup_set: {} for lookup_set in lookup_sets}
         for obj in existing_qs:
             for lookup_set in lookup_sets:
-                key = lookup_key_from_object(obj, lookup_set)
+                key = lookup_key_from_object(
+                    obj,
+                    lookup_set,
+                    model_string=model_string,
+                    nullable_fields=nullable_lookup_fields,
+                )
                 if key is not None and key not in lookup_cache[lookup_set]:
                     lookup_cache[lookup_set][key] = obj
 
         for values in normalized_rows:
             existing = None
             for lookup_set in lookup_sets:
-                lookup_key = lookup_key_from_values(values, lookup_set)
+                lookup_key = lookup_key_from_values(
+                    values,
+                    lookup_set,
+                    model_string=model_string,
+                    nullable_fields=nullable_lookup_fields,
+                )
                 if lookup_key is None:
                     continue
                 if lookup_key in lookup_cache[lookup_set]:
@@ -1270,7 +1345,12 @@ def bulk_orm_apply_tree_models(
                 runner.logger.increment_statistics(model_string, outcome="applied")
                 runner.events_clearer.increment()
                 for lookup_set in lookup_sets:
-                    lookup_key = lookup_key_from_values(values, lookup_set)
+                    lookup_key = lookup_key_from_values(
+                        values,
+                        lookup_set,
+                        model_string=model_string,
+                        nullable_fields=nullable_lookup_fields,
+                    )
                     if lookup_key is not None:
                         lookup_cache[lookup_set][lookup_key] = obj
                 continue

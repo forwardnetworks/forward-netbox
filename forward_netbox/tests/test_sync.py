@@ -14061,24 +14061,14 @@ class ForwardApplyEngineParityTest(TestCase):
         self.assertEqual(candidate["risk"], "high")
         self.assertEqual(self._device_decision().selected_engine, "adapter")
 
-    def test_ipam_prefix_experimental_bulk_defaults_to_adapter(self):
+    def test_ipam_prefix_defaults_to_bulk(self):
+        # Promoted to the default safe set (it runs the per-object tree path that
+        # preserves the NetBox hierarchy signal).
         decision = self._prefix_decision()
-        self.assertEqual(decision.selected_engine, "adapter")
-        self.assertEqual(decision.reason_code, "adapter_required_model_contract")
+        self.assertEqual(decision.selected_engine, "bulk_orm")
+        self.assertEqual(decision.reason_code, "bulk_orm_enabled_safe_model_set")
 
-    def test_ipam_prefix_experimental_bulk_selects_bulk_when_allowlisted(self):
-        self.sync.parameters["bulk_orm_models"] = ["ipam.prefix"]
-        self.sync.save(update_fields=["parameters"])
-        decision = self._prefix_decision()
-        self.assertEqual(decision.selected_engine, "adapter")
-        self.assertEqual(
-            decision.reason_code,
-            "adapter_required_model_contract",
-        )
-
-    def test_ipam_prefix_experimental_bulk_apply_upserts_rows(self):
-        self.sync.parameters["bulk_orm_models"] = ["ipam.prefix"]
-        self.sync.save(update_fields=["parameters"])
+    def test_ipam_prefix_bulk_apply_upserts_rows(self):
         runner = self._runner()
 
         self._prefix_engine().apply_upserts(
@@ -14094,6 +14084,20 @@ class ForwardApplyEngineParityTest(TestCase):
         self.assertTrue(VRF.objects.filter(name="blue").exists())
         self.assertTrue(
             Prefix.objects.filter(prefix="10.10.1.0/24", vrf__name="blue").exists()
+        )
+
+    def test_ipam_prefix_bulk_null_vrf_reapply_no_duplicate(self):
+        # Null-VRF (global table) prefix must match an existing row on re-apply
+        # instead of creating a duplicate (the composite (prefix, vrf) key encodes
+        # the null vrf as a sentinel rather than bailing to None).
+        runner = self._runner()
+        rows = [{"prefix": "10.20.0.0/24", "vrf": None, "status": "active"}]
+
+        self._prefix_engine().apply_upserts(runner, "ipam.prefix", rows)
+        self._prefix_engine().apply_upserts(runner, "ipam.prefix", rows)
+
+        self.assertEqual(
+            Prefix.objects.filter(prefix="10.20.0.0/24", vrf=None).count(), 1
         )
 
 

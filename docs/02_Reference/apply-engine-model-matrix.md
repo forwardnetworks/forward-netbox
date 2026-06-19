@@ -26,6 +26,7 @@ These models are parity-tested for the current `bulk_orm` path:
 - `ipam.vlan`
 - `ipam.vrf`
 - `ipam.ipaddress`
+- `ipam.prefix`
 
 ## Adapter-Required Set
 
@@ -37,7 +38,6 @@ These models remain adapter-required with explicit blocker codes:
 - `dcim.module` | `dependency_resolution`
 - `extras.taggeditem` | `generic_foreign_key_relations`
 - `ipam.fhrpgroup` | `generic_foreign_key_relations`
-- `ipam.prefix` | `ipam_hierarchy_semantics`
 - `netbox_cisco_aci.acifabric` | `plugin_model_dependencies`
 - `netbox_cisco_aci.acinode` | `plugin_model_dependencies`
 - `netbox_cisco_aci.acipod` | `plugin_model_dependencies`
