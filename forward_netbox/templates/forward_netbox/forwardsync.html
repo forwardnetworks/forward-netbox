@@ -54,6 +54,12 @@
     <a class="btn btn-outline-secondary" href="{{ run_history_url }}">
       <i class="mdi mdi-history" aria-hidden="true"></i>&nbsp;{% trans "Run History" %}
     </a>
+    <form action="{{ refresh_device_analysis_url }}" method="post" class="d-inline">
+      {% csrf_token %}
+      <button type="submit" class="btn btn-outline-secondary">
+        <i class="mdi mdi-radar" aria-hidden="true"></i>&nbsp;{% trans "Refresh Device Analysis" %}
+      </button>
+    </form>
     <a class="btn btn-outline-secondary" href="{{ support_bundle_url }}">
       <i class="mdi mdi-download" aria-hidden="true"></i>&nbsp;{% trans "Export Support Bundle" %}
     </a>

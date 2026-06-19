@@ -1,0 +1,46 @@
+{% load i18n %}
+<div class="card">
+  <h5 class="card-header">{% trans "Forward Analysis" %}</h5>
+  <div class="card-body">
+    <table class="table table-hover attr-table">
+      <tr>
+        <th scope="row">{% trans "Reachable (collected)" %}</th>
+        <td>
+          {% if analysis.reachable %}
+            <span class="badge text-bg-success">{% trans "Yes" %}</span>
+          {% else %}
+            <span class="badge text-bg-warning">{% trans "No" %}</span>
+          {% endif %}
+        </td>
+      </tr>
+      <tr>
+        <th scope="row">{% trans "Blast radius (links)" %}</th>
+        <td>{{ analysis.blast_radius }}</td>
+      </tr>
+      <tr>
+        <th scope="row">{% trans "Up interfaces" %}</th>
+        <td>{{ analysis.up_interfaces }}</td>
+      </tr>
+      <tr>
+        <th scope="row">{% trans "CVE exposure" %}</th>
+        <td>
+          {% if analysis.cve_count %}
+            <span class="badge text-bg-warning">{{ analysis.cve_count }}</span>
+          {% else %}
+            <span class="badge text-bg-success">0</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% if analysis.detail %}
+      <tr>
+        <th scope="row">{% trans "Location" %}</th>
+        <td>{{ analysis.detail }}</td>
+      </tr>
+      {% endif %}
+      <tr>
+        <th scope="row">{% trans "Updated" %}</th>
+        <td>{{ analysis.updated }}</td>
+      </tr>
+    </table>
+  </div>
+</div>
