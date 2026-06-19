@@ -236,6 +236,30 @@ class ForwardSyncHealthTest(TestCase):
             },
         )
 
+    def test_collection_gap_summary_reflects_backfilled_tag(self):
+        from dcim.models import Device
+        from dcim.models import DeviceRole
+        from dcim.models import DeviceType
+        from dcim.models import Manufacturer
+        from dcim.models import Site
+        from extras.models import Tag
+
+        summary = sync_health_summary(self.sync)
+        self.assertEqual(summary["collection_gap"]["status"], "info")
+        self.assertEqual(summary["collection_gap"]["backfilled_count"], 0)
+
+        mfr = Manufacturer.objects.create(name="MfrCG", slug="mfr-cg")
+        dt = DeviceType.objects.create(manufacturer=mfr, model="dt-cg", slug="dt-cg")
+        role = DeviceRole.objects.create(name="RoleCG", slug="role-cg")
+        site = Site.objects.create(name="SiteCG", slug="site-cg")
+        dev = Device.objects.create(name="dev-cg", device_type=dt, role=role, site=site)
+        tag = Tag.objects.create(name="Forward Backfilled", slug="forward-backfilled")
+        dev.tags.add(tag)
+
+        summary2 = sync_health_summary(self.sync)
+        self.assertEqual(summary2["collection_gap"]["status"], "warn")
+        self.assertEqual(summary2["collection_gap"]["backfilled_count"], 1)
+
     def test_sync_health_summary_reports_local_state(self):
         self.execution_job.data = {
             **self.execution_job.data,
