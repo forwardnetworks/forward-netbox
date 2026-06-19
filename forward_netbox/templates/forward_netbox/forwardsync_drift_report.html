@@ -1,0 +1,78 @@
+{% extends 'generic/object.html' %}
+{% load helpers %}
+{% load i18n %}
+
+{% block title %}{{ object }} - {% trans "Drift Report" %}{% endblock %}
+
+{% block extra_controls %}
+  <a class="btn btn-outline-secondary" href="{{ object.get_absolute_url }}">
+    <i class="mdi mdi-arrow-left" aria-hidden="true"></i>&nbsp;{% trans "Sync" %}
+  </a>
+{% endblock extra_controls %}
+
+{% block content %}
+<div class="row mb-3">
+  <div class="col col-md-4">
+    <div class="card">
+      <h5 class="card-header">{% trans "Drift Summary" %}</h5>
+      <div class="card-body">
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">{% trans "In sync" %}</th>
+            <td>
+              {% if report.in_sync %}
+                <span class="badge text-bg-success">{% trans "Yes" %}</span>
+              {% else %}
+                <span class="badge text-bg-warning">{% trans "No" %}</span>
+              {% endif %}
+            </td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Drifted models" %}</th>
+            <td>{{ report.drifted_model_count }} / {{ report.model_count }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Total drift" %}</th>
+            <td>{{ report.total_drift }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "From preview" %}</th>
+            <td>{{ report.generated_at|placeholder }}</td>
+          </tr>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="card">
+  <h5 class="card-header">{% trans "Per-Model Drift (NetBox vs Forward)" %}</h5>
+  <div class="table-responsive">
+    <table class="table table-hover">
+      <thead>
+        <tr>
+          <th>{% trans "Model" %}</th>
+          <th>{% trans "Forward rows" %}</th>
+          <th>{% trans "Pending changes" %}</th>
+          <th>{% trans "Pending removals" %}</th>
+          <th>{% trans "Drift" %}</th>
+          <th>{% trans "In sync" %}</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in report.models %}
+          <tr>
+            <td><code>{{ row.model }}</code></td>
+            <td>{{ row.forward_rows|placeholder }}</td>
+            <td>{{ row.pending_changes }}</td>
+            <td>{{ row.pending_removes }}</td>
+            <td>{% if row.drift %}<strong class="text-warning">{{ row.drift }}</strong>{% else %}0{% endif %}</td>
+            <td>{% if row.in_sync %}<span class="badge text-bg-success">{% trans "Yes" %}</span>{% else %}<span class="badge text-bg-warning">{% trans "No" %}</span>{% endif %}</td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="6" class="text-muted">{% trans "No model results in the preview." %}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock content %}
