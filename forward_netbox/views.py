@@ -799,13 +799,69 @@ class ForwardSyncScopeReconciliationView(BaseObjectView):
                 _("Scope reconciliation failed: %(error)s") % {"error": exc},
             )
             return redirect(sync.get_absolute_url())
+        from .utilities.scope_reconciliation import BACKFILLED_TAG_SLUG
+
         payload = {
             key: value for key, value in report.items() if not key.startswith("_")
         }
+        backfilled_tag_url = f"{reverse('dcim:device_list')}?tag={BACKFILLED_TAG_SLUG}"
         return render(
             request,
             self.template_name,
-            {"object": sync, "payload": payload},
+            {
+                "object": sync,
+                "payload": payload,
+                "backfilled_tag_url": backfilled_tag_url,
+                "tag_backfilled_url": reverse(
+                    "plugins:forward_netbox:forwardsync_tag_backfilled",
+                    kwargs={"pk": sync.pk},
+                ),
+            },
+        )
+
+
+@register_model_view(ForwardSync, "tag_backfilled", path="tag-backfilled")
+class ForwardSyncTagBackfilledView(BaseObjectView):
+    queryset = ForwardSync.objects.all()
+
+    def get_required_permission(self):
+        return "dcim.change_device"
+
+    def get(self, request, pk):
+        sync = get_object_or_404(self.queryset, pk=pk)
+        return redirect(
+            reverse(
+                "plugins:forward_netbox:forwardsync_scope_reconciliation",
+                kwargs={"pk": sync.pk},
+            )
+        )
+
+    def post(self, request, pk):
+        # Tags the backfilled devices so they are filterable in the standard
+        # device list. Runs as a background job (live Forward query + tag writes).
+        from core.models import Job
+        from django.utils.module_loading import import_string
+
+        sync = get_object_or_404(self.queryset, pk=pk)
+        job = Job.enqueue(
+            import_string("forward_netbox.jobs.tag_forward_backfilled_devices"),
+            instance=sync,
+            user=request.user,
+            name=f"{sync.name} - tag backfilled devices",
+        )
+        messages.success(
+            request,
+            _(
+                "Queued job #%(pk)d to tag backfilled devices. When it finishes, "
+                "filter the device list by the forward-backfilled tag."
+            )
+            % {"pk": job.pk},
+        )
+        return redirect(
+            reverse(
+                "plugins:forward_netbox:forwardsync_scope_reconciliation",
+                kwargs={"pk": sync.pk},
+            )
         )
 
 

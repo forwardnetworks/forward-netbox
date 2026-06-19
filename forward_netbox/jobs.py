@@ -266,6 +266,29 @@ def prune_forward_orphans(job, *args, **kwargs):
             raise
 
 
+def tag_forward_backfilled_devices(job, *args, **kwargs):
+    """Background sync of the ``forward-backfilled`` tag for a sync.
+
+    Runs as a job because it issues a live Forward scope query and may tag/untag
+    many devices (with change-logging signals), which can exceed an HTTP gateway
+    timeout on large fabrics.
+    """
+    from .utilities.scope_reconciliation import tag_backfilled_devices
+
+    sync = ForwardSync.objects.get(pk=job.object_id)
+    try:
+        job.start()
+        job.data = tag_backfilled_devices(sync)
+        job.save(update_fields=["data"])
+        job.terminate()
+    except Exception as exc:
+        job.terminate(status=JobStatusChoices.STATUS_ERRORED)
+        if type(exc) in (SyncError, JobTimeoutException):
+            logger.error(exc)
+        else:
+            raise
+
+
 def create_forward_module_bays(job, *args, **kwargs):
     """Background creation of missing module bays for a sync (out-of-band ORM)."""
     from .utilities.module_readiness import compute_module_readiness_for_sync
