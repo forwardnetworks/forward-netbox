@@ -89,6 +89,7 @@ def coalesce_update_or_create(
     update_values=None,
     conflict_policy="strict",
     return_change=False,
+    create_instance_attrs=None,
 ):
     lookups = [lookup for lookup in (coalesce_lookups or []) if lookup]
     if not lookups:
@@ -105,6 +106,11 @@ def coalesce_update_or_create(
     if obj is None:
         try:
             obj = model(**create_values)
+            # Non-field instance attributes consulted by the model's save() — e.g.
+            # dcim.Module honours `_adopt_components` to attach already-present
+            # components instead of recreating (and colliding with) them.
+            for attr, value in (create_instance_attrs or {}).items():
+                setattr(obj, attr, value)
             obj.full_clean()
             obj.save()
             remember_lookup_object(runner, obj)
@@ -331,6 +337,7 @@ def coalesce_upsert(
     create_values,
     update_values=None,
     return_change=False,
+    create_instance_attrs=None,
 ):
     return coalesce_update_or_create(
         runner,
@@ -340,6 +347,7 @@ def coalesce_upsert(
         update_values=update_values,
         conflict_policy=runner._conflict_policy(model_string),
         return_change=return_change,
+        create_instance_attrs=create_instance_attrs,
     )
 
 
@@ -387,7 +395,9 @@ def upsert_row_from_defaults(
     )
 
 
-def upsert_values_from_defaults(runner, model_string, model, *, values, coalesce_sets):
+def upsert_values_from_defaults(
+    runner, model_string, model, *, values, coalesce_sets, create_instance_attrs=None
+):
     lookups = _dedupe_lookups(
         [coalesce_lookup(values, *coalesce_set) for coalesce_set in coalesce_sets]
     )
@@ -398,6 +408,7 @@ def upsert_values_from_defaults(runner, model_string, model, *, values, coalesce
         coalesce_lookups=lookups,
         create_values=values,
         update_values=values,
+        create_instance_attrs=create_instance_attrs,
     )
 
 

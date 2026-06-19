@@ -35,8 +35,14 @@
   {% endif %}
   {% if perms.forward_netbox.view_forwardsync %}
     {% if perms.forward_netbox.run_forwardsync %}
+      <form action="{{ dependency_preview_url }}" method="post" class="d-inline">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-outline-secondary">
+          <i class="mdi mdi-clipboard-search" aria-hidden="true"></i>&nbsp;{% trans "Preview Dependencies" %}
+        </button>
+      </form>
       <a class="btn btn-outline-secondary" href="{{ dependency_preview_url }}">
-        <i class="mdi mdi-clipboard-search" aria-hidden="true"></i>&nbsp;{% trans "Preview Dependencies" %}
+        <i class="mdi mdi-eye-outline" aria-hidden="true"></i>&nbsp;{% trans "View Last Preview" %}
       </a>
     {% endif %}
     <a class="btn btn-outline-secondary" href="{{ scope_reconciliation_url }}">

@@ -15,6 +15,7 @@ class ForwardSyncRunnerContractTest(TestCase):
             "dcim.cable": [
                 ("device", "interface", "remote_device", "remote_interface")
             ],
+            "ipam.fhrpgroup": [("protocol", "group_id", "address", "vrf")],
         }
 
     def test_conflict_policy_defaults_to_strict_and_uses_cable_override(self):
@@ -60,6 +61,63 @@ class ForwardSyncRunnerContractTest(TestCase):
 
         self.assertEqual(upsert_rows, [{"slug": "site-b", "name": "Site B"}])
         self.assertEqual(delete_rows, [{"slug": "site-a", "name": "Site A"}])
+
+    def test_split_diff_rows_drops_delete_when_identity_also_upserted(self):
+        # FHRP state flap: many (device, interface, state) rows collapse onto one
+        # (protocol, group_id, address, vrf) group, so the snapshot diff emits an
+        # ADDED variant and a DELETED variant for the SAME group. The delete must
+        # be dropped so the group is not churned (created+deleted) every sync.
+        identity = {
+            "protocol": "hsrp",
+            "group_id": 1100,
+            "address": "11.240.24.1",
+            "vrf": "default",
+        }
+        diff_rows = [
+            {"type": "ADDED", "after": {**identity, "state": "active", "device": "r1"}},
+            {
+                "type": "DELETED",
+                "before": {**identity, "state": "standby", "device": "r2"},
+            },
+        ]
+
+        upsert_rows, delete_rows = self.runner._split_diff_rows(
+            "ipam.fhrpgroup", diff_rows
+        )
+
+        self.assertEqual(len(upsert_rows), 1)
+        self.assertEqual(delete_rows, [])
+
+    def test_split_diff_rows_keeps_delete_for_distinct_identity(self):
+        # A delete for a group that is NOT being upserted is still applied.
+        diff_rows = [
+            {
+                "type": "ADDED",
+                "after": {
+                    "protocol": "hsrp",
+                    "group_id": 1100,
+                    "address": "11.240.24.1",
+                    "vrf": "default",
+                },
+            },
+            {
+                "type": "DELETED",
+                "before": {
+                    "protocol": "hsrp",
+                    "group_id": 999,
+                    "address": "11.240.24.9",
+                    "vrf": "default",
+                },
+            },
+        ]
+
+        upsert_rows, delete_rows = self.runner._split_diff_rows(
+            "ipam.fhrpgroup", diff_rows
+        )
+
+        self.assertEqual(len(upsert_rows), 1)
+        self.assertEqual(len(delete_rows), 1)
+        self.assertEqual(delete_rows[0]["group_id"], 999)
 
     def test_nullable_vrf_identity_is_model_specific(self):
         self.assertTrue(

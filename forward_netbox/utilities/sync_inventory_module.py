@@ -167,4 +167,10 @@ def apply_dcim_module(runner, row):
             "dcim.module",
             [("device", "module_bay")],
         ),
+        # Forward syncs device interfaces (and other components) independently of
+        # modules, so a module type's component templates collide by name with the
+        # already-present interfaces. Adopt the existing components into the module
+        # instead of recreating them, which would raise a unique-constraint
+        # IntegrityError (dcim_interface_unique_device_name, etc.).
+        create_instance_attrs={"_adopt_components": True},
     )
