@@ -25,6 +25,7 @@ where command.commandType == CommandType.CISCO_APIC_SWITCH
   || command.commandType == CommandType.CISCO_APIC_EXT_L3OUT_INTERFACES
   || command.commandType == CommandType.CISCO_APIC_VLAN_STATUS_LEAF
   || command.commandType == CommandType.CISCO_APIC_VPC_MAP
+  || command.commandType == CommandType.CUSTOM
 let command_type =
   if command.commandType == CommandType.CISCO_APIC_SWITCH then "CISCO_APIC_SWITCH"
   else if command.commandType == CommandType.CISCO_APIC_CONTROLLER_DETAIL then "CISCO_APIC_CONTROLLER_DETAIL"
@@ -41,7 +42,9 @@ let command_type =
   else if command.commandType == CommandType.CISCO_APIC_VLAN_LEAF then "CISCO_APIC_VLAN_LEAF"
   else if command.commandType == CommandType.CISCO_APIC_EXT_L3OUT_INTERFACES then "CISCO_APIC_EXT_L3OUT_INTERFACES"
   else if command.commandType == CommandType.CISCO_APIC_VLAN_STATUS_LEAF then "CISCO_APIC_VLAN_STATUS_LEAF"
-  else "CISCO_APIC_VPC_MAP"
+  else if command.commandType == CommandType.CUSTOM then "CUSTOM"
+  else if command.commandType == CommandType.CISCO_APIC_VPC_MAP then "CISCO_APIC_VPC_MAP"
+  else "CUSTOM"
 where isEmpty(forward_netbox_shard_keys)
   || device.name in forward_netbox_shard_keys
   || command_type in forward_netbox_shard_keys

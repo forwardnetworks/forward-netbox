@@ -127,7 +127,9 @@ ACI_INTEGRATION = OptionalPluginIntegration(
             "command_type": "CUSTOM",
             "source": "APIC custom command: moquery -c eqptCh -a all",
             "status": "current",
-            "notes": ("Feeds APIC server CIMC inventory rows.",),
+            "notes": (
+                "Feeds APIC server CIMC inventory rows and custom-command checks.",
+            ),
         },
         {
             "command_type": "CISCO_ACI_FABRIC_NODES",
@@ -225,7 +227,7 @@ ACI_INTEGRATION = OptionalPluginIntegration(
     enabled_by_default=False,
     status="policy_write_path",
     notes=(
-        "Writes proven fabric, pod, node, tenant, VRF, and filter rows in 1.3.2.",
+        "Writes proven fabric, pod, node, tenant, VRF, bridge domain, filter, and L3Out rows in 1.3.2.",
         "Contract, BD, EPG, L3Out, and static binding maps are present but conservative until bounded source identity is proven.",
     ),
 )
