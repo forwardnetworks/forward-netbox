@@ -355,7 +355,34 @@ def _model_fetch_fallback_contract(model_string):
 def _build_shard_fetch_model_contracts():
     contracts = {}
     for model_string in FORWARD_SUPPORTED_MODELS:
-        if model_string in DEVICE_SHARD_MODELS:
+        if model_string == "ipam.fhrpgroup":
+            # FHRP groups span devices, so they are bucketed by group identity and
+            # fetched as a full model diff (not per-device), letting the diff dedup
+            # drop state-flap delete/create churn.
+            contracts[model_string] = {
+                "model": model_string,
+                "fetch_mode": "model",
+                "key_family": "fhrp_identity",
+                "shard_safe": True,
+                "local_safety_filter": True,
+                "schema_contract": "same_nqe_row_shape",
+                "reason_code": "fhrp_group_identity_bucket",
+                "reason": (
+                    "FHRP groups span multiple devices (active/standby), so they "
+                    "are bucketed by group identity and fetched as a full model "
+                    "diff; the diff dedup then drops state-flap churn."
+                ),
+                "bucket_strategy": {
+                    "supported": True,
+                    "key_family": "fhrp_identity",
+                    "reason_code": "identity_bucket_available",
+                    "reason": (
+                        "Group identity co-locates both routers of a group in one "
+                        "shard for deterministic bucketing."
+                    ),
+                },
+            }
+        elif model_string in DEVICE_SHARD_MODELS:
             contracts[model_string] = {
                 "model": model_string,
                 "fetch_mode": "nqe_parameters",
@@ -499,6 +526,15 @@ def row_shard_key(model_string, row, coalesce_fields):
                 f"{device}:{interface}" for device, interface in canonical_identity
             )
 
+    if model_string == "ipam.fhrpgroup":
+        # FHRP groups span multiple devices (active/standby routers). Bucket by
+        # GROUP identity, not device, so both routers land in one shard — the
+        # diff dedup can then pair the state-flap ADD/DELETE and avoid churn.
+        return "fhrp:" + "|".join(
+            str(row.get(field) or "")
+            for field in ("protocol", "group_id", "address", "vrf")
+        )
+
     if model_string in DEVICE_SHARD_MODELS and row.get("device") not in ("", None):
         return f"device:{row['device']}"
 
@@ -552,7 +588,11 @@ def shard_fetch_contract(model_string, shard_keys):
         }
 
     device_names = _device_names_from_shard_keys(shard_keys)
-    if device_names and model_string in DEVICE_SHARD_MODELS:
+    if (
+        device_names
+        and model_string in DEVICE_SHARD_MODELS
+        and model_string != "ipam.fhrpgroup"
+    ):
         fetch_parameters = {
             SHARD_FETCH_PARAMETER_KEYS: list(device_names),
         }
