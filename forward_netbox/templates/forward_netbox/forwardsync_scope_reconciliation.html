@@ -31,7 +31,12 @@
           </tr>
           <tr>
             <th scope="row">{% trans "Tagged but backfilled" %}</th>
-            <td>{{ payload.forward_tagged_backfilled }}</td>
+            <td>
+              {{ payload.forward_tagged_backfilled }}
+              {% if payload.netbox_present_backfilled %}
+                &nbsp;<a href="{{ backfilled_tag_url }}" class="text-decoration-none">{% blocktrans with count=payload.netbox_present_backfilled %}view {{ count }} tagged{% endblocktrans %}</a>
+              {% endif %}
+            </td>
           </tr>
           <tr>
             <th scope="row">{% trans "Out of scope (orphans)" %}</th>
@@ -50,7 +55,13 @@
         </table>
       </div>
       <div class="card-footer text-end">
-        <form method="post"
+        <form method="post" action="{{ tag_backfilled_url }}" class="d-inline">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-outline-warning"{% if not payload.netbox_present_backfilled %} disabled{% endif %}>
+            <i class="mdi mdi-tag-outline" aria-hidden="true"></i>&nbsp;{% trans "Tag backfilled devices" %}
+          </button>
+        </form>
+        <form method="post" class="d-inline"
               action="{% url 'plugins:forward_netbox:forwardsync_prune_orphans' pk=object.pk %}"
               onsubmit="return confirm('{% blocktrans with count=payload.netbox_out_of_scope %}Delete {{ count }} out-of-scope device(s)? This also removes their interfaces and IP addresses.{% endblocktrans %}');">
           {% csrf_token %}
@@ -74,6 +85,26 @@
           {% endif %}
         {% else %}
           <p class="text-muted mb-0">{% trans "No out-of-scope devices." %}</p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+<div class="row mt-3">
+  <div class="col col-md-6">
+    <div class="card">
+      <h5 class="card-header">{% trans "Tagged-but-Backfilled Sample" %}</h5>
+      <div class="card-body">
+        {% if payload.present_backfilled_sample %}
+          <p class="text-muted mt-0">{% trans "In NetBox but not freshly collected in the latest snapshot. Use Tag backfilled devices, then filter the device list by the forward-backfilled tag." %}</p>
+          <ul class="mb-0">
+            {% for name in payload.present_backfilled_sample %}<li><code>{{ name }}</code></li>{% endfor %}
+          </ul>
+          {% if payload.netbox_present_backfilled > payload.present_backfilled_sample|length %}
+            <p class="text-muted mt-2 mb-0">{% blocktrans with shown=payload.present_backfilled_sample|length total=payload.netbox_present_backfilled %}Showing {{ shown }} of {{ total }}.{% endblocktrans %}</p>
+          {% endif %}
+        {% else %}
+          <p class="text-muted mb-0">{% trans "No backfilled devices in NetBox." %}</p>
         {% endif %}
       </div>
     </div>

@@ -10,6 +10,17 @@ from .sync_facade import device_tag_scope
 
 SAMPLE_LIMIT = 25
 
+# NetBox tag applied to devices that are tagged-in-scope but were backfilled
+# (not freshly collected) in the latest Forward snapshot, so operators can find
+# them with a normal device-list filter (?tag=forward-backfilled).
+BACKFILLED_TAG_SLUG = "forward-backfilled"
+BACKFILLED_TAG_NAME = "Forward Backfilled"
+BACKFILLED_TAG_COLOR = "ffc107"
+BACKFILLED_TAG_DESCRIPTION = (
+    "Tagged in scope but backfilled (not freshly collected) in the latest "
+    "Forward snapshot. Maintained by the Forward sync scope reconciliation."
+)
+
 
 def compute_scope_reconciliation(sync) -> dict:
     """Compare NetBox devices against the sync's Forward device tag scope.
@@ -85,9 +96,10 @@ def compute_scope_reconciliation(sync) -> dict:
         "out_of_scope_sample": sorted(out_of_scope)[:SAMPLE_LIMIT],
         "present_backfilled_sample": sorted(present_backfilled)[:SAMPLE_LIMIT],
         "missing_in_netbox_sample": sorted(missing_in_netbox)[:SAMPLE_LIMIT],
-        # Internal sets for prune; not meant for JSON serialization.
+        # Internal sets for prune/tag; not meant for JSON serialization.
         "_tagged_names": tagged_names,
         "_out_of_scope": out_of_scope,
+        "_present_backfilled": present_backfilled,
     }
 
 
@@ -125,4 +137,56 @@ def prune_orphan_devices(sync, *, report=None) -> dict:
         "pruned_device_count": len(orphans),
         "pruned_object_count": deleted_total,
         "out_of_scope_sample": orphans[:SAMPLE_LIMIT],
+    }
+
+
+def tag_backfilled_devices(sync, *, report=None) -> dict:
+    """Apply the ``forward-backfilled`` tag to the sync's backfilled devices.
+
+    Adds the tag to NetBox devices that are tagged-in-scope but backfilled in the
+    latest snapshot, and removes it from any device that previously carried the
+    tag but is now freshly collected (or no longer in scope). Idempotent — after
+    running, the tag's device set exactly matches the current backfilled set, so
+    operators can filter ``/dcim/devices/?tag=forward-backfilled``.
+    """
+    from extras.models import Tag
+
+    if report is None:
+        report = compute_scope_reconciliation(sync)
+    present_backfilled = report["_present_backfilled"]
+
+    tag, _ = Tag.objects.get_or_create(
+        slug=BACKFILLED_TAG_SLUG,
+        defaults={
+            "name": BACKFILLED_TAG_NAME,
+            "color": BACKFILLED_TAG_COLOR,
+            "description": BACKFILLED_TAG_DESCRIPTION,
+        },
+    )
+
+    want_ids = set(
+        Device.objects.filter(name__in=present_backfilled).values_list("pk", flat=True)
+        if present_backfilled
+        else []
+    )
+    currently_tagged_ids = set(
+        Device.objects.filter(tags__slug=BACKFILLED_TAG_SLUG).values_list(
+            "pk", flat=True
+        )
+    )
+
+    added = 0
+    removed = 0
+    with transaction.atomic():
+        for device in Device.objects.filter(pk__in=want_ids - currently_tagged_ids):
+            device.tags.add(tag)
+            added += 1
+        for device in Device.objects.filter(pk__in=currently_tagged_ids - want_ids):
+            device.tags.remove(tag)
+            removed += 1
+    return {
+        "tag_slug": BACKFILLED_TAG_SLUG,
+        "tagged": added,
+        "untagged": removed,
+        "total_backfilled": len(want_ids),
     }
