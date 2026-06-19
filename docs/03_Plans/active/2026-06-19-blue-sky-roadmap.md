@@ -1,138 +1,80 @@
 # Blue-Sky Roadmap
 
-Forward-looking ideas for the forward-netbox plugin, captured after the 1.5.x
-line stabilized (bulk-ORM coverage complete, heavy UI actions on background jobs,
-scope reconciliation + backfilled-tag + module-readiness workflows shipped).
+## Goal
 
-Grouped by effort. Nothing here is committed work — this is a menu to pull from.
+Capture forward-looking ideas for the forward-netbox plugin after the 1.5.x line
+stabilized (bulk-ORM coverage complete, heavy UI actions on background jobs,
+scope reconciliation + backfilled-tag + module-readiness workflows shipped). This
+is a menu to pull from, not a single committed change.
 
-Out of scope: Forward **Predict** (paid, not GA). Reachability, path, and blast
-radius are GA Forward capabilities and ARE in scope below.
+## Constraints
 
----
+- Forward **Predict** (paid, not GA) is out of scope. Reachability, path, and
+  blast radius are GA Forward capabilities and ARE in scope.
+- Read-only sourcing via NQE, consistent with the existing sync model.
+- No customer data, credentials, or network ids in repo/tests/docs.
 
-## Quick Wins — toil and quality
+## Touched Surfaces
 
-### Release automation (`invoke release X.Y.Z`)
+Varies per idea — see each item under Approach for its specific surfaces. Spans
+`scripts/`, `tasks.py`, `docs/`, `forward_netbox/views.py` + templates,
+`forward_netbox/utilities/` (scope reconciliation, health summary, execution
+ledger), and new NQE maps/query specs.
 
-**What:** one command that runs the entire release flow: bump version
-(`pyproject.toml`, `forward_netbox/__init__.py`) and the 3 README compatibility
-tables, scaffold the release plan file, `git add -A` then the full local CI mirror
-(pre-commit clean + run-twice, harness check, harness tests, py_compile, mkdocs
---strict, build), create the release branch, push, wait for GitHub CI on both
-NetBox matrices, fast-forward `main`, tag, GitHub release with artifacts, PyPI
-upload, then sync local `main` and delete the branch.
+## Approach
 
-**Why:** the 1.5.x line was cut by hand release after release, including CI
-round-trips from avoidable mistakes — the sensitive-content guard firing on an
-**untracked** plan file (the mirror skips untracked files), and the plan-file
-gate. A script that always `git add`s before the mirror and encodes the gates
-removes both the toil and that class of failure.
+### Quick wins — toil and quality
 
-**Touched surfaces:** `tasks.py`/`invoke` (or `scripts/release.py`), referencing
-the existing `scripts/check_harness.py`. No product code.
+**Release automation (`invoke release X.Y.Z`).** One command for the full release
+flow: bump version + 3 README tables, scaffold the plan, `git add -A` then the
+local CI mirror, branch, push, wait for CI, FF main, tag, GitHub release, PyPI,
+sync. Removes per-release toil and the avoidable CI round-trips (sensitive guard
+firing on untracked files, plan-file gate). Surfaces: `scripts/release.py`,
+`tasks.py`. *Shipped in this branch.*
 
-**Effort:** small. Highest leverage relative to size.
+**Plan-dir hygiene + Operations Guide.** Archive superseded plans to
+`completed/`; fold the live operator workflows into one Operations Guide.
+Surfaces: `docs/03_Plans/`, `docs/01_User_Guide/`. *Shipped in this branch.*
 
-### Plan-dir hygiene + Operations Guide
+### Medium — operator confidence at scale
 
-**What:** archive superseded plans from `docs/03_Plans/active/` to
-`completed/`, and fold the live operator workflows — background-job actions
-(prune orphans, create module bays, dependency preview, tag backfilled), scope
-reconciliation, module readiness, snapshot selectors — into a single
-**Operations Guide** under `docs/01_User_Guide/`.
+**Sync observability panel.** Per-sync run history: per-model throughput/timing,
+change-volume trend, and a what-changed-and-why summary from the execution ledger
+and per-model statistics. Surfaces: `views.py` + templates, execution ledger.
 
-**Why:** 30+ files in `active/`, many May-era architecture roadmaps that are
-done or superseded. Operator-facing knowledge currently lives mostly in release
-notes. One legible guide + a clean planning dir makes the repo maintainable for
-the next contributor.
+**Collection-gap health signal.** Trend the backfilled (tagged-but-not-collected)
+device count, flag spikes, and surface it in the sync health summary instead of a
+manual probe. Surfaces: `utilities/scope_reconciliation.py`,
+`utilities/health_summary_blocks.py`, sync detail page.
 
-**Touched surfaces:** `docs/03_Plans/`, `docs/01_User_Guide/`, `mkdocs.yml`.
+### Big bets — product differentiation
 
-**Effort:** small–medium, docs only.
+**Surface Forward reachability / path / blast radius into NetBox.** Bring GA
+Forward analysis into NetBox as read-only device/prefix panels or custom fields
+(reachability state, representative path, blast radius). Surfaces: new NQE maps +
+query specs, new sync models or custom fields, detail panels. Predict excluded.
 
----
+**Bidirectional drift report.** Generalize `scope_reconciliation` into a
+multi-model NetBox-vs-Forward drift report (IPs, prefixes, platforms), catching
+operator edits that diverge from ground truth. Surfaces: a drift utility, a drift
+view/report, optionally an audit command.
 
-## Medium — operator confidence at scale
+## Validation
 
-### Sync observability panel
+Each item ships with its own tests and the standard local CI mirror + GitHub CI
+on both NetBox matrices. This roadmap doc itself needs no validation beyond
+mkdocs build.
 
-**What:** a per-sync run-history view with per-model throughput/timing,
-change-volume trend over runs, and a "what changed this sync and why" summary
-(created/updated/deleted by model, with the apply-engine decision and reason).
+## Rollback
 
-**Why:** on large fabrics (5000+ devices) operators infer health from the
-changelog plus ingestion issues. A first-class panel turns that into a glance.
-Much of the data already exists in the execution ledger and per-model statistics
-— this is largely surfacing, not new collection.
+Per-item; each is independent and revertable on its own. Removing this doc has no
+runtime impact.
 
-**Touched surfaces:** `views.py` + templates, `utilities/execution_ledger*`,
-health summary blocks.
+## Decision Log
 
-**Effort:** medium.
-
-### Collection-gap health signal
-
-**What:** extend the 1.5.9 backfilled work — trend the backfilled (tagged but
-not freshly collected) device count across runs, flag a spike, and surface it in
-the sync health summary instead of requiring a manual reconciliation probe.
-
-**Why:** the backfilled count is a leading indicator of a Forward collection
-problem (the 22 devices on the live fabric were real gear with a collection gap,
-not a plugin issue). Today that requires a manual probe; this makes it a standing
-dashboard number with a clear "investigate collection" call to action.
-
-**Touched surfaces:** `utilities/scope_reconciliation.py`,
-`utilities/health_summary_blocks.py`, the sync detail page.
-
-**Effort:** medium, builds directly on shipped 1.5.9 code.
-
----
-
-## Big Bets — product differentiation
-
-### Surface Forward reachability / path / blast radius into NetBox
-
-**What:** bring GA Forward analysis into NetBox as device/prefix panels or custom
-fields — e.g. reachability state, representative path info, and **blast radius**
-(what a device/link failure would impact). Read-only, sourced from NQE like the
-rest of the plugin.
-
-**Why:** today NetBox is an inventory mirror of Forward. Forward also knows
-operational truth — reachability, paths, blast radius — that NetBox has no view
-of. Surfacing it makes NetBox a richer source of truth and differentiates the
-integration beyond inventory sync.
-
-**Scope note:** GA capabilities only. Forward **Predict** (paid, not GA) is
-explicitly excluded.
-
-**Touched surfaces:** new NQE maps + query specs, new sync models or custom
-fields, device/prefix detail panels.
-
-**Effort:** large. Biggest payoff.
-
-### Bidirectional drift report / write-back guardrails
-
-**What:** a "NetBox says X, Forward says Y" drift report extended beyond device
-scope to IPs, prefixes, platforms, etc. — catching operator edits in NetBox that
-diverge from Forward ground truth. Optionally, guardrails before write-back.
-
-**Why:** the sync is one-way (Forward → NetBox). Operators can edit NetBox and
-silently diverge. The scope-reconciliation panel already proves the "compare two
-sources" pattern works; this generalizes it to more models.
-
-**Touched surfaces:** a drift utility (generalize `scope_reconciliation.py`),
-a drift view/report, optionally an audit command.
-
-**Effort:** large.
-
----
-
-## Suggested order
-
-1. Release automation (small, immediate toil + error reduction).
-2. Plan hygiene + Operations Guide (small, makes the repo legible).
-3. Collection-gap health signal (medium, extends shipped work).
-4. Sync observability panel (medium).
-5. Reachability / path / blast-radius surfacing (large, differentiating).
-6. Bidirectional drift report (large).
+- Suggested order: (1) release automation, (2) plan hygiene + Operations Guide,
+  (3) collection-gap health signal, (4) sync observability panel, (5) reachability
+  / path / blast-radius surfacing, (6) bidirectional drift report — cheapest /
+  highest-leverage first, large differentiating bets last.
+- Predict excluded because it is a paid, non-GA Forward feature; blast radius kept
+  because it is generally included.
