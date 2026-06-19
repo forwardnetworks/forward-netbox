@@ -189,6 +189,48 @@ class ScopeModuleUiTest(TestCase):
             ).exists()
         )
 
+    def test_sync_run_history_summary(self):
+        from forward_netbox.models import ForwardIngestion
+        from forward_netbox.utilities.run_history import sync_run_history
+
+        ForwardIngestion.objects.create(
+            sync=self.sync,
+            created_change_count=3,
+            updated_change_count=0,
+            deleted_change_count=1,
+            failed_change_count=1,
+        )
+        history = sync_run_history(self.sync)
+        self.assertTrue(history["available"])
+        self.assertEqual(history["run_count"], 1)
+        self.assertEqual(history["runs"][0]["total_changes"], 4)
+        self.assertEqual(history["failed_runs"], 1)
+
+    def test_run_history_view_renders(self):
+        from forward_netbox.models import ForwardIngestion
+
+        ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_id="snap-1",
+            snapshot_selector="latestProcessed",
+            sync_mode="diff",
+            created_change_count=5,
+            updated_change_count=2,
+            deleted_change_count=1,
+            model_results=[
+                {"model": "dcim.device", "estimated_changes": 5, "row_count": 5}
+            ],
+        )
+        client = self._superuser_client()
+        resp = client.get(
+            reverse(
+                "plugins:forward_netbox:forwardsync_run_history",
+                kwargs={"pk": self.sync.pk},
+            )
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "dcim.device")
+
     def test_module_readiness_view_and_create(self):
         self._device("dev-m")
         client = self._superuser_client()
