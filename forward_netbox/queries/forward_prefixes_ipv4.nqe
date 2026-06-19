@@ -1,35 +1,118 @@
 /**
  * @intent Forward IPv4 Prefixes
- * @description Raw NQE for NetBox IPv4 prefixes derived from Forward network instance routes.
+ * @description Raw NQE for NetBox IPv4 prefixes derived from the connected subnets
+ *   of in-scope device interfaces (subinterface, bridge, tunnel, routed-VLAN L3
+ *   addresses) — i.e. the networks devices actually host, not their full routing
+ *   tables. Respects the device tag scope.
  */
+
+subinterface_ipv4(device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>) =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where isEmpty(device_tag_include_tags)
+    || (device_tag_include_match == "all"
+      && all(foreach tag in device_tag_include_tags select tag in device.tagNames))
+    || (device_tag_include_match != "all"
+      && any(foreach tag in device_tag_include_tags select tag in device.tagNames))
+  where isEmpty(device_tag_exclude_tags)
+    || !any(foreach tag in device_tag_exclude_tags select tag in device.tagNames)
+  foreach interface in device.interfaces
+  foreach subinterface in interface.subinterfaces
+  foreach address in subinterface.ipv4.addresses
+  where address.prefixLength > 0
+  where address.prefixLength < 32
+  let prefix = ipSubnet(networkAddress(ipSubnet(address.ip, address.prefixLength)), address.prefixLength)
+  select {
+    vrf: if isPresent(subinterface.networkInstanceName)
+      then if subinterface.networkInstanceName != "default" then subinterface.networkInstanceName else null : String
+      else null : String,
+    prefix: prefix,
+    status: "active"
+  };
+
+bridge_ipv4(device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>) =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where isEmpty(device_tag_include_tags)
+    || (device_tag_include_match == "all"
+      && all(foreach tag in device_tag_include_tags select tag in device.tagNames))
+    || (device_tag_include_match != "all"
+      && any(foreach tag in device_tag_include_tags select tag in device.tagNames))
+  where isEmpty(device_tag_exclude_tags)
+    || !any(foreach tag in device_tag_exclude_tags select tag in device.tagNames)
+  foreach interface in device.interfaces
+  where isPresent(interface.bridge?.ipv4?.addresses)
+  foreach address in interface.bridge.ipv4.addresses
+  where address.prefixLength > 0
+  where address.prefixLength < 32
+  let prefix = ipSubnet(networkAddress(ipSubnet(address.ip, address.prefixLength)), address.prefixLength)
+  select {
+    vrf: if isPresent(interface.bridge.networkInstanceName)
+      then if interface.bridge.networkInstanceName != "default" then interface.bridge.networkInstanceName else null : String
+      else null : String,
+    prefix: prefix,
+    status: "active"
+  };
+
+tunnel_ipv4(device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>) =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where isEmpty(device_tag_include_tags)
+    || (device_tag_include_match == "all"
+      && all(foreach tag in device_tag_include_tags select tag in device.tagNames))
+    || (device_tag_include_match != "all"
+      && any(foreach tag in device_tag_include_tags select tag in device.tagNames))
+  where isEmpty(device_tag_exclude_tags)
+    || !any(foreach tag in device_tag_exclude_tags select tag in device.tagNames)
+  foreach interface in device.interfaces
+  where isPresent(interface.tunnel?.ipv4?.addresses)
+  foreach address in interface.tunnel.ipv4.addresses
+  where address.prefixLength > 0
+  where address.prefixLength < 32
+  let prefix = ipSubnet(networkAddress(ipSubnet(address.ip, address.prefixLength)), address.prefixLength)
+  select {
+    vrf: if isPresent(interface.tunnel.networkInstanceName)
+      then if interface.tunnel.networkInstanceName != "default" then interface.tunnel.networkInstanceName else null : String
+      else null : String,
+    prefix: prefix,
+    status: "active"
+  };
+
+routed_vlan_ipv4(device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>) =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where isEmpty(device_tag_include_tags)
+    || (device_tag_include_match == "all"
+      && all(foreach tag in device_tag_include_tags select tag in device.tagNames))
+    || (device_tag_include_match != "all"
+      && any(foreach tag in device_tag_include_tags select tag in device.tagNames))
+  where isEmpty(device_tag_exclude_tags)
+    || !any(foreach tag in device_tag_exclude_tags select tag in device.tagNames)
+  foreach interface in device.interfaces
+  where isPresent(interface.routedVlan?.ipv4?.addresses)
+  foreach address in interface.routedVlan.ipv4.addresses
+  where address.prefixLength > 0
+  where address.prefixLength < 32
+  let prefix = ipSubnet(networkAddress(ipSubnet(address.ip, address.prefixLength)), address.prefixLength)
+  select {
+    vrf: if isPresent(interface.routedVlan.networkInstanceName)
+      then if interface.routedVlan.networkInstanceName != "default" then interface.routedVlan.networkInstanceName else null : String
+      else null : String,
+    prefix: prefix,
+    status: "active"
+  };
 
 @query
 f(forward_netbox_shard_keys: List<String>, device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>) =
-foreach device in network.devices
-where device.snapshotInfo.result == DeviceSnapshotResult.completed
-where device.platform.vendor != Vendor.FORWARD_CUSTOM
-where isEmpty(device_tag_include_tags)
-  || (device_tag_include_match == "all"
-    && all(foreach tag in device_tag_include_tags select tag in device.tagNames))
-  || (device_tag_include_match != "all"
-    && any(foreach tag in device_tag_include_tags select tag in device.tagNames))
-where isEmpty(device_tag_exclude_tags)
-  || !any(foreach tag in device_tag_exclude_tags select tag in device.tagNames)
-foreach ni in device.networkInstances
-where isPresent(ni.afts?.ipv4Unicast?.ipEntries)
-foreach entry in ni.afts.ipv4Unicast.ipEntries
-where length(entry.prefix) > 0
-where length(entry.prefix) < 32
-where !(toNumber(networkAddress(entry.prefix)) >= toNumber(ipAddress("0.0.0.0"))
-  && toNumber(networkAddress(entry.prefix)) <= toNumber(ipAddress("0.255.255.255")))
-where !(toNumber(networkAddress(entry.prefix)) >= toNumber(ipAddress("127.0.0.0"))
-  && toNumber(networkAddress(entry.prefix)) <= toNumber(ipAddress("127.255.255.255")))
-let prefix = ipSubnet(networkAddress(entry.prefix), length(entry.prefix))
-where length(forward_netbox_shard_keys) == 0 || toString(prefix) in forward_netbox_shard_keys
-select distinct {
-  vrf: if ni.name != "default"
-    then if toString(ni.instanceType) != "NetworkInstanceType.DEFAULT_INSTANCE" then ni.name else null : String
-    else null : String,
-  prefix: prefix,
-  status: "active"
-};
+foreach row in (
+  subinterface_ipv4(device_tag_include_tags, device_tag_include_match, device_tag_exclude_tags)
+    + bridge_ipv4(device_tag_include_tags, device_tag_include_match, device_tag_exclude_tags)
+    + tunnel_ipv4(device_tag_include_tags, device_tag_include_match, device_tag_exclude_tags)
+    + routed_vlan_ipv4(device_tag_include_tags, device_tag_include_match, device_tag_exclude_tags)
+)
+where isEmpty(forward_netbox_shard_keys) || toString(row.prefix) in forward_netbox_shard_keys
+select distinct row;
