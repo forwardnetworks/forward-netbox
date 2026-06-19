@@ -656,10 +656,34 @@ class ForwardSyncView(generic.ObjectView):
                 "plugins:forward_netbox:forwardsync_module_readiness",
                 kwargs={"pk": instance.pk},
             ),
+            "run_history_url": reverse(
+                "plugins:forward_netbox:forwardsync_run_history",
+                kwargs={"pk": instance.pk},
+            ),
         }
         if instance.last_ingestion:
             data.update(instance.last_ingestion.get_statistics())
         return data
+
+
+@register_model_view(ForwardSync, "run_history", path="run-history")
+class ForwardSyncRunHistoryView(BaseObjectView):
+    queryset = ForwardSync.objects.all()
+    template_name = "forward_netbox/forwardsync_run_history.html"
+
+    def get_required_permission(self):
+        return "forward_netbox.view_forwardsync"
+
+    def get(self, request, pk):
+        from .utilities.run_history import sync_run_history
+
+        sync = get_object_or_404(self.queryset, pk=pk)
+        history = sync_run_history(sync)
+        return render(
+            request,
+            self.template_name,
+            {"object": sync, "history": history},
+        )
 
 
 @register_model_view(ForwardSync, "dependency_preview", path="dependency-preview")
