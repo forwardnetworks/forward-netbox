@@ -231,6 +231,52 @@ class ScopeModuleUiTest(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, "dcim.device")
 
+    def test_refresh_device_analysis_job(self):
+        from forward_netbox.jobs import refresh_forward_device_analysis
+        from forward_netbox.models import ForwardDeviceAnalysis
+
+        self._device("dev-an")
+        fwd_client = Mock()
+        fwd_client.run_nqe_query = Mock(
+            return_value=[
+                {
+                    "name": "dev-an",
+                    "reachable": True,
+                    "blast_radius": 7,
+                    "cve_count": 2,
+                    "up_interfaces": 5,
+                    "detail": "DC1",
+                },
+                # Not in NetBox -> skipped (analysis is a NetBox-side overlay).
+                {"name": "ghost", "reachable": False, "blast_radius": 0},
+            ]
+        )
+        client = self._superuser_client()
+        with (
+            patch.object(ForwardSource, "get_client", return_value=fwd_client),
+            patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
+        ):
+            resp = client.post(
+                reverse(
+                    "plugins:forward_netbox:forwardsync_refresh_device_analysis",
+                    kwargs={"pk": self.sync.pk},
+                )
+            )
+            self.assertEqual(resp.status_code, 302)
+            job = Job.objects.filter(name__icontains="refresh device analysis").latest(
+                "pk"
+            )
+            refresh_forward_device_analysis(job)
+
+        rows = ForwardDeviceAnalysis.objects.filter(sync=self.sync)
+        self.assertEqual(rows.count(), 1)
+        analysis = rows.get()
+        self.assertEqual(analysis.device_name, "dev-an")
+        self.assertTrue(analysis.reachable)
+        self.assertEqual(analysis.blast_radius, 7)
+        self.assertEqual(analysis.cve_count, 2)
+        self.assertEqual(analysis.up_interfaces, 5)
+
     def test_module_readiness_view_and_create(self):
         self._device("dev-m")
         client = self._superuser_client()
