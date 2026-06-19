@@ -62,6 +62,36 @@ class ForwardSyncRunnerContractTest(TestCase):
         self.assertEqual(upsert_rows, [{"slug": "site-b", "name": "Site B"}])
         self.assertEqual(delete_rows, [{"slug": "site-a", "name": "Site A"}])
 
+    def test_fhrp_rows_for_one_group_share_a_shard_key(self):
+        # Both routers of an HSRP group must bucket into one shard so the diff
+        # dedup can pair the state-flap ADD (active) and DELETE (standby).
+        from forward_netbox.utilities.branch_budget import row_shard_key
+
+        coalesce = [
+            ("protocol", "group_id", "address", "vrf"),
+            ("protocol", "group_id", "address"),
+        ]
+        base = {
+            "protocol": "hsrp",
+            "group_id": 1100,
+            "address": "11.240.24.1/32",
+            "vrf": None,
+        }
+        k1 = row_shard_key("ipam.fhrpgroup", {**base, "device": "r1"}, coalesce)
+        k2 = row_shard_key("ipam.fhrpgroup", {**base, "device": "r2"}, coalesce)
+        self.assertEqual(k1, k2)
+        self.assertTrue(k1.startswith("fhrp:"))
+
+    def test_fhrp_uses_model_fetch_not_device_parameters(self):
+        # Group-identity shard keys must route fhrp to a full model fetch so the
+        # un-sharded diff is co-resident for the dedup.
+        from forward_netbox.utilities.branch_budget import shard_fetch_contract
+
+        contract = shard_fetch_contract(
+            "ipam.fhrpgroup", ["fhrp:hsrp|1100|11.240.24.1/32|"]
+        )
+        self.assertEqual(contract["fetch_mode"], "model")
+
     def test_split_diff_rows_drops_delete_when_identity_also_upserted(self):
         # FHRP state flap: many (device, interface, state) rows collapse onto one
         # (protocol, group_id, address, vrf) group, so the snapshot diff emits an
