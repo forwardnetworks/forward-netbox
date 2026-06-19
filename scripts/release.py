@@ -248,6 +248,9 @@ def stage_publish(version: str, notes_file: Path, *, auto_finish: bool = False) 
     run(["git", "checkout", "-b", branch])
     run(["git", "add", "-A"])
     run(["git", "commit", "-m", f"release: cut v{version}"])
+    # Simulate the push-event harness gate (every commit's high-risk paths need a
+    # plan file in the SAME commit) BEFORE pushing — avoids a failed-CI round-trip.
+    run([sys.executable, "scripts/check_harness.py", "--base", "origin/main"])
     run(["git", "push", "--no-verify", "-u", "origin", branch])
     conclusion = wait_for_ci(version)
     if conclusion != "success":
