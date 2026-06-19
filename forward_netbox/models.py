@@ -1215,3 +1215,15 @@ class ForwardDeviceAnalysis(ForwardPluginModelDocsMixin, ChangeLoggedModel):
 
     def get_absolute_url(self):
         return reverse("plugins:forward_netbox:forwarddeviceanalysis", args=[self.pk])
+
+    @property
+    def forward_ui_url(self):
+        """Pivot link into the Forward app (path search / blast radius live there).
+
+        Best-effort: the Forward app base URL. Device-specific frontend routes are
+        not a stable public contract, so we land the operator in Forward rather
+        than risk a 404 deep link.
+        """
+        source = getattr(self.sync, "source", None)
+        url = (getattr(source, "url", "") or "").rstrip("/")
+        return url or None
