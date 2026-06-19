@@ -1,3 +1,4 @@
+default_install_hook_types: [pre-commit, commit-msg]
 repos:
   - repo: local
     hooks:
@@ -13,6 +14,19 @@ repos:
         stages: [commit-msg]
         pass_filenames: true
         always_run: true
+      - id: conventional-commit
+        name: enforce conventional commit subject
+        entry: python scripts/check_commit_msg.py
+        language: system
+        stages: [commit-msg]
+        pass_filenames: true
+        always_run: true
+      - id: changelog-up-to-date
+        name: CHANGELOG.md matches the README release table
+        entry: python scripts/gen_changelog.py --check
+        language: system
+        files: ^(README\.md|CHANGELOG\.md)$
+        pass_filenames: false
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
     hooks:
