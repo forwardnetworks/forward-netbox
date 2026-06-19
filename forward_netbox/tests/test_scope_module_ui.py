@@ -15,6 +15,7 @@ from django.urls import reverse
 
 from forward_netbox.jobs import create_forward_module_bays
 from forward_netbox.jobs import prune_forward_orphans
+from forward_netbox.jobs import tag_forward_backfilled_devices
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.utilities.module_readiness import compute_module_readiness_for_sync
@@ -122,6 +123,71 @@ class ScopeModuleUiTest(TestCase):
             prune_forward_orphans(job)
         self.assertTrue(Device.objects.filter(name="dev-a").exists())
         self.assertFalse(Device.objects.filter(name="dev-stale").exists())
+
+    def test_tag_backfilled_devices_adds_and_removes_tag(self):
+        from forward_netbox.utilities.scope_reconciliation import (
+            tag_backfilled_devices,
+        )
+
+        self._device("dev-collected")
+        self._device("dev-backfilled")
+        fwd_client = Mock()
+        fwd_client.run_nqe_query = Mock(
+            return_value=[
+                {"name": "dev-collected", "completed": True},
+                {"name": "dev-backfilled", "completed": False},
+            ]
+        )
+        with (
+            patch.object(ForwardSource, "get_client", return_value=fwd_client),
+            patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
+        ):
+            result = tag_backfilled_devices(self.sync)
+            self.assertEqual(result["tagged"], 1)
+            self.assertEqual(
+                set(
+                    Device.objects.filter(tags__slug="forward-backfilled").values_list(
+                        "name", flat=True
+                    )
+                ),
+                {"dev-backfilled"},
+            )
+            # The device now collects fresh — the tag is removed on the next run.
+            fwd_client.run_nqe_query.return_value = [
+                {"name": "dev-collected", "completed": True},
+                {"name": "dev-backfilled", "completed": True},
+            ]
+            result2 = tag_backfilled_devices(self.sync)
+            self.assertEqual(result2["untagged"], 1)
+            self.assertEqual(
+                Device.objects.filter(tags__slug="forward-backfilled").count(), 0
+            )
+
+    def test_tag_backfilled_view_enqueues_job(self):
+        self._device("dev-backfilled")
+        fwd_client = Mock()
+        fwd_client.run_nqe_query = Mock(
+            return_value=[{"name": "dev-backfilled", "completed": False}]
+        )
+        client = self._superuser_client()
+        with (
+            patch.object(ForwardSource, "get_client", return_value=fwd_client),
+            patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
+        ):
+            resp = client.post(
+                reverse(
+                    "plugins:forward_netbox:forwardsync_tag_backfilled",
+                    kwargs={"pk": self.sync.pk},
+                )
+            )
+            self.assertEqual(resp.status_code, 302)
+            job = Job.objects.filter(name__icontains="tag backfilled").latest("pk")
+            tag_forward_backfilled_devices(job)
+        self.assertTrue(
+            Device.objects.filter(
+                name="dev-backfilled", tags__slug="forward-backfilled"
+            ).exists()
+        )
 
     def test_module_readiness_view_and_create(self):
         self._device("dev-m")
