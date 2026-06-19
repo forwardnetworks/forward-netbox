@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "forward-netbox"
-version = "1.5.7"
+version = "1.5.8"
 description = "NetBox plugin to sync Forward data into NetBox via built-in NQE queries"
 authors = ["Craig Johnson <craigjohnson@forwardnetworks.com>"]
 license = "MIT"
