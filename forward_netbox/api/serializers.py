@@ -1,3 +1,4 @@
+from dcim.api.serializers import DeviceSerializer
 from django.contrib.contenttypes.models import ContentType
 from netbox.api.fields import ChoiceField
 from netbox.api.fields import ContentTypeField
@@ -16,6 +17,7 @@ from forward_netbox.choices import ForwardSourceStatusChoices
 from forward_netbox.choices import ForwardSyncStatusChoices
 from forward_netbox.choices import ForwardValidationStatusChoices
 from forward_netbox.models import FORWARD_SUPPORTED_SYNC_MODELS
+from forward_netbox.models import ForwardDeviceAnalysis
 from forward_netbox.models import ForwardDriftPolicy
 from forward_netbox.models import ForwardExecutionRun
 from forward_netbox.models import ForwardExecutionStep
@@ -173,6 +175,36 @@ class ForwardSyncSerializer(NestedGroupModelSerializer):
         data = super().to_representation(instance)
         data["parameters"] = instance.get_display_parameters()
         return data
+
+
+class ForwardDeviceAnalysisSerializer(NestedGroupModelSerializer):
+    sync = ForwardSyncSerializer(nested=True)
+    device = DeviceSerializer(nested=True)
+
+    class Meta:
+        model = ForwardDeviceAnalysis
+        fields = (
+            "id",
+            "display",
+            "sync",
+            "device",
+            "reachable",
+            "blast_radius",
+            "cve_count",
+            "up_interfaces",
+            "detail",
+            "snapshot_id",
+            "created",
+            "last_updated",
+        )
+        brief_fields = (
+            "id",
+            "display",
+            "device",
+            "reachable",
+            "blast_radius",
+            "cve_count",
+        )
 
 
 class ForwardDriftPolicySerializer(NestedGroupModelSerializer):

@@ -12,6 +12,7 @@ from rest_framework.response import Response
 from ..exceptions import ForwardConnectivityError
 from ..exceptions import ForwardSyncError
 from .serializers import EmptySerializer
+from .serializers import ForwardDeviceAnalysisSerializer
 from .serializers import ForwardDriftPolicySerializer
 from .serializers import ForwardExecutionRunSerializer
 from .serializers import ForwardExecutionStepSerializer
@@ -22,6 +23,7 @@ from .serializers import ForwardSourceSerializer
 from .serializers import ForwardSyncSerializer
 from .serializers import ForwardValidationRunOverrideSerializer
 from .serializers import ForwardValidationRunSerializer
+from forward_netbox.filtersets import ForwardDeviceAnalysisFilterSet
 from forward_netbox.filtersets import ForwardDriftPolicyFilterSet
 from forward_netbox.filtersets import ForwardExecutionRunFilterSet
 from forward_netbox.filtersets import ForwardExecutionStepFilterSet
@@ -29,6 +31,7 @@ from forward_netbox.filtersets import ForwardNQEMapFilterSet
 from forward_netbox.filtersets import ForwardSourceFilterSet
 from forward_netbox.filtersets import ForwardSyncFilterSet
 from forward_netbox.filtersets import ForwardValidationRunFilterSet
+from forward_netbox.models import ForwardDeviceAnalysis
 from forward_netbox.models import ForwardDriftPolicy
 from forward_netbox.models import ForwardExecutionRun
 from forward_netbox.models import ForwardExecutionStep
@@ -788,6 +791,12 @@ class ForwardExecutionStepViewSet(NetBoxReadOnlyModelViewSet):
     )
     serializer_class = ForwardExecutionStepSerializer
     filterset_class = ForwardExecutionStepFilterSet
+
+
+class ForwardDeviceAnalysisViewSet(NetBoxModelViewSet):
+    queryset = ForwardDeviceAnalysis.objects.all()
+    serializer_class = ForwardDeviceAnalysisSerializer
+    filterset_class = ForwardDeviceAnalysisFilterSet
 
 
 class ForwardDriftPolicyViewSet(NetBoxModelViewSet):

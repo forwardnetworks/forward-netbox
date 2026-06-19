@@ -29,6 +29,7 @@ from utilities.views import get_viewname
 from utilities.views import register_model_view
 from utilities.views import ViewTab
 
+from .filtersets import ForwardDeviceAnalysisFilterSet
 from .filtersets import ForwardDriftPolicyFilterSet
 from .filtersets import ForwardExecutionRunFilterSet
 from .filtersets import ForwardExecutionStepFilterSet
@@ -50,6 +51,7 @@ from .forms import ForwardSourceForm
 from .forms import ForwardSyncBulkEditForm
 from .forms import ForwardSyncForm
 from .forms import ForwardValidationRunForceAllowForm
+from .models import ForwardDeviceAnalysis
 from .models import ForwardDriftPolicy
 from .models import ForwardExecutionRun
 from .models import ForwardExecutionStep
@@ -59,6 +61,7 @@ from .models import ForwardNQEMap
 from .models import ForwardSource
 from .models import ForwardSync
 from .models import ForwardValidationRun
+from .tables import ForwardDeviceAnalysisTable
 from .tables import ForwardDriftPolicyTable
 from .tables import ForwardExecutionRunTable
 from .tables import ForwardExecutionStepTable
@@ -1888,6 +1891,31 @@ class ForwardIngestionDeleteView(generic.ObjectDeleteView):
 class ForwardIngestionBulkDeleteView(generic.BulkDeleteView):
     queryset = ForwardIngestion.objects.all()
     table = ForwardIngestionTable
+
+
+@register_model_view(ForwardDeviceAnalysis, "list", path="", detail=False)
+class ForwardDeviceAnalysisListView(generic.ObjectListView):
+    queryset = ForwardDeviceAnalysis.objects.all()
+    filterset = ForwardDeviceAnalysisFilterSet
+    table = ForwardDeviceAnalysisTable
+    # Read-only overlay: refreshed by the device-analysis job, not hand-edited.
+    actions = (BulkExport, BulkDelete)
+
+
+@register_model_view(ForwardDeviceAnalysis)
+class ForwardDeviceAnalysisView(generic.ObjectView):
+    queryset = ForwardDeviceAnalysis.objects.all()
+
+
+@register_model_view(ForwardDeviceAnalysis, "delete")
+class ForwardDeviceAnalysisDeleteView(generic.ObjectDeleteView):
+    queryset = ForwardDeviceAnalysis.objects.all()
+
+
+@register_model_view(ForwardDeviceAnalysis, "bulk_delete", path="delete", detail=False)
+class ForwardDeviceAnalysisBulkDeleteView(generic.BulkDeleteView):
+    queryset = ForwardDeviceAnalysis.objects.all()
+    table = ForwardDeviceAnalysisTable
 
 
 @register_model_view(ForwardDriftPolicy, "list", path="", detail=False)
