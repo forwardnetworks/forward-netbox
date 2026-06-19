@@ -22,10 +22,11 @@ out-of-scope devices.
 - `ipam.vlan` (forward_vlans) and `ipam.vrf` (forward_vrfs) declared only
   `forward_netbox_shard_keys` — no device-tag filter — and their rows carry no
   device field, so `_apply_device_tag_scope` keeps every row. They leaked.
-- Prefix breadth note: prefixes derive from in-scope devices' routing/forwarding
-  tables, which are network-wide by nature; a tagged router legitimately knows
-  remote routes. Restricting prefixes to directly-connected subnets is a separate
-  derivation change, deferred pending product decision.
+- Prefix breadth: prefixes derived from in-scope devices' routing/forwarding
+  tables are network-wide (a tagged router knows remote routes). On ORG, routing-
+  derived Prod_Core prefixes = 91,859 vs connected-subnet = 26,223. DECISION:
+  switch prefix derivation to connected interface subnets (the networks devices
+  actually host) as the default — true IPAM ownership, ~3.5x smaller.
 
 ## Touched Surfaces
 
@@ -34,6 +35,11 @@ out-of-scope devices.
   where-clauses on `device.tagNames`.
 - `forward_netbox/queries/forward_vlans.nqe` — same, threaded through the
   `candidateRows` helper and the `@query` `f`.
+- `forward_netbox/queries/forward_prefixes_ipv4.nqe` and
+  `forward_prefixes_ipv6.nqe` — rederive prefixes from connected interface
+  subnets (subinterface/bridge/tunnel/routed-VLAN L3 addresses), canonicalized to
+  the network address, instead of routing-table entries. Keeps the device-tag
+  scope. ORG: v4 routing 91,859 -> connected 26,223 scoped; v6 connected 49.
 
 ## Approach
 
