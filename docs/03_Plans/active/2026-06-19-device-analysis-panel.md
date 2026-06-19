@@ -28,7 +28,9 @@ CVE exposure, and up-interface count.
 - `forward_netbox/views.py` — `ForwardSyncRefreshDeviceAnalysisView` (POST
   enqueues) + sync-detail Refresh Device Analysis button URL.
 - `forward_netbox/template_content.py` + `templates/.../inc/device_analysis_panel.html`
-  — device-detail panel rendering the stored analysis.
+  — device-detail panel rendering the stored analysis, with an "Open in Forward"
+  deep-link (`ForwardDeviceAnalysis.forward_ui_url`, best-effort base URL) to pivot
+  to Forward's path-search / blast-radius UI (true path analysis lives there).
 - Tests in `test_scope_module_ui`.
 
 ## Approach
