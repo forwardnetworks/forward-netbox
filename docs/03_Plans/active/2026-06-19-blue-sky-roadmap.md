@@ -49,10 +49,15 @@ manual probe. Surfaces: `utilities/scope_reconciliation.py`,
 
 ### Big bets — product differentiation
 
-**Surface Forward reachability / path / blast radius into NetBox.** Bring GA
-Forward analysis into NetBox as read-only device/prefix panels or custom fields
-(reachability state, representative path, blast radius). Surfaces: new NQE maps +
-query specs, new sync models or custom fields, detail panels. Predict excluded.
+**Surface Forward reachability / path / blast radius into NetBox.** Shipped the
+GA-NQE-derivable proxies in 1.6.x (device-analysis: reachability/collected,
+connectivity-degree blast radius, real CVE). DECISION (2026-06-19): do NOT
+reimplement true path search / Predict blast radius in NetBox — it duplicates
+Forward's strength on the wrong (static) surface, the real blast radius needs
+Predict (paid/non-GA) + scenario context, and impact decisions are made in Forward
+during change planning. If pivot-to-Forward is wanted, add a cheap device-panel
+**deep-link** to Forward's path-search/blast-radius UI (best ROI); build a stored
+criticality metric only on a concrete customer ask, gated on Predict availability.
 
 **Bidirectional drift report.** Generalize `scope_reconciliation` into a
 multi-model NetBox-vs-Forward drift report (IPs, prefixes, platforms), catching
