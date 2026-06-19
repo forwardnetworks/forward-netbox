@@ -163,6 +163,41 @@ class ScopeModuleUiTest(TestCase):
                 Device.objects.filter(tags__slug="forward-backfilled").count(), 0
             )
 
+    def test_collection_gap_alert_command_breaches_and_tags(self):
+        import json
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        self._device("dev-collected")
+        self._device("dev-backfilled")
+        fwd_client = Mock()
+        fwd_client.run_nqe_query = Mock(
+            return_value=[
+                {"name": "dev-collected", "completed": True},
+                {"name": "dev-backfilled", "completed": False},
+            ]
+        )
+        out = StringIO()
+        with (
+            patch.object(ForwardSource, "get_client", return_value=fwd_client),
+            patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
+        ):
+            with self.assertRaises(SystemExit):
+                call_command(
+                    "forward_collection_gap_alert",
+                    sync_name="ui-sync",
+                    threshold=0,
+                    tag=True,
+                    fail_on_breach=True,
+                    stdout=out,
+                )
+        data = json.loads(out.getvalue())
+        self.assertTrue(data["breached"])
+        self.assertEqual(data["backfilled_count"], 1)
+        self.assertEqual(data["alert"].count("Collection gap"), 1)
+        self.assertTrue(Device.objects.filter(tags__slug="forward-backfilled").exists())
+
     def test_tag_backfilled_view_enqueues_job(self):
         self._device("dev-backfilled")
         fwd_client = Mock()

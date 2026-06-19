@@ -65,7 +65,7 @@
       <tbody>
         {% for run in history.runs %}
           <tr>
-            <td>{{ run.id }}</td>
+            <td>{% if run.url %}<a href="{{ run.url }}">{{ run.id }}</a>{% else %}{{ run.id }}{% endif %}</td>
             <td>{{ run.created|placeholder }}</td>
             <td>{{ run.snapshot_id|placeholder }}{% if run.snapshot_selector %} <span class="text-muted">({{ run.snapshot_selector }})</span>{% endif %}</td>
             <td>{{ run.sync_mode|placeholder }}</td>
