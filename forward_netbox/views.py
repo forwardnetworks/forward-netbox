@@ -671,28 +671,71 @@ class ForwardSyncDependencyPreviewView(BaseObjectView):
         return "forward_netbox.run_forwardsync"
 
     def get(self, request, pk):
+        # Render the most recent completed preview job's cached payload. The heavy
+        # live dry-run runs in the background job (see post()), never in this GET,
+        # so this page never blocks on Forward and cannot 504 on large fabrics.
+        from core.choices import JobStatusChoices
+        from core.models import Job
+        from django.contrib.contenttypes.models import ContentType
+
         sync = get_object_or_404(self.queryset, pk=pk)
-        try:
-            payload = _dependency_dry_run_payload(sync)
-        except Exception as exc:
-            messages.error(
+        job = (
+            Job.objects.filter(
+                object_type=ContentType.objects.get_for_model(ForwardSync),
+                object_id=sync.pk,
+                name__icontains="dependency preview",
+                status=JobStatusChoices.STATUS_COMPLETED,
+            )
+            .order_by("-created")
+            .first()
+        )
+        if job is None or not job.data:
+            messages.info(
                 request,
-                _("Dependency preview failed: %(error)s") % {"error": exc},
+                _(
+                    "No dependency preview available yet. Use Preview Dependencies "
+                    "to queue one, then watch the Jobs tab."
+                ),
             )
             return redirect(sync.get_absolute_url())
+        payload = job.data
         if request.GET.get("format") == "json":
             filename = f"forward-sync-{sync.pk}-dependency-preview.json"
-            return _download_json_response(json_safe_value(payload), filename)
+            return _download_json_response(payload, filename)
         return render(
             request,
             self.template_name,
             {
                 "object": sync,
-                "payload": json_safe_value(payload),
-                "plan_preview": payload["plan_preview"],
-                "plan_items": payload["plan_items"],
+                "payload": payload,
+                "plan_preview": payload.get("plan_preview"),
+                "plan_items": payload.get("plan_items"),
+                "preview_job": job,
             },
         )
+
+    def post(self, request, pk):
+        # Building the dependency plan is a heavy live Forward dry-run that exceeds
+        # an HTTP gateway timeout on large fabrics, so it runs as a background job.
+        from core.models import Job
+        from django.utils.module_loading import import_string
+
+        sync = get_object_or_404(self.queryset, pk=pk)
+        job = Job.enqueue(
+            import_string("forward_netbox.jobs.forward_dependency_preview"),
+            instance=sync,
+            user=request.user,
+            name=f"{sync.name} - dependency preview",
+        )
+        messages.success(
+            request,
+            _(
+                "Queued job #%(pk)d to build the dependency preview. Watch the Jobs "
+                "tab; the result then appears under View Last Preview."
+            )
+            % {"pk": job.pk},
+        )
+        return redirect(sync.get_absolute_url())
 
 
 @register_model_view(ForwardSync, "run")

@@ -287,6 +287,32 @@ def create_forward_module_bays(job, *args, **kwargs):
             raise
 
 
+def forward_dependency_preview(job, *args, **kwargs):
+    """Background dependency dry-run preview for a sync.
+
+    The dry-run builds a full multi-branch plan against live Forward data, which
+    far exceeds an HTTP gateway timeout on large fabrics. Run it as a job and
+    cache the JSON payload on ``job.data`` so the preview page can render it
+    later without a Forward round-trip.
+    """
+    from .views import _dependency_dry_run_payload
+
+    sync = ForwardSync.objects.get(pk=job.object_id)
+    try:
+        job.start()
+        sync.logger = SyncLogging(job=job.pk)
+        payload = _dependency_dry_run_payload(sync)
+        job.data = json_safe_value(payload)
+        job.save(update_fields=["data"])
+        job.terminate()
+    except Exception as exc:
+        job.terminate(status=JobStatusChoices.STATUS_ERRORED)
+        if type(exc) in (SyncError, JobTimeoutException):
+            logger.error(exc)
+        else:
+            raise
+
+
 def merge_forwardingestion(job, remove_branch=True, *args, **kwargs):
     ingestion = ForwardIngestion.objects.get(pk=job.object_id)
     try:
