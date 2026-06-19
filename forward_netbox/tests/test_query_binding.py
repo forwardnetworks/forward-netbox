@@ -457,6 +457,7 @@ class NQEMapBindingTest(TestCase):
             repository="org",
             query_path="/forward_netbox_validation/forward_devices",
             commit_id="commit-pinned",
+            require_source_code=True,
         )
 
     def test_live_query_binding_drift_warns_when_direct_query_id_not_found(self):

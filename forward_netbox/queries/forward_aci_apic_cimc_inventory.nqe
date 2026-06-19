@@ -21,7 +21,7 @@ foreach node_match in regexMatches(controller_command.response, apicNodeRegex)
 let node = node_match.data
 foreach chassis_command in device.outputs.commands
 where chassis_command.commandType == CommandType.CUSTOM
-where chassis_command.commandText == "moquery -c eqptCh -a all"
+where matches(toLowerCase(chassis_command.commandText), "moquery -c eqptch*")
 foreach chassis_match in regexMatches(chassis_command.response, chassisRegex)
 let chassis = chassis_match.data
 where chassis.pod_id == node.pod_id

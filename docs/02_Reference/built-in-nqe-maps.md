@@ -58,24 +58,27 @@ When a sync uses the local device tag filter mode, the plugin now passes the sel
 
 ## Optional Cisco ACI Plugin Maps
 
-The `1.3.3` ACI maps are disabled by default and require the optional
+The optional ACI maps are disabled by default and require the optional
 `netbox-cisco-aci` plugin. They do not use sync-time Forward column filters.
 All maps declare `forward_netbox_shard_keys`, seed an empty default for UI
 execution, and constrain rows only when shard keys are provided.
 
-The proven write path covers ACI fabrics, pods, nodes, tenants, VRFs, filters,
-and APIC CIMC inventory items. The CIMC inventory map targets native NetBox
-`dcim.inventoryitem` rows and requires Forward to collect the APIC custom
-command `moquery -c eqptCh -a all`; it joins those chassis rows to APIC
-controller detail output in NQE before emitting normalized inventory rows.
-Bridge domains, application profiles, EPGs, contracts, L3Outs, and static
-port bindings are present as disabled model/query contracts but remain
-conservative no-op maps until bounded source identity and repeat-sync
-idempotence are proven. The active maps parse selected command output in NQE
-and emit small normalized rows rather than returning raw command responses.
-The separate `Forward ACI Command Inventory` map is discovery-only and reports
-which bounded ACI/APIC command families are present on each device without
-returning raw response payloads.
+The proven write path covers ACI fabrics, pods, nodes, tenants, VRFs, bridge
+domains, L3Outs, filters, and APIC CIMC inventory items. The CIMC inventory map
+targets native NetBox `dcim.inventoryitem` rows and requires Forward to collect
+the APIC custom command `moquery -c eqptCh -a all`; it joins those chassis rows
+to APIC controller detail output in NQE before emitting normalized inventory
+rows. Tenant and VRF maps parse `moquery -c fvCtx`; bridge domains parse
+`moquery -c fvBD`; and L3Outs parse `moquery -c l3extInstP`. Application
+profiles, EPGs, contracts, and static port bindings are present as disabled
+model/query contracts but remain conservative no-op maps until bounded source
+identity and repeat-sync idempotence are proven. The active maps parse selected
+command output in NQE and emit small normalized rows rather than returning raw
+command responses. The separate `Forward ACI Command Inventory` map is
+discovery-only and reports which bounded ACI/APIC command families are present
+on each device without returning raw response payloads. Exact custom-command
+checks stay inside the maps that consume those commands, so missing input fails
+cleanly there rather than being hidden behind a broad APIC dump.
 
 | Map | Expected Fields |
 | --- | --- |
