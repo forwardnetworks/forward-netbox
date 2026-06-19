@@ -43,4 +43,11 @@
       </tr>
     </table>
   </div>
+  {% if analysis.forward_ui_url %}
+  <div class="card-footer text-end">
+    <a class="btn btn-sm btn-outline-secondary" href="{{ analysis.forward_ui_url }}" target="_blank" rel="noopener">
+      <i class="mdi mdi-open-in-new" aria-hidden="true"></i>&nbsp;{% trans "Open in Forward (path search / blast radius)" %}
+    </a>
+  </div>
+  {% endif %}
 </div>

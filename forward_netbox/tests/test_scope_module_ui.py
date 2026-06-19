@@ -324,7 +324,11 @@ class ScopeModuleUiTest(TestCase):
         panel = ForwardDeviceAnalysisPanel(
             context={"object": analysis.device, "request": None}
         )
-        self.assertIn("Forward Analysis", panel.right_page())
+        rendered = panel.right_page()
+        self.assertIn("Forward Analysis", rendered)
+        # Deep-link pivot into the Forward app.
+        self.assertIn("Open in Forward", rendered)
+        self.assertIn("https://fwd.app", rendered)
 
     def test_module_readiness_view_and_create(self):
         self._device("dev-m")
