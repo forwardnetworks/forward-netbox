@@ -111,6 +111,8 @@ DEVICE_TAG_PARAMETER_QUERY_FILES = {
     "forward_locations.nqe",
     "forward_prefixes_ipv4.nqe",
     "forward_prefixes_ipv6.nqe",
+    "forward_vlans.nqe",
+    "forward_vrfs.nqe",
 }
 
 
