@@ -1171,39 +1171,47 @@ class ForwardIngestionIssue(ForwardPluginModelDocsMixin, models.Model):
         return f"[{self.timestamp}] {self.message}"
 
 
-class ForwardDeviceAnalysis(models.Model):
+class ForwardDeviceAnalysis(ForwardPluginModelDocsMixin, ChangeLoggedModel):
     """Read-only per-device operational analysis surfaced from Forward.
 
-    Populated out-of-band by the device-analysis refresh job (NQE), keyed by
-    device name so the device-detail panel can render it without a live Forward
+    Populated out-of-band by the device-analysis refresh job (NQE) and rendered on
+    the device detail panel and a fleet-wide list view, without a live Forward
     call. Not a Branching-managed sync model.
     """
+
+    objects = RestrictedQuerySet.as_manager()
 
     sync = models.ForeignKey(
         ForwardSync,
         on_delete=models.CASCADE,
         related_name="device_analyses",
     )
-    device_name = models.CharField(max_length=255, db_index=True)
+    device = models.ForeignKey(
+        "dcim.Device",
+        on_delete=models.CASCADE,
+        related_name="+",
+    )
     reachable = models.BooleanField(default=False)
     blast_radius = models.PositiveIntegerField(default=0)
     cve_count = models.PositiveIntegerField(default=0)
     up_interfaces = models.PositiveIntegerField(default=0)
     detail = models.CharField(max_length=255, blank=True, default="")
     snapshot_id = models.CharField(max_length=100, blank=True, default="")
-    updated = models.DateTimeField(auto_now=True)
 
     class Meta:
-        ordering = ("device_name",)
+        ordering = ("device__name",)
         verbose_name = _("Forward Device Analysis")
         verbose_name_plural = _("Forward Device Analyses")
         db_table = "forward_netbox_device_analysis"
         constraints = [
             models.UniqueConstraint(
-                fields=["sync", "device_name"],
+                fields=["sync", "device"],
                 name="forward_device_analysis_sync_device",
             )
         ]
 
     def __str__(self):
-        return f"{self.device_name} analysis"
+        return f"{self.device} analysis"
+
+    def get_absolute_url(self):
+        return reverse("plugins:forward_netbox:forwarddeviceanalysis", args=[self.pk])
