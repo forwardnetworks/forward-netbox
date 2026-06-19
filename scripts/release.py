@@ -129,13 +129,23 @@ def stage_prepare(version: str, summary: str, *, write: bool) -> None:
     for path, text in edits.items():
         path.write_text(text, encoding="utf-8")
         print(f"[prepare] wrote {path.relative_to(REPO_ROOT)}")
+    # Keep CHANGELOG.md in lockstep with the README table (a pre-commit hook
+    # enforces this).
+    run([sys.executable, "scripts/gen_changelog.py"])
     print(
         "[prepare] NOTE: author the plan file in docs/03_Plans/active with all 7 "
         "headings, then `git add -A` before verify."
     )
 
 
-def stage_verify() -> None:
+# Container Django suite. Override via the FORWARD_DJANGO_TEST_CMD env var.
+DJANGO_TEST_CMD = (
+    "docker exec forward-netbox-netbox-1 /opt/netbox/venv/bin/python "
+    "/opt/netbox/netbox/manage.py test --noinput --keepdb forward_netbox.tests"
+)
+
+
+def stage_verify(*, with_django: bool = False) -> None:
     print("[verify] local CI mirror")
     run(["git", "add", "-A"])  # so the sensitive guard sees new tracked files
     run([sys.executable, "-m", "pre_commit", "clean"], check=False)
@@ -157,23 +167,105 @@ def stage_verify() -> None:
     )
     run([sys.executable, "-m", "mkdocs", "build", "--strict"])
     run([sys.executable, "-m", "build"])
-    print("[verify] OK — run the Django suite separately in the container.")
+    if with_django:
+        import os
+        import shlex
+
+        cmd = os.environ.get("FORWARD_DJANGO_TEST_CMD", DJANGO_TEST_CMD)
+        print("[verify] running the container Django suite")
+        run(shlex.split(cmd))
+    else:
+        print("[verify] OK — run the Django suite separately (or pass --with-django).")
 
 
-def stage_publish(version: str, notes_file: Path) -> None:
+def _capture(cmd: list[str]) -> str:
+    result = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True)
+    return result.stdout.strip()
+
+
+def wait_for_ci(version: str, *, poll_seconds: int = 30, max_polls: int = 80) -> str:
+    """Poll GitHub CI for the release branch until it concludes.
+
+    Robust against the `gh run watch` mid-run dropout seen in practice: re-polls
+    `gh run list` JSON and tolerates transient empty/Error responses. Returns the
+    final conclusion ('success'/'failure'/...), or '' if it never concluded.
+    """
+    import json
+    import time
+
+    branch = f"release/{version}"
+    for _ in range(max_polls):
+        raw = _capture(
+            [
+                "gh",
+                "run",
+                "list",
+                "--branch",
+                branch,
+                "--limit",
+                "1",
+                "--json",
+                "status,conclusion",
+            ]
+        )
+        try:
+            runs = json.loads(raw) if raw else []
+        except json.JSONDecodeError:
+            runs = []
+        if runs:
+            run_info = runs[0]
+            if run_info.get("status") == "completed":
+                conclusion = run_info.get("conclusion") or ""
+                print(f"[ci] {branch} concluded: {conclusion}")
+                return conclusion
+            print(f"[ci] {branch} status={run_info.get('status')} — waiting")
+        else:
+            print(f"[ci] no run yet for {branch} — waiting")
+        time.sleep(poll_seconds)
+    print(f"[ci] timed out waiting for {branch}")
+    return ""
+
+
+def notes_from_plan(version: str) -> Path | None:
+    """Best-effort release notes from a plan's 'Bundled changes' section."""
+    for path in sorted(PLAN_DIR.glob(f"*release-{version}*.md")):
+        text = path.read_text(encoding="utf-8")
+        if "## Bundled changes" not in text:
+            continue
+        section = text.split("## Bundled changes", 1)[1]
+        # Stop at the next heading.
+        body = section.split("\n## ", 1)[0].strip()
+        out = REPO_ROOT / "dist" / f"release-notes-{version}.md"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(f"# v{version}\n\n{body}\n", encoding="utf-8")
+        return out
+    return None
+
+
+def stage_publish(version: str, notes_file: Path, *, auto_finish: bool = False) -> None:
     print(f"[publish] rolling out v{version}")
     branch = f"release/{version}"
     run(["git", "checkout", "-b", branch])
     run(["git", "add", "-A"])
     run(["git", "commit", "-m", f"release: cut v{version}"])
     run(["git", "push", "--no-verify", "-u", "origin", branch])
-    print("[publish] wait for GitHub CI to go green, then re-run with --finish")
-    # Finishing (FF main, tag, gh release, PyPI, sync) is deliberately a separate
-    # manual confirmation after CI — see --finish.
+    conclusion = wait_for_ci(version)
+    if conclusion != "success":
+        raise ReleaseError(f"GitHub CI did not succeed (conclusion={conclusion!r})")
+    if auto_finish:
+        stage_finish(version, notes_file)
+    else:
+        print("[publish] CI green — re-run with --finish to FF main, tag, release.")
 
 
-def stage_finish(version: str, notes_file: Path) -> None:
+def stage_finish(version: str, notes_file: Path | None = None) -> None:
     print(f"[finish] tag + release v{version}")
+    if notes_file is None:
+        notes_file = notes_from_plan(version)
+    if notes_file is None:
+        raise ReleaseError(
+            "no --notes-file and no plan 'Bundled changes' section to derive notes"
+        )
     run(["git", "push", "--no-verify", "origin", f"release/{version}:main"])
     run(["git", "tag", "-a", f"v{version}", "-m", f"Release {version}"])
     run(["git", "push", "--no-verify", "origin", f"v{version}"])
@@ -211,9 +303,19 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--write", action="store_true", help="write prepare edits")
     parser.add_argument(
+        "--with-django",
+        action="store_true",
+        help="also run the container Django suite during verify",
+    )
+    parser.add_argument(
         "--publish",
         action="store_true",
-        help="branch + push (rollout). Off by default — safe to omit.",
+        help="branch + push (rollout), then wait for GitHub CI. Off by default.",
+    )
+    parser.add_argument(
+        "--auto-finish",
+        action="store_true",
+        help="with --publish: after CI is green, FF main + tag + GitHub release",
     )
     parser.add_argument(
         "--finish",
@@ -231,11 +333,14 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         stage_prepare(args.version, args.summary, write=args.write)
         if args.write:
-            stage_verify()
+            stage_verify(with_django=args.with_django)
         if args.publish:
-            if not args.notes_file:
-                parser.error("--publish requires --notes-file")
-            stage_publish(args.version, args.notes_file)
+            notes_file = args.notes_file or notes_from_plan(args.version)
+            if notes_file is None:
+                parser.error(
+                    "--publish needs --notes-file or a plan 'Bundled changes' section"
+                )
+            stage_publish(args.version, notes_file, auto_finish=args.auto_finish)
     except ReleaseError as exc:
         print(f"release error: {exc}", file=sys.stderr)
         return 1
