@@ -241,7 +241,43 @@ def _check_plan_lifecycle(failures: list[str]) -> None:
     )
 
 
+def _commit_files(sha: str) -> list[str]:
+    return _git_names("diff-tree", "--no-commit-id", "--name-only", "-r", sha)
+
+
+def _check_per_commit_plan_lifecycle(failures: list[str], base: str) -> None:
+    """Simulate the push-event gate: every commit in base..HEAD that touches a
+    high-risk path must also touch a plan file in that SAME commit.
+
+    The GitHub push check, for a new branch, evaluates only the tip commit
+    (diff-tree of after_sha), so a high-risk file and its plan must share a commit.
+    Validating every commit this way guarantees the push passes regardless of how
+    GitHub computes the diff — and catches it before pushing (no failed-CI email).
+    """
+    shas = _git_names("rev-list", f"{base}..HEAD")
+    for sha in shas:
+        files = _commit_files(sha)
+        high_risk = [path for path in files if _is_high_risk_path(path)]
+        if high_risk and not any(_is_plan_file(path) for path in files):
+            failures.append(
+                f"commit {sha[:10]} changes high-risk paths without a plan file in "
+                f"the same commit: {', '.join(high_risk[:6])}"
+            )
+
+
 def main() -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Forward NetBox harness check.")
+    parser.add_argument(
+        "--base",
+        help=(
+            "Validate every commit in <base>..HEAD against the push-event plan "
+            "gate (use before pushing, e.g. --base origin/main)."
+        ),
+    )
+    args = parser.parse_args()
+
     failures: list[str] = []
 
     for relative_path in REQUIRED_PATHS:
@@ -263,6 +299,8 @@ def main() -> int:
     _check_plan_directory(failures, "docs/03_Plans/active")
     _check_plan_directory(failures, "docs/03_Plans/completed")
     _check_plan_lifecycle(failures)
+    if args.base:
+        _check_per_commit_plan_lifecycle(failures, args.base)
 
     if failures:
         print("Harness check failed:")
