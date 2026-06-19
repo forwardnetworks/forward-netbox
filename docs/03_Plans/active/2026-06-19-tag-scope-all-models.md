@@ -65,6 +65,18 @@ These are org-published queries with a changed signature (new params). The org
 NQE maps must be republished (forward_validation_org_query_audit --repair
 --overwrite) for query_id-mode syncs to pick up the scoped versions.
 
+## Migration heads-up (prefix prune on first sync)
+
+Switching prefixes from routing-derived to connected-subnet derivation makes the
+first post-upgrade sync a large one-time PRUNE: prefixes that were routing-only
+(learned/remote/default routes) and are not connected subnets become deletes.
+ORG scale: ~91,859 -> ~26,223 under the Prod_Core tag, i.e. ~65k prefix deletes on
+the first run; an untagged/full sync prunes more. In Branching mode these deletes
+stage in a review branch first (review before merge); fast-bootstrap applies
+directly. Anything referencing the pruned prefixes (IP assignments, custom data,
+parent/child) is affected. Steady state after the one-time prune is clean.
+Operators should review the first 1.6.1 sync branch before merging.
+
 ## Rollback
 
 Revert the two `.nqe` files to the shard-key-only signatures and republish.
