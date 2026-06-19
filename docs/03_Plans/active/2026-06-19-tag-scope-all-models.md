@@ -35,6 +35,8 @@ out-of-scope devices.
   where-clauses on `device.tagNames`.
 - `forward_netbox/queries/forward_vlans.nqe` — same, threaded through the
   `candidateRows` helper and the `@query` `f`.
+- `forward_netbox/utilities/query_registry.py` — seed the device-tag params for
+  `forward_vlans`/`forward_vrfs` (added to the device-tag query-file allowlist).
 - `forward_netbox/queries/forward_prefixes_ipv4.nqe` and
   `forward_prefixes_ipv6.nqe` — rederive prefixes from connected interface
   subnets (subinterface/bridge/tunnel/routed-VLAN L3 addresses), canonicalized to
