@@ -1,0 +1,92 @@
+{% extends 'generic/object.html' %}
+{% load helpers %}
+{% load i18n %}
+
+{% block title %}{{ object }} - {% trans "Run History" %}{% endblock %}
+
+{% block extra_controls %}
+  <a class="btn btn-outline-secondary" href="{{ object.get_absolute_url }}">
+    <i class="mdi mdi-arrow-left" aria-hidden="true"></i>&nbsp;{% trans "Sync" %}
+  </a>
+{% endblock extra_controls %}
+
+{% block content %}
+{% if not history.available %}
+  <div class="alert alert-info">{% trans "No ingestion runs recorded yet." %}</div>
+{% else %}
+<div class="row mb-3">
+  <div class="col col-md-4">
+    <div class="card">
+      <h5 class="card-header">{% trans "Run Summary" %}</h5>
+      <div class="card-body">
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">{% trans "Runs shown" %}</th>
+            <td>{{ history.run_count }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Peak change volume" %}</th>
+            <td>{{ history.max_changes }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Runs with failures" %}</th>
+            <td>
+              {% if history.failed_runs %}
+                <span class="badge text-bg-warning">{{ history.failed_runs }}</span>
+              {% else %}
+                <span class="badge text-bg-success">0</span>
+              {% endif %}
+            </td>
+          </tr>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="card">
+  <h5 class="card-header">{% trans "Recent Runs" %}</h5>
+  <div class="table-responsive">
+    <table class="table table-hover">
+      <thead>
+        <tr>
+          <th>{% trans "Run" %}</th>
+          <th>{% trans "Created" %}</th>
+          <th>{% trans "Snapshot" %}</th>
+          <th>{% trans "Mode" %}</th>
+          <th>{% trans "Created" %}</th>
+          <th>{% trans "Updated" %}</th>
+          <th>{% trans "Deleted" %}</th>
+          <th>{% trans "Failed" %}</th>
+          <th>{% trans "Total" %}</th>
+          <th>{% trans "Duration (s)" %}</th>
+          <th>{% trans "Top models (by change)" %}</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for run in history.runs %}
+          <tr>
+            <td>{{ run.id }}</td>
+            <td>{{ run.created|placeholder }}</td>
+            <td>{{ run.snapshot_id|placeholder }}{% if run.snapshot_selector %} <span class="text-muted">({{ run.snapshot_selector }})</span>{% endif %}</td>
+            <td>{{ run.sync_mode|placeholder }}</td>
+            <td>{{ run.created_count }}</td>
+            <td>{{ run.updated_count }}</td>
+            <td>{{ run.deleted_count }}</td>
+            <td>{% if run.failed %}<span class="text-warning">{{ run.failed }}</span>{% else %}0{% endif %}</td>
+            <td><strong>{{ run.total_changes }}</strong></td>
+            <td>{{ run.duration_seconds|placeholder }}</td>
+            <td>
+              {% for model in run.top_models %}
+                <code>{{ model.model }}</code>{% if model.estimated_changes %} ({{ model.estimated_changes }}){% endif %}{% if not forloop.last %}, {% endif %}
+              {% empty %}
+                <span class="text-muted">&mdash;</span>
+              {% endfor %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+{% endblock content %}
