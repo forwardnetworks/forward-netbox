@@ -9515,6 +9515,51 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertEqual(module.serial, "SN-1")
         self.assertEqual(module.asset_tag, "AT-1")
 
+    def test_apply_dcim_module_adopts_existing_interface(self):
+        # The module type's interface template collides by name with an interface
+        # Forward already synced onto the device. The module apply must ADOPT it
+        # instead of recreating it (which would raise a unique-constraint
+        # IntegrityError on dcim_interface_unique_device_name).
+        from dcim.models import InterfaceTemplate
+
+        device = self._create_device("device-a")
+        module_bay = self._create_module_bay(device)
+        existing_interface = Interface.objects.create(
+            device=device, name="GigabitEthernet0/0/0", type="1000base-t"
+        )
+        manufacturer = Manufacturer.objects.get(slug="vendor-1")
+        module_type = ModuleType.objects.create(
+            manufacturer=manufacturer, model="Line Card 1", part_number="LC-1"
+        )
+        InterfaceTemplate.objects.create(
+            module_type=module_type, name="GigabitEthernet0/0/0", type="1000base-t"
+        )
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "device": device.name,
+            "module_bay": "Slot 1",
+            "manufacturer": "vendor-1",
+            "manufacturer_slug": "vendor-1",
+            "model": "Line Card 1",
+            "part_number": "LC-1",
+            "status": "active",
+        }
+
+        runner._apply_dcim_module(row)
+
+        module = Module.objects.get(device=device, module_bay=module_bay)
+        # No duplicate interface created; the existing one was adopted.
+        self.assertEqual(
+            Interface.objects.filter(
+                device=device, name="GigabitEthernet0/0/0"
+            ).count(),
+            1,
+        )
+        existing_interface.refresh_from_db()
+        self.assertEqual(existing_interface.module_id, module.pk)
+
     def test_apply_dcim_module_skips_missing_module_bay_without_side_effect_create(
         self,
     ):

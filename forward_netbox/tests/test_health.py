@@ -1834,44 +1834,59 @@ class ForwardSyncHealthTest(TestCase):
         ]
         return planner
 
-    def test_sync_dependency_preview_renders_plan_summary(self):
+    def test_sync_dependency_preview_renders_cached_job_payload(self):
+        # POST queues the heavy dry-run as a job; once it runs, the GET page
+        # renders the cached payload without touching Forward (no 504 risk).
+        from core.models import Job
+        from forward_netbox.jobs import forward_dependency_preview
+
         self.client.force_login(self.user)
         planner = self._mock_dependency_preview_planner()
         client = Mock()
+        url = reverse(
+            "plugins:forward_netbox:forwardsync_dependency_preview",
+            kwargs={"pk": self.sync.pk},
+        )
 
         with patch.object(ForwardSource, "get_client", return_value=client), patch(
             "forward_netbox.views.ForwardMultiBranchPlanner",
             return_value=planner,
         ):
-            response = self.client.get(
-                reverse(
-                    "plugins:forward_netbox:forwardsync_dependency_preview",
-                    kwargs={"pk": self.sync.pk},
-                )
-            )
+            post_response = self.client.post(url)
+            self.assertEqual(post_response.status_code, 302)
+            job = Job.objects.filter(name__icontains="dependency preview").latest("pk")
+            forward_dependency_preview(job)
+            response = self.client.get(url)
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Dependency Dry Run")
         self.assertContains(response, "Delete Dependency Plan")
         self.assertContains(response, "dcim.device")
 
-    def test_sync_dependency_preview_uses_planner_without_ingestion_side_effects(self):
+    def test_sync_dependency_preview_job_uses_planner_without_ingestion_side_effects(
+        self,
+    ):
+        from core.models import Job
+        from forward_netbox.jobs import forward_dependency_preview
+
         self.client.force_login(self.user)
         planner = self._mock_dependency_preview_planner()
         client = Mock()
         ingestion_count = ForwardIngestion.objects.count()
+        url = reverse(
+            "plugins:forward_netbox:forwardsync_dependency_preview",
+            kwargs={"pk": self.sync.pk},
+        )
 
         with patch.object(ForwardSource, "get_client", return_value=client), patch(
             "forward_netbox.views.ForwardMultiBranchPlanner",
             return_value=planner,
         ) as planner_class:
-            response = self.client.get(
-                reverse(
-                    "plugins:forward_netbox:forwardsync_dependency_preview",
-                    kwargs={"pk": self.sync.pk},
-                )
-                + "?format=json"
-            )
+            self.client.post(url)
+            job = Job.objects.filter(name__icontains="dependency preview").latest("pk")
+            forward_dependency_preview(job)
+            # GET reads the cached job payload — the planner is not called again.
+            response = self.client.get(url + "?format=json")
 
         self.assertEqual(response.status_code, 200)
         planner_class.assert_called_once()

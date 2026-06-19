@@ -135,4 +135,31 @@ class ForwardSyncRunnerContractMixin:
                 f"Forward diff row for {model_string} had unsupported type `{change_type}`."
             )
 
+        # Never delete an entity we are simultaneously upserting in the same diff
+        # batch. When several Forward rows collapse onto one NetBox identity (e.g.
+        # ipam.fhrpgroup: many (device, interface, state) rows map to one
+        # (protocol, group_id, address, vrf) group), a volatile non-identity field
+        # like HSRP state flapping active<->standby makes the snapshot diff emit an
+        # ADDED variant and a DELETED variant for the SAME group. Routing the
+        # DELETED side to a delete would drop the group we just re-created, causing
+        # perpetual create/delete churn run after run. Drop those deletes.
+        if upsert_rows and delete_rows:
+            upsert_identities = {
+                identity
+                for row in upsert_rows
+                if (
+                    identity := self._coalesce_identity(
+                        model_string, row, coalesce_sets
+                    )
+                )
+                is not None
+            }
+            if upsert_identities:
+                delete_rows = [
+                    row
+                    for row in delete_rows
+                    if self._coalesce_identity(model_string, row, coalesce_sets)
+                    not in upsert_identities
+                ]
+
         return upsert_rows, delete_rows
