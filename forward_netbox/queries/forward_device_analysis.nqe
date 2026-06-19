@@ -1,7 +1,9 @@
 // forward_device_analysis.nqe
 //
 // Per-device operational analysis surfaced into NetBox (read-only). Device-
-// parallel: one record per device.
+// parallel: one record per device. Written as a BARE NQE expression (no @query/
+// @primaryKey/function wrapper) because the plugin runs it ad-hoc via the
+// nqe-executions API, which expects an expression — not a saved library query.
 //
 // Forward's full path-based reachability and blast radius come from the path
 // search / Predict APIs, which are NOT part of the device NQE schema. This query
@@ -13,34 +15,29 @@
 //   - cve_count     : count of confirmed-vulnerable CVE findings (exposure)
 //   - up_interfaces : operationally-up interface count
 //
-// FIELD VALIDATION: the field bindings below (snapshotInfo.result, interfaces.
-// operStatus, interfaces.links, cveFindings.isVulnerable) are valid against the
-// current NQE schema, but enum names / field availability can vary by Forward
-// release — re-validate with the NQE linter against the deployed schema version
-// before relying on this in production.
+// FIELD VALIDATION: the field bindings (snapshotInfo.result, interfaces.
+// operStatus, interfaces.links, cveFindings.isVulnerable) are validated against
+// the live Forward NQE schema, but can vary by Forward release — re-validate with
+// the NQE linter against the deployed schema version on upgrade.
 
-@primaryKey(name)
-@query
-deviceAnalysis(Device_Name_Equals: String) =
-  foreach device in network.devices
-  where Device_Name_Equals == "" || device.name == Device_Name_Equals
-  let upInterfaces =
-    length(foreach i in device.interfaces
-           where i.operStatus == OperStatus.UP
-           select i.name)
-  let physicalLinks =
-    length(foreach i in device.interfaces
-           foreach l in i.links
-           select l)
-  let vulnerabilities =
-    length(foreach c in device.cveFindings
-           where c.isVulnerable
-           select c.cveId)
-  select {
-    name: device.name,
-    reachable: device.snapshotInfo.result == DeviceSnapshotResult.completed,
-    blast_radius: physicalLinks,
-    cve_count: vulnerabilities,
-    up_interfaces: upInterfaces,
-    detail: device.locationName
-  }
+foreach device in network.devices
+let upInterfaces =
+  length(foreach i in device.interfaces
+         where i.operStatus == OperStatus.UP
+         select i.name)
+let physicalLinks =
+  length(foreach i in device.interfaces
+         foreach l in i.links
+         select l)
+let vulnerabilities =
+  length(foreach c in device.cveFindings
+         where c.isVulnerable
+         select c.cveId)
+select {
+  name: device.name,
+  reachable: device.snapshotInfo.result == DeviceSnapshotResult.completed,
+  blast_radius: physicalLinks,
+  cve_count: vulnerabilities,
+  up_interfaces: upInterfaces,
+  detail: device.locationName
+}
