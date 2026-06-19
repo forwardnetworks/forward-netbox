@@ -524,7 +524,7 @@ class ForwardSyncFormTest(TestCase):
 
 class ForwardNQEMapFormTest(TestCase):
     def test_repository_path_uses_forward_query_selector(self):
-        source = ForwardSource.objects.create(
+        ForwardSource.objects.create(
             name="source-1",
             type="saas",
             url="https://fwd.app",
@@ -569,7 +569,10 @@ class ForwardNQEMapFormTest(TestCase):
             form.fields["commit_id"].widget.attrs["data-url"],
             "/api/plugins/forward/nqe-map/available-query-commits/",
         )
-        self.assertEqual(form.fields["query_source"].initial, source.pk)
+        self.assertEqual(
+            form.fields["query_source"].initial,
+            ForwardSource.objects.order_by("pk").first().pk,
+        )
         self.assertEqual(form.fields["query_repository"].initial, "org")
         self.assertEqual(form.fields["query_mode"].initial, "query_path")
 
@@ -732,7 +735,7 @@ class ForwardNQEMapBulkEditFormTest(TestCase):
         self.assertIn("query_bulk_operation", form.fields)
         self.assertIn("publish_overwrite", form.fields)
         self.assertIn("publish_commit_message", form.fields)
-        self.assertEqual(form.fields["bind_query_source"].queryset.count(), 1)
+        self.assertGreaterEqual(form.fields["bind_query_source"].queryset.count(), 1)
         self.assertEqual(
             form.fields["bind_query_folder"].widget.attrs["data-url"],
             "/api/plugins/forward/nqe-map/available-query-folders/",

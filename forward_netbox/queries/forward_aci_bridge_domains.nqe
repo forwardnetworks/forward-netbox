@@ -1,25 +1,45 @@
 /**
  * @intent Forward ACI Bridge Domains
- * @description Conservative ACI bridge-domain map; emits no rows until Forward exposes bounded BD identity.
+ * @description Discovers ACI bridge domains from the APIC fvBD custom command output.
  */
+
+import "netbox_utilities";
+
+bdRegex = re`(?:^|\R)#\s+fv\.BD\s*\R(?:\s*[^\r\n]*\R)*?\s*dn\s*:\s*uni/tn-(?<tenant_name>[^/\s]+)/BD-(?<name>[^\r\n/]+)\R(?:\s*[^\r\n]*\R)*?\s*arpFlood\s*:\s*(?<arp_flooding_enabled>\S+)\R(?:\s*[^\r\n]*\R)*?\s*unicastRoute\s*:\s*(?<unicast_routing_enabled>\S+)\R(?:\s*[^\r\n]*\R)*?\s*limitIpLearnToSubnets\s*:\s*(?<limit_ip_learn_to_subnets>\S+)\R(?:\s*[^\r\n]*\R)*?\s*unkMacUcastAct\s*:\s*(?<l2_unknown_unicast>\S+)\R(?:\s*[^\r\n]*\R)*?\s*unkMcastAct\s*:\s*(?<l3_unknown_multicast>\S+)\R(?:\s*[^\r\n]*\R)*?\s*multiDstPktAct\s*:\s*(?<multi_destination_flooding>\S+)\R(?:\s*[^\r\n]*\R)*?\s*mac\s*:\s*(?<mac_address>\S+)\R(?:\s*[^\r\n]*\R)*?\s*tnFvCtxName\s*:\s*(?<vrf_name>\S+)`;
+
+aciFabricName(device) =
+  if isPresent(device.locationName) && length(device.locationName) > 0
+  then slugify(toLowerCase(device.locationName))
+  else "forward-aci-fabric";
 
 @query
 f(forward_netbox_shard_keys: List<String>) =
 foreach device in network.devices
-where false
-where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+foreach command in device.outputs.commands
+where command.commandType == CommandType.CUSTOM
+where matches(toLowerCase(command.commandText), "moquery -c fvbd*")
+foreach bd_match in regexMatches(command.response, bdRegex)
+let bd = bd_match.data
+let fabric_name = aciFabricName(device)
+where isEmpty(forward_netbox_shard_keys)
+  || fabric_name in forward_netbox_shard_keys
+  || bd.tenant_name in forward_netbox_shard_keys
+  || bd.name in forward_netbox_shard_keys
+  || bd.vrf_name in forward_netbox_shard_keys
 select distinct {
-  fabric_name: "",
-  tenant_name: "",
-  vrf_tenant_name: "",
-  vrf_name: "",
-  name: "",
-  unicast_routing_enabled: true,
-  arp_flooding_enabled: false,
-  limit_ip_learn_to_subnets: true,
-  l2_unknown_unicast: "proxy",
-  l3_unknown_multicast: "flood",
-  multi_destination_flooding: "bd-flood",
-  mac_address: "",
+  fabric_name: fabric_name,
+  tenant_name: bd.tenant_name,
+  vrf_tenant_name: bd.tenant_name,
+  vrf_name: bd.vrf_name,
+  name: bd.name,
+  unicast_routing_enabled: bd.unicast_routing_enabled == "yes",
+  arp_flooding_enabled: bd.arp_flooding_enabled == "yes",
+  limit_ip_learn_to_subnets: bd.limit_ip_learn_to_subnets == "yes",
+  l2_unknown_unicast: bd.l2_unknown_unicast,
+  l3_unknown_multicast: bd.l3_unknown_multicast,
+  multi_destination_flooding: bd.multi_destination_flooding,
+  mac_address: bd.mac_address,
   description: ""
 };
