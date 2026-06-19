@@ -17,6 +17,7 @@ from .choices import ForwardSourceDeploymentChoices
 from .choices import ForwardSourceStatusChoices
 from .choices import ForwardSyncStatusChoices
 from .choices import ForwardValidationStatusChoices
+from .models import ForwardDeviceAnalysis
 from .models import ForwardDriftPolicy
 from .models import ForwardExecutionRun
 from .models import ForwardExecutionStep
@@ -180,6 +181,21 @@ class ForwardIngestionIssueFilterSet(BaseFilterSet):
             | Q(model__icontains=value)
             | Q(exception__icontains=value)
             | Q(message__icontains=value)
+        )
+
+
+class ForwardDeviceAnalysisFilterSet(ChangeLoggedModelFilterSet):
+    q = django_filters.CharFilter(method="search")
+
+    class Meta:
+        model = ForwardDeviceAnalysis
+        fields = ("id", "sync", "device", "reachable", "blast_radius", "cve_count")
+
+    def search(self, queryset, name, value):
+        if not value.strip():
+            return queryset
+        return queryset.filter(
+            Q(device__name__icontains=value) | Q(detail__icontains=value)
         )
 
 
