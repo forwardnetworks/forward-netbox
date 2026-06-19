@@ -13,6 +13,7 @@ from django.contrib.contenttypes.models import ContentType
 from django.db import connection
 from django.test import TestCase
 from ipam.models import IPAddress
+from ipam.models import Prefix
 from ipam.models import VLAN
 from ipam.models import VRF
 
@@ -32,6 +33,7 @@ from forward_netbox.utilities.sync_core_models import apply_dcim_site
 from forward_netbox.utilities.sync_interface import apply_dcim_interface
 from forward_netbox.utilities.sync_interface import apply_dcim_macaddress
 from forward_netbox.utilities.sync_ipam import apply_ipam_ipaddress
+from forward_netbox.utilities.sync_ipam import apply_ipam_prefix
 from forward_netbox.utilities.sync_ipam import apply_ipam_vlan
 from forward_netbox.utilities.sync_ipam import apply_ipam_vrf
 
@@ -522,5 +524,25 @@ class BulkAdapterParityTest(TestCase):
             capture=lambda: [
                 (v.name, v.rd, v.description, v.enforce_unique)
                 for v in VRF.objects.order_by("name")
+            ],
+        )
+
+    def test_prefix_bulk_matches_adapter(self):
+        # Parent + child + a global (null-VRF) prefix. Capturing `_depth` proves
+        # the bulk per-object tree path triggers NetBox's hierarchy signal exactly
+        # like the adapter; the global prefix proves null-VRF identity parity.
+        rows = [
+            {"prefix": "10.0.0.0/16", "vrf": None, "status": "active"},
+            {"prefix": "10.0.1.0/24", "vrf": None, "status": "active"},
+            {"prefix": "192.168.0.0/24", "vrf": None, "status": "reserved"},
+        ]
+        self._assert_simple_parity(
+            model_string="ipam.prefix",
+            seed=lambda: None,
+            rows=rows,
+            adapter_fn=apply_ipam_prefix,
+            capture=lambda: [
+                (str(p.prefix), p.vrf_id, p.status, p._depth)
+                for p in Prefix.objects.order_by("prefix")
             ],
         )
