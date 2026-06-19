@@ -29,7 +29,6 @@ def fetch_device_analysis_rows(sync):
         query=_analysis_query_text(),
         network_id=network_id,
         snapshot_id=snapshot_id,
-        parameters={"Device_Name_Equals": ""},
         fetch_all=True,
     )
     return rows, snapshot_id
