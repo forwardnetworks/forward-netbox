@@ -664,6 +664,10 @@ class ForwardSyncView(generic.ObjectView):
                 "plugins:forward_netbox:forwardsync_refresh_device_analysis",
                 kwargs={"pk": instance.pk},
             ),
+            "drift_report_url": reverse(
+                "plugins:forward_netbox:forwardsync_drift_report",
+                kwargs={"pk": instance.pk},
+            ),
         }
         if instance.last_ingestion:
             data.update(instance.last_ingestion.get_statistics())
@@ -704,6 +708,51 @@ class ForwardSyncRefreshDeviceAnalysisView(BaseObjectView):
             % {"pk": job.pk},
         )
         return redirect(sync.get_absolute_url())
+
+
+@register_model_view(ForwardSync, "drift_report", path="drift-report")
+class ForwardSyncDriftReportView(BaseObjectView):
+    queryset = ForwardSync.objects.all()
+    template_name = "forward_netbox/forwardsync_drift_report.html"
+
+    def get_required_permission(self):
+        return "forward_netbox.view_forwardsync"
+
+    def get(self, request, pk):
+        # Derives a per-model drift table from the latest completed dependency
+        # preview job's cached payload — no extra dry-run.
+        from core.choices import JobStatusChoices
+        from core.models import Job
+        from django.contrib.contenttypes.models import ContentType
+
+        from .utilities.drift_report import compute_drift_report
+
+        sync = get_object_or_404(self.queryset, pk=pk)
+        job = (
+            Job.objects.filter(
+                object_type=ContentType.objects.get_for_model(ForwardSync),
+                object_id=sync.pk,
+                name__icontains="dependency preview",
+                status=JobStatusChoices.STATUS_COMPLETED,
+            )
+            .order_by("-created")
+            .first()
+        )
+        if job is None or not job.data:
+            messages.info(
+                request,
+                _(
+                    "No drift data yet. Run Preview Dependencies first, then open "
+                    "the drift report."
+                ),
+            )
+            return redirect(sync.get_absolute_url())
+        report = compute_drift_report(job.data)
+        return render(
+            request,
+            self.template_name,
+            {"object": sync, "report": report},
+        )
 
 
 @register_model_view(ForwardSync, "run_history", path="run-history")
