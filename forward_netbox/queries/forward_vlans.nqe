@@ -5,10 +5,17 @@
 
 import "netbox_utilities";
 
-candidateRows(forward_netbox_shard_keys: List<String>) =
+candidateRows(forward_netbox_shard_keys: List<String>, device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>) =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where isEmpty(device_tag_include_tags)
+    || (device_tag_include_match == "all"
+      && all(foreach tag in device_tag_include_tags select tag in device.tagNames))
+    || (device_tag_include_match != "all"
+      && any(foreach tag in device_tag_include_tags select tag in device.tagNames))
+  where isEmpty(device_tag_exclude_tags)
+    || !any(foreach tag in device_tag_exclude_tags select tag in device.tagNames)
   foreach ni in device.networkInstances
   foreach vlan in ni.vlans
   where isEmpty(forward_netbox_shard_keys) || toString(vlan.vlanId) in forward_netbox_shard_keys
@@ -23,9 +30,9 @@ candidateRows(forward_netbox_shard_keys: List<String>) =
   };
 
 @query
-f(forward_netbox_shard_keys: List<String>) =
+f(forward_netbox_shard_keys: List<String>, device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>) =
 foreach grouped in (
-  foreach row in candidateRows(forward_netbox_shard_keys)
+  foreach row in candidateRows(forward_netbox_shard_keys, device_tag_include_tags, device_tag_include_match, device_tag_exclude_tags)
   group row as grouped_rows by {
     site: row.site,
     site_slug: row.site_slug,
