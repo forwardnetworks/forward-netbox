@@ -17,7 +17,7 @@ Create a Forward data file with:
 - NQE name: `netbox_feature_tag_rules`
 - File type: `JSON`
 
-Attach the data file to the Forward network used by the sync, then run or reprocess a Forward snapshot. The plugin executes public `/api/nqe` against the selected snapshot, so the selected sync snapshot must include the uploaded data file value before rules affect plugin results.
+Attach the data file to the Forward network used by the sync, then run or reprocess a Forward snapshot. The plugin executes Forward NQE execution API calls against the selected snapshot, so the selected sync snapshot must include the uploaded data file value before rules affect plugin results.
 
 If this data file is not uploaded, attached, and visible in the selected snapshot, do not enable `Forward Device Feature Tags with Rules`. Forward's NQE schema only exposes data files that exist for the network, so a query that references a missing data file will fail validation. Keep `Forward Device Feature Tags` enabled instead.
 

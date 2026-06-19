@@ -1,22 +1,44 @@
 /**
  * @intent Forward ACI L3Outs
- * @description Conservative ACI L3Out map; emits no rows until Forward exposes non-empty L3Out identity.
+ * @description Discovers ACI L3Outs from the APIC l3extInstP custom command output.
  */
+
+import "netbox_utilities";
+
+l3outRegex = re`(?:^|\R)#\s+l3ext\.InstP\s*\R(?:\s*[^\r\n]*\R)*?\s*dn\s*:\s*uni/tn-(?<tenant_name>[^/\s]+)/out-(?<name>[^\r\n/]+)\R(?:\s*[^\r\n]*\R)*?\s*matchT\s*:\s*(?<matchT>\S+)\R(?:\s*[^\r\n]*\R)*?\s*scope\s*:\s*(?<scope>\S+)\R(?:\s*[^\r\n]*\R)*?\s*pcEnfPref\s*:\s*(?<pcEnfPref>\S+)\R(?:\s*[^\r\n]*\R)*?\s*prefGrMemb\s*:\s*(?<prefGrMemb>\S+)\R(?:\s*[^\r\n]*\R)*?\s*targetDscp\s*:\s*(?<target_dscp>\S+)(?:\R(?:\s*[^\r\n]*\R)*?\s*tnFvCtxName\s*:\s*(?<vrf_name>\S+))?`;
+
+aciFabricName(device) =
+  if isPresent(device.locationName) && length(device.locationName) > 0
+  then slugify(toLowerCase(device.locationName))
+  else "forward-aci-fabric";
 
 @query
 f(forward_netbox_shard_keys: List<String>) =
 foreach device in network.devices
-where false
-where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+foreach command in device.outputs.commands
+where command.commandType == CommandType.CUSTOM
+where matches(toLowerCase(command.commandText), "moquery -c l3extinstp*")
+foreach l3out_match in regexMatches(command.response, l3outRegex)
+let l3out = l3out_match.data
+let fabric_name = aciFabricName(device)
+where isPresent(l3out.vrf_name)
+where isEmpty(forward_netbox_shard_keys)
+  || fabric_name in forward_netbox_shard_keys
+  || l3out.tenant_name in forward_netbox_shard_keys
+  || l3out.vrf_name in forward_netbox_shard_keys
+  || l3out.name in forward_netbox_shard_keys
 select distinct {
-  fabric_name: "",
-  tenant_name: "",
-  vrf_name: "",
-  name: "",
+  fabric_name: fabric_name,
+  tenant_name: l3out.tenant_name,
+  vrf_tenant_name: l3out.tenant_name,
+  vrf_name: l3out.vrf_name,
+  name: l3out.name,
   protocol_bgp: false,
   protocol_ospf: false,
   protocol_eigrp: false,
   protocol_static: true,
-  target_dscp: "",
+  target_dscp: l3out.target_dscp,
   description: ""
 };
