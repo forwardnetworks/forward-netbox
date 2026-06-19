@@ -619,11 +619,18 @@ class QueryRegistryTest(TestCase):
         ]
         for model_string, query_name in device_query_names:
             spec = get_seeded_builtin_query_spec(model_string, query_name)
-            self.assertIn(
-                "normalizeDevicePlatformName(device)",
-                spec.query,
-                msg=f"{query_name} no longer normalizes forward platform OS values.",
-            )
+            if model_string == "dcim.platform":
+                self.assertIn(
+                    "normalizePlatformName(toString(device.platform.os), device.platform.osVersion)",
+                    spec.query,
+                    msg=f"{query_name} no longer normalizes forward platform OS values.",
+                )
+            else:
+                self.assertIn(
+                    "normalizeDevicePlatformName(device)",
+                    spec.query,
+                    msg=f"{query_name} no longer normalizes forward platform OS values.",
+                )
             self.assertNotIn(
                 'replace(toString(device.platform.os), "OS.", "")',
                 spec.query,
@@ -636,9 +643,9 @@ class QueryRegistryTest(TestCase):
         # Forward Platforms calls normalizePlatformName directly so it works for
         # ACI/APIC/CIMC devices whose vendor enum may not resolve via device context.
         self.assertIn(
-            "normalizePlatformName(toString(device.platform.os),",
+            "normalizePlatformName(toString(device.platform.os), device.platform.osVersion)",
             platform_spec.query,
-            msg="Forward Platforms no longer calls normalizePlatformName directly.",
+            msg="Forward Platforms should not use normalizeDevicePlatformName — it must call normalizePlatformName directly.",
         )
         self.assertNotIn(
             "normalizeDevicePlatformName(device)",
@@ -1233,21 +1240,47 @@ class QueryRegistryTest(TestCase):
         self.assertIn("In-Band IPv4 Address", apic_node_row["query"])
         self.assertIn("Pod I[Dd]", apic_node_row["query"])
         self.assertIn("CommandType.CUSTOM", cimc_row["query"])
-        self.assertIn('commandText == "moquery -c eqptCh -a all"', cimc_row["query"])
+        self.assertIn(
+            'matches(toLowerCase(chassis_command.commandText), "moquery -c eqptch*")',
+            cimc_row["query"],
+        )
         self.assertIn("CISCO_APIC_CONTROLLER_DETAIL", cimc_row["query"])
         self.assertIn(
             "regexMatches(chassis_command.response, chassisRegex)", cimc_row["query"]
         )
         self.assertIn("cimcVersion", cimc_row["query"])
         self.assertIn("device: node.node_name", cimc_row["query"])
-        self.assertIn("CISCO_ACI_FABRIC_VRFS", tenant_row["query"])
-        self.assertIn("tenant_name:", vrf_row["query"])
-        self.assertIn("where false", bd_row["query"])
+        self.assertIn(
+            'matches(toLowerCase(command.commandText), "moquery -c fvctx*")',
+            tenant_row["query"],
+        )
+        self.assertIn(
+            'matches(toLowerCase(command.commandText), "moquery -c fvctx*")',
+            vrf_row["query"],
+        )
+        self.assertIn("policy_enforcement_preference:", vrf_row["query"])
+        self.assertIn("policy_enforcement_direction:", vrf_row["query"])
+        self.assertIn("bd_enforcement_enabled:", vrf_row["query"])
+        self.assertIn(
+            'matches(toLowerCase(command.commandText), "moquery -c fvbd*")',
+            bd_row["query"],
+        )
+        self.assertIn("arp_flooding_enabled:", bd_row["query"])
+        self.assertIn("unicast_routing_enabled:", bd_row["query"])
+        self.assertIn("limit_ip_learn_to_subnets:", bd_row["query"])
+        self.assertIn("mac_address:", bd_row["query"])
         self.assertIn("where false", app_profile_row["query"])
         self.assertIn("where false", epg_row["query"])
         self.assertIn("where false", contract_row["query"])
         self.assertIn("CISCO_ACI_ZONING_FILTER", filter_row["query"])
-        self.assertIn("where false", l3out_row["query"])
+        self.assertIn(
+            'matches(toLowerCase(command.commandText), "moquery -c l3extinstp*")',
+            l3out_row["query"],
+        )
+        self.assertIn("(?<matchT>", l3out_row["query"])
+        self.assertIn("(?<pcEnfPref>", l3out_row["query"])
+        self.assertIn("(?<prefGrMemb>", l3out_row["query"])
+        self.assertIn("(?<target_dscp>", l3out_row["query"])
         self.assertIn("where false", static_binding_row["query"])
         self.assertNotIn(
             "Forward ACI Nodes",

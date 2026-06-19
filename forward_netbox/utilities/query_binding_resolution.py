@@ -342,6 +342,7 @@ def _live_drift_for_query_id(
             repository=repository,
             query_path=query_path,
             commit_id=query_map.commit_id or commit_id,
+            require_source_code=True,
         )
     except Exception as exc:
         return _live_lookup_failed(local_result, exc)

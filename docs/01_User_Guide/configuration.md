@@ -52,7 +52,7 @@ Create a `Forward Source` for each Forward deployment or tenant you want to sync
   - Retries do not mask NQE row validation failures or non-transient HTTP error
     responses.
 - `NQE Page Size`
-  - Rows requested per `/api/nqe` page.
+- Rows requested per NQE page.
   - Defaults to `10000`; valid range is `1..10000`.
   - This controls request paging (`queryOptions.offset/limit`) only. It does not change query semantics.
 - `Query Fetch Concurrency`
@@ -198,7 +198,7 @@ The plugin seeds two query families for device type matching:
 - Default maps that do not require a Forward data file.
 - Disabled alias-aware variants for `Forward Device Models` and `Forward Devices`.
 
-The alias-aware variants require a Forward JSON data file named `netbox_device_type_aliases.json` with NQE name `netbox_device_type_aliases`. That file can carry both Device Type Library aliases and manufacturer override rows, so alias-aware customizations stay data-driven instead of embedded in query code. Upload and attach the data file, then run or reprocess a Forward snapshot before enabling the alias-aware maps for plugin syncs. The plugin executes public `/api/nqe` against the selected snapshot and cannot force Forward's latest-data-file mode. Leave the default non-data-file maps enabled unless the selected snapshot exposes the data file value. See [Device Type Alias Data File](../02_Reference/device-type-alias-data-file.md).
+The alias-aware variants require a Forward JSON data file named `netbox_device_type_aliases.json` with NQE name `netbox_device_type_aliases`. That file can carry both Device Type Library aliases and manufacturer override rows, so alias-aware customizations stay data-driven instead of embedded in query code. Upload and attach the data file, then run or reprocess a Forward snapshot before enabling the alias-aware maps for plugin syncs. The plugin executes Forward NQE execution API queries against the selected snapshot and cannot force Forward's latest-data-file mode. Leave the default non-data-file maps enabled unless the selected snapshot exposes the data file value. See [Device Type Alias Data File](../02_Reference/device-type-alias-data-file.md).
 
 The plugin also seeds a default `Forward Device Feature Tags` map and a disabled `Forward Device Feature Tags with Rules` variant. The default map requires no data file and tags BGP-enabled devices as `Prot_BGP` from Forward's structured protocol state. The rules-aware variant requires a Forward JSON data file named `netbox_feature_tag_rules.json` with NQE name `netbox_feature_tag_rules`; use it when operators need to rename tags, change colors, or apply multiple tags from the same structured feature. See [Feature Tag Rules Data File](../02_Reference/feature-tag-rules-data-file.md).
 
@@ -223,15 +223,19 @@ Bindings` maps. Enable them only when you want Forward to create or update the
 plugin's ACI inventory and policy objects. The ACI maps use Forward
 saved-query/raw-query execution and `forward_netbox_shard_keys`; they do not
 use sync-time column filters or per-tenant/per-node Forward API calls. The
-fabric/pod/node, tenant/VRF, filter, and APIC CIMC inventory maps parse
-selected command output in NQE and emit normalized fields instead of raw command
-responses. The APIC CIMC inventory map targets native `dcim.inventoryitem` rows
-and requires the APIC custom command `moquery -c eqptCh -a all` to be collected
-by Forward. A separate `Forward ACI Command Inventory` discovery map reports
-bounded APIC/ACI command family presence without exposing raw payloads. Bridge
-domain, application profile, EPG, contract, L3Out, and static binding maps are
-seeded disabled as conservative no-op contracts until their bounded parser
-identity and repeat-sync behavior are proven.
+fabric/pod/node, tenant/VRF, bridge-domain, filter, L3Out, and APIC CIMC
+inventory maps parse selected command output in NQE and emit normalized fields
+instead of raw command responses. The APIC CIMC inventory map targets native
+`dcim.inventoryitem` rows and requires the APIC custom command
+`moquery -c eqptCh -a all` to be collected by Forward. The tenant and VRF maps
+consume `moquery -c fvCtx`; bridge domains consume `moquery -c fvBD`; and
+L3Outs consume `moquery -c l3extInstP`. The separate `Forward ACI Command
+Inventory` discovery map reports bounded APIC/ACI command family presence
+without exposing raw payloads. Exact custom-command checks stay in the map that
+needs them, so missing input fails cleanly there instead of being hidden behind
+a broad APIC dump. Application profile, EPG, contract, and static binding maps
+are still seeded disabled as conservative no-op contracts until their bounded
+parser identity and repeat-sync behavior are proven.
 
 Large datasets should prefer saved queries plus `latestProcessed`. That keeps the first run as a full baseline, then lets later runs use Forward `nqe-diffs` directly. The current built-ins also collapse NetBox identities in NQE where the source emits many raw rows for one object, such as prefix, IP, MAC, and VLAN records.
 
