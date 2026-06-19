@@ -660,10 +660,50 @@ class ForwardSyncView(generic.ObjectView):
                 "plugins:forward_netbox:forwardsync_run_history",
                 kwargs={"pk": instance.pk},
             ),
+            "refresh_device_analysis_url": reverse(
+                "plugins:forward_netbox:forwardsync_refresh_device_analysis",
+                kwargs={"pk": instance.pk},
+            ),
         }
         if instance.last_ingestion:
             data.update(instance.last_ingestion.get_statistics())
         return data
+
+
+@register_model_view(
+    ForwardSync, "refresh_device_analysis", path="refresh-device-analysis"
+)
+class ForwardSyncRefreshDeviceAnalysisView(BaseObjectView):
+    queryset = ForwardSync.objects.all()
+
+    def get_required_permission(self):
+        return "forward_netbox.view_forwardsync"
+
+    def get(self, request, pk):
+        sync = get_object_or_404(self.queryset, pk=pk)
+        return redirect(sync.get_absolute_url())
+
+    def post(self, request, pk):
+        # Live NQE over all devices — runs as a background job.
+        from core.models import Job
+        from django.utils.module_loading import import_string
+
+        sync = get_object_or_404(self.queryset, pk=pk)
+        job = Job.enqueue(
+            import_string("forward_netbox.jobs.refresh_forward_device_analysis"),
+            instance=sync,
+            user=request.user,
+            name=f"{sync.name} - refresh device analysis",
+        )
+        messages.success(
+            request,
+            _(
+                "Queued job #%(pk)d to refresh device analysis. The results appear "
+                "on each device's Forward Analysis panel."
+            )
+            % {"pk": job.pk},
+        )
+        return redirect(sync.get_absolute_url())
 
 
 @register_model_view(ForwardSync, "run_history", path="run-history")
