@@ -1924,6 +1924,61 @@ class ForwardSyncHealthTest(TestCase):
         self.assertNotIn("upsert_rows", data["plan_items"][0])
         self.assertNotIn("delete_rows", data["plan_items"][0])
 
+    def test_compute_drift_report_summarizes_model_results(self):
+        from forward_netbox.utilities.drift_report import compute_drift_report
+
+        payload = {
+            "generated_at": "t",
+            "model_results": [
+                {
+                    "model": "dcim.device",
+                    "row_count": 10,
+                    "estimated_changes": 3,
+                    "delete_count": 1,
+                },
+                {
+                    "model": "ipam.prefix",
+                    "row_count": 5,
+                    "estimated_changes": 0,
+                    "delete_count": 0,
+                },
+            ],
+        }
+        report = compute_drift_report(payload)
+        self.assertFalse(report["in_sync"])
+        self.assertEqual(report["total_drift"], 4)
+        self.assertEqual(report["drifted_model_count"], 1)
+        self.assertEqual(report["model_count"], 2)
+        self.assertEqual(report["models"][0]["model"], "dcim.device")
+        self.assertTrue(report["models"][1]["in_sync"])
+
+    def test_drift_report_view_renders_from_cached_preview(self):
+        from core.models import Job
+        from forward_netbox.jobs import forward_dependency_preview
+
+        self.client.force_login(self.user)
+        planner = self._mock_dependency_preview_planner()
+        client = Mock()
+        preview_url = reverse(
+            "plugins:forward_netbox:forwardsync_dependency_preview",
+            kwargs={"pk": self.sync.pk},
+        )
+        drift_url = reverse(
+            "plugins:forward_netbox:forwardsync_drift_report",
+            kwargs={"pk": self.sync.pk},
+        )
+        with patch.object(ForwardSource, "get_client", return_value=client), patch(
+            "forward_netbox.views.ForwardMultiBranchPlanner",
+            return_value=planner,
+        ):
+            self.client.post(preview_url)
+            job = Job.objects.filter(name__icontains="dependency preview").latest("pk")
+            forward_dependency_preview(job)
+            response = self.client.get(drift_url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "dcim.device")
+
     def test_ingestion_health_check_marks_non_blocking_issue_baseline_as_pass(self):
         ingestion = ForwardIngestion.objects.create(
             sync=self.sync,
