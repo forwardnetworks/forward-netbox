@@ -2,11 +2,15 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
-## v1.7.0
+## v1.7.1
+
+ACI BD/L3Out graduation + FHRP churn fix (replaces yanked 1.7.0 and 1.6.2)
+
+## v1.7.0 — 2026-06-19
 
 ACI bridge domain and L3Out NQE maps; query publish hardening
 
-## v1.7.0
+## v1.7.0 — 2026-06-19
 
 ACI bridge domain and L3Out NQE maps; query publish hardening
 
