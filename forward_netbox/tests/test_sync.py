@@ -10690,6 +10690,91 @@ class ForwardSyncRunnerTest(TestCase):
         )
         logger.increment_statistics.assert_any_call("ipam.fhrpgroup", outcome="skipped")
 
+    def test_fhrp_state_flip_does_not_churn_group(self):
+        # Regression (REDACTED's 13/13 churn): HSRP uses `select distinct row` in
+        # NQE, so any state change (MASTER→BACKUP) emits DELETED+ADDED per router.
+        # Applying those DELETE rows through delete_ipam_fhrpgroup removes valid
+        # FHRPGroupAssignments; when all assignments are gone the group is deleted,
+        # producing Created:N / Deleted:N every sync.
+        #
+        # Fix: _split_diff_rows deduplicates DELETED rows whose group identity
+        # also appears in an UPSERT row (same diff batch).
+        from forward_netbox.utilities.sync_contracts import default_coalesce_fields_for_model
+
+        device1 = self._create_device("device-1")
+        device2 = self._create_device("device-2")
+        Interface.objects.create(device=device1, name="Vlan100", type="virtual")
+        Interface.objects.create(device=device2, name="Vlan100", type="virtual")
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        # Prime coalesce fields (normally set by the fetch execution layer)
+        runner._model_coalesce_fields["ipam.fhrpgroup"] = default_coalesce_fields_for_model(
+            "ipam.fhrpgroup"
+        )
+
+        row_base = {
+            "protocol": "hsrp",
+            "group_id": 10,
+            "name": "hsrp",
+            "vrf": None,
+            "address": "10.0.0.1/32",
+            "priority": 100,
+            "status": "active",
+        }
+
+        # First sync: establish two router members
+        runner._apply_model_rows(
+            "ipam.fhrpgroup",
+            [
+                {**row_base, "device": "device-1", "interface": "Vlan100", "state": "MASTER"},
+                {**row_base, "device": "device-2", "interface": "Vlan100", "state": "BACKUP"},
+            ],
+        )
+        self.assertEqual(FHRPGroup.objects.count(), 1)
+        self.assertEqual(FHRPGroupAssignment.objects.count(), 2)
+        group_pk = FHRPGroup.objects.get().pk
+
+        # Simulate the incremental diff after HSRP state flips: each router emits
+        # DELETED (old state row) + ADDED (new state row).
+        state_flip_diff = [
+            {
+                "type": "DELETED",
+                "before": {**row_base, "device": "device-1", "interface": "Vlan100", "state": "MASTER"},
+                "after": None,
+            },
+            {
+                "type": "ADDED",
+                "before": None,
+                "after": {**row_base, "device": "device-1", "interface": "Vlan100", "state": "BACKUP"},
+            },
+            {
+                "type": "DELETED",
+                "before": {**row_base, "device": "device-2", "interface": "Vlan100", "state": "BACKUP"},
+                "after": None,
+            },
+            {
+                "type": "ADDED",
+                "before": None,
+                "after": {**row_base, "device": "device-2", "interface": "Vlan100", "state": "MASTER"},
+            },
+        ]
+
+        upsert_rows, delete_rows = runner._split_diff_rows("ipam.fhrpgroup", state_flip_diff)
+
+        self.assertEqual(len(upsert_rows), 2)
+        self.assertEqual(
+            delete_rows,
+            [],
+            "state-flip DELETED rows must be suppressed when group identity re-appears in upsert_rows",
+        )
+
+        # Applying the upserts must NOT destroy the group.
+        runner._apply_model_rows("ipam.fhrpgroup", upsert_rows)
+        self.assertEqual(FHRPGroup.objects.count(), 1)
+        self.assertEqual(FHRPGroup.objects.get().pk, group_pk)
+        self.assertEqual(FHRPGroupAssignment.objects.count(), 2)
+
     def test_validate_row_shape_allows_cable_endpoint_identity(self):
         validate_row_shape_for_model(
             "dcim.cable",
