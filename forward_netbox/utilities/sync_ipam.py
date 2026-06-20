@@ -213,6 +213,33 @@ def _lookup_fhrp_group(runner, row):
     )
 
 
+def _find_fhrp_group_by_vip(runner, host_ip, vrf, protocol, group_id):
+    """Return the FHRPGroup that currently owns the VIP at host_ip/vrf, or None.
+
+    Used as a pre-lookup in apply_ipam_fhrpgroup so that name changes (e.g.
+    VRF now present in NQE where it was absent before) don't produce a spurious
+    create+delete cycle: we find the existing group via its stable VIP assignment
+    instead of its mutable name field.
+    """
+    from ipam.models import FHRPGroup
+    from ipam.models import IPAddress
+
+    existing_ip = runner._get_unique_or_raise(
+        IPAddress,
+        {"address__net_host": host_ip, "vrf": vrf},
+    )
+    if existing_ip is None:
+        return None
+    ct = runner._content_type_for(FHRPGroup)
+    if existing_ip.assigned_object_type_id != ct.pk:
+        return None
+    return FHRPGroup.objects.filter(
+        pk=existing_ip.assigned_object_id,
+        protocol=protocol,
+        group_id=group_id,
+    ).first()
+
+
 def _ensure_fhrp_vip(runner, row, *, group, vrf, protocol):
     from ipam.models import FHRPGroup
     from ipam.models import IPAddress
@@ -325,27 +352,45 @@ def apply_ipam_fhrpgroup(runner, row):
     vrf = _fhrp_vrf(runner, row)
     protocol = row.get("protocol") or "hsrp"
     group_name = _fhrp_group_name(row)
-    group, group_created = runner._coalesce_update_or_create(
-        FHRPGroup,
-        coalesce_lookups=[
-            {
+
+    # VIP-first lookup: find the group that already owns this VIP.  This
+    # handles name-change scenarios (e.g. VRF data newly present in NQE)
+    # without creating a spurious duplicate that immediately hits VIP conflict.
+    group_created = False
+    host_ip = str(ip_interface(row["address"]).ip) if row.get("address") else None
+    group = (
+        _find_fhrp_group_by_vip(runner, host_ip, vrf, protocol, int(row["group_id"]))
+        if host_ip
+        else None
+    )
+    if group is not None:
+        # Migrate name to canonical form if it changed (e.g. VRF appeared).
+        if group.name != group_name:
+            group.name = group_name
+            group.save(update_fields=["name"])
+    else:
+        group, group_created = runner._coalesce_update_or_create(
+            FHRPGroup,
+            coalesce_lookups=[
+                {
+                    "protocol": protocol,
+                    "group_id": int(row["group_id"]),
+                    "name": group_name,
+                }
+            ],
+            create_values={
                 "protocol": protocol,
                 "group_id": int(row["group_id"]),
                 "name": group_name,
-            }
-        ],
-        create_values={
-            "protocol": protocol,
-            "group_id": int(row["group_id"]),
-            "name": group_name,
-            "description": "Forward FHRP group",
-            "comments": "",
-        },
-        update_values={
-            "description": "Forward FHRP group",
-            "comments": "",
-        },
-    )
+                "description": "Forward FHRP group",
+                "comments": "",
+            },
+            update_values={
+                "description": "Forward FHRP group",
+                "comments": "",
+            },
+        )
+
     vip_applied = _ensure_fhrp_vip(
         runner,
         row,
