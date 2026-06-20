@@ -10699,7 +10699,9 @@ class ForwardSyncRunnerTest(TestCase):
         #
         # Fix: _split_diff_rows deduplicates DELETED rows whose group identity
         # also appears in an UPSERT row (same diff batch).
-        from forward_netbox.utilities.sync_contracts import default_coalesce_fields_for_model
+        from forward_netbox.utilities.sync_contracts import (
+            default_coalesce_fields_for_model,
+        )
 
         device1 = self._create_device("device-1")
         device2 = self._create_device("device-2")
@@ -10709,8 +10711,8 @@ class ForwardSyncRunnerTest(TestCase):
             sync=self.sync, ingestion=None, client=None, logger_=Mock()
         )
         # Prime coalesce fields (normally set by the fetch execution layer)
-        runner._model_coalesce_fields["ipam.fhrpgroup"] = default_coalesce_fields_for_model(
-            "ipam.fhrpgroup"
+        runner._model_coalesce_fields["ipam.fhrpgroup"] = (
+            default_coalesce_fields_for_model("ipam.fhrpgroup")
         )
 
         row_base = {
@@ -10727,8 +10729,18 @@ class ForwardSyncRunnerTest(TestCase):
         runner._apply_model_rows(
             "ipam.fhrpgroup",
             [
-                {**row_base, "device": "device-1", "interface": "Vlan100", "state": "MASTER"},
-                {**row_base, "device": "device-2", "interface": "Vlan100", "state": "BACKUP"},
+                {
+                    **row_base,
+                    "device": "device-1",
+                    "interface": "Vlan100",
+                    "state": "MASTER",
+                },
+                {
+                    **row_base,
+                    "device": "device-2",
+                    "interface": "Vlan100",
+                    "state": "BACKUP",
+                },
             ],
         )
         self.assertEqual(FHRPGroup.objects.count(), 1)
@@ -10740,27 +10752,49 @@ class ForwardSyncRunnerTest(TestCase):
         state_flip_diff = [
             {
                 "type": "DELETED",
-                "before": {**row_base, "device": "device-1", "interface": "Vlan100", "state": "MASTER"},
+                "before": {
+                    **row_base,
+                    "device": "device-1",
+                    "interface": "Vlan100",
+                    "state": "MASTER",
+                },
                 "after": None,
             },
             {
                 "type": "ADDED",
                 "before": None,
-                "after": {**row_base, "device": "device-1", "interface": "Vlan100", "state": "BACKUP"},
+                "after": {
+                    **row_base,
+                    "device": "device-1",
+                    "interface": "Vlan100",
+                    "state": "BACKUP",
+                },
             },
             {
                 "type": "DELETED",
-                "before": {**row_base, "device": "device-2", "interface": "Vlan100", "state": "BACKUP"},
+                "before": {
+                    **row_base,
+                    "device": "device-2",
+                    "interface": "Vlan100",
+                    "state": "BACKUP",
+                },
                 "after": None,
             },
             {
                 "type": "ADDED",
                 "before": None,
-                "after": {**row_base, "device": "device-2", "interface": "Vlan100", "state": "MASTER"},
+                "after": {
+                    **row_base,
+                    "device": "device-2",
+                    "interface": "Vlan100",
+                    "state": "MASTER",
+                },
             },
         ]
 
-        upsert_rows, delete_rows = runner._split_diff_rows("ipam.fhrpgroup", state_flip_diff)
+        upsert_rows, delete_rows = runner._split_diff_rows(
+            "ipam.fhrpgroup", state_flip_diff
+        )
 
         self.assertEqual(len(upsert_rows), 2)
         self.assertEqual(
