@@ -1338,3 +1338,40 @@ class SyncACIAdapterTest(TestCase):
 
         self.assertFalse(result)
         self.assertEqual(runner.deletes, [])
+
+
+class SuppressAciDeletesTest(TestCase):
+    """ACI inventory must not be auto-pruned when an APIC fails collection."""
+
+    def _sync(self, **params):
+        return SimpleNamespace(parameters=params)
+
+    def test_aci_deletes_suppressed_by_default(self):
+        from forward_netbox.utilities.sync_execution import (
+            _should_suppress_aci_deletes,
+        )
+
+        sync = self._sync()
+        self.assertTrue(
+            _should_suppress_aci_deletes(sync, "netbox_cisco_aci.acibridgedomain")
+        )
+        self.assertTrue(_should_suppress_aci_deletes(sync, "netbox_cisco_aci.acil3out"))
+
+    def test_aci_deletes_applied_when_opted_in(self):
+        from forward_netbox.utilities.sync_execution import (
+            _should_suppress_aci_deletes,
+        )
+
+        sync = self._sync(aci_allow_deletes=True)
+        self.assertFalse(
+            _should_suppress_aci_deletes(sync, "netbox_cisco_aci.acibridgedomain")
+        )
+
+    def test_non_aci_models_never_suppressed(self):
+        from forward_netbox.utilities.sync_execution import (
+            _should_suppress_aci_deletes,
+        )
+
+        sync = self._sync()
+        self.assertFalse(_should_suppress_aci_deletes(sync, "dcim.interface"))
+        self.assertFalse(_should_suppress_aci_deletes(sync, "ipam.fhrpgroup"))

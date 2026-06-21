@@ -100,6 +100,52 @@ class ForwardDeviceScopeReconciliationAuditCommandTest(TestCase):
         with self.assertRaises(SystemExit):
             self._run(rows, **{"fail_on_drift": True})
 
+    def test_backfill_reason_breakdown_and_staleness(self):
+        # Two in-scope devices fail collection with different reasons; the audit
+        # must surface the per-reason breakdown and a per-device stale age so an
+        # operator never needs a manual Forward probe to diagnose the gap.
+        self._make_devices("dev-ok", "dev-auth", "dev-timeout")
+        rows = [
+            {"name": "dev-ok", "completed": True},
+            {
+                "name": "dev-auth",
+                "completed": False,
+                "reason": "DeviceSnapshotResult.collectionFailed"
+                "(DeviceCollectionError.AUTHENTICATION_FAILED)",
+                "backfillTime": "2020-01-01T00:00:00Z",
+            },
+            {
+                "name": "dev-timeout",
+                "completed": False,
+                "reason": "DeviceSnapshotResult.collectionFailed"
+                "(DeviceCollectionError.CONNECTION_TIMEOUT)",
+                "backfillTime": "2020-01-01T00:00:00Z",
+            },
+        ]
+        payload = self._run(rows)
+        self.assertEqual(
+            payload["backfilled_reason_breakdown"],
+            {"AUTHENTICATION_FAILED": 1, "CONNECTION_TIMEOUT": 1},
+        )
+        detail = {d["name"]: d for d in payload["present_backfilled_detail_sample"]}
+        self.assertEqual(detail["dev-auth"]["reason"], "AUTHENTICATION_FAILED")
+        self.assertEqual(detail["dev-timeout"]["reason"], "CONNECTION_TIMEOUT")
+        self.assertGreater(detail["dev-auth"]["stale_days"], 0)
+
+    def test_backfill_reason_defaults_unknown_without_reason(self):
+        # Older payloads (no reason/backfillTime) must not break: reason -> unknown,
+        # stale_days -> None.
+        self._make_devices("dev-a", "dev-c")
+        rows = [
+            {"name": "dev-a", "completed": True},
+            {"name": "dev-c", "completed": False},
+        ]
+        payload = self._run(rows)
+        self.assertEqual(payload["backfilled_reason_breakdown"], {"unknown": 1})
+        detail = payload["present_backfilled_detail_sample"][0]
+        self.assertEqual(detail["reason"], "unknown")
+        self.assertIsNone(detail["stale_days"])
+
     def test_prune_orphans_dry_run_keeps_devices(self):
         # dev-a completed in scope, dev-c tagged-but-backfilled, dev-d stale.
         self._make_devices("dev-a", "dev-c", "dev-d")

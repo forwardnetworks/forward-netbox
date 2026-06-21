@@ -799,7 +799,9 @@
           <tr>
             <th scope="row">{% trans "Backfilled devices" %}</th>
             <td>
-              {% if health.collection_gap.status == "warn" %}
+              {% if health.collection_gap.status == "danger" %}
+                <span class="badge text-bg-danger">{{ health.collection_gap.backfilled_count }}</span>
+              {% elif health.collection_gap.status == "warn" %}
                 <span class="badge text-bg-warning">{{ health.collection_gap.backfilled_count }}</span>
               {% else %}
                 <span class="badge text-bg-success">{{ health.collection_gap.backfilled_count }}</span>
