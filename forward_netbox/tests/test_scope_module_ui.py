@@ -271,16 +271,25 @@ class ScopeModuleUiTest(TestCase):
         from forward_netbox.models import ForwardDeviceAnalysis
 
         self._device("dev-an")
+        self._device("dev-down")
         fwd_client = Mock()
         fwd_client.run_nqe_query = Mock(
             return_value=[
                 {
                     "name": "dev-an",
                     "reachable": True,
+                    "collection_result": "DeviceSnapshotResult.completed",
                     "blast_radius": 7,
                     "cve_count": 2,
                     "up_interfaces": 5,
                     "detail": "DC1",
+                },
+                {
+                    "name": "dev-down",
+                    "reachable": False,
+                    "collection_result": "DeviceSnapshotResult.collectionFailed"
+                    "(DeviceCollectionError.AUTHENTICATION_FAILED)",
+                    "blast_radius": 0,
                 },
                 # Not in NetBox -> skipped (analysis is a NetBox-side overlay).
                 {"name": "ghost", "reachable": False, "blast_radius": 0},
@@ -304,13 +313,17 @@ class ScopeModuleUiTest(TestCase):
             refresh_forward_device_analysis(job)
 
         rows = ForwardDeviceAnalysis.objects.filter(sync=self.sync)
-        self.assertEqual(rows.count(), 1)
-        analysis = rows.get()
-        self.assertEqual(analysis.device.name, "dev-an")
+        self.assertEqual(rows.count(), 2)
+        analysis = rows.get(device__name="dev-an")
         self.assertTrue(analysis.reachable)
         self.assertEqual(analysis.blast_radius, 7)
         self.assertEqual(analysis.cve_count, 2)
         self.assertEqual(analysis.up_interfaces, 5)
+        self.assertEqual(analysis.collection_result, "completed")
+        # The failed device surfaces the specific Forward collection error token.
+        down = rows.get(device__name="dev-down")
+        self.assertFalse(down.reachable)
+        self.assertEqual(down.collection_result, "AUTHENTICATION_FAILED")
 
         # List view + device-detail panel render the stored analysis.
         list_resp = client.get(

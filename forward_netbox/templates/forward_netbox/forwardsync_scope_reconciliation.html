@@ -93,15 +93,46 @@
 <div class="row mt-3">
   <div class="col col-md-6">
     <div class="card">
+      <h5 class="card-header">{% trans "Backfill Reason Breakdown" %}</h5>
+      <div class="card-body">
+        {% if payload.backfilled_reason_breakdown %}
+          <p class="text-muted mt-0">{% trans "Why these in-scope devices were not freshly collected by Forward. This is a Forward collection-health signal, not a sync error — fix collection in Forward (rotate credentials for AUTHENTICATION_FAILED, check reachability for CONNECTION_TIMEOUT, finish onboarding for INCOMPLETE_SETUP)." %}</p>
+          <table class="table table-hover attr-table mb-0">
+            {% for reason, count in payload.backfilled_reason_breakdown.items %}
+              <tr>
+                <th scope="row"><code>{{ reason }}</code></th>
+                <td><span class="badge text-bg-warning">{{ count }}</span></td>
+              </tr>
+            {% endfor %}
+          </table>
+        {% else %}
+          <p class="text-muted mb-0">{% trans "No backfilled devices in the latest snapshot." %}</p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  <div class="col col-md-6">
+    <div class="card">
       <h5 class="card-header">{% trans "Tagged-but-Backfilled Sample" %}</h5>
       <div class="card-body">
-        {% if payload.present_backfilled_sample %}
-          <p class="text-muted mt-0">{% trans "In NetBox but not freshly collected in the latest snapshot. Use Tag backfilled devices, then filter the device list by the forward-backfilled tag." %}</p>
-          <ul class="mb-0">
-            {% for name in payload.present_backfilled_sample %}<li><code>{{ name }}</code></li>{% endfor %}
-          </ul>
-          {% if payload.netbox_present_backfilled > payload.present_backfilled_sample|length %}
-            <p class="text-muted mt-2 mb-0">{% blocktrans with shown=payload.present_backfilled_sample|length total=payload.netbox_present_backfilled %}Showing {{ shown }} of {{ total }}.{% endblocktrans %}</p>
+        {% if payload.present_backfilled_detail_sample %}
+          <p class="text-muted mt-0">{% trans "In NetBox but not freshly collected in the latest snapshot (serving last-known-good data). Days = how stale the served data is." %}</p>
+          <table class="table table-hover attr-table mb-0">
+            <thead>
+              <tr><th>{% trans "Device" %}</th><th>{% trans "Reason" %}</th><th>{% trans "Stale" %}</th></tr>
+            </thead>
+            <tbody>
+              {% for item in payload.present_backfilled_detail_sample %}
+                <tr>
+                  <td><code>{{ item.name }}</code></td>
+                  <td><code>{{ item.reason }}</code></td>
+                  <td>{% if item.stale_days is not None %}{% blocktrans count days=item.stale_days %}{{ days }} day{% plural %}{{ days }} days{% endblocktrans %}{% else %}<span class="text-muted">&mdash;</span>{% endif %}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+          {% if payload.netbox_present_backfilled > payload.present_backfilled_detail_sample|length %}
+            <p class="text-muted mt-2 mb-0">{% blocktrans with shown=payload.present_backfilled_detail_sample|length total=payload.netbox_present_backfilled %}Showing {{ shown }} of {{ total }}.{% endblocktrans %}</p>
           {% endif %}
         {% else %}
           <p class="text-muted mb-0">{% trans "No backfilled devices in NetBox." %}</p>

@@ -8,7 +8,8 @@ Forward 26.6 is the baseline for async NQE.
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v1.7.1` | `4.5.9` and `4.6.2` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Current release; ACI BD/L3Out graduation + FHRP churn fix (replaces yanked 1.7.0 and 1.6.2) |
+| `v1.7.2` | `4.5.9` and `4.6.2` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Current release; Collection-gap diagnostics: per-reason backfill breakdown + staleness, growth/trend escalation, per-device collection result, ACI delete safety valve, opt-in auto-tag |
+| `v1.7.1` | `4.5.9` and `4.6.2` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v1.7.2`; ACI BD/L3Out graduation + FHRP churn fix (replaces yanked 1.7.0 and 1.6.2) |
 | `v1.7.0` | `4.5.9` and `4.6.2` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v1.7.1`; ACI bridge domain and L3Out NQE maps; query publish hardening |
 | `v1.7.0` | `4.5.9` and `4.6.2` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v1.7.0`; ACI bridge domain and L3Out NQE maps; query publish hardening |
 | `v1.6.2` | `4.5.9` and `4.6.2` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v1.7.0`; completes the 1.6.1 line (1.6.1 was yanked — its PyPI build predated these): device tag scope now covers VLANs/VRFs and prefixes derive from connected interface subnets; the FHRP group churn (delete+recreate every sync) is fixed by identity-bucket sharding; device analysis is a first-class model with a fleet list view, REST API, and an Open in Forward deep-link. |

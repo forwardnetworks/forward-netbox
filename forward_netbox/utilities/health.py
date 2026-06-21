@@ -507,6 +507,44 @@ def _density_learning_summary(sync):
     return _density_learning_summary_impl(sync)
 
 
+def _backfilled_count_trend(sync):
+    """Delta in backfilled count since the previous tag reconciliation.
+
+    The ``tag_forward_backfilled_devices`` job records ``total_backfilled`` in
+    its ``job.data`` on every run, so the last two completed runs give a cheap
+    growth signal without any extra storage. Returns ``{previous, delta}`` (delta
+    can be negative when collection recovers) or ``None`` when there is no prior
+    run to compare against. A growing gap (e.g. 18 -> 72) is the signal an
+    operator needs but a single point-in-time count hides.
+    """
+    from core.choices import JobStatusChoices
+    from core.models import Job
+    from django.contrib.contenttypes.models import ContentType
+
+    try:
+        content_type = ContentType.objects.get_for_model(sync.__class__)
+        history = list(
+            Job.objects.filter(
+                object_type=content_type,
+                object_id=sync.pk,
+                status=JobStatusChoices.STATUS_COMPLETED,
+                data__has_key="total_backfilled",
+            )
+            .order_by("-created", "-pk")
+            .values_list("data", flat=True)[:2]
+        )
+    except Exception:  # pragma: no cover - defensive; trend is best-effort
+        return None
+    counts = [
+        entry.get("total_backfilled")
+        for entry in history
+        if isinstance(entry, dict) and isinstance(entry.get("total_backfilled"), int)
+    ]
+    if len(counts) < 2:
+        return None
+    return {"previous": counts[1], "latest": counts[0], "delta": counts[0] - counts[1]}
+
+
 def _collection_gap_summary(sync):
     """Collection-gap signal from the persisted ``forward-backfilled`` tag.
 
@@ -526,22 +564,39 @@ def _collection_gap_summary(sync):
             "available": True,
             "status": "info",
             "backfilled_count": 0,
+            "trend_delta": None,
             "tag_slug": BACKFILLED_TAG_SLUG,
             "message": (
                 "No devices flagged forward-backfilled. Run Tag backfilled devices "
                 "from Scope Reconciliation to refresh this signal."
             ),
         }
+    trend = _backfilled_count_trend(sync)
+    growing = bool(trend and trend["delta"] > 0)
+    trend_note = ""
+    if trend and trend["delta"] > 0:
+        trend_note = (
+            f" Up {trend['delta']} since the previous reconciliation "
+            f"({trend['previous']} -> {trend['latest']}) — collection is degrading."
+        )
+    elif trend and trend["delta"] < 0:
+        trend_note = (
+            f" Down {abs(trend['delta'])} since the previous reconciliation "
+            f"({trend['previous']} -> {trend['latest']}) — collection is recovering."
+        )
     return {
         "available": True,
-        "status": "warn",
+        # A growing gap is worse than a steady one: escalate so it stands out.
+        "status": "danger" if growing else "warn",
         "backfilled_count": count,
+        "trend_delta": trend["delta"] if trend else None,
         "tag_slug": BACKFILLED_TAG_SLUG,
         "message": (
             f"{count} device(s) tagged forward-backfilled — in scope but not "
-            "freshly collected in the latest snapshot. Investigate Forward "
-            "collection for these devices (filter the device list by the "
-            "forward-backfilled tag)."
+            "freshly collected in the latest snapshot. Open Scope Reconciliation "
+            "for the per-reason breakdown (auth vs timeout vs incomplete setup) "
+            "and fix Forward collection for these devices, or filter the device "
+            f"list by the forward-backfilled tag.{trend_note}"
         ),
     }
 
