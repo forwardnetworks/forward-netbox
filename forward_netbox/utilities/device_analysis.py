@@ -6,6 +6,8 @@
 # APIs (not device NQE); see forward_netbox/queries/forward_device_analysis.nqe.
 from pathlib import Path
 
+from .scope_reconciliation import _collection_failure_reason
+
 ANALYSIS_QUERY_NAME = "Forward Device Analysis"
 ANALYSIS_QUERY_PATH = (
     Path(__file__).resolve().parents[1] / "queries" / "forward_device_analysis.nqe"
@@ -73,6 +75,9 @@ def refresh_device_analysis(sync) -> dict:
                 device=device,
                 defaults={
                     "reachable": bool(row.get("reachable")),
+                    "collection_result": _collection_failure_reason(
+                        row.get("collection_result")
+                    )[:64],
                     "blast_radius": _coerce_int(row.get("blast_radius")),
                     "cve_count": _coerce_int(row.get("cve_count")),
                     "up_interfaces": _coerce_int(row.get("up_interfaces")),

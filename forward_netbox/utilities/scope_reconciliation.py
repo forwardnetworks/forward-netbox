@@ -2,13 +2,59 @@
 #
 # Used by both the forward_device_scope_reconciliation_audit management command
 # and the sync-detail UI panel so the CLI and UI always agree.
+import re
+from datetime import datetime
+from datetime import timezone as dt_timezone
+
 from dcim.models import Device
 from django.db import transaction
+from django.utils import timezone
 
 from .forward_api import build_device_tag_scope_where
 from .sync_facade import device_tag_scope
 
 SAMPLE_LIMIT = 25
+
+# Forward renders a failed collection result as
+# ``DeviceSnapshotResult.collectionFailed(DeviceCollectionError.AUTHENTICATION_FAILED)``.
+# Pull the specific DeviceCollectionError token so operators can see *why* a
+# device is backfilled (auth vs timeout vs incomplete setup) without a manual
+# Forward API probe.
+_COLLECTION_ERROR_RE = re.compile(r"DeviceCollectionError\.([A-Za-z0-9_]+)")
+
+
+def _collection_failure_reason(reason_str):
+    """Map a stringified ``device.snapshotInfo.result`` to a short reason token.
+
+    ``DeviceSnapshotResult.collectionFailed(DeviceCollectionError.X)`` -> ``X``;
+    ``DeviceSnapshotResult.completed`` -> ``completed``; anything unparseable
+    (including a missing reason on older payloads) -> ``unknown``.
+    """
+    if not reason_str:
+        return "unknown"
+    match = _COLLECTION_ERROR_RE.search(str(reason_str))
+    if match:
+        return match.group(1)
+    token = str(reason_str).rsplit(".", 1)[-1].strip()
+    return token or "unknown"
+
+
+def _stale_days(ts_str):
+    """Whole days between an ISO collection/backfill timestamp and now.
+
+    Returns ``None`` when the timestamp is missing or unparseable so callers can
+    render a placeholder instead of a misleading ``0``.
+    """
+    if not ts_str:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(ts_str).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt_timezone.utc)
+    return max(0, (timezone.now() - parsed).days)
+
 
 # NetBox tag applied to devices that are tagged-in-scope but were backfilled
 # (not freshly collected) in the latest Forward snapshot, so operators can find
@@ -47,7 +93,10 @@ def compute_scope_reconciliation(sync) -> dict:
             "select {",
             "  name: device.name,",
             "  completed: device.snapshotInfo.result "
-            "== DeviceSnapshotResult.completed",
+            "== DeviceSnapshotResult.completed,",
+            "  reason: toString(device.snapshotInfo.result),",
+            "  collectionTime: device.snapshotInfo.collectionTime,",
+            "  backfillTime: device.snapshotInfo.backfillTime",
             "}",
         ]
     )
@@ -58,16 +107,17 @@ def compute_scope_reconciliation(sync) -> dict:
         fetch_all=True,
     )
 
-    tagged_names = {
-        str(row.get("name") or "").strip()
-        for row in rows
-        if str(row.get("name") or "").strip()
-    }
-    completed_names = {
-        str(row.get("name") or "").strip()
-        for row in rows
-        if row.get("completed") and str(row.get("name") or "").strip()
-    }
+    row_by_name = {}
+    tagged_names = set()
+    completed_names = set()
+    for row in rows:
+        name = str(row.get("name") or "").strip()
+        if not name:
+            continue
+        tagged_names.add(name)
+        row_by_name[name] = row
+        if row.get("completed"):
+            completed_names.add(name)
     backfilled_names = tagged_names - completed_names
 
     netbox_names = {
@@ -79,6 +129,31 @@ def compute_scope_reconciliation(sync) -> dict:
     out_of_scope = netbox_names - tagged_names
     present_backfilled = netbox_names & backfilled_names
     missing_in_netbox = completed_names - netbox_names
+
+    # Why are the in-scope devices backfilled? Group by the Forward collection
+    # error so operators can act (rotate creds for AUTHENTICATION_FAILED, check
+    # reachability for CONNECTION_TIMEOUT, finish onboarding for INCOMPLETE_SETUP)
+    # without running a manual probe.
+    reason_breakdown = {}
+    for name in backfilled_names:
+        reason = _collection_failure_reason((row_by_name.get(name) or {}).get("reason"))
+        reason_breakdown[reason] = reason_breakdown.get(reason, 0) + 1
+    reason_breakdown = dict(
+        sorted(reason_breakdown.items(), key=lambda kv: (-kv[1], kv[0]))
+    )
+
+    present_backfilled_detail = []
+    for name in sorted(present_backfilled)[:SAMPLE_LIMIT]:
+        row = row_by_name.get(name) or {}
+        present_backfilled_detail.append(
+            {
+                "name": name,
+                "reason": _collection_failure_reason(row.get("reason")),
+                "stale_days": _stale_days(
+                    row.get("backfillTime") or row.get("collectionTime")
+                ),
+            }
+        )
 
     return {
         "sync_id": sync.pk,
@@ -93,8 +168,10 @@ def compute_scope_reconciliation(sync) -> dict:
         "netbox_present_backfilled": len(present_backfilled),
         "netbox_out_of_scope": len(out_of_scope),
         "forward_missing_in_netbox": len(missing_in_netbox),
+        "backfilled_reason_breakdown": reason_breakdown,
         "out_of_scope_sample": sorted(out_of_scope)[:SAMPLE_LIMIT],
         "present_backfilled_sample": sorted(present_backfilled)[:SAMPLE_LIMIT],
+        "present_backfilled_detail_sample": present_backfilled_detail,
         "missing_in_netbox_sample": sorted(missing_in_netbox)[:SAMPLE_LIMIT],
         # Internal sets for prune/tag; not meant for JSON serialization.
         "_tagged_names": tagged_names,

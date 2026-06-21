@@ -2,7 +2,11 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
-## v1.7.1
+## v1.7.2
+
+Collection-gap diagnostics: per-reason backfill breakdown + staleness, growth/trend escalation, per-device collection result, ACI delete safety valve, opt-in auto-tag
+
+## v1.7.1 — 2026-06-19
 
 ACI BD/L3Out graduation + FHRP churn fix (replaces yanked 1.7.0 and 1.6.2)
 

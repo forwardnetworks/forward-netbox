@@ -259,6 +259,47 @@ class ForwardSyncHealthTest(TestCase):
         summary2 = sync_health_summary(self.sync)
         self.assertEqual(summary2["collection_gap"]["status"], "warn")
         self.assertEqual(summary2["collection_gap"]["backfilled_count"], 1)
+        self.assertIsNone(summary2["collection_gap"]["trend_delta"])
+
+    def test_collection_gap_escalates_when_growing(self):
+        from core.choices import JobStatusChoices
+        from core.models import Job
+        from dcim.models import Device
+        from dcim.models import DeviceRole
+        from dcim.models import DeviceType
+        from dcim.models import Manufacturer
+        from dcim.models import Site
+        from django.contrib.contenttypes.models import ContentType
+        from extras.models import Tag
+
+        mfr = Manufacturer.objects.create(name="MfrCG2", slug="mfr-cg2")
+        dt = DeviceType.objects.create(manufacturer=mfr, model="dt-cg2", slug="dt-cg2")
+        role = DeviceRole.objects.create(name="RoleCG2", slug="role-cg2")
+        site = Site.objects.create(name="SiteCG2", slug="site-cg2")
+        dev = Device.objects.create(
+            name="dev-cg2", device_type=dt, role=role, site=site
+        )
+        tag = Tag.objects.create(name="Forward Backfilled", slug="forward-backfilled")
+        dev.tags.add(tag)
+
+        # Two prior tag reconciliations recorded a growing gap (18 -> 72).
+        from uuid import uuid4
+
+        content_type = ContentType.objects.get_for_model(self.sync.__class__)
+        for total in (18, 72):
+            Job.objects.create(
+                object_type=content_type,
+                object_id=self.sync.pk,
+                name="tag backfilled devices",
+                status=JobStatusChoices.STATUS_COMPLETED,
+                data={"total_backfilled": total},
+                job_id=uuid4(),
+            )
+
+        summary = sync_health_summary(self.sync)["collection_gap"]
+        self.assertEqual(summary["status"], "danger")
+        self.assertEqual(summary["trend_delta"], 54)
+        self.assertIn("Up 54", summary["message"])
 
     def test_sync_health_summary_reports_local_state(self):
         self.execution_job.data = {
