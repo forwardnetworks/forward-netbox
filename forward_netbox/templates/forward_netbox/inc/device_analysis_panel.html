@@ -10,6 +10,9 @@
             <span class="badge text-bg-success">{% trans "Yes" %}</span>
           {% else %}
             <span class="badge text-bg-warning">{% trans "No" %}</span>
+            {% if analysis.collection_result and analysis.collection_result != "completed" %}
+              &nbsp;<code>{{ analysis.collection_result }}</code>
+            {% endif %}
           {% endif %}
         </td>
       </tr>

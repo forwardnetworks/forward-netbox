@@ -37,6 +37,7 @@ let vulnerabilities =
 select {
   name: device.name,
   reachable: device.snapshotInfo.result == DeviceSnapshotResult.completed,
+  collection_result: toString(device.snapshotInfo.result),
   blast_radius: physicalLinks,
   cve_count: vulnerabilities,
   up_interfaces: upInterfaces,
