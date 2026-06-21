@@ -63,6 +63,21 @@ class ForwardJobsTest(TestCase):
         )
         self.ingestion = ForwardIngestion.objects.create(sync=self.sync)
 
+    def test_auto_tag_backfilled_enqueues_only_when_enabled(self):
+        from forward_netbox.jobs import _maybe_enqueue_backfilled_tag_refresh
+
+        # Disabled by default: no enqueue.
+        with patch("forward_netbox.jobs.Job.enqueue") as enqueue:
+            _maybe_enqueue_backfilled_tag_refresh(self.sync)
+            enqueue.assert_not_called()
+
+        # Opt-in via the auto_tag_backfilled parameter: enqueues the tag job.
+        self.sync.parameters = {**self.sync.parameters, "auto_tag_backfilled": True}
+        with patch("forward_netbox.jobs.Job.enqueue") as enqueue:
+            _maybe_enqueue_backfilled_tag_refresh(self.sync)
+            enqueue.assert_called_once()
+            self.assertEqual(enqueue.call_args.kwargs["instance"], self.sync)
+
     def test_record_timeout_issue_creates_single_issue_per_ingestion_phase(self):
         issue_1 = record_timeout_issue(
             self.ingestion,
