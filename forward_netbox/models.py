@@ -1192,6 +1192,10 @@ class ForwardDeviceAnalysis(ForwardPluginModelDocsMixin, ChangeLoggedModel):
         related_name="+",
     )
     reachable = models.BooleanField(default=False)
+    # Specific Forward collection result token (e.g. "completed",
+    # "AUTHENTICATION_FAILED", "CONNECTION_TIMEOUT") so the panel can show *why*
+    # an unreachable device failed, not just a Yes/No.
+    collection_result = models.CharField(max_length=64, blank=True, default="")
     blast_radius = models.PositiveIntegerField(default=0)
     cve_count = models.PositiveIntegerField(default=0)
     up_interfaces = models.PositiveIntegerField(default=0)

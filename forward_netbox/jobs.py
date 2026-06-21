@@ -142,6 +142,30 @@ def _maybe_enqueue_device_analysis_refresh(sync):
         logger.warning("Auto device-analysis refresh enqueue failed: %s", exc)
 
 
+def _maybe_enqueue_backfilled_tag_refresh(sync):
+    """Opt-in: after a successful sync, refresh the ``forward-backfilled`` tag.
+
+    Enabled per sync via the ``auto_tag_backfilled`` parameter. Without it the
+    tag (and the Collection Gap health signal that counts it) only updates when
+    an operator clicks Tag backfilled devices, so the count drifts from reality
+    between manual refreshes. Never lets a tag-refresh problem affect the sync
+    result.
+    """
+    if not (sync.parameters or {}).get("auto_tag_backfilled"):
+        return
+    try:
+        from django.utils.module_loading import import_string
+
+        Job.enqueue(
+            import_string("forward_netbox.jobs.tag_forward_backfilled_devices"),
+            instance=sync,
+            user=sync.user,
+            name=f"{sync.name} - tag backfilled devices (auto)",
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Auto backfilled-tag refresh enqueue failed: %s", exc)
+
+
 def sync_forwardsync(job, *args, **kwargs):
     sync = ForwardSync.objects.get(pk=job.object_id)
 
@@ -150,6 +174,7 @@ def sync_forwardsync(job, *args, **kwargs):
         sync.sync(job=job, adhoc=bool(kwargs.get("adhoc")))
         safe_save_job_data(job, sync)
         _maybe_enqueue_device_analysis_refresh(sync)
+        _maybe_enqueue_backfilled_tag_refresh(sync)
         job.terminate()
     except Exception as exc:
         safe_save_job_data(job, sync)

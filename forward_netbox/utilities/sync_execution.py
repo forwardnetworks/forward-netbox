@@ -11,6 +11,22 @@ from .query_registry import get_query_specs
 from .query_registry import resolve_query_specs_for_client
 from .sync_contracts import validate_row_shape_for_model
 
+# ACI inventory models. Their NQE maps hard-gate on the parent APIC's
+# `snapshotInfo.result == completed`; when an APIC fails collection the whole
+# fabric query returns empty, so a snapshot-to-snapshot diff emits a DELETE for
+# every bridge domain / L3Out / pod / node that "disappeared". Pruning ACI
+# inventory on a transient APIC collection failure is destructive and hard to
+# rebuild, so ACI deletes are opt-in (set ``aci_allow_deletes``) rather than
+# applied automatically.
+ACI_MODEL_PREFIX = "netbox_cisco_aci."
+
+
+def _should_suppress_aci_deletes(sync, model_string):
+    """True when ACI delete rows must be held back (opt-out via parameter)."""
+    if not model_string.startswith(ACI_MODEL_PREFIX):
+        return False
+    return not bool((sync.parameters or {}).get("aci_allow_deletes"))
+
 
 def run_sync_stage(runner):
     runner.logger.log_info("Starting Forward ingestion sync stage.", obj=runner.sync)
@@ -241,6 +257,16 @@ def run_sync_stage(runner):
         for model_string in reversed(runner.sync.get_model_strings()):
             delete_rows = pending_deletes.get(model_string, [])
             if not delete_rows:
+                continue
+            if _should_suppress_aci_deletes(runner.sync, model_string):
+                runner.logger.log_warning(
+                    f"Held back {len(delete_rows)} delete(s) for {model_string}: "
+                    "ACI inventory is not auto-pruned because a failed APIC "
+                    "collection empties the fabric query and would delete real "
+                    "objects. Fix Forward collection, or set aci_allow_deletes to "
+                    "apply ACI deletes.",
+                    obj=runner.sync,
+                )
                 continue
             try:
                 engine = select_apply_engine(
