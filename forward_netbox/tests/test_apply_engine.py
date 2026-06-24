@@ -17,10 +17,6 @@ from ipam.models import Prefix
 from ipam.models import VLAN
 from ipam.models import VRF
 
-from forward_netbox.choices import forward_configured_models
-from forward_netbox.management.commands.forward_smoke_sync import (
-    Command as SmokeSyncCommand,
-)
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.utilities import apply_engine as apply_engine_module
@@ -63,6 +59,11 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
         )
         runner._dependency_failed = Mock(return_value=False)
         runner._mark_dependency_failed = Mock()
+        # Faithful to the real runner: the interface lookup caches are concrete
+        # containers (bulk_orm_apply_interface refreshes them after a create).
+        runner._interface_by_device_name_cache = {}
+        runner._missing_interface_by_device_name_cache = set()
+        runner._interface_canonical_cache = {}
         return runner
 
     def _device(self, name="device-1"):
@@ -177,6 +178,23 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
         self.assertFalse(runner._apply_model_rows.called)
         self.assertEqual(Site.objects.filter(slug="site-b").count(), 1)
         self.assertEqual(Site.objects.get(slug="site-a").name, "Site A")
+
+    def test_isolate_bulk_objects_applies_good_and_records_bad(self):
+        # The per-row isolation fallback (used when a bulk write hits a DB
+        # constraint and rolls back) must apply the good objects and record the
+        # offending one as an issue, instead of failing the whole shard.
+        from forward_netbox.utilities.apply_engine_bulk import _isolate_bulk_objects
+
+        Site.objects.create(name="Taken", slug="taken")
+        runner = self._runner()
+        good = Site(name="Good", slug="good")
+        bad = Site(name="Bad", slug="taken")  # duplicate slug -> IntegrityError
+
+        _isolate_bulk_objects(Site, [good, bad], "create", runner, "dcim.site")
+
+        self.assertEqual(Site.objects.filter(slug="good").count(), 1)
+        self.assertEqual(Site.objects.filter(name="Bad").count(), 0)
+        runner._record_issue.assert_called_once()
 
     def test_bulk_orm_creates_and_updates_manufacturers(self):
         self.sync.parameters["enable_bulk_orm"] = True
@@ -749,38 +767,24 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
             runner,
             "dcim.platform",
             [
-                {
-                    "name": "NX-OS",
-                    "slug": "nxos",
-                    "manufacturer": "Juniper",
-                    "manufacturer_slug": "juniper",
-                },
-                {
-                    "name": "IOS-XR",
-                    "slug": "iosxr",
-                    "manufacturer": "Cisco",
-                    "manufacturer_slug": "cisco",
-                },
+                {"name": "NX-OS", "slug": "nxos"},
+                {"name": "IOS-XR", "slug": "iosxr"},
             ],
         )
 
         self.assertFalse(runner._apply_model_rows.called)
-        # Manufacturer is create-only: an existing platform keeps its manufacturer
-        # on update (parity with the adapter, which lets operators override the
-        # NQE-sourced manufacturer without the next sync clobbering it). The newly
-        # created platform still gets its manufacturer set.
-        self.assertEqual(Platform.objects.get(slug="nxos").manufacturer.slug, "cisco")
-        self.assertEqual(Platform.objects.get(slug="iosxr").manufacturer.slug, "cisco")
+        # 2.0: platforms are global. The newly created platform has no
+        # manufacturer, and an existing manufacturer-scoped platform is cleared on
+        # update so any vendor's device can attach.
+        self.assertIsNone(Platform.objects.get(slug="nxos").manufacturer)
+        self.assertIsNone(Platform.objects.get(slug="iosxr").manufacturer)
 
     def test_bulk_orm_counts_unchanged_platform_rows_as_unchanged(self):
         self.sync.parameters["enable_bulk_orm"] = True
         self.sync.save(update_fields=["parameters"])
-        manufacturer = Manufacturer.objects.create(name="Cisco", slug="cisco")
-        Platform.objects.create(
-            name="ACI",
-            slug="aci",
-            manufacturer=manufacturer,
-        )
+        # 2.0: platforms are global (no manufacturer); a re-applied identical row
+        # must count as unchanged.
+        Platform.objects.create(name="ACI", slug="aci")
         runner = self._runner()
         engine = select_apply_engine(
             sync=self.sync,
@@ -791,14 +795,7 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
         engine.apply_upserts(
             runner,
             "dcim.platform",
-            [
-                {
-                    "name": "ACI",
-                    "slug": "aci",
-                    "manufacturer": "Cisco",
-                    "manufacturer_slug": "cisco",
-                }
-            ],
+            [{"name": "ACI", "slug": "aci"}],
         )
 
         self.assertEqual(Platform.objects.filter(slug="aci").count(), 1)
@@ -832,102 +829,6 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
 
         self.assertEqual(Site.objects.filter(slug="site-a").count(), 1)
         runner._record_issue.assert_called()
-
-    def test_smoke_sync_can_enable_bulk_orm_for_live_proof_runs(self):
-        sync = SmokeSyncCommand()._build_sync(
-            sync_name="bulk-orm-smoke-sync",
-            source=self.source,
-            user=None,
-            snapshot_id="latestProcessed",
-            selected_models=set(forward_configured_models()),
-            auto_merge=True,
-            execution_backend="branching",
-            enable_bulk_orm=True,
-            scheduler_overlap=True,
-        )
-
-        self.assertTrue(sync.parameters["enable_bulk_orm"])
-        self.assertTrue(sync.parameters["scheduler_overlap"])
-
-    @patch.dict("os.environ", {}, clear=True)
-    def test_smoke_sync_defaults_safe_bulk_orm_on(self):
-        self.assertTrue(SmokeSyncCommand()._enable_bulk_orm({}))
-
-    @patch.dict("os.environ", {}, clear=True)
-    def test_smoke_sync_can_disable_safe_bulk_orm_for_comparison(self):
-        self.assertFalse(
-            SmokeSyncCommand()._enable_bulk_orm({"disable_bulk_orm": True})
-        )
-
-    def test_smoke_sync_build_source_preserves_runtime_tuning_parameters(self):
-        self.source.parameters.update(
-            {
-                "query_fetch_concurrency": 16,
-                "nqe_page_size": 10000,
-                "query_preflight_enabled": False,
-                "query_preflight_row_limit": 2,
-            }
-        )
-        self.source.save(update_fields=["parameters"])
-
-        source = SmokeSyncCommand()._build_source(
-            source_name=self.source.name,
-            source_type="saas",
-            url="https://fwd.app",
-            username="user@example.com",
-            password="secret",
-            network_id="test-network",
-        )
-
-        self.assertEqual(source.parameters["query_fetch_concurrency"], 16)
-        self.assertEqual(source.parameters["nqe_page_size"], 10000)
-        self.assertFalse(source.parameters["query_preflight_enabled"])
-        self.assertEqual(source.parameters["query_preflight_row_limit"], 2)
-
-    def test_smoke_sync_build_sync_preserves_existing_parameters(self):
-        sync = ForwardSync.objects.create(
-            name="bulk-orm-smoke-sync",
-            source=self.source,
-            parameters={
-                "bulk_orm_models": ["ipam.prefix"],
-                "max_changes_per_branch": 12000,
-                "dcim.site": False,
-            },
-        )
-
-        updated = SmokeSyncCommand()._build_sync(
-            sync_name=sync.name,
-            source=self.source,
-            user=None,
-            snapshot_id="latestProcessed",
-            selected_models={"dcim.site"},
-            auto_merge=True,
-            execution_backend="fast_bootstrap",
-            enable_bulk_orm=True,
-            scheduler_overlap=True,
-        )
-
-        self.assertEqual(updated.parameters["bulk_orm_models"], ["ipam.prefix"])
-        self.assertEqual(updated.parameters["max_changes_per_branch"], 12000)
-        self.assertTrue(updated.parameters["dcim.site"])
-        self.assertEqual(updated.parameters["execution_backend"], "fast_bootstrap")
-
-    def test_smoke_sync_build_sync_persists_max_changes_per_branch(self):
-        sync = SmokeSyncCommand()._build_sync(
-            sync_name="max-shard-smoke-sync",
-            source=self.source,
-            user=None,
-            snapshot_id="latestProcessed",
-            selected_models={"dcim.site"},
-            auto_merge=True,
-            execution_backend="branching",
-            max_changes_per_branch=42,
-            enable_bulk_orm=True,
-            scheduler_overlap=False,
-        )
-
-        self.assertEqual(sync.parameters["max_changes_per_branch"], 42)
-        self.assertEqual(sync.get_max_changes_per_branch(), 42)
 
     def test_bulk_orm_update_uses_targeted_validation_not_full_clean(self):
         """B6: bulk engine UPDATE path calls clean_fields() + clean() instead

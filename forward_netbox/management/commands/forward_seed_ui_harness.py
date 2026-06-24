@@ -1,6 +1,5 @@
 import os
 import uuid
-from datetime import timedelta
 
 from core.choices import JobStatusChoices
 from core.models import Job
@@ -15,15 +14,12 @@ from forward_netbox.choices import ForwardSourceStatusChoices
 from forward_netbox.choices import ForwardSyncStatusChoices
 from forward_netbox.choices import ForwardValidationStatusChoices
 from forward_netbox.models import ForwardDriftPolicy
-from forward_netbox.models import ForwardExecutionRun
-from forward_netbox.models import ForwardExecutionStep
 from forward_netbox.models import ForwardIngestion
 from forward_netbox.models import ForwardIngestionIssue
 from forward_netbox.models import ForwardNQEMap
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.models import ForwardValidationRun
-from forward_netbox.utilities.branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from forward_netbox.utilities.job_compat import ensure_core_job_compat_defaults
 
@@ -85,19 +81,12 @@ class Command(BaseCommand):
             snapshot_id=options["snapshot_id"],
             validation_run=validation_run,
         )
-        execution_run = self._ensure_execution_run(
-            sync=sync,
-            ingestion=ingestion,
-            snapshot_id=options["snapshot_id"],
-            validation_run=validation_run,
-        )
 
         self.stdout.write(self.style.SUCCESS("Seeded Forward UI harness fixture."))
         self.stdout.write(f"username={user.username}")
         self.stdout.write(f"source_url={source.get_absolute_url()}")
         self.stdout.write(f"sync_url={sync.get_absolute_url()}")
         self.stdout.write(f"ingestion_url={ingestion.get_absolute_url()}")
-        self.stdout.write(f"execution_run_url={execution_run.get_absolute_url()}")
 
     def _ensure_superuser(self, *, username, password):
         user_model = get_user_model()
@@ -151,7 +140,6 @@ class Command(BaseCommand):
     def _ensure_sync(self, *, sync_name, source, user, policy):
         parameters = {
             "auto_merge": True,
-            "max_changes_per_branch": DEFAULT_MAX_CHANGES_PER_BRANCH,
             "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
         }
         enabled_models = {"dcim.site", "dcim.device", "dcim.interface"}
@@ -305,93 +293,6 @@ class Command(BaseCommand):
             raw_data={"fixture": True},
         )
         return ingestion
-
-    def _ensure_execution_run(self, *, sync, ingestion, snapshot_id, validation_run):
-        ForwardExecutionRun.objects.filter(sync=sync).delete()
-        run = ForwardExecutionRun.objects.create(
-            sync=sync,
-            source=sync.source,
-            job=ingestion.job,
-            validation_run=validation_run,
-            backend="branching",
-            status="completed",
-            phase="completed",
-            phase_message="Synthetic UI harness execution completed.",
-            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id=snapshot_id,
-            max_changes_per_branch=DEFAULT_MAX_CHANGES_PER_BRANCH,
-            auto_merge=True,
-            total_steps=2,
-            next_step_index=3,
-            plan_preview={
-                "total_estimated_changes": 7,
-                "branch_count": 2,
-                "models": {
-                    "dcim.site": {"branches": 1, "estimated_changes": 1},
-                    "dcim.interface": {"branches": 1, "estimated_changes": 4},
-                },
-            },
-            model_change_density={"dcim.interface": 1.0},
-            latest_heartbeat=timezone.now(),
-            baseline_ready=True,
-            completed=timezone.now(),
-        )
-        ForwardExecutionStep.objects.create(
-            run=run,
-            index=1,
-            kind="stage",
-            status="merged",
-            model_string="dcim.site",
-            label="dcim.site | Forward Locations",
-            query_name="Forward Locations",
-            execution_mode="query_path",
-            execution_value="/forward_netbox_validation/forward_locations",
-            sync_mode="full",
-            estimated_changes=1,
-            actual_changes=1,
-            query_parameters={
-                "forward_netbox_shard_keys": ["site:ui-harness-site-1"],
-            },
-            fetch_mode="model",
-            ingestion=ingestion,
-            job=ingestion.job,
-            heartbeat=timezone.now(),
-            started=timezone.now() - timedelta(minutes=2),
-            completed=timezone.now() - timedelta(minutes=1),
-        )
-        ForwardExecutionStep.objects.create(
-            run=run,
-            index=2,
-            kind="stage",
-            status="merged",
-            model_string="dcim.interface",
-            label="dcim.interface | Forward Interfaces shard 1",
-            query_name="Forward Interfaces",
-            execution_mode="query_path",
-            execution_value="/forward_netbox_validation/forward_interfaces",
-            sync_mode="full",
-            estimated_changes=4,
-            actual_changes=4,
-            query_parameters={
-                "forward_netbox_shard_keys": ["device:ui-harness-device-1"],
-            },
-            shard_keys=["device:ui-harness-device-1"],
-            fetch_mode="nqe_parameters",
-            fetch_key_family="device",
-            fetch_parameters={
-                "forward_netbox_shard_mode": "shard_keys",
-                "forward_netbox_shard_keys": ["device:ui-harness-device-1"],
-                "forward_netbox_shard_bucket": 0,
-                "forward_netbox_shard_bucket_count": 1,
-            },
-            fetch_column_filters=[],
-            ingestion=ingestion,
-            job=ingestion.job,
-            heartbeat=timezone.now(),
-            started=timezone.now() - timedelta(minutes=1),
-            completed=timezone.now(),
-        )
-        return run
 
     def _ensure_job(self, *, ingestion, user):
         ensure_core_job_compat_defaults()

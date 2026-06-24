@@ -10,16 +10,14 @@ from netbox_branching.models import ChangeDiff
 
 from .models import ForwardDeviceAnalysis
 from .models import ForwardDriftPolicy
-from .models import ForwardExecutionRun
-from .models import ForwardExecutionStep
 from .models import ForwardIngestion
 from .models import ForwardIngestionIssue
 from .models import ForwardNQEMap
 from .models import ForwardSource
 from .models import ForwardSync
 from .models import ForwardValidationRun
+from .utilities.execution_ledger import execution_run_failure_summary
 from .utilities.execution_ledger import latest_execution_run
-from .utilities.execution_ledger_serialization import execution_run_failure_summary
 from .utilities.json_safe import json_safe_value
 
 
@@ -243,166 +241,6 @@ class ForwardValidationRunTable(NetBoxTable):
             "snapshot_id",
             "baseline_snapshot_id",
             "completed",
-        )
-
-
-class ForwardExecutionRunTable(NetBoxTable):
-    run = tables.Column(
-        accessor="pk",
-        linkify=lambda record: record.get_absolute_url(),
-        verbose_name=_("Execution Run"),
-    )
-    sync = tables.Column(linkify=True)
-    source = tables.Column(linkify=True)
-    latest_failure = tables.Column(
-        verbose_name=_("Latest Failure"),
-        orderable=False,
-        empty_values=(),
-    )
-    validation_run = tables.Column(linkify=True)
-    job = tables.Column(linkify=True)
-    backend = columns.ChoiceFieldColumn()
-    status = columns.ChoiceFieldColumn()
-    actions = columns.ActionsColumn(actions=())
-
-    def render_run(self, record):
-        return str(record)
-
-    def render_latest_failure(self, value, record):
-        summary = execution_run_failure_summary(record)
-        if not summary["available"]:
-            return "---"
-        return format_html(
-            '<span title="{}">{}</span>',
-            summary["error"],
-            summary["message"],
-        )
-
-    class Meta(NetBoxTable.Meta):
-        model = ForwardExecutionRun
-        fields = (
-            "run",
-            "pk",
-            "sync",
-            "source",
-            "latest_failure",
-            "backend",
-            "status",
-            "phase",
-            "snapshot_id",
-            "total_steps",
-            "next_step_index",
-            "auto_merge",
-            "job",
-            "validation_run",
-            "latest_heartbeat",
-            "completed",
-        )
-        default_columns = (
-            "run",
-            "sync",
-            "backend",
-            "status",
-            "latest_failure",
-            "phase",
-            "total_steps",
-            "next_step_index",
-            "latest_heartbeat",
-            "completed",
-        )
-
-
-class ForwardExecutionStepTable(NetBoxTable):
-    step = tables.Column(
-        accessor="pk",
-        linkify=lambda record: record.get_absolute_url(),
-        verbose_name=_("Step"),
-    )
-    run = tables.Column(linkify=True)
-    kind = columns.ChoiceFieldColumn()
-    status = columns.ChoiceFieldColumn()
-    query_id = tables.Column(
-        verbose_name=_("Query ID"),
-        orderable=False,
-        empty_values=(),
-    )
-    query_path = tables.Column(
-        verbose_name=_("Query path"),
-        orderable=False,
-        empty_values=(),
-    )
-    branch = tables.Column(linkify=True)
-    ingestion = tables.Column(linkify=True)
-    job = tables.Column(linkify=True)
-    merge_job = tables.Column(linkify=True)
-    actions = columns.ActionsColumn(actions=())
-
-    def render_step(self, record):
-        return str(record)
-
-    def render_query_id(self, value, record):
-        return record.execution_value if record.execution_mode == "query_id" else "---"
-
-    def render_query_path(self, value, record):
-        return (
-            record.execution_value if record.execution_mode == "query_path" else "---"
-        )
-
-    class Meta(NetBoxTable.Meta):
-        model = ForwardExecutionStep
-        fields = (
-            "step",
-            "pk",
-            "run",
-            "index",
-            "kind",
-            "status",
-            "model_string",
-            "query_name",
-            "query_id",
-            "query_path",
-            "label",
-            "sync_mode",
-            "estimated_changes",
-            "actual_changes",
-            "fetched_row_count",
-            "query_runtime_ms",
-            "attempted_row_count",
-            "applied_row_count",
-            "skipped_row_count",
-            "failed_row_count",
-            "fetch_mode",
-            "fetch_key_family",
-            "apply_engine",
-            "branch",
-            "ingestion",
-            "job",
-            "merge_job",
-            "retry_count",
-            "heartbeat",
-            "completed",
-        )
-        default_columns = (
-            "step",
-            "index",
-            "kind",
-            "status",
-            "model_string",
-            "query_name",
-            "query_id",
-            "query_path",
-            "label",
-            "estimated_changes",
-            "actual_changes",
-            "fetched_row_count",
-            "attempted_row_count",
-            "applied_row_count",
-            "failed_row_count",
-            "fetch_mode",
-            "fetch_key_family",
-            "apply_engine",
-            "retry_count",
-            "heartbeat",
         )
 
 

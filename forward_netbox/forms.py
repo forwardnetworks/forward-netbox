@@ -27,7 +27,6 @@ from .models import ForwardDriftPolicy
 from .models import ForwardNQEMap
 from .models import ForwardSource
 from .models import ForwardSync
-from .utilities.branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
 from .utilities.forward_api import DEFAULT_FORWARD_API_REQUESTS_PER_MINUTE
 from .utilities.forward_api import DEFAULT_FORWARD_API_TIMEOUT_SECONDS
 from .utilities.forward_api import DEFAULT_FORWARD_SAAS_API_REQUESTS_PER_MINUTE
@@ -1027,24 +1026,6 @@ class ForwardSyncForm(NetBoxModelForm):
             "Leave unchecked to pause for review after each shard."
         ),
     )
-    execution_backend = forms.ChoiceField(
-        choices=tuple(
-            (value, label)
-            for value, label, _color in ForwardExecutionBackendChoices.CHOICES
-        ),
-        required=False,
-        label="Execution backend",
-        help_text=(
-            "Use Branching for reviewable changes. Use Fast bootstrap for large "
-            "initial ingests that should write directly after validation."
-        ),
-    )
-    max_changes_per_branch = forms.IntegerField(
-        required=False,
-        min_value=1,
-        label="Max changes per branch",
-        help_text="Maximum planned changes per native Branching shard.",
-    )
     enable_bulk_orm = forms.BooleanField(
         required=False,
         label="Use safe bulk ORM models",
@@ -1054,15 +1035,6 @@ class ForwardSyncForm(NetBoxModelForm):
             "plugin-specific contracts remain on the adapter path."
         ),
     )
-    scheduler_overlap = forms.BooleanField(
-        required=False,
-        label="Stage next shard during merge",
-        help_text=(
-            "Experimental Branching speedup. When auto merge is enabled, pre-stage "
-            "one eligible shard while the current shard is merging; merges remain "
-            "serialized by the execution ledger."
-        ),
-    )
     skip_unchanged_snapshot = forms.BooleanField(
         required=False,
         label="Skip scheduled runs on an unchanged snapshot",
@@ -1070,6 +1042,15 @@ class ForwardSyncForm(NetBoxModelForm):
             "When a scheduled run would target the same snapshot as the last "
             "successful baseline, skip query execution entirely (no-op) to reduce "
             "Forward API load. Manual/adhoc runs always execute. Off by default."
+        ),
+    )
+    set_primary_ip_from_mgmt_tag = forms.BooleanField(
+        required=False,
+        label="Set primary IP from Mgmt_ tag",
+        help_text=(
+            "When a Forward device carries a `Mgmt_<interface>` tag (e.g. "
+            "`Mgmt_Vl211`), set the device's primary IP to the address on that "
+            "interface (e.g. Vlan211). Off by default."
         ),
     )
     diff_fallback_mode = forms.ChoiceField(
@@ -1126,25 +1107,17 @@ class ForwardSyncForm(NetBoxModelForm):
         kwargs["initial"] = initial
         super().__init__(*args, **kwargs)
         parameters = self.instance.parameters or {}
-        self.fields["execution_backend"].initial = parameters.get(
-            "execution_backend",
-            ForwardExecutionBackendChoices.BRANCHING,
-        )
         self.fields["auto_merge"].initial = parameters.get("auto_merge", True)
-        self.fields["max_changes_per_branch"].initial = parameters.get(
-            "max_changes_per_branch",
-            DEFAULT_MAX_CHANGES_PER_BRANCH,
-        )
         self.fields["enable_bulk_orm"].initial = parameters.get(
             "enable_bulk_orm",
             DEFAULT_ENABLE_BULK_ORM_FOR_NEW_SYNCS,
         )
-        self.fields["scheduler_overlap"].initial = parameters.get(
-            "scheduler_overlap",
-            False,
-        )
         self.fields["skip_unchanged_snapshot"].initial = parameters.get(
             "skip_unchanged_snapshot",
+            False,
+        )
+        self.fields["set_primary_ip_from_mgmt_tag"].initial = parameters.get(
+            "set_primary_ip_from_mgmt_tag",
             False,
         )
         self.fields["diff_fallback_mode"].initial = parameters.get(
@@ -1179,12 +1152,10 @@ class ForwardSyncForm(NetBoxModelForm):
             FieldSet("snapshot_id", name="Snapshot"),
             FieldSet(*configured_models, name="Model Selection"),
             FieldSet(
-                "execution_backend",
-                "max_changes_per_branch",
                 "auto_merge",
                 "enable_bulk_orm",
-                "scheduler_overlap",
                 "skip_unchanged_snapshot",
+                "set_primary_ip_from_mgmt_tag",
                 "diff_fallback_mode",
                 "scheduled",
                 "interval",
@@ -1227,23 +1198,19 @@ class ForwardSyncForm(NetBoxModelForm):
         ):
             raise forms.ValidationError("Select at least one NetBox model to sync.")
         parameters = {
-            "execution_backend": cleaned.get("execution_backend")
-            or ForwardExecutionBackendChoices.BRANCHING,
+            "execution_backend": ForwardExecutionBackendChoices.SINGLE_BRANCH,
             "auto_merge": cleaned.get("auto_merge", False),
             "multi_branch": True,
-            "max_changes_per_branch": cleaned.get("max_changes_per_branch")
-            or DEFAULT_MAX_CHANGES_PER_BRANCH,
             "snapshot_id": snapshot_id,
             "enable_bulk_orm": bool(cleaned.get("enable_bulk_orm", False)),
             "bulk_orm_models": list(
                 (self.instance.parameters or {}).get("bulk_orm_models") or []
             ),
-            "scheduler_overlap": bool(
-                cleaned.get("scheduler_overlap", False)
-                and cleaned.get("auto_merge", False)
-            ),
             "skip_unchanged_snapshot": bool(
                 cleaned.get("skip_unchanged_snapshot", False)
+            ),
+            "set_primary_ip_from_mgmt_tag": bool(
+                cleaned.get("set_primary_ip_from_mgmt_tag", False)
             ),
             "diff_fallback_mode": cleaned.get("diff_fallback_mode")
             or ForwardDiffFallbackModeChoices.ALLOW_FALLBACK,
@@ -1256,24 +1223,20 @@ class ForwardSyncForm(NetBoxModelForm):
 
     def save(self, *args, **kwargs):
         parameters = {
-            "execution_backend": self.cleaned_data.get("execution_backend")
-            or ForwardExecutionBackendChoices.BRANCHING,
+            "execution_backend": ForwardExecutionBackendChoices.SINGLE_BRANCH,
             "auto_merge": self.cleaned_data.get("auto_merge", False),
             "multi_branch": True,
-            "max_changes_per_branch": self.cleaned_data.get("max_changes_per_branch")
-            or DEFAULT_MAX_CHANGES_PER_BRANCH,
             "snapshot_id": self.cleaned_data.get("snapshot_id")
             or LATEST_PROCESSED_SNAPSHOT,
             "enable_bulk_orm": bool(self.cleaned_data.get("enable_bulk_orm", False)),
             "bulk_orm_models": list(
                 (self.instance.parameters or {}).get("bulk_orm_models") or []
             ),
-            "scheduler_overlap": bool(
-                self.cleaned_data.get("scheduler_overlap", False)
-                and self.cleaned_data.get("auto_merge", False)
-            ),
             "skip_unchanged_snapshot": bool(
                 self.cleaned_data.get("skip_unchanged_snapshot", False)
+            ),
+            "set_primary_ip_from_mgmt_tag": bool(
+                self.cleaned_data.get("set_primary_ip_from_mgmt_tag", False)
             ),
             "diff_fallback_mode": self.cleaned_data.get("diff_fallback_mode")
             or ForwardDiffFallbackModeChoices.ALLOW_FALLBACK,

@@ -1,5 +1,4 @@
 import hashlib
-import math
 from dataclasses import dataclass
 from dataclasses import field
 
@@ -13,7 +12,6 @@ from .sync_contracts import default_coalesce_fields_for_model
 from .sync_contracts import row_coalesce_field_is_complete
 
 DEFAULT_MAX_CHANGES_PER_BRANCH = 10000
-BRANCH_BUDGET_SOFT_OVERRUN_PERCENT = 0.05
 BRANCH_RUN_STATE_PARAMETER = "_branch_run"
 MODEL_CHANGE_DENSITY_PARAMETER = "_model_change_density"
 MODEL_CHANGE_DENSITY_PROFILE_PARAMETER = "_model_change_density_profile"
@@ -38,12 +36,6 @@ DEFAULT_MODEL_DELETE_CHANGE_DENSITY = {
 DELETE_LARGE_SHARD_WARNING_RATIO = 0.8
 DELETE_WAVE_WARNING_ROW_COUNT = 1000
 DELETE_WAVE_WARNING_SHARE = 0.5
-RUNTIME_BUDGET_MIN_ROWS = 200
-RUNTIME_BUDGET_SHAPE_MIN_FACTOR = 0.75
-RUNTIME_BUDGET_SHAPE_MAX_FACTOR = 1.25
-RUNTIME_BUDGET_MS_PER_ROW_LOW = 0.75
-RUNTIME_BUDGET_MS_PER_ROW_NEUTRAL = 3.0
-RUNTIME_BUDGET_MS_PER_ROW_HIGH = 12.0
 MODEL_DENSITY_SAFETY_FACTORS = {
     "dcim.cable": 0.5,
     "netbox_routing.bgppeer": 0.5,
@@ -719,159 +711,6 @@ def _parse_structured_shard_key(shard_key):
     return parsed
 
 
-def split_workload(workload, *, max_changes_per_branch):
-    if max_changes_per_branch < 1:
-        raise ValueError("`max_changes_per_branch` must be at least 1.")
-
-    if workload.estimated_changes <= max_changes_per_branch:
-        return [
-            BranchPlanItem(
-                index=1,
-                model_string=workload.model_string,
-                label=workload.label,
-                estimated_changes=workload.estimated_changes,
-                upsert_rows=workload.upsert_rows,
-                delete_rows=workload.delete_rows,
-                sync_mode=workload.sync_mode,
-                coalesce_fields=workload.coalesce_fields,
-                query_name=workload.query_name,
-                execution_mode=workload.execution_mode,
-                execution_value=workload.execution_value,
-                query_runtime_ms=workload.query_runtime_ms,
-                baseline_snapshot_id=workload.baseline_snapshot_id,
-                apply_engine=workload.apply_engine,
-                apply_engine_reason=workload.apply_engine_reason,
-                apply_engine_decision=workload.apply_engine_decision,
-                fetch_mode=workload.fetch_mode,
-                fetch_key_family=workload.fetch_key_family,
-                fetch_parameters=workload.fetch_parameters,
-                query_parameters=workload.query_parameters,
-                fetch_column_filters=workload.fetch_column_filters,
-                operation=workload.operation,
-            )
-        ]
-
-    buckets = {}
-    for row in workload.upsert_rows:
-        key = row_shard_key(
-            workload.model_string,
-            row,
-            workload.coalesce_fields,
-        )
-        buckets.setdefault(key, {"upsert_rows": [], "delete_rows": []})[
-            "upsert_rows"
-        ].append(row)
-    for row in workload.delete_rows:
-        key = row_shard_key(
-            workload.model_string,
-            row,
-            workload.coalesce_fields,
-        )
-        buckets.setdefault(key, {"upsert_rows": [], "delete_rows": []})[
-            "delete_rows"
-        ].append(row)
-
-    soft_limit = soft_budget_limit(max_changes_per_branch)
-    oversized = [
-        (key, len(rows["upsert_rows"]) + len(rows["delete_rows"]))
-        for key, rows in buckets.items()
-        if len(rows["upsert_rows"]) + len(rows["delete_rows"]) > soft_limit
-    ]
-    if oversized:
-        key, count = sorted(oversized, key=lambda item: item[1], reverse=True)[0]
-        raise ForwardQueryError(
-            f"`{workload.model_string}` shard key `{key}` has {count} rows, "
-            f"which exceeds the soft branch budget limit of {soft_limit} "
-            f"(guideline {max_changes_per_branch})."
-        )
-
-    minimum_branch_count = math.ceil(
-        workload.estimated_changes / max_changes_per_branch
-    )
-    branches = [
-        {"upsert_rows": [], "delete_rows": [], "shard_keys": []}
-        for _ in range(minimum_branch_count)
-    ]
-    ordered_buckets = sorted(
-        buckets.items(),
-        key=lambda item: (
-            -(len(item[1]["upsert_rows"]) + len(item[1]["delete_rows"])),
-            shard_key_digest(item[0]),
-        ),
-    )
-
-    for key, rows in ordered_buckets:
-        count = len(rows["upsert_rows"]) + len(rows["delete_rows"])
-        candidate = None
-        for branch in sorted(
-            branches,
-            key=lambda item: len(item["upsert_rows"]) + len(item["delete_rows"]),
-        ):
-            branch_count = len(branch["upsert_rows"]) + len(branch["delete_rows"])
-            if branch_count + count <= max_changes_per_branch:
-                candidate = branch
-                break
-        if candidate is None:
-            candidate = {"upsert_rows": [], "delete_rows": [], "shard_keys": []}
-            branches.append(candidate)
-
-        candidate["upsert_rows"].extend(rows["upsert_rows"])
-        candidate["delete_rows"].extend(rows["delete_rows"])
-        candidate["shard_keys"].append(key)
-
-    plan_items = []
-    for index, branch in enumerate(branches, start=1):
-        estimated_changes = len(branch["upsert_rows"]) + len(branch["delete_rows"])
-        if not estimated_changes:
-            continue
-        fetch_contract = shard_fetch_contract(
-            workload.model_string,
-            branch["shard_keys"],
-        )
-        plan_items.append(
-            BranchPlanItem(
-                index=index,
-                model_string=workload.model_string,
-                label=f"{workload.label} shard {index}",
-                estimated_changes=estimated_changes,
-                upsert_rows=branch["upsert_rows"],
-                delete_rows=branch["delete_rows"],
-                sync_mode=workload.sync_mode,
-                coalesce_fields=workload.coalesce_fields,
-                shard_keys=tuple(sorted(branch["shard_keys"])),
-                query_name=workload.query_name,
-                execution_mode=workload.execution_mode,
-                execution_value=workload.execution_value,
-                query_runtime_ms=workload.query_runtime_ms,
-                baseline_snapshot_id=workload.baseline_snapshot_id,
-                apply_engine=workload.apply_engine,
-                apply_engine_reason=workload.apply_engine_reason,
-                apply_engine_decision=workload.apply_engine_decision,
-                fetch_mode=fetch_contract.get("fetch_mode") or workload.fetch_mode,
-                fetch_key_family=(
-                    fetch_contract.get("fetch_key_family") or workload.fetch_key_family
-                ),
-                fetch_parameters=(
-                    fetch_contract.get("fetch_parameters") or workload.fetch_parameters
-                ),
-                query_parameters=(
-                    fetch_contract.get("query_parameters") or workload.query_parameters
-                ),
-                fetch_column_filters=(
-                    fetch_contract.get("fetch_column_filters")
-                    or workload.fetch_column_filters
-                ),
-                operation=workload.operation,
-            )
-        )
-    return plan_items
-
-
-def soft_budget_limit(max_changes_per_branch):
-    budget = max(1, int(max_changes_per_branch or 1))
-    return int(budget * (1 + BRANCH_BUDGET_SOFT_OVERRUN_PERCENT))
-
-
 def dependency_phased_workloads(workloads):
     apply_workloads = []
     delete_workloads = []
@@ -947,42 +786,40 @@ def _workload_for_operation(workload, *, upsert_rows, delete_rows, operation):
     )
 
 
-def build_branch_plan(workloads, *, max_changes_per_branch):
-    plan = []
-    for workload in dependency_phased_workloads(workloads):
-        plan.extend(
-            split_workload(
-                workload,
-                max_changes_per_branch=max_changes_per_branch,
-            )
-        )
+def build_branch_plan(workloads):
+    """One branch-plan item per dependency-phased workload.
+
+    2.0: single-branch ingest applies every workload in one branch, so the plan
+    is simply the dependency-ordered workloads (no size-based sharding).
+    """
     return [
         BranchPlanItem(
             index=index,
-            model_string=item.model_string,
-            label=item.label,
-            estimated_changes=item.estimated_changes,
-            upsert_rows=item.upsert_rows,
-            delete_rows=item.delete_rows,
-            sync_mode=item.sync_mode,
-            coalesce_fields=item.coalesce_fields,
-            shard_keys=item.shard_keys,
-            query_name=item.query_name,
-            execution_mode=item.execution_mode,
-            execution_value=item.execution_value,
-            query_runtime_ms=item.query_runtime_ms,
-            baseline_snapshot_id=item.baseline_snapshot_id,
-            apply_engine=item.apply_engine,
-            apply_engine_reason=item.apply_engine_reason,
-            apply_engine_decision=item.apply_engine_decision,
-            fetch_mode=item.fetch_mode,
-            fetch_key_family=item.fetch_key_family,
-            fetch_parameters=item.fetch_parameters,
-            query_parameters=item.query_parameters,
-            fetch_column_filters=item.fetch_column_filters,
-            operation=item.operation,
+            model_string=workload.model_string,
+            label=workload.label,
+            estimated_changes=workload.estimated_changes,
+            upsert_rows=workload.upsert_rows,
+            delete_rows=workload.delete_rows,
+            sync_mode=workload.sync_mode,
+            coalesce_fields=workload.coalesce_fields,
+            query_name=workload.query_name,
+            execution_mode=workload.execution_mode,
+            execution_value=workload.execution_value,
+            query_runtime_ms=workload.query_runtime_ms,
+            baseline_snapshot_id=workload.baseline_snapshot_id,
+            apply_engine=workload.apply_engine,
+            apply_engine_reason=workload.apply_engine_reason,
+            apply_engine_decision=workload.apply_engine_decision,
+            fetch_mode=workload.fetch_mode,
+            fetch_key_family=workload.fetch_key_family,
+            fetch_parameters=workload.fetch_parameters,
+            query_parameters=workload.query_parameters,
+            fetch_column_filters=workload.fetch_column_filters,
+            operation=workload.operation,
         )
-        for index, item in enumerate(plan, start=1)
+        for index, workload in enumerate(
+            dependency_phased_workloads(workloads), start=1
+        )
     ]
 
 
@@ -1026,143 +863,6 @@ def effective_row_budget_for_model(
         (max_changes_per_branch * float(effective_safety_factor)) / density_value
     )
     return max(1, min(row_budget_ceiling, scaled_budget))
-
-
-def effective_workload_row_budget(
-    workload,
-    *,
-    max_changes_per_branch,
-    model_change_density=None,
-    model_change_density_profile=None,
-    safety_factor=DEFAULT_DENSITY_SAFETY_FACTOR,
-):
-    row_budget = effective_row_budget_for_model(
-        workload.model_string,
-        max_changes_per_branch=max_changes_per_branch,
-        model_change_density=model_change_density,
-        model_change_density_profile=model_change_density_profile,
-        safety_factor=safety_factor,
-    )
-    delete_count = len(workload.delete_rows)
-    if delete_count:
-        row_budget = min(row_budget, max_changes_per_branch)
-        delete_density = DEFAULT_MODEL_DELETE_CHANGE_DENSITY.get(workload.model_string)
-        if delete_density is not None:
-            upsert_count = len(workload.upsert_rows)
-            total_rows = upsert_count + delete_count
-            if total_rows > 0:
-                weighted_change_estimate = upsert_count + (
-                    delete_count * float(delete_density)
-                )
-                if weighted_change_estimate > 0:
-                    weighted_budget = int(
-                        (max_changes_per_branch * total_rows) / weighted_change_estimate
-                    )
-                    row_budget = max(1, min(row_budget, weighted_budget))
-
-    runtime_shaped_budget = _runtime_shaped_row_budget(
-        row_budget,
-        workload=workload,
-        max_changes_per_branch=max_changes_per_branch,
-    )
-    row_budget_cap = max(max_changes_per_branch, row_budget)
-    return max(1, min(row_budget_cap, runtime_shaped_budget))
-
-
-def _runtime_shaped_row_budget(base_budget, *, workload, max_changes_per_branch):
-    total_rows = len(workload.upsert_rows) + len(workload.delete_rows)
-    if total_rows < RUNTIME_BUDGET_MIN_ROWS:
-        return base_budget
-
-    try:
-        runtime_ms = float(workload.query_runtime_ms or 0.0)
-    except (TypeError, ValueError):
-        return base_budget
-    if runtime_ms <= 0:
-        return base_budget
-
-    runtime_per_row_ms = runtime_ms / float(total_rows)
-    factor = _runtime_budget_shape_factor(runtime_per_row_ms)
-    if workload.delete_rows and factor > 1.0:
-        factor = 1.0
-    shaped_budget = int(round(float(base_budget) * factor))
-    cap = max(max_changes_per_branch, base_budget)
-    return max(1, min(cap, shaped_budget))
-
-
-def _runtime_budget_shape_factor(runtime_per_row_ms):
-    if runtime_per_row_ms <= RUNTIME_BUDGET_MS_PER_ROW_LOW:
-        return RUNTIME_BUDGET_SHAPE_MIN_FACTOR
-    if runtime_per_row_ms >= RUNTIME_BUDGET_MS_PER_ROW_HIGH:
-        return RUNTIME_BUDGET_SHAPE_MAX_FACTOR
-
-    if runtime_per_row_ms <= RUNTIME_BUDGET_MS_PER_ROW_NEUTRAL:
-        span = RUNTIME_BUDGET_MS_PER_ROW_NEUTRAL - RUNTIME_BUDGET_MS_PER_ROW_LOW
-        if span <= 0:
-            return 1.0
-        ratio = (runtime_per_row_ms - RUNTIME_BUDGET_MS_PER_ROW_LOW) / span
-        return RUNTIME_BUDGET_SHAPE_MIN_FACTOR + (
-            (1.0 - RUNTIME_BUDGET_SHAPE_MIN_FACTOR) * ratio
-        )
-
-    span = RUNTIME_BUDGET_MS_PER_ROW_HIGH - RUNTIME_BUDGET_MS_PER_ROW_NEUTRAL
-    if span <= 0:
-        return 1.0
-    ratio = (runtime_per_row_ms - RUNTIME_BUDGET_MS_PER_ROW_NEUTRAL) / span
-    return 1.0 + ((RUNTIME_BUDGET_SHAPE_MAX_FACTOR - 1.0) * ratio)
-
-
-def build_branch_plan_with_density(
-    workloads,
-    *,
-    max_changes_per_branch,
-    model_change_density=None,
-    model_change_density_profile=None,
-    safety_factor=DEFAULT_DENSITY_SAFETY_FACTOR,
-):
-    plan = []
-    for workload in dependency_phased_workloads(workloads):
-        model_budget = effective_workload_row_budget(
-            workload,
-            max_changes_per_branch=max_changes_per_branch,
-            model_change_density=model_change_density,
-            model_change_density_profile=model_change_density_profile,
-            safety_factor=safety_factor,
-        )
-        plan.extend(
-            split_workload(
-                workload,
-                max_changes_per_branch=model_budget,
-            )
-        )
-    return [
-        BranchPlanItem(
-            index=index,
-            model_string=item.model_string,
-            label=item.label,
-            estimated_changes=item.estimated_changes,
-            upsert_rows=item.upsert_rows,
-            delete_rows=item.delete_rows,
-            sync_mode=item.sync_mode,
-            coalesce_fields=item.coalesce_fields,
-            shard_keys=item.shard_keys,
-            query_name=item.query_name,
-            execution_mode=item.execution_mode,
-            execution_value=item.execution_value,
-            query_runtime_ms=item.query_runtime_ms,
-            baseline_snapshot_id=item.baseline_snapshot_id,
-            apply_engine=item.apply_engine,
-            apply_engine_reason=item.apply_engine_reason,
-            apply_engine_decision=item.apply_engine_decision,
-            fetch_mode=item.fetch_mode,
-            fetch_key_family=item.fetch_key_family,
-            fetch_parameters=item.fetch_parameters,
-            query_parameters=item.query_parameters,
-            fetch_column_filters=item.fetch_column_filters,
-            operation=item.operation,
-        )
-        for index, item in enumerate(plan, start=1)
-    ]
 
 
 def build_branch_budget_hints(

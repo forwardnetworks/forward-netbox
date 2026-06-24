@@ -55,7 +55,7 @@ REQUIRED_FIELDS_BY_QUERY_NAME = {
     "Forward Locations": {"name", "slug", "status", "physical_address", "comments"},
     "Forward Device Vendors": {"name", "slug"},
     "Forward Device Types": {"name", "slug", "color"},
-    "Forward Platforms": {"name", "manufacturer", "manufacturer_slug", "slug"},
+    "Forward Platforms": {"name", "slug"},
     "Forward Device Models": {
         "manufacturer",
         "manufacturer_slug",
@@ -180,7 +180,6 @@ SLUG_QUERY_NAMES = {
 
 MANUFACTURER_QUERY_NAMES = {
     "Forward Device Vendors",
-    "Forward Platforms",
     "Forward Device Models",
     "Forward Devices",
     "Forward Inventory Items",
@@ -545,8 +544,9 @@ class QueryRegistryTest(TestCase):
         self.assertIn("name: manufacturer_name", manufacturer_spec.query)
         self.assertNotIn("name: vendor", manufacturer_spec.query)
 
+        # NB: dcim.platform is intentionally excluded — 2.0 platforms are global
+        # (no manufacturer), so the platform query no longer carries one.
         for model_string in [
-            "dcim.platform",
             "dcim.devicetype",
             "dcim.device",
             "dcim.inventoryitem",
@@ -1056,6 +1056,50 @@ class QueryRegistryTest(TestCase):
         self.assertEqual(len(specs), 1)
         self.assertEqual(specs[0].query_id, "FQ_custom_devices")
         self.assertEqual(specs[0].query, None)
+
+    def test_resolve_map_specs_collapses_alias_variant_duplicates(self):
+        # Base device query + its NetBox-alias variant both enabled for the same
+        # model must collapse to ONE spec (the alias supersedes the base), else
+        # each sync reconciles the device twice and flips its device_type FK.
+        netbox_model = ContentType.objects.get(app_label="dcim", model="device")
+        base = ForwardNQEMap.objects.create(
+            name="Forward Devices",
+            netbox_model=netbox_model,
+            query_id="FQ_devices",
+            built_in=True,
+            enabled=True,
+            weight=600,
+        )
+        alias = ForwardNQEMap.objects.create(
+            name="Forward Devices with NetBox Device Type Aliases",
+            netbox_model=netbox_model,
+            query_id="FQ_devices_alias",
+            built_in=True,
+            enabled=True,
+            weight=2100,
+        )
+
+        specs = get_query_specs("dcim.device", maps=[base, alias])
+
+        self.assertEqual(len(specs), 1)
+        self.assertEqual(specs[0].query_id, "FQ_devices_alias")
+
+    def test_resolve_map_specs_keeps_base_when_alias_disabled(self):
+        # Only the base enabled -> keep the base (no alias to supersede it).
+        netbox_model = ContentType.objects.get(app_label="dcim", model="device")
+        base = ForwardNQEMap.objects.create(
+            name="Forward Devices",
+            netbox_model=netbox_model,
+            query_id="FQ_devices",
+            built_in=True,
+            enabled=True,
+            weight=600,
+        )
+
+        specs = get_query_specs("dcim.device", maps=[base])
+
+        self.assertEqual(len(specs), 1)
+        self.assertEqual(specs[0].query_id, "FQ_devices")
 
     def test_built_in_maps_use_current_bundled_query_text(self):
         netbox_model = ContentType.objects.get(app_label="dcim", model="virtualchassis")

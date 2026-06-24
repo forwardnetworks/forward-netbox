@@ -19,7 +19,9 @@ from invoke.tasks import task as invoke_task
 
 INIT_FILE = "forward_netbox/__init__.py"
 ALLOW_SHARED_RUNTIME_TESTS_ENV = "FORWARD_NETBOX_ALLOW_SHARED_RUNTIME_TESTS"
-ACTIVE_EXECUTION_RUN_STATUSES = ("queued", "running", "waiting")
+# 2.0 single-branch model: the legacy ForwardExecutionRun table was removed, so
+# "active run" is now an in-progress ForwardSync.
+ACTIVE_SYNC_STATUSES = ("queued", "syncing", "merging")
 ISOLATED_TEST_PROJECT_NAME = "forward-netbox-test"
 ISOLATED_PLAYWRIGHT_PROJECT_NAME = "forward-netbox-ui-test"
 ISOLATED_PLAYWRIGHT_HOST_PORT = "18080"
@@ -121,15 +123,15 @@ def _shared_runtime_test_guard_bypassed():
 
 
 def _shared_runtime_active_execution_runs(context):
-    statuses = json.dumps(list(ACTIVE_EXECUTION_RUN_STATUSES))
+    statuses = json.dumps(list(ACTIVE_SYNC_STATUSES))
     python_code = (
         "import json; "
-        "from forward_netbox.models import ForwardExecutionRun; "
+        "from forward_netbox.models import ForwardSync; "
         f"statuses={statuses}; "
-        "qs=ForwardExecutionRun.objects.filter(status__in=statuses).order_by('-id'); "
+        "qs=ForwardSync.objects.filter(status__in=statuses).order_by('-id'); "
         "print(json.dumps({"
         '"active_count": qs.count(), '
-        '"runs": list(qs.values("id", "sync__name", "status")[:5])'
+        '"runs": list(qs.values("id", "name", "status")[:5])'
         "}, sort_keys=True))"
     )
     try:
@@ -4098,11 +4100,8 @@ def prune_compat_cache(context, sync_name="", dry_run=True, output_json=""):
         lint,
         build,
         start,
-        architecture_audit_check,
         check,
         scenario_test_ci,
-        ingestion_delete_regression_ci,
-        scale_chaos_test,
         test_ci,
         validation_org_query_audit_ci,
         playwright_test,

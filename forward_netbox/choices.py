@@ -124,13 +124,14 @@ class ForwardSyncStatusChoices(ChoiceSet):
 
 
 class ForwardExecutionBackendChoices(ChoiceSet):
+    # 2.0: single-branch is the only execution path. BRANCHING / FAST_BOOTSTRAP
+    # are retained as internal constants (legacy ForwardExecutionRun rows may
+    # still carry them) but are no longer user-selectable.
+    SINGLE_BRANCH = "single_branch"
     BRANCHING = "branching"
     FAST_BOOTSTRAP = "fast_bootstrap"
 
-    CHOICES = (
-        (BRANCHING, _("Branching"), "blue"),
-        (FAST_BOOTSTRAP, _("Fast bootstrap"), "cyan"),
-    )
+    CHOICES = ((SINGLE_BRANCH, _("Single branch"), "green"),)
 
 
 class ForwardDiffFallbackModeChoices(ChoiceSet):

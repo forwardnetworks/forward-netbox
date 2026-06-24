@@ -31,8 +31,6 @@ from utilities.views import ViewTab
 
 from .filtersets import ForwardDeviceAnalysisFilterSet
 from .filtersets import ForwardDriftPolicyFilterSet
-from .filtersets import ForwardExecutionRunFilterSet
-from .filtersets import ForwardExecutionStepFilterSet
 from .filtersets import ForwardIngestionChangeFilterSet
 from .filtersets import ForwardIngestionFilterSet
 from .filtersets import ForwardIngestionIssueFilterSet
@@ -53,8 +51,6 @@ from .forms import ForwardSyncForm
 from .forms import ForwardValidationRunForceAllowForm
 from .models import ForwardDeviceAnalysis
 from .models import ForwardDriftPolicy
-from .models import ForwardExecutionRun
-from .models import ForwardExecutionStep
 from .models import ForwardIngestion
 from .models import ForwardIngestionIssue
 from .models import ForwardNQEMap
@@ -63,8 +59,6 @@ from .models import ForwardSync
 from .models import ForwardValidationRun
 from .tables import ForwardDeviceAnalysisTable
 from .tables import ForwardDriftPolicyTable
-from .tables import ForwardExecutionRunTable
-from .tables import ForwardExecutionStepTable
 from .tables import ForwardIngestionChangesTable
 from .tables import ForwardIngestionIssueTable
 from .tables import ForwardIngestionObjectChangesTable
@@ -75,33 +69,20 @@ from .tables import ForwardSyncTable
 from .tables import ForwardValidationRunTable
 from .utilities.change_explainability import change_explainability_summary
 from .utilities.direct_changes import object_changes_for_ingestion
-from .utilities.execution_ledger import current_discardable_step
-from .utilities.execution_ledger import current_mergeable_step
-from .utilities.execution_ledger import current_retryable_step
-from .utilities.execution_ledger import discard_stage_branch_for_retry
 from .utilities.execution_ledger import execution_run_bundle_for_sync
-from .utilities.execution_ledger import execution_run_recovery_recommendation
-from .utilities.execution_ledger import execution_run_support_bundle
-from .utilities.execution_ledger import latest_execution_run
-from .utilities.execution_ledger import prepare_stage_step_retry
-from .utilities.execution_ledger import reconcile_execution_run
-from .utilities.execution_ledger_metrics import pushdown_trend_history_for_sync
-from .utilities.execution_ledger_serialization import execution_run_failure_summary
-from .utilities.execution_ledger_serialization import execution_run_insights_summary
-from .utilities.execution_ledger_serialization import live_support_diagnostics
+from .utilities.execution_ledger import live_support_diagnostics
+from .utilities.execution_ledger import pushdown_trend_history_for_sync
 from .utilities.execution_telemetry import build_plan_preview
 from .utilities.health import live_data_file_health_check
 from .utilities.health import live_source_health_check
 from .utilities.health import sync_health_summary
 from .utilities.json_safe import json_safe_value
-from .utilities.multi_branch import ForwardMultiBranchPlanner
 from .utilities.query_binding import apply_explicit_nqe_map_bindings
 from .utilities.query_binding import build_nqe_map_bindings
 from .utilities.query_binding import live_query_binding_drift
 from .utilities.query_binding import publish_builtin_nqe_map_queries
 from .utilities.query_binding import refresh_query_id_bindings_from_repository_folder
 from .utilities.query_binding import restore_builtin_raw_query_bindings
-from .utilities.resumable_branching import enqueue_branch_stage_job
 from .utilities.support_bundle_archive import support_bundle_zip_response
 from .utilities.sync_state import get_execution_display_state
 
@@ -347,41 +328,36 @@ def _dependency_model_result_summary(result):
 
 
 def _dependency_dry_run_payload(sync):
-    max_changes_per_branch = sync.get_max_changes_per_branch()
-    planner = ForwardMultiBranchPlanner(
-        sync,
-        sync.source.get_client(),
-        sync.logger,
-    )
-    context, plan = planner.build_plan(
-        max_changes_per_branch=max_changes_per_branch,
-        model_change_density=sync.get_model_change_density(),
-        model_change_density_profile=sync.get_model_change_density_profile(),
-    )
+    from .utilities.branch_budget import build_branch_plan
+    from .utilities.query_fetch import ForwardQueryFetcher
+
+    fetcher = ForwardQueryFetcher(sync, sync.source.get_client(), sync.logger)
+    context = fetcher.resolve_context()
+    workloads = fetcher.fetch_workloads(context)
+    plan = build_branch_plan(workloads)
     plan_preview = build_plan_preview(
-        plan,
-        max_changes_per_branch=max_changes_per_branch,
+        plan, max_changes_per_branch=sync.get_max_changes_per_branch()
     )
     plan_items = [_dependency_plan_item_summary(item) for item in plan]
+    context_dict = context.as_dict()
     return {
         "generated_at": timezone.now().isoformat(),
         "sync": {
             "pk": sync.pk,
             "name": sync.name,
             "source": sync.source_id,
-            "max_changes_per_branch": max_changes_per_branch,
         },
         "context": {
-            "network_id": context.get("network_id"),
-            "snapshot_id": context.get("snapshot_id"),
-            "snapshot_selector": context.get("snapshot_selector"),
+            "network_id": context_dict.get("network_id"),
+            "snapshot_id": context_dict.get("snapshot_id"),
+            "snapshot_selector": context_dict.get("snapshot_selector"),
         },
         "plan_preview": plan_preview,
         "plan_items_count": len(plan_items),
         "plan_items_truncated": len(plan_items) > _EXECUTION_PLAN_ITEM_LIMIT,
         "plan_items": plan_items[:_EXECUTION_PLAN_ITEM_LIMIT],
         "model_results": [
-            _dependency_model_result_summary(result) for result in planner.model_results
+            _dependency_model_result_summary(result) for result in fetcher.model_results
         ],
     }
 
@@ -632,9 +608,6 @@ class ForwardSyncView(generic.ObjectView):
             "enabled_models": instance.enabled_models(),
             "query_drift_summary": health.get("query_drift_summary", {}),
             "query_drift_results": health.get("query_modes", {}).get("local_drift", []),
-            "latest_execution_failure": execution_run_failure_summary(
-                latest_execution_run(instance)
-            ),
             "dependency_preview_url": reverse(
                 "plugins:forward_netbox:forwardsync_dependency_preview",
                 kwargs={"pk": instance.pk},
@@ -657,10 +630,6 @@ class ForwardSyncView(generic.ObjectView):
             ),
             "module_readiness_url": reverse(
                 "plugins:forward_netbox:forwardsync_module_readiness",
-                kwargs={"pk": instance.pk},
-            ),
-            "run_history_url": reverse(
-                "plugins:forward_netbox:forwardsync_run_history",
                 kwargs={"pk": instance.pk},
             ),
             "refresh_device_analysis_url": reverse(
@@ -755,26 +724,6 @@ class ForwardSyncDriftReportView(BaseObjectView):
             request,
             self.template_name,
             {"object": sync, "report": report},
-        )
-
-
-@register_model_view(ForwardSync, "run_history", path="run-history")
-class ForwardSyncRunHistoryView(BaseObjectView):
-    queryset = ForwardSync.objects.all()
-    template_name = "forward_netbox/forwardsync_run_history.html"
-
-    def get_required_permission(self):
-        return "forward_netbox.view_forwardsync"
-
-    def get(self, request, pk):
-        from .utilities.run_history import sync_run_history
-
-        sync = get_object_or_404(self.queryset, pk=pk)
-        history = sync_run_history(sync)
-        return render(
-            request,
-            self.template_name,
-            {"object": sync, "history": history},
         )
 
 
@@ -1344,284 +1293,6 @@ class ForwardIngestionTabView(generic.ObjectChildrenView):
 
     def get_children(self, request, parent):
         return annotate_statistics(ForwardIngestion.objects.filter(sync=parent))
-
-
-@register_model_view(ForwardSync, "execution_runs")
-class ForwardSyncExecutionRunsView(generic.ObjectChildrenView):
-    queryset = ForwardSync.objects.all()
-    child_model = ForwardExecutionRun
-    table = ForwardExecutionRunTable
-    filterset = ForwardExecutionRunFilterSet
-    tab = ViewTab(
-        label=_("Execution Runs"),
-        badge=lambda obj: ForwardExecutionRun.objects.filter(sync=obj).count(),
-        permission="forward_netbox.view_forwardexecutionrun",
-    )
-
-    def get_children(self, request, parent):
-        return ForwardExecutionRun.objects.filter(sync=parent).select_related(
-            "sync",
-            "source",
-            "job",
-            "validation_run",
-        )
-
-
-@register_model_view(ForwardExecutionRun, "list", path="", detail=False)
-class ForwardExecutionRunListView(generic.ObjectListView):
-    queryset = ForwardExecutionRun.objects.select_related(
-        "sync",
-        "source",
-        "job",
-        "validation_run",
-    )
-    filterset = ForwardExecutionRunFilterSet
-    table = ForwardExecutionRunTable
-    actions = (BulkExport,)
-
-
-@register_model_view(ForwardExecutionRun)
-class ForwardExecutionRunView(generic.ObjectView):
-    queryset = ForwardExecutionRun.objects.select_related(
-        "sync",
-        "source",
-        "job",
-        "validation_run",
-    )
-    template_name = "forward_netbox/forwardexecutionrun.html"
-    actions = ()
-
-    def get_extra_context(self, request, instance):
-        return {
-            "support_bundle_url": reverse(
-                "plugins:forward_netbox:forwardexecutionrun_export_bundle",
-                kwargs={"pk": instance.pk},
-            ),
-            "support_bundle_zip_url": reverse(
-                "plugins:forward_netbox:forwardexecutionrun_export_bundle_zip",
-                kwargs={"pk": instance.pk},
-            ),
-            "latest_execution_failure": execution_run_failure_summary(instance),
-            "latest_execution_insights": execution_run_insights_summary(instance),
-            "retryable_step": current_retryable_step(instance),
-            "discardable_step": current_discardable_step(instance),
-            "recovery_recommendation": execution_run_recovery_recommendation(instance),
-        }
-
-
-@register_model_view(ForwardExecutionRun, "steps")
-class ForwardExecutionRunStepsView(generic.ObjectChildrenView):
-    queryset = ForwardExecutionRun.objects.all()
-    child_model = ForwardExecutionStep
-    table = ForwardExecutionStepTable
-    filterset = ForwardExecutionStepFilterSet
-    tab = ViewTab(
-        label=_("Steps"),
-        badge=lambda obj: ForwardExecutionStep.objects.filter(run=obj).count(),
-        permission="forward_netbox.view_forwardexecutionstep",
-    )
-
-    def get_children(self, request, parent):
-        return ForwardExecutionStep.objects.filter(run=parent).select_related(
-            "run",
-            "branch",
-            "ingestion",
-            "job",
-            "merge_job",
-        )
-
-
-@register_model_view(ForwardExecutionRun, "export_bundle", path="support-bundle")
-class ForwardExecutionRunSupportBundleView(BaseObjectView):
-    queryset = ForwardExecutionRun.objects.all()
-
-    def get_required_permission(self):
-        return "forward_netbox.view_forwardexecutionrun"
-
-    def get(self, request, pk):
-        run = get_object_or_404(self.queryset, pk=pk)
-        filename = f"forward-execution-run-{run.pk}-support-bundle.json"
-        return _download_json_response(execution_run_support_bundle(run), filename)
-
-
-@register_model_view(
-    ForwardExecutionRun,
-    "export_bundle_zip",
-    path="support-bundle-zip",
-)
-class ForwardExecutionRunSupportBundleZipView(BaseObjectView):
-    queryset = ForwardExecutionRun.objects.all()
-
-    def get_required_permission(self):
-        return "forward_netbox.view_forwardexecutionrun"
-
-    def get(self, request, pk):
-        run = get_object_or_404(self.queryset, pk=pk)
-        return self._download(request, run)
-
-    def post(self, request, pk):
-        run = get_object_or_404(self.queryset, pk=pk)
-        return self._download(request, run)
-
-    def _download(self, request, run):
-        filename = f"forward-execution-run-{run.pk}-support-bundle.zip"
-        try:
-            return support_bundle_zip_response(
-                execution_run_support_bundle(run),
-                filename=filename,
-                json_filename=f"forward-execution-run-{run.pk}-support-bundle.json",
-                password=request.POST.get("password") or request.GET.get("password"),
-            )
-        except RuntimeError as exc:
-            return HttpResponseBadRequest(str(exc))
-
-
-@register_model_view(ForwardExecutionRun, "reconcile")
-class ForwardExecutionRunReconcileView(BaseObjectView):
-    queryset = ForwardExecutionRun.objects.all()
-
-    def get_required_permission(self):
-        return "forward_netbox.change_forwardexecutionrun"
-
-    def get(self, request, pk):
-        return redirect(get_object_or_404(self.queryset, pk=pk).get_absolute_url())
-
-    def post(self, request, pk):
-        run = get_object_or_404(self.queryset, pk=pk)
-        result = reconcile_execution_run(run)
-        messages.success(
-            request,
-            _("Reconciled Forward execution run %(run)s; updated %(count)s steps.")
-            % {"run": run.pk, "count": result.get("updated_steps", 0)},
-        )
-        return redirect(run.get_absolute_url())
-
-
-@register_model_view(ForwardExecutionRun, "retry_current_step")
-class ForwardExecutionRunRetryCurrentStepView(BaseObjectView):
-    queryset = ForwardExecutionRun.objects.all()
-
-    def get_required_permission(self):
-        return "forward_netbox.run_forwardsync"
-
-    def get(self, request, pk):
-        return redirect(get_object_or_404(self.queryset, pk=pk).get_absolute_url())
-
-    def post(self, request, pk):
-        run = get_object_or_404(self.queryset, pk=pk)
-        step = current_retryable_step(run)
-        if step is None:
-            messages.error(request, _("No retryable Forward execution step was found."))
-            return redirect(run.get_absolute_url())
-        prepared = prepare_stage_step_retry(step)
-        if prepared is None:
-            messages.warning(
-                request,
-                _("Forward execution step %(step)s is already queued for retry.")
-                % {"step": step.index},
-            )
-            return redirect(run.get_absolute_url())
-        job = enqueue_branch_stage_job(run.sync, user=request.user, adhoc=True)
-        messages.success(
-            request,
-            _("Queued job #%(job)s to retry Forward execution step %(step)s.")
-            % {"job": job.pk, "step": step.index},
-        )
-        return redirect(run.get_absolute_url())
-
-
-@register_model_view(ForwardExecutionRun, "discard_branch_retry")
-class ForwardExecutionRunDiscardBranchRetryView(BaseObjectView):
-    queryset = ForwardExecutionRun.objects.all()
-
-    def get_required_permission(self):
-        return "forward_netbox.run_forwardsync"
-
-    def get(self, request, pk):
-        return redirect(get_object_or_404(self.queryset, pk=pk).get_absolute_url())
-
-    def post(self, request, pk):
-        run = get_object_or_404(self.queryset, pk=pk)
-        step = current_discardable_step(run)
-        if step is None:
-            messages.error(
-                request,
-                _(
-                    "No failed Forward execution step with a discardable branch was found."
-                ),
-            )
-            return redirect(run.get_absolute_url())
-        discarded = discard_stage_branch_for_retry(step)
-        if discarded is None:
-            messages.error(
-                request,
-                _("The failed Forward execution branch could not be discarded."),
-            )
-            return redirect(run.get_absolute_url())
-        job = enqueue_branch_stage_job(run.sync, user=request.user, adhoc=True)
-        messages.success(
-            request,
-            _(
-                "Discarded the failed branch and queued job #%(job)s to retry "
-                "Forward execution step %(step)s."
-            )
-            % {"job": job.pk, "step": step.index},
-        )
-        return redirect(run.get_absolute_url())
-
-
-@register_model_view(ForwardExecutionRun, "requeue_merge")
-class ForwardExecutionRunRequeueMergeView(BaseObjectView):
-    queryset = ForwardExecutionRun.objects.all()
-
-    def get_required_permission(self):
-        return "forward_netbox.merge_forwardingestion"
-
-    def get(self, request, pk):
-        return redirect(get_object_or_404(self.queryset, pk=pk).get_absolute_url())
-
-    def post(self, request, pk):
-        run = get_object_or_404(self.queryset, pk=pk)
-        step = current_mergeable_step(run)
-        if step is None:
-            messages.error(request, _("No mergeable Forward execution step was found."))
-            return redirect(run.get_absolute_url())
-        job = step.ingestion.enqueue_merge_job(user=request.user, remove_branch=True)
-        messages.success(
-            request,
-            _("Queued merge job #%(job)s for Forward execution step %(step)s.")
-            % {"job": job.pk, "step": step.index},
-        )
-        return redirect(run.get_absolute_url())
-
-
-@register_model_view(ForwardExecutionStep, "list", path="", detail=False)
-class ForwardExecutionStepListView(generic.ObjectListView):
-    queryset = ForwardExecutionStep.objects.select_related(
-        "run",
-        "run__sync",
-        "branch",
-        "ingestion",
-        "job",
-        "merge_job",
-    )
-    filterset = ForwardExecutionStepFilterSet
-    table = ForwardExecutionStepTable
-    actions = (BulkExport,)
-
-
-@register_model_view(ForwardExecutionStep)
-class ForwardExecutionStepView(generic.ObjectView):
-    queryset = ForwardExecutionStep.objects.select_related(
-        "run",
-        "run__sync",
-        "branch",
-        "ingestion",
-        "job",
-        "merge_job",
-    )
-    template_name = "forward_netbox/forwardexecutionstep.html"
-    actions = ()
 
 
 @register_model_view(ForwardIngestion, "list", path="", detail=False)
