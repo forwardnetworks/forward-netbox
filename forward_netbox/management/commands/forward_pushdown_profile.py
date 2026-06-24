@@ -244,43 +244,9 @@ class Command(BaseCommand):
         }
 
     def _top_slow_models(self, sync, limit):
-        from forward_netbox.models import ForwardExecutionRun
-        from forward_netbox.models import ForwardExecutionStep
-        from forward_netbox.choices import ForwardExecutionRunStatusChoices
-        from forward_netbox.choices import ForwardExecutionStepStatusChoices
-
-        run_statuses = {
-            ForwardExecutionRunStatusChoices.COMPLETED,
-            ForwardExecutionRunStatusChoices.FAILED,
-            ForwardExecutionRunStatusChoices.TIMEOUT,
-        }
-        step_statuses = {
-            ForwardExecutionStepStatusChoices.STAGED,
-            ForwardExecutionStepStatusChoices.MERGED,
-            ForwardExecutionStepStatusChoices.FAILED,
-            ForwardExecutionStepStatusChoices.TIMEOUT,
-            ForwardExecutionStepStatusChoices.MERGE_TIMEOUT,
-        }
-        runs = (
-            ForwardExecutionRun.objects.filter(sync=sync, status__in=run_statuses)
-            .order_by("-created")
-            .values_list("pk", flat=True)[:5]
-        )
-        if not runs:
-            return []
-        model_seconds = {}
-        for step in ForwardExecutionStep.objects.filter(
-            run_id__in=list(runs),
-            status__in=step_statuses,
-        ):
-            if not step.model_string or not step.started or not step.completed:
-                continue
-            seconds = max(0.0, (step.completed - step.started).total_seconds())
-            model_seconds[step.model_string] = (
-                model_seconds.get(step.model_string, 0.0) + seconds
-            )
-        ordered = sorted(model_seconds.items(), key=lambda item: item[1], reverse=True)
-        return [model_string for model_string, _ in ordered[:limit]]
+        # 2.0: per-shard execution run/step timing history was removed, so there
+        # is no recorded per-model duration to rank by.
+        return []
 
     def _filter_rows_to_scope(self, model_string, rows, coalesce_fields, shard_keys):
         scoped_rows = []

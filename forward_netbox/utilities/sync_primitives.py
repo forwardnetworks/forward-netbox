@@ -560,6 +560,8 @@ def lookup_device_by_name(runner, device_name):
 def lookup_interface(runner, device, interface_name):
     from dcim.models import Interface
 
+    from .interface_naming import canonical_interface_key
+
     if device is None or not interface_name:
         return None
     key = (device.pk, interface_name)
@@ -572,7 +574,27 @@ def lookup_interface(runner, device, interface_name):
         {"device": device, "name": interface_name},
     )
     if interface is None:
+        # Forward reports abbreviated interface names (gi0/0/2); NetBox
+        # device-type templates and pre-existing data use the canonical full form
+        # (GigabitEthernet0/0/2). Match on the canonical (type, number) key so the
+        # sync UPDATES the existing interface instead of creating a duplicate
+        # (the gi0/0/2 + GigabitEthernet0/0/2 double-listing). Per-device map is
+        # built once and cached.
+        canon = canonical_interface_key(interface_name)
+        if canon is not None:
+            device_map = runner._interface_canonical_cache.get(device.pk)
+            if device_map is None:
+                device_map = {}
+                for candidate in Interface.objects.filter(device=device):
+                    candidate_key = canonical_interface_key(candidate.name)
+                    if candidate_key is not None:
+                        device_map.setdefault(candidate_key, candidate)
+                runner._interface_canonical_cache[device.pk] = device_map
+            interface = device_map.get(canon)
+    if interface is None:
         runner._missing_interface_by_device_name_cache.add(key)
+    else:
+        runner._interface_by_device_name_cache[key] = interface
     return interface
 
 

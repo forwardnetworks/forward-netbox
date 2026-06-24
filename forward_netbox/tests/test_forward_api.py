@@ -1407,6 +1407,32 @@ class ForwardClientTest(TestCase):
             )
         self.assertEqual(self.client._request.call_count, 3)
 
+    def test_run_nqe_query_fetch_all_raises_when_row_ceiling_exceeded(self):
+        # A giant unsharded result must abort before exhausting worker memory.
+        self.client.nqe_fetch_all_max_rows = 1
+        self.client.nqe_fetch_all_max_pages = 1000
+        self.client._request = Mock(
+            side_effect=[
+                self._response(
+                    {"executionKey": "X_123", "status": "COMPLETED", "outcome": "OK"}
+                ),
+                self._response({"items": [{"fields": {"n": 1}}]}),
+                self._response({"items": [{"fields": {"n": 2}}]}),
+            ]
+        )
+
+        with self.assertRaisesRegex(
+            ForwardClientError,
+            "exceeded the in-memory row ceiling",
+        ):
+            self.client.run_nqe_query(
+                query_id="Q_devices",
+                network_id="network-1",
+                snapshot_id="snapshot-1",
+                limit=1,
+                fetch_all=True,
+            )
+
     def test_run_nqe_query_fetch_all_raises_on_identical_full_pages(self):
         self.client.nqe_fetch_all_max_pages = 10
         self.client.nqe_identical_full_page_streak_limit = 2

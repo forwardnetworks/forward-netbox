@@ -54,9 +54,6 @@
     <a class="btn btn-outline-secondary" href="{{ module_readiness_url }}">
       <i class="mdi mdi-server-network" aria-hidden="true"></i>&nbsp;{% trans "Module Readiness" %}
     </a>
-    <a class="btn btn-outline-secondary" href="{{ run_history_url }}">
-      <i class="mdi mdi-history" aria-hidden="true"></i>&nbsp;{% trans "Run History" %}
-    </a>
     <form action="{{ refresh_device_analysis_url }}" method="post" class="d-inline">
       {% csrf_token %}
       <button type="submit" class="btn btn-outline-secondary">
@@ -188,7 +185,6 @@
         {% endif %}
       {% endwith %}
     {% endwith %}
-    {% include 'forward_netbox/inc/execution_failure_banner.html' with failure_summary=latest_execution_failure support_bundle_url=support_bundle_url %}
     <div class="card">
       <h5 class="card-header">{% trans "Query Drift" %}</h5>
       <div class="card-body">

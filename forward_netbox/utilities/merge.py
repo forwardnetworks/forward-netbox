@@ -17,8 +17,8 @@ from typing import TYPE_CHECKING
 
 from core.exceptions import SyncError
 from core.models import ObjectChange as ObjectChange_
-from django.db import connection
 from django.db import DEFAULT_DB_ALIAS
+from django.db import transaction
 from django.db.models.signals import post_save
 from django.test import RequestFactory
 from django.urls import reverse
@@ -27,6 +27,8 @@ from netbox.context_managers import event_tracking
 from netbox_branching.choices import BranchEventTypeChoices
 from netbox_branching.choices import BranchStatusChoices
 from netbox_branching.merge_strategies import get_merge_strategy
+
+from .bulk_merge import bulk_merge_changes
 from netbox_branching.models import Branch
 from netbox_branching.models import BranchEvent
 from netbox_branching.signals import post_merge
@@ -166,43 +168,66 @@ def merge_branch(
     last_log_at = last_heartbeat_at
     step_index = _merge_step_index(ingestion)
 
-    try:
-        for change in changes:
-            processed += 1
-            model_class = change.changed_object_type.model_class()
-            app_label, model_name = change.changed_object_type.natural_key()
-            model_string = f"{app_label}.{model_name}"
-            savepoint = connection.savepoint()
-            try:
-                with event_tracking(request):
-                    request.id = change.request_id
-                    request.user = change.user
-                    change.apply(branch, using=DEFAULT_DB_ALIAS, logger=logger)
+    def _model_string(model_class):
+        return f"{model_class._meta.app_label}.{model_class._meta.model_name}"
 
-                connection.savepoint_commit(savepoint)
-                models_touched.add(model_class)
-                if sync_logger:
-                    sync_logger.increment_statistics(model_string)
-            except Exception as exc:
-                connection.savepoint_rollback(savepoint)
-                failed += 1
-                message = (
-                    f"Failed to apply change {change.pk} "
-                    f"({change.action} {model_string}: {change.changed_object_id}): {exc}"
-                )
-                issue_recorder.record(
-                    model_string=model_string, message=message, exc=exc
-                )
-            last_heartbeat_at, last_log_at = _report_merge_progress(
-                ingestion,
-                sync_logger=sync_logger,
+    def _apply_one(collapsed_change):
+        # Per-object fallback: apply one collapsed change via the framework's
+        # ObjectChange.apply (handles MPTT tree depth, deletion-aware update
+        # payloads, ProtectedError), savepoint-isolated so one bad row records an
+        # issue and the merge continues.
+        model_class = collapsed_change.model_class
+        model_string = _model_string(model_class)
+        dummy_change = collapsed_change.generate_object_change()
+        last = collapsed_change.last_change
+        try:
+            with transaction.atomic():
+                with event_tracking(request):
+                    request.id = getattr(last, "request_id", None)
+                    request.user = getattr(last, "user", None) or user
+                    dummy_change.apply(branch, using=DEFAULT_DB_ALIAS, logger=logger)
+            models_touched.add(model_class)
+            return True
+        except Exception as exc:
+            issue_recorder.record(
                 model_string=model_string,
-                step_index=step_index,
-                processed=processed,
-                total_changes=total_changes,
-                last_heartbeat_at=last_heartbeat_at,
-                last_log_at=last_log_at,
+                message=(
+                    f"Failed to apply collapsed change "
+                    f"({collapsed_change.final_action} {model_string}: "
+                    f"{collapsed_change.key[1]}): {exc}"
+                ),
+                exc=exc,
             )
+            return False
+
+    def _record_applied(model_class):
+        nonlocal processed, last_heartbeat_at, last_log_at
+        processed += 1
+        if sync_logger:
+            sync_logger.increment_statistics(_model_string(model_class))
+        last_heartbeat_at, last_log_at = _report_merge_progress(
+            ingestion,
+            sync_logger=sync_logger,
+            model_string=_model_string(model_class),
+            step_index=step_index,
+            processed=processed,
+            total_changes=total_changes,
+            last_heartbeat_at=last_heartbeat_at,
+            last_log_at=last_log_at,
+        )
+
+    try:
+        applied_count, bulk_failed, bulk_models = bulk_merge_changes(
+            branch,
+            changes,
+            request,
+            user,
+            logger,
+            apply_one=_apply_one,
+            record_applied=_record_applied,
+        )
+        failed += bulk_failed
+        models_touched |= bulk_models
     finally:
         post_save.disconnect(handler, sender=ObjectChange_)
 
