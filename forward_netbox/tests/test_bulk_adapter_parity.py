@@ -239,6 +239,52 @@ class BulkAdapterParityTest(TestCase):
         self.assertEqual(by_name["Po1"][1], "lag")
         self.assertEqual(by_name["Ethernet1"][2], "Po1")
 
+    def test_interface_lag_parent_and_member_same_batch_no_duplicate(self):
+        # Regression: a plain LAG parent (Po9, type=lag) and a member that
+        # references it (lag=Po9) arrive in the SAME bulk batch. The parent is
+        # staged in the bulk create dict (uncommitted) while the member is
+        # delegated to the adapter, which would independently create Po9 — and
+        # the trailing bulk_create then violated
+        # ``dcim_interface_unique_device_name`` ("po9 already exists"). Deferring
+        # the member until after the bulk write commits + caches the parent fixes
+        # it: exactly one Po9, member bound to it.
+        rows = [
+            {"device": "dev-p", "name": "Po9", "type": "lag", "enabled": True},
+            {
+                "device": "dev-p",
+                "name": "Ethernet9",
+                "type": "1000base-t",
+                "enabled": True,
+                "lag": "Po9",
+            },
+        ]
+        bulk_orm_apply_interface(self._runner(), rows)
+        po9 = Interface.objects.filter(device=self.device, name="Po9")
+        self.assertEqual(po9.count(), 1)
+        self.assertEqual(po9.first().type, "lag")
+        member = Interface.objects.get(device=self.device, name="Ethernet9")
+        self.assertEqual(member.lag.name, "Po9")
+
+    def test_interface_duplicate_spellings_in_batch_collapse(self):
+        # Forward emitting both an abbreviated and a canonical spelling of the
+        # same interface in one batch (po10 + Port-channel10) must create ONE
+        # interface — the second row canonically matches the first staged create
+        # even though neither is committed yet.
+        rows = [
+            {"device": "dev-p", "name": "po10", "type": "lag", "enabled": True},
+            {
+                "device": "dev-p",
+                "name": "Port-channel10",
+                "type": "lag",
+                "enabled": True,
+            },
+        ]
+        bulk_orm_apply_interface(self._runner(), rows)
+        created = Interface.objects.filter(
+            device=self.device, name__in=["po10", "Port-channel10"]
+        )
+        self.assertEqual(created.count(), 1)
+
     def test_macaddress_bulk_matches_adapter(self):
         interface_ct = ContentType.objects.get_for_model(Interface)
         rows = [
@@ -281,6 +327,29 @@ class BulkAdapterParityTest(TestCase):
         # Both MACs now point at Ethernet1.
         self.assertEqual(len(state), 2)
         self.assertTrue(all(row[1] == self.interface.pk for row in state))
+
+    def test_macaddress_differing_format_matches_existing_no_duplicate(self):
+        # Forward emits toString(macAddress) as lowercase / cisco-dot; NetBox
+        # stores upper colon-expanded. Re-syncing the same MAC must match the
+        # existing row (MACAddress has no uniqueness constraint, so a missed match
+        # silently duplicates it every run).
+        interface_ct = ContentType.objects.get_for_model(Interface)
+        MACAddress.objects.create(
+            mac_address="AA:BB:CC:DD:EE:01",
+            assigned_object_type=interface_ct,
+            assigned_object_id=self.interface.pk,
+        )
+        before = MACAddress.objects.count()
+        for variant in ("aa:bb:cc:dd:ee:01", "aabb.ccdd.ee01", "AA-BB-CC-DD-EE-01"):
+            bulk_orm_apply_macaddress(
+                self._runner(),
+                [{"device": "dev-p", "interface": "Ethernet1", "mac": variant}],
+            )
+        self.assertEqual(
+            MACAddress.objects.count(),
+            before,
+            "a differently-formatted MAC re-created a duplicate row",
+        )
 
     def _outcomes(self, runner, model_string):
         counts = {}

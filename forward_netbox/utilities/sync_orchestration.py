@@ -6,7 +6,6 @@ from core.signals import pre_sync
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 
-from ..choices import ForwardExecutionBackendChoices
 from ..choices import ForwardIngestionPhaseChoices
 from ..choices import ForwardSourceStatusChoices
 from ..choices import ForwardSyncStatusChoices
@@ -176,8 +175,7 @@ def _record_forward_api_usage(sync, executor):
 
 
 def run_forward_sync(sync, job=None, *, max_changes_per_branch=None, adhoc=False):
-    from .fast_bootstrap_executor import ForwardFastBootstrapExecutor
-    from .multi_branch import ForwardMultiBranchExecutor
+    from .single_branch_executor import ForwardSingleBranchExecutor
 
     sync.logger = SyncLogging(job=job.pk if job else sync.pk)
     try:
@@ -217,45 +215,21 @@ def run_forward_sync(sync, job=None, *, max_changes_per_branch=None, adhoc=False
         return
 
     user = _prepare_forward_sync(sync, job=job)
-    if max_changes_per_branch is None:
-        max_changes_per_branch = sync.get_max_changes_per_branch()
 
     ingestion = None
     executor = None
     try:
-        execution_backend = (sync.parameters or {}).get(
-            "execution_backend",
-            ForwardExecutionBackendChoices.BRANCHING,
-        )
-        log_worker_timeout_guidance(
-            sync,
-            sync.logger,
-            execution_backend=execution_backend,
-        )
-        executor_class = (
-            ForwardFastBootstrapExecutor
-            if execution_backend == ForwardExecutionBackendChoices.FAST_BOOTSTRAP
-            else ForwardMultiBranchExecutor
-        )
-        executor = executor_class(
+        # Single-branch is the only execution path (2.0): one provisioned branch
+        # per sync, bulk staged and bulk merged.
+        log_worker_timeout_guidance(sync, sync.logger)
+        executor = ForwardSingleBranchExecutor(
             sync,
             sync.source.get_client(),
             sync.logger,
             user=user,
             job=job,
         )
-        if execution_backend == ForwardExecutionBackendChoices.FAST_BOOTSTRAP:
-            ingestions = executor.run()
-        else:
-            ingestions = executor.run(
-                max_changes_per_branch=max_changes_per_branch,
-            )
-        if getattr(executor, "resumable_started", False) is True:
-            sync.logger.log_success(
-                "Forward Branching plan queued for resumable shard execution.",
-                obj=sync,
-            )
-            return
+        ingestions = executor.run()
         if not ingestions:
             sync.status = ForwardSyncStatusChoices.COMPLETED
             sync.logger.log_success("Forward ingestion completed.", obj=sync)
@@ -263,21 +237,15 @@ def run_forward_sync(sync, job=None, *, max_changes_per_branch=None, adhoc=False
         ingestion = ingestions[-1]
         if sync.status == ForwardSyncStatusChoices.READY_TO_MERGE:
             sync.logger.log_success(
-                "Forward multi-branch shard staged for review.",
+                "Forward single-branch sync staged for review.",
                 obj=sync,
             )
             return
         sync.status = ForwardSyncStatusChoices.COMPLETED
-        if execution_backend == ForwardExecutionBackendChoices.FAST_BOOTSTRAP:
-            sync.logger.log_success(
-                "Forward fast bootstrap ingestion completed.",
-                obj=sync,
-            )
-        else:
-            sync.logger.log_success(
-                "Forward multi-branch ingestion completed.",
-                obj=sync,
-            )
+        sync.logger.log_success(
+            "Forward single-branch ingestion completed.",
+            obj=sync,
+        )
         return
     except Exception as exc:
         ingestion = _record_forward_sync_failure(

@@ -1,12 +1,172 @@
 from typing import Any
 
 # Fields the bulk engines must set on CREATE but preserve on UPDATE, matching the
-# adapter's intent. dcim.platform.manufacturer is preserved so operators can
-# override the NQE-sourced manufacturer in NetBox without the next sync
-# overwriting their change (see ForwardSyncRunner._ensure_platform).
-CREATE_ONLY_UPDATE_FIELDS_BY_MODEL = {
-    "dcim.platform": frozenset({"manufacturer"}),
-}
+# adapter's intent. (2.0: platforms are global/manufacturer-less — see
+# forward_platforms.nqe — so there are no create-only platform fields anymore.)
+CREATE_ONLY_UPDATE_FIELDS_BY_MODEL: dict[str, frozenset] = {}
+
+# Chunk size for synthesizing branch ObjectChanges after a bulk write: bounds the
+# serialized batch + the ObjectChange list so memory does not grow with the
+# model's total row count (a single shard can be ~500k rows).
+EMIT_OBJECT_CHANGE_CHUNK = 1000
+
+
+def _isolate_bulk_objects(
+    model, objects, operation, runner, model_string, *, fields=None
+):
+    """Re-apply objects one at a time after a bulk write hit a constraint error.
+
+    A failed ``bulk_create``/``bulk_update`` rolls back the whole batch, so one
+    bad row would otherwise fail the entire shard. This saves each object in its
+    own savepoint — good rows apply, the offending row(s) are recorded as
+    ingestion issues — restoring the per-row resilience the adapter path has.
+    """
+    from django.db import transaction
+
+    for obj in objects:
+        try:
+            with transaction.atomic():
+                if operation == "create":
+                    obj.save(force_insert=True)
+                else:
+                    obj.save(update_fields=list(fields) if fields else None)
+        except Exception as exc:  # noqa: BLE001 - isolate one row, keep the shard
+            runner._record_issue(
+                model_string,
+                f"Bulk {operation} row failed; isolated so the shard continues: {exc}",
+                {"name": getattr(obj, "name", None), "pk": getattr(obj, "pk", None)},
+                exception=exc,
+            )
+
+
+def _branch_is_active():
+    """True when staging into a netbox_branching branch (vs direct-to-main)."""
+    try:
+        from netbox_branching.contextvars import active_branch
+    except Exception:  # pragma: no cover - branching not installed
+        return False
+    return active_branch.get() is not None
+
+
+def emit_branch_object_changes(created, updated):
+    """Synthesize the core.ObjectChange rows a bulk write would otherwise skip.
+
+    bulk_create / bulk_update fire no post_save, so NetBox records no
+    ObjectChange — and the plugin merge replays a branch purely from its
+    ObjectChange rows (``branch.get_unmerged_changes()``), so without this every
+    bulk-staged row is silently dropped at merge. Phase 4: after the bulk write,
+    synthesize each row's ObjectChange and ``bulk_create`` them. While
+    ``active_branch`` is set the rows live in the branch schema, but
+    core.ObjectChange is not branchable so the router would write it to main —
+    target the branch connection explicitly (the framework does the same,
+    branches.py:676/743) so get_unmerged_changes() sees these rows. The rows keep
+    the same pks they had in the branch (it shares main's id sequence).
+
+    ``postchange_data`` must be exactly ``serialize_object`` output (the inverse
+    the merge's ``deserialize`` consumes). Rather than per-object
+    ``to_objectchange`` (which runs Django's JSON serializer + a tag query per
+    row — the dominant staging cost), serialize a whole chunk in ONE
+    ``serialize('json', chunk)`` and prefetch the chunk's tags in one query.
+    CREATE uses the freshly-saved instance (pk back-filled by bulk_create);
+    UPDATE requires the caller to have ``snapshot()``-ed before mutating so
+    ``prechange_data`` is correct. No-op (returns False) when not staging into a
+    branch or without a request context, so FAST_BOOTSTRAP direct-to-main is
+    untouched.
+    """
+    try:
+        from netbox_branching.contextvars import active_branch
+    except Exception:  # pragma: no cover - branching not installed
+        return False
+    branch = active_branch.get()
+    if branch is None:
+        return False
+    from netbox.context import current_request
+
+    request = current_request.get()
+    if request is None or getattr(request, "user", None) is None:
+        # Core skips ObjectChange entirely without a request/user; do not emit a
+        # userless change. Caller must fall back to the adapter for tracking.
+        return False
+    from core.choices import ObjectChangeActionChoices
+    from core.models import ObjectChange
+    from django.db.models import prefetch_related_objects
+    from extras.utils import is_taggable
+
+    try:
+        from netbox_branching.models import ChangeDiff
+    except Exception:  # pragma: no cover - branching not installed
+        ChangeDiff = None
+
+    user = request.user
+    user_name = getattr(user, "username", "") or ""
+    request_id = getattr(request, "id", None)
+
+    def _flush(objs, action):
+        # Build + write ObjectChanges in chunks so the OC list never grows with
+        # the model's total row count (a single shard can be ~500k rows).
+        for start in range(0, len(objs), EMIT_OBJECT_CHANGE_CHUNK):
+            chunk = objs[start : start + EMIT_OBJECT_CHANGE_CHUNK]
+            if is_taggable(type(chunk[0])):
+                # serialize_object resolves tags via obj.tags.all() (one query per
+                # row); prefetch the chunk's tags in a single query so each access
+                # hits the cache.
+                prefetch_related_objects(chunk, "tags")
+            ocs = []
+            for obj in chunk:
+                # to_objectchange builds postchange_data via serialize_object —
+                # the exact inverse the merge's deserialize consumes.
+                oc = obj.to_objectchange(action)
+                oc.user = user
+                oc.user_name = user_name
+                oc.request_id = request_id
+                ocs.append(oc)
+            ObjectChange.objects.using(branch.connection_name).bulk_create(
+                ocs, batch_size=EMIT_OBJECT_CHANGE_CHUNK
+            )
+            # bulk_create fires no post_save, so netbox_branching.record_change_diff
+            # never runs and no ChangeDiff row is written. ChangeDiff(action=CREATE)
+            # is the ONLY thing check_object_accessible_in_branch consults to allow a
+            # later in-branch modify of a branch-created object (signal_receivers.py).
+            # Without it, on a clean main every modify of a bulk-created row aborts
+            # with "deleted in the main branch" (a dirty main masked this because the
+            # rows already existed in main). The merge replays ObjectChange only and
+            # never reads ChangeDiff, so synthesizing these is purely additive — no
+            # double-apply. Only CREATE diffs are needed: an UPDATEd object either
+            # exists in main (accessible) or was created in this branch (already has a
+            # CREATE diff from the create pass above).
+            if (
+                ChangeDiff is not None
+                and action == ObjectChangeActionChoices.ACTION_CREATE
+            ):
+                diffs = [
+                    ChangeDiff(
+                        branch=branch,
+                        object_type_id=oc.changed_object_type_id,
+                        object_id=oc.changed_object_id,
+                        # object_repr is NOT NULL and only set in ChangeDiff.save(),
+                        # which bulk_create bypasses — populate it explicitly.
+                        object_repr=(oc.object_repr or "")[:200],
+                        action=ObjectChangeActionChoices.ACTION_CREATE,
+                        original=None,
+                        modified=oc.postchange_data_clean or None,
+                        current=None,
+                        conflicts=None,
+                    )
+                    for oc in ocs
+                ]
+                # ChangeDiff is branch metadata in main (record_change_diff writes it
+                # with no using()); mirror that — do NOT target the branch connection.
+                ChangeDiff.objects.bulk_create(
+                    diffs, batch_size=EMIT_OBJECT_CHANGE_CHUNK
+                )
+
+    created = list(created)
+    updated = list(updated)
+    if created:
+        _flush(created, ObjectChangeActionChoices.ACTION_CREATE)
+    if updated:
+        _flush(updated, ObjectChangeActionChoices.ACTION_UPDATE)
+    return True
 
 
 def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str, Any]]):
@@ -21,6 +181,8 @@ def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str,
         return bulk_orm_apply_ipaddress(runner, rows)
     if model_string == "dcim.interface":
         return bulk_orm_apply_interface(runner, rows)
+    if model_string == "dcim.device":
+        return bulk_orm_apply_device(runner, rows)
 
     from dcim.models import DeviceType
     from dcim.models import DeviceRole
@@ -160,35 +322,6 @@ def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str,
             for manufacturer in manufacturers
             if manufacturer.name
         }
-    if model_string == "dcim.platform":
-        manufacturer_rows = [
-            {
-                "name": row.get("manufacturer"),
-                "slug": row.get("manufacturer_slug") or row.get("manufacturer"),
-            }
-            for row in rows
-            if row.get("manufacturer")
-        ]
-        bulk_orm_apply_simple_models(runner, "dcim.manufacturer", manufacturer_rows)
-        manufacturer_values = {
-            value
-            for row in manufacturer_rows
-            for value in (row.get("slug"), row.get("name"))
-            if value not in ("", None)
-        }
-        manufacturers = Manufacturer.objects.filter(
-            Q(slug__in=manufacturer_values) | Q(name__in=manufacturer_values)
-        )
-        manufacturer_by_slug = {
-            manufacturer.slug: manufacturer
-            for manufacturer in manufacturers
-            if manufacturer.slug
-        }
-        manufacturer_by_name = {
-            manufacturer.name: manufacturer
-            for manufacturer in manufacturers
-            if manufacturer.name
-        }
     if model_string == "ipam.prefix":
         requested_vrf_names = {
             row.get("vrf") for row in rows if row.get("vrf") not in ("", None)
@@ -229,12 +362,10 @@ def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str,
         if model_string == "dcim.devicerole" and not normalized.get("color"):
             normalized["color"] = "9e9e9e"
         if model_string == "dcim.platform":
-            manufacturer = None
-            if row.get("manufacturer"):
-                manufacturer = manufacturer_by_slug.get(
-                    row.get("manufacturer_slug")
-                ) or manufacturer_by_name.get(row.get("manufacturer"))
-            normalized["manufacturer"] = manufacturer
+            # 2.0: platforms are global. Force manufacturer=None on create AND
+            # update so a manufacturer-scoped platform (e.g. a legacy UNKNOWN tied
+            # to one vendor) is cleared and any vendor's device can attach.
+            normalized["manufacturer"] = None
         if model_string == "dcim.devicetype":
             manufacturer = None
             if row.get("manufacturer"):
@@ -305,6 +436,7 @@ def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str,
 
     create_objects = []
     update_objects = []
+    branch_active = _branch_is_active()
     for values in normalized_rows:
         existing = None
         for lookup_set in lookup_sets:
@@ -321,7 +453,12 @@ def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str,
                 break
         if existing is None:
             obj = model(**values)
-            obj.full_clean()
+            # The existing-object lookup above already proved this identity is
+            # absent, so validate_unique/validate_constraints (a DB query per row)
+            # is redundant; a genuine constraint violation still surfaces via the
+            # bulk_create IntegrityError -> per-row isolate path. Field validation
+            # is kept.
+            obj.full_clean(validate_unique=False, validate_constraints=False)
             create_objects.append(obj)
             for lookup_set in lookup_sets:
                 key = lookup_key_from_values(
@@ -335,6 +472,10 @@ def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str,
             runner.logger.increment_statistics(model_string, outcome="applied")
             runner.events_clearer.increment()
             continue
+        if branch_active and getattr(existing, "pk", None) is not None:
+            # Capture pre-mutation state so a synthesized UPDATE ObjectChange (or
+            # the per-object isolate fallback) gets correct prechange_data.
+            existing.snapshot()
         changed = False
         for field_name in fields:
             if field_name in create_only_fields:
@@ -358,17 +499,71 @@ def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str,
             continue
         runner.logger.increment_statistics(model_string, outcome="unchanged")
 
-    with transaction.atomic():
-        if create_objects:
-            model.objects.bulk_create(create_objects, batch_size=1000)
-        if update_objects:
-            model.objects.bulk_update(
-                update_objects,
-                fields=list(fields),
-                batch_size=1000,
-            )
+    from django.db import IntegrityError
+
+    try:
+        with transaction.atomic():
+            if create_objects:
+                model.objects.bulk_create(create_objects, batch_size=1000)
+            if update_objects:
+                model.objects.bulk_update(
+                    update_objects,
+                    fields=list(fields),
+                    batch_size=1000,
+                )
+    except IntegrityError as exc:
+        # A DB constraint violation rolled the whole batch back. Isolate per row
+        # so a single bad row does not fail the entire shard; the offending
+        # row(s) become ingestion issues for operator review.
+        runner.logger.log_warning(
+            f"Bulk write for {model_string} hit a constraint error ({exc}); "
+            "retrying the batch row-by-row to isolate the offending row(s).",
+            obj=runner.sync,
+        )
+        # Per-object isolate saves fire post_save, so when staging into a branch
+        # they record their own ObjectChanges (CREATE, and UPDATE via the
+        # snapshot taken above) — no synthesized emission needed on this path.
+        _isolate_bulk_objects(model, create_objects, "create", runner, model_string)
+        _isolate_bulk_objects(
+            model, update_objects, "update", runner, model_string, fields=fields
+        )
+    else:
+        # Bulk write succeeded and recorded no post_save, so synthesize the
+        # branch ObjectChanges the merge replays from (no-op direct-to-main).
+        if branch_active:
+            try:
+                emit_branch_object_changes(create_objects, update_objects)
+            except Exception as exc:  # noqa: BLE001 - surface, do not crash shard
+                runner._record_issue(
+                    model_string,
+                    f"Bulk write staged into the branch but its change log could "
+                    f"not be recorded; these rows would not merge: {exc}",
+                    {},
+                    exception=exc,
+                )
     runner.events_clearer.clear()
     return True
+
+
+def _canonical_mac(value):
+    """NetBox-canonical (upper, colon-expanded) form of a MAC for stable matching.
+
+    Forward emits ``toString(macAddress)`` — often lowercase (``6c:4e:..``) or
+    cisco-dot (``6c4e.f637.6380``) — while NetBox normalizes the stored value to
+    the upper colon-expanded form (``6C:4E:F6:37:63:80``). Matching on the raw
+    Forward string misses the existing row, and since MACAddress has no uniqueness
+    constraint, every sync re-creates the same MAC (silent duplication + branch
+    churn). Normalize both the existing-index key and the per-row lookup key.
+    """
+    from netaddr import EUI
+    from netaddr import mac_unix_expanded
+
+    try:
+        eui = EUI(str(value))
+        eui.dialect = mac_unix_expanded
+        return str(eui).upper()
+    except Exception:  # noqa: BLE001 - fall back to a stable normalized string
+        return str(value).strip().upper()
 
 
 def bulk_orm_apply_macaddress(runner, rows: list[dict[str, Any]]):
@@ -405,12 +600,13 @@ def bulk_orm_apply_macaddress(runner, rows: list[dict[str, Any]]):
         )
     }
     macs_by_address = {
-        str(mac.mac_address): mac
+        _canonical_mac(mac.mac_address): mac
         for mac in MACAddress.objects.filter(mac_address__in=mac_values)
     }
 
     create_objects = {}
     update_objects = {}
+    branch_active = _branch_is_active()
     for row in rows:
         device_name = row.get("device")
         interface_name = row.get("interface")
@@ -523,7 +719,7 @@ def bulk_orm_apply_macaddress(runner, rows: list[dict[str, Any]]):
             )
             continue
 
-        mac_key = str(mac_address)
+        mac_key = _canonical_mac(mac_address)
         mac = macs_by_address.get(mac_key)
         if mac is None:
             mac = create_objects.get(mac_key)
@@ -533,7 +729,9 @@ def bulk_orm_apply_macaddress(runner, rows: list[dict[str, Any]]):
                 assigned_object_type=interface_content_type,
                 assigned_object_id=interface.pk,
             )
-            mac.full_clean()
+            # Identity proven absent above; skip the per-row validate_unique DB
+            # query (constraint violations still surface via isolate).
+            mac.full_clean(validate_unique=False, validate_constraints=False)
             create_objects[mac_key] = mac
             macs_by_address[mac_key] = mac
             runner.logger.increment_statistics("dcim.macaddress", outcome="applied")
@@ -548,6 +746,8 @@ def bulk_orm_apply_macaddress(runner, rows: list[dict[str, Any]]):
         ):
             runner.logger.increment_statistics("dcim.macaddress", outcome="unchanged")
             continue
+        if branch_active:
+            mac.snapshot()
         mac.assigned_object_type = interface_content_type
         mac.assigned_object_id = interface.pk
         mac.full_clean()
@@ -556,17 +756,47 @@ def bulk_orm_apply_macaddress(runner, rows: list[dict[str, Any]]):
         runner.logger.increment_statistics("dcim.macaddress", outcome="applied")
         runner.events_clearer.increment()
 
-    with transaction.atomic():
-        if create_objects:
-            MACAddress.objects.bulk_create(
-                list(create_objects.values()),
-                batch_size=1000,
-            )
-        if update_objects:
-            MACAddress.objects.bulk_update(
-                list(update_objects.values()),
-                fields=["assigned_object_type", "assigned_object_id"],
-                batch_size=1000,
+    from django.db import IntegrityError
+
+    mac_update_fields = ["assigned_object_type", "assigned_object_id"]
+    try:
+        with transaction.atomic():
+            if create_objects:
+                MACAddress.objects.bulk_create(
+                    list(create_objects.values()),
+                    batch_size=1000,
+                )
+            if update_objects:
+                MACAddress.objects.bulk_update(
+                    list(update_objects.values()),
+                    fields=mac_update_fields,
+                    batch_size=1000,
+                )
+    except IntegrityError as exc:
+        runner.logger.log_warning(
+            f"Bulk write for dcim.macaddress hit a constraint error ({exc}); "
+            "retrying row-by-row to isolate the offending row(s).",
+            obj=runner.sync,
+        )
+        _isolate_bulk_objects(
+            MACAddress,
+            list(create_objects.values()),
+            "create",
+            runner,
+            "dcim.macaddress",
+        )
+        _isolate_bulk_objects(
+            MACAddress,
+            list(update_objects.values()),
+            "update",
+            runner,
+            "dcim.macaddress",
+            fields=mac_update_fields,
+        )
+    else:
+        if branch_active:
+            emit_branch_object_changes(
+                list(create_objects.values()), list(update_objects.values())
             )
 
     runner.events_clearer.clear()
@@ -605,6 +835,7 @@ def bulk_orm_apply_interface(runner, rows: list[dict[str, Any]]):
 
     from ..exceptions import ForwardDependencySkipError
     from ..exceptions import ForwardSearchError
+    from .interface_naming import canonical_interface_key
     from .sync_interface import _interface_untagged_vlan
     from .sync_interface import apply_dcim_interface
 
@@ -625,6 +856,19 @@ def bulk_orm_apply_interface(runner, rows: list[dict[str, Any]]):
 
     create_objects = {}
     update_objects = {}
+    # Pending bulk creates indexed by canonical (device.pk, (type, number)) so a
+    # second row whose name canonicalizes to one already staged (e.g. Forward
+    # emits both ``po9`` and ``Port-channel9``) collapses onto the first instead
+    # of staging a duplicate the lookup can't yet see (it isn't committed).
+    pending_canonical = {}
+    # LAG-interdependent rows (members or lag-type-with-cable) are deferred until
+    # AFTER the bulk write commits. A plain LAG parent (``po9``) is staged in
+    # create_objects (uncommitted); delegating a member that references it inline
+    # would have the adapter independently create the parent it can't see in the
+    # pending dict, so the trailing bulk_create then hits a duplicate-key error.
+    # Deferring guarantees the parent is committed (and cached) before members
+    # are applied.
+    adapter_rows = []
 
     def _delegate_to_adapter(row):
         # Hard LAG/cable cases keep exact adapter semantics (parent ensure,
@@ -654,6 +898,7 @@ def bulk_orm_apply_interface(runner, rows: list[dict[str, Any]]):
                 defaults=getattr(exc, "defaults", None),
             )
 
+    branch_active = _branch_is_active()
     for row in rows:
         device_name = row.get("device")
         try:
@@ -698,7 +943,7 @@ def bulk_orm_apply_interface(runner, rows: list[dict[str, Any]]):
             and getattr(existing, "cable", None) is not None
         )
         if needs_adapter:
-            _delegate_to_adapter(row)
+            adapter_rows.append(row)
             continue
 
         defaults = {
@@ -721,17 +966,29 @@ def bulk_orm_apply_interface(runner, rows: list[dict[str, Any]]):
 
         if existing is None:
             key = (device.pk, row["name"])
+            canon = canonical_interface_key(row["name"])
+            canon_key = (device.pk, canon) if canon is not None else None
             interface = create_objects.get(key)
+            if interface is None and canon_key is not None:
+                # A differently-spelled but canonically-equal name already staged
+                # for this device (po9 vs Port-channel9): reuse it, don't dup.
+                interface = pending_canonical.get(canon_key)
             if interface is None:
                 interface = Interface(**defaults)
-                interface.full_clean()
+                # Identity proven absent above; skip the per-row validate_unique
+                # DB query (constraint violations still surface via isolate).
+                interface.full_clean(validate_unique=False, validate_constraints=False)
                 create_objects[key] = interface
+                if canon_key is not None:
+                    pending_canonical[canon_key] = interface
             runner.logger.increment_statistics("dcim.interface", outcome="applied")
             runner.events_clearer.increment()
             continue
 
         # Existing interface: only write when a field actually changes,
         # otherwise every sync re-PATCHes unchanged interfaces.
+        if branch_active:
+            existing.snapshot()
         changed = False
         for field, value in defaults.items():
             if _interface_field_differs(existing, field, value):
@@ -746,16 +1003,297 @@ def bulk_orm_apply_interface(runner, rows: list[dict[str, Any]]):
         runner.logger.increment_statistics("dcim.interface", outcome="applied")
         runner.events_clearer.increment()
 
-    with transaction.atomic():
-        if create_objects:
-            Interface.objects.bulk_create(
-                list(create_objects.values()), batch_size=1000
+    from django.db import IntegrityError
+
+    try:
+        with transaction.atomic():
+            if create_objects:
+                Interface.objects.bulk_create(
+                    list(create_objects.values()), batch_size=1000
+                )
+            if update_objects:
+                Interface.objects.bulk_update(
+                    list(update_objects.values()),
+                    fields=update_field_names,
+                    batch_size=1000,
+                )
+    except IntegrityError as exc:
+        runner.logger.log_warning(
+            f"Bulk write for dcim.interface hit a constraint error ({exc}); "
+            "retrying row-by-row to isolate the offending row(s).",
+            obj=runner.sync,
+        )
+        _isolate_bulk_objects(
+            Interface, list(create_objects.values()), "create", runner, "dcim.interface"
+        )
+        _isolate_bulk_objects(
+            Interface,
+            list(update_objects.values()),
+            "update",
+            runner,
+            "dcim.interface",
+            fields=update_field_names,
+        )
+    else:
+        if branch_active:
+            emit_branch_object_changes(
+                list(create_objects.values()), list(update_objects.values())
             )
-        if update_objects:
-            Interface.objects.bulk_update(
-                list(update_objects.values()),
-                fields=update_field_names,
-                batch_size=1000,
+
+    # Reflect freshly-created interfaces in the runner lookup caches so the
+    # deferred LAG rows (and any later same-run lookup) resolve them instead of
+    # re-creating them off a stale negative-cache entry. Clear every negative for
+    # a device that just gained an interface (cheap; negatives are only a hint)
+    # so a canonically-equivalent spelling can no longer short-circuit to None.
+    created = [iface for iface in create_objects.values() if getattr(iface, "pk", None)]
+    if created:
+        created_device_pks = {iface.device_id for iface in created}
+        runner._missing_interface_by_device_name_cache = {
+            miss_key
+            for miss_key in runner._missing_interface_by_device_name_cache
+            if miss_key[0] not in created_device_pks
+        }
+        for iface in created:
+            dev_pk = iface.device_id
+            runner._interface_by_device_name_cache[(dev_pk, iface.name)] = iface
+            canon = canonical_interface_key(iface.name)
+            if canon is not None:
+                device_map = runner._interface_canonical_cache.get(dev_pk)
+                if device_map is not None:
+                    device_map.setdefault(canon, iface)
+
+    # Apply deferred LAG-interdependent rows now that their parent interfaces are
+    # committed and cached (parent-first ordering, no duplicate-key race).
+    for row in adapter_rows:
+        _delegate_to_adapter(row)
+
+    runner.events_clearer.clear()
+    return True
+
+
+def _device_field_differs(existing, field, value):
+    if field in {"site", "role", "device_type", "platform"}:
+        return getattr(existing, f"{field}_id") != (value.pk if value else None)
+    return getattr(existing, field) != value
+
+
+def bulk_orm_apply_device(runner, rows: list[dict[str, Any]]):
+    """Batched apply for dcim.device with adapter-parity semantics.
+
+    The clean common case — a device whose site/role/device-type (and optional
+    platform) are already staged by their own workloads immediately before
+    dcim.device, with no virtual-chassis membership — is resolved by batch FK
+    lookup and written with bulk_create/bulk_update + branch ObjectChange
+    synthesis. Rows that need adapter sequencing (a missing parent the adapter
+    would create on demand, virtual-chassis membership, or the opt-in
+    ``apply_device_scope_tags`` per-device tagging) delegate row-by-row to
+    ``apply_dcim_device`` so their behavior stays byte-for-byte identical.
+    Existing devices are written only when a field actually changes.
+    """
+    from dcim.models import Device
+    from dcim.models import DeviceRole
+    from dcim.models import DeviceType
+    from dcim.models import Platform
+    from dcim.models import Site
+    from django.db import IntegrityError
+    from django.db import transaction
+    from django.db.models import Q
+
+    from ..exceptions import ForwardDependencySkipError
+    from ..exceptions import ForwardSearchError
+    from .sync_device import _scope_tags
+    from .sync_device import apply_dcim_device
+
+    update_field_names = ["site", "role", "device_type", "platform", "serial", "status"]
+
+    def _delegate(row):
+        try:
+            apply_dcim_device(runner, row)
+            runner.logger.increment_statistics("dcim.device", outcome="applied")
+        except ForwardDependencySkipError as exc:
+            runner.logger.increment_statistics("dcim.device", outcome="skipped")
+            runner._record_issue(
+                "dcim.device",
+                str(exc),
+                row,
+                exception=exc,
+                context=getattr(exc, "context", None),
+                defaults=getattr(exc, "defaults", None),
+            )
+        except (ForwardSearchError, Exception) as exc:  # noqa: BLE001
+            runner._mark_dependency_failed("dcim.device", row)
+            runner.logger.increment_statistics("dcim.device", outcome="failed")
+            runner._record_issue(
+                "dcim.device",
+                str(exc),
+                row,
+                exception=exc,
+                context=getattr(exc, "context", None),
+                defaults=getattr(exc, "defaults", None),
+            )
+
+    # Opt-in per-device scope tagging is an adapter side effect; keep exact parity
+    # by delegating the whole batch when it is enabled.
+    if _scope_tags(runner):
+        for row in rows:
+            _delegate(row)
+        runner.events_clearer.clear()
+        return True
+
+    def _index(model, slug_values, name_values):
+        objs = model.objects.filter(Q(slug__in=slug_values) | Q(name__in=name_values))
+        by_slug, by_name = {}, {}
+        for obj in objs:
+            if obj.slug:
+                by_slug[obj.slug] = obj
+            if obj.name:
+                by_name[obj.name] = obj
+        return by_slug, by_name
+
+    site_slug_v = {r.get("site_slug") for r in rows if r.get("site_slug")}
+    site_name_v = {r.get("site") for r in rows if r.get("site")}
+    sites_by_slug, sites_by_name = _index(Site, site_slug_v, site_name_v)
+    role_slug_v = {r.get("role_slug") for r in rows if r.get("role_slug")}
+    role_name_v = {r.get("role") for r in rows if r.get("role")}
+    roles_by_slug, roles_by_name = _index(DeviceRole, role_slug_v, role_name_v)
+    plat_slug_v = {r.get("platform_slug") for r in rows if r.get("platform_slug")}
+    plat_name_v = {r.get("platform") for r in rows if r.get("platform")}
+    plats_by_slug, plats_by_name = _index(Platform, plat_slug_v, plat_name_v)
+    # DeviceType has no `name`; it is keyed by slug and `model`.
+    dt_slug_v = {r.get("device_type_slug") for r in rows if r.get("device_type_slug")}
+    dt_model_v = {r.get("device_type") for r in rows if r.get("device_type")}
+    dts = DeviceType.objects.filter(Q(slug__in=dt_slug_v) | Q(model__in=dt_model_v))
+    dt_by_slug = {dt.slug: dt for dt in dts if dt.slug}
+    dt_by_model = {dt.model: dt for dt in dts if dt.model}
+
+    existing_by_name = {
+        d.name: d
+        for d in Device.objects.filter(
+            name__in={r["name"] for r in rows if r.get("name")}
+        )
+    }
+
+    create_objects = {}
+    update_objects = {}
+    branch_active = _branch_is_active()
+
+    for row in rows:
+        if not row.get("name"):
+            runner.logger.increment_statistics("dcim.device", outcome="failed")
+            runner._record_issue(
+                "dcim.device", "Bulk ORM device row missing `name`.", row
+            )
+            continue
+        site = sites_by_slug.get(row.get("site_slug")) or sites_by_name.get(
+            row.get("site")
+        )
+        role = roles_by_slug.get(row.get("role_slug")) or roles_by_name.get(
+            row.get("role")
+        )
+        device_type = dt_by_slug.get(row.get("device_type_slug")) or dt_by_model.get(
+            row.get("device_type")
+        )
+        platform = None
+        wants_platform = bool(row.get("platform"))
+        if wants_platform:
+            platform = plats_by_slug.get(row.get("platform_slug")) or plats_by_name.get(
+                row.get("platform")
+            )
+        # Anything needing adapter sequencing keeps exact parity via the adapter:
+        # a parent not pre-staged (adapter creates it) or virtual-chassis rows.
+        if (
+            site is None
+            or role is None
+            or device_type is None
+            or (wants_platform and platform is None)
+            or row.get("virtual_chassis")
+        ):
+            _delegate(row)
+            continue
+
+        defaults = {
+            "name": row["name"],
+            "site": site,
+            "role": role,
+            "device_type": device_type,
+            "platform": platform,
+            "serial": row.get("serial", ""),
+            "status": row["status"],
+        }
+        try:
+            existing = existing_by_name.get(row["name"])
+            if existing is None:
+                device = create_objects.get(row["name"])
+                if device is None:
+                    device = Device(**defaults)
+                    device.full_clean(validate_unique=False, validate_constraints=False)
+                    create_objects[row["name"]] = device
+                runner.logger.increment_statistics("dcim.device", outcome="applied")
+                runner.events_clearer.increment()
+                continue
+            if branch_active:
+                existing.snapshot()
+            changed = False
+            for field, value in defaults.items():
+                if _device_field_differs(existing, field, value):
+                    setattr(existing, field, value)
+                    changed = True
+            if not changed:
+                runner.logger.increment_statistics("dcim.device", outcome="unchanged")
+                continue
+            existing.full_clean()
+            if getattr(existing, "pk", None):
+                update_objects[existing.pk] = existing
+            runner.logger.increment_statistics("dcim.device", outcome="applied")
+            runner.events_clearer.increment()
+        except Exception as exc:  # noqa: BLE001 - isolate one device, keep staging
+            # e.g. a device deleted in main while the branch modifies it, or any
+            # per-row validation conflict: record the issue + mark the dependency
+            # failed so child interfaces/IPs skip cleanly, and keep the sync going.
+            runner._mark_dependency_failed("dcim.device", row)
+            runner.logger.increment_statistics("dcim.device", outcome="failed")
+            runner._record_issue(
+                "dcim.device",
+                f"Skipping device `{row.get('name')}`; isolated after apply "
+                f"error: {exc}",
+                row,
+                exception=exc,
+            )
+            continue
+
+    try:
+        with transaction.atomic():
+            if create_objects:
+                Device.objects.bulk_create(
+                    list(create_objects.values()), batch_size=1000
+                )
+            if update_objects:
+                Device.objects.bulk_update(
+                    list(update_objects.values()),
+                    fields=update_field_names,
+                    batch_size=1000,
+                )
+    except IntegrityError as exc:
+        runner.logger.log_warning(
+            f"Bulk write for dcim.device hit a constraint error ({exc}); retrying "
+            "row-by-row to isolate the offending row(s).",
+            obj=runner.sync,
+        )
+        _isolate_bulk_objects(
+            Device, list(create_objects.values()), "create", runner, "dcim.device"
+        )
+        _isolate_bulk_objects(
+            Device,
+            list(update_objects.values()),
+            "update",
+            runner,
+            "dcim.device",
+            fields=update_field_names,
+        )
+    else:
+        if branch_active:
+            emit_branch_object_changes(
+                list(create_objects.values()), list(update_objects.values())
             )
 
     runner.events_clearer.clear()
@@ -841,6 +1379,7 @@ def bulk_orm_apply_ipaddress(runner, rows: list[dict[str, Any]]):
 
     create_objects = {}
     update_objects = {}
+    branch_active = _branch_is_active()
 
     for row in rows:
         device_name = row.get("device")
@@ -937,13 +1476,18 @@ def bulk_orm_apply_ipaddress(runner, rows: list[dict[str, Any]]):
                 assigned_object_type=interface_ct,
                 assigned_object_id=interface.pk,
             )
-            ip.full_clean()
+            # Identity proven absent above; skip the per-row validate_unique DB
+            # query (constraint violations still surface via isolate). IPAddress
+            # has no unique global constraint here, so behaviour is unchanged.
+            ip.full_clean(validate_unique=False, validate_constraints=False)
             create_objects[lookup_key] = ip
             existing_by_key[lookup_key] = ip
             runner.logger.increment_statistics("ipam.ipaddress", outcome="applied")
             runner.events_clearer.increment()
             continue
 
+        if branch_active:
+            ip.snapshot()
         changed = False
         if str(ip.address) != str(row["address"]):
             ip.address = row["address"]
@@ -974,16 +1518,41 @@ def bulk_orm_apply_ipaddress(runner, rows: list[dict[str, Any]]):
         runner.logger.increment_statistics("ipam.ipaddress", outcome="applied")
         runner.events_clearer.increment()
 
-    with transaction.atomic():
-        if create_objects:
-            IPAddress.objects.bulk_create(
-                list(create_objects.values()), batch_size=1000
-            )
-        if update_objects:
-            IPAddress.objects.bulk_update(
-                list(update_objects.values()),
-                fields=update_field_names,
-                batch_size=1000,
+    from django.db import IntegrityError
+
+    try:
+        with transaction.atomic():
+            if create_objects:
+                IPAddress.objects.bulk_create(
+                    list(create_objects.values()), batch_size=1000
+                )
+            if update_objects:
+                IPAddress.objects.bulk_update(
+                    list(update_objects.values()),
+                    fields=update_field_names,
+                    batch_size=1000,
+                )
+    except IntegrityError as exc:
+        runner.logger.log_warning(
+            f"Bulk write for ipam.ipaddress hit a constraint error ({exc}); "
+            "retrying row-by-row to isolate the offending row(s).",
+            obj=runner.sync,
+        )
+        _isolate_bulk_objects(
+            IPAddress, list(create_objects.values()), "create", runner, "ipam.ipaddress"
+        )
+        _isolate_bulk_objects(
+            IPAddress,
+            list(update_objects.values()),
+            "update",
+            runner,
+            "ipam.ipaddress",
+            fields=update_field_names,
+        )
+    else:
+        if branch_active:
+            emit_branch_object_changes(
+                list(create_objects.values()), list(update_objects.values())
             )
 
     runner.events_clearer.clear()
@@ -991,6 +1560,13 @@ def bulk_orm_apply_ipaddress(runner, rows: list[dict[str, Any]]):
 
 
 def bulk_orm_apply_virtualchassis(runner, rows: list[dict[str, Any]]):
+    # VirtualChassis staging is a two-phase write (the chassis plus member-device
+    # reassignments) and is low-volume, so it is not worth synthesizing branch
+    # ObjectChanges for. When staging into a branch, defer to the adapter
+    # (per-object saves fire post_save -> tracked branch changes) by returning
+    # False so the engine falls back to runner._apply_model_rows.
+    if _branch_is_active():
+        return False
     from dcim.models import Device
     from dcim.models import VirtualChassis
     from django.core.exceptions import ValidationError

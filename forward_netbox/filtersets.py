@@ -8,10 +8,6 @@ from netbox.filtersets import NetBoxModelFilterSet
 from netbox_branching.models import ChangeDiff
 
 from .choices import ForwardDriftPolicyBaselineChoices
-from .choices import ForwardExecutionBackendChoices
-from .choices import ForwardExecutionRunStatusChoices
-from .choices import ForwardExecutionStepKindChoices
-from .choices import ForwardExecutionStepStatusChoices
 from .choices import ForwardIngestionPhaseChoices
 from .choices import ForwardSourceDeploymentChoices
 from .choices import ForwardSourceStatusChoices
@@ -19,8 +15,6 @@ from .choices import ForwardSyncStatusChoices
 from .choices import ForwardValidationStatusChoices
 from .models import ForwardDeviceAnalysis
 from .models import ForwardDriftPolicy
-from .models import ForwardExecutionRun
-from .models import ForwardExecutionStep
 from .models import ForwardIngestion
 from .models import ForwardIngestionIssue
 from .models import ForwardNQEMap
@@ -234,89 +228,4 @@ class ForwardValidationRunFilterSet(BaseFilterSet):
             Q(sync__name__icontains=value)
             | Q(snapshot_id__icontains=value)
             | Q(baseline_snapshot_id__icontains=value)
-        )
-
-
-class ForwardExecutionRunFilterSet(BaseFilterSet):
-    q = django_filters.CharFilter(method="search")
-    backend = django_filters.MultipleChoiceFilter(
-        choices=ForwardExecutionBackendChoices,
-        null_value=None,
-    )
-    status = django_filters.MultipleChoiceFilter(
-        choices=ForwardExecutionRunStatusChoices,
-        null_value=None,
-    )
-
-    class Meta:
-        model = ForwardExecutionRun
-        fields = (
-            "id",
-            "sync",
-            "source",
-            "validation_run",
-            "backend",
-            "status",
-            "snapshot_id",
-        )
-
-    def search(self, queryset, name, value):
-        if not value.strip():
-            return queryset
-        return queryset.filter(
-            Q(sync__name__icontains=value)
-            | Q(source__name__icontains=value)
-            | Q(phase__icontains=value)
-            | Q(phase_message__icontains=value)
-            | Q(snapshot_selector__icontains=value)
-            | Q(snapshot_id__icontains=value)
-        )
-
-
-class ForwardExecutionStepFilterSet(BaseFilterSet):
-    q = django_filters.CharFilter(method="search")
-    kind = django_filters.MultipleChoiceFilter(
-        choices=ForwardExecutionStepKindChoices,
-        null_value=None,
-    )
-    status = django_filters.MultipleChoiceFilter(
-        choices=ForwardExecutionStepStatusChoices,
-        null_value=None,
-    )
-
-    class Meta:
-        model = ForwardExecutionStep
-        fields = (
-            "id",
-            "run",
-            "kind",
-            "status",
-            "model_string",
-            "query_name",
-            "sync_mode",
-            "fetch_mode",
-            "fetched_row_count",
-            "attempted_row_count",
-            "applied_row_count",
-            "skipped_row_count",
-            "failed_row_count",
-            "apply_engine",
-            "branch",
-            "ingestion",
-            "job",
-            "merge_job",
-        )
-
-    def search(self, queryset, name, value):
-        if not value.strip():
-            return queryset
-        return queryset.filter(
-            Q(run__sync__name__icontains=value)
-            | Q(model_string__icontains=value)
-            | Q(label__icontains=value)
-            | Q(query_name__icontains=value)
-            | Q(execution_mode__icontains=value)
-            | Q(execution_value__icontains=value)
-            | Q(branch_name__icontains=value)
-            | Q(last_error__icontains=value)
         )

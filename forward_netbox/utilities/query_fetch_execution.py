@@ -23,6 +23,7 @@ from ..exceptions import ForwardQueryError
 from .apply_engine import apply_engine_decision_for
 from .branch_budget import BranchPlanItem
 from .branch_budget import BranchWorkload
+from .branch_budget import DEVICE_SHARD_MODELS
 from .branch_budget import row_shard_key
 from .branch_budget import shard_fetch_contract
 from .execution_ledger import active_execution_run
@@ -59,6 +60,57 @@ from .query_registry import optional_builtin_query_names_for_model
 from .query_registry import resolve_query_specs_for_client
 from .sync import ForwardSyncRunner
 from .sync_contracts import validate_row_shape_for_model
+
+# Models whose NQE query filters `device.name in forward_netbox_shard_keys`, so a
+# device-tag scope can be pushed to the Forward fetch as device-name shard keys
+# (reducing the fetch to in-scope devices instead of fetching the whole network
+# and discarding it locally). Network-scoped models (prefix/vlan/vrf/site/
+# platform/devicetype) and the ACI fabric models use different shard semantics
+# and keep the post-fetch local scope filter.
+DEVICE_NAME_SCOPED_MODELS = DEVICE_SHARD_MODELS | {
+    "dcim.device",
+    "dcim.virtualchassis",
+}
+
+# Bounded retry for a single workload (shard) fetch when the Forward NQE call
+# fails transiently. The HTTP client already retries at the request level; this
+# adds a coarser query-level retry so a transient NQE-execution failure (async
+# poll timeout, engine busy, connection reset) does not fail the shard — a
+# failed shard is dropped from the rebuilt plan and desyncs the resumable
+# branching executor's claimed index (the class of crash Blake hit on ipam.vlan).
+DEFAULT_WORKLOAD_FETCH_RETRY_ATTEMPTS = 2
+DEFAULT_WORKLOAD_FETCH_RETRY_BACKOFF_SECONDS = 3.0
+_TRANSIENT_FETCH_ERROR_TOKENS = (
+    "timeout",
+    "timed out",
+    "temporarily",
+    "unavailable",
+    "connection reset",
+    "connection aborted",
+    "429",
+    "500",
+    "502",
+    "503",
+    "504",
+)
+
+
+def _is_transient_fetch_error(exc):
+    """True when a workload fetch error is worth retrying.
+
+    Connectivity errors are always transient. Other client errors are retried
+    only when the message looks transient (timeout / 429 / 5xx / reset).
+    ForwardQueryError (a malformed or unpublished query, or a source defect) is
+    never transient — retrying it just wastes time.
+    """
+    if isinstance(exc, ForwardConnectivityError):
+        return True
+    if isinstance(exc, ForwardQueryError):
+        return False
+    if isinstance(exc, ForwardClientError):
+        message = str(exc or "").lower()
+        return any(token in message for token in _TRANSIENT_FETCH_ERROR_TOKENS)
+    return False
 
 
 def _nqe_string_literal(value: str) -> str:
@@ -670,9 +722,38 @@ class ForwardQueryFetcher:
         except (ForwardClientError, ForwardConnectivityError, ForwardQueryError) as exc:
             return model_string, spec, [], exc
 
+    def _drop_uninstalled_integration_models(self, model_strings):
+        """Drop models whose optional NetBox plugin is not installed.
+
+        A model can be enabled in the sync config even when its integration
+        plugin (e.g. netbox_routing, netbox_cisco_aci) is absent. Such a model
+        cannot sync, and attempting it fails every row at apply time with a
+        "plugin not installed" error. Skip it once here, with a single warning,
+        mirroring the query-validation filter.
+        """
+        from django.apps import apps
+
+        from .plugin_integrations.registry import optional_integration_for_model
+
+        kept = []
+        for model_string in model_strings:
+            integration = optional_integration_for_model(model_string)
+            if integration and not apps.is_installed(integration.app_label):
+                self.logger.log_warning(
+                    f"Skipping `{model_string}`: the optional "
+                    f"`{integration.app_label}` NetBox plugin is not installed. "
+                    "Install and migrate it to sync this model.",
+                    obj=self.sync,
+                )
+                continue
+            kept.append(model_string)
+        return kept
+
     def _query_jobs(self, context: ForwardQueryContext, *, model_strings=None):
         jobs = []
-        enabled_models = list(model_strings or self.sync.get_model_strings())
+        enabled_models = self._drop_uninstalled_integration_models(
+            list(model_strings or self.sync.get_model_strings())
+        )
         resolved_specs, spec_errors = self._resolve_specs_for_models(
             model_strings=enabled_models,
             maps=context.maps,
@@ -788,6 +869,35 @@ class ForwardQueryFetcher:
             self._append_routing_diagnostics(context)
         return workloads
 
+    def _workload_fetch_retry_config(self):
+        """Return ``(attempts, backoff_seconds)`` for transient fetch retries.
+
+        Tunable per source via ``workload_fetch_retry_attempts`` /
+        ``workload_fetch_retry_backoff_seconds`` (the latter may be 0 to disable
+        sleeping, e.g. in tests).
+        """
+        source = getattr(self.sync, "source", None)
+        parameters = dict(getattr(source, "parameters", {}) or {})
+        try:
+            attempts = int(
+                parameters.get(
+                    "workload_fetch_retry_attempts",
+                    DEFAULT_WORKLOAD_FETCH_RETRY_ATTEMPTS,
+                )
+            )
+        except (TypeError, ValueError):
+            attempts = DEFAULT_WORKLOAD_FETCH_RETRY_ATTEMPTS
+        try:
+            backoff = float(
+                parameters.get(
+                    "workload_fetch_retry_backoff_seconds",
+                    DEFAULT_WORKLOAD_FETCH_RETRY_BACKOFF_SECONDS,
+                )
+            )
+        except (TypeError, ValueError):
+            backoff = DEFAULT_WORKLOAD_FETCH_RETRY_BACKOFF_SECONDS
+        return max(0, attempts), max(0.0, backoff)
+
     def _query_diagnostics_enabled(self) -> bool:
         source = getattr(self.sync, "source", None)
         parameters = dict(getattr(source, "parameters", {}) or {})
@@ -823,7 +933,9 @@ class ForwardQueryFetcher:
         shard_scope=None,
     ):
         jobs = []
-        enabled_models = list(model_strings or self.sync.get_model_strings())
+        enabled_models = self._drop_uninstalled_integration_models(
+            list(model_strings or self.sync.get_model_strings())
+        )
         resolved_specs, spec_errors = self._resolve_specs_for_models(
             model_strings=enabled_models,
             maps=context.maps,
@@ -1216,37 +1328,56 @@ class ForwardQueryFetcher:
         model_string, spec, baseline, coalesce_fields, shard_scope = job
         baseline_snapshot_id = getattr(baseline, "snapshot_id", "") or ""
         started = time.perf_counter()
-        try:
-            rows, delete_rows, sync_mode, fetch_meta = self._fetch_spec_rows(
-                model_string,
-                spec,
-                baseline,
-                context,
-                coalesce_fields,
-                shard_scope=shard_scope,
-                return_fetch_meta=True,
-            )
-            runtime_ms = round((time.perf_counter() - started) * 1000, 1)
-            if validate_rows:
-                self.validate_rows(
-                    model_string,
-                    rows,
-                    delete_rows,
-                    coalesce_fields,
-                )
-        except (ForwardClientError, ForwardConnectivityError, ForwardQueryError) as exc:
-            runtime_ms = round((time.perf_counter() - started) * 1000, 1)
-            return (
-                self._failure_result(
-                    context,
+        attempts, backoff = self._workload_fetch_retry_config()
+        for attempt in range(attempts + 1):
+            try:
+                rows, delete_rows, sync_mode, fetch_meta = self._fetch_spec_rows(
                     model_string,
                     spec,
-                    exc,
-                    sync_mode="planning",
-                    runtime_ms=runtime_ms,
-                ),
-                None,
-            )
+                    baseline,
+                    context,
+                    coalesce_fields,
+                    shard_scope=shard_scope,
+                    return_fetch_meta=True,
+                )
+                if validate_rows:
+                    self.validate_rows(
+                        model_string,
+                        rows,
+                        delete_rows,
+                        coalesce_fields,
+                    )
+                break
+            except (
+                ForwardClientError,
+                ForwardConnectivityError,
+                ForwardQueryError,
+            ) as exc:
+                if attempt < attempts and _is_transient_fetch_error(exc):
+                    self.logger.log_warning(
+                        (
+                            f"Transient fetch error for {model_string} "
+                            f"(`{spec.execution_value}`); retrying "
+                            f"{attempt + 1}/{attempts}: {exc}"
+                        ),
+                        obj=self.sync,
+                    )
+                    if backoff > 0:
+                        time.sleep(backoff * (attempt + 1))
+                    continue
+                runtime_ms = round((time.perf_counter() - started) * 1000, 1)
+                return (
+                    self._failure_result(
+                        context,
+                        model_string,
+                        spec,
+                        exc,
+                        sync_mode="planning",
+                        runtime_ms=runtime_ms,
+                    ),
+                    None,
+                )
+        runtime_ms = round((time.perf_counter() - started) * 1000, 1)
         apply_engine_decision = apply_engine_decision_for(
             sync=self.sync,
             model_string=model_string,
@@ -1923,6 +2054,21 @@ class ForwardQueryFetcher:
             for key, value in parameters.items()
             if not str(key).startswith("device_tag_")
         }
+        # Push the resolved device-tag scope into the Forward fetch as device-name
+        # shard keys for device-keyed queries, so the fetch returns only in-scope
+        # devices instead of the whole network (the post-fetch filter would
+        # otherwise discard the out-of-scope rows after paying to fetch them).
+        # Skip when a per-shard key set is already present (do not widen it).
+        scoped_device_names = context.scoped_device_names
+        if (
+            scoped_device_names
+            and getattr(spec, "model_string", "") in DEVICE_NAME_SCOPED_MODELS
+            and "forward_netbox_shard_keys" in spec_parameters
+            and not sanitized_parameters.get("forward_netbox_shard_keys")
+        ):
+            sanitized_parameters["forward_netbox_shard_keys"] = sorted(
+                scoped_device_names
+            )
         if not accepts_device_tag_parameters:
             return sanitized_parameters
         tag_parameters = {

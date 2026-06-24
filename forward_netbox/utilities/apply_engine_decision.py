@@ -37,6 +37,12 @@ BULK_ORM_ENABLED_MODELS = {
     # `_depth`/`_children` exactly like the adapter. Null-VRF identity and the
     # canonical-CIDR lookup key are handled in the bulk lookup builders.
     "ipam.prefix",
+    # Promoted: highest-volume model. Its parents (site/manufacturer/role/
+    # device-type/platform) are bulk-staged immediately before it, so the bulk
+    # path resolves them by lookup; rows needing adapter sequencing (missing
+    # parent, virtual-chassis membership, opt-in scope tagging) delegate to the
+    # adapter for exact parity. Biggest single staging speedup.
+    "dcim.device",
 }
 EXPERIMENTAL_BULK_ORM_MODELS = set()
 
@@ -53,6 +59,7 @@ BULK_ORM_SPEC_MODELS = {
     "ipam.prefix",
     "ipam.ipaddress",
     "dcim.interface",
+    "dcim.device",
 }
 BULK_ORM_PARITY_GATES = (
     {
@@ -232,7 +239,6 @@ BULK_ORM_PERFORMANCE_IMPACT_PRIORITY = {
 
 ADAPTER_REQUIRED_MODELS = {
     "dcim.cable",
-    "dcim.device",
     "dcim.inventoryitem",
     "dcim.module",
     "extras.taggeditem",
@@ -264,13 +270,6 @@ ADAPTER_MODEL_BLOCKERS = {
         "blocker_reason": (
             "Cable upserts require direction-insensitive identity handling and "
             "existing-link conflict checks that currently live in adapter logic."
-        ),
-    },
-    "dcim.device": {
-        "blocker_code": "dependency_resolution",
-        "blocker_reason": (
-            "Device writes depend on staged manufacturer/site/device-type/role "
-            "resolution and model-level validation sequencing."
         ),
     },
     "dcim.inventoryitem": {

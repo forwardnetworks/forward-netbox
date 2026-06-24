@@ -20,6 +20,7 @@ These models are parity-tested for the current `bulk_orm` path:
 - `dcim.devicerole`
 - `dcim.platform`
 - `dcim.devicetype`
+- `dcim.device`
 - `dcim.macaddress`
 - `dcim.virtualchassis`
 - `dcim.interface`
@@ -33,7 +34,6 @@ These models are parity-tested for the current `bulk_orm` path:
 These models remain adapter-required with explicit blocker codes:
 
 - `dcim.cable` | `relationship_identity_directionality`
-- `dcim.device` | `dependency_resolution`
 - `dcim.inventoryitem` | `dependency_resolution`
 - `dcim.module` | `dependency_resolution`
 - `extras.taggeditem` | `generic_foreign_key_relations`

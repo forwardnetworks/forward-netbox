@@ -89,12 +89,34 @@ async function screenshot(page, name) {
   return target;
 }
 
+async function waitForWebReady(url, timeoutMs = 180000) {
+  // The seed runs via `docker exec manage.py` (no web server needed), so a
+  // successful seed does NOT mean gunicorn is serving yet. Poll the URL until
+  // it responds before driving the browser, otherwise the first navigation
+  // times out against a cold container.
+  const deadline = Date.now() + timeoutMs;
+  let lastErr = "no response";
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(url, { redirect: "manual" });
+      if (res.status > 0) return;
+    } catch (err) {
+      lastErr = err && err.message ? err.message : String(err);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  throw new Error(
+    `web server not ready at ${url} within ${timeoutMs}ms (last: ${lastErr})`,
+  );
+}
+
 async function main() {
   mkdirSync(artifactDir, { recursive: true });
   if (process.env.PLAYWRIGHT_SKIP_MIGRATE !== "true") {
     runDockerManage("migrate --noinput");
   }
   runDockerManage("forward_seed_ui_harness");
+  await waitForWebReady(`${baseURL}/login/`);
 
   const browser = await chromium.launch({
     headless: process.env.PLAYWRIGHT_HEADLESS !== "false",

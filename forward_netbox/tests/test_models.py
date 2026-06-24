@@ -3,16 +3,13 @@ from unittest.mock import Mock
 from unittest.mock import patch
 from uuid import uuid4
 
-from core.choices import JobStatusChoices
 from core.exceptions import SyncError
-from core.models import Job
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
 from django.test import override_settings
 from django.test import TestCase
-from django.urls import reverse
 from django.utils import timezone
 from netbox_branching.models import Branch
 
@@ -20,16 +17,11 @@ from forward_netbox.choices import FORWARD_BGP_MODELS
 from forward_netbox.choices import forward_configured_models
 from forward_netbox.choices import ForwardDiffFallbackModeChoices
 from forward_netbox.choices import ForwardDriftPolicyBaselineChoices
-from forward_netbox.choices import ForwardExecutionBackendChoices
-from forward_netbox.choices import ForwardExecutionRunStatusChoices
-from forward_netbox.choices import ForwardExecutionStepStatusChoices
 from forward_netbox.choices import ForwardSourceStatusChoices
 from forward_netbox.choices import ForwardSyncStatusChoices
 from forward_netbox.choices import ForwardValidationStatusChoices
 from forward_netbox.jobs import sync_forwardsync
 from forward_netbox.models import ForwardDriftPolicy
-from forward_netbox.models import ForwardExecutionRun
-from forward_netbox.models import ForwardExecutionStep
 from forward_netbox.models import ForwardIngestion
 from forward_netbox.models import ForwardIngestionIssue
 from forward_netbox.models import ForwardNQEMap
@@ -52,8 +44,6 @@ from forward_netbox.utilities.forward_api import MAX_NQE_ASYNC_MAX_POLLS
 from forward_netbox.utilities.forward_api import MAX_NQE_ASYNC_POLL_INTERVAL_SECONDS
 from forward_netbox.utilities.query_registry import builtin_nqe_map_rows
 from forward_netbox.utilities.query_registry import QuerySpec
-from forward_netbox.utilities.sync_state import clear_branch_run_state
-from forward_netbox.utilities.sync_state import get_branch_run_display_state
 from forward_netbox.utilities.validation import force_allow_validation_run
 from forward_netbox.utilities.validation import ForwardValidationRunner
 from forward_netbox.views import annotate_statistics
@@ -500,24 +490,6 @@ class ForwardSyncModelTest(TestCase):
             ForwardDiffFallbackModeChoices.REQUIRE_DIFF,
         )
 
-    def test_sync_accepts_fast_bootstrap_execution_backend(self):
-        sync = ForwardSync(
-            name="sync-fast-bootstrap",
-            source=self.source,
-            parameters={
-                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
-                "execution_backend": ForwardExecutionBackendChoices.FAST_BOOTSTRAP,
-                "dcim.device": True,
-            },
-        )
-
-        sync.clean()
-
-        self.assertEqual(
-            sync.parameters["execution_backend"],
-            ForwardExecutionBackendChoices.FAST_BOOTSTRAP,
-        )
-
     def test_new_sync_validation_defaults_safe_bulk_orm_enabled(self):
         sync = ForwardSync(
             name="sync-new-bulk-orm-default",
@@ -531,22 +503,6 @@ class ForwardSyncModelTest(TestCase):
         sync.clean()
 
         self.assertTrue(sync.parameters["enable_bulk_orm"])
-
-    def test_sync_display_parameters_include_execution_backend(self):
-        sync = ForwardSync.objects.create(
-            name="sync-display-fast-bootstrap",
-            source=self.source,
-            parameters={
-                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
-                "execution_backend": ForwardExecutionBackendChoices.FAST_BOOTSTRAP,
-                "dcim.device": True,
-            },
-        )
-
-        self.assertEqual(
-            sync.get_display_parameters()["execution_backend"],
-            ForwardExecutionBackendChoices.FAST_BOOTSTRAP,
-        )
 
     def test_sync_rejects_past_scheduled_time(self):
         sync = ForwardSync(
@@ -652,46 +608,6 @@ class ForwardSyncModelTest(TestCase):
         self.assertEqual(summary["branch_budget_hints"]["dcim.device"], 10000)
         self.assertIn("dcim.device", summary["enabled_models"])
 
-    def test_workload_summary_warns_for_large_branching_baseline(self):
-        sync = ForwardSync.objects.create(
-            name="sync-large-branching-guidance",
-            source=self.source,
-            parameters={
-                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
-                "dcim.device": True,
-                "max_changes_per_branch": 10000,
-            },
-        )
-        sync.set_branch_run_state(
-            {
-                "snapshot_id": "snapshot-2",
-                "next_plan_index": 1,
-                "total_plan_items": 12,
-                "awaiting_merge": False,
-                "plan_preview": {
-                    "planned_shards": 12,
-                    "estimated_changes": 120000,
-                },
-            }
-        )
-
-        guidance = sync.get_workload_summary()["branching_guidance"]
-        lane = sync.get_workload_summary()["initial_baseline_lane"]
-
-        self.assertEqual(guidance["severity"], "warning")
-        self.assertIn("Fast bootstrap", guidance["message"])
-        self.assertEqual(
-            lane["recommendation"],
-            "use_fast_bootstrap_for_trusted_baseline",
-        )
-        self.assertEqual(lane["recommended_backend"], "fast_bootstrap")
-        self.assertEqual(lane["lane_risk"], "high")
-        self.assertEqual(lane["runtime_class"], "hours")
-        self.assertEqual(
-            lane["fast_bootstrap_confirmation"][0],
-            "Use only for a trusted initial baseline.",
-        )
-
     def test_workload_summary_recommends_branching_for_bounded_projection(self):
         sync = ForwardSync.objects.create(
             name="sync-bounded-branching-guidance",
@@ -768,67 +684,6 @@ class ForwardSyncModelTest(TestCase):
             lane["estimate"]["delete_heavy_models"][0]["model"], "dcim.device"
         )
 
-    def test_workload_summary_projects_days_from_recent_shard_runtime(self):
-        sync = ForwardSync.objects.create(
-            name="sync-runtime-projection-guidance",
-            source=self.source,
-            parameters={
-                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
-                "dcim.device": True,
-                "max_changes_per_branch": 10000,
-            },
-        )
-        run = ForwardExecutionRun.objects.create(
-            sync=sync,
-            source=self.source,
-            backend="branching",
-            status="running",
-            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id="snapshot-runtime",
-            total_steps=50,
-            next_step_index=2,
-            plan_preview={
-                "planned_shards": 50,
-                "estimated_changes": 500000,
-                "model_count": 1,
-            },
-        )
-        now = timezone.now()
-        ForwardExecutionStep.objects.create(
-            run=run,
-            index=1,
-            status=ForwardExecutionStepStatusChoices.MERGED,
-            model_string="dcim.device",
-            started=now - timedelta(hours=1),
-            completed=now,
-        )
-
-        lane = sync.get_workload_summary()["initial_baseline_lane"]
-
-        self.assertEqual(lane["runtime_class"], "days")
-        self.assertEqual(lane["confidence"], "medium")
-        self.assertEqual(lane["projected_seconds"], 180000.0)
-
-    def test_fast_bootstrap_backend_surfaces_confirmation_text(self):
-        sync = ForwardSync.objects.create(
-            name="sync-fast-bootstrap-guidance",
-            source=self.source,
-            parameters={
-                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
-                "execution_backend": ForwardExecutionBackendChoices.FAST_BOOTSTRAP,
-                "dcim.device": True,
-            },
-        )
-
-        lane = sync.get_workload_summary()["initial_baseline_lane"]
-
-        self.assertEqual(lane["recommendation"], "fast_bootstrap_active")
-        self.assertEqual(lane["current_backend"], "fast_bootstrap")
-        self.assertIn(
-            "Fast bootstrap skips Branching review",
-            lane["fast_bootstrap_confirmation"][1],
-        )
-
     def test_sync_detail_renders_initial_baseline_lane_advisory(self):
         user = get_user_model().objects.create_superuser(
             username="sync-detail-admin",
@@ -860,347 +715,6 @@ class ForwardSyncModelTest(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Use Fast bootstrap for trusted baseline")
         self.assertContains(response, "Use only for a trusted initial baseline.")
-
-    def test_sync_detail_renders_latest_execution_failure_summary(self):
-        user = get_user_model().objects.create_superuser(
-            username="sync-failure-admin",
-            password="TestPassword123!",
-            email="sync-failure-admin@example.com",
-        )
-        sync = ForwardSync.objects.create(
-            name="sync-failure-summary",
-            source=self.source,
-            parameters={
-                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
-                "ipam.prefix": True,
-            },
-        )
-        run = ForwardExecutionRun.objects.create(
-            sync=sync,
-            source=self.source,
-            status=ForwardExecutionRunStatusChoices.FAILED,
-            phase="failed",
-            phase_message="Forward execution failed.",
-            total_steps=1,
-            next_step_index=1,
-        )
-        ForwardExecutionStep.objects.create(
-            run=run,
-            index=1,
-            kind="stage",
-            status=ForwardExecutionStepStatusChoices.FAILED,
-            model_string="ipam.prefix",
-            query_name="Forward Prefixes",
-            execution_mode="query_id",
-            execution_value="Q_154ce88d2f6b9e896aff0e3d925a682d7d4247ad",
-            last_error="Forward API request failed with HTTP 400: prefix shard broke.",
-        )
-        self.client.force_login(user)
-
-        response = self.client.get(sync.get_absolute_url())
-
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Shard 1 ipam.prefix Forward Prefixes failed.")
-        self.assertContains(
-            response,
-            "Forward API request failed with HTTP 400: prefix shard broke.",
-        )
-        self.assertContains(
-            response,
-            reverse(
-                "plugins:forward_netbox:forwardexecutionstep",
-                kwargs={"pk": run.steps.first().pk},
-            ),
-        )
-        self.assertContains(response, "Support bundle")
-        self.assertContains(response, "Q_154ce88d2f6b9e896aff0e3d925a682d7d4247ad")
-
-    def _build_execution_insights_fixture(self):
-        sync = ForwardSync.objects.create(
-            name="run-insights-sync",
-            source=self.source,
-            parameters={
-                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
-                "dcim.device": True,
-                "ipam.prefix": True,
-            },
-        )
-        ForwardIngestion.objects.create(
-            sync=sync,
-            model_results=[
-                {
-                    "model": "ipam.prefix",
-                    "query_name": "Forward Prefixes",
-                    "execution_mode": "query_id",
-                    "fetch_mode": "nqe_parameters",
-                    "row_count": 10,
-                    "delete_count": 0,
-                },
-                {
-                    "model": "dcim.device",
-                    "query_name": "Forward Devices",
-                    "execution_mode": "query_path",
-                    "fetch_mode": "nqe_parameters",
-                    "row_count": 5,
-                    "delete_count": 1,
-                },
-            ],
-        )
-        run = ForwardExecutionRun.objects.create(
-            sync=sync,
-            source=self.source,
-            status=ForwardExecutionRunStatusChoices.COMPLETED,
-            phase="completed",
-            phase_message="Forward execution completed.",
-            total_steps=2,
-            next_step_index=3,
-        )
-        now = timezone.now()
-        job = Job.objects.create(
-            object_type=ContentType.objects.get_for_model(ForwardExecutionRun),
-            object_id=run.pk,
-            name="execution-insights-job",
-            user=None,
-            status=JobStatusChoices.STATUS_COMPLETED,
-            job_id=str(uuid4()),
-            created=now,
-            started=now,
-            completed=now,
-            data={
-                "forward_api_usage": {
-                    "api_requests_per_minute": 1800,
-                    "http_attempts": 24,
-                    "http_429_failures": 1,
-                    "nqe_query_calls": 3,
-                    "nqe_diff_calls": 2,
-                    "nqe_pages": 5,
-                    "throttle_sleep_seconds": 1.25,
-                    "usage_window_seconds": 30.0,
-                    "observed_http_attempts_per_minute": 48.0,
-                }
-            },
-        )
-        run.job = job
-        run.save(update_fields=["job"])
-        return sync, run
-
-    def test_execution_run_detail_renders_execution_insights_summary(self):
-        user = get_user_model().objects.create_superuser(
-            username="run-insights-admin",
-            password="TestPassword123!",
-            email="run-insights-admin@example.com",
-        )
-        sync, run = self._build_execution_insights_fixture()
-        self.client.force_login(user)
-
-        response = self.client.get(run.get_absolute_url())
-
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Execution Insights")
-        self.assertContains(response, "HTTP attempts")
-        self.assertContains(response, "NQE query calls")
-        self.assertContains(response, "query_id")
-        self.assertContains(response, "query_path")
-        self.assertContains(response, "ipam.prefix")
-        self.assertContains(response, "dcim.device")
-        self.assertContains(response, sync.name)
-
-    def test_sync_list_renders_latest_execution_failure_summary(self):
-        user = get_user_model().objects.create_superuser(
-            username="sync-list-admin",
-            password="TestPassword123!",
-            email="sync-list-admin@example.com",
-        )
-        sync = ForwardSync.objects.create(
-            name="sync-list-failure-summary",
-            source=self.source,
-            parameters={
-                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
-                "ipam.prefix": True,
-            },
-        )
-        run = ForwardExecutionRun.objects.create(
-            sync=sync,
-            source=self.source,
-            status=ForwardExecutionRunStatusChoices.FAILED,
-            phase="failed",
-            phase_message="Forward execution failed.",
-            total_steps=1,
-            next_step_index=1,
-        )
-        ForwardExecutionStep.objects.create(
-            run=run,
-            index=1,
-            kind="stage",
-            status=ForwardExecutionStepStatusChoices.FAILED,
-            model_string="ipam.prefix",
-            query_name="Forward Prefixes",
-            last_error="Forward API request failed with HTTP 400: prefix shard broke.",
-        )
-        self.client.force_login(user)
-
-        response = self.client.get(reverse("plugins:forward_netbox:forwardsync_list"))
-
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "sync-list-failure-summary")
-        self.assertContains(response, "Shard 1 ipam.prefix Forward Prefixes failed.")
-
-    def test_execution_run_detail_renders_latest_execution_failure_summary(self):
-        user = get_user_model().objects.create_superuser(
-            username="run-detail-admin",
-            password="TestPassword123!",
-            email="run-detail-admin@example.com",
-        )
-        sync = ForwardSync.objects.create(
-            name="run-detail-sync",
-            source=self.source,
-            parameters={
-                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
-                "ipam.prefix": True,
-            },
-        )
-        run = ForwardExecutionRun.objects.create(
-            sync=sync,
-            source=self.source,
-            status=ForwardExecutionRunStatusChoices.FAILED,
-            phase="failed",
-            phase_message="Forward execution failed.",
-            total_steps=1,
-            next_step_index=1,
-        )
-        ForwardExecutionStep.objects.create(
-            run=run,
-            index=1,
-            kind="stage",
-            status=ForwardExecutionStepStatusChoices.FAILED,
-            model_string="ipam.prefix",
-            query_name="Forward Prefixes",
-            execution_mode="query_id",
-            execution_value="Q_154ce88d2f6b9e896aff0e3d925a682d7d4247ad",
-            last_error="Forward API request failed with HTTP 400: prefix shard broke.",
-        )
-        self.client.force_login(user)
-
-        response = self.client.get(run.get_absolute_url())
-
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Shard 1 ipam.prefix Forward Prefixes failed.")
-        self.assertContains(
-            response,
-            "Forward API request failed with HTTP 400: prefix shard broke.",
-        )
-        self.assertContains(
-            response,
-            reverse(
-                "plugins:forward_netbox:forwardexecutionstep",
-                kwargs={"pk": run.steps.first().pk},
-            ),
-        )
-        self.assertContains(response, "Support bundle")
-        self.assertContains(response, "Query ID")
-
-    def test_execution_run_list_renders_latest_execution_failure_summary(self):
-        user = get_user_model().objects.create_superuser(
-            username="run-list-admin",
-            password="TestPassword123!",
-            email="run-list-admin@example.com",
-        )
-        sync = ForwardSync.objects.create(
-            name="run-list-sync",
-            source=self.source,
-            parameters={
-                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
-                "ipam.prefix": True,
-            },
-        )
-        run = ForwardExecutionRun.objects.create(
-            sync=sync,
-            source=self.source,
-            status=ForwardExecutionRunStatusChoices.FAILED,
-            phase="failed",
-            phase_message="Forward execution failed.",
-            total_steps=1,
-            next_step_index=1,
-        )
-        ForwardExecutionStep.objects.create(
-            run=run,
-            index=1,
-            kind="stage",
-            status=ForwardExecutionStepStatusChoices.FAILED,
-            model_string="ipam.prefix",
-            query_name="Forward Prefixes",
-            last_error="Forward API request failed with HTTP 400: prefix shard broke.",
-        )
-        self.client.force_login(user)
-
-        response = self.client.get(
-            reverse("plugins:forward_netbox:forwardexecutionrun_list")
-        )
-
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "run-list-sync")
-        self.assertContains(response, "Shard 1 ipam.prefix Forward Prefixes failed.")
-
-    def test_execution_run_steps_list_renders_query_references(self):
-        user = get_user_model().objects.create_superuser(
-            username="run-steps-admin",
-            password="TestPassword123!",
-            email="run-steps-admin@example.com",
-        )
-        sync = ForwardSync.objects.create(
-            name="run-steps-sync",
-            source=self.source,
-            parameters={
-                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
-                "ipam.prefix": True,
-            },
-        )
-        run = ForwardExecutionRun.objects.create(
-            sync=sync,
-            source=self.source,
-            status=ForwardExecutionRunStatusChoices.FAILED,
-            phase="failed",
-            phase_message="Forward execution failed.",
-            total_steps=2,
-            next_step_index=1,
-        )
-        ForwardExecutionStep.objects.create(
-            run=run,
-            index=1,
-            kind="stage",
-            status=ForwardExecutionStepStatusChoices.STAGED,
-            model_string="ipam.prefix",
-            query_name="Forward Prefixes",
-            execution_mode="query_id",
-            execution_value="Q_154ce88d2f6b9e896aff0e3d925a682d7d4247ad",
-        )
-        ForwardExecutionStep.objects.create(
-            run=run,
-            index=2,
-            kind="stage",
-            status=ForwardExecutionStepStatusChoices.STAGED,
-            model_string="ipam.vrf",
-            query_name="Forward VRFs",
-            execution_mode="query_path",
-            execution_value="/queries/netbox/ipam/vrfs.nqe",
-        )
-        self.client.force_login(user)
-
-        response = self.client.get(
-            reverse(
-                "plugins:forward_netbox:forwardexecutionrun_steps",
-                kwargs={"pk": run.pk},
-            )
-        )
-
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Query ID")
-        self.assertContains(response, "Query path")
-        self.assertContains(
-            response,
-            "Q_154ce88d2f6b9e896aff0e3d925a682d7d4247ad",
-        )
-        self.assertContains(response, "/queries/netbox/ipam/vrfs.nqe")
 
     def test_display_parameters_include_branch_budget_hints(self):
         sync = ForwardSync.objects.create(
@@ -1647,31 +1161,9 @@ class ForwardSyncModelTest(TestCase):
         )
 
     @patch("forward_netbox.models.ForwardSource.get_client")
-    @patch("forward_netbox.utilities.multi_branch.ForwardMultiBranchExecutor")
-    def test_sync_job_uses_multi_branch_path_by_default(
-        self,
-        mock_executor_class,
-        _mock_get_client,
-    ):
-        mock_executor = mock_executor_class.return_value
-        mock_executor.run.return_value = []
-        sync = ForwardSync.objects.create(
-            name="sync-default-exec",
-            source=self.source,
-            parameters={
-                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
-                "dcim.device": True,
-            },
-        )
-
-        sync.sync()
-
-        mock_executor.run.assert_called_once_with(
-            max_changes_per_branch=DEFAULT_MAX_CHANGES_PER_BRANCH,
-        )
-
-    @patch("forward_netbox.models.ForwardSource.get_client")
-    @patch("forward_netbox.utilities.multi_branch.ForwardMultiBranchExecutor")
+    @patch(
+        "forward_netbox.utilities.single_branch_executor.ForwardSingleBranchExecutor"
+    )
     def test_sync_sets_source_status_to_syncing_during_run(
         self,
         mock_executor_class,
@@ -1743,130 +1235,6 @@ class ForwardSyncModelTest(TestCase):
 
         sync.refresh_from_db()
         self.assertEqual(sync.status, "ready_to_merge")
-
-    def test_sync_sync_uses_execution_ledger_waiting_merge_without_branch_json(
-        self,
-    ):
-        sync = ForwardSync.objects.create(
-            name="sync-ledger-waiting-merge",
-            source=self.source,
-            status="ready_to_merge",
-            parameters={
-                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
-                "dcim.device": True,
-            },
-        )
-        execution_run = ForwardExecutionRun.objects.create(
-            sync=sync,
-            source=self.source,
-            backend="branching",
-            status="waiting",
-            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id="snapshot-ledger",
-            total_steps=1,
-            next_step_index=1,
-        )
-        ForwardExecutionStep.objects.create(
-            run=execution_run,
-            index=1,
-            kind="stage",
-            status=ForwardExecutionStepStatusChoices.STAGED,
-            model_string="dcim.site",
-        )
-        clear_branch_run_state(sync)
-        initial_parameters = dict(sync.parameters or {})
-
-        sync.sync()
-
-        sync.refresh_from_db()
-        self.assertEqual(sync.status, "ready_to_merge")
-        self.assertEqual(sync.parameters, initial_parameters)
-
-    @patch("forward_netbox.utilities.sync_facade.enqueue_branch_stage_job")
-    def test_model_enqueue_sync_job_uses_execution_ledger_without_branch_json(
-        self,
-        mock_enqueue_stage,
-    ):
-        user = get_user_model().objects.create_user(username="enqueue-user")
-        sync = ForwardSync.objects.create(
-            name="sync-ledger-enqueue",
-            source=self.source,
-            user=user,
-            parameters={
-                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
-                "dcim.device": True,
-            },
-        )
-        execution_run = ForwardExecutionRun.objects.create(
-            sync=sync,
-            source=self.source,
-            backend="branching",
-            status="running",
-            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id="snapshot-ledger",
-            total_steps=1,
-            next_step_index=1,
-        )
-        ForwardExecutionStep.objects.create(
-            run=execution_run,
-            index=1,
-            kind="stage",
-            status=ForwardExecutionStepStatusChoices.PENDING,
-            model_string="dcim.site",
-        )
-        clear_branch_run_state(sync)
-        initial_parameters = dict(sync.parameters or {})
-
-        sync.enqueue_sync_job(adhoc=True)
-
-        mock_enqueue_stage.assert_called_once_with(sync, user=user, adhoc=True)
-        sync.refresh_from_db()
-        self.assertEqual(sync.parameters, initial_parameters)
-
-    @patch("forward_netbox.models.Job.enqueue")
-    @patch("forward_netbox.utilities.sync_facade.enqueue_branch_stage_job")
-    def test_model_enqueue_sync_job_prefers_completed_ledger_over_stale_json(
-        self,
-        mock_enqueue_stage,
-        mock_enqueue,
-    ):
-        user = get_user_model().objects.create_user(username="stale-enqueue-user")
-        sync = ForwardSync.objects.create(
-            name="sync-stale-ledger-enqueue",
-            source=self.source,
-            user=user,
-            parameters={
-                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
-                "dcim.device": True,
-            },
-        )
-        ForwardExecutionRun.objects.create(
-            sync=sync,
-            source=self.source,
-            backend="branching",
-            status="completed",
-            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id="snapshot-finished",
-            total_steps=1,
-            next_step_index=2,
-        )
-        sync.set_branch_run_state(
-            {
-                "next_plan_index": 1,
-                "total_plan_items": 1,
-                "awaiting_merge": False,
-                "phase": "planning",
-                "phase_message": "stale compatibility cache",
-            }
-        )
-        initial_parameters = dict(sync.parameters or {})
-
-        sync.enqueue_sync_job(adhoc=True)
-
-        mock_enqueue_stage.assert_not_called()
-        mock_enqueue.assert_called_once()
-        sync.refresh_from_db()
-        self.assertEqual(sync.parameters, initial_parameters)
 
     @patch("forward_netbox.models.Job.enqueue")
     def test_scheduled_enqueue_sets_queued_only_for_new_sync(self, mock_enqueue):
@@ -2224,7 +1592,9 @@ class ForwardSyncModelTest(TestCase):
         self.assertIn("scheduled", ForwardSyncTable.Meta.default_columns)
 
     @patch("forward_netbox.models.ForwardSource.get_client")
-    @patch("forward_netbox.utilities.multi_branch.ForwardMultiBranchExecutor")
+    @patch(
+        "forward_netbox.utilities.single_branch_executor.ForwardSingleBranchExecutor"
+    )
     def test_sync_failure_records_issue_on_current_executor_ingestion(
         self,
         mock_executor_class,
@@ -2498,258 +1868,6 @@ class ForwardIngestionSnapshotSummaryTest(TestCase):
             },
         )
 
-    def test_analysis_summary_helpers_roll_up_validation_and_issues(self):
-        validation_run = ForwardValidationRun.objects.create(
-            sync=self.sync,
-            status=ForwardValidationStatusChoices.BLOCKED,
-            allowed=False,
-            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id="snapshot-before",
-            baseline_snapshot_id="snapshot-baseline",
-            drift_summary={
-                "model_count": 2,
-                "blocked_models": 1,
-            },
-            blocking_reasons=["threshold exceeded"],
-        )
-        ingestion = ForwardIngestion.objects.create(
-            sync=self.sync,
-            validation_run=validation_run,
-            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id="snapshot-before",
-            sync_mode="diff",
-            baseline_ready=True,
-            model_results=[
-                {"model": "dcim.device", "diagnostics": [{"message": "one"}]},
-                {
-                    "model": "ipam.prefix",
-                    "diagnostics": [{"message": "two"}, {"message": "three"}],
-                },
-            ],
-        )
-        ForwardIngestionIssue.objects.create(
-            ingestion=ingestion,
-            phase="sync",
-            model="dcim.device",
-            message="device warning",
-            exception="warning",
-        )
-        ForwardIngestionIssue.objects.create(
-            ingestion=ingestion,
-            phase="merge",
-            model="ipam.prefix",
-            message="prefix warning",
-            exception="warning",
-        )
-        now = timezone.now()
-        execution_job = Job.objects.create(
-            object_type=ContentType.objects.get_for_model(ForwardSync),
-            object_id=self.sync.pk,
-            name="analysis summary job",
-            user=None,
-            status=JobStatusChoices.STATUS_COMPLETED,
-            job_id=str(uuid4()),
-            created=now,
-            started=now,
-            completed=now,
-            data={
-                "dependency_parent_coverage": {
-                    "available": True,
-                    "source": "run_job_data.dependency_parent_coverage",
-                    "row_count": 8,
-                    "blocked_row_count": 3,
-                    "missing_parent_count": 1,
-                    "model_count": 1,
-                    "models": [
-                        {
-                            "available": True,
-                            "model": "dcim.interface",
-                            "row_count": 8,
-                            "blocked_row_count": 3,
-                            "missing_parent_count": 1,
-                            "missing_parent_names": ["device-1"],
-                            "groups": [
-                                {
-                                    "parent_model": "dcim.device",
-                                    "parent_field": "device",
-                                    "parent_name": "device-1",
-                                    "row_count": 3,
-                                    "sample_rows": ["eth1/1", "eth1/2"],
-                                }
-                            ],
-                        }
-                    ],
-                }
-            },
-        )
-        ingestion.job = execution_job
-        ingestion.save(update_fields=["job"])
-
-        analysis = ingestion.get_analysis_summary()
-        execution = ingestion.get_execution_summary()
-        sync_analysis = self.sync.get_analysis_summary()
-
-        self.assertEqual(analysis["baseline_ready"], True)
-        self.assertEqual(analysis["sync_mode"], "diff")
-        self.assertEqual(analysis["issue_count"], 2)
-        self.assertEqual(analysis["issue_models"], ["dcim.device", "ipam.prefix"])
-        self.assertEqual(analysis["issue_phases"], {"merge": 1, "sync": 1})
-        self.assertEqual(analysis["model_result_count"], 2)
-        self.assertEqual(analysis["diagnostic_count"], 3)
-        self.assertEqual(analysis["validation_run"], validation_run.pk)
-        self.assertEqual(
-            analysis["validation_status"], ForwardValidationStatusChoices.BLOCKED
-        )
-        self.assertEqual(analysis["validation_allowed"], False)
-        self.assertEqual(analysis["validation_blocking_reason_count"], 1)
-        self.assertEqual(
-            analysis["validation_drift_summary"],
-            {"model_count": 2, "blocked_models": 1},
-        )
-        self.assertEqual(sync_analysis["latest_validation_run"], validation_run.pk)
-        self.assertEqual(
-            sync_analysis["latest_validation_status"],
-            ForwardValidationStatusChoices.BLOCKED,
-        )
-        self.assertEqual(sync_analysis["latest_ingestion_analysis_summary"], analysis)
-        self.assertEqual(
-            sync_analysis["query_path_resolution"],
-            execution["query_path_resolution"],
-        )
-        self.assertEqual(sync_analysis["query_modes"], execution["query_modes"])
-        self.assertFalse(sync_analysis["dependency_lookup_cache"]["available"])
-        self.assertTrue(sync_analysis["dependency_parent_coverage"]["available"])
-        self.assertEqual(
-            sync_analysis["dependency_parent_coverage"]["row_count"],
-            8,
-        )
-        self.assertTrue(sync_analysis["latest_ingestion"]["baseline_ready"])
-        self.assertEqual(sync_analysis["latest_ingestion"]["issue_count"], 2)
-
-    def test_advisory_summary_helpers_include_top_model_results(self):
-        validation_run = ForwardValidationRun.objects.create(
-            sync=self.sync,
-            status=ForwardValidationStatusChoices.BLOCKED,
-            allowed=False,
-            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id="snapshot-before",
-            baseline_snapshot_id="snapshot-baseline",
-            drift_summary={"model_count": 2, "blocked_models": 1},
-            blocking_reasons=["threshold exceeded"],
-        )
-        ingestion = ForwardIngestion.objects.create(
-            sync=self.sync,
-            validation_run=validation_run,
-            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id="snapshot-before",
-            sync_mode="diff",
-            baseline_ready=True,
-            model_results=[
-                {
-                    "model": "ipam.prefix",
-                    "query_name": "Forward Prefixes",
-                    "estimated_changes": 8,
-                    "row_count": 5,
-                    "delete_count": 1,
-                    "diagnostics": [{"message": "one"}],
-                    "execution_mode": "query_path",
-                    "fetch_mode": "nqe_parameters",
-                    "query_path_resolution": {
-                        "available": True,
-                        "query_path_spec_count": 1,
-                        "artifact_hit_count": 1,
-                        "client_resolve_count": 0,
-                        "repository_index_count": 1,
-                        "cache_hit_rate": 1.0,
-                    },
-                },
-                {
-                    "model": "dcim.device",
-                    "query_name": "Forward Devices",
-                    "estimated_changes": 13,
-                    "row_count": 10,
-                    "delete_count": 2,
-                    "diagnostics": [{"message": "two"}, {"message": "three"}],
-                    "execution_mode": "query_id",
-                    "fetch_mode": "query",
-                    "query_path_resolution": {
-                        "available": True,
-                        "query_path_spec_count": 2,
-                        "artifact_hit_count": 1,
-                        "client_resolve_count": 1,
-                        "repository_index_count": 0,
-                        "cache_hit_rate": 0.5,
-                    },
-                },
-            ],
-        )
-        ForwardIngestionIssue.objects.create(
-            ingestion=ingestion,
-            phase="sync",
-            model="dcim.device",
-            message="device warning",
-            exception="warning",
-        )
-
-        advisory = ingestion.get_advisory_summary()
-        sync_advisory = self.sync.get_advisory_summary()
-        execution = ingestion.get_execution_summary()
-
-        self.assertTrue(advisory["baseline_ready"])
-        self.assertEqual(advisory["blast_radius"]["estimated_changes"], 21)
-        self.assertEqual(advisory["intent_signals"]["validation_status"], "blocked")
-        self.assertEqual(advisory["intent_signals"]["issue_count"], 1)
-        self.assertEqual(advisory["path_signals"]["diagnostic_count"], 3)
-        self.assertEqual(
-            advisory["path_signals"]["top_model_results"][0]["model"], "dcim.device"
-        )
-        self.assertEqual(
-            advisory["path_signals"]["top_model_results"][0]["estimated_changes"], 13
-        )
-        self.assertEqual(
-            advisory["path_signals"]["top_model_results"][0]["query_path_resolution"][
-                "query_path_spec_count"
-            ],
-            2,
-        )
-        self.assertEqual(
-            advisory["path_signals"]["query_path_resolution"]["total_query_path_specs"],
-            3,
-        )
-        self.assertEqual(
-            advisory["path_signals"]["query_path_resolution"]["artifact_hit_count"], 2
-        )
-        self.assertEqual(
-            advisory["path_signals"]["query_path_resolution"]["client_resolve_count"],
-            1,
-        )
-        self.assertEqual(
-            advisory["path_signals"]["query_path_resolution"]["repository_index_count"],
-            1,
-        )
-        self.assertEqual(
-            advisory["path_signals"]["query_modes"]["execution_modes"],
-            {"query_id": 1, "query_path": 1},
-        )
-        self.assertEqual(
-            advisory["path_signals"]["query_modes"]["fetch_modes"],
-            {"nqe_parameters": 1, "query": 1},
-        )
-        self.assertEqual(
-            advisory["path_signals"]["query_path_resolution"]["top_models"][0]["model"],
-            "dcim.device",
-        )
-        self.assertEqual(sync_advisory["latest_validation_run"], validation_run.pk)
-        self.assertEqual(
-            sync_advisory["query_path_resolution"],
-            execution["query_path_resolution"],
-        )
-        self.assertEqual(sync_advisory["query_modes"], execution["query_modes"])
-        self.assertFalse(sync_advisory["dependency_lookup_cache"]["available"])
-        self.assertEqual(
-            sync_advisory["latest_ingestion"]["intent_signals"]["issue_count"], 1
-        )
-
     def test_workload_summary_helpers_roll_up_execution_details(self):
         ingestion = ForwardIngestion.objects.create(
             sync=self.sync,
@@ -2890,50 +2008,6 @@ class ForwardIngestionSnapshotSummaryTest(TestCase):
         self.assertFalse(ingestion.baseline_ready)
         self.assertEqual(self.sync.get_branch_run_state(), {})
         self.assertTrue(self.sync.ready_for_sync)
-
-    def test_sync_merge_records_resumable_plan_item_merged(self):
-        ingestion = ForwardIngestion.objects.create(
-            sync=self.sync,
-            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id="snapshot-before",
-        )
-        execution_run = ForwardExecutionRun.objects.create(
-            sync=self.sync,
-            source=self.source,
-            backend=ForwardExecutionBackendChoices.BRANCHING,
-            status="running",
-            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id="snapshot-before",
-            max_changes_per_branch=DEFAULT_MAX_CHANGES_PER_BRANCH,
-            total_steps=3,
-            next_step_index=2,
-            auto_merge=True,
-        )
-        ForwardExecutionStep.objects.create(
-            run=execution_run,
-            index=1,
-            kind="stage",
-            status=ForwardExecutionStepStatusChoices.MERGE_QUEUED,
-            model_string="dcim.site",
-            ingestion=ingestion,
-        )
-        ForwardExecutionStep.objects.create(
-            run=execution_run,
-            index=2,
-            kind="stage",
-            status=ForwardExecutionStepStatusChoices.PENDING,
-            model_string="dcim.device",
-        )
-
-        with patch("forward_netbox.utilities.merge.merge_branch"):
-            ingestion.sync_merge()
-
-        self.sync.refresh_from_db()
-        execution_run.refresh_from_db()
-        state = get_branch_run_display_state(self.sync)
-        self.assertEqual(state["plan_items"][0]["status"], "merged")
-        self.assertEqual(state["next_plan_index"], 2)
-        self.assertEqual(execution_run.next_step_index, 2)
 
     def test_sync_merge_clears_gated_branch_run_after_final_merge(self):
         ingestion = ForwardIngestion.objects.create(

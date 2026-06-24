@@ -330,6 +330,7 @@ def clean_forward_sync(sync):
             "bulk_orm_models",
             "scheduler_overlap",
             "skip_unchanged_snapshot",
+            "set_primary_ip_from_mgmt_tag",
             "diff_fallback_mode",
             BRANCH_RUN_STATE_PARAMETER,
             MODEL_CHANGE_DENSITY_PARAMETER,
@@ -343,20 +344,18 @@ def clean_forward_sync(sync):
     if not isinstance(snapshot_id, str):
         raise ValidationError(_("`snapshot_id` must be a string."))
     parameters["snapshot_id"] = snapshot_id
-    execution_backend = parameters.get(
-        "execution_backend",
-        ForwardExecutionBackendChoices.BRANCHING,
-    )
-    valid_backends = {choice[0] for choice in ForwardExecutionBackendChoices.CHOICES}
-    if execution_backend not in valid_backends:
-        raise ValidationError(_("`execution_backend` is not supported."))
-    parameters["execution_backend"] = execution_backend
+    # 2.0: single-branch is the only execution backend. Normalize any value
+    # (including legacy branching / fast_bootstrap) to it.
+    parameters["execution_backend"] = ForwardExecutionBackendChoices.SINGLE_BRANCH
     parameters["auto_merge"] = bool(parameters.get("auto_merge", sync.auto_merge))
     parameters["scheduler_overlap"] = bool(
         parameters.get("scheduler_overlap", False) and parameters["auto_merge"]
     )
     parameters["skip_unchanged_snapshot"] = bool(
         parameters.get("skip_unchanged_snapshot", False)
+    )
+    parameters["set_primary_ip_from_mgmt_tag"] = bool(
+        parameters.get("set_primary_ip_from_mgmt_tag", False)
     )
     diff_fallback_mode = parameters.get(
         "diff_fallback_mode",

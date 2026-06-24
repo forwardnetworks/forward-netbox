@@ -150,48 +150,6 @@ class ForwardSyncFormTest(TestCase):
             self.assertIn(model_string, form.fields)
             self.assertFalse(form.fields[model_string].initial)
 
-    def test_form_preserves_auto_merge_and_forces_native_branching(self):
-        form = ForwardSyncForm(
-            data={
-                "name": "sync-1",
-                "source": self.source.pk,
-                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
-                "execution_backend": ForwardExecutionBackendChoices.BRANCHING,
-                "dcim.device": "on",
-                "auto_merge": "",
-                "scheduler_overlap": "on",
-                "max_changes_per_branch": "10000",
-            }
-        )
-
-        self.assertTrue(form.is_valid(), form.errors)
-        self.assertTrue(form.instance.parameters["multi_branch"])
-        self.assertFalse(form.instance.parameters["auto_merge"])
-        self.assertFalse(form.instance.auto_merge)
-        self.assertFalse(form.instance.parameters["scheduler_overlap"])
-        self.assertEqual(form.instance.parameters["max_changes_per_branch"], 10000)
-        self.assertEqual(
-            form.instance.parameters["execution_backend"],
-            ForwardExecutionBackendChoices.BRANCHING,
-        )
-
-    def test_form_persists_scheduler_overlap_with_auto_merge(self):
-        form = ForwardSyncForm(
-            data={
-                "name": "sync-overlap",
-                "source": self.source.pk,
-                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
-                "execution_backend": ForwardExecutionBackendChoices.BRANCHING,
-                "dcim.device": "on",
-                "auto_merge": "on",
-                "scheduler_overlap": "on",
-                "max_changes_per_branch": "10000",
-            }
-        )
-
-        self.assertTrue(form.is_valid(), form.errors)
-        self.assertTrue(form.instance.parameters["scheduler_overlap"])
-
     def test_form_persists_safe_bulk_orm_option(self):
         form = ForwardSyncForm(
             data={
@@ -246,25 +204,6 @@ class ForwardSyncFormTest(TestCase):
         self.assertEqual(
             form.instance.parameters["diff_fallback_mode"],
             ForwardDiffFallbackModeChoices.REQUIRE_DIFF,
-        )
-
-    def test_form_persists_fast_bootstrap_backend(self):
-        form = ForwardSyncForm(
-            data={
-                "name": "sync-fast-bootstrap",
-                "source": self.source.pk,
-                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
-                "execution_backend": ForwardExecutionBackendChoices.FAST_BOOTSTRAP,
-                "dcim.device": "on",
-                "auto_merge": "on",
-                "max_changes_per_branch": "10000",
-            }
-        )
-
-        self.assertTrue(form.is_valid(), form.errors)
-        self.assertEqual(
-            form.instance.parameters["execution_backend"],
-            ForwardExecutionBackendChoices.FAST_BOOTSTRAP,
         )
 
     @patch("forward_netbox.forms.ForwardSource.validate_connection")

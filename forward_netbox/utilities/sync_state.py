@@ -17,10 +17,10 @@ from .branch_budget import MODEL_CHANGE_DENSITY_PROFILE_PARAMETER
 from .density_learning import density_profile_summary
 from .density_learning import normalize_density_map
 from .density_learning import normalize_density_profile
-from .execution_ledger_serialization import (
+from .execution_ledger import (
     dependency_lookup_cache_support_summary as _dependency_lookup_cache_support_summary,
 )
-from .execution_ledger_serialization import (
+from .execution_ledger import (
     dependency_parent_coverage_support_summary as _dependency_parent_coverage_support_summary,
 )
 from .execution_telemetry import build_branch_run_summary

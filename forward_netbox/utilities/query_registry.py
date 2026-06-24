@@ -901,6 +901,35 @@ def resolve_query_specs_for_client(specs: list[QuerySpec], client) -> list[Query
     return resolved_specs
 
 
+# Builtin map name suffix marking the "NetBox Device Type alias" variant of a
+# base query (e.g. "Forward Devices" -> "Forward Devices with NetBox Device Type
+# Aliases"). The alias variant maps device models through the NetBox Device Type
+# Library; it is a drop-in replacement for the base query, not an addition.
+_ALIAS_VARIANT_NAME_SUFFIX = " with NetBox Device Type Aliases"
+
+
+def _collapse_alias_variant_duplicates(builtin_maps):
+    """Run only one of each base/alias builtin pair.
+
+    The base query and its ``*_with_netbox_aliases`` variant emit the SAME NetBox
+    object from the same source rows but resolve ``device_type`` differently (raw
+    PID vs Device-Type-Library alias). If both are enabled for a model, every sync
+    reconciles the same device twice and flips its ``device_type`` FK between the
+    two spellings — perpetual churn. When an alias variant is enabled, it
+    supersedes its base counterpart; drop the base so exactly one runs.
+    """
+    superseded_base_names = {
+        query_map.name[: -len(_ALIAS_VARIANT_NAME_SUFFIX)]
+        for query_map in builtin_maps
+        if query_map.name.endswith(_ALIAS_VARIANT_NAME_SUFFIX)
+    }
+    return [
+        query_map
+        for query_map in builtin_maps
+        if query_map.name not in superseded_base_names
+    ]
+
+
 def _resolve_map_query_specs(model_string: str, maps) -> list[QuerySpec]:
     selected_maps = [
         query_map
@@ -908,7 +937,9 @@ def _resolve_map_query_specs(model_string: str, maps) -> list[QuerySpec]:
         if query_map.enabled and query_map.model_string == model_string
     ]
     custom_maps = [query_map for query_map in selected_maps if not query_map.built_in]
-    builtin_maps = [query_map for query_map in selected_maps if query_map.built_in]
+    builtin_maps = _collapse_alias_variant_duplicates(
+        [query_map for query_map in selected_maps if query_map.built_in]
+    )
     chosen_maps = custom_maps or builtin_maps
     return [_build_query_spec_from_map(query_map) for query_map in chosen_maps]
 

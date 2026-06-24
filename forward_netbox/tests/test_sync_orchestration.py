@@ -10,7 +10,6 @@ from django.test import override_settings
 from django.test import TestCase
 from django.utils import timezone
 
-from forward_netbox.choices import ForwardExecutionBackendChoices
 from forward_netbox.choices import ForwardSourceStatusChoices
 from forward_netbox.choices import ForwardSyncStatusChoices
 from forward_netbox.exceptions import ForwardClientError
@@ -53,7 +52,9 @@ class ForwardSyncOrchestrationHelperTest(TestCase):
             },
         )
 
-    @patch("forward_netbox.utilities.multi_branch.ForwardMultiBranchExecutor")
+    @patch(
+        "forward_netbox.utilities.single_branch_executor.ForwardSingleBranchExecutor"
+    )
     def test_run_forward_sync_marks_sync_and_source_ready_on_success(
         self,
         mock_executor_class,
@@ -73,7 +74,9 @@ class ForwardSyncOrchestrationHelperTest(TestCase):
         self.assertEqual(self.sync.status, ForwardSyncStatusChoices.COMPLETED)
         self.assertEqual(self.source.status, ForwardSourceStatusChoices.READY)
 
-    @patch("forward_netbox.utilities.multi_branch.ForwardMultiBranchExecutor")
+    @patch(
+        "forward_netbox.utilities.single_branch_executor.ForwardSingleBranchExecutor"
+    )
     def test_run_forward_sync_rejects_child_models_without_dcim_device(
         self,
         mock_executor_class,
@@ -92,7 +95,9 @@ class ForwardSyncOrchestrationHelperTest(TestCase):
 
     @override_settings(RQ_DEFAULT_TIMEOUT=300)
     @patch.object(SyncLogging, "log_warning")
-    @patch("forward_netbox.utilities.multi_branch.ForwardMultiBranchExecutor")
+    @patch(
+        "forward_netbox.utilities.single_branch_executor.ForwardSingleBranchExecutor"
+    )
     def test_run_forward_sync_warns_when_worker_timeout_is_lower_than_source_timeout(
         self,
         mock_executor_class,
@@ -110,31 +115,6 @@ class ForwardSyncOrchestrationHelperTest(TestCase):
         warning_message = mock_log_warning.call_args.args[0]
         self.assertIn("RQ_DEFAULT_TIMEOUT is 300s", warning_message)
         self.assertIn("Forward source timeout (1200s)", warning_message)
-
-    @patch(
-        "forward_netbox.utilities.fast_bootstrap_executor.ForwardFastBootstrapExecutor"
-    )
-    def test_run_forward_sync_uses_fast_bootstrap_executor(
-        self,
-        mock_executor_class,
-    ):
-        self.sync.parameters = {
-            **self.sync.parameters,
-            "execution_backend": ForwardExecutionBackendChoices.FAST_BOOTSTRAP,
-        }
-        self.sync.save(update_fields=["parameters"])
-        mock_executor = mock_executor_class.return_value
-        mock_executor.run.return_value = []
-        mock_executor.current_ingestion = SimpleNamespace(snapshot_id="snapshot-1")
-        mock_executor.client = SimpleNamespace(
-            get_latest_processed_snapshot_id=Mock(return_value="snapshot-1")
-        )
-
-        run_forward_sync(self.sync)
-
-        mock_executor.run.assert_called_once_with()
-        self.sync.refresh_from_db()
-        self.assertEqual(self.sync.status, ForwardSyncStatusChoices.COMPLETED)
 
     def test_latest_processed_catchup_decision_skips_when_snapshot_is_current(self):
         self.sync.status = ForwardSyncStatusChoices.COMPLETED
@@ -226,7 +206,9 @@ class ForwardSyncOrchestrationHelperTest(TestCase):
         self.assertFalse(decision["should_queue"])
         self.assertEqual(decision["reason"], "latest_processed_lookup_failed")
 
-    @patch("forward_netbox.utilities.multi_branch.ForwardMultiBranchExecutor")
+    @patch(
+        "forward_netbox.utilities.single_branch_executor.ForwardSingleBranchExecutor"
+    )
     def test_run_forward_sync_queues_catchup_when_latest_processed_advances(
         self,
         mock_executor_class,
@@ -402,7 +384,9 @@ class SkipUnchangedSnapshotTest(TestCase):
             should_skip_unchanged_snapshot(self.sync, adhoc=False, client=object())
         )
 
-    @patch("forward_netbox.utilities.multi_branch.ForwardMultiBranchExecutor")
+    @patch(
+        "forward_netbox.utilities.single_branch_executor.ForwardSingleBranchExecutor"
+    )
     def test_run_forward_sync_noops_without_executing(self, mock_executor_class):
         self._set_baseline("snapshot-1")
         self.sync.resolve_snapshot_id = Mock(return_value="snapshot-1")
