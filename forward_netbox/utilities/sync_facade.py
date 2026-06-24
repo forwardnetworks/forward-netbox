@@ -11,7 +11,6 @@ from ..exceptions import ForwardSyncError
 from .branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
 from .forward_api import LATEST_COLLECTED_SNAPSHOT
 from .forward_api import LATEST_PROCESSED_SNAPSHOT
-from .resumable_branching import enqueue_branch_stage_job
 from .sync_state import get_max_changes_per_branch as get_state_max_changes_per_branch
 
 
@@ -20,10 +19,7 @@ DEFAULT_ENABLE_BULK_ORM_FOR_NEW_SYNCS = True
 
 def normalize_forward_sync(sync):
     parameters = dict(sync.parameters or {})
-    parameters["execution_backend"] = parameters.get(
-        "execution_backend",
-        ForwardExecutionBackendChoices.BRANCHING,
-    )
+    parameters["execution_backend"] = ForwardExecutionBackendChoices.SINGLE_BRANCH
     parameters["diff_fallback_mode"] = parameters.get(
         "diff_fallback_mode",
         ForwardDiffFallbackModeChoices.ALLOW_FALLBACK,
@@ -131,10 +127,8 @@ def get_query_parameters(sync):
 
 
 def uses_multi_branch(sync):
-    return (sync.parameters or {}).get(
-        "execution_backend",
-        ForwardExecutionBackendChoices.BRANCHING,
-    ) == ForwardExecutionBackendChoices.BRANCHING
+    # 2.0: the single-branch path always uses the branching framework.
+    return True
 
 
 def is_model_enabled(sync, model_string):
@@ -163,8 +157,6 @@ def enqueue_sync_job(sync, adhoc=False, user=None):
         )
     if not user:
         user = sync.user
-    if sync.has_pending_branch_run:
-        return enqueue_branch_stage_job(sync, user=user, adhoc=adhoc)
     if adhoc or sync.status == ForwardSyncStatusChoices.NEW:
         sync.status = ForwardSyncStatusChoices.QUEUED
         sync.__class__.objects.filter(pk=sync.pk).update(status=sync.status)

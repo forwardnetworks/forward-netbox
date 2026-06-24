@@ -290,6 +290,10 @@ class ForwardSyncRunner(ForwardSyncRunnerContractMixin, ForwardSyncRunnerAdapter
         self._missing_device_by_name_cache: set[str] = set()
         self._interface_by_device_name_cache: dict[tuple[int, str], object] = {}
         self._missing_interface_by_device_name_cache: set[tuple[int, str]] = set()
+        # device.pk -> {canonical (type, number) key -> Interface}, for matching
+        # Forward's abbreviated names (gi0/0/2) to existing canonical interfaces
+        # (GigabitEthernet0/0/2) so the sync never creates a duplicate.
+        self._interface_canonical_cache: dict[int, dict] = {}
         self._module_bay_by_device_name_cache: dict[tuple[int, str], object] = {}
         self._missing_module_bay_by_device_name_cache: set[tuple[int, str]] = set()
         self._vrf_by_name_cache: dict[str, object] = {}

@@ -32,6 +32,12 @@ MAX_NQE_PAGE_SIZE = 10000
 DEFAULT_NQE_PAGE_SIZE = 10000
 DEFAULT_NQE_FETCH_ALL_MAX_PAGES = 5000
 MAX_NQE_FETCH_ALL_MAX_PAGES = 200000
+# Absolute ceiling on rows accumulated in memory by a single fetch_all. The
+# page-count ceiling alone permits ~50M rows (10k page x 5k pages) before
+# firing, enough to OOM the worker on a large unsharded result. Abort earlier
+# with an actionable error so the operator shards the model instead of crashing.
+DEFAULT_NQE_FETCH_ALL_MAX_ROWS = 2_000_000
+MAX_NQE_FETCH_ALL_MAX_ROWS = 50_000_000
 DEFAULT_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT = 25
 MAX_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT = 1000
 DEFAULT_QUERY_FETCH_CONCURRENCY = 10
@@ -169,6 +175,9 @@ class ForwardClient:
         self.nqe_page_size = self._coerce_nqe_page_size(params.get("nqe_page_size"))
         self.nqe_fetch_all_max_pages = self._coerce_nqe_fetch_all_max_pages(
             params.get("nqe_fetch_all_max_pages")
+        )
+        self.nqe_fetch_all_max_rows = self._coerce_nqe_fetch_all_max_rows(
+            params.get("nqe_fetch_all_max_rows")
         )
         self.nqe_identical_full_page_streak_limit = (
             self._coerce_nqe_identical_full_page_streak_limit(
@@ -439,6 +448,15 @@ class ForwardClient:
         except (TypeError, ValueError):
             return DEFAULT_NQE_FETCH_ALL_MAX_PAGES
         return max(1, min(pages, MAX_NQE_FETCH_ALL_MAX_PAGES))
+
+    def _coerce_nqe_fetch_all_max_rows(self, value):
+        if value is None:
+            return DEFAULT_NQE_FETCH_ALL_MAX_ROWS
+        try:
+            rows = int(value)
+        except (TypeError, ValueError):
+            return DEFAULT_NQE_FETCH_ALL_MAX_ROWS
+        return max(1, min(rows, MAX_NQE_FETCH_ALL_MAX_ROWS))
 
     def _coerce_nqe_identical_full_page_streak_limit(self, value):
         if value is None:
@@ -905,6 +923,66 @@ class ForwardClient:
             "backfilled (collection canceled). Pin a specific snapshot, widen "
             "the device tag scope, or re-run collection in Forward."
         )
+
+    def get_device_mgmt_tags(
+        self,
+        network_id,
+        snapshot_id,
+        *,
+        include_tags=None,
+        exclude_tags=None,
+        include_match="any",
+    ):
+        """Return ``{device_name: [Mgmt_* tag, ...]}`` for the in-scope devices.
+
+        Used by the primary-IP-from-tag feature: the ``Mgmt_<iface>`` device tags
+        are not synced into NetBox, so they are read directly from Forward. Only
+        management tags are returned; the device-tag scope mirrors the sync's
+        include/exclude scope so the same devices are considered.
+        """
+        network_id = str(network_id or "").strip()
+        if not network_id:
+            raise ForwardClientError("get_device_mgmt_tags requires a network_id.")
+        snapshot_id = str(snapshot_id or "").strip()
+        if not snapshot_id:
+            raise ForwardClientError("get_device_mgmt_tags requires a snapshot_id.")
+        include_tags = [
+            str(tag).strip() for tag in (include_tags or []) if str(tag).strip()
+        ]
+        exclude_tags = [
+            str(tag).strip() for tag in (exclude_tags or []) if str(tag).strip()
+        ]
+        if include_match not in {"any", "all"}:
+            include_match = "any"
+        scope_where = build_device_tag_scope_where(
+            include_tags, exclude_tags, include_match
+        )
+        query = "\n".join(
+            [
+                "foreach device in network.devices",
+                "where device.snapshotInfo.result == DeviceSnapshotResult.completed",
+                "where device.platform.vendor != Vendor.FORWARD_CUSTOM",
+                *scope_where,
+                "foreach tag in device.tagNames",
+                "select {device: device.name, tag: tag}",
+            ]
+        )
+        rows = self.run_nqe_query(
+            query=query,
+            network_id=network_id,
+            snapshot_id=snapshot_id,
+            fetch_all=True,
+        )
+        device_tags: dict[str, list[str]] = {}
+        for row in rows or []:
+            device = str(row.get("device") or "").strip()
+            tag = str(row.get("tag") or "").strip()
+            if not device or not tag or not tag.lower().startswith("mgmt_"):
+                continue
+            tags = device_tags.setdefault(device, [])
+            if tag not in tags:
+                tags.append(tag)
+        return device_tags
 
     def get_snapshot_metrics(self, snapshot_id):
         snapshot_id = str(snapshot_id or "").strip()
@@ -1684,6 +1762,13 @@ class ForwardClient:
                     "Forward async NQE result pagination exceeded "
                     f"{self.nqe_fetch_all_max_pages} page(s) while fetching "
                     f"`{query_id or '<raw-query>'}`."
+                )
+            if len(all_records) >= self.nqe_fetch_all_max_rows:
+                raise ForwardClientError(
+                    "Forward async NQE result exceeded the in-memory row ceiling "
+                    f"({self.nqe_fetch_all_max_rows} rows) while fetching "
+                    f"`{query_id or '<raw-query>'}`. Shard this model (or raise "
+                    "nqe_fetch_all_max_rows) to avoid exhausting worker memory."
                 )
 
             next_offset = offset + len(all_records)

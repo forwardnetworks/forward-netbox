@@ -31,22 +31,6 @@ urlpatterns = (
         include(get_model_urls("forward_netbox", "forwardingestion")),
     ),
     path(
-        "execution-run/",
-        include(get_model_urls("forward_netbox", "forwardexecutionrun", detail=False)),
-    ),
-    path(
-        "execution-run/<int:pk>/",
-        include(get_model_urls("forward_netbox", "forwardexecutionrun")),
-    ),
-    path(
-        "execution-step/",
-        include(get_model_urls("forward_netbox", "forwardexecutionstep", detail=False)),
-    ),
-    path(
-        "execution-step/<int:pk>/",
-        include(get_model_urls("forward_netbox", "forwardexecutionstep")),
-    ),
-    path(
         "nqe-map/",
         include(get_model_urls("forward_netbox", "forwardnqemap", detail=False)),
     ),
