@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "forward-netbox"
-version = "1.7.2"
+version = "2.0.0"
 description = "NetBox plugin to sync Forward data into NetBox via built-in NQE queries"
 authors = ["Craig Johnson <craigjohnson@forwardnetworks.com>"]
 license = "MIT"
@@ -15,7 +15,7 @@ packages = [{include = "forward_netbox"}]
 
 [tool.poetry.dependencies]
 httpx = ">0.26,<0.29"
-netboxlabs-netbox-branching = ">=0.7.0"
+netboxlabs-netbox-branching = ">=1.1.0"
 pyzipper = "^0.3.6"
 python = "^3.10"
 

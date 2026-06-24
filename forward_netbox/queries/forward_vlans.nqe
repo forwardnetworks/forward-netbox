@@ -1,10 +1,19 @@
 /**
  * @intent Forward VLANs
- * @description Raw NQE for NetBox VLAN rows derived from Forward network instances.
+ * @description Raw NQE for NetBox VLAN rows derived from Forward device VLANs.
  */
 
 import "netbox_utilities";
 
+// One pass over network.devices (device-parallel) emitting two VLAN sources per
+// device, unioned:
+//   1. networkInstance.vlans — interface-associated VLANs (the historical source).
+//   2. interface access/native VLANs — the untagged VLAN each port references,
+//      which `networkInstance.vlans` can omit. Importing these at the device's
+//      site ensures every interface's untagged_vlan assignment resolves instead
+//      of being dropped. Mirrors forward_interfaces.nqe's untagged_vlan logic;
+//      VID 1 is the implicit default and is skipped (NetBox treats an unset
+//      untagged_vlan as VLAN 1).
 candidateRows(forward_netbox_shard_keys: List<String>, device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>) =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
@@ -16,16 +25,42 @@ candidateRows(forward_netbox_shard_keys: List<String>, device_tag_include_tags: 
       && any(foreach tag in device_tag_include_tags select tag in device.tagNames))
   where isEmpty(device_tag_exclude_tags)
     || !any(foreach tag in device_tag_exclude_tags select tag in device.tagNames)
-  foreach ni in device.networkInstances
-  foreach vlan in ni.vlans
-  where isEmpty(forward_netbox_shard_keys) || toString(vlan.vlanId) in forward_netbox_shard_keys
   let site_name = if isPresent(device.locationName) then toLowerCase(device.locationName) else "unknown"
   let site_slug = slugify(site_name)
+  let ni_vlans =
+    foreach ni in device.networkInstances
+    foreach vlan in ni.vlans
+    select {
+      vid: vlan.vlanId,
+      name: if isPresent(vlan.name) then vlan.name else join(" ", ["VLAN", toString(vlan.vlanId)])
+    }
+  let iface_vlans =
+    foreach interface in device.interfaces
+    let vlan_mode =
+      if isPresent(interface.ethernet?.switchedVlan?.interfaceMode)
+        then if interface.ethernet.switchedVlan.interfaceMode == VlanModeType.ACCESS then "access"
+        else if interface.ethernet.switchedVlan.interfaceMode == VlanModeType.TRUNK then "tagged"
+        else null : String
+      else null : String
+    let vid =
+      if vlan_mode == "access" && isPresent(interface.ethernet?.switchedVlan?.accessVlan)
+        then interface.ethernet.switchedVlan.accessVlan
+      else if vlan_mode == "tagged" && isPresent(interface.ethernet?.switchedVlan?.nativeVlan)
+        then interface.ethernet.switchedVlan.nativeVlan
+      else null : Integer
+    where isPresent(vid)
+    where vid != 1
+    select {
+      vid: vid,
+      name: join(" ", ["VLAN", toString(vid)])
+    }
+  foreach vlan_row in (ni_vlans + iface_vlans)
+  where isEmpty(forward_netbox_shard_keys) || toString(vlan_row.vid) in forward_netbox_shard_keys
   select distinct {
     site: site_name,
     site_slug: site_slug,
-    vid: vlan.vlanId,
-    name: if isPresent(vlan.name) then vlan.name else join(" ", ["VLAN", toString(vlan.vlanId)]),
+    vid: vlan_row.vid,
+    name: vlan_row.name,
     status: "active"
   };
 

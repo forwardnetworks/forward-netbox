@@ -1,6 +1,5 @@
 from django.conf import settings
 
-from ..choices import ForwardExecutionBackendChoices
 from .forward_api import DEFAULT_FORWARD_API_TIMEOUT_SECONDS
 from .forward_api import DEFAULT_QUERY_FETCH_CONCURRENCY
 from .forward_api import MAX_QUERY_FETCH_CONCURRENCY
@@ -76,7 +75,7 @@ def _bounded_ratio(value, default):
     return max(0.0, min(1.0, parsed))
 
 
-def log_worker_timeout_guidance(sync, logger_, *, execution_backend):
+def log_worker_timeout_guidance(sync, logger_):
     rq_timeout = configured_rq_default_timeout()
     if rq_timeout is None:
         return
@@ -92,15 +91,11 @@ def log_worker_timeout_guidance(sync, logger_, *, execution_backend):
         )
         return
 
-    if (
-        execution_backend == ForwardExecutionBackendChoices.BRANCHING
-        and rq_timeout < MIN_LARGE_BRANCH_RQ_TIMEOUT_SECONDS
-    ):
+    if rq_timeout < MIN_LARGE_BRANCH_RQ_TIMEOUT_SECONDS:
         logger_.log_warning(
             "NetBox RQ_DEFAULT_TIMEOUT is "
-            f"{rq_timeout}s. Large Branching baselines can exceed this even with "
-            "bounded shards; increase the worker timeout for large syncs or use "
-            "Fast bootstrap for a trusted initial baseline.",
+            f"{rq_timeout}s. Large single-branch baselines can exceed this; "
+            "increase the worker timeout for large initial syncs.",
             obj=sync,
         )
 
@@ -159,34 +154,7 @@ def _projected_plan_runtime_seconds(sync, plan):
 
 
 def _recent_seconds_per_change(sync):
-    from ..models import ForwardExecutionRun
-    from ..choices import ForwardExecutionRunStatusChoices
-    from ..choices import ForwardExecutionStepStatusChoices
-
-    completed_statuses = {
-        ForwardExecutionStepStatusChoices.STAGED,
-        ForwardExecutionStepStatusChoices.MERGED,
-    }
-    run_statuses = {
-        ForwardExecutionRunStatusChoices.COMPLETED,
-        ForwardExecutionRunStatusChoices.FAILED,
-        ForwardExecutionRunStatusChoices.TIMEOUT,
-    }
-    runs = ForwardExecutionRun.objects.filter(
-        sync=sync, status__in=run_statuses
-    ).order_by("-created")[:3]
-    total_seconds = 0.0
-    total_changes = 0
-    for run in runs:
-        for step in run.steps.filter(status__in=completed_statuses):
-            if not step.started or not step.completed:
-                continue
-            attempted = int(step.attempted_row_count or 0)
-            if attempted <= 0:
-                continue
-            duration_seconds = max(0.0, (step.completed - step.started).total_seconds())
-            total_seconds += duration_seconds
-            total_changes += attempted
-    if total_changes <= 0:
-        return None
-    return total_seconds / total_changes
+    # 2.0: per-shard execution run/step history was removed, so there is no
+    # recorded throughput to derive from; callers fall back to the default
+    # estimate.
+    return None

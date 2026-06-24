@@ -1,5 +1,21 @@
+try:  # pragma: no cover - core is always present inside NetBox
+    from core.exceptions import SyncError as _CoreSyncError
+except ModuleNotFoundError:  # pragma: no cover - tooling imports outside NetBox
+    _CoreSyncError = Exception
+
+
 class ForwardSyncError(Exception):
     """Base exception for Forward sync failures."""
+
+
+class ForwardShardResolutionError(_CoreSyncError):
+    """Raised when a resumed shard's claimed index cannot be resolved against the
+    rebuilt plan.
+
+    Subclasses the core ``SyncError`` so existing sync error handling still
+    catches it, while letting the stage-job runner distinguish a (bounded,
+    retryable) resume-time plan desync from a genuine, terminal sync failure.
+    """
 
 
 class ForwardClientError(ForwardSyncError):

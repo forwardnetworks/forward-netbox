@@ -354,29 +354,22 @@ class ForwardSyncRunnerAdapterMixin:
     def _ensure_platform(self, row):
         from dcim.models import Platform
 
-        manufacturer = None
-        if row.get("manufacturer"):
-            manufacturer = self._ensure_manufacturer(
-                {"name": row["manufacturer"], "slug": row["manufacturer_slug"]}
-            )
         coalesce_sets = self._coalesce_sets_for(
             "dcim.platform",
             [("slug",), ("name",)],
         )
-        create_values = {
+        # 2.0: platforms are global (no manufacturer) so any vendor's device can
+        # attach. `normalizePlatformName` is OS-only and some names (e.g. UNKNOWN)
+        # span vendors, which a manufacturer-scoped platform would reject. Set
+        # manufacturer=None on CREATE and UPDATE so an existing manufacturer-scoped
+        # platform is cleared on the next sync.
+        values = {
             "name": row["name"],
             "slug": row["slug"],
-            "manufacturer": manufacturer,
-        }
-        # Preserve existing manufacturer on UPDATE — only set it on CREATE so
-        # operators can override the NQE-sourced manufacturer in NetBox without
-        # the next sync overwriting their change.
-        update_values = {
-            "name": row["name"],
-            "slug": row["slug"],
+            "manufacturer": None,
         }
         lookups = [
-            sync_coalesce_lookup(create_values, *coalesce_set)
+            sync_coalesce_lookup(values, *coalesce_set)
             for coalesce_set in coalesce_sets
         ]
         lookups = [lk for lk in lookups if lk]
@@ -385,8 +378,8 @@ class ForwardSyncRunnerAdapterMixin:
             "dcim.platform",
             Platform,
             coalesce_lookups=lookups,
-            create_values=create_values,
-            update_values=update_values,
+            create_values=values,
+            update_values=values,
         )
         return platform
 

@@ -5,25 +5,19 @@ from core.models import Job
 from core.signals import pre_sync
 from dcim.models import Site
 from dcim.models import VirtualChassis
+from django.db import transaction
 from django.db.models import signals
 from django.utils import timezone
 from django.utils.module_loading import import_string
 from netbox_branching.choices import BranchStatusChoices
 
-from ..choices import ForwardExecutionRunStatusChoices
 from ..choices import ForwardExecutionStepStatusChoices
 from ..choices import ForwardSourceStatusChoices
 from ..choices import ForwardSyncStatusChoices
-from .execution_ledger import active_execution_run
-from .execution_ledger import branch_run_state_from_execution_run
-from .execution_ledger import current_retryable_step
 from .execution_ledger import execution_step_for_ingestion
 from .execution_ledger import latest_execution_run
 from .execution_ledger import mark_ingestion_step_merged
 from .execution_ledger import mark_run_completed
-from .execution_ledger import prepare_stage_step_retry
-from .resumable_branching import enqueue_branch_stage_job
-from .resumable_branching import update_plan_item_state
 from .snapshot_freshness import latest_processed_catchup_decision
 from .sync_state import get_branch_run_display_state
 from .sync_state import has_pending_branch_run
@@ -140,24 +134,27 @@ def sync_merge_ingestion(ingestion, *, mark_baseline_ready=None, remove_branch=T
     try:
         with suppress_branch_merge_side_effect_signals():
             merge_branch(ingestion=ingestion, sync_logger=forwardsync.logger)
-        if mark_baseline_ready:
-            ingestion.baseline_ready = True
-            ingestion.__class__.objects.filter(pk=ingestion.pk).update(
-                baseline_ready=True
+        # Post-merge ledger bookkeeping must commit all-or-nothing. merge_branch
+        # has already applied the branch into NetBox; if the bookkeeping below
+        # were to partially commit (baseline_ready set but the step not marked
+        # MERGED, or vice versa) a resume could re-merge an already-applied shard
+        # and double-apply it. The atomic block keeps the ledger internally
+        # consistent; the merge_forwardingestion re-entry guard (branch already
+        # merged/removed -> mark step merged, skip re-merge) covers a crash
+        # between the merge and this block.
+        with transaction.atomic():
+            if mark_baseline_ready:
+                ingestion.baseline_ready = True
+                ingestion.__class__.objects.filter(pk=ingestion.pk).update(
+                    baseline_ready=True
+                )
+            mark_ingestion_step_merged(
+                ingestion,
+                baseline_ready=mark_baseline_ready,
+                merge_job=ingestion.merge_job,
             )
         if pending_plan_index:
-            update_plan_item_state(
-                forwardsync,
-                pending_plan_index,
-                status="merged",
-                ingestion_id=ingestion.pk,
-            )
             branch_run_state = get_branch_run_display_state(forwardsync)
-        mark_ingestion_step_merged(
-            ingestion,
-            baseline_ready=mark_baseline_ready,
-            merge_job=ingestion.merge_job,
-        )
         if is_pending_branch_run:
             if branch_run_state.get("pending_is_final"):
                 mark_run_completed(forwardsync, baseline_ready=mark_baseline_ready)
@@ -258,143 +255,10 @@ def maybe_enqueue_next_branch_stage(
     *,
     allow_failed_recovery=False,
 ):
-    sync = ingestion.sync
-    auto_merge_timeout_job = _maybe_enqueue_merge_timeout_retry(ingestion, user)
-    if auto_merge_timeout_job is not None:
-        return auto_merge_timeout_job
-    state = get_branch_run_display_state(sync)
-    ledger_step = execution_step_for_ingestion(ingestion)
-    ledger_run = (
-        ledger_step.run if ledger_step is not None else active_execution_run(sync)
-    )
-    if (
-        ledger_run is None
-        and getattr(sync, "pk", None)
-        and sync.execution_runs.exists()
-    ):
-        # Once ledger history exists, don't continue work from stale compatibility
-        # branch-run payloads when there is no active run.
-        return None
-    if ledger_run is not None:
-        if not ledger_run.auto_merge:
-            return None
-        if ledger_run.status in {
-            ForwardExecutionRunStatusChoices.RUNNING,
-            ForwardExecutionRunStatusChoices.WAITING,
-        }:
-            staged_merge_job = _maybe_enqueue_staged_step_merge(ledger_run, user)
-            if staged_merge_job is not None:
-                return staged_merge_job
-        elif allow_failed_recovery and ledger_run.status in {
-            ForwardExecutionRunStatusChoices.FAILED,
-            ForwardExecutionRunStatusChoices.TIMEOUT,
-            ForwardExecutionRunStatusChoices.CANCELLED,
-        }:
-            staged_merge_job = _maybe_enqueue_staged_step_merge(ledger_run, user)
-            if staged_merge_job is not None:
-                return staged_merge_job
-            retry_step = current_retryable_step(ledger_run)
-            if retry_step is None:
-                return None
-            prepare_stage_step_retry(retry_step)
-            ledger_run.refresh_from_db()
-        elif ledger_run.status != ForwardExecutionRunStatusChoices.RUNNING:
-            return None
-        state = branch_run_state_from_execution_run(ledger_run)
-    elif not state or not state.get("auto_merge"):
-        return None
-    next_plan_index = int(state.get("next_plan_index") or 1)
-    total_plan_items = int(state.get("total_plan_items") or 0)
-    if total_plan_items and next_plan_index <= total_plan_items:
-        return enqueue_branch_stage_job(sync, user=user, adhoc=True)
+    # 2.0: single-branch ingest has no "next shard stage" to enqueue and no
+    # execution-ledger run/step rows. The per-shard staging + merge-timeout-retry
+    # machinery is gone; this is now a no-op.
     return None
-
-
-def _maybe_enqueue_staged_step_merge(run, user):
-    next_plan_index = int(run.next_step_index or 1)
-    step = (
-        run.steps.filter(
-            kind="stage",
-            index=next_plan_index,
-            status=ForwardExecutionStepStatusChoices.STAGED,
-        )
-        .select_related("ingestion")
-        .order_by("index")
-        .first()
-    )
-    if step is None or step.ingestion_id is None:
-        return None
-    ingestion = step.ingestion
-    if not ingestion.can_queue_merge:
-        return None
-    if run.status in {
-        ForwardExecutionRunStatusChoices.FAILED,
-        ForwardExecutionRunStatusChoices.TIMEOUT,
-        ForwardExecutionRunStatusChoices.CANCELLED,
-    }:
-        run.status = ForwardExecutionRunStatusChoices.RUNNING
-        run.phase = "queued_merge"
-        total = int(run.total_steps or 0)
-        run.phase_message = (
-            f"Queued merge for shard {step.index}/{total}."
-            if total
-            else f"Queued merge for shard {step.index}."
-        )
-        run.latest_heartbeat = timezone.now()
-        run.save(
-            update_fields=[
-                "status",
-                "phase",
-                "phase_message",
-                "latest_heartbeat",
-                "updated",
-            ]
-        )
-        sync = run.sync
-        sync.status = ForwardSyncStatusChoices.QUEUED
-        sync.save(update_fields=["parameters", "status", "last_updated"])
-    job = enqueue_merge_job(ingestion, user, remove_branch=True)
-    step.status = ForwardExecutionStepStatusChoices.MERGE_QUEUED
-    step.merge_job = job
-    step.completed = None
-    step.heartbeat = timezone.now()
-    step.save(
-        update_fields=[
-            "status",
-            "merge_job",
-            "completed",
-            "heartbeat",
-            "updated",
-        ]
-    )
-    update_plan_item_state(
-        ingestion.sync,
-        step.index,
-        status="merge_queued",
-        merge_job_id=job.pk,
-    )
-    ingestion.sync.logger.log_info(
-        f"Queued merge for pre-staged shard {step.index}/{run.total_steps}.",
-        obj=ingestion,
-    )
-    return job
-
-
-def _maybe_enqueue_merge_timeout_retry(ingestion, user):
-    sync = ingestion.sync
-    run = active_execution_run(sync) or latest_execution_run(sync)
-    if run is None or not bool(getattr(run, "auto_merge", False)):
-        return None
-    step = execution_step_for_ingestion(ingestion)
-    if step is None:
-        return None
-    if step.status != ForwardExecutionStepStatusChoices.MERGE_TIMEOUT:
-        return None
-    if int(step.retry_count or 0) > AUTO_MERGE_STALE_MERGE_REQUEUE_LIMIT:
-        return None
-    if not ingestion.can_queue_merge:
-        return None
-    return enqueue_merge_job(ingestion, user, remove_branch=False)
 
 
 def record_change_totals(
