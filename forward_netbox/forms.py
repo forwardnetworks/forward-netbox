@@ -10,6 +10,7 @@ from utilities.forms import get_field_value
 from utilities.forms.fields import CommentField
 from utilities.forms.rendering import FieldSet
 from utilities.forms.widgets import APISelect
+from utilities.forms.widgets import APISelectMultiple
 from utilities.forms.widgets import DateTimePicker
 from utilities.forms.widgets import HTMXSelect
 from utilities.forms.widgets import NumberWithOptions
@@ -375,7 +376,9 @@ class ForwardSourceForm(NetBoxModelForm):
         self.fields["device_tag_include_tags"] = FlexibleMultipleChoiceField(
             required=False,
             choices=(),
-            widget=APISelect(api_url="/api/plugins/forward/source/available-tags/"),
+            widget=APISelectMultiple(
+                api_url="/api/plugins/forward/source/available-tags/"
+            ),
             label="Device Tags Include",
             help_text=(
                 "Optional Forward device tags. Devices must match the selected include logic."
@@ -384,7 +387,9 @@ class ForwardSourceForm(NetBoxModelForm):
         self.fields["device_tag_exclude_tags"] = FlexibleMultipleChoiceField(
             required=False,
             choices=(),
-            widget=APISelect(api_url="/api/plugins/forward/source/available-tags/"),
+            widget=APISelectMultiple(
+                api_url="/api/plugins/forward/source/available-tags/"
+            ),
             label="Device Tags Exclude",
             help_text=(
                 "Optional Forward device tags. Devices with any selected tag are excluded."
