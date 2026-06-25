@@ -556,6 +556,32 @@ class QueryRegistryTest(TestCase):
             self.assertNotIn("manufacturer: vendor", spec.query)
             self.assertNotIn("manufacturer: device.platform.vendor", spec.query)
 
+    def test_builtin_query_outputs_satisfy_contract_required_fields(self):
+        # Regression: a ModelSyncContract must never require an output field the
+        # builtin query does not emit. 2.0 shipped dcim.platform requiring
+        # manufacturer/manufacturer_slug after the query had (correctly, for
+        # global platforms) dropped them — which blocked every sync the moment
+        # the query was published to the org. This guards the whole class.
+        from forward_netbox.utilities.sync_contracts import MODEL_SYNC_CONTRACTS
+        from forward_netbox.utilities.sync_contracts import (
+            extract_declared_query_fields,
+        )
+
+        for model_string, contract in MODEL_SYNC_CONTRACTS.items():
+            for spec in BUILTIN_QUERY_SPECS.get(model_string, ()):
+                if not spec.query:
+                    continue
+                declared = extract_declared_query_fields(spec.query)
+                missing = [
+                    field for field in contract.required_fields if field not in declared
+                ]
+                self.assertEqual(
+                    missing,
+                    [],
+                    f"{model_string} query `{spec.query_name}` omits "
+                    f"contract-required output field(s): {missing}",
+                )
+
     def test_interface_query_uses_lookup_record_for_speed_mapping(self):
         spec = next(
             spec
