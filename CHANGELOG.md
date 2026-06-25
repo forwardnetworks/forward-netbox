@@ -2,7 +2,11 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
-## v2.0.0
+## v2.0.1
+
+Patch: fixes two 2.0.0 regressions an operator hits immediately — a false `netbox_branching is not installed; syncs will fail` startup warning (the dependency check used the wrong distribution name), and a 500 on the Sync list page (`KeyError: 'available'` from a removed execution-ledger summary). No engine or data changes; drop-in upgrade from `2.0.0`
+
+## v2.0.0 — 2026-06-24
 
 Breaking 2.0 — single-branch is the only execution path. Removed the per-shard branching/fast-bootstrap/resumable executor, 10k-change budget sharding, and the execution-ledger run-history; dropped the backend/max-changes/scheduler-overlap selectors
 

@@ -16,8 +16,6 @@ from .models import ForwardNQEMap
 from .models import ForwardSource
 from .models import ForwardSync
 from .models import ForwardValidationRun
-from .utilities.execution_ledger import execution_run_failure_summary
-from .utilities.execution_ledger import latest_execution_run
 from .utilities.json_safe import json_safe_value
 
 
@@ -90,13 +88,15 @@ class ForwardSyncTable(NetBoxTable):
         return getattr(value, "name", "---") if value else "---"
 
     def render_latest_failure(self, value, record):
-        summary = execution_run_failure_summary(latest_execution_run(record))
-        if not summary["available"]:
+        # 2.0 removed the execution-run ledger; surface the latest ingestion's
+        # failed-change count (the always-populated 2.0 failure signal) instead.
+        ingestion = record.forwardingestion_set.last()
+        failed = getattr(ingestion, "failed_change_count", 0) or 0
+        if not failed:
             return "---"
         return format_html(
-            '<span title="{}">{}</span>',
-            summary["error"],
-            summary["message"],
+            '<span class="text-danger">{}</span>',
+            _("{n} failed change(s)").format(n=failed),
         )
 
     class Meta(NetBoxTable.Meta):
