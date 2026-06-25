@@ -270,7 +270,11 @@ def apply_dcim_interface(runner, row):
             "device": device,
             "name": row["lag"],
             "type": "lag",
-            "enabled": True,
+            # Do NOT force enabled here: the LAG parent's own interface row carries
+            # Forward's operStatus-derived enabled. Forcing True on the member-ensure
+            # update fights that row (parent often reports operStatus DOWN), so every
+            # sync flip-flops enabled True<->False — perpetual churn. Existence +
+            # type=lag is all the member needs; enabled follows the parent's own row.
         }
         lag, _ = runner._upsert_row(
             "dcim.interface",
