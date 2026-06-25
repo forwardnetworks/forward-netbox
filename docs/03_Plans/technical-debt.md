@@ -35,8 +35,8 @@ The current architecture has explicit boundaries for contracts, query fetch, pla
 
 - `contracts`: validation of row shape, model identity, and coalesce rules.
 - `query fetch`: snapshot resolution, query execution, pagination, diffs, and model-result metadata.
-- `planning`: workload grouping, shard sizing, and branch budget estimation.
-- `execution`: branch lifecycle, shard retries, merge handoff, and resume state.
+- `planning`: workload grouping, dependency phasing, and branch budget/density estimation (single branch per sync; no shard sizing).
+- `execution`: single-branch staging and bulk-merge handoff.
 - `validation`: drift policy decisions and pre-branch gating.
 - `adapters`: per-NetBox-model row apply/delete behavior.
 - `reporting`: logs, statistics, model results, issues, row failures, and operator-facing progress.
@@ -65,11 +65,23 @@ Required first step: add behavior-preserving tests around the current module bou
 
 ## Branch Execution Boundaries
 
-- `forward_netbox/utilities/multi_branch_planner.py` now owns the planning boundary.
-- `forward_netbox/utilities/multi_branch_executor.py` now owns branch lifecycle, resume state, overflow retry, and merge orchestration. Its main `run()` state machine is now split into smaller helpers, but the execution contract remains the same.
-- `forward_netbox/utilities/multi_branch_lifecycle.py` now owns the reusable branch creation, cleanup, overflow retry, and per-shard ingestion wiring that used to live inline in the executor.
-- `forward_netbox/utilities/multi_branch.py` is now a compatibility shim that re-exports the planning and execution surfaces.
-- Required first step: keep adding focused tests around resume, stale branches, overflow retry, and auto-merge interaction before any further execution split.
+- 2.0 collapsed the per-shard, multi-branch engine to ONE branch per sync. The
+  former `multi_branch_planner.py`, `multi_branch_executor.py`, and
+  `multi_branch.py` modules (shard sizing, resume state, overflow retry) have
+  been removed. Do not reintroduce shard/resume/overflow vocabulary here.
+- `forward_netbox/utilities/single_branch_executor.py` owns the only execution
+  path: provision one branch, stage all dependency-phased workloads into it, then
+  bulk-merge once (`bulk_merge.py`).
+- `forward_netbox/utilities/multi_branch_lifecycle.py` owns the reusable per-branch
+  staging primitive (`run_item_in_branch`), the runtime-phase heartbeat, and the
+  no-change ingestion helper — reused by `single_branch_executor.py` and the
+  fast-bootstrap base class it extends.
+- `forward_netbox/utilities/branch_budget.py` owns `build_branch_plan`
+  (dependency phasing/ordering) plus the budget/density telemetry the UI shows.
+  NOTE: the `shard`-named helpers there (`row_shard_key`, `shard_fetch_contract`)
+  feed the live query-fetch path and are NOT dead despite the legacy name.
+- Required first step: keep single-branch staging and bulk-merge delete ordering
+  pinned in tests before any further execution split.
 
 ## Local Test Repeatability
 
