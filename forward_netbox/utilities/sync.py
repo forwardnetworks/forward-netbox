@@ -251,13 +251,15 @@ _SYNC_RUNNER_IMPORT_ANCHORS = (
 
 class ForwardSyncRunner(ForwardSyncRunnerContractMixin, ForwardSyncRunnerAdapterMixin):
     CONFLICT_WARNING_DETAIL_LIMIT = 20
-    # Per-reason override of the per-row skip-warning detail cap. A systemic
-    # readiness gap (module sync enabled before the device-type module bays
-    # exist) skips EVERY module row on that hardware, so 20 near-identical lines
-    # is noise: a few examples plus the suppressed-count summary convey the same
-    # single action ("run forward_module_readiness"). Reasons not listed here use
-    # CONFLICT_WARNING_DETAIL_LIMIT.
-    SKIP_WARNING_DETAIL_LIMITS = {"missing-module-bay": 3}
+    # Per-reason override of the per-row skip-warning detail cap (general
+    # mechanism; reasons not listed use CONFLICT_WARNING_DETAIL_LIMIT).
+    SKIP_WARNING_DETAIL_LIMITS: dict[str, int] = {}
+    # Skip reasons that are a SYSTEMIC readiness gap, not a per-row anomaly:
+    # module sync enabled before the device-type module bays exist skips EVERY
+    # module row on that hardware. Collapse these into ONE actionable summary
+    # (total + a few examples + the forward_module_readiness remediation) at the
+    # end of the model instead of logging a wall of near-identical per-row lines.
+    SKIP_WARNING_ROLLUP_REASONS = frozenset({"missing-module-bay"})
     MODULE_NATIVE_INVENTORY_PART_TYPES = {
         "FABRIC MODULE",
         "LINE CARD",
@@ -322,6 +324,7 @@ class ForwardSyncRunner(ForwardSyncRunnerContractMixin, ForwardSyncRunnerAdapter
         self._aggregated_conflict_warning_suppressed: dict[tuple[str, str], int] = {}
         self._aggregated_skip_warning_counts: dict[tuple[str, str], int] = {}
         self._aggregated_skip_warning_suppressed: dict[tuple[str, str], int] = {}
+        self._aggregated_skip_warning_samples: dict[tuple[str, str], list[str]] = {}
         self.events_clearer = EventsClearer()
 
     def run(self):
