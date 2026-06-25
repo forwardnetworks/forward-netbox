@@ -32,12 +32,15 @@ class ForwardSyncRunnerContractMixin:
     def _emit_aggregated_conflict_warning_summaries(self, model_string):
         return sync_emit_aggregated_conflict_warning_summaries(self, model_string)
 
-    def _record_aggregated_skip_warning(self, *, model_string, reason, warning_message):
+    def _record_aggregated_skip_warning(
+        self, *, model_string, reason, warning_message, sample=None
+    ):
         return sync_record_aggregated_skip_warning(
             self,
             model_string=model_string,
             reason=reason,
             warning_message=warning_message,
+            sample=sample,
         )
 
     def _emit_aggregated_skip_warning_summaries(self, model_string):

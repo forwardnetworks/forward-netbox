@@ -67,15 +67,30 @@ def emit_aggregated_conflict_warning_summaries(runner, model_string):
         )
 
 
+# Examples kept for a rollup-reason summary; the rest are counted, not listed.
+SKIP_WARNING_ROLLUP_SAMPLES = 5
+
+
 def _skip_warning_detail_limit(runner, reason):
     return getattr(runner, "SKIP_WARNING_DETAIL_LIMITS", {}).get(
         reason, runner.CONFLICT_WARNING_DETAIL_LIMIT
     )
 
 
-def record_aggregated_skip_warning(runner, *, model_string, reason, warning_message):
+def record_aggregated_skip_warning(
+    runner, *, model_string, reason, warning_message, sample=None
+):
     key = (model_string, reason)
     count = runner._aggregated_skip_warning_counts.get(key, 0)
+    if reason in getattr(runner, "SKIP_WARNING_ROLLUP_REASONS", frozenset()):
+        # Systemic readiness gap: never log per row. Keep a few examples and let
+        # emit_aggregated_skip_warning_summaries collapse the rest into one line.
+        if sample:
+            samples = runner._aggregated_skip_warning_samples.setdefault(key, [])
+            if sample not in samples and len(samples) < SKIP_WARNING_ROLLUP_SAMPLES:
+                samples.append(sample)
+        runner._aggregated_skip_warning_counts[key] = count + 1
+        return
     if count < _skip_warning_detail_limit(runner, reason):
         runner.logger.log_warning(
             warning_message,
@@ -89,10 +104,35 @@ def record_aggregated_skip_warning(runner, *, model_string, reason, warning_mess
 
 
 def emit_aggregated_skip_warning_summaries(runner, model_string):
+    rollup_reasons = getattr(runner, "SKIP_WARNING_ROLLUP_REASONS", frozenset())
+    # Rollup reasons: one actionable summary (total + a few examples + remedy).
+    for (warning_model, reason), total in sorted(
+        runner._aggregated_skip_warning_counts.items()
+    ):
+        if warning_model != model_string or reason not in rollup_reasons or total <= 0:
+            continue
+        samples = runner._aggregated_skip_warning_samples.get(
+            (warning_model, reason), []
+        )
+        remainder = total - len(samples)
+        examples = ", ".join(samples)
+        suffix = f" (+{remainder} more)" if remainder > 0 else ""
+        runner.logger.log_warning(
+            f"Skipped {total} {model_string} row(s) because the target module bay "
+            f"does not exist in NetBox. Run `forward_module_readiness`, import the "
+            f"generated module-bay CSV, then re-run module sync. "
+            f"Examples: {examples}{suffix}.",
+            obj=runner.sync,
+        )
+    # All other reasons: the first-N-then-suppressed-count summary.
     for (warning_model, reason), suppressed_count in sorted(
         runner._aggregated_skip_warning_suppressed.items()
     ):
-        if warning_model != model_string or suppressed_count <= 0:
+        if (
+            warning_model != model_string
+            or suppressed_count <= 0
+            or reason in rollup_reasons
+        ):
             continue
         runner.logger.log_warning(
             f"Suppressed {suppressed_count} additional {model_string} skip warnings "
