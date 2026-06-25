@@ -182,6 +182,12 @@ def _interface_untagged_vlan(runner, device, row):
             ),
         )
         return False, None
+    if vid == 1:
+        # VID 1 is the implicit access default: forward_vlans.nqe intentionally
+        # does not import VLAN 1 (NetBox represents an unset untagged_vlan as
+        # VLAN 1), so leave the interface untagged_vlan unset and skip silently
+        # rather than warning that VLAN 1 "was not imported".
+        return False, None
     vlan = runner._get_unique_or_raise(VLAN, {"site": device.site, "vid": vid})
     if vlan is None:
         runner._record_aggregated_skip_warning(

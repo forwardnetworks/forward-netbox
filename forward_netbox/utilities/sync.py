@@ -301,6 +301,9 @@ class ForwardSyncRunner(ForwardSyncRunnerContractMixin, ForwardSyncRunnerAdapter
         self._tag_by_slug_cache: dict[str, object] = {}
         self._tag_by_name_cache: dict[str, object] = {}
         self._device_tag_ids_cache: dict[int, set[int]] = {}
+        # device name -> include tags that device carries (apply_device_scope_tags
+        # per-device tagging; populated from the resolved context by the executor).
+        self._scope_matched_tags: dict[str, list[str]] = {}
         self._asn_by_number_cache: dict[int, object] = {}
         self._cable_between_cache: dict[tuple[int, int], object] = {}
         self._unique_lookup_cache: dict[tuple, object] = {}
