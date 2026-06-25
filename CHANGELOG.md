@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v2.0.4
+
+Patch: collapse the module-sync readiness warning wall into ONE summary. When module sync is enabled before a device's module bays exist in NetBox, every module row is skipped; 2.0.3 capped the per-row lines at 3, this replaces them entirely with a single actionable line per sync (total skipped + a few examples + the `forward_module_readiness` remedy). Other skip reasons are unchanged. No engine/schema/org changes; drop-in from `2.0.3`
+
 ## v2.0.3
 
 Patch: (1) module-sync readiness warnings no longer flood the log — the per-row `module bay does not exist; run forward_module_readiness` skip is capped to a few examples plus a suppressed-count summary (was up to 20 near-identical lines per sync); (2) fixes the release `CI` gate (`CHANGELOG matches README`) that had been red since v1.7.2 — the generator no longer depends on git tag-date timing; (3) removes dead executor code (`ForwardFastBootstrapExecutor.run`) and refreshes stale internal docs. No engine/schema changes; drop-in from `2.0.2`

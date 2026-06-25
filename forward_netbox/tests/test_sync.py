@@ -1954,37 +1954,31 @@ class ForwardSyncRunnerTest(TestCase):
             "`missing-interface` after the first 20.",
         )
 
-    def test_apply_dcim_module_caps_missing_module_bay_warnings(self):
+    def test_apply_dcim_module_rolls_up_missing_module_bay_warnings(self):
         # A systemic readiness gap (module sync enabled before the device-type
-        # module bays exist) skips every module row, so the per-row detail is
-        # capped low (SKIP_WARNING_DETAIL_LIMITS) and the rest are summarized.
+        # module bays exist) skips every module row; the per-row lines are
+        # collapsed into ONE actionable summary (count + examples + remedy)
+        # instead of flooding the log.
         self._create_device("device-module-readiness")
         logger = Mock()
         runner = ForwardSyncRunner(
             sync=self.sync, ingestion=None, client=None, logger_=logger
         )
-        limit = ForwardSyncRunner.SKIP_WARNING_DETAIL_LIMITS["missing-module-bay"]
         rows = [
             {"device": "device-module-readiness", "module_bay": f"module {index}"}
-            for index in range(limit + 2)
+            for index in range(7)
         ]
 
         runner._apply_model_rows("dcim.module", rows)
 
         warning_messages = [call.args[0] for call in logger.log_warning.call_args_list]
-        # `limit` per-row detail lines + one suppressed-count summary.
-        self.assertEqual(len(warning_messages), limit + 1)
-        self.assertTrue(
-            all(
-                "forward_module_readiness" in message
-                for message in warning_messages[:limit]
-            )
-        )
-        self.assertEqual(
-            warning_messages[-1],
-            f"Suppressed 2 additional dcim.module skip warnings for "
-            f"`missing-module-bay` after the first {limit}.",
-        )
+        # Exactly one summary line, regardless of how many rows were skipped.
+        self.assertEqual(len(warning_messages), 1)
+        summary = warning_messages[0]
+        self.assertIn("Skipped 7 dcim.module row(s)", summary)
+        self.assertIn("forward_module_readiness", summary)
+        self.assertIn("device-module-readiness/module 0", summary)
+        self.assertIn("(+2 more)", summary)  # 7 skipped - 5 sampled
 
     def test_dependency_lookup_cache_primes_only_exact_interface_pairs(self):
         device_1 = self._create_device("device-pair-1")
