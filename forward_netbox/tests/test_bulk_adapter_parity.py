@@ -328,6 +328,35 @@ class BulkAdapterParityTest(TestCase):
         self.assertEqual(len(state), 2)
         self.assertTrue(all(row[1] == self.interface.pk for row in state))
 
+    def test_lag_member_does_not_override_parent_enabled(self):
+        # Regression (#41): a LAG parent's `enabled` follows its own Forward row
+        # (operStatus-derived, often False for a Port-channel). The member-ensure
+        # must NOT force it True, else every sync flips enabled True<->False and
+        # churns. Seed the parent disabled, apply a member, assert it stays.
+        parent = Interface.objects.create(
+            device=self.device, name="Po1", type="lag", enabled=False
+        )
+        bulk_orm_apply_interface(
+            self._runner(),
+            [
+                {
+                    "device": "dev-p",
+                    "name": "Ethernet7",
+                    "type": "1000base-t",
+                    "enabled": True,
+                    "lag": "Po1",
+                }
+            ],
+        )
+        parent.refresh_from_db()
+        self.assertFalse(
+            parent.enabled, "member-ensure must not flip LAG parent enabled to True"
+        )
+        self.assertEqual(
+            Interface.objects.get(device=self.device, name="Ethernet7").lag_id,
+            parent.pk,
+        )
+
     def test_macaddress_differing_format_matches_existing_no_duplicate(self):
         # Forward emits toString(macAddress) as lowercase / cisco-dot; NetBox
         # stores upper colon-expanded. Re-syncing the same MAC must match the
