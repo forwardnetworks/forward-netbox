@@ -746,7 +746,11 @@ def bulk_orm_apply_macaddress(runner, rows: list[dict[str, Any]]):
         ):
             runner.logger.increment_statistics("dcim.macaddress", outcome="unchanged")
             continue
-        if branch_active:
+        # `mac` may be a not-yet-saved in-memory create from an earlier row with
+        # the same canonical MAC (duplicate MAC across interfaces/devices — only
+        # surfaces at full-network scale); snapshot() touches tags and raises on
+        # an unsaved object, so only snapshot already-persisted rows.
+        if branch_active and getattr(mac, "pk", None) is not None:
             mac.snapshot()
         mac.assigned_object_type = interface_content_type
         mac.assigned_object_id = interface.pk
@@ -1486,7 +1490,11 @@ def bulk_orm_apply_ipaddress(runner, rows: list[dict[str, Any]]):
             runner.events_clearer.increment()
             continue
 
-        if branch_active:
+        # `ip` may be a not-yet-saved in-memory create from an earlier row that
+        # shares this (host_ip, vrf) key (duplicate IP across devices — only
+        # surfaces at full-network scale). snapshot() touches tags, which raises
+        # on an unsaved object; only snapshot already-persisted rows.
+        if branch_active and ip.pk is not None:
             ip.snapshot()
         changed = False
         if str(ip.address) != str(row["address"]):
