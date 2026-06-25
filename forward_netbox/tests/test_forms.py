@@ -96,6 +96,28 @@ class ForwardSourceFormTest(TestCase):
             " ".join(form.non_field_errors()),
         )
 
+    def test_device_tag_fields_use_multiselect_widget(self):
+        # Regression: the include/exclude tag fields used a single-select widget
+        # (APISelect), so the browser only submitted the LAST selected tag.
+        # They must use a multiple-select widget that keeps every tag.
+        form = ForwardSourceForm()
+        for field_name in ("device_tag_include_tags", "device_tag_exclude_tags"):
+            self.assertTrue(
+                form.fields[field_name].widget.allow_multiple_selected,
+                f"{field_name} must use a multiple-select widget",
+            )
+
+    @patch("forward_netbox.forms.ForwardSource.validate_connection")
+    def test_include_tags_retain_all_submitted_values(self, _mock_validate):
+        data = self._base_form_data()
+        data["device_tag_include_tags"] = ["tag-a", "tag-b", "tag-c"]
+        form = ForwardSourceForm(data=data)
+        form.is_valid()
+        self.assertEqual(
+            list(form.cleaned_data.get("device_tag_include_tags") or []),
+            ["tag-a", "tag-b", "tag-c"],
+        )
+
 
 class ForwardSyncFormTest(TestCase):
     def setUp(self):
