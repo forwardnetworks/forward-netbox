@@ -2,7 +2,11 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
-## v2.0.1
+## v2.0.2
+
+Patch: apply_device_scope_tags now works with multiple include tags in `any` match mode — each device is tagged with exactly the include tag(s) it carries (resolved per-device at fetch time), instead of skipping. Also silences the spurious `Skipping untagged VLAN 1` warning (VID 1 is NetBox's implicit access default and is intentionally not imported). No engine/schema changes; drop-in from `2.0.1`, no org republish
+
+## v2.0.1 — 2026-06-25
 
 Patch: fixes two 2.0.0 regressions an operator hits immediately — a false `netbox_branching is not installed; syncs will fail` startup warning (the dependency check used the wrong distribution name), and a 500 on the Sync list page (`KeyError: 'available'` from a removed execution-ledger summary). No engine or data changes; drop-in upgrade from `2.0.0`
 
