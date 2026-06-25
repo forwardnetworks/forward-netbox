@@ -313,6 +313,42 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
             outcome="applied",
         )
 
+    @patch(
+        "forward_netbox.utilities.apply_engine_bulk._branch_is_active",
+        return_value=True,
+    )
+    def test_bulk_orm_macaddress_duplicate_in_branch_no_crash(self, _branch):
+        # Regression (full-network scale): a duplicate canonical MAC reassigned
+        # across interfaces made the second row call snapshot() on the first
+        # row's not-yet-saved in-memory MACAddress, which raises (tags need a pk).
+        self.sync.parameters["enable_bulk_orm"] = True
+        self.sync.save(update_fields=["parameters"])
+        device = self._device()
+        Interface.objects.create(device=device, name="Ethernet1", type="1000base-t")
+        Interface.objects.create(device=device, name="Ethernet2", type="1000base-t")
+        runner = self._runner()
+        engine = select_apply_engine(
+            sync=self.sync, model_string="dcim.macaddress", backend="branching"
+        )
+        # Must not raise on the duplicate-MAC second row.
+        engine.apply_upserts(
+            runner,
+            "dcim.macaddress",
+            [
+                {
+                    "device": device.name,
+                    "interface": "Ethernet1",
+                    "mac": "00:aa:bb:cc:dd:ee",
+                },
+                {
+                    "device": device.name,
+                    "interface": "Ethernet2",
+                    "mac": "00:aa:bb:cc:dd:ee",
+                },
+            ],
+        )
+        self.assertEqual(MACAddress.objects.count(), 1)
+
     def test_bulk_orm_mac_address_preserves_dependency_skip_behavior(self):
         self.sync.parameters["enable_bulk_orm"] = True
         self.sync.save(update_fields=["parameters"])
@@ -528,6 +564,49 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
         existing.refresh_from_db()
         self.assertEqual(existing.status, "active")
         self.assertEqual(existing.assigned_object_id, interface.pk)
+
+    @patch(
+        "forward_netbox.utilities.apply_engine_bulk._branch_is_active",
+        return_value=True,
+    )
+    def test_bulk_orm_ipaddress_duplicate_host_ip_in_branch_no_crash(self, _branch):
+        # Regression (full-network scale): two rows sharing a (host_ip, vrf) key
+        # (same host on different prefixes/interfaces) made the second row call
+        # snapshot() on the first row's not-yet-saved in-memory IPAddress, which
+        # raises "objects need a primary key before you can access their tags".
+        device, _interface = self._device_with_interface()
+        Interface.objects.create(device=device, name="Ethernet2", type="1000base-t")
+        self.sync.parameters["enable_bulk_orm"] = True
+        self.sync.parameters["bulk_orm_models"] = ["ipam.ipaddress"]
+        self.sync.save(update_fields=["parameters"])
+        engine = select_apply_engine(
+            sync=self.sync, model_string="ipam.ipaddress", backend="branching"
+        )
+        runner = self._ipaddress_runner()
+        # Must not raise on the duplicate (host_ip, vrf) second row.
+        engine.apply_upserts(
+            runner,
+            "ipam.ipaddress",
+            [
+                {
+                    "device": "ip-dev",
+                    "interface": "Ethernet1",
+                    "address": "10.9.9.9/24",
+                    "status": "active",
+                    "vrf": None,
+                },
+                {
+                    "device": "ip-dev",
+                    "interface": "Ethernet2",
+                    "address": "10.9.9.9/32",
+                    "status": "active",
+                    "vrf": None,
+                },
+            ],
+        )
+        self.assertEqual(
+            IPAddress.objects.filter(address__startswith="10.9.9.9").count(), 1
+        )
 
     def test_bulk_orm_ipaddress_skips_missing_interface(self):
         self._device_with_interface()
