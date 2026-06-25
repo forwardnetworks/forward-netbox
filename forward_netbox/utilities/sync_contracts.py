@@ -28,7 +28,10 @@ MODEL_SYNC_CONTRACTS: dict[str, ModelSyncContract] = {
         default_coalesce_fields=(("slug",), ("name",)),
     ),
     "dcim.platform": ModelSyncContract(
-        required_fields=("name", "slug", "manufacturer", "manufacturer_slug"),
+        # 2.0: platforms are global (manufacturer is forced None on apply so any
+        # vendor's device can attach — see apply_engine_bulk). The query therefore
+        # emits only name/slug; manufacturer is intentionally NOT required.
+        required_fields=("name", "slug"),
         allowed_coalesce_fields=("name", "slug"),
         default_coalesce_fields=(("slug",), ("name",)),
     ),
