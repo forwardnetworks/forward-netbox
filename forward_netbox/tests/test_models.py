@@ -1591,6 +1591,23 @@ class ForwardSyncModelTest(TestCase):
     def test_sync_table_shows_scheduled_by_default(self):
         self.assertIn("scheduled", ForwardSyncTable.Meta.default_columns)
 
+    def test_sync_table_latest_failure_renders_without_ledger(self):
+        # Regression: render_latest_failure called the removed execution-ledger
+        # stubs and indexed summary["available"] -> KeyError, 500'ing the sync
+        # list page in 2.0. It must render from the ingestion's failed-change
+        # count and never crash.
+        from forward_netbox.models import ForwardIngestion
+
+        sync = ForwardSync.objects.create(name="lf-sync", source=self.source)
+        table = ForwardSyncTable(ForwardSync.objects.filter(pk=sync.pk))
+        # No ingestion -> graceful dash.
+        self.assertEqual(table.render_latest_failure(value=None, record=sync), "---")
+        # Failed changes -> surfaced count, still no crash.
+        ForwardIngestion.objects.create(sync=sync, failed_change_count=3)
+        rendered = str(table.render_latest_failure(value=None, record=sync))
+        self.assertIn("3", rendered)
+        self.assertNotIn("available", rendered)
+
     @patch("forward_netbox.models.ForwardSource.get_client")
     @patch(
         "forward_netbox.utilities.single_branch_executor.ForwardSingleBranchExecutor"
