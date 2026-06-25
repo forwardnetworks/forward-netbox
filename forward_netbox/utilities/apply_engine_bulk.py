@@ -1105,7 +1105,7 @@ def bulk_orm_apply_device(runner, rows: list[dict[str, Any]]):
 
     from ..exceptions import ForwardDependencySkipError
     from ..exceptions import ForwardSearchError
-    from .sync_device import _scope_tags
+    from .sync_device import _scope_tags_enabled
     from .sync_device import apply_dcim_device
 
     update_field_names = ["site", "role", "device_type", "platform", "serial", "status"]
@@ -1138,7 +1138,7 @@ def bulk_orm_apply_device(runner, rows: list[dict[str, Any]]):
 
     # Opt-in per-device scope tagging is an adapter side effect; keep exact parity
     # by delegating the whole batch when it is enabled.
-    if _scope_tags(runner):
+    if _scope_tags_enabled(runner):
         for row in rows:
             _delegate(row)
         runner.events_clearer.clear()

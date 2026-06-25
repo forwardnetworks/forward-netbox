@@ -180,6 +180,7 @@ class ForwardQueryContext:
     device_tag_prune_out_of_scope: bool = False
     scoped_device_names: set[str] = field(default_factory=set)
     scoped_site_names: set[str] = field(default_factory=set)
+    scoped_matched_tags: dict[str, list[str]] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -197,6 +198,11 @@ class ForwardQueryContext:
             "device_tag_prune_out_of_scope": self.device_tag_prune_out_of_scope,
             "scoped_device_count": len(self.scoped_device_names),
             "scoped_site_count": len(self.scoped_site_names),
+            # Full per-device matched-tag map (not a count): the branch apply path
+            # reads this back to tag each device with the include tags it carries.
+            "scoped_matched_tags": {
+                str(k): list(v) for k, v in self.scoped_matched_tags.items()
+            },
         }
 
 
@@ -407,7 +413,11 @@ class ForwardQueryFetcher:
                     f"{_safe_exception_summary(exc)}",
                     obj=self.sync,
                 )
-            scoped_device_names, scoped_site_names = self._resolve_scoped_tag_scope(
+            (
+                scoped_device_names,
+                scoped_site_names,
+                scoped_matched_tags,
+            ) = self._resolve_scoped_tag_scope(
                 network_id=network_id,
                 snapshot_id=snapshot_id,
                 include_tags=include_tags,
@@ -420,12 +430,17 @@ class ForwardQueryFetcher:
                 snapshot_metrics=snapshot_metrics,
                 scoped_device_names=scoped_device_names,
                 scoped_site_names=scoped_site_names,
+                scoped_matched_tags=scoped_matched_tags,
             )
         else:
             snapshot_info = dict(cached_context.get("snapshot_info") or {})
             snapshot_metrics = dict(cached_context.get("snapshot_metrics") or {})
             scoped_device_names = set(cached_context.get("scoped_device_names") or [])
             scoped_site_names = set(cached_context.get("scoped_site_names") or [])
+            scoped_matched_tags = {
+                str(k): list(v)
+                for k, v in (cached_context.get("scoped_matched_tags") or {}).items()
+            }
         context = ForwardQueryContext(
             network_id=network_id,
             snapshot_selector=snapshot_selector,
@@ -441,6 +456,7 @@ class ForwardQueryFetcher:
             device_tag_prune_out_of_scope=prune_out_of_scope,
             scoped_device_names=scoped_device_names,
             scoped_site_names=scoped_site_names,
+            scoped_matched_tags=scoped_matched_tags,
         )
         self._resolved_context_cache[context_cache_key] = context
         return context
@@ -495,6 +511,7 @@ class ForwardQueryFetcher:
         snapshot_metrics: dict[str, Any],
         scoped_device_names: set[str],
         scoped_site_names: set[str],
+        scoped_matched_tags: dict[str, list[str]] | None = None,
     ) -> None:
         if descriptor is None:
             return
@@ -506,6 +523,9 @@ class ForwardQueryFetcher:
                 "snapshot_metrics": dict(snapshot_metrics or {}),
                 "scoped_device_names": sorted(scoped_device_names or set()),
                 "scoped_site_names": sorted(scoped_site_names or set()),
+                "scoped_matched_tags": {
+                    str(k): sorted(v) for k, v in (scoped_matched_tags or {}).items()
+                },
             },
         )
 
@@ -542,9 +562,9 @@ class ForwardQueryFetcher:
         include_tags: list[str],
         exclude_tags: list[str],
         include_match: str,
-    ) -> tuple[set[str], set[str]]:
+    ) -> tuple[set[str], set[str], dict[str, list[str]]]:
         if not include_tags and not exclude_tags:
-            return set(), set()
+            return set(), set(), {}
         scope_where = build_device_tag_scope_where(
             include_tags, exclude_tags, include_match
         )
@@ -559,7 +579,8 @@ class ForwardQueryFetcher:
                 *where,
                 "select {",
                 "  name: device.name,",
-                '  site: if isPresent(device.locationName) then toLowerCase(device.locationName) else "unknown"',
+                '  site: if isPresent(device.locationName) then toLowerCase(device.locationName) else "unknown",',
+                "  tagNames: device.tagNames",
                 "}",
             ]
         )
@@ -581,6 +602,23 @@ class ForwardQueryFetcher:
             if str(row.get("name") or "").strip()
         }
         sites = set()
+        # Per-device matched include tags: which of the sync's include tags each
+        # in-scope device actually carries. Intersect HERE (include_tags is in
+        # scope) so the persisted payload is bounded by the include-tag count,
+        # not the device's full tag list. In include_match="all" mode every
+        # in-scope device carries all include tags, so the intersection equals
+        # include_tags (identical to the historical single-tag/all behaviour);
+        # in "any" mode it is exactly the carried subset.
+        include_tag_set = set(include_tags)
+        matched_tags_by_device: dict[str, list[str]] = {}
+        for row in rows:
+            name = str(row.get("name") or "").strip()
+            if not name:
+                continue
+            device_tags = row.get("tagNames") or []
+            matched = sorted(include_tag_set.intersection(str(t) for t in device_tags))
+            if matched:
+                matched_tags_by_device[name] = matched
         for row in rows:
             site = str(row.get("site") or "").strip().lower()
             if not site:
@@ -605,7 +643,7 @@ class ForwardQueryFetcher:
                 exclude_tags=exclude_tags,
                 include_match=include_match,
             )
-        return names, sites
+        return names, sites, matched_tags_by_device
 
     def _warn_if_scope_all_backfilled(
         self,

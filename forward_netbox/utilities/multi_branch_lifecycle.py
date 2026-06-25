@@ -85,6 +85,11 @@ def run_item_in_branch(executor, item, context, ingestion, branch, *, total_plan
         logger_=executor.logger,
     )
     runner._model_coalesce_fields[item.model_string] = item.coalesce_fields
+    # Per-device scope-tag map resolved at fetch time (apply_device_scope_tags);
+    # without this, branched syncs would tag nothing.
+    runner._scope_matched_tags = {
+        str(k): list(v) for k, v in (context.get("scoped_matched_tags") or {}).items()
+    }
     ingestion.snapshot_selector = context["snapshot_selector"]
     ingestion.snapshot_id = context["snapshot_id"]
     ingestion.snapshot_info = context["snapshot_info"]
