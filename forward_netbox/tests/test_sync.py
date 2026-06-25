@@ -4,9 +4,7 @@ import tempfile
 from unittest.mock import Mock
 from unittest.mock import patch
 
-from core.exceptions import SyncError
 from core.models import ObjectChange
-from core.models import ObjectType
 from dcim.models import Cable
 from dcim.models import Device
 from dcim.models import DeviceRole
@@ -23,7 +21,6 @@ from dcim.models import VirtualChassis
 from dcim.models.device_components import ModuleBay
 from dcim.models.modules import ModuleType
 from django.apps import apps
-from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
 from django.db import connection
@@ -53,7 +50,6 @@ from forward_netbox.models import ForwardIngestion
 from forward_netbox.models import ForwardIngestionIssue
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
-from forward_netbox.models import ForwardValidationRun
 from forward_netbox.signals import seed_builtin_nqe_maps
 from forward_netbox.utilities.apply_engine import ADAPTER_MODELS_WITHOUT_BLOCKER
 from forward_netbox.utilities.apply_engine import ADAPTER_REQUIRED_MODELS
@@ -79,17 +75,11 @@ from forward_netbox.utilities.branch_budget import shard_fetch_capability_for_mo
 from forward_netbox.utilities.branch_budget import shard_fetch_contract
 from forward_netbox.utilities.branch_budget import SHARD_FETCH_MODEL_CONTRACTS
 from forward_netbox.utilities.density_learning import update_density_learning
-from forward_netbox.utilities.direct_changes import object_changes_for_ingestion
 from forward_netbox.utilities.execution_telemetry import build_plan_preview
-from forward_netbox.utilities.fast_bootstrap_executor import (
-    ForwardFastBootstrapExecutor,
-)
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
-from forward_netbox.utilities.logging import SyncLogging
 from forward_netbox.utilities.query_diagnostics import (
     summarize_ipaddress_parent_prefix_rows,
 )
-from forward_netbox.utilities.query_fetch import ForwardModelResult
 from forward_netbox.utilities.query_fetch import ForwardQueryContext
 from forward_netbox.utilities.query_fetch import ForwardQueryFetcher
 from forward_netbox.utilities.query_registry import QuerySpec
@@ -582,534 +572,6 @@ class ForwardBranchBudgetPlanTest(TestCase):
         self.assertTrue(result["accepted"])
         self.assertIn("dcim.device", density)
         self.assertEqual(profile["dcim.device"]["sample_count"], 1)
-
-
-class ForwardFastBootstrapExecutorTest(TestCase):
-    SNAPSHOT_ID = "snapshot-1"
-
-    def setUp(self):
-        self.source = ForwardSource.objects.create(
-            name="source-fast-bootstrap",
-            type="saas",
-            url="https://fwd.app",
-            parameters={
-                "username": "user@example.com",
-                "password": "secret",
-                "verify": True,
-                "timeout": 1200,
-                "network_id": "test-network",
-            },
-        )
-        self.sync = ForwardSync.objects.create(
-            name="sync-fast-bootstrap",
-            source=self.source,
-            parameters={
-                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
-                "dcim.site": True,
-                "enable_bulk_orm": False,
-            },
-        )
-
-    @patch("forward_netbox.utilities.fast_bootstrap_executor.ForwardSyncRunner")
-    @patch("forward_netbox.utilities.fast_bootstrap_executor.ForwardQueryFetcher")
-    def test_run_creates_branchless_baseline_ingestion(
-        self,
-        mock_fetcher_class,
-        mock_runner_class,
-    ):
-        logger = SyncLogging()
-        context = ForwardQueryContext(
-            network_id="test-network",
-            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id=self.SNAPSHOT_ID,
-            snapshot_info={"state": "PROCESSED"},
-            snapshot_metrics={},
-            query_parameters={},
-            maps=[],
-        )
-        workload = BranchWorkload(
-            model_string="dcim.site",
-            label="sites",
-            upsert_rows=[{"name": "Site 1", "slug": "site-1"}],
-            delete_rows=[{"name": "Old Site", "slug": "old-site"}],
-            sync_mode="full",
-            coalesce_fields=[["slug"]],
-            query_name="Forward Sites",
-            execution_mode="query_id",
-            execution_value="FQ_sites",
-        )
-        model_result = ForwardModelResult(
-            model_string="dcim.site",
-            query_name="Forward Sites",
-            execution_mode="query_id",
-            execution_value="FQ_sites",
-            sync_mode="full",
-            row_count=1,
-            delete_count=1,
-            snapshot_id=self.SNAPSHOT_ID,
-        )
-        fetcher = mock_fetcher_class.return_value
-        fetcher.resolve_context.return_value = context
-        fetcher.fetch_workloads.return_value = [workload]
-        fetcher.model_results = [model_result]
-        runner = mock_runner_class.return_value
-        runner._model_coalesce_fields = {}
-
-        def apply_rows(model_string, rows):
-            for _row in rows:
-                logger.increment_statistics(model_string)
-
-        def delete_rows(model_string, rows):
-            for _row in rows:
-                logger.increment_statistics(model_string)
-
-        runner._apply_model_rows.side_effect = apply_rows
-        runner._delete_model_rows.side_effect = delete_rows
-
-        ingestions = ForwardFastBootstrapExecutor(
-            self.sync,
-            Mock(),
-            logger,
-            user=Mock(),
-        ).run()
-
-        self.assertEqual(len(ingestions), 1)
-        ingestion = ingestions[0]
-        self.assertIsNone(ingestion.branch)
-        self.assertTrue(ingestion.baseline_ready)
-        self.assertEqual(ingestion.snapshot_id, self.SNAPSHOT_ID)
-        self.assertEqual(ingestion.sync_mode, "full")
-        self.assertEqual(ingestion.applied_change_count, 2)
-        self.assertEqual(ingestion.failed_change_count, 0)
-        self.assertEqual(ingestion.model_results, [model_result.as_dict()])
-        self.assertEqual(ingestion.model_results[0]["apply_engine"], "adapter")
-        self.assertEqual(
-            ForwardValidationRun.objects.get(sync=self.sync),
-            ingestion.validation_run,
-        )
-        self.assertIsNotNone(ingestion.change_request_id)
-        runner._apply_model_rows.assert_called_once_with(
-            "dcim.site",
-            workload.upsert_rows,
-        )
-        runner._delete_model_rows.assert_called_once_with(
-            "dcim.site",
-            workload.delete_rows,
-        )
-
-    @patch("forward_netbox.utilities.fast_bootstrap_executor.ForwardSyncRunner")
-    @patch("forward_netbox.utilities.fast_bootstrap_executor.ForwardQueryFetcher")
-    def test_run_skips_preflight_when_source_disables_it(
-        self,
-        mock_fetcher_class,
-        mock_runner_class,
-    ):
-        self.source.parameters["query_preflight_enabled"] = False
-        self.source.save(update_fields=["parameters"])
-
-        logger = SyncLogging()
-        context = ForwardQueryContext(
-            network_id="test-network",
-            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id=self.SNAPSHOT_ID,
-            snapshot_info={"state": "PROCESSED"},
-            snapshot_metrics={},
-            query_parameters={},
-            maps=[],
-        )
-        workload = BranchWorkload(
-            model_string="dcim.site",
-            label="sites",
-            upsert_rows=[{"name": "Site 1", "slug": "site-1"}],
-            delete_rows=[],
-            sync_mode="full",
-            coalesce_fields=[["slug"]],
-            query_name="Forward Sites",
-            execution_mode="query_id",
-            execution_value="FQ_sites",
-        )
-        fetcher = mock_fetcher_class.return_value
-        fetcher.resolve_context.return_value = context
-        fetcher.fetch_workloads.return_value = [workload]
-        fetcher.model_results = []
-        runner = mock_runner_class.return_value
-        runner._model_coalesce_fields = {}
-
-        ForwardFastBootstrapExecutor(
-            self.sync,
-            Mock(),
-            logger,
-            user=Mock(),
-        ).run()
-
-        self.assertFalse(fetcher.run_preflight.called)
-        fetcher.fetch_workloads.assert_called_once()
-
-    @patch("forward_netbox.utilities.fast_bootstrap_executor.ForwardSyncRunner")
-    @patch("forward_netbox.utilities.fast_bootstrap_executor.ForwardQueryFetcher")
-    def test_run_applies_fast_bootstrap_workloads_in_dependency_order(
-        self,
-        mock_fetcher_class,
-        mock_runner_class,
-    ):
-        logger = SyncLogging()
-        context = ForwardQueryContext(
-            network_id="test-network",
-            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id=self.SNAPSHOT_ID,
-            snapshot_info={"state": "PROCESSED"},
-            snapshot_metrics={},
-            query_parameters={},
-            maps=[],
-        )
-        mac_workload = BranchWorkload(
-            model_string="dcim.macaddress",
-            label="mac addresses",
-            upsert_rows=[
-                {
-                    "device": "device-1",
-                    "interface": "Ethernet1",
-                    "mac": "00:11:22:33:44:55",
-                    "mac_address": "00:11:22:33:44:55",
-                }
-            ],
-            sync_mode="full",
-            coalesce_fields=[["mac_address"]],
-            query_name="Forward MAC Addresses",
-            execution_mode="query_id",
-            execution_value="FQ_macs",
-        )
-        interface_workload = BranchWorkload(
-            model_string="dcim.interface",
-            label="interfaces",
-            upsert_rows=[
-                {
-                    "device": "device-1",
-                    "name": "Ethernet1",
-                    "type": "other",
-                    "enabled": True,
-                }
-            ],
-            sync_mode="full",
-            coalesce_fields=[["device", "name"]],
-            query_name="Forward Interfaces",
-            execution_mode="query_id",
-            execution_value="FQ_interfaces",
-        )
-        fetcher = mock_fetcher_class.return_value
-        fetcher.resolve_context.return_value = context
-        fetcher.fetch_workloads.return_value = [mac_workload, interface_workload]
-        fetcher.model_results = [
-            ForwardModelResult(
-                model_string="dcim.macaddress",
-                query_name="Forward MAC Addresses",
-                execution_mode="query_id",
-                execution_value="FQ_macs",
-                sync_mode="full",
-                row_count=1,
-                snapshot_id=self.SNAPSHOT_ID,
-            ),
-            ForwardModelResult(
-                model_string="dcim.interface",
-                query_name="Forward Interfaces",
-                execution_mode="query_id",
-                execution_value="FQ_interfaces",
-                sync_mode="full",
-                row_count=1,
-                snapshot_id=self.SNAPSHOT_ID,
-            ),
-        ]
-        runner = mock_runner_class.return_value
-        runner._model_coalesce_fields = {}
-
-        ForwardFastBootstrapExecutor(
-            self.sync,
-            Mock(),
-            logger,
-            user=Mock(),
-        ).run()
-
-        self.assertEqual(
-            [call.args[0] for call in runner._apply_model_rows.call_args_list],
-            ["dcim.interface", "dcim.macaddress"],
-        )
-
-    @patch("forward_netbox.utilities.fast_bootstrap_executor.ForwardQueryFetcher")
-    def test_run_records_direct_netbox_changes_for_fast_bootstrap(
-        self,
-        mock_fetcher_class,
-    ):
-        logger = SyncLogging()
-        context = ForwardQueryContext(
-            network_id="test-network",
-            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id=self.SNAPSHOT_ID,
-            snapshot_info={"state": "PROCESSED"},
-            snapshot_metrics={},
-            query_parameters={},
-            maps=[],
-        )
-        workload = BranchWorkload(
-            model_string="dcim.site",
-            label="sites",
-            upsert_rows=[{"name": "Site 2", "slug": "site-2"}],
-            delete_rows=[],
-            sync_mode="full",
-            coalesce_fields=[["slug"]],
-            query_name="Forward Sites",
-            execution_mode="query_id",
-            execution_value="FQ_sites",
-        )
-        model_result = ForwardModelResult(
-            model_string="dcim.site",
-            query_name="Forward Sites",
-            execution_mode="query_id",
-            execution_value="FQ_sites",
-            sync_mode="full",
-            row_count=1,
-            delete_count=0,
-            snapshot_id=self.SNAPSHOT_ID,
-        )
-        fetcher = mock_fetcher_class.return_value
-        fetcher.resolve_context.return_value = context
-        fetcher.fetch_workloads.return_value = [workload]
-        fetcher.model_results = [model_result]
-        user = get_user_model().objects.create_user(username="fast-bootstrap-user")
-
-        ingestions = ForwardFastBootstrapExecutor(
-            self.sync,
-            Mock(),
-            logger,
-            user=user,
-        ).run()
-
-        ingestion = ingestions[0]
-        ingestion.refresh_from_db()
-        site_type = ObjectType.objects.get_for_model(Site)
-        self.assertTrue(Site.objects.filter(slug="site-2").exists())
-        self.assertTrue(
-            ObjectChange.objects.filter(
-                request_id=ingestion.change_request_id,
-                changed_object_type=site_type,
-                action="create",
-            ).exists()
-        )
-        self.assertEqual(ingestion.applied_change_count, 1)
-        self.assertEqual(ingestion.created_change_count, 1)
-        self.assertEqual(ingestion.updated_change_count, 0)
-        self.assertEqual(ingestion.deleted_change_count, 0)
-        self.assertEqual(object_changes_for_ingestion(ingestion).count(), 1)
-
-    @patch("forward_netbox.utilities.fast_bootstrap_executor.ForwardSyncRunner")
-    @patch("forward_netbox.utilities.fast_bootstrap_executor.ForwardQueryFetcher")
-    def test_run_does_not_mark_baseline_ready_when_issues_exist(
-        self,
-        mock_fetcher_class,
-        mock_runner_class,
-    ):
-        logger = SyncLogging()
-        context = ForwardQueryContext(
-            network_id="test-network",
-            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id=self.SNAPSHOT_ID,
-            snapshot_info={"state": "PROCESSED"},
-            snapshot_metrics={},
-            query_parameters={},
-            maps=[],
-        )
-        workload = BranchWorkload(
-            model_string="dcim.site",
-            label="sites",
-            upsert_rows=[{"name": "Site 1", "slug": "site-1"}],
-            delete_rows=[],
-            sync_mode="full",
-            coalesce_fields=[["slug"]],
-            query_name="Forward Sites",
-            execution_mode="query_id",
-            execution_value="FQ_sites",
-        )
-        model_result = ForwardModelResult(
-            model_string="dcim.site",
-            query_name="Forward Sites",
-            execution_mode="query_id",
-            execution_value="FQ_sites",
-            sync_mode="full",
-            row_count=1,
-            delete_count=0,
-            snapshot_id=self.SNAPSHOT_ID,
-        )
-        fetcher = mock_fetcher_class.return_value
-        fetcher.resolve_context.return_value = context
-        fetcher.fetch_workloads.return_value = [workload]
-        fetcher.model_results = [model_result]
-        runner = mock_runner_class.return_value
-        runner._model_coalesce_fields = {}
-
-        def apply_rows(model_string, _rows):
-            ingestion = ForwardIngestion.objects.get(sync=self.sync)
-            ingestion.issues.create(
-                model=model_string,
-                message="Unable to apply site row.",
-                exception="validation failed",
-            )
-            logger.increment_statistics(model_string, outcome="failed")
-
-        runner._apply_model_rows.side_effect = apply_rows
-
-        with self.assertRaisesRegex(
-            SyncError,
-            "Forward fast bootstrap completed with issues",
-        ):
-            ForwardFastBootstrapExecutor(
-                self.sync,
-                Mock(),
-                logger,
-                user=Mock(),
-            ).run()
-
-        ingestion = ForwardIngestion.objects.get(sync=self.sync)
-        self.assertFalse(ingestion.baseline_ready)
-        self.assertEqual(ingestion.issues.count(), 1)
-        self.assertEqual(ingestion.applied_change_count, 0)
-        self.assertEqual(ingestion.failed_change_count, 1)
-
-    @patch("forward_netbox.utilities.fast_bootstrap_executor.ForwardSyncRunner")
-    @patch("forward_netbox.utilities.fast_bootstrap_executor.ForwardQueryFetcher")
-    def test_run_marks_baseline_ready_when_only_optional_model_issues_exist(
-        self,
-        mock_fetcher_class,
-        mock_runner_class,
-    ):
-        logger = SyncLogging()
-        context = ForwardQueryContext(
-            network_id="test-network",
-            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id=self.SNAPSHOT_ID,
-            snapshot_info={"state": "PROCESSED"},
-            snapshot_metrics={},
-            query_parameters={},
-            maps=[],
-        )
-        workload = BranchWorkload(
-            model_string="netbox_routing.bgppeer",
-            label="bgp peers",
-            upsert_rows=[{"device": "device-1"}],
-            delete_rows=[],
-            sync_mode="full",
-            coalesce_fields=[["device"]],
-            query_name="Forward BGP Peers",
-            execution_mode="query_id",
-            execution_value="FQ_bgp",
-        )
-        model_result = ForwardModelResult(
-            model_string="netbox_routing.bgppeer",
-            query_name="Forward BGP Peers",
-            execution_mode="query_id",
-            execution_value="FQ_bgp",
-            sync_mode="full",
-            row_count=1,
-            delete_count=0,
-            snapshot_id=self.SNAPSHOT_ID,
-        )
-        fetcher = mock_fetcher_class.return_value
-        fetcher.resolve_context.return_value = context
-        fetcher.fetch_workloads.return_value = [workload]
-        fetcher.model_results = [model_result]
-        runner = mock_runner_class.return_value
-        runner._model_coalesce_fields = {}
-
-        def apply_rows(model_string, _rows):
-            ingestion = ForwardIngestion.objects.get(sync=self.sync)
-            ingestion.issues.create(
-                model=model_string,
-                message="Unable to apply optional BGP row.",
-                exception="validation failed",
-            )
-            logger.increment_statistics(model_string, outcome="failed")
-
-        runner._apply_model_rows.side_effect = apply_rows
-
-        ingestions = ForwardFastBootstrapExecutor(
-            self.sync,
-            Mock(),
-            logger,
-            user=Mock(),
-        ).run()
-
-        ingestion = ingestions[0]
-        ingestion.refresh_from_db()
-        self.assertTrue(ingestion.baseline_ready)
-        self.assertEqual(ingestion.issues.count(), 1)
-        self.assertEqual(ingestion.failed_change_count, 1)
-
-    @patch("forward_netbox.utilities.fast_bootstrap_executor.ForwardSyncRunner")
-    @patch("forward_netbox.utilities.fast_bootstrap_executor.ForwardQueryFetcher")
-    def test_run_marks_baseline_ready_when_only_dependency_skip_issues_exist(
-        self,
-        mock_fetcher_class,
-        mock_runner_class,
-    ):
-        logger = SyncLogging()
-        context = ForwardQueryContext(
-            network_id="test-network",
-            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id=self.SNAPSHOT_ID,
-            snapshot_info={"state": "PROCESSED"},
-            snapshot_metrics={},
-            query_parameters={},
-            maps=[],
-        )
-        workload = BranchWorkload(
-            model_string="ipam.ipaddress",
-            label="ip addresses",
-            upsert_rows=[],
-            delete_rows=[{"address": "192.0.2.1/32"}],
-            sync_mode="full",
-            coalesce_fields=[["address"]],
-            query_name="Forward IP Addresses",
-            execution_mode="query_id",
-            execution_value="FQ_ip",
-        )
-        model_result = ForwardModelResult(
-            model_string="ipam.ipaddress",
-            query_name="Forward IP Addresses",
-            execution_mode="query_id",
-            execution_value="FQ_ip",
-            sync_mode="full",
-            row_count=0,
-            delete_count=1,
-            snapshot_id=self.SNAPSHOT_ID,
-        )
-        fetcher = mock_fetcher_class.return_value
-        fetcher.resolve_context.return_value = context
-        fetcher.fetch_workloads.return_value = [workload]
-        fetcher.model_results = [model_result]
-        runner = mock_runner_class.return_value
-        runner._model_coalesce_fields = {}
-
-        def delete_rows(model_string, _rows):
-            ingestion = ForwardIngestion.objects.get(sync=self.sync)
-            ingestion.issues.create(
-                model=model_string,
-                message="Skipping delete for `ipam.ipaddress` due to protected dependencies.",
-                exception="ForwardDependencySkipError",
-            )
-            logger.increment_statistics(model_string, outcome="skipped")
-
-        runner._delete_model_rows.side_effect = delete_rows
-
-        ingestions = ForwardFastBootstrapExecutor(
-            self.sync,
-            Mock(),
-            logger,
-            user=Mock(),
-        ).run()
-
-        ingestion = ingestions[0]
-        ingestion.refresh_from_db()
-        self.assertTrue(ingestion.baseline_ready)
-        self.assertEqual(ingestion.issues.count(), 1)
-        self.assertEqual(ingestion.failed_change_count, 0)
 
 
 class ForwardSyncRunnerTest(TestCase):
@@ -2490,6 +1952,38 @@ class ForwardSyncRunnerTest(TestCase):
             warning_messages[-1],
             "Suppressed 2 additional dcim.macaddress skip warnings for "
             "`missing-interface` after the first 20.",
+        )
+
+    def test_apply_dcim_module_caps_missing_module_bay_warnings(self):
+        # A systemic readiness gap (module sync enabled before the device-type
+        # module bays exist) skips every module row, so the per-row detail is
+        # capped low (SKIP_WARNING_DETAIL_LIMITS) and the rest are summarized.
+        self._create_device("device-module-readiness")
+        logger = Mock()
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=logger
+        )
+        limit = ForwardSyncRunner.SKIP_WARNING_DETAIL_LIMITS["missing-module-bay"]
+        rows = [
+            {"device": "device-module-readiness", "module_bay": f"module {index}"}
+            for index in range(limit + 2)
+        ]
+
+        runner._apply_model_rows("dcim.module", rows)
+
+        warning_messages = [call.args[0] for call in logger.log_warning.call_args_list]
+        # `limit` per-row detail lines + one suppressed-count summary.
+        self.assertEqual(len(warning_messages), limit + 1)
+        self.assertTrue(
+            all(
+                "forward_module_readiness" in message
+                for message in warning_messages[:limit]
+            )
+        )
+        self.assertEqual(
+            warning_messages[-1],
+            f"Suppressed 2 additional dcim.module skip warnings for "
+            f"`missing-module-bay` after the first {limit}.",
         )
 
     def test_dependency_lookup_cache_primes_only_exact_interface_pairs(self):

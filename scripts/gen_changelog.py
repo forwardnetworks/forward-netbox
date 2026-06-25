@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
 # Generate CHANGELOG.md from the README compatibility table (the maintained
-# single source of per-release summaries) plus git tag dates.
+# single source of per-release summaries).
 #
 # Usage: python scripts/gen_changelog.py [--check]
 #   --check exits non-zero if CHANGELOG.md is out of date (for CI).
+#
+# The output is a pure function of README.md — deterministic by design. Per-release
+# DATES are intentionally NOT stamped here: they would come from `git tag vX`, but
+# the release flow commits CHANGELOG.md *before* the tag exists, so CI (which runs
+# after the tag is pushed) would regenerate a dated header that never matches the
+# dateless committed file. That tag-timing race left `--check` red on every
+# release since v1.7.2. Dates live in the git tags and GitHub releases instead.
 import argparse
 import re
-import subprocess
 import sys
 from pathlib import Path
 
@@ -15,19 +21,6 @@ README = REPO_ROOT / "README.md"
 CHANGELOG = REPO_ROOT / "CHANGELOG.md"
 
 ROW_RE = re.compile(r"^\| `v([0-9][^`]*)` \| [^|]* \| (.+?) \|\s*$")
-
-
-def _tag_date(version: str) -> str:
-    try:
-        out = subprocess.run(
-            ["git", "log", "-1", "--format=%as", f"v{version}"],
-            cwd=REPO_ROOT,
-            capture_output=True,
-            text=True,
-        )
-        return out.stdout.strip()
-    except Exception:  # pragma: no cover - defensive
-        return ""
 
 
 def _summary(status_cell: str) -> str:
@@ -49,9 +42,7 @@ def build_changelog() -> str:
         if not match:
             continue
         version, status_cell = match.group(1), match.group(2)
-        date = _tag_date(version)
-        header = f"## v{version}" + (f" — {date}" if date else "")
-        lines += [header, "", _summary(status_cell), ""]
+        lines += [f"## v{version}", "", _summary(status_cell), ""]
     return "\n".join(lines).rstrip() + "\n"
 
 
