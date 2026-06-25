@@ -67,10 +67,16 @@ def emit_aggregated_conflict_warning_summaries(runner, model_string):
         )
 
 
+def _skip_warning_detail_limit(runner, reason):
+    return getattr(runner, "SKIP_WARNING_DETAIL_LIMITS", {}).get(
+        reason, runner.CONFLICT_WARNING_DETAIL_LIMIT
+    )
+
+
 def record_aggregated_skip_warning(runner, *, model_string, reason, warning_message):
     key = (model_string, reason)
     count = runner._aggregated_skip_warning_counts.get(key, 0)
-    if count < runner.CONFLICT_WARNING_DETAIL_LIMIT:
+    if count < _skip_warning_detail_limit(runner, reason):
         runner.logger.log_warning(
             warning_message,
             obj=runner.sync,
@@ -90,7 +96,8 @@ def emit_aggregated_skip_warning_summaries(runner, model_string):
             continue
         runner.logger.log_warning(
             f"Suppressed {suppressed_count} additional {model_string} skip warnings "
-            f"for `{reason}` after the first {runner.CONFLICT_WARNING_DETAIL_LIMIT}.",
+            f"for `{reason}` after the first "
+            f"{_skip_warning_detail_limit(runner, reason)}.",
             obj=runner.sync,
         )
 

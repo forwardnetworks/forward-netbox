@@ -251,6 +251,13 @@ _SYNC_RUNNER_IMPORT_ANCHORS = (
 
 class ForwardSyncRunner(ForwardSyncRunnerContractMixin, ForwardSyncRunnerAdapterMixin):
     CONFLICT_WARNING_DETAIL_LIMIT = 20
+    # Per-reason override of the per-row skip-warning detail cap. A systemic
+    # readiness gap (module sync enabled before the device-type module bays
+    # exist) skips EVERY module row on that hardware, so 20 near-identical lines
+    # is noise: a few examples plus the suppressed-count summary convey the same
+    # single action ("run forward_module_readiness"). Reasons not listed here use
+    # CONFLICT_WARNING_DETAIL_LIMIT.
+    SKIP_WARNING_DETAIL_LIMITS = {"missing-module-bay": 3}
     MODULE_NATIVE_INVENTORY_PART_TYPES = {
         "FABRIC MODULE",
         "LINE CARD",
