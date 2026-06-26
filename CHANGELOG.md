@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v2.0.8
+
+Bugfix: progress bars now reach 100% on a completed sync. For relationship and two-phase models (cable+termination, device+primary_ip, module+moduletype, fhrp group+assignment) the per-model bar settled below 100% because the merge `total` counts ChangeDiff rows while `current` counts applied objects; a finished job now renders every model at 100%. Cosmetic only — no apply/merge/data change. Drop-in from `2.0.7`
+
 ## v2.0.7
 
 Bugfixes + diagnostics: (1) a MAC whose target interface was not imported is now a benign aggregated skip like the IP path (with the canonical-name fallback), not a red `ForwardSearchError` failure; (2) the two benign IP diagnostics (filtered-unassignable, no-parent-prefix) collapse to one summary line each instead of a 20-row wall; (3) when a `require_diff` sync is blocked by a failed diff fetch, the block now names that cause and the `Allow full fallback` remedy. Drop-in from `2.0.6`
