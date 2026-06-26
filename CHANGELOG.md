@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v2.0.5
+
+Branding + polish: the plugin is now presented as **Forward Field Integration** (NetBox plugin name, sidebar menu, docs/site titles). Adds a theme-aware Forward Networks logo + `#ff3506` accent bar at the top of the Source/Sync/Ingestion pages. Display-only: package `forward_netbox`, the `forward` URL prefix, NQE query names, and all APIs are unchanged. Drop-in from `2.0.4`
+
 ## v2.0.4
 
 Patch: collapse the module-sync readiness warning wall into ONE summary. When module sync is enabled before a device's module bays exist in NetBox, every module row is skipped; 2.0.3 capped the per-row lines at 3, this replaces them entirely with a single actionable line per sync (total skipped + a few examples + the `forward_module_readiness` remedy). Other skip reasons are unchanged. No engine/schema/org changes; drop-in from `2.0.3`

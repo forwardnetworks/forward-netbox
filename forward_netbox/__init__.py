@@ -6,9 +6,9 @@ except ModuleNotFoundError:  # pragma: no cover - tooling imports outside NetBox
 
 class NetboxForwardConfig(PluginConfig):
     name = "forward_netbox"
-    verbose_name = "NetBox Forward Plugin"
+    verbose_name = "Forward Field Integration"
     description = "Sync Forward data into NetBox using built-in NQE queries."
-    version = "2.0.4"
+    version = "2.0.5"
     base_url = "forward"
     min_version = "4.6.3"
 
