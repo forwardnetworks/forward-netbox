@@ -367,6 +367,21 @@ def clean_forward_sync(sync):
     if diff_fallback_mode not in valid_diff_fallback_modes:
         raise ValidationError(_("`diff_fallback_mode` is not supported."))
     parameters["diff_fallback_mode"] = diff_fallback_mode
+    if diff_fallback_mode == ForwardDiffFallbackModeChoices.REQUIRE_DIFF:
+        source_parameters = dict(
+            getattr(getattr(sync, "source", None), "parameters", {}) or {}
+        )
+        if source_parameters.get("device_tag_prune_out_of_scope"):
+            raise ValidationError(
+                _(
+                    "`Require diff` is incompatible with prune-out-of-scope. Pruning "
+                    "out-of-scope devices needs a full query of the complete in-scope "
+                    "device set, which `Require diff` forbids, so every model would "
+                    "fail the diff fetch and the sync would block. Set diff fallback "
+                    "mode to `Allow full fallback`, or turn off prune-out-of-scope on "
+                    "the source."
+                )
+            )
     parameters["enable_bulk_orm"] = bool(
         parameters.get(
             "enable_bulk_orm",
