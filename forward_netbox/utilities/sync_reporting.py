@@ -70,6 +70,24 @@ def emit_aggregated_conflict_warning_summaries(runner, model_string):
 # Examples kept for a rollup-reason summary; the rest are counted, not listed.
 SKIP_WARNING_ROLLUP_SAMPLES = 5
 
+# One-line summary per rollup reason ({total},{model},{reason},{examples},{suffix}).
+ROLLUP_SUMMARY_TEMPLATES = {
+    "missing-module-bay": (
+        "Skipped {total} {model} row(s) because the target module bay "
+        "does not exist in NetBox. Run `forward_module_readiness`, import the "
+        "generated module-bay CSV, then re-run module sync. "
+        "Examples: {examples}{suffix}."
+    ),
+    "shared-vip": (
+        "{total} {model} row(s) share a virtual IP with another FHRP group; the "
+        "VIP stays on the first group and the others are kept without a duplicate "
+        "VIP (no data lost). Examples: {examples}{suffix}."
+    ),
+}
+_DEFAULT_ROLLUP_TEMPLATE = (
+    "Skipped {total} {model} row(s) for `{reason}`. Examples: {examples}{suffix}."
+)
+
 
 def _skip_warning_detail_limit(runner, reason):
     return getattr(runner, "SKIP_WARNING_DETAIL_LIMITS", {}).get(
@@ -117,11 +135,15 @@ def emit_aggregated_skip_warning_summaries(runner, model_string):
         remainder = total - len(samples)
         examples = ", ".join(samples)
         suffix = f" (+{remainder} more)" if remainder > 0 else ""
+        template = ROLLUP_SUMMARY_TEMPLATES.get(reason, _DEFAULT_ROLLUP_TEMPLATE)
         runner.logger.log_warning(
-            f"Skipped {total} {model_string} row(s) because the target module bay "
-            f"does not exist in NetBox. Run `forward_module_readiness`, import the "
-            f"generated module-bay CSV, then re-run module sync. "
-            f"Examples: {examples}{suffix}.",
+            template.format(
+                total=total,
+                model=model_string,
+                reason=reason,
+                examples=examples,
+                suffix=suffix,
+            ),
             obj=runner.sync,
         )
     # All other reasons: the first-N-then-suppressed-count summary.
