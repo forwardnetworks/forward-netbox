@@ -208,7 +208,24 @@ class ForwardValidationRunner:
                 + "."
             )
 
+        if reasons and self._diff_fallback_is_require_diff():
+            reasons.append(
+                "These query failures blocked the sync because its diff fallback "
+                "mode is `Require diff`: a diff run that cannot fetch rows is treated "
+                "as a hard failure instead of retrying a full fetch. Set the sync's "
+                "diff fallback mode to `Allow full fallback` to recover automatically, "
+                "and use Refresh Query IDs on the Health page if the query maps "
+                "drifted."
+            )
+
         return reasons
+
+    def _diff_fallback_is_require_diff(self):
+        from ..choices import ForwardDiffFallbackModeChoices
+
+        parameters = dict(getattr(self.sync, "parameters", {}) or {})
+        configured = str(parameters.get("diff_fallback_mode") or "").strip()
+        return configured == ForwardDiffFallbackModeChoices.REQUIRE_DIFF
 
     def _forced_validation_override_applies(self, context, policy):
         latest_validation_run = getattr(self.sync, "latest_validation_run", None)

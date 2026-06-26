@@ -82,26 +82,19 @@ def append_ipaddress_parent_prefix_diagnostics(fetcher, workloads):
     if diagnostic["total"] <= 0:
         return
 
+    examples = "; ".join(
+        f"{ex['address']} on {ex['device']}/{ex['interface']}"
+        for ex in diagnostic["examples"][:3]
+    )
+    more = diagnostic["total"] - min(3, len(diagnostic["examples"]))
+    suffix = f" (+{more} more)" if more > 0 else ""
     fetcher.logger.log_warning(
-        "Forward IP Addresses found "
-        f"{diagnostic['total']} rows without an imported covering prefix.",
+        f"Forward IP Addresses: {diagnostic['total']} address(es) have no imported "
+        "covering prefix in NetBox — this is normal for /32 loopbacks and /31 or "
+        "/127 links; the addresses are still imported and assigned. "
+        f"Examples: {examples}{suffix}.",
         obj=fetcher.sync,
     )
-    for example in diagnostic["examples"]:
-        fetcher.logger.log_warning(
-            "IP address without imported parent prefix "
-            f"`{example['address']}` on `{example['device']}` "
-            f"`{example['interface']}` (vrf `{example['vrf']}`).",
-            obj=fetcher.sync,
-        )
-    suppressed = diagnostic.get("suppressed_examples", 0)
-    if suppressed > 0:
-        fetcher.logger.log_warning(
-            "Suppressed "
-            f"{suppressed} additional parent-prefix diagnostic examples after "
-            f"the first {IPADDRESS_PARENT_PREFIX_DETAIL_LIMIT}.",
-            obj=fetcher.sync,
-        )
 
     fetcher.model_results = [
         (
@@ -235,27 +228,19 @@ def run_ipaddress_unassignable_diagnostic(fetcher, context):
         f"{IPADDRESS_DIAGNOSTIC_LABELS.get(reason, reason)}={count}"
         for reason, count in sorted(diagnostic["counts"].items())
     )
+    examples = "; ".join(
+        f"{ex['address']} on {ex['device']}/{ex['interface']} ({ex['reason']})"
+        for ex in diagnostic["examples"][:3]
+    )
+    more = diagnostic["total"] - min(3, len(diagnostic["examples"]))
+    suffix = f" (+{more} more)" if more > 0 else ""
     fetcher.logger.log_warning(
-        "Forward IP Addresses filtered "
-        f"{diagnostic['total']} interface addresses that NetBox cannot assign: "
-        f"{count_summary}.",
+        f"Forward IP Addresses: filtered {diagnostic['total']} interface "
+        f"address(es) NetBox cannot assign ({count_summary}) — subnet, broadcast, "
+        "and 0.0.0.0 addresses, which are not host IPs (expected). "
+        f"Examples: {examples}{suffix}.",
         obj=fetcher.sync,
     )
-    for example in diagnostic["examples"]:
-        fetcher.logger.log_warning(
-            "Filtered unassignable IP address "
-            f"`{example['address']}` on `{example['device']}` "
-            f"`{example['interface']}` ({example['reason']}).",
-            obj=fetcher.sync,
-        )
-    suppressed = diagnostic["total"] - len(diagnostic["examples"])
-    if suppressed > 0:
-        fetcher.logger.log_warning(
-            "Suppressed "
-            f"{suppressed} additional filtered IP address diagnostic examples "
-            f"after the first {IPADDRESS_DIAGNOSTIC_DETAIL_LIMIT}.",
-            obj=fetcher.sync,
-        )
     if callable(cached_store):
         cached_store(
             diagnostic_name="unassignable_interface_addresses",
