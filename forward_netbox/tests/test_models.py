@@ -2426,3 +2426,56 @@ class ForwardNQEMapModelTest(TestCase):
             built_in=True,
         )
         self.assertFalse(query_map.enabled)
+
+
+class ForwardIngestionProgressStatisticsTest(TestCase):
+    def _ingestion(self, *, status, raw_stats):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            job=SimpleNamespace(status=status),
+            merge_job=None,
+            get_job_logs=lambda job: {"statistics": raw_stats},
+            num_created=1,
+            num_updated=1,
+            num_deleted=1,
+            staged_changes=1,
+            created_change_count=0,
+            updated_change_count=0,
+            deleted_change_count=0,
+            applied_change_count=0,
+        )
+
+    def test_completed_job_renders_full_bars(self):
+        # A finished run must show 100% for every model. Relationship and
+        # two-phase models (cable+termination, device+primary_ip, fhrp group+
+        # assignment) leave current<total because `total` counts merge
+        # ChangeDiff rows while `current` counts applied objects.
+        from forward_netbox.utilities.ingestion_presentation import get_statistics
+
+        ingestion = self._ingestion(
+            status="completed",
+            raw_stats={
+                "dcim.cable": {"total": 6, "current": 3},
+                "dcim.device": {"total": 12, "current": 6},
+                "ipam.fhrpgroup": {"total": 7, "current": 5},
+                "dcim.module": {"total": 1431, "current": 1431},
+            },
+        )
+
+        stats = get_statistics(ingestion)["statistics"]
+        self.assertEqual(stats["dcim.cable"], 100.0)
+        self.assertEqual(stats["dcim.device"], 100.0)
+        self.assertEqual(stats["ipam.fhrpgroup"], 100.0)
+        self.assertEqual(stats["dcim.module"], 100.0)
+
+    def test_running_job_shows_partial_progress(self):
+        from forward_netbox.utilities.ingestion_presentation import get_statistics
+
+        ingestion = self._ingestion(
+            status="running",
+            raw_stats={"dcim.device": {"total": 12, "current": 6}},
+        )
+
+        stats = get_statistics(ingestion)["statistics"]
+        self.assertEqual(stats["dcim.device"], 50.0)
