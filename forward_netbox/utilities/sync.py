@@ -259,7 +259,7 @@ class ForwardSyncRunner(ForwardSyncRunnerContractMixin, ForwardSyncRunnerAdapter
     # module row on that hardware. Collapse these into ONE actionable summary
     # (total + a few examples + the forward_module_readiness remediation) at the
     # end of the model instead of logging a wall of near-identical per-row lines.
-    SKIP_WARNING_ROLLUP_REASONS = frozenset({"missing-module-bay"})
+    SKIP_WARNING_ROLLUP_REASONS = frozenset({"missing-module-bay", "shared-vip"})
     MODULE_NATIVE_INVENTORY_PART_TYPES = {
         "FABRIC MODULE",
         "LINE CARD",
