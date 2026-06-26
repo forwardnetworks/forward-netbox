@@ -355,6 +355,7 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
         device = self._device()
         runner = self._runner()
         runner._dependency_failed = Mock(return_value=True)
+        runner._lookup_interface = lambda device, name: None
         engine = select_apply_engine(
             sync=self.sync,
             model_string="dcim.macaddress",
@@ -381,11 +382,16 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
         )
         runner._record_issue.assert_called_once()
 
-    def test_bulk_orm_mac_address_records_missing_interface_failure(self):
+    def test_bulk_orm_mac_address_skips_missing_interface(self):
+        # A MAC whose target interface was not imported is a BENIGN skip — the
+        # same condition the IP path treats as an aggregated skip — not a hard
+        # "failed" ForwardSearchError issue that paints the model red.
         self.sync.parameters["enable_bulk_orm"] = True
         self.sync.save(update_fields=["parameters"])
         device = self._device()
         runner = self._runner()
+        runner._lookup_interface = lambda device, name: None
+        runner._record_aggregated_skip_warning = Mock()
         engine = select_apply_engine(
             sync=self.sync,
             model_string="dcim.macaddress",
@@ -404,14 +410,15 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
             ],
         )
 
-        self.assertFalse(runner._apply_model_rows.called)
         self.assertEqual(MACAddress.objects.count(), 0)
-        runner.logger.increment_statistics.assert_called_with(
-            "dcim.macaddress",
-            outcome="failed",
+        runner._record_aggregated_skip_warning.assert_called_once()
+        self.assertEqual(
+            runner._record_aggregated_skip_warning.call_args.kwargs["reason"],
+            "missing-interface",
         )
-        runner._mark_dependency_failed.assert_called_once()
-        runner._record_issue.assert_called_once()
+        # NOT a hard failure: no issue row, no dependency mark.
+        runner._record_issue.assert_not_called()
+        runner._mark_dependency_failed.assert_not_called()
 
     def test_devicerole_uses_bulk_orm_when_feature_enabled(self):
         self.sync.parameters["enable_bulk_orm"] = True
