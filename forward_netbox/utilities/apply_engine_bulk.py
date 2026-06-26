@@ -676,7 +676,9 @@ def bulk_orm_apply_macaddress(runner, rows: list[dict[str, Any]]):
             )
             continue
 
-        interface = interfaces_by_key.get((device.name, interface_name))
+        interface = interfaces_by_key.get(
+            (device.name, interface_name)
+        ) or runner._lookup_interface(device, interface_name)
         if interface is None:
             key = (device.name, interface_name)
             if runner._dependency_failed("dcim.interface", key):
@@ -700,22 +702,20 @@ def bulk_orm_apply_macaddress(runner, rows: list[dict[str, Any]]):
                     defaults=exc.defaults,
                 )
                 continue
-            exc = ForwardSearchError(
-                f"Unable to find interface {interface_name} on device {device.name} "
-                "for MAC assignment.",
+            # A MAC whose target interface was not imported is benign — the same
+            # condition the IP path treats as an aggregated skip, not a hard
+            # ForwardSearchError "failed" issue. Keep it consistent so a MAC that
+            # cannot attach does not paint the model red. (The deeper "why was the
+            # interface not imported" is surfaced by the dcim.interface sync, not
+            # here.)
+            runner._record_aggregated_skip_warning(
                 model_string="dcim.macaddress",
-                context={"device": device.name, "interface": interface_name},
-                data=row,
-            )
-            runner._mark_dependency_failed("dcim.macaddress", row)
-            runner.logger.increment_statistics("dcim.macaddress", outcome="failed")
-            runner._record_issue(
-                "dcim.macaddress",
-                str(exc),
-                row,
-                exception=exc,
-                context=exc.context,
-                defaults=exc.defaults,
+                reason="missing-interface",
+                warning_message=(
+                    f"Skipping MAC address `{row.get('mac')}` on `{device.name}` "
+                    f"`{interface_name}` because the target interface was not "
+                    "imported."
+                ),
             )
             continue
 

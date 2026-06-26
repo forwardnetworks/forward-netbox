@@ -490,6 +490,38 @@ class ForwardSyncModelTest(TestCase):
             ForwardDiffFallbackModeChoices.REQUIRE_DIFF,
         )
 
+    def test_sync_rejects_require_diff_with_prune_out_of_scope(self):
+        # require_diff + prune-out-of-scope is incompatible: prune needs a full
+        # query (the complete in-scope set), which require_diff forbids — every
+        # model would fail the diff fetch. Reject at config time with the remedy
+        # instead of failing the run with a cryptic device-coverage block.
+        source = ForwardSource.objects.create(
+            name="src-prune-require-diff",
+            type="saas",
+            url="https://fwd.app",
+            status="ready",
+            parameters={
+                "username": "u@example.com",
+                "password": "p",
+                "verify": True,
+                "network_id": "n",
+                "device_tag_prune_out_of_scope": True,
+            },
+        )
+        sync = ForwardSync(
+            name="sync-prune-require-diff",
+            source=source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+                "diff_fallback_mode": ForwardDiffFallbackModeChoices.REQUIRE_DIFF,
+            },
+        )
+
+        with self.assertRaises(ValidationError) as ctx:
+            sync.clean()
+        self.assertIn("incompatible with prune-out-of-scope", str(ctx.exception))
+
     def test_new_sync_validation_defaults_safe_bulk_orm_enabled(self):
         sync = ForwardSync(
             name="sync-new-bulk-orm-default",
@@ -1515,6 +1547,49 @@ class ForwardSyncModelTest(TestCase):
                 "dcim.devicetype, dcim.platform."
             ],
         )
+
+    def test_validation_block_adds_require_diff_remediation_hint(self):
+        # When the device-coverage gate fires AND the sync is in require_diff mode
+        # (a diff run that could not fetch rows), the block must name that cause
+        # and the allow_fallback remedy, not only the cryptic coverage message.
+        policy = ForwardDriftPolicy.objects.create(
+            name="policy-require-diff-hint",
+            block_on_query_errors=False,
+        )
+        sync = ForwardSync.objects.create(
+            name="sync-require-diff-hint",
+            source=self.source,
+            drift_policy=policy,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+                "dcim.interface": True,
+                "diff_fallback_mode": "require_diff",
+            },
+        )
+        runner = ForwardValidationRunner(sync=sync, client=None, logger_=Mock())
+
+        reasons = runner._blocking_reasons(
+            {
+                "snapshot_selector": LATEST_PROCESSED_SNAPSHOT,
+                "snapshot_id": "snapshot-require-diff",
+                "snapshot_info": {"state": "PROCESSED"},
+                "snapshot_metrics": {},
+            },
+            plan=[],
+            model_results=[
+                {
+                    "model": "dcim.device",
+                    "failure_count": 1,
+                    "row_count": 0,
+                    "delete_count": 0,
+                }
+            ],
+            policy=policy,
+        )
+
+        self.assertTrue(any("Require diff" in reason for reason in reasons))
+        self.assertTrue(any("Allow full fallback" in reason for reason in reasons))
 
     @patch("forward_netbox.models.Job.enqueue")
     @patch.object(ForwardSync, "sync", autospec=True)
