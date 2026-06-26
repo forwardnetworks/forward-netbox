@@ -1,4 +1,4 @@
-site_name: Forward NetBox Documentation
+site_name: Forward Field Integration Documentation
 theme:
   name: material
 plugins:
