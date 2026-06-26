@@ -175,6 +175,13 @@ def get_statistics(ingestion, stage="sync"):
     job = ingestion.merge_job if stage == "merge" else ingestion.job
     job_results = ingestion.get_job_logs(job)
     raw_stats = job_results.get("statistics", {})
+    # A completed job has applied every change it was going to. For relationship
+    # and two-phase models (cable+termination, device+primary_ip, module+
+    # moduletype, fhrp group+assignment) the per-model `total` counts merge
+    # ChangeDiff rows while `current` counts applied objects, so `current/total`
+    # can settle below 100% on a finished run and the bar looks stuck. Once the
+    # job is complete, show full progress for every model that had work.
+    job_completed = str(getattr(job, "status", "") or "").lower() == "completed"
     statistics = {}
     for model_string, stats in raw_stats.items():
         total = stats.get("total", 0)
@@ -182,10 +189,13 @@ def get_statistics(ingestion, stage="sync"):
             current = max(0, int(stats.get("current", 0) or 0))
             total = max(0, int(total or 0))
             if total:
-                # Clamp visualization to 100% so oversized intermediate accounting
-                # (for example cascading delete operations) does not render as
-                # runaway progress in the UI.
-                statistics[model_string] = min(current, total) / total * 100
+                if job_completed:
+                    statistics[model_string] = 100.0
+                else:
+                    # Clamp visualization to 100% so oversized intermediate
+                    # accounting (for example cascading delete operations) does
+                    # not render as runaway progress in the UI.
+                    statistics[model_string] = min(current, total) / total * 100
     if not getattr(ingestion, "num_created", 0):
         ingestion.num_created = ingestion.created_change_count
     if not getattr(ingestion, "num_updated", 0):
