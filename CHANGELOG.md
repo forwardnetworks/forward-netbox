@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v2.0.6
+
+Bugfix: stop the pernicious FHRP-group sync churn. When a virtual IP is shared by two HSRP/VRRP groups (different group_id), the second group was created then immediately deleted every sync (VIP-conflict), so a fixed set of FHRP groups was added and removed on every run. The second group now persists with its interface assignment (the VIP stays attached to the first group; NetBox allows a VIP on only one group), and deleting a shared-VIP group no longer removes the other group's VIP. Drop-in from `2.0.5`
+
 ## v2.0.5
 
 Branding + polish: the plugin is now presented as **Forward Field Integration** (NetBox plugin name, sidebar menu, docs/site titles). Adds a theme-aware Forward Networks logo + `#ff3506` accent bar at the top of the Source/Sync/Ingestion pages. Display-only: package `forward_netbox`, the `forward` URL prefix, NQE query names, and all APIs are unchanged. Drop-in from `2.0.4`

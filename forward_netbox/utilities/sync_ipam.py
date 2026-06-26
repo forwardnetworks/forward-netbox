@@ -71,6 +71,7 @@ def delete_ipam_ipaddress(runner, row):
 
 def delete_ipam_fhrpgroup(runner, row):
     from dcim.models import Interface
+    from ipam.models import FHRPGroup
     from ipam.models import FHRPGroupAssignment
     from ipam.models import IPAddress
 
@@ -101,7 +102,15 @@ def delete_ipam_fhrpgroup(runner, row):
                 "vrf": vrf,
             },
         )
-        if ip_address is not None:
+        # Only delete the VIP if it actually belongs to THIS group. A virtual IP
+        # shared across two FHRP groups stays attached to the other group, so
+        # removing this group must not delete the other group's VIP.
+        fhrp_ct = runner._content_type_for(FHRPGroup)
+        if (
+            ip_address is not None
+            and ip_address.assigned_object_type_id == fhrp_ct.pk
+            and ip_address.assigned_object_id == group.pk
+        ):
             ip_address.delete()
             deleted = True
         group.delete()
@@ -273,6 +282,29 @@ def _ensure_fhrp_vip(runner, row, *, group, vrf, protocol):
         and current_object_id == desired_assigned_object_id
     )
     if not is_unassigned and not is_same_fhrp_group:
+        existing_on_other_fhrp_group = (
+            current_type_id == desired_assigned_object_type.pk
+        )
+        if existing_on_other_fhrp_group:
+            # Two distinct FHRP groups (different group_id) legitimately share a
+            # virtual IP. NetBox attaches a VIP IPAddress to exactly ONE group,
+            # so leave it with the group that already owns it and do NOT create a
+            # duplicate (which also trips NetBox's unique-IP guard). Returning
+            # True lets the caller still create the group + its interface
+            # assignment, so the second group PERSISTS instead of being created
+            # and deleted on every sync — the root of the pernicious 13-group
+            # FHRP add/remove churn. Reported once (rolled up), not per row.
+            runner._record_aggregated_skip_warning(
+                model_string="ipam.fhrpgroup",
+                reason="shared-vip",
+                warning_message=(
+                    f"FHRP VIP `{row['address']}` is shared by more than one "
+                    f"group; it stays on the first group, and group "
+                    f"`{row['group_id']}` is kept without a duplicate VIP."
+                ),
+                sample=f"{row.get('device')}/group {row['group_id']}",
+            )
+            return True
         runner._record_aggregated_skip_warning(
             model_string="ipam.fhrpgroup",
             reason="vip-conflict",
