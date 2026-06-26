@@ -5034,6 +5034,73 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertEqual(ip_address.role, "hsrp")
         self.assertEqual(ip_address.assigned_object, group)
 
+    def test_apply_ipam_fhrpgroup_shared_vip_persists_both_groups_idempotently(self):
+        # Two distinct HSRP groups (different group_id) legitimately share a
+        # virtual IP. NetBox attaches the VIP IPAddress to ONE group; the second
+        # group must still PERSIST (with its interface assignment), and a re-sync
+        # must NOT delete-and-recreate it. This is the root of the pernicious
+        # 13-FHRP-group add/remove churn (shared VIPs across two group_ids).
+        device = self._create_device("device-1")
+        Interface.objects.create(device=device, name="Vlan100", type="virtual")
+        Interface.objects.create(device=device, name="Vlan200", type="virtual")
+
+        def apply_both():
+            runner = ForwardSyncRunner(
+                sync=self.sync, ingestion=None, client=None, logger_=Mock()
+            )
+            for gid, iface in ((1, "Vlan100"), (16, "Vlan200")):
+                runner._apply_ipam_fhrpgroup(
+                    {
+                        "protocol": "hsrp",
+                        "group_id": gid,
+                        "name": "hsrp",
+                        "device": "device-1",
+                        "interface": iface,
+                        "vrf": None,
+                        "address": "10.0.0.1/32",
+                        "state": "MASTER",
+                        "priority": 100,
+                        "status": "active",
+                    }
+                )
+
+        apply_both()
+        # Both groups exist; VIP attached once (to the first group); no dup IP.
+        self.assertEqual(FHRPGroup.objects.count(), 2)
+        self.assertEqual(FHRPGroupAssignment.objects.count(), 2)
+        self.assertEqual(IPAddress.objects.filter(address="10.0.0.1/32").count(), 1)
+        original_pks = set(FHRPGroup.objects.values_list("pk", flat=True))
+
+        # Re-sync: idempotent — same groups, same PKs (NOT deleted + recreated).
+        apply_both()
+        self.assertEqual(FHRPGroup.objects.count(), 2)
+        self.assertEqual(FHRPGroupAssignment.objects.count(), 2)
+        self.assertEqual(IPAddress.objects.filter(address="10.0.0.1/32").count(), 1)
+        self.assertEqual(
+            set(FHRPGroup.objects.values_list("pk", flat=True)), original_pks
+        )
+
+        # Removing the second (VIP-less) group must NOT delete the first group's
+        # shared VIP.
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        runner._delete_ipam_fhrpgroup(
+            {
+                "protocol": "hsrp",
+                "group_id": 16,
+                "name": "hsrp",
+                "device": "device-1",
+                "interface": "Vlan200",
+                "vrf": None,
+                "address": "10.0.0.1/32",
+                "status": "active",
+            }
+        )
+        self.assertFalse(FHRPGroup.objects.filter(group_id=16).exists())
+        self.assertTrue(FHRPGroup.objects.filter(group_id=1).exists())
+        self.assertEqual(IPAddress.objects.filter(address="10.0.0.1/32").count(), 1)
+
     def test_apply_ipam_fhrpgroup_creates_vrrp_group_assignment_and_vip(self):
         device = self._create_device("device-1")
         interface = Interface.objects.create(
