@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v2.1.0
+
+Feature: `forward_scope_ipam_audit` management command — a read-only audit listing network-global IPAM (prefixes, VLANs, VRFs) that NetBox holds but the sync's latest Forward fetch no longer reports, as manual-review candidates. Device-tag scope prune is device-derived and never removes global IPAM; this surfaces stale global objects without deleting anything (identity matching reuses the apply engine so verdicts match the sync). Drop-in from `2.0.8`.
+
 ## v2.0.8
 
 Bugfix: progress bars now reach 100% on a completed sync. For relationship and two-phase models (cable+termination, device+primary_ip, module+moduletype, fhrp group+assignment) the per-model bar settled below 100% because the merge `total` counts ChangeDiff rows while `current` counts applied objects; a finished job now renders every model at 100%. Cosmetic only — no apply/merge/data change. Drop-in from `2.0.7`
