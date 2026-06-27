@@ -90,8 +90,9 @@ def append_ipaddress_parent_prefix_diagnostics(fetcher, workloads):
     suffix = f" (+{more} more)" if more > 0 else ""
     fetcher.logger.log_warning(
         f"Forward IP Addresses: {diagnostic['total']} address(es) have no imported "
-        "covering prefix in NetBox — this is normal for /32 loopbacks and /31 or "
-        "/127 links; the addresses are still imported and assigned. "
+        "covering prefix in NetBox — this is normal for /32 and /128 host addresses "
+        "(loopbacks, anycast, some VIPs) that have no broader connected subnet to "
+        "derive a prefix from; the addresses are still imported and assigned. "
         f"Examples: {examples}{suffix}.",
         obj=fetcher.sync,
     )
