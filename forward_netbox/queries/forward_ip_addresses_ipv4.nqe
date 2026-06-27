@@ -117,6 +117,7 @@ global_rows(forward_netbox_shard_keys: List<String>) =
     select candidate.device)
   let chosen_interface = min(foreach candidate in grouped_rows
     where candidate.prefix_length == chosen_prefix_length
+      && candidate.device == chosen_device
     select candidate.interface)
   select {
     device: chosen_device,
