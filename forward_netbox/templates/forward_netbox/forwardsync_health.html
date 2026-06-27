@@ -816,6 +816,27 @@
       </div>
     </div>
     <div class="card">
+      <h5 class="card-header">{% trans "Out of Scope" %}</h5>
+      <div class="card-body">
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">{% trans "Out-of-scope devices" %}</th>
+            <td>
+              {% if health.out_of_scope.status == "warn" %}
+                <span class="badge text-bg-warning">{{ health.out_of_scope.out_of_scope_count }}</span>
+              {% else %}
+                <span class="badge text-bg-success">{{ health.out_of_scope.out_of_scope_count }}</span>
+              {% endif %}
+            </td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Status" %}</th>
+            <td>{{ health.out_of_scope.message }}</td>
+          </tr>
+        </table>
+      </div>
+    </div>
+    <div class="card">
       <h5 class="card-header">{% trans "Density Learning" %}</h5>
       <div class="card-body">
         <table class="table table-hover attr-table">
