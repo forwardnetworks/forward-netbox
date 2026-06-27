@@ -163,6 +163,32 @@ class ScopeModuleUiTest(TestCase):
                 Device.objects.filter(tags__slug="forward-backfilled").count(), 0
             )
 
+    def test_tag_backfilled_devices_also_tags_out_of_scope(self):
+        from forward_netbox.utilities.scope_reconciliation import (
+            tag_backfilled_devices,
+        )
+
+        self._device("dev-collected")
+        self._device("dev-orphan")  # in NetBox, not returned by the Forward scope
+        fwd_client = Mock()
+        fwd_client.run_nqe_query = Mock(
+            return_value=[{"name": "dev-collected", "completed": True}]
+        )
+        with (
+            patch.object(ForwardSource, "get_client", return_value=fwd_client),
+            patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
+        ):
+            result = tag_backfilled_devices(self.sync)
+        self.assertEqual(result["total_out_of_scope"], 1)
+        self.assertEqual(
+            set(
+                Device.objects.filter(tags__slug="forward-out-of-scope").values_list(
+                    "name", flat=True
+                )
+            ),
+            {"dev-orphan"},
+        )
+
     def test_collection_gap_alert_command_breaches_and_tags(self):
         import json
         from io import StringIO

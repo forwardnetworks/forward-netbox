@@ -123,6 +123,7 @@ def sync_health_summary(sync):
     compatibility_cache = _compatibility_cache_summary(sync, execution_run)
     density_learning = _density_learning_summary(sync)
     collection_gap = _collection_gap_summary(sync)
+    out_of_scope = _out_of_scope_summary(sync)
     dependency_lookup_cache = dependency_lookup_cache_support_summary(execution_run)
     dependency_parent_coverage = dependency_parent_coverage_support_summary(
         execution_run
@@ -186,6 +187,7 @@ def sync_health_summary(sync):
         "compatibility_cache": compatibility_cache,
         "density_learning": density_learning,
         "collection_gap": collection_gap,
+        "out_of_scope": out_of_scope,
         "dependency_lookup_cache": dependency_lookup_cache,
         "dependency_parent_coverage": dependency_parent_coverage,
         "optional_plugin_capabilities": optional_plugin_capabilities,
@@ -507,15 +509,14 @@ def _density_learning_summary(sync):
     return _density_learning_summary_impl(sync)
 
 
-def _backfilled_count_trend(sync):
-    """Delta in backfilled count since the previous tag reconciliation.
+def _job_data_count_trend(sync, count_key):
+    """Delta in a reconciliation count since the previous tag reconciliation.
 
-    The ``tag_forward_backfilled_devices`` job records ``total_backfilled`` in
-    its ``job.data`` on every run, so the last two completed runs give a cheap
-    growth signal without any extra storage. Returns ``{previous, delta}`` (delta
-    can be negative when collection recovers) or ``None`` when there is no prior
-    run to compare against. A growing gap (e.g. 18 -> 72) is the signal an
-    operator needs but a single point-in-time count hides.
+    The ``tag_forward_backfilled_devices`` job records ``total_backfilled`` and
+    ``total_out_of_scope`` in its ``job.data`` on every run, so the last two
+    completed runs give a cheap growth signal without extra storage. Returns
+    ``{previous, latest, delta}`` (delta can be negative when the bucket shrinks)
+    or ``None`` when there is no prior run to compare against.
     """
     from core.choices import JobStatusChoices
     from core.models import Job
@@ -528,7 +529,7 @@ def _backfilled_count_trend(sync):
                 object_type=content_type,
                 object_id=sync.pk,
                 status=JobStatusChoices.STATUS_COMPLETED,
-                data__has_key="total_backfilled",
+                data__has_key=count_key,
             )
             .order_by("-created", "-pk")
             .values_list("data", flat=True)[:2]
@@ -536,13 +537,17 @@ def _backfilled_count_trend(sync):
     except Exception:  # pragma: no cover - defensive; trend is best-effort
         return None
     counts = [
-        entry.get("total_backfilled")
+        entry.get(count_key)
         for entry in history
-        if isinstance(entry, dict) and isinstance(entry.get("total_backfilled"), int)
+        if isinstance(entry, dict) and isinstance(entry.get(count_key), int)
     ]
     if len(counts) < 2:
         return None
     return {"previous": counts[1], "latest": counts[0], "delta": counts[0] - counts[1]}
+
+
+def _backfilled_count_trend(sync):
+    return _job_data_count_trend(sync, "total_backfilled")
 
 
 def _collection_gap_summary(sync):
@@ -597,6 +602,59 @@ def _collection_gap_summary(sync):
             "for the per-reason breakdown (auth vs timeout vs incomplete setup) "
             "and fix Forward collection for these devices, or filter the device "
             f"list by the forward-backfilled tag.{trend_note}"
+        ),
+    }
+
+
+def _out_of_scope_summary(sync):
+    """Out-of-scope orphan signal from the persisted ``forward-out-of-scope`` tag.
+
+    Counts NetBox devices that match none of the sync's included Forward tags
+    (the removable orphans), using the stored tag — a cheap DB count, no live
+    Forward query. The mirror of the backfilled signal: backfilled devices are in
+    scope and kept; these are out of scope and removable via Scope Reconciliation
+    -> Prune orphans.
+    """
+    from dcim.models import Device
+
+    from .scope_reconciliation import OUT_OF_SCOPE_TAG_SLUG
+
+    count = Device.objects.filter(tags__slug=OUT_OF_SCOPE_TAG_SLUG).count()
+    if count == 0:
+        return {
+            "available": True,
+            "status": "info",
+            "out_of_scope_count": 0,
+            "trend_delta": None,
+            "tag_slug": OUT_OF_SCOPE_TAG_SLUG,
+            "message": (
+                "No NetBox devices are out of scope. Run Tag backfilled devices "
+                "from Scope Reconciliation to refresh this signal."
+            ),
+        }
+    trend = _job_data_count_trend(sync, "total_out_of_scope")
+    trend_note = ""
+    if trend and trend["delta"] > 0:
+        trend_note = (
+            f" Up {trend['delta']} since the previous reconciliation "
+            f"({trend['previous']} -> {trend['latest']})."
+        )
+    elif trend and trend["delta"] < 0:
+        trend_note = (
+            f" Down {abs(trend['delta'])} since the previous reconciliation "
+            f"({trend['previous']} -> {trend['latest']})."
+        )
+    return {
+        "available": True,
+        "status": "warn",
+        "out_of_scope_count": count,
+        "trend_delta": trend["delta"] if trend else None,
+        "tag_slug": OUT_OF_SCOPE_TAG_SLUG,
+        "message": (
+            f"{count} NetBox device(s) tagged forward-out-of-scope — they match "
+            "none of the sync's included Forward tags. Review and remove them via "
+            "Scope Reconciliation -> Prune orphans, or filter the device list by "
+            f"the forward-out-of-scope tag.{trend_note}"
         ),
     }
 

@@ -67,6 +67,20 @@ BACKFILLED_TAG_DESCRIPTION = (
     "Forward snapshot. Maintained by the Forward sync scope reconciliation."
 )
 
+# NetBox tag applied to devices that match NONE of the sync's included Forward
+# tags (out of scope). Unlike backfilled devices (in scope, kept), these are the
+# removable orphans — review and delete them via Scope Reconciliation -> Prune
+# orphans. Maintained alongside the backfilled tag so operators can filter
+# /dcim/devices/?tag=forward-out-of-scope.
+OUT_OF_SCOPE_TAG_SLUG = "forward-out-of-scope"
+OUT_OF_SCOPE_TAG_NAME = "Forward Out Of Scope"
+OUT_OF_SCOPE_TAG_COLOR = "f44336"
+OUT_OF_SCOPE_TAG_DESCRIPTION = (
+    "Matches none of the sync's included Forward device tags (out of scope). "
+    "Removable via Scope Reconciliation -> Prune orphans. Maintained by the "
+    "Forward sync scope reconciliation."
+)
+
 
 def compute_scope_reconciliation(sync) -> dict:
     """Compare NetBox devices against the sync's Forward device tag scope.
@@ -217,41 +231,26 @@ def prune_orphan_devices(sync, *, report=None) -> dict:
     }
 
 
-def tag_backfilled_devices(sync, *, report=None) -> dict:
-    """Apply the ``forward-backfilled`` tag to the sync's backfilled devices.
+def _apply_maintained_device_tag(device_names, *, slug, name, color, description):
+    """Make the tag's device set exactly ``device_names`` (idempotent).
 
-    Adds the tag to NetBox devices that are tagged-in-scope but backfilled in the
-    latest snapshot, and removes it from any device that previously carried the
-    tag but is now freshly collected (or no longer in scope). Idempotent — after
-    running, the tag's device set exactly matches the current backfilled set, so
-    operators can filter ``/dcim/devices/?tag=forward-backfilled``.
+    Adds the tag to devices in the set that lack it and removes it from devices
+    that carry it but are no longer in the set. Returns ``{added, removed, total}``.
     """
     from extras.models import Tag
 
-    if report is None:
-        report = compute_scope_reconciliation(sync)
-    present_backfilled = report["_present_backfilled"]
-
     tag, _ = Tag.objects.get_or_create(
-        slug=BACKFILLED_TAG_SLUG,
-        defaults={
-            "name": BACKFILLED_TAG_NAME,
-            "color": BACKFILLED_TAG_COLOR,
-            "description": BACKFILLED_TAG_DESCRIPTION,
-        },
+        slug=slug,
+        defaults={"name": name, "color": color, "description": description},
     )
-
     want_ids = set(
-        Device.objects.filter(name__in=present_backfilled).values_list("pk", flat=True)
-        if present_backfilled
+        Device.objects.filter(name__in=device_names).values_list("pk", flat=True)
+        if device_names
         else []
     )
     currently_tagged_ids = set(
-        Device.objects.filter(tags__slug=BACKFILLED_TAG_SLUG).values_list(
-            "pk", flat=True
-        )
+        Device.objects.filter(tags__slug=slug).values_list("pk", flat=True)
     )
-
     added = 0
     removed = 0
     with transaction.atomic():
@@ -261,9 +260,44 @@ def tag_backfilled_devices(sync, *, report=None) -> dict:
         for device in Device.objects.filter(pk__in=currently_tagged_ids - want_ids):
             device.tags.remove(tag)
             removed += 1
+    return {"added": added, "removed": removed, "total": len(want_ids)}
+
+
+def tag_backfilled_devices(sync, *, report=None) -> dict:
+    """Maintain the ``forward-backfilled`` and ``forward-out-of-scope`` device tags.
+
+    ``forward-backfilled`` marks devices that are tagged-in-scope but were not
+    freshly collected in the latest snapshot (kept on purpose).
+    ``forward-out-of-scope`` marks NetBox devices that match none of the sync's
+    included Forward tags (the removable orphans). Both are idempotent — after
+    running, each tag's device set exactly matches the current bucket, so operators
+    can filter ``/dcim/devices/?tag=forward-backfilled`` or
+    ``?tag=forward-out-of-scope``.
+    """
+    if report is None:
+        report = compute_scope_reconciliation(sync)
+
+    backfilled = _apply_maintained_device_tag(
+        report["_present_backfilled"],
+        slug=BACKFILLED_TAG_SLUG,
+        name=BACKFILLED_TAG_NAME,
+        color=BACKFILLED_TAG_COLOR,
+        description=BACKFILLED_TAG_DESCRIPTION,
+    )
+    out_of_scope = _apply_maintained_device_tag(
+        report["_out_of_scope"],
+        slug=OUT_OF_SCOPE_TAG_SLUG,
+        name=OUT_OF_SCOPE_TAG_NAME,
+        color=OUT_OF_SCOPE_TAG_COLOR,
+        description=OUT_OF_SCOPE_TAG_DESCRIPTION,
+    )
     return {
         "tag_slug": BACKFILLED_TAG_SLUG,
-        "tagged": added,
-        "untagged": removed,
-        "total_backfilled": len(want_ids),
+        "tagged": backfilled["added"],
+        "untagged": backfilled["removed"],
+        "total_backfilled": backfilled["total"],
+        "out_of_scope_tag_slug": OUT_OF_SCOPE_TAG_SLUG,
+        "out_of_scope_tagged": out_of_scope["added"],
+        "out_of_scope_untagged": out_of_scope["removed"],
+        "total_out_of_scope": out_of_scope["total"],
     }
