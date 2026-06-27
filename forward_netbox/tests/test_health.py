@@ -226,6 +226,32 @@ class ForwardSyncHealthTest(TestCase):
         self.assertEqual(summary2["collection_gap"]["backfilled_count"], 1)
         self.assertIsNone(summary2["collection_gap"]["trend_delta"])
 
+    def test_out_of_scope_summary_reflects_tag(self):
+        from dcim.models import Device
+        from dcim.models import DeviceRole
+        from dcim.models import DeviceType
+        from dcim.models import Manufacturer
+        from dcim.models import Site
+        from extras.models import Tag
+
+        summary = sync_health_summary(self.sync)
+        self.assertEqual(summary["out_of_scope"]["status"], "info")
+        self.assertEqual(summary["out_of_scope"]["out_of_scope_count"], 0)
+
+        mfr = Manufacturer.objects.create(name="MfrOS", slug="mfr-os")
+        dt = DeviceType.objects.create(manufacturer=mfr, model="dt-os", slug="dt-os")
+        role = DeviceRole.objects.create(name="RoleOS", slug="role-os")
+        site = Site.objects.create(name="SiteOS", slug="site-os")
+        dev = Device.objects.create(name="dev-os", device_type=dt, role=role, site=site)
+        tag = Tag.objects.create(
+            name="Forward Out Of Scope", slug="forward-out-of-scope"
+        )
+        dev.tags.add(tag)
+
+        summary2 = sync_health_summary(self.sync)
+        self.assertEqual(summary2["out_of_scope"]["status"], "warn")
+        self.assertEqual(summary2["out_of_scope"]["out_of_scope_count"], 1)
+
     def test_collection_gap_escalates_when_growing(self):
         from core.choices import JobStatusChoices
         from core.models import Job
