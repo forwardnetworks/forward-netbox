@@ -141,6 +141,23 @@ engine. The default safe set (all built-in models as of 1.5.10) runs bulk-ORM;
 a handful of relationship-heavy models stay on the adapter. See
 [Apply Engine Model Matrix](../02_Reference/apply-engine-model-matrix.md).
 
+## Auditing Mgmt_ primary-IP resolution
+
+When `set_primary_ip_from_mgmt_tag` is on, a device's `Mgmt_<iface>` tag sets its
+primary IP from the IP on that interface. If few devices get a primary IP, this
+read-only audit shows why, per device — it reuses the resolver's own matching, so
+a verdict matches what a sync computes:
+
+```
+python manage.py forward_primary_ip_audit --sync-name "<sync>"
+```
+
+It reports `mgmt_tagged_devices`, `resolvable`, and the unresolved split:
+`device_not_in_netbox`, `interface_not_matched` (the Mgmt target interface name is
+not on the device in NetBox), and `interface_present_no_ip` (the interface exists
+but no IP is assigned to it in NetBox — an import/assignment gap, since the
+resolver reads NetBox assignments, not Forward). Never writes.
+
 ## Releasing the plugin
 
 Maintainers cut releases with `invoke release` (see `scripts/release.py`):
