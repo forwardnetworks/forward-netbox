@@ -38,6 +38,30 @@ CLI equivalent:
 python manage.py forward_device_scope_reconciliation_audit --sync-name "<sync>"
 ```
 
+### What scope prune removes
+
+The tag scope is **device-derived**: a Forward row is treated as out-of-scope
+(and deleted from NetBox when prune is enabled) only when it is tied to a device
+that is not in the included-tag set. Coverage by model:
+
+| Model group | Out-of-scope rows removed? |
+| --- | --- |
+| `dcim.device` and device-anchored children — `interface`, `macaddress`, `ipaddress`, `module`, `inventoryitem`, `cable`, `virtualchassis`, `extras.taggeditem`, device-scoped `ipam.fhrpgroup` | **Yes** — removed when their device is out of scope |
+| `dcim.site` | **Yes** — a site with no in-scope device is removed |
+| `ipam.prefix`, `ipam.vlan`, `ipam.vrf`, `dcim.manufacturer`, `dcim.platform`, `dcim.devicetype`, `dcim.devicerole` | **No** — network-global; imported and updated, never scope-deleted |
+
+Network-global IPAM and metadata (prefixes, VLANs, VRFs, manufacturers,
+platforms, device types, device roles) are **not** pruned by tag scope. They are
+not owned by a device, so the scope filter has no signal to classify one as
+out-of-scope, and deleting shared global objects is high blast radius — a /16
+aggregate or a network-wide VLAN would look "unreferenced" by a scoped device
+subset and be wrongly removed. Delete those manually in NetBox if a run truly
+needs them gone.
+
+To verify what a run removed, read the per-model **delete count** on the
+ingestion page (the `delete_count` field in the support bundle): it lists exactly
+which models had out-of-scope deletions.
+
 ### Prune orphans
 
 The **Prune orphans** button queues a job that deletes the out-of-scope devices
