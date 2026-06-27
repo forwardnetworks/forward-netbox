@@ -102,6 +102,28 @@ tag on the next run.
 The **Collection gap** health signal (sync health summary) flags when the
 backfilled count is non-trivial so you can investigate collection in Forward.
 
+### Backfilled vs out of scope
+
+These are different buckets — only one is removable:
+
+- **Backfilled** (`forward-backfilled` tag) — the device **matches an included
+  Forward tag** (it is in scope) but Forward could not freshly collect it in the
+  latest snapshot (auth/timeout/incomplete setup), so older data carried over.
+  These are **kept on purpose**; pruning a real device over a transient collection
+  failure would be wrong. Scope membership is decided by the live Forward tag, not
+  the NetBox tag — so a backfilled device can be in scope even if its included tag
+  is not (yet) shown in NetBox, because feature tags only refresh on a clean
+  collection. Fix Forward collection and the device collects clean next run and
+  drops the tag automatically.
+- **Out of scope** (orphan) — the device matches **none** of the included Forward
+  tags. These are the removable ones: review them on the Scope Reconciliation page
+  and delete with **Prune orphans**. (`device_tag_prune_out_of_scope` only deletes
+  out-of-scope rows the sync query still returns; devices absent from the result
+  entirely are removed by Prune orphans.)
+
+So a device showing `forward-backfilled` but not an included tag in NetBox is
+**not** an out-of-scope orphan — it is in scope and intentionally retained.
+
 ## Module readiness
 
 NetBox Branching cannot create a new device's module bays during a merge, so
