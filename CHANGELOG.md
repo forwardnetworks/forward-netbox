@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v2.1.2
+
+Feature + docs: (1) new out-of-scope orphan health signal — the sync health summary now shows how many NetBox devices match none of the included Forward tags (removable via Scope Reconciliation -> Prune orphans), mirroring the backfilled signal, via a self-healing `forward-out-of-scope` device tag and a `?tag=forward-out-of-scope` filter; (2) docs: the "no covering prefix" diagnostic now names /32 and /128 host addresses (loopbacks, anycast, some VIPs), and the Operations Guide documents backfilled (in-scope, kept) vs out-of-scope (removable) devices. Drop-in from `2.1.1`.
+
 ## v2.1.1
 
 Bugfix + diagnostics: (1) the IPv4/IPv6 IP queries global dedup now pins the chosen interface to the chosen device (mirroring the VRF and MAC dedup blocks), so a deduped global address can no longer be attributed to an interface on a different device — the source of spurious "target interface was not imported" skips; (2) new read-only `forward_primary_ip_audit` command buckets Mgmt_ primary-IP resolution per device (resolvable / device-not-in-netbox / interface-not-matched / interface-present-no-IP) to pinpoint why a device does not get a primary IP. Drop-in from `2.1.0`.
