@@ -62,6 +62,23 @@ To verify what a run removed, read the per-model **delete count** on the
 ingestion page (the `delete_count` field in the support bundle): it lists exactly
 which models had out-of-scope deletions.
 
+### Auditing stale global IPAM
+
+Because global IPAM is never scope-deleted, NetBox can accumulate prefixes, VLANs,
+or VRFs that Forward no longer reports. The read-only audit lists them for manual
+review — it reuses the apply engine's own identity matching, so a "stale" verdict
+is exactly what the sync would consider the same object, and it **never deletes**:
+
+```
+python manage.py forward_scope_ipam_audit --sync-name "<sync>"
+```
+
+It prints, per model, `forward_rows`, `netbox_count`, `unmatchable_count` (objects
+whose identity is indeterminate — never flagged), and `stale_count` with a
+`stale_sample`. Restrict with `--models ipam.prefix,ipam.vlan,ipam.vrf`, size the
+sample with `--limit`, and add `--fail-on-stale` for CI. Delete confirmed-stale
+objects by hand in NetBox.
+
 ### Prune orphans
 
 The **Prune orphans** button queues a job that deletes the out-of-scope devices
