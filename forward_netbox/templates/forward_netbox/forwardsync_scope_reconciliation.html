@@ -71,6 +71,13 @@
             <i class="mdi mdi-tag-outline" aria-hidden="true"></i>&nbsp;{% trans "Tag backfilled devices" %}
           </button>
         </form>
+        <form method="post" action="{{ tag_delete_eligible_ipam_url }}" class="d-inline"
+              title="{% trans 'Audits global IPAM (prefixes/VLANs/VRFs) against the latest Forward fetch and tags stale objects forward-delete-eligible for manual review. Never deletes.' %}">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-outline-danger">
+            <i class="mdi mdi-tag-remove-outline" aria-hidden="true"></i>&nbsp;{% trans "Tag delete-eligible IPAM" %}
+          </button>
+        </form>
         <form method="post" class="d-inline"
               action="{% url 'plugins:forward_netbox:forwardsync_prune_orphans' pk=object.pk %}"
               onsubmit="return confirm('{% blocktrans with dev_count=payload.netbox_out_of_scope site_count=payload.netbox_empty_orphan_site_count %}Delete {{ dev_count }} out-of-scope device(s) and {{ site_count }} empty site(s)? This also removes their interfaces and IP addresses.{% endblocktrans %}');">

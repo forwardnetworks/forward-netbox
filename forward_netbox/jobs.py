@@ -360,6 +360,32 @@ def tag_forward_backfilled_devices(job, *args, **kwargs):
             raise
 
 
+def tag_forward_delete_eligible_ipam(job, *args, **kwargs):
+    """Background sync of the ``forward-delete-eligible`` tag across network-global
+    IPAM (prefixes/VLANs/VRFs) for a sync.
+
+    Runs as a job because it issues live Forward fetches for each IPAM model and
+    may tag/untag many objects (with change-logging signals). Tag-only — never
+    deletes.
+    """
+    from .utilities.logging import SyncLogging
+    from .utilities.scope_ipam_audit import tag_delete_eligible_ipam
+
+    sync = ForwardSync.objects.get(pk=job.object_id)
+    try:
+        job.start()
+        client = sync.source.get_client()
+        job.data = tag_delete_eligible_ipam(sync, client, SyncLogging())
+        job.save(update_fields=["data"])
+        job.terminate()
+    except Exception as exc:
+        job.terminate(status=JobStatusChoices.STATUS_ERRORED)
+        if type(exc) in (SyncError, JobTimeoutException):
+            logger.error(exc)
+        else:
+            raise
+
+
 def create_forward_module_bays(job, *args, **kwargs):
     """Background creation of missing module bays for a sync (out-of-band ORM)."""
     from .utilities.module_readiness import compute_module_readiness_for_sync
