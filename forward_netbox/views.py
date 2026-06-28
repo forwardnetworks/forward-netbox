@@ -881,6 +881,10 @@ class ForwardSyncScopeReconciliationView(BaseObjectView):
                     "plugins:forward_netbox:forwardsync_tag_backfilled",
                     kwargs={"pk": sync.pk},
                 ),
+                "tag_delete_eligible_ipam_url": reverse(
+                    "plugins:forward_netbox:forwardsync_tag_delete_eligible_ipam",
+                    kwargs={"pk": sync.pk},
+                ),
             },
         )
 
@@ -919,6 +923,56 @@ class ForwardSyncTagBackfilledView(BaseObjectView):
             _(
                 "Queued job #%(pk)d to tag backfilled devices. When it finishes, "
                 "filter the device list by the forward-backfilled tag."
+            )
+            % {"pk": job.pk},
+        )
+        return redirect(
+            reverse(
+                "plugins:forward_netbox:forwardsync_scope_reconciliation",
+                kwargs={"pk": sync.pk},
+            )
+        )
+
+
+@register_model_view(
+    ForwardSync, "tag_delete_eligible_ipam", path="tag-delete-eligible-ipam"
+)
+class ForwardSyncTagDeleteEligibleIpamView(BaseObjectView):
+    queryset = ForwardSync.objects.all()
+
+    def get_required_permission(self):
+        return "ipam.change_prefix"
+
+    def get(self, request, pk):
+        sync = get_object_or_404(self.queryset, pk=pk)
+        return redirect(
+            reverse(
+                "plugins:forward_netbox:forwardsync_scope_reconciliation",
+                kwargs={"pk": sync.pk},
+            )
+        )
+
+    def post(self, request, pk):
+        # Tags network-global IPAM (prefixes/VLANs/VRFs) that the latest Forward
+        # fetch no longer reports so an operator can review and delete them by
+        # hand. Runs as a background job: it issues live Forward fetches per IPAM
+        # model and may tag/untag many objects. Tag-only — never deletes.
+        from core.models import Job
+        from django.utils.module_loading import import_string
+
+        sync = get_object_or_404(self.queryset, pk=pk)
+        job = Job.enqueue(
+            import_string("forward_netbox.jobs.tag_forward_delete_eligible_ipam"),
+            instance=sync,
+            user=request.user,
+            name=f"{sync.name} - tag delete-eligible IPAM",
+        )
+        messages.success(
+            request,
+            _(
+                "Queued job #%(pk)d to tag delete-eligible IPAM. When it finishes, "
+                "filter prefixes/VLANs/VRFs by the forward-delete-eligible tag to "
+                "review and delete them."
             )
             % {"pk": job.pk},
         )
