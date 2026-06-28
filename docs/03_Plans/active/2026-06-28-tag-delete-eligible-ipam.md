@@ -43,8 +43,18 @@ A future auto-prune is bounded by NetBox itself — even a manual bulk delete is
   `tag_delete_eligible_ipam`.
 - `forward_netbox/management/commands/forward_tag_delete_eligible.py` — new
   management command wrapping the tag function (JSON output + remediation hint).
+- `forward_netbox/jobs.py` — `tag_forward_delete_eligible_ipam` background job
+  (builds client + SyncLogging, calls the tag function, stores result in job.data).
+- `forward_netbox/views.py` — `ForwardSyncTagDeleteEligibleIpamView` (POST enqueues
+  the job, `ipam.change_prefix` gated) + `tag_delete_eligible_ipam_url` in the
+  Scope Reconciliation context.
+- `forward_netbox/templates/forward_netbox/forwardsync_scope_reconciliation.html`
+  — "Tag delete-eligible IPAM" card-footer button (always enabled; the eligible
+  count needs live Forward fetches, so it is computed in the job, not on render).
 - `forward_netbox/tests/test_scope_ipam_audit.py` — stale_pks, tag-stale-not-kept,
   self-healing untag, empty-fetch-skip.
+- `forward_netbox/tests/test_scope_module_ui.py` — view enqueues job + job stores
+  result (wiring test).
 
 ## Approach
 
