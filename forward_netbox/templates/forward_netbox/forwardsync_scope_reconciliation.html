@@ -49,6 +49,16 @@
             </td>
           </tr>
           <tr>
+            <th scope="row">{% trans "Empty orphan sites" %}</th>
+            <td>
+              {% if payload.netbox_empty_orphan_site_count %}
+                <span class="badge text-bg-warning">{{ payload.netbox_empty_orphan_site_count }}</span>
+              {% else %}
+                <span class="badge text-bg-success">0</span>
+              {% endif %}
+            </td>
+          </tr>
+          <tr>
             <th scope="row">{% trans "In scope, missing from NetBox" %}</th>
             <td>{{ payload.forward_missing_in_netbox }}</td>
           </tr>
@@ -63,9 +73,9 @@
         </form>
         <form method="post" class="d-inline"
               action="{% url 'plugins:forward_netbox:forwardsync_prune_orphans' pk=object.pk %}"
-              onsubmit="return confirm('{% blocktrans with count=payload.netbox_out_of_scope %}Delete {{ count }} out-of-scope device(s)? This also removes their interfaces and IP addresses.{% endblocktrans %}');">
+              onsubmit="return confirm('{% blocktrans with dev_count=payload.netbox_out_of_scope site_count=payload.netbox_empty_orphan_site_count %}Delete {{ dev_count }} out-of-scope device(s) and {{ site_count }} empty site(s)? This also removes their interfaces and IP addresses.{% endblocktrans %}');">
           {% csrf_token %}
-          <button type="submit" class="btn btn-danger"{% if not payload.netbox_out_of_scope %} disabled{% endif %}>
+          <button type="submit" class="btn btn-danger"{% if not payload.netbox_out_of_scope and not payload.netbox_empty_orphan_site_count %} disabled{% endif %}>
             <i class="mdi mdi-trash-can-outline" aria-hidden="true"></i>&nbsp;{% trans "Prune orphans" %}
           </button>
         </form>
