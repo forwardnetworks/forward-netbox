@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v2.1.4
+
+Tag delete-eligible global IPAM (prefixes/VLANs/VRFs) for manual review
+
 ## v2.1.3
 
 Prune empty orphan sites (zero devices + zero racks) alongside out-of-scope devices
