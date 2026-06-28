@@ -288,15 +288,20 @@ def prune_forward_orphans(job, *args, **kwargs):
     timeout on large fabrics.
     """
     from .utilities.scope_reconciliation import EmptyForwardScopeError
+    from .utilities.scope_reconciliation import compute_scope_reconciliation
     from .utilities.scope_reconciliation import prune_orphan_devices
+    from .utilities.scope_reconciliation import prune_orphan_sites
 
     sync = ForwardSync.objects.get(pk=job.object_id)
     try:
         job.start()
-        result = prune_orphan_devices(sync)
+        report = compute_scope_reconciliation(sync)
+        device_result = prune_orphan_devices(sync, report=report)
+        site_result = prune_orphan_sites(sync, report=report)
         job.data = {
-            "pruned_device_count": result.get("pruned_device_count", 0),
-            "out_of_scope_sample": result.get("out_of_scope_sample", []),
+            "pruned_device_count": device_result.get("pruned_device_count", 0),
+            "out_of_scope_sample": device_result.get("out_of_scope_sample", []),
+            "pruned_site_count": site_result.get("pruned_site_count", 0),
         }
         job.save(update_fields=["data"])
         job.terminate()

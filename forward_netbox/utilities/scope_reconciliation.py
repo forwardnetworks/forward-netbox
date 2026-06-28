@@ -110,7 +110,8 @@ def compute_scope_reconciliation(sync) -> dict:
             "== DeviceSnapshotResult.completed,",
             "  reason: toString(device.snapshotInfo.result),",
             "  collectionTime: device.snapshotInfo.collectionTime,",
-            "  backfillTime: device.snapshotInfo.backfillTime",
+            "  backfillTime: device.snapshotInfo.backfillTime,",
+            '  location: if isPresent(device.locationName) then toLowerCase(device.locationName) else ""',
             "}",
         ]
     )
@@ -121,9 +122,12 @@ def compute_scope_reconciliation(sync) -> dict:
         fetch_all=True,
     )
 
+    from django.utils.text import slugify as _slugify
+
     row_by_name = {}
     tagged_names = set()
     completed_names = set()
+    forward_site_slugs = set()
     for row in rows:
         name = str(row.get("name") or "").strip()
         if not name:
@@ -132,6 +136,11 @@ def compute_scope_reconciliation(sync) -> dict:
         row_by_name[name] = row
         if row.get("completed"):
             completed_names.add(name)
+        loc = str(row.get("location") or "").strip()
+        if loc:
+            sl = _slugify(loc)
+            if sl:
+                forward_site_slugs.add(sl)
     backfilled_names = tagged_names - completed_names
 
     netbox_names = {
@@ -169,6 +178,23 @@ def compute_scope_reconciliation(sync) -> dict:
             }
         )
 
+    # Compute empty orphan sites for the preview (current DB state; prune re-queries
+    # after device deletion so sites that become empty then are also removed).
+    from dcim.models import Rack, Site
+
+    if forward_site_slugs:
+        device_site_ids = set(Device.objects.values_list("site_id", flat=True))
+        rack_site_ids = set(Rack.objects.values_list("site_id", flat=True))
+        occupied_site_ids = device_site_ids | rack_site_ids
+        empty_orphan_sites = list(
+            Site.objects.exclude(slug__in=forward_site_slugs)
+            .exclude(pk__in=occupied_site_ids)
+            .values_list("name", flat=True)
+            .order_by("name")
+        )
+    else:
+        empty_orphan_sites = []
+
     return {
         "sync_id": sync.pk,
         "sync_name": sync.name,
@@ -181,14 +207,17 @@ def compute_scope_reconciliation(sync) -> dict:
         "forward_tagged_backfilled": len(backfilled_names),
         "netbox_present_backfilled": len(present_backfilled),
         "netbox_out_of_scope": len(out_of_scope),
+        "netbox_empty_orphan_site_count": len(empty_orphan_sites),
         "forward_missing_in_netbox": len(missing_in_netbox),
         "backfilled_reason_breakdown": reason_breakdown,
         "out_of_scope_sample": sorted(out_of_scope)[:SAMPLE_LIMIT],
+        "empty_orphan_site_sample": empty_orphan_sites[:SAMPLE_LIMIT],
         "present_backfilled_sample": sorted(present_backfilled)[:SAMPLE_LIMIT],
         "present_backfilled_detail_sample": present_backfilled_detail,
         "missing_in_netbox_sample": sorted(missing_in_netbox)[:SAMPLE_LIMIT],
         # Internal sets for prune/tag; not meant for JSON serialization.
         "_tagged_names": tagged_names,
+        "_forward_site_slugs": forward_site_slugs,
         "_out_of_scope": out_of_scope,
         "_present_backfilled": present_backfilled,
     }
@@ -228,6 +257,46 @@ def prune_orphan_devices(sync, *, report=None) -> dict:
         "pruned_device_count": len(orphans),
         "pruned_object_count": deleted_total,
         "out_of_scope_sample": orphans[:SAMPLE_LIMIT],
+    }
+
+
+def prune_orphan_sites(sync, *, report=None) -> dict:
+    """Delete empty NetBox sites absent from the sync's Forward location scope.
+
+    Only removes sites with zero devices AND zero racks. Re-queries current DB
+    state so sites that became empty after device prune are also removed.
+    Safety: refuses when the Forward scope returned 0 devices or no location data.
+    """
+    from dcim.models import Rack, Site
+
+    if report is None:
+        report = compute_scope_reconciliation(sync)
+    if not report["_tagged_names"]:
+        raise EmptyForwardScopeError(
+            "Forward scope returned 0 devices; refusing site prune."
+        )
+    forward_site_slugs = report.get("_forward_site_slugs") or set()
+    if not forward_site_slugs:
+        return {"pruned_site_count": 0, "pruned_site_object_count": 0}
+    device_site_ids = set(Device.objects.values_list("site_id", flat=True))
+    rack_site_ids = set(Rack.objects.values_list("site_id", flat=True))
+    occupied_site_ids = device_site_ids | rack_site_ids
+    prunable_pks = list(
+        Site.objects.exclude(slug__in=forward_site_slugs)
+        .exclude(pk__in=occupied_site_ids)
+        .values_list("pk", flat=True)
+    )
+    if not prunable_pks:
+        return {"pruned_site_count": 0, "pruned_site_object_count": 0}
+    pruned_objects = 0
+    with transaction.atomic():
+        for start in range(0, len(prunable_pks), 500):
+            batch = prunable_pks[start : start + 500]
+            deleted, _ = Site.objects.filter(pk__in=batch).delete()
+            pruned_objects += deleted
+    return {
+        "pruned_site_count": len(prunable_pks),
+        "pruned_site_object_count": pruned_objects,
     }
 
 
