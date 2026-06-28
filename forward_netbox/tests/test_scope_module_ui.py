@@ -299,6 +299,41 @@ class ScopeModuleUiTest(TestCase):
             ).exists()
         )
 
+    def test_tag_delete_eligible_ipam_view_enqueues_and_runs_job(self):
+        from forward_netbox.jobs import tag_forward_delete_eligible_ipam
+
+        fwd_client = Mock()
+        stub_result = {
+            "tag_slug": "forward-delete-eligible",
+            "models_tagged": ["ipam.vrf"],
+            "skipped": [],
+            "results": [],
+            "total_eligible": 3,
+        }
+        client = self._superuser_client()
+        with (
+            patch.object(ForwardSource, "get_client", return_value=fwd_client),
+            patch(
+                "forward_netbox.utilities.scope_ipam_audit.tag_delete_eligible_ipam",
+                return_value=stub_result,
+            ) as mock_tag,
+        ):
+            resp = client.post(
+                reverse(
+                    "plugins:forward_netbox:forwardsync_tag_delete_eligible_ipam",
+                    kwargs={"pk": self.sync.pk},
+                )
+            )
+            self.assertEqual(resp.status_code, 302)
+            job = Job.objects.filter(name__icontains="tag delete-eligible IPAM").latest(
+                "pk"
+            )
+            self.assertEqual(job.object_id, self.sync.pk)
+            tag_forward_delete_eligible_ipam(job)
+            mock_tag.assert_called_once()
+        job.refresh_from_db()
+        self.assertEqual(job.data["total_eligible"], 3)
+
     def test_refresh_device_analysis_job(self):
         from forward_netbox.jobs import refresh_forward_device_analysis
         from forward_netbox.models import ForwardDeviceAnalysis
