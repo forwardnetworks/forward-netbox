@@ -6,6 +6,7 @@ from dcim.models import Device
 from dcim.models import DeviceRole
 from dcim.models import DeviceType
 from dcim.models import Manufacturer
+from dcim.models import Rack
 from dcim.models import Site
 from dcim.models.device_components import ModuleBay
 from django.contrib.auth import get_user_model
@@ -188,6 +189,54 @@ class ScopeModuleUiTest(TestCase):
             ),
             {"dev-orphan"},
         )
+
+    def test_prune_also_removes_empty_orphan_sites(self):
+        # site-u (self.site) has a rack — non-empty, must be kept even though
+        # it has no devices and is not in the Forward location result.
+        Rack.objects.create(name="rack-u", site=self.site)
+        site_active = Site.objects.create(name="Site Active", slug="site-active")
+        site_stale = Site.objects.create(name="Site Stale", slug="site-stale")
+        Device.objects.create(
+            name="dev-site-a",
+            device_type=self.dt,
+            role=self.role,
+            site=site_active,
+        )
+        Device.objects.create(
+            name="dev-site-stale",
+            device_type=self.dt,
+            role=self.role,
+            site=site_stale,
+        )
+        fwd_client = Mock()
+        # Forward only knows site-active; dev-site-stale (and site-stale) are orphans.
+        fwd_client.run_nqe_query = Mock(
+            return_value=[
+                {"name": "dev-site-a", "completed": True, "location": "site active"}
+            ]
+        )
+        client = self._superuser_client()
+        with (
+            patch.object(ForwardSource, "get_client", return_value=fwd_client),
+            patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
+        ):
+            resp = client.post(
+                reverse(
+                    "plugins:forward_netbox:forwardsync_prune_orphans",
+                    kwargs={"pk": self.sync.pk},
+                )
+            )
+            self.assertEqual(resp.status_code, 302)
+            job = Job.objects.filter(name__icontains="prune orphans").latest("pk")
+            prune_forward_orphans(job)
+        # In-scope device + its site kept.
+        self.assertTrue(Device.objects.filter(name="dev-site-a").exists())
+        self.assertTrue(Site.objects.filter(slug="site-active").exists())
+        # Out-of-scope device deleted; its site is now empty + not in Forward → deleted.
+        self.assertFalse(Device.objects.filter(name="dev-site-stale").exists())
+        self.assertFalse(Site.objects.filter(slug="site-stale").exists())
+        # site-u has a rack → kept despite not being in Forward locations.
+        self.assertTrue(Site.objects.filter(slug="site-u").exists())
 
     def test_collection_gap_alert_command_breaches_and_tags(self):
         import json
