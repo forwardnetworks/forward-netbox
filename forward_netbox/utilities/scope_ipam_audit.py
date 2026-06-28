@@ -11,6 +11,8 @@
 # consider the same object. An object whose identity is indeterminate (no non-null
 # lookup key) is reported as `unmatchable` and never flagged stale, so the audit
 # cannot produce a false delete candidate.
+from django.db import transaction
+
 from .apply_engine_bulk import lookup_key_from_object
 from .apply_engine_bulk import lookup_key_from_values
 from .query_fetch import ForwardQueryFetcher
@@ -150,6 +152,10 @@ def audit_model_rows(model_string, rows, *, sample_limit=20):
         "unmatchable_count": unmatchable_count,
         "stale_count": len(stale),
         "stale_sample": [str(obj) for obj in stale[:sample_limit]],
+        # PKs of the stale objects — drives the delete-eligible tag (read by
+        # tag_delete_eligible_ipam). `unmatchable` objects are never included,
+        # so a tagged object always has a determinate identity absent from Forward.
+        "stale_pks": [obj.pk for obj in stale],
     }
 
 
@@ -191,4 +197,105 @@ def audit_global_ipam_scope(
         "models_audited": selected,
         "results": results,
         "total_stale": sum(result["stale_count"] for result in results),
+    }
+
+
+# A self-healing NetBox tag marking network-global IPAM (prefixes/VLANs/VRFs)
+# whose identity is absent from the sync's latest Forward fetch. This NEVER
+# deletes; it stamps review candidates so an operator can filter by the tag in
+# NetBox (e.g. /ipam/prefixes/?tag=forward-delete-eligible) and bulk-delete what
+# they confirm. The tag set is reconciled to exactly the stale set on every run:
+# an object that reappears in a later Forward fetch is untagged automatically.
+# NetBox's own PROTECT FKs (Prefix/IPRange/IPAddress -> VRF, Prefix/WirelessLAN
+# -> VLAN) still block any delete of an object that retains dependents, so the
+# tag is a review aid, not an authorization to destroy live addressing.
+DELETE_ELIGIBLE_TAG_SLUG = "forward-delete-eligible"
+DELETE_ELIGIBLE_TAG_NAME = "Forward: delete-eligible"
+DELETE_ELIGIBLE_TAG_COLOR = "f44336"  # red — matches the "removable" signal
+DELETE_ELIGIBLE_TAG_DESCRIPTION = (
+    "Network-global IPAM absent from the latest Forward fetch. Review and delete "
+    "manually; reconciled on every run (auto-untagged if it returns to Forward)."
+)
+
+
+def _apply_maintained_ipam_tag(model, want_pks, *, slug, name, color, description):
+    """Make ``model``'s tag set exactly ``want_pks`` for the delete-eligible tag.
+
+    Adds the tag to objects in ``want_pks`` that lack it and removes it from
+    objects that carry it but are no longer stale. Idempotent. Returns
+    ``{added, removed, total}``.
+    """
+    from extras.models import Tag
+
+    tag, _ = Tag.objects.get_or_create(
+        slug=slug,
+        defaults={"name": name, "color": color, "description": description},
+    )
+    want_ids = set(want_pks)
+    currently_tagged_ids = set(
+        model.objects.filter(tags__slug=slug).values_list("pk", flat=True)
+    )
+    added = 0
+    removed = 0
+    for obj in model.objects.filter(pk__in=want_ids - currently_tagged_ids):
+        obj.tags.add(tag)
+        added += 1
+    for obj in model.objects.filter(pk__in=currently_tagged_ids - want_ids):
+        obj.tags.remove(tag)
+        removed += 1
+    return {"added": added, "removed": removed, "total": len(want_ids)}
+
+
+def tag_delete_eligible_ipam(
+    sync, client, logger, *, models=None, sample_limit=20, fetch_rows=None
+):
+    """Maintain the ``forward-delete-eligible`` tag across network-global IPAM.
+
+    For each enabled, selected model the sync's latest Forward fetch is compared
+    against NetBox (reusing the read-only audit identity matching) and the tag is
+    reconciled to exactly the stale set. Never deletes.
+
+    Guard: if the Forward fetch returns **zero** rows for a model, that model is
+    skipped (not tagged) — an empty/failed fetch must not flag every NetBox object
+    as eligible. The model is reported under ``skipped`` instead.
+    """
+    enabled = set(sync.get_model_strings())
+    requested = models or GLOBAL_IPAM_AUDIT_MODELS
+    selected = [model for model in requested if model in enabled]
+    fetch_rows = fetch_rows or _default_fetch_rows
+
+    results = []
+    skipped = []
+    with transaction.atomic():
+        for model_string in selected:
+            rows = fetch_rows(sync, client, logger, model_string)
+            if not rows:
+                skipped.append({"model": model_string, "reason": "empty_forward_fetch"})
+                continue
+            audit = audit_model_rows(model_string, rows, sample_limit=sample_limit)
+            tag_result = _apply_maintained_ipam_tag(
+                _model_class(model_string),
+                audit["stale_pks"],
+                slug=DELETE_ELIGIBLE_TAG_SLUG,
+                name=DELETE_ELIGIBLE_TAG_NAME,
+                color=DELETE_ELIGIBLE_TAG_COLOR,
+                description=DELETE_ELIGIBLE_TAG_DESCRIPTION,
+            )
+            results.append(
+                {
+                    "model": model_string,
+                    "forward_rows": audit["forward_rows"],
+                    "netbox_count": audit["netbox_count"],
+                    "tagged": tag_result["added"],
+                    "untagged": tag_result["removed"],
+                    "total_eligible": tag_result["total"],
+                    "stale_sample": audit["stale_sample"],
+                }
+            )
+    return {
+        "tag_slug": DELETE_ELIGIBLE_TAG_SLUG,
+        "models_tagged": [result["model"] for result in results],
+        "skipped": skipped,
+        "results": results,
+        "total_eligible": sum(result["total_eligible"] for result in results),
     }
