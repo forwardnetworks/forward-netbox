@@ -8,6 +8,8 @@ from ipam.models import VRF
 
 from forward_netbox.utilities.scope_ipam_audit import audit_global_ipam_scope
 from forward_netbox.utilities.scope_ipam_audit import audit_model_rows
+from forward_netbox.utilities.scope_ipam_audit import DELETE_ELIGIBLE_TAG_SLUG
+from forward_netbox.utilities.scope_ipam_audit import tag_delete_eligible_ipam
 
 
 class ScopeIpamAuditTest(TestCase):
@@ -76,3 +78,74 @@ class ScopeIpamAuditTest(TestCase):
         self.assertEqual(payload["models_audited"], ["ipam.vrf"])
         self.assertEqual(payload["total_stale"], 1)
         self.assertEqual(payload["results"][0]["stale_sample"], ["absent"])
+
+    def test_audit_model_rows_exposes_stale_pks(self):
+        keep = VRF.objects.create(name="keep")
+        stale = VRF.objects.create(name="stale")
+        result = audit_model_rows("ipam.vrf", [{"name": "keep", "rd": None}])
+        self.assertEqual(result["stale_pks"], [stale.pk])
+        self.assertNotIn(keep.pk, result["stale_pks"])
+
+    def _vrf_sync(self):
+        return SimpleNamespace(get_model_strings=lambda: ["ipam.vrf", "dcim.device"])
+
+    def test_tag_delete_eligible_tags_stale_and_skips_kept(self):
+        keep = VRF.objects.create(name="present")
+        stale = VRF.objects.create(name="absent")
+        canned = {"ipam.vrf": [{"name": "present", "rd": None}]}
+
+        payload = tag_delete_eligible_ipam(
+            self._vrf_sync(),
+            client=None,
+            logger=None,
+            fetch_rows=lambda s, c, lg, model: canned.get(model, []),
+        )
+
+        self.assertEqual(payload["tag_slug"], DELETE_ELIGIBLE_TAG_SLUG)
+        self.assertEqual(payload["total_eligible"], 1)
+        self.assertTrue(stale.tags.filter(slug=DELETE_ELIGIBLE_TAG_SLUG).exists())
+        self.assertFalse(keep.tags.filter(slug=DELETE_ELIGIBLE_TAG_SLUG).exists())
+
+    def test_tag_delete_eligible_is_self_healing(self):
+        stale = VRF.objects.create(name="absent")
+        VRF.objects.create(name="present")
+
+        def fetch_only_present(s, c, lg, model):
+            return [{"name": "present", "rd": None}]
+
+        # First run: `absent` is stale -> tagged.
+        tag_delete_eligible_ipam(
+            self._vrf_sync(), None, None, fetch_rows=fetch_only_present
+        )
+        self.assertTrue(stale.tags.filter(slug=DELETE_ELIGIBLE_TAG_SLUG).exists())
+
+        # `absent` returns to Forward -> tag is reconciled off on the next run.
+        def fetch_both(s, c, lg, model):
+            return [
+                {"name": "present", "rd": None},
+                {"name": "absent", "rd": None},
+            ]
+
+        payload = tag_delete_eligible_ipam(
+            self._vrf_sync(), None, None, fetch_rows=fetch_both
+        )
+        self.assertEqual(payload["total_eligible"], 0)
+        self.assertEqual(payload["results"][0]["untagged"], 1)
+        self.assertFalse(stale.tags.filter(slug=DELETE_ELIGIBLE_TAG_SLUG).exists())
+
+    def test_tag_delete_eligible_skips_empty_forward_fetch(self):
+        # An empty/failed fetch must not flag every NetBox object as eligible.
+        survivor = VRF.objects.create(name="lonely")
+        payload = tag_delete_eligible_ipam(
+            self._vrf_sync(),
+            None,
+            None,
+            fetch_rows=lambda s, c, lg, model: [],
+        )
+        self.assertEqual(payload["total_eligible"], 0)
+        self.assertEqual(payload["models_tagged"], [])
+        self.assertEqual(
+            payload["skipped"],
+            [{"model": "ipam.vrf", "reason": "empty_forward_fetch"}],
+        )
+        self.assertFalse(survivor.tags.filter(slug=DELETE_ELIGIBLE_TAG_SLUG).exists())
