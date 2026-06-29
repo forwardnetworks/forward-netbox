@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v2.2.0
+
+Fix devices mis-assigned the ACI platform; link Palo vsys / Fortinet vdom firewalls to their physical chassis
+
 ## v2.1.5
 
 Fix Prune orphans erroring on empty sites that still hold a VLAN/VM/prefix (delete only truly-empty sites)
