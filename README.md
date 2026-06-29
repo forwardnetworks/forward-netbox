@@ -8,7 +8,8 @@ Forward 26.6 is the baseline for async NQE.
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v2.1.5` | `4.6.3` required; needs netbox-branching `1.1.0+` | Current release; Fix Prune orphans erroring on empty sites that still hold a VLAN/VM/prefix (delete only truly-empty sites) |
+| `v2.1.6` | `4.6.3` required; needs netbox-branching `1.1.0+` | Current release; Fix devices mis-assigned the ACI platform (CUSTOM command wrongly treated as an ACI signal) |
+| `v2.1.5` | `4.6.3` required; needs netbox-branching `1.1.0+` | Superseded by `v2.1.6`; Fix Prune orphans erroring on empty sites that still hold a VLAN/VM/prefix (delete only truly-empty sites) |
 | `v2.1.4` | `4.6.3` required; needs netbox-branching `1.1.0+` | Superseded by `v2.1.5`; Tag delete-eligible global IPAM (prefixes/VLANs/VRFs) for manual review |
 | `v2.1.3` | `4.6.3` required; needs netbox-branching `1.1.0+` | Superseded by `v2.1.4`; Prune empty orphan sites (zero devices + zero racks) alongside out-of-scope devices |
 | `v2.1.3` | `4.6.3` required; needs netbox-branching `1.1.0+` | Superseded by `v2.1.3`; Prune empty orphan sites (zero devices + zero racks) alongside out-of-scope devices |
