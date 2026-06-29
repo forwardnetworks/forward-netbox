@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v2.1.5
+
+Fix Prune orphans erroring on empty sites that still hold a VLAN/VM/prefix (delete only truly-empty sites)
+
 ## v2.1.4
 
 Tag delete-eligible global IPAM (prefixes/VLANs/VRFs) for manual review

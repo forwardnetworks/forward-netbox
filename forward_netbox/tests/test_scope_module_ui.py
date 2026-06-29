@@ -238,6 +238,41 @@ class ScopeModuleUiTest(TestCase):
         # site-u has a rack → kept despite not being in Forward locations.
         self.assertTrue(Site.objects.filter(slug="site-u").exists())
 
+    def test_prune_keeps_sites_with_non_device_objects(self):
+        # Regression: a site empty of devices+racks but still holding a VLAN
+        # (PROTECT) or a prefix (CASCADE) is NOT truly empty. Deleting it would
+        # either raise ProtectedError (aborting the whole prune) or silently
+        # cascade-delete the prefix. Such sites must be kept; only a site nothing
+        # references is pruned.
+        from ipam.models import Prefix
+        from ipam.models import VLAN
+
+        from forward_netbox.utilities.scope_reconciliation import prune_orphan_sites
+
+        Rack.objects.create(name="rack-keep", site=self.site)  # keeps setUp's site-u
+        site_vlan = Site.objects.create(name="Site Vlan", slug="site-vlan")
+        site_prefix = Site.objects.create(name="Site Prefix", slug="site-prefix")
+        Site.objects.create(name="Site Empty", slug="site-empty")
+        VLAN.objects.create(vid=10, name="v10", site=site_vlan)  # PROTECT
+        # NetBox 4.x scopes a prefix via the generic `scope` (mirrored to _site).
+        Prefix.objects.create(prefix="10.0.0.0/24", scope=site_prefix)  # CASCADE
+
+        report = {
+            "_tagged_names": {"dev-x"},
+            "_forward_site_slugs": {"site-active"},  # none of the above are in-scope
+        }
+        result = prune_orphan_sites(self.sync, report=report)
+
+        # Only the truly-empty orphan is pruned; no ProtectedError raised.
+        self.assertEqual(result["pruned_site_count"], 1)
+        self.assertFalse(Site.objects.filter(slug="site-empty").exists())
+        # VLAN-bearing and prefix-bearing sites are kept; the prefix survives.
+        self.assertTrue(Site.objects.filter(slug="site-vlan").exists())
+        self.assertTrue(Site.objects.filter(slug="site-prefix").exists())
+        self.assertTrue(Prefix.objects.filter(prefix="10.0.0.0/24").exists())
+        # site-u (rack) kept.
+        self.assertTrue(Site.objects.filter(slug="site-u").exists())
+
     def test_collection_gap_alert_command_breaches_and_tags(self):
         import json
         from io import StringIO
