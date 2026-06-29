@@ -180,12 +180,10 @@ def compute_scope_reconciliation(sync) -> dict:
 
     # Compute empty orphan sites for the preview (current DB state; prune re-queries
     # after device deletion so sites that become empty then are also removed).
-    from dcim.models import Rack, Site
+    from dcim.models import Site
 
     if forward_site_slugs:
-        device_site_ids = set(Device.objects.values_list("site_id", flat=True))
-        rack_site_ids = set(Rack.objects.values_list("site_id", flat=True))
-        occupied_site_ids = device_site_ids | rack_site_ids
+        occupied_site_ids = _occupied_site_ids()
         empty_orphan_sites = list(
             Site.objects.exclude(slug__in=forward_site_slugs)
             .exclude(pk__in=occupied_site_ids)
@@ -260,14 +258,52 @@ def prune_orphan_devices(sync, *, report=None) -> dict:
     }
 
 
-def prune_orphan_sites(sync, *, report=None) -> dict:
-    """Delete empty NetBox sites absent from the sync's Forward location scope.
+def _occupied_site_ids() -> set:
+    """Site PKs referenced by ANY related object (FK), across every relation.
 
-    Only removes sites with zero devices AND zero racks. Re-queries current DB
-    state so sites that became empty after device prune are also removed.
-    Safety: refuses when the Forward scope returned 0 devices or no location data.
+    A site is "truly empty" only when nothing points to it. We union the site
+    foreign keys of every reverse relation (devices, racks, prefixes, VLANs, VMs,
+    power panels, locations, clusters, wireless LANs, circuit/cable terminations,
+    …) rather than just devices+racks. This matters for two reasons NetBox's own
+    FK ``on_delete`` rules impose:
+      * PROTECT (Device, Rack, PowerPanel, VLAN, VirtualMachine) — deleting a site
+        that still has one of these raises ``ProtectedError``.
+      * CASCADE (Prefix, Location, Cluster, WirelessLAN, CircuitTermination) —
+        deleting the site would silently destroy those children.
+    Either way such a site is not "truly empty" and must be kept. Many-to-many
+    relations (e.g. ConfigContext.sites) do not pin a site and are skipped.
     """
-    from dcim.models import Rack, Site
+    from dcim.models import Site
+
+    occupied = set()
+    for rel in Site._meta.related_objects:
+        if rel.many_to_many:
+            continue
+        attname = rel.field.attname  # e.g. "site_id" / "_site_id"
+        occupied.update(
+            rel.related_model.objects.exclude(**{attname: None}).values_list(
+                attname, flat=True
+            )
+        )
+    occupied.discard(None)
+    return occupied
+
+
+def prune_orphan_sites(sync, *, report=None) -> dict:
+    """Delete truly-empty NetBox sites absent from the sync's Forward location scope.
+
+    Only removes sites that nothing references (no devices, racks, prefixes, VLANs,
+    VMs, power panels, locations, clusters, …) — see ``_occupied_site_ids``. A site
+    with any remaining object is kept, so the prune neither hits a NetBox PROTECT
+    error nor cascade-deletes child objects. Re-queries current DB state so sites
+    emptied by the device prune in the same job are also removed. Deletes one site
+    at a time and skips any that unexpectedly raise ``ProtectedError`` so a single
+    surprise relation cannot abort the whole prune. Safety: refuses when the
+    Forward scope returned 0 devices or no location data.
+    """
+    from django.db.models.deletion import ProtectedError
+
+    from dcim.models import Site
 
     if report is None:
         report = compute_scope_reconciliation(sync)
@@ -277,26 +313,32 @@ def prune_orphan_sites(sync, *, report=None) -> dict:
         )
     forward_site_slugs = report.get("_forward_site_slugs") or set()
     if not forward_site_slugs:
-        return {"pruned_site_count": 0, "pruned_site_object_count": 0}
-    device_site_ids = set(Device.objects.values_list("site_id", flat=True))
-    rack_site_ids = set(Rack.objects.values_list("site_id", flat=True))
-    occupied_site_ids = device_site_ids | rack_site_ids
+        return {"pruned_site_count": 0, "pruned_site_object_count": 0, "skipped": 0}
+    occupied_site_ids = _occupied_site_ids()
     prunable_pks = list(
         Site.objects.exclude(slug__in=forward_site_slugs)
         .exclude(pk__in=occupied_site_ids)
         .values_list("pk", flat=True)
     )
     if not prunable_pks:
-        return {"pruned_site_count": 0, "pruned_site_object_count": 0}
+        return {"pruned_site_count": 0, "pruned_site_object_count": 0, "skipped": 0}
+    pruned_sites = 0
     pruned_objects = 0
-    with transaction.atomic():
-        for start in range(0, len(prunable_pks), 500):
-            batch = prunable_pks[start : start + 500]
-            deleted, _ = Site.objects.filter(pk__in=batch).delete()
+    skipped = 0
+    for pk in prunable_pks:
+        try:
+            with transaction.atomic():
+                deleted, _ = Site.objects.filter(pk=pk).delete()
+            pruned_sites += 1
             pruned_objects += deleted
+        except ProtectedError:
+            # A relation not covered by the occupancy union still pins this site;
+            # leave it rather than fail the whole prune.
+            skipped += 1
     return {
-        "pruned_site_count": len(prunable_pks),
+        "pruned_site_count": pruned_sites,
         "pruned_site_object_count": pruned_objects,
+        "skipped": skipped,
     }
 
 
