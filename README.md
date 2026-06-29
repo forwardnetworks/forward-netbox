@@ -8,7 +8,8 @@ Forward 26.6 is the baseline for async NQE.
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v2.1.4` | `4.6.3` required; needs netbox-branching `1.1.0+` | Current release; Tag delete-eligible global IPAM (prefixes/VLANs/VRFs) for manual review |
+| `v2.1.5` | `4.6.3` required; needs netbox-branching `1.1.0+` | Current release; Fix Prune orphans erroring on empty sites that still hold a VLAN/VM/prefix (delete only truly-empty sites) |
+| `v2.1.4` | `4.6.3` required; needs netbox-branching `1.1.0+` | Superseded by `v2.1.5`; Tag delete-eligible global IPAM (prefixes/VLANs/VRFs) for manual review |
 | `v2.1.3` | `4.6.3` required; needs netbox-branching `1.1.0+` | Superseded by `v2.1.4`; Prune empty orphan sites (zero devices + zero racks) alongside out-of-scope devices |
 | `v2.1.3` | `4.6.3` required; needs netbox-branching `1.1.0+` | Superseded by `v2.1.3`; Prune empty orphan sites (zero devices + zero racks) alongside out-of-scope devices |
 | `v2.1.2` | `4.6.3` required; needs netbox-branching `1.1.0+` | Superseded by `v2.1.3`; Feature + docs: (1) new out-of-scope orphan health signal — the sync health summary now shows how many NetBox devices match none of the included Forward tags (removable via Scope Reconciliation -> Prune orphans), mirroring the backfilled signal, via a self-healing `forward-out-of-scope` device tag and a `?tag=forward-out-of-scope` filter; (2) docs: the "no covering prefix" diagnostic now names /32 and /128 host addresses (loopbacks, anycast, some VIPs), and the Operations Guide documents backfilled (in-scope, kept) vs out-of-scope (removable) devices. Drop-in from `2.1.1`. |
