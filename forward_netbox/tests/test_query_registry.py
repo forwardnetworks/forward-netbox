@@ -739,6 +739,13 @@ class QueryRegistryTest(TestCase):
 
         self.assertIn("export deviceHasAciCommandOutputs(device: Device)", utilities)
         for command_type in expected["command_types"]:
+            # CommandType.CUSTOM is the generic catch-all collected by the ACI
+            # command-inventory query, but it must NOT be an ACI signal in
+            # deviceHasAciCommandOutputs — it is present on nearly every device,
+            # so including it misclassified ~all devices as the "ACI" platform.
+            if command_type == "CUSTOM":
+                self.assertNotIn("CommandType.CUSTOM", utilities)
+                continue
             self.assertIn(command_type, utilities)
         self.assertIn(
             "export normalizeDevicePlatformName(device: Device)",
