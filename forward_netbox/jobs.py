@@ -166,6 +166,28 @@ def _maybe_enqueue_backfilled_tag_refresh(sync):
         logger.warning("Auto backfilled-tag refresh enqueue failed: %s", exc)
 
 
+def _maybe_enqueue_vsys_parent_link(sync):
+    """Opt-in: after a successful sync, link virtual-context firewalls (Palo vsys /
+    Fortinet vdom) to their physical chassis via the ``forward_parent_device``
+    custom field. Enabled per sync with ``auto_link_vsys_parents=True`` (matches
+    the other post-sync overlays); otherwise run ``forward_link_vsys_parents`` by
+    hand. Non-destructive and never affects the sync result.
+    """
+    if not (sync.parameters or {}).get("auto_link_vsys_parents"):
+        return
+    try:
+        from django.utils.module_loading import import_string
+
+        Job.enqueue(
+            import_string("forward_netbox.jobs.link_forward_vsys_parents"),
+            instance=sync,
+            user=sync.user,
+            name=f"{sync.name} - link vsys/vdom parents (auto)",
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Auto vsys parent-link enqueue failed: %s", exc)
+
+
 def sync_forwardsync(job, *args, **kwargs):
     sync = ForwardSync.objects.get(pk=job.object_id)
 
@@ -175,6 +197,7 @@ def sync_forwardsync(job, *args, **kwargs):
         safe_save_job_data(job, sync)
         _maybe_enqueue_device_analysis_refresh(sync)
         _maybe_enqueue_backfilled_tag_refresh(sync)
+        _maybe_enqueue_vsys_parent_link(sync)
         job.terminate()
     except Exception as exc:
         safe_save_job_data(job, sync)
@@ -360,6 +383,36 @@ def tag_forward_backfilled_devices(job, *args, **kwargs):
         job.save(update_fields=["data"])
         job.terminate()
     except Exception as exc:
+        job.terminate(status=JobStatusChoices.STATUS_ERRORED)
+        if type(exc) in (SyncError, JobTimeoutException):
+            logger.error(exc)
+        else:
+            raise
+
+
+def link_forward_vsys_parents(job, *args, **kwargs):
+    """Background linkage of virtual-context firewalls (Palo vsys / Fortinet vdom)
+    to their physical chassis via the ``forward_parent_device`` custom field.
+
+    Runs as a job because it issues a live Forward query and may update many
+    devices. Non-destructive — only sets/clears the custom field.
+    """
+    from .utilities.logging import SyncLogging
+    from .utilities.vsys_parent import link_vsys_parents
+
+    sync = ForwardSync.objects.get(pk=job.object_id)
+    try:
+        job.start()
+        client = sync.source.get_client()
+        job.data = link_vsys_parents(sync, client, SyncLogging())
+        job.save(update_fields=["data"])
+        job.terminate()
+    except Exception as exc:
+        job.data = {
+            "error": str(exc) or exc.__class__.__name__,
+            "error_type": exc.__class__.__name__,
+        }
+        job.save(update_fields=["data"])
         job.terminate(status=JobStatusChoices.STATUS_ERRORED)
         if type(exc) in (SyncError, JobTimeoutException):
             logger.error(exc)

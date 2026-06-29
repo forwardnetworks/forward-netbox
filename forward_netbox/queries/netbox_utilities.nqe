@@ -99,7 +99,6 @@ export deviceHasAciCommandOutputs(device: Device) =
       where command.commandType in [
         CommandType.CISCO_APIC_SWITCH,
         CommandType.CISCO_APIC_CONTROLLER_DETAIL,
-        CommandType.CUSTOM,
         CommandType.CISCO_ACI_FABRIC_NODES,
         CommandType.CISCO_ACI_FABRIC_VRFS,
         CommandType.CISCO_ACI_NODE_TYPE,
