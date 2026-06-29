@@ -311,6 +311,13 @@ def prune_forward_orphans(job, *args, **kwargs):
         job.terminate(status=JobStatusChoices.STATUS_ERRORED)
         logger.error(exc)
     except Exception as exc:
+        # Record the failure on the job so it is visible in the UI (the Data panel)
+        # instead of an empty Error field with null data.
+        job.data = {
+            "error": str(exc) or exc.__class__.__name__,
+            "error_type": exc.__class__.__name__,
+        }
+        job.save(update_fields=["data"])
         job.terminate(status=JobStatusChoices.STATUS_ERRORED)
         if type(exc) in (SyncError, JobTimeoutException):
             logger.error(exc)
