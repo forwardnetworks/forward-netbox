@@ -338,6 +338,66 @@ class ForwardIngestionLogExportViewTest(TestCase):
         self.assertContains(response, "ipam.prefix 1")
         self.assertContains(response, "vrf 1")
 
+    def test_poll_defers_change_explainability_while_running(self):
+        # Regression (504 fix): while the job is running, the 5s/15s poll must
+        # NOT recompute change_explainability — doing so on every poll piles DB
+        # load onto the web workers during a long settling merge, which is what
+        # produces the gateway 504s on large platform-reclassification syncs.
+        running_sync = ForwardSync.objects.create(
+            name="sync-running-poll",
+            source=self.source,
+            parameters={"snapshot_id": "latestProcessed"},
+        )
+        running_ing = ForwardIngestion.objects.create(
+            sync=running_sync,
+            snapshot_selector="latestProcessed",
+            snapshot_id="snap-running",
+        )
+        now = timezone.now()
+        running_job = Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardIngestion),
+            object_id=running_ing.pk,
+            name="running-ingestion-job",
+            user=None,
+            status=JobStatusChoices.STATUS_RUNNING,
+            job_id="333e4567-e89b-12d3-a456-426614174002",
+            created=now,
+            started=now,
+            completed=None,
+            data={},
+        )
+        running_ing.job = running_job
+        running_ing.save(update_fields=["job"])
+
+        self.client.force_login(self.user)
+        with patch("forward_netbox.views.change_explainability_summary") as mock_ce:
+            response = self.client.get(
+                reverse(
+                    "plugins:forward_netbox:forwardingestion_logs",
+                    kwargs={"pk": running_ing.pk},
+                ),
+                headers={"HX-Request": "true"},
+            )
+        self.assertEqual(response.status_code, 200)
+        mock_ce.assert_not_called()
+
+    def test_poll_computes_change_explainability_when_done(self):
+        # The completed ingestion still computes it (the deferral is only while
+        # the job runs), so the operator sees the breakdown once it finishes.
+        self.client.force_login(self.user)
+        with patch(
+            "forward_netbox.views.change_explainability_summary",
+            return_value={"available": False},
+        ) as mock_ce:
+            self.client.get(
+                reverse(
+                    "plugins:forward_netbox:forwardingestion_logs",
+                    kwargs={"pk": self.ingestion.pk},
+                ),
+                headers={"HX-Request": "true"},
+            )
+        mock_ce.assert_called_once()
+
     def test_export_logs_compacts_large_execution_plan_items(self):
         sync = ForwardSync.objects.create(
             name="sync-log-export-plan-items",

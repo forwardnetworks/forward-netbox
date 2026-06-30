@@ -22,7 +22,7 @@
      hx-swap-oob="true"
      class="col col-md-12"
      hx-get="{{ logs_url }}?stage={{ active_stage }}"
-     hx-trigger="{% if polling_done %}none{% else %}every 5s{% endif %}"
+     hx-trigger="{% if polling_done %}none{% else %}every 15s{% endif %}"
      hx-target="#ingestion_logs"
      hx-select="#ingestion_logs"
      hx-select-oob="#ingestion_status:innerHTML,#ingestion_progress:innerHTML,#ingestion_statistics:innerHTML,#change_explainability:innerHTML,#object_tabs:innerHTML,#ingestion_merge_button:innerHTML"
