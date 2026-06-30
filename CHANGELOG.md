@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v2.2.1
+
+Add read-only forward_apply_identity_audit diagnostic to pinpoint 1-created/1-deleted idempotency churn
+
 ## v2.2.0
 
 Fix devices mis-assigned the ACI platform; link Palo vsys / Fortinet vdom firewalls to their physical chassis
