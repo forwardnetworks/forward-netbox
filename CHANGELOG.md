@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v2.2.2
+
+Fix 504 gateway timeouts on large syncs: stop recomputing change-explainability on every poll during a long merge + back off poll to 15s
+
 ## v2.2.1
 
 Add read-only forward_apply_identity_audit diagnostic to pinpoint 1-created/1-deleted idempotency churn

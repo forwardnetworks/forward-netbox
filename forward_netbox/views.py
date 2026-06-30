@@ -1374,19 +1374,27 @@ class ForwardIngestionLogView(LoginRequiredMixin, View):
         data["execution_state"] = _compact_execution_state_payload(
             json_safe_value(get_execution_display_state(ingestion.sync))
         )
-        data["change_explainability"] = change_explainability_summary(ingestion)
+        sync_running = ingestion.job and not ingestion.job.completed
+        merge_running = ingestion.merge_job and not ingestion.merge_job.completed
+        job_running = bool(sync_running or merge_running)
+        # Defer the change-explainability recompute while the job is running: it
+        # is only meaningful once staging/merge completes, and recomputing it on
+        # every poll piles DB load onto the web workers during a long settling
+        # merge (a large platform reclassification can run for minutes) — that
+        # contention is what produces the 504 gateway timeouts the customer sees.
+        data["change_explainability"] = (
+            {"available": False, "reason": "deferred_while_running"}
+            if job_running
+            else change_explainability_summary(ingestion)
+        )
         data["export_logs_url"] = reverse(
             "plugins:forward_netbox:forwardingestion_export_logs",
             kwargs={"pk": ingestion.pk},
         )
 
         if request.htmx:
-            sync_running = ingestion.job and not ingestion.job.completed
-            merge_running = ingestion.merge_job and not ingestion.merge_job.completed
             anything_ever_ran = ingestion.job or ingestion.merge_job
-            data["polling_done"] = (
-                bool(anything_ever_ran) and not sync_running and not merge_running
-            )
+            data["polling_done"] = bool(anything_ever_ran) and not job_running
         return render(request, self.template_name, data)
 
 
@@ -1447,7 +1455,13 @@ class ForwardIngestionView(generic.ObjectView):
         data["execution_state"] = _compact_execution_state_payload(
             json_safe_value(get_execution_display_state(instance.sync))
         )
-        data["change_explainability"] = change_explainability_summary(instance)
+        # Defer change-explainability while the job is running (see
+        # ForwardIngestionLogView): avoids recomputing it under merge contention.
+        data["change_explainability"] = (
+            {"available": False, "reason": "deferred_while_running"}
+            if data["job_running"]
+            else change_explainability_summary(instance)
+        )
         data["export_logs_url"] = reverse(
             "plugins:forward_netbox:forwardingestion_export_logs",
             kwargs={"pk": instance.pk},
