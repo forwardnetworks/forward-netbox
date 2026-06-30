@@ -167,7 +167,7 @@
     <div id="ingestion_poll"
          class="col col-md-12"
          hx-get="{% url 'plugins:forward_netbox:forwardingestion_logs' pk=object.pk %}?stage={{ active_stage|default:'sync' }}"
-         hx-trigger="{% if job_running %}every 5s{% else %}none{% endif %}"
+         hx-trigger="{% if job_running %}every 15s{% else %}none{% endif %}"
          hx-target="#ingestion_logs"
          hx-select="#ingestion_logs"
          hx-select-oob="#ingestion_status:innerHTML,#ingestion_progress:innerHTML,#ingestion_statistics:innerHTML,#change_explainability:innerHTML,#object_tabs:innerHTML,#ingestion_merge_button:innerHTML"
