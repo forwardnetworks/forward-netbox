@@ -33,7 +33,8 @@ pip install forward-netbox==1.7.2
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v2.2.0` | `4.6.3` required (4.5.x dropped); needs netbox-branching `1.1.0+` | Current release; Fix devices mis-assigned the ACI platform; link Palo vsys / Fortinet vdom firewalls to their physical chassis |
+| `v2.2.1` | `4.6.3` required (4.5.x dropped); needs netbox-branching `1.1.0+` | Current release; Add read-only forward_apply_identity_audit diagnostic to pinpoint 1-created/1-deleted idempotency churn |
+| `v2.2.0` | `4.6.3` required (4.5.x dropped); needs netbox-branching `1.1.0+` | Superseded by `v2.2.1`; Fix devices mis-assigned the ACI platform; link Palo vsys / Fortinet vdom firewalls to their physical chassis |
 | `v2.1.5` | `4.6.3` required (4.5.x dropped); needs netbox-branching `1.1.0+` | Superseded by `v2.2.0`; Fix Prune orphans erroring on empty sites that still hold a VLAN/VM/prefix (delete only truly-empty sites) |
 | `v2.1.4` | `4.6.3` required (4.5.x dropped); needs netbox-branching `1.1.0+` | Superseded by `v2.1.5`; Tag delete-eligible global IPAM (prefixes/VLANs/VRFs) for manual review |
 | `v2.1.3` | `4.6.3` required (4.5.x dropped); needs netbox-branching `1.1.0+` | Superseded by `v2.1.4`; Prune empty orphan sites (zero devices + zero racks) alongside out-of-scope devices |
