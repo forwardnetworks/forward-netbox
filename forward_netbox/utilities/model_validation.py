@@ -337,6 +337,7 @@ def clean_forward_sync(sync):
             "auto_tag_backfilled",
             "auto_refresh_device_analysis",
             "auto_link_vsys_parents",
+            "auto_prune_orphans",
             BRANCH_RUN_STATE_PARAMETER,
             MODEL_CHANGE_DENSITY_PARAMETER,
             MODEL_CHANGE_DENSITY_PROFILE_PARAMETER,
