@@ -30,16 +30,17 @@ let physicalLinks =
          where i.operStatus == OperStatus.UP
          foreach l in i.links
          select l)
-let vulnerabilities =
-  length(foreach c in device.cveFindings
-         where c.isVulnerable
-         select c.cveId)
+let cveIds =
+  foreach c in device.cveFindings
+  where c.isVulnerable
+  select c.cveId
 select {
   name: device.name,
   reachable: device.snapshotInfo.result == DeviceSnapshotResult.completed,
   collection_result: toString(device.snapshotInfo.result),
   blast_radius: physicalLinks,
-  cve_count: vulnerabilities,
+  cve_count: length(cveIds),
+  cve_ids: cveIds,
   up_interfaces: upInterfaces,
   detail: device.locationName
 }
