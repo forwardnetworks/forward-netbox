@@ -167,13 +167,15 @@ def _maybe_enqueue_backfilled_tag_refresh(sync):
 
 
 def _maybe_enqueue_vsys_parent_link(sync):
-    """Opt-in: after a successful sync, link virtual-context firewalls (Palo vsys /
+    """After a successful sync, link virtual-context firewalls (Palo vsys /
     Fortinet vdom) to their physical chassis via the ``forward_parent_device``
-    custom field. Enabled per sync with ``auto_link_vsys_parents=True`` (matches
-    the other post-sync overlays); otherwise run ``forward_link_vsys_parents`` by
-    hand. Non-destructive and never affects the sync result.
+    custom field. Non-destructive, idempotent, and never affects the sync result.
+
+    Runs by DEFAULT (unlike the opt-in overlays): a blank ``Parent Device`` on
+    every vsys/vdom is a confusing default, so the link auto-refreshes each sync
+    unless the sync explicitly opts out with ``auto_link_vsys_parents=False``.
     """
-    if not (sync.parameters or {}).get("auto_link_vsys_parents"):
+    if (sync.parameters or {}).get("auto_link_vsys_parents") is False:
         return
     try:
         from django.utils.module_loading import import_string

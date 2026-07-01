@@ -34,6 +34,14 @@
           {% endif %}
         </td>
       </tr>
+      {% if analysis.cve_ids %}
+      <tr>
+        <th scope="row">{% trans "CVEs" %}</th>
+        <td class="lh-lg">
+          {% for cve in analysis.cve_ids %}<a href="https://nvd.nist.gov/vuln/detail/{{ cve|urlencode }}" target="_blank" rel="noopener"><code>{{ cve }}</code></a>{% if not forloop.last %} {% endif %}{% endfor %}
+        </td>
+      </tr>
+      {% endif %}
       {% if analysis.detail %}
       <tr>
         <th scope="row">{% trans "Location" %}</th>

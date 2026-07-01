@@ -19,6 +19,20 @@ foreach ni in device.networkInstances
 where ni.name != "default"
 where toString(ni.instanceType) != "NetworkInstanceType.DEFAULT_INSTANCE"
 where isEmpty(forward_netbox_shard_keys) || ni.name in forward_netbox_shard_keys
+// Skip VRFs with no addressing: NetBox derives prefixes/IPs from subinterface
+// addresses keyed by networkInstanceName, so a VRF whose subinterfaces carry no
+// IPv4/IPv6 address imports as an empty VRF and re-imports every sync. Only emit
+// a VRF that has at least one addressed subinterface (mirrors how the prefix/IP
+// queries associate addressing to a VRF).
+where !isEmpty(
+  foreach interface in device.interfaces
+  foreach subinterface in interface.subinterfaces
+  where isPresent(subinterface.networkInstanceName)
+    && subinterface.networkInstanceName == ni.name
+    && (!isEmpty(subinterface.ipv4.addresses)
+      || !isEmpty(subinterface.ipv6.addresses))
+  select subinterface.networkInstanceName
+)
 select distinct {
   name: ni.name,
   rd: null : String,
