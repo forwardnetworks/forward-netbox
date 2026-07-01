@@ -39,6 +39,25 @@ class VsysParentTest(TestCase):
         self.assertEqual(vsys.custom_field_data.get(PARENT_DEVICE_CF), chassis.pk)
         # The physical chassis itself is never linked.
         self.assertIn(chassis.custom_field_data.get(PARENT_DEVICE_CF), (None, ""))
+        # The context is also modeled as a VirtualDeviceContext under the chassis.
+        from dcim.models import VirtualDeviceContext
+
+        self.assertEqual(result["vdc_created"], 1)
+        self.assertTrue(
+            VirtualDeviceContext.objects.filter(
+                device=chassis, name=vsys.name, status="active"
+            ).exists()
+        )
+        # Re-running is idempotent — the VDC is found, not re-created.
+        again = link_vsys_parents(
+            None, fetch_rows=self._rows([(vsys.name, chassis.name)])
+        )
+        self.assertEqual(again["vdc_created"], 0)
+        self.assertEqual(again["vdc_existing"], 1)
+        self.assertEqual(
+            VirtualDeviceContext.objects.filter(device=chassis, name=vsys.name).count(),
+            1,
+        )
 
     def test_orphan_parent_not_linked(self):
         # vsys present in NetBox, but its physical chassis is not collected.
