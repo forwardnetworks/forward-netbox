@@ -50,15 +50,18 @@ def _virtual_device_rows(sync, client=None, *, fetch_rows=None):
 
 
 def link_vsys_parents(sync, client=None, logger=None, *, fetch_rows=None) -> dict:
-    """Maintain the ``forward_parent_device`` custom field across virtual-context
-    devices present in NetBox. Idempotent; never deletes a device.
+    """Model virtual-context firewalls (Palo vsys / Fortinet vdom) two ways, both
+    additive and idempotent, never deleting a device:
+    (1) set the ``forward_parent_device`` custom field to the chassis, and
+    (2) create a NetBox ``VirtualDeviceContext`` for the context under the chassis.
 
-    Returns counts: ``linked`` (CF set/changed this run), ``cleared`` (a device
-    that is no longer a virtual context had its link removed), ``orphan_parent``
-    (virtual device whose physical chassis is not in NetBox — left unlinked),
-    ``already`` (link already correct).
+    Returns counts: ``linked`` (CF set/changed), ``cleared`` (a device no longer a
+    virtual context had its link removed), ``already`` (CF already correct),
+    ``orphan_parent`` (chassis not in NetBox — skipped), ``vdc_created`` /
+    ``vdc_existing`` (VirtualDeviceContexts created / already present).
     """
     from dcim.models import Device
+    from dcim.models import VirtualDeviceContext
 
     pairs = _virtual_device_rows(sync, client, fetch_rows=fetch_rows)
 
@@ -101,6 +104,27 @@ def link_vsys_parents(sync, client=None, logger=None, *, fetch_rows=None) -> dic
         device.save()
         cleared += 1
 
+    # Also model each vsys/vdom as a NetBox VirtualDeviceContext (VDC) under its
+    # physical chassis — the NetBox-native representation of a firewall context.
+    # Additive + idempotent: create-or-find by (chassis device, context name); we
+    # never delete a VDC (an operator may curate them) and never touch the vsys
+    # device rows, so this is safe alongside the flat-device import.
+    vdc_created = 0
+    vdc_existing = 0
+    for name, parent in pairs:
+        parent_pk = pk_by_name.get(parent)
+        if parent_pk is None or pk_by_name.get(name) is None:
+            continue
+        _, created = VirtualDeviceContext.objects.get_or_create(
+            device_id=parent_pk,
+            name=name,
+            defaults={"status": "active"},
+        )
+        if created:
+            vdc_created += 1
+        else:
+            vdc_existing += 1
+
     return {
         "cf": PARENT_DEVICE_CF,
         "virtual_devices": len(pairs),
@@ -108,4 +132,6 @@ def link_vsys_parents(sync, client=None, logger=None, *, fetch_rows=None) -> dic
         "already": already,
         "cleared": cleared,
         "orphan_parent": orphan_parent,
+        "vdc_created": vdc_created,
+        "vdc_existing": vdc_existing,
     }
