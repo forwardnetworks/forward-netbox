@@ -384,6 +384,7 @@ class ScopeModuleUiTest(TestCase):
                     "collection_result": "DeviceSnapshotResult.completed",
                     "blast_radius": 7,
                     "cve_count": 2,
+                    "cve_ids": ["CVE-2022-5678", "CVE-2021-1234"],
                     "up_interfaces": 5,
                     "detail": "DC1",
                 },
@@ -421,6 +422,8 @@ class ScopeModuleUiTest(TestCase):
         self.assertTrue(analysis.reachable)
         self.assertEqual(analysis.blast_radius, 7)
         self.assertEqual(analysis.cve_count, 2)
+        # CVE IDs stored (deduped + sorted) so the panel can list them.
+        self.assertEqual(analysis.cve_ids, ["CVE-2021-1234", "CVE-2022-5678"])
         self.assertEqual(analysis.up_interfaces, 5)
         self.assertEqual(analysis.collection_result, "completed")
         # The failed device surfaces the specific Forward collection error token.
@@ -442,6 +445,9 @@ class ScopeModuleUiTest(TestCase):
         )
         rendered = panel.right_page()
         self.assertIn("Forward Analysis", rendered)
+        # The actual CVE IDs behind the exposure count are listed + linked to NVD.
+        self.assertIn("CVE-2021-1234", rendered)
+        self.assertIn("nvd.nist.gov/vuln/detail/CVE-2022-5678", rendered)
         # Deep-link pivot into the Forward app.
         self.assertIn("Open in Forward", rendered)
         self.assertIn("https://fwd.app", rendered)

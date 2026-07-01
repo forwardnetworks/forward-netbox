@@ -430,6 +430,15 @@ def _committed_query_source(committed_query: dict) -> str:
     return ""
 
 
+# Friendly, non-alarming display labels for the raw drift status codes (the raw
+# code is kept for keying/counting; only the badge text changes). "unverified"
+# is expected + non-blocking for org-managed direct query IDs, so it should not
+# read like an error.
+_QUERY_DRIFT_STATUS_LABELS = {
+    "direct_query_id_unverified": "Org-managed (pinned)",
+}
+
+
 def _query_drift_result(
     query_map: ForwardNQEMap,
     *,
@@ -449,6 +458,9 @@ def _query_drift_result(
         "model": query_map.model_string,
         "mode": query_map.execution_mode,
         "status": status,
+        "status_label": _QUERY_DRIFT_STATUS_LABELS.get(
+            status, status.replace("_", " ").capitalize()
+        ),
         "severity": severity,
         "message": message,
         "remediation": remediation,

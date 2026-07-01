@@ -551,11 +551,11 @@
                 <td>{{ item.commit_message }}</td>
                 <td>
                   {% if item.severity == "pass" %}
-                    <span class="badge text-bg-success">{{ item.status }}</span>
+                    <span class="badge text-bg-success">{{ item.status_label|default:item.status }}</span>
                   {% elif item.severity == "warn" %}
-                    <span class="badge text-bg-warning">{{ item.status }}</span>
+                    <span class="badge text-bg-warning">{{ item.status_label|default:item.status }}</span>
                   {% else %}
-                    <span class="badge text-bg-secondary">{{ item.status }}</span>
+                    <span class="badge text-bg-secondary" title="{{ item.message }}">{{ item.status_label|default:item.status }}</span>
                   {% endif %}
                 </td>
                 <td>{{ item.message }}</td>

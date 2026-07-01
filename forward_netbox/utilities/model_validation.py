@@ -332,6 +332,11 @@ def clean_forward_sync(sync):
             "skip_unchanged_snapshot",
             "set_primary_ip_from_mgmt_tag",
             "diff_fallback_mode",
+            # Post-sync overlay toggles (opt-in, except vsys parent-link which is
+            # default-on and opts OUT with auto_link_vsys_parents=False).
+            "auto_tag_backfilled",
+            "auto_refresh_device_analysis",
+            "auto_link_vsys_parents",
             BRANCH_RUN_STATE_PARAMETER,
             MODEL_CHANGE_DENSITY_PARAMETER,
             MODEL_CHANGE_DENSITY_PROFILE_PARAMETER,
