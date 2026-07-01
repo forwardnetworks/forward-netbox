@@ -1604,6 +1604,10 @@ class ForwardSyncModelTest(TestCase):
             parameters={
                 "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
                 "dcim.device": True,
+                # Isolate this test to the recurring-reschedule enqueue; the
+                # vsys/vdom parent-link overlay is default-on and would add a
+                # second enqueue (covered by its own test).
+                "auto_link_vsys_parents": False,
             },
         )
         user = get_user_model().objects.create_user(username="recurring-user")

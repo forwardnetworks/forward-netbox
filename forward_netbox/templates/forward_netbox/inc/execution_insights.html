@@ -74,7 +74,8 @@
                 </div>
                 <div class="text-end text-muted small">
                   <div>{{ item.execution_mode }} / {{ item.fetch_mode }}</div>
-                  <div>{{ item.row_count }} rows, {{ item.delete_count }} deletes</div>
+                  {# delete_count is PLANNED intent from the Forward snapshot diff (rows Forward stopped reporting), computed before apply. The APPLIED delete count is the ingestion's num_deleted / change log — an item already absent from NetBox plans a delete but applies none, so these legitimately differ. Label as planned to avoid contradicting the change log. #}
+                  <div>{{ item.row_count }} rows, {{ item.delete_count }} delete(s) planned</div>
                 </div>
               </div>
             </li>

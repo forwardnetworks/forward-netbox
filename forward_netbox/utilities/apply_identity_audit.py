@@ -16,12 +16,20 @@
 #   * would_delete — NetBox objects matched by no Forward row.
 # A model with would_create AND would_delete both small (often 1/1) names the
 # churning object and shows the differing key. NEVER writes anything.
+import difflib
+
 from .apply_engine_bulk import lookup_key_from_object
 from .apply_engine_bulk import lookup_key_from_values
 
 # Identity mirrors apply_engine_bulk's simple-model specs. The Forward query for
 # each model emits the lookup fields directly (slug/name/rd/vid/site_slug); we
 # read those off the row rather than recomputing slugify.
+#
+# dcim.device is also audited (name-level, best-effort): it is the largest model
+# and the most likely carrier of a "1 created + 1 deleted" name-key flip-flop
+# (e.g. a virtual-context firewall whose Forward name drifts). It is NOT a simple
+# dimension — name uniqueness is site-scoped — so a device legitimately moved
+# between sites can show here; treat device pairs as a lead, not a verdict.
 SIMPLE_MODEL_IDENTITY = {
     "dcim.site": {"lookup_sets": (("slug",), ("name",)), "row": ("slug", "name")},
     "dcim.manufacturer": {
@@ -35,11 +43,13 @@ SIMPLE_MODEL_IDENTITY = {
     "dcim.platform": {"lookup_sets": (("slug",), ("name",)), "row": ("slug", "name")},
     "dcim.devicetype": {"lookup_sets": (("slug",),), "row": ("slug",)},
     "ipam.vrf": {"lookup_sets": (("rd",), ("name",)), "row": ("rd", "name")},
+    "dcim.device": {"lookup_sets": (("name",),), "row": ("name",)},
 }
 SIMPLE_MODELS = tuple(SIMPLE_MODEL_IDENTITY)
 
 
 def _model_class(model_string):
+    from dcim.models import Device
     from dcim.models import DeviceRole
     from dcim.models import DeviceType
     from dcim.models import Manufacturer
@@ -54,7 +64,56 @@ def _model_class(model_string):
         "dcim.platform": Platform,
         "dcim.devicetype": DeviceType,
         "ipam.vrf": VRF,
+        "dcim.device": Device,
     }[model_string]
+
+
+def _pair_churn(would_create, would_delete, *, limit=10):
+    """Match each would_delete (NetBox stored) to its most-similar would_create
+    (Forward computed) so the diagnostic names the churning object and the exact
+    key disagreement, instead of two disconnected lists.
+
+    ``would_create`` / ``would_delete`` are lists of (key, label) tuples — key is
+    the raw comparable string, label is the human-readable display. Returns
+    ``[{netbox, forward, similarity, differs_on}]`` for the best matches.
+    """
+    pairs = []
+    remaining = list(would_create)
+    for del_key, del_label in would_delete:
+        best = None
+        best_ratio = 0.0
+        for idx, (cre_key, cre_label) in enumerate(remaining):
+            ratio = difflib.SequenceMatcher(None, del_key, cre_key).ratio()
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best = (idx, cre_key, cre_label)
+        if best is None:
+            continue
+        idx, cre_key, cre_label = best
+        pairs.append(
+            {
+                "netbox": del_label,
+                "forward": cre_label,
+                "similarity": round(best_ratio, 3),
+                "differs_on": _describe_diff(del_key, cre_key),
+            }
+        )
+        remaining.pop(idx)
+    pairs.sort(key=lambda p: p["similarity"], reverse=True)
+    return pairs[:limit]
+
+
+def _describe_diff(netbox_key, forward_key):
+    """Short human hint for why two near-identical keys disagree."""
+    if netbox_key == forward_key:
+        return "identical"
+    if netbox_key.lower() == forward_key.lower():
+        return "case"
+    if netbox_key.strip() == forward_key.strip():
+        return "whitespace"
+    if netbox_key.replace("_", "-") == forward_key.replace("_", "-"):
+        return "underscore-vs-dash"
+    return "other"
 
 
 def audit_model_identity(model_string, rows, *, sample_limit=15):
@@ -76,7 +135,7 @@ def audit_model_identity(model_string, rows, *, sample_limit=15):
 
     netbox_keys = {lookup_set: set() for lookup_set in lookup_sets}
     netbox_count = 0
-    would_delete = []
+    would_delete = []  # (primary_key, label)
     for obj in model.objects.all().iterator():
         netbox_count += 1
         obj_keys = {
@@ -98,9 +157,10 @@ def audit_model_identity(model_string, rows, *, sample_limit=15):
             key_parts = ", ".join(
                 f"{field}={getattr(obj, field, None)}" for field in lookup_sets[0]
             )
-            would_delete.append(f"{obj} ({key_parts})")
+            primary_key = obj_keys[lookup_sets[0]] or str(obj)
+            would_delete.append((str(primary_key), f"{obj} ({key_parts})"))
 
-    would_create = []
+    would_create = []  # (primary_key, label)
     for row in rows:
         values = {field: (row.get(field) or None) for field in row_fields}
         matched = False
@@ -113,19 +173,32 @@ def audit_model_identity(model_string, rows, *, sample_limit=15):
             label = " / ".join(
                 str(values.get(field)) for field in row_fields if values.get(field)
             )
-            would_create.append(label or "?")
+            primary_key = lookup_key_from_values(
+                values, lookup_sets[0], model_string=model_string
+            )
+            would_create.append((str(primary_key), label or "?"))
 
+    churn_suspect = bool(would_create) and bool(would_delete)
     return {
         "model": model_string,
         "forward_rows": len(rows),
         "netbox_count": netbox_count,
         "would_create_count": len(would_create),
         "would_delete_count": len(would_delete),
-        "would_create_sample": sorted(would_create)[:sample_limit],
-        "would_delete_sample": sorted(would_delete)[:sample_limit],
+        "would_create_sample": sorted(label for _, label in would_create)[
+            :sample_limit
+        ],
+        "would_delete_sample": sorted(label for _, label in would_delete)[
+            :sample_limit
+        ],
         # The churn signature: both sides non-empty and small => one logical
         # object with two different keys (create the new, delete the orphan).
-        "churn_suspect": bool(would_create) and bool(would_delete),
+        "churn_suspect": churn_suspect,
+        # Pinpoint: pair each stale NetBox object with the Forward row most likely
+        # to be the SAME logical object, and name the exact key disagreement.
+        "churn_pairs": (
+            _pair_churn(would_create, would_delete) if churn_suspect else []
+        ),
     }
 
 

@@ -43,6 +43,23 @@ def _coerce_int(value):
         return 0
 
 
+# Bound the stored CVE-id list so a device with a very large finding set can't
+# bloat the row; the count (cve_count) remains authoritative for the total.
+_CVE_IDS_LIMIT = 200
+
+
+def _coerce_cve_ids(value):
+    if not isinstance(value, (list, tuple)):
+        return []
+    seen = []
+    for item in value:
+        cve = str(item or "").strip()
+        if cve and cve not in seen:
+            seen.append(cve)
+    seen.sort()
+    return seen[:_CVE_IDS_LIMIT]
+
+
 def refresh_device_analysis(sync) -> dict:
     """Upsert ForwardDeviceAnalysis rows from the device-analysis NQE.
 
@@ -80,6 +97,7 @@ def refresh_device_analysis(sync) -> dict:
                     )[:64],
                     "blast_radius": _coerce_int(row.get("blast_radius")),
                     "cve_count": _coerce_int(row.get("cve_count")),
+                    "cve_ids": _coerce_cve_ids(row.get("cve_ids")),
                     "up_interfaces": _coerce_int(row.get("up_interfaces")),
                     "detail": str(row.get("detail") or "")[:255],
                     "snapshot_id": str(snapshot_id or ""),

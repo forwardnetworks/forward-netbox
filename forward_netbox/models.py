@@ -959,6 +959,9 @@ class ForwardDeviceAnalysis(ForwardPluginModelDocsMixin, ChangeLoggedModel):
     collection_result = models.CharField(max_length=64, blank=True, default="")
     blast_radius = models.PositiveIntegerField(default=0)
     cve_count = models.PositiveIntegerField(default=0)
+    # The actual confirmed-vulnerable CVE IDs behind cve_count, so the device
+    # panel can list them (not just the exposure number).
+    cve_ids = models.JSONField(default=list, blank=True)
     up_interfaces = models.PositiveIntegerField(default=0)
     detail = models.CharField(max_length=255, blank=True, default="")
     snapshot_id = models.CharField(max_length=100, blank=True, default="")

@@ -64,6 +64,25 @@ class ForwardJobsTest(TestCase):
             enqueue.assert_called_once()
             self.assertEqual(enqueue.call_args.kwargs["instance"], self.sync)
 
+    def test_vsys_parent_link_enqueues_by_default_and_respects_opt_out(self):
+        from forward_netbox.jobs import _maybe_enqueue_vsys_parent_link
+
+        # DEFAULT-ON: no parameter -> the parent-link overlay enqueues (a blank
+        # Parent Device on every vsys/vdom is a confusing default).
+        with patch("forward_netbox.jobs.Job.enqueue") as enqueue:
+            _maybe_enqueue_vsys_parent_link(self.sync)
+            enqueue.assert_called_once()
+            self.assertEqual(enqueue.call_args.kwargs["instance"], self.sync)
+
+        # Explicit opt-out with auto_link_vsys_parents=False -> no enqueue.
+        self.sync.parameters = {
+            **self.sync.parameters,
+            "auto_link_vsys_parents": False,
+        }
+        with patch("forward_netbox.jobs.Job.enqueue") as enqueue:
+            _maybe_enqueue_vsys_parent_link(self.sync)
+            enqueue.assert_not_called()
+
     def test_record_timeout_issue_creates_single_issue_per_ingestion_phase(self):
         issue_1 = record_timeout_issue(
             self.ingestion,
