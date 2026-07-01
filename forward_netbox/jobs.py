@@ -190,6 +190,28 @@ def _maybe_enqueue_vsys_parent_link(sync):
         logger.warning("Auto vsys parent-link enqueue failed: %s", exc)
 
 
+def _maybe_enqueue_auto_prune(sync):
+    """Opt-in: after a successful sync, run "Prune orphans" (delete out-of-scope
+    devices + empty orphan sites). OFF by default because it deletes NetBox data;
+    enable per sync with ``auto_prune_orphans=True``. The prune keeps its own
+    guards (refuses when the Forward scope returned 0 devices). Never lets a prune
+    problem affect the sync result.
+    """
+    if not (sync.parameters or {}).get("auto_prune_orphans"):
+        return
+    try:
+        from django.utils.module_loading import import_string
+
+        Job.enqueue(
+            import_string("forward_netbox.jobs.prune_forward_orphans"),
+            instance=sync,
+            user=sync.user,
+            name=f"{sync.name} - prune orphans (auto)",
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Auto prune-orphans enqueue failed: %s", exc)
+
+
 def sync_forwardsync(job, *args, **kwargs):
     sync = ForwardSync.objects.get(pk=job.object_id)
 
@@ -200,6 +222,7 @@ def sync_forwardsync(job, *args, **kwargs):
         _maybe_enqueue_device_analysis_refresh(sync)
         _maybe_enqueue_backfilled_tag_refresh(sync)
         _maybe_enqueue_vsys_parent_link(sync)
+        _maybe_enqueue_auto_prune(sync)
         job.terminate()
     except Exception as exc:
         safe_save_job_data(job, sync)
