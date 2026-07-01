@@ -83,6 +83,21 @@ class ForwardJobsTest(TestCase):
             _maybe_enqueue_vsys_parent_link(self.sync)
             enqueue.assert_not_called()
 
+    def test_auto_prune_orphans_enqueues_only_when_enabled(self):
+        from forward_netbox.jobs import _maybe_enqueue_auto_prune
+
+        # OFF by default (it deletes NetBox data): no enqueue.
+        with patch("forward_netbox.jobs.Job.enqueue") as enqueue:
+            _maybe_enqueue_auto_prune(self.sync)
+            enqueue.assert_not_called()
+
+        # Opt-in via auto_prune_orphans: enqueues the prune job.
+        self.sync.parameters = {**self.sync.parameters, "auto_prune_orphans": True}
+        with patch("forward_netbox.jobs.Job.enqueue") as enqueue:
+            _maybe_enqueue_auto_prune(self.sync)
+            enqueue.assert_called_once()
+            self.assertIn("prune orphans", enqueue.call_args.kwargs["name"])
+
     def test_record_timeout_issue_creates_single_issue_per_ingestion_phase(self):
         issue_1 = record_timeout_issue(
             self.ingestion,
