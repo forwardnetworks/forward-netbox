@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v2.2.4
+
+Hotfix: device-analysis NQE (bare foreach) errored refresh + CVE list; surface job errors into job.data
+
 ## v2.2.3
 
 Field-feedback fixes: delete-count labeling, vsys/vdom auto-link, skip empty VRFs, per-device CVE list, churn pinpoint, query-ID status clarify
