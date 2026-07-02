@@ -31,9 +31,9 @@ let physicalLinks =
          foreach l in i.links
          select l)
 let cveIds =
-  foreach c in device.cveFindings
-  where c.isVulnerable
-  select c.cveId
+  (foreach c in device.cveFindings
+   where c.isVulnerable
+   select c.cveId)
 select {
   name: device.name,
   reachable: device.snapshotInfo.result == DeviceSnapshotResult.completed,

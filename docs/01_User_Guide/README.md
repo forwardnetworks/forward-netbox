@@ -33,7 +33,8 @@ pip install forward-netbox==1.7.2
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v2.2.3` | `4.6.3` required (4.5.x dropped); needs netbox-branching `1.1.0+` | Current release; Field-feedback fixes: delete-count labeling, vsys/vdom auto-link, skip empty VRFs, per-device CVE list, churn pinpoint, query-ID status clarify |
+| `v2.2.4` | `4.6.3` required (4.5.x dropped); needs netbox-branching `1.1.0+` | Current release; Hotfix: device-analysis NQE (bare foreach) errored refresh + CVE list; surface job errors into job.data |
+| `v2.2.3` | `4.6.3` required (4.5.x dropped); needs netbox-branching `1.1.0+` | Superseded by `v2.2.4`; Field-feedback fixes: delete-count labeling, vsys/vdom auto-link, skip empty VRFs, per-device CVE list, churn pinpoint, query-ID status clarify |
 | `v2.2.2` | `4.6.3` required (4.5.x dropped); needs netbox-branching `1.1.0+` | Superseded by `v2.2.3`; Fix 504 gateway timeouts on large syncs: stop recomputing change-explainability on every poll during a long merge + back off poll to 15s |
 | `v2.2.1` | `4.6.3` required (4.5.x dropped); needs netbox-branching `1.1.0+` | Superseded by `v2.2.2`; Add read-only forward_apply_identity_audit diagnostic to pinpoint 1-created/1-deleted idempotency churn |
 | `v2.2.0` | `4.6.3` required (4.5.x dropped); needs netbox-branching `1.1.0+` | Superseded by `v2.2.1`; Fix devices mis-assigned the ACI platform; link Palo vsys / Fortinet vdom firewalls to their physical chassis |
