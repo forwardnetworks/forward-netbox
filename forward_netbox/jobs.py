@@ -385,6 +385,13 @@ def refresh_forward_device_analysis(job, *args, **kwargs):
         job.save(update_fields=["data"])
         job.terminate()
     except Exception as exc:
+        # Record the failure on the job so it is visible in the UI (the Data
+        # panel) instead of an empty Error field with null data.
+        job.data = {
+            "error": str(exc) or exc.__class__.__name__,
+            "error_type": exc.__class__.__name__,
+        }
+        job.save(update_fields=["data"])
         job.terminate(status=JobStatusChoices.STATUS_ERRORED)
         if type(exc) in (SyncError, JobTimeoutException):
             logger.error(exc)
@@ -408,6 +415,13 @@ def tag_forward_backfilled_devices(job, *args, **kwargs):
         job.save(update_fields=["data"])
         job.terminate()
     except Exception as exc:
+        # Record the failure on the job so it is visible in the UI (the Data
+        # panel) instead of an empty Error field with null data.
+        job.data = {
+            "error": str(exc) or exc.__class__.__name__,
+            "error_type": exc.__class__.__name__,
+        }
+        job.save(update_fields=["data"])
         job.terminate(status=JobStatusChoices.STATUS_ERRORED)
         if type(exc) in (SyncError, JobTimeoutException):
             logger.error(exc)
@@ -464,6 +478,13 @@ def tag_forward_delete_eligible_ipam(job, *args, **kwargs):
         job.save(update_fields=["data"])
         job.terminate()
     except Exception as exc:
+        # Record the failure on the job so it is visible in the UI (the Data
+        # panel) instead of an empty Error field with null data.
+        job.data = {
+            "error": str(exc) or exc.__class__.__name__,
+            "error_type": exc.__class__.__name__,
+        }
+        job.save(update_fields=["data"])
         job.terminate(status=JobStatusChoices.STATUS_ERRORED)
         if type(exc) in (SyncError, JobTimeoutException):
             logger.error(exc)
@@ -485,6 +506,13 @@ def create_forward_module_bays(job, *args, **kwargs):
         job.save(update_fields=["data"])
         job.terminate()
     except Exception as exc:
+        # Record the failure on the job so it is visible in the UI (the Data
+        # panel) instead of an empty Error field with null data.
+        job.data = {
+            "error": str(exc) or exc.__class__.__name__,
+            "error_type": exc.__class__.__name__,
+        }
+        job.save(update_fields=["data"])
         job.terminate(status=JobStatusChoices.STATUS_ERRORED)
         if type(exc) in (SyncError, JobTimeoutException):
             logger.error(exc)
@@ -511,6 +539,13 @@ def forward_dependency_preview(job, *args, **kwargs):
         job.save(update_fields=["data"])
         job.terminate()
     except Exception as exc:
+        # Record the failure on the job so it is visible in the UI (the Data
+        # panel) instead of an empty Error field with null data.
+        job.data = {
+            "error": str(exc) or exc.__class__.__name__,
+            "error_type": exc.__class__.__name__,
+        }
+        job.save(update_fields=["data"])
         job.terminate(status=JobStatusChoices.STATUS_ERRORED)
         if type(exc) in (SyncError, JobTimeoutException):
             logger.error(exc)
