@@ -178,6 +178,9 @@ class ForwardQueryContext:
     device_tag_exclude_tags: list[str] = field(default_factory=list)
     device_tag_include_match: str = "any"
     device_tag_prune_out_of_scope: bool = False
+    # Forward tags the operator selected to sync as NetBox device tags (feeds the
+    # sync_device_tags query parameter of the device-tag sync query).
+    sync_device_tags: list[str] = field(default_factory=list)
     scoped_device_names: set[str] = field(default_factory=set)
     scoped_site_names: set[str] = field(default_factory=set)
     scoped_matched_tags: dict[str, list[str]] = field(default_factory=dict)
@@ -196,6 +199,7 @@ class ForwardQueryContext:
             "device_tag_exclude_tags": self.device_tag_exclude_tags,
             "device_tag_include_match": self.device_tag_include_match,
             "device_tag_prune_out_of_scope": self.device_tag_prune_out_of_scope,
+            "sync_device_tags": self.sync_device_tags,
             "scoped_device_count": len(self.scoped_device_names),
             "scoped_site_count": len(self.scoped_site_names),
             # Full per-device matched-tag map (not a count): the branch apply path
@@ -373,6 +377,10 @@ class ForwardQueryFetcher:
         prune_out_of_scope = bool(
             source_parameters.get("device_tag_prune_out_of_scope")
         )
+        sync_device_tags = source_parameters.get("sync_device_tags") or []
+        sync_device_tags = sorted(
+            {str(tag).strip() for tag in sync_device_tags if str(tag).strip()}
+        )
         context_cache_key = (
             network_id,
             snapshot_selector,
@@ -454,6 +462,7 @@ class ForwardQueryFetcher:
             device_tag_exclude_tags=exclude_tags,
             device_tag_include_match=include_match,
             device_tag_prune_out_of_scope=prune_out_of_scope,
+            sync_device_tags=sync_device_tags,
             scoped_device_names=scoped_device_names,
             scoped_site_names=scoped_site_names,
             scoped_matched_tags=scoped_matched_tags,
@@ -2106,6 +2115,13 @@ class ForwardQueryFetcher:
         ):
             sanitized_parameters["forward_netbox_shard_keys"] = sorted(
                 scoped_device_names
+            )
+        # Push the operator's selected sync-tags into any query that declares the
+        # sync_device_tags parameter (the device-tag sync query), so the user picks
+        # exactly which Forward tags become NetBox device tags.
+        if "sync_device_tags" in spec_parameters:
+            sanitized_parameters["sync_device_tags"] = sorted(
+                getattr(context, "sync_device_tags", None) or []
             )
         if not accepts_device_tag_parameters:
             return sanitized_parameters

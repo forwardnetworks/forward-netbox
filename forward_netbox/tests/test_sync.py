@@ -6734,6 +6734,68 @@ class ForwardSyncRunnerTest(TestCase):
             },
         )
 
+    def test_apply_context_tag_parameters_injects_sync_device_tags(self):
+        # The operator's selected Forward tags (context.sync_device_tags) must be
+        # injected into any query that declares the sync_device_tags parameter, and
+        # sorted so query results are deterministic across runs.
+        client = Mock()
+        logger = Mock()
+        fetcher = ForwardQueryFetcher(
+            sync=self.sync,
+            client=client,
+            logger_=logger,
+        )
+        context = ForwardQueryContext(
+            network_id="test-network",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-before",
+            sync_device_tags=["N.Patel", "Mgmt_Vl211"],
+        )
+        spec = QuerySpec(
+            model_string="extras.taggeditem",
+            query_name="Forward Device Feature Tags",
+            query=(
+                "@query f(forward_netbox_shard_keys: List<String>, "
+                "sync_device_tags: List<String>) = []"
+            ),
+            parameters={"forward_netbox_shard_keys": [], "sync_device_tags": []},
+        )
+
+        resolved = fetcher._apply_context_tag_parameters(
+            spec, {"forward_netbox_shard_keys": []}, context
+        )
+
+        self.assertEqual(resolved["sync_device_tags"], ["Mgmt_Vl211", "N.Patel"])
+
+    def test_apply_context_tag_parameters_skips_sync_device_tags_when_undeclared(self):
+        # A query that does not declare sync_device_tags must not receive it, or the
+        # Forward engine rejects the fetch with an unexpected-parameter error.
+        client = Mock()
+        logger = Mock()
+        fetcher = ForwardQueryFetcher(
+            sync=self.sync,
+            client=client,
+            logger_=logger,
+        )
+        context = ForwardQueryContext(
+            network_id="test-network",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-before",
+            sync_device_tags=["Mgmt_Vl211"],
+        )
+        spec = QuerySpec(
+            model_string="dcim.interface",
+            query_name="Forward Interfaces",
+            query="@query f(forward_netbox_shard_keys: List<String>) = []",
+            parameters={"forward_netbox_shard_keys": []},
+        )
+
+        resolved = fetcher._apply_context_tag_parameters(
+            spec, {"forward_netbox_shard_keys": []}, context
+        )
+
+        self.assertNotIn("sync_device_tags", resolved)
+
     def test_fetch_spec_rows_rejects_legacy_column_filter_scope(self):
         client = Mock()
         logger = Mock()

@@ -118,6 +118,37 @@ class ForwardSourceFormTest(TestCase):
             ["tag-a", "tag-b", "tag-c"],
         )
 
+    def test_sync_device_tags_uses_multiselect_widget(self):
+        # The operator picks 1+ Forward tags to sync as NetBox device tags; the
+        # widget must keep every selected tag (same regression class as the
+        # include/exclude fields).
+        form = ForwardSourceForm()
+        self.assertTrue(
+            form.fields["sync_device_tags"].widget.allow_multiple_selected,
+            "sync_device_tags must use a multiple-select widget",
+        )
+
+    @patch("forward_netbox.forms.ForwardSource.validate_connection")
+    def test_sync_device_tags_persist_to_parameters(self, _mock_validate):
+        data = self._base_form_data()
+        data["sync_device_tags"] = ["Mgmt_Vl211", "N.Patel"]
+        form = ForwardSourceForm(data=data)
+        self.assertTrue(form.is_valid(), form.errors)
+        source = form.save()
+        # Order-independent: the query sorts on inject, but persistence keeps the
+        # normalized submitted set.
+        self.assertEqual(
+            sorted(source.parameters["sync_device_tags"]),
+            ["Mgmt_Vl211", "N.Patel"],
+        )
+
+    @patch("forward_netbox.forms.ForwardSource.validate_connection")
+    def test_sync_device_tags_default_empty(self, _mock_validate):
+        form = ForwardSourceForm(data=self._base_form_data())
+        self.assertTrue(form.is_valid(), form.errors)
+        source = form.save()
+        self.assertEqual(source.parameters["sync_device_tags"], [])
+
 
 class ForwardSyncFormTest(TestCase):
     def setUp(self):

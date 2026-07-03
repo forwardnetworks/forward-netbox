@@ -98,6 +98,34 @@ class ForwardJobsTest(TestCase):
             enqueue.assert_called_once()
             self.assertIn("prune orphans", enqueue.call_args.kwargs["name"])
 
+    def test_overlay_enqueue_skips_when_active_job_exists(self):
+        # Regression (hung-pending pile-up): the default-on vsys overlay enqueues
+        # after every sync; if one is still pending/running it must NOT enqueue a
+        # duplicate that stacks up behind it.
+        from django.contrib.contenttypes.models import ContentType
+
+        from forward_netbox.jobs import _maybe_enqueue_vsys_parent_link
+
+        name = f"{self.sync.name} - link vsys/vdom parents (auto)"
+        Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=self.sync.pk,
+            name=name,
+            status=JobStatusChoices.STATUS_PENDING,
+            job_id=uuid4(),
+        )
+        with patch("forward_netbox.jobs.Job.enqueue") as enqueue:
+            _maybe_enqueue_vsys_parent_link(self.sync)
+            enqueue.assert_not_called()
+
+        # A completed job of the same name does NOT block a fresh enqueue.
+        Job.objects.filter(object_id=self.sync.pk, name=name).update(
+            status=JobStatusChoices.STATUS_COMPLETED
+        )
+        with patch("forward_netbox.jobs.Job.enqueue") as enqueue:
+            _maybe_enqueue_vsys_parent_link(self.sync)
+            enqueue.assert_called_once()
+
     def test_record_timeout_issue_creates_single_issue_per_ingestion_phase(self):
         issue_1 = record_timeout_issue(
             self.ingestion,
