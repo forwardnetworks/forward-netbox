@@ -315,15 +315,24 @@ def _dependency_plan_item_summary(item):
 
 
 def _dependency_model_result_summary(result):
+    # ``fetcher.model_results`` are ForwardModelResult dataclasses, not dicts —
+    # calling result.get(...) on them raised AttributeError and errored the whole
+    # dependency preview (hidden as null-data until 2.2.4 surfaced job errors).
+    # Normalize via as_dict(); tolerate a plain dict too.
+    data = result.as_dict() if hasattr(result, "as_dict") else (result or {})
+    row_count = int(data.get("row_count") or 0)
+    delete_count = int(data.get("delete_count") or 0)
     return {
-        "model": result.get("model") or "",
-        "query_name": result.get("query_name") or "",
-        "execution_mode": result.get("execution_mode") or "unknown",
-        "fetch_mode": result.get("fetch_mode") or "unknown",
-        "row_count": int(result.get("row_count") or 0),
-        "delete_count": int(result.get("delete_count") or 0),
-        "estimated_changes": int(result.get("estimated_changes") or 0),
-        "runtime_ms": float(result.get("runtime_ms") or 0.0),
+        "model": data.get("model") or "",
+        "query_name": data.get("query_name") or "",
+        "execution_mode": data.get("execution_mode") or "unknown",
+        "fetch_mode": data.get("fetch_mode") or "unknown",
+        "row_count": row_count,
+        "delete_count": delete_count,
+        # Per-model change estimate: upsert rows + deletes (as_dict has no
+        # estimated_changes field). The plan-level total is plan_preview.
+        "estimated_changes": row_count + delete_count,
+        "runtime_ms": float(data.get("runtime_ms") or 0.0),
     }
 
 

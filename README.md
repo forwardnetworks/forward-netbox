@@ -8,7 +8,8 @@ Forward 26.6 is the baseline for async NQE.
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v2.2.4` | `4.6.3` required; needs netbox-branching `1.1.0+` | Current release; Hotfix: device-analysis NQE (bare foreach) errored refresh + CVE list; surface job errors into job.data |
+| `v2.2.5` | `4.6.4` required; needs netbox-branching `1.1.0+` | Current release; Feature: operator-selectable **Sync Device Tags** — pick which Forward device tags (e.g. `Mgmt_*`) become NetBox device tags (replaces the hardcoded feature-tag set); Fix dependency-preview AttributeError + vsys job pile-up guard (hung pending); test/require NetBox 4.6.4 |
+| `v2.2.4` | `4.6.3` required; needs netbox-branching `1.1.0+` | Superseded by `v2.2.5`; Hotfix: device-analysis NQE (bare foreach) errored refresh + CVE list; surface job errors into job.data |
 | `v2.2.3` | `4.6.3` required; needs netbox-branching `1.1.0+` | Superseded by `v2.2.4`; Field-feedback fixes: delete-count labeling, vsys/vdom auto-link, skip empty VRFs, per-device CVE list, churn pinpoint, query-ID status clarify |
 | `v2.2.2` | `4.6.3` required; needs netbox-branching `1.1.0+` | Superseded by `v2.2.3`; Fix 504 gateway timeouts on large syncs: stop recomputing change-explainability on every poll during a long merge + back off poll to 15s |
 | `v2.2.1` | `4.6.3` required; needs netbox-branching `1.1.0+` | Superseded by `v2.2.2`; Add read-only forward_apply_identity_audit diagnostic to pinpoint 1-created/1-deleted idempotency churn |
