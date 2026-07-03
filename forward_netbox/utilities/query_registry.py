@@ -101,6 +101,11 @@ ROUTING_IMPORT_DIAGNOSTIC_QUERY_NAME = "Forward Routing Import Diagnostics"
 ROUTING_IMPORT_DIAGNOSTIC_QUERY_FILE = "forward_routing_import_diagnostics.nqe"
 SHARD_QUERY_PARAMETER_NAME = "forward_netbox_shard_keys"
 SHARD_QUERY_PARAMETER_DEFAULT = {SHARD_QUERY_PARAMETER_NAME: []}
+# Operator-selected Forward tags to sync as NetBox device tags. Declared by any
+# query whose source references it (the device-feature-tags sync query); the
+# resolved selection is injected in _prepare_query_parameters.
+SYNC_DEVICE_TAGS_PARAMETER_NAME = "sync_device_tags"
+SYNC_DEVICE_TAGS_PARAMETER_DEFAULT = {SYNC_DEVICE_TAGS_PARAMETER_NAME: []}
 DEVICE_TAG_QUERY_PARAMETER_DEFAULTS = {
     "device_tag_include_tags": [],
     "device_tag_include_match": "any",
@@ -131,6 +136,8 @@ def _default_query_parameters(filename: str) -> dict[str, Any]:
         source = _read_query(filename)
     if SHARD_QUERY_PARAMETER_NAME in source:
         parameters.update(SHARD_QUERY_PARAMETER_DEFAULT)
+    if SYNC_DEVICE_TAGS_PARAMETER_NAME in source:
+        parameters.update(SYNC_DEVICE_TAGS_PARAMETER_DEFAULT)
     return parameters
 
 

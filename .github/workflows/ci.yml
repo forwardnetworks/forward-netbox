@@ -15,7 +15,7 @@ jobs:
       fail-fast: false
       matrix:
         netbox-version:
-          - v4.6.3
+          - v4.6.4
     env:
       NETBOX_VER: ${{ matrix.netbox-version }}
     steps:
