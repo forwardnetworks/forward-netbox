@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v2.2.5
+
+Feature: operator-selectable **Sync Device Tags** — pick which Forward device tags (e.g. `Mgmt_*`) become NetBox device tags (replaces the hardcoded feature-tag set); Fix dependency-preview AttributeError + vsys job pile-up guard (hung pending); test/require NetBox 4.6.4
+
 ## v2.2.4
 
 Hotfix: device-analysis NQE (bare foreach) errored refresh + CVE list; surface job errors into job.data

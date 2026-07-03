@@ -151,6 +151,49 @@ class ForwardSyncModelTest(TestCase):
             str(ctx.exception),
         )
 
+    def test_source_accepts_sync_device_tags_list(self):
+        source = ForwardSource(
+            name="source-sync-device-tags",
+            type="saas",
+            url="https://fwd.app",
+            parameters={
+                "username": "user@example.com",
+                "password": "secret",
+                "verify": True,
+                "timeout": 1200,
+                "network_id": "test-network",
+                "sync_device_tags": ["Mgmt_Vl211", "Prod_Core"],
+            },
+        )
+
+        source.clean()
+
+        self.assertEqual(
+            source.parameters["sync_device_tags"], ["Mgmt_Vl211", "Prod_Core"]
+        )
+
+    def test_source_rejects_non_list_sync_device_tags(self):
+        source = ForwardSource(
+            name="source-bad-sync-device-tags",
+            type="saas",
+            url="https://fwd.app",
+            parameters={
+                "username": "user@example.com",
+                "password": "secret",
+                "verify": True,
+                "timeout": 1200,
+                "network_id": "test-network",
+                "sync_device_tags": "Mgmt_Vl211",
+            },
+        )
+
+        with self.assertRaises(ValidationError) as ctx:
+            source.clean()
+
+        self.assertIn(
+            "`sync_device_tags` must be a list of strings.", str(ctx.exception)
+        )
+
     def test_source_preserves_api_requests_per_minute(self):
         source = ForwardSource(
             name="source-api-rpm",

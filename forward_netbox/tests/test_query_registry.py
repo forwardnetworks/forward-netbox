@@ -883,6 +883,20 @@ class QueryRegistryTest(TestCase):
             },
         )
 
+    def test_feature_tags_query_seeds_sync_device_tags_parameter(self):
+        # The device-feature-tags query is operator-driven: its signature declares
+        # sync_device_tags, so the seeded parameters must include it (empty) or the
+        # param-injection guard never fires and the selected tags never reach the
+        # fetch.
+        rows = {row["name"]: row for row in builtin_nqe_map_rows()}
+        self.assertEqual(
+            rows["Forward Device Feature Tags"]["parameters"],
+            {
+                "forward_netbox_shard_keys": [],
+                "sync_device_tags": [],
+            },
+        )
+
     def test_sync_builtin_queries_seed_empty_shard_parameter(self):
         rows = {row["name"]: row for row in builtin_nqe_map_rows()}
         excluded_names = {
@@ -1611,16 +1625,23 @@ class QueryRegistryTest(TestCase):
             (("device", "interface", "remote_device", "remote_interface"),),
         )
 
-    def test_device_feature_tag_query_emits_bgp_tag(self):
+    def test_device_feature_tag_query_syncs_operator_selected_tags(self):
+        # 2.2.5: the default feature-tags map is param-driven — it emits exactly the
+        # Forward device tags the operator selected in sync_device_tags, not a
+        # hardcoded Prot_BGP. (BGP tagging moved to the routing plugin.)
         spec = next(
             spec
             for spec in BUILTIN_QUERY_SPECS["extras.taggeditem"]
             if spec.query_name == "Forward Device Feature Tags"
         )
 
-        self.assertIn("where isPresent(protocol.bgp)", spec.query)
-        self.assertIn('tag: "Prot_BGP"', spec.query)
-        self.assertIn('tag_slug: "prot-bgp"', spec.query)
+        self.assertIn("sync_device_tags: List<String>", spec.query)
+        self.assertIn("foreach tag in device.tagNames", spec.query)
+        self.assertIn("where tag in sync_device_tags", spec.query)
+        self.assertIn("tag: tag", spec.query)
+        self.assertNotIn('tag: "Prot_BGP"', spec.query)
+        self.assertNotIn("protocol.bgp", spec.query)
+        self.assertIn("sync_device_tags", spec.parameters)
         self.assertEqual(spec.coalesce_fields, (("device", "tag_slug"),))
 
     def test_optional_device_feature_tag_rules_query_uses_data_file(self):

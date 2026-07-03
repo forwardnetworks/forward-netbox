@@ -59,6 +59,7 @@ def clean_forward_source(source):
             "device_tag_filter_mode",
             "device_tag_prune_out_of_scope",
             "apply_device_scope_tags",
+            "sync_device_tags",
         }
     )
     if invalid:
@@ -81,7 +82,11 @@ def clean_forward_source(source):
     for key in ("device_tag_include", "device_tag_exclude"):
         if parameters.get(key) is not None and not isinstance(parameters.get(key), str):
             raise ValidationError(_(f"`{key}` must be a string."))
-    for key in ("device_tag_include_tags", "device_tag_exclude_tags"):
+    for key in (
+        "device_tag_include_tags",
+        "device_tag_exclude_tags",
+        "sync_device_tags",
+    ):
         if parameters.get(key) is None:
             continue
         if not isinstance(parameters.get(key), list) or any(

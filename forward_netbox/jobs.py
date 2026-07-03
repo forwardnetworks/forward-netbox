@@ -121,6 +121,24 @@ def record_timeout_issue(ingestion, phase, message):
     )
 
 
+def _sync_has_active_job(sync, name):
+    """True if a pending/running job with ``name`` already exists for ``sync``.
+
+    Post-sync overlays are enqueued after EVERY sync; a slow/large overlay (e.g.
+    the vsys parent-link's full-network fetch) can still be running when the next
+    sync fires, so without this guard duplicate jobs pile up in PENDING behind it
+    and look 'hung'. Skipping the enqueue when one is already active keeps at most
+    one overlay of each kind queued per sync.
+    """
+    return sync.jobs.filter(
+        name=name,
+        status__in=[
+            JobStatusChoices.STATUS_PENDING,
+            JobStatusChoices.STATUS_RUNNING,
+        ],
+    ).exists()
+
+
 def _maybe_enqueue_device_analysis_refresh(sync):
     """Opt-in: after a successful sync, refresh the device-analysis overlay.
 
@@ -132,11 +150,14 @@ def _maybe_enqueue_device_analysis_refresh(sync):
     try:
         from django.utils.module_loading import import_string
 
+        name = f"{sync.name} - refresh device analysis (auto)"
+        if _sync_has_active_job(sync, name):
+            return
         Job.enqueue(
             import_string("forward_netbox.jobs.refresh_forward_device_analysis"),
             instance=sync,
             user=sync.user,
-            name=f"{sync.name} - refresh device analysis (auto)",
+            name=name,
         )
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("Auto device-analysis refresh enqueue failed: %s", exc)
@@ -156,11 +177,14 @@ def _maybe_enqueue_backfilled_tag_refresh(sync):
     try:
         from django.utils.module_loading import import_string
 
+        name = f"{sync.name} - tag backfilled devices (auto)"
+        if _sync_has_active_job(sync, name):
+            return
         Job.enqueue(
             import_string("forward_netbox.jobs.tag_forward_backfilled_devices"),
             instance=sync,
             user=sync.user,
-            name=f"{sync.name} - tag backfilled devices (auto)",
+            name=name,
         )
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("Auto backfilled-tag refresh enqueue failed: %s", exc)
@@ -180,11 +204,14 @@ def _maybe_enqueue_vsys_parent_link(sync):
     try:
         from django.utils.module_loading import import_string
 
+        name = f"{sync.name} - link vsys/vdom parents (auto)"
+        if _sync_has_active_job(sync, name):
+            return
         Job.enqueue(
             import_string("forward_netbox.jobs.link_forward_vsys_parents"),
             instance=sync,
             user=sync.user,
-            name=f"{sync.name} - link vsys/vdom parents (auto)",
+            name=name,
         )
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("Auto vsys parent-link enqueue failed: %s", exc)
@@ -202,11 +229,14 @@ def _maybe_enqueue_auto_prune(sync):
     try:
         from django.utils.module_loading import import_string
 
+        name = f"{sync.name} - prune orphans (auto)"
+        if _sync_has_active_job(sync, name):
+            return
         Job.enqueue(
             import_string("forward_netbox.jobs.prune_forward_orphans"),
             instance=sync,
             user=sync.user,
-            name=f"{sync.name} - prune orphans (auto)",
+            name=name,
         )
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("Auto prune-orphans enqueue failed: %s", exc)
