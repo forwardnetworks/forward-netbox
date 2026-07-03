@@ -147,3 +147,9 @@ test-results/
 # Local generated operator reports
 .forward-netbox-reports/
 development/fetch-artifacts/
+
+# Transient run telemetry captured during scale/chaos validation — regenerable,
+# not source. Keep named summary fixtures (audit/benchmark/matrix JSON) tracked.
+docs/03_Plans/evidence/*monitor*.json
+docs/03_Plans/evidence/*autorecover*.json
+docs/03_Plans/evidence/*chaos-stage*.json

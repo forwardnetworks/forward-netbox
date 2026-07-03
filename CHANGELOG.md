@@ -38,10 +38,6 @@ Tag delete-eligible global IPAM (prefixes/VLANs/VRFs) for manual review
 
 Prune empty orphan sites (zero devices + zero racks) alongside out-of-scope devices
 
-## v2.1.3
-
-Prune empty orphan sites (zero devices + zero racks) alongside out-of-scope devices
-
 ## v2.1.2
 
 Feature + docs: (1) new out-of-scope orphan health signal — the sync health summary now shows how many NetBox devices match none of the included Forward tags (removable via Scope Reconciliation -> Prune orphans), mirroring the backfilled signal, via a self-healing `forward-out-of-scope` device tag and a `?tag=forward-out-of-scope` filter; (2) docs: the "no covering prefix" diagnostic now names /32 and /128 host addresses (loopbacks, anycast, some VIPs), and the Operations Guide documents backfilled (in-scope, kept) vs out-of-scope (removable) devices. Drop-in from `2.1.1`.
@@ -97,10 +93,6 @@ Collection-gap diagnostics: per-reason backfill breakdown + staleness, growth/tr
 ## v1.7.1
 
 ACI BD/L3Out graduation + FHRP churn fix (replaces yanked 1.7.0 and 1.6.2)
-
-## v1.7.0
-
-ACI bridge domain and L3Out NQE maps; query publish hardening
 
 ## v1.7.0
 
