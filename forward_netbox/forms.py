@@ -436,6 +436,19 @@ class ForwardSourceForm(NetBoxModelForm):
                 "filtered in NetBox."
             ),
         )
+        self.fields["sync_device_tags"] = FlexibleMultipleChoiceField(
+            required=False,
+            choices=(),
+            widget=APISelectMultiple(
+                api_url="/api/plugins/forward/source/available-tags/"
+            ),
+            label="Sync Device Tags",
+            help_text=(
+                "Forward device tags (e.g. Mgmt_*) to sync onto NetBox devices as "
+                "device tags. Select one or more; leave empty to sync none. "
+                "Independent of the include/exclude scope filters above."
+            ),
+        )
         _configure_api_select(
             self.fields["network_id"].widget,
             {
@@ -448,6 +461,7 @@ class ForwardSourceForm(NetBoxModelForm):
         )
         self.fields["device_tag_include_tags"].widget.attrs["multiple"] = "multiple"
         self.fields["device_tag_exclude_tags"].widget.attrs["multiple"] = "multiple"
+        self.fields["sync_device_tags"].widget.attrs["multiple"] = "multiple"
         _configure_api_select(
             self.fields["device_tag_include_tags"].widget,
             {
@@ -470,6 +484,17 @@ class ForwardSourceForm(NetBoxModelForm):
                 "network_id": "$network_id",
             },
         )
+        _configure_api_select(
+            self.fields["sync_device_tags"].widget,
+            {
+                "type": "$type",
+                "url": "$url",
+                "username": "$username",
+                "password": "$password",
+                "verify": "$verify",
+                "network_id": "$network_id",
+            },
+        )
         if self.instance.pk:
             self.fields["network_id"].widget.add_query_param(
                 "source_id", self.instance.pk
@@ -478,6 +503,9 @@ class ForwardSourceForm(NetBoxModelForm):
                 "source_id", self.instance.pk
             )
             self.fields["device_tag_exclude_tags"].widget.add_query_param(
+                "source_id", self.instance.pk
+            )
+            self.fields["sync_device_tags"].widget.add_query_param(
                 "source_id", self.instance.pk
             )
 
@@ -549,9 +577,11 @@ class ForwardSourceForm(NetBoxModelForm):
         self.fields["network_id"].choices = _selected_choice(existing_network_id)
         include_bound = []
         exclude_bound = []
+        sync_tags_bound = []
         if self.is_bound:
             include_bound = self._bound_tag_values("device_tag_include_tags")
             exclude_bound = self._bound_tag_values("device_tag_exclude_tags")
+            sync_tags_bound = self._bound_tag_values("sync_device_tags")
         include_initial = (
             include_bound
             if self.is_bound
@@ -568,13 +598,21 @@ class ForwardSourceForm(NetBoxModelForm):
         if exclude_initial is None and parameters.get("device_tag_exclude"):
             exclude_initial = [parameters.get("device_tag_exclude")]
         exclude_initial = self._normalize_tag_values(exclude_initial)
+        sync_tags_initial = (
+            sync_tags_bound if self.is_bound else parameters.get("sync_device_tags")
+        )
+        sync_tags_initial = self._normalize_tag_values(sync_tags_initial)
         self.fields["device_tag_include_tags"].initial = include_initial
         self.fields["device_tag_exclude_tags"].initial = exclude_initial
+        self.fields["sync_device_tags"].initial = sync_tags_initial
         self.fields["device_tag_include_tags"].choices = [
             (tag, tag) for tag in include_initial
         ]
         self.fields["device_tag_exclude_tags"].choices = [
             (tag, tag) for tag in exclude_initial
+        ]
+        self.fields["sync_device_tags"].choices = [
+            (tag, tag) for tag in sync_tags_initial
         ]
         self.fields["device_tag_include_match"].initial = (
             parameters.get("device_tag_include_match") or "any"
@@ -619,6 +657,7 @@ class ForwardSourceForm(NetBoxModelForm):
                     "device_tag_filter_mode",
                     "device_tag_prune_out_of_scope",
                     "apply_device_scope_tags",
+                    "sync_device_tags",
                     name="Parameters",
                 )
             )
@@ -649,6 +688,7 @@ class ForwardSourceForm(NetBoxModelForm):
                     "device_tag_filter_mode",
                     "device_tag_prune_out_of_scope",
                     "apply_device_scope_tags",
+                    "sync_device_tags",
                     name="Parameters",
                 )
             )
@@ -689,6 +729,11 @@ class ForwardSourceForm(NetBoxModelForm):
         if not exclude_tags:
             exclude_tags = self._normalize_tag_values(
                 self._bound_tag_values("device_tag_exclude_tags")
+            )
+        sync_device_tags = self._normalize_tag_values(cleaned.get("sync_device_tags"))
+        if not sync_device_tags:
+            sync_device_tags = self._normalize_tag_values(
+                self._bound_tag_values("sync_device_tags")
             )
         candidate_parameters = {
             "username": username,
@@ -794,6 +839,7 @@ class ForwardSourceForm(NetBoxModelForm):
                 cleaned.get("device_tag_prune_out_of_scope")
             ),
             "apply_device_scope_tags": bool(cleaned.get("apply_device_scope_tags")),
+            "sync_device_tags": sync_device_tags,
         }
         self.instance.type = source_type
         self.instance.url = (
@@ -834,6 +880,9 @@ class ForwardSourceForm(NetBoxModelForm):
         self.fields["device_tag_exclude_tags"].choices = [
             (tag, tag) for tag in exclude_tags
         ]
+        self.fields["sync_device_tags"].choices = [
+            (tag, tag) for tag in sync_device_tags
+        ]
         return cleaned
 
     def save(self, *args, **kwargs):
@@ -860,6 +909,13 @@ class ForwardSourceForm(NetBoxModelForm):
         if not exclude_tags:
             exclude_tags = self._normalize_tag_values(
                 self._bound_tag_values("device_tag_exclude_tags")
+            )
+        sync_device_tags = self._normalize_tag_values(
+            self.cleaned_data.get("sync_device_tags")
+        )
+        if not sync_device_tags:
+            sync_device_tags = self._normalize_tag_values(
+                self._bound_tag_values("sync_device_tags")
             )
         self.instance.parameters = {
             "username": self.cleaned_data.get("username")
@@ -976,6 +1032,7 @@ class ForwardSourceForm(NetBoxModelForm):
             "apply_device_scope_tags": bool(
                 self.cleaned_data.get("apply_device_scope_tags")
             ),
+            "sync_device_tags": sync_device_tags,
         }
         self.instance.status = ForwardSourceStatusChoices.NEW
         return super().save(*args, **kwargs)
