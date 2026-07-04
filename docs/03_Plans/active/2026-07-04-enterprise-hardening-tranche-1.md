@@ -20,8 +20,9 @@ credential-at-rest, support-posture/GA framing) are tracked separately.
 - `mkdocs.yml` + `docs/.pages.yml` + `docs/README.md` — exclude `03_Plans/` and
   `00_Project_Knowledge/` from the built site (internal/field material) and drop
   their landing-page links, so a doc publish cannot leak customer field notes.
-- `forward_netbox/tests/test_interface_naming.py` — rename `test_live_mgmt_abbreviations`
-  → `test_live_mgmt_abbreviations` and scrub the customer-named comment.
+- `forward_netbox/tests/test_interface_naming.py` — rename the customer-named
+  live-abbreviation test to `test_live_mgmt_abbreviations` and scrub the
+  customer-named comment.
 - `forward_netbox/utilities/sensitive_content.py` + `tests/test_sensitive_content.py`
   — the scanner now also reads patterns from the `FORWARD_SENSITIVE_PATTERNS` env
   var so CI can block customer identifiers via a secret without committing them
