@@ -23,7 +23,7 @@ jobs:
       NETBOX_VER: ${{ matrix.netbox-version }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Set up Python
