@@ -14,6 +14,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Validate min-supported NetBox and the latest 4.6.x patch. v4.6.4 is
+        # currently both (newest published 4.6.x); add newer 4.6.x patches here
+        # as they release so a point-release breaks CI before users.
         netbox-version:
           - v4.6.4
     env:
@@ -53,10 +56,7 @@ jobs:
         continue-on-error: true
         run: |
           python -m pip install pip-audit
-          echo httpx > audit-reqs.txt
-          echo 'netboxlabs-netbox-branching>=1.1.0' >> audit-reqs.txt
-          echo pyzipper >> audit-reqs.txt
-          pip-audit --progress-spinner off -r audit-reqs.txt
+          pip-audit --progress-spinner off -r constraints.txt
       - name: Run pre-commit
         run: pre-commit run --all-files
       - name: Check repository harness
@@ -109,13 +109,16 @@ jobs:
             "cd /opt/netbox/netbox && \
             python manage.py test --keepdb --noinput \
             forward_netbox.tests.test_synthetic_scenarios"
-      - name: Run plugin tests
+      - name: Run plugin tests (with coverage)
         run: |
           docker compose --project-name forward-netbox \
             --project-directory development \
             exec -T netbox bash -lc \
             "cd /opt/netbox/netbox && \
-            python manage.py test --keepdb --noinput forward_netbox.tests"
+            python -m coverage run --rcfile=/source/.coveragerc \
+            manage.py test --keepdb --noinput forward_netbox.tests && \
+            python -m coverage report --rcfile=/source/.coveragerc \
+            --fail-under=70"
       - name: Validate validation-org query sync
         env:
           VAL_SRC: ${{ secrets.FORWARD_VALIDATION_SOURCE_NAME }}
