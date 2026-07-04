@@ -3,6 +3,51 @@
 **Date:** 2026-07-03
 **Source:** post-2.2.5 read-only architecture audit (4 agents).
 
+## Enterprise / GA-readiness roadmap (2026-07-04, 7-agent assessment)
+
+Verdict: **near-GA** — strong engineering core (reliability, observability,
+idempotency, test depth all above NetBox-plugin baseline). Tranche 1 (see
+[2026-07-04-enterprise-hardening-tranche-1](2026-07-04-enterprise-hardening-tranche-1.md))
+landed the safe quick wins: stopped the doc-publish confidentiality leak, scrubbed
+a committed customer name + hardened the scanner, added SECURITY.md / Dependabot /
+pip-audit / migration-drift guard / issue+PR templates / pyproject metadata, and
+made the missing-user sync attribution auditable. **Remaining GA items:**
+
+- **GA-blocker — Trusted Publishing (project).** PyPI upload is a manual laptop
+  twine token (release.py only prints the hint); artifacts unsigned. Move publish
+  into a tag-triggered GitHub Actions job using OIDC Trusted Publishing + PEP 740
+  attestations; retire the token.
+- **GA-blocker — upgrade safety (project).** CI only migrates a fresh empty DB
+  forward; ~30 migrations incl. destructive/rename ones are untested on a populated
+  DB. Add a MigratorTestCase upgrade/downgrade test across the destructive
+  migrations; write UPGRADE + ROLLBACK guides.
+- **Decision — support posture / GA framing.** README still carries an
+  "unsupported / not an official Forward product / no warranty" disclaimer and
+  `Development Status :: 4 - Beta`; site is named "Forward Field Integration". These
+  are business/legal calls (does Forward officially support + warrant this?), left
+  for the maintainer, not changed unilaterally. Bumping to Production/Stable + a
+  support-lifecycle statement gates on this decision.
+- **Tier-1 — credential at rest (project).** Forward API password is plaintext in a
+  JSONField (models.py); masking is display-only. Encrypt at rest or formally
+  document the DB-at-rest-encryption requirement.
+- **Tier-1 — object-permission trust boundary (decision/medium).** Sync/merge
+  writes bypass NetBox object permissions (inventory-wide create/update/delete).
+  Document as an intended trust boundary at minimum, or gate on underlying
+  dcim/ipam perms.
+- **Tier-1 — CI matrix + coverage floor (medium).** CI runs a single pinned NetBox
+  patch; `.coveragerc` exists but coverage is never measured/enforced; no lockfile
+  (tested != shipped). Restore a min+latest 4.6.x matrix (note: routing/peering
+  optional-plugin caps still apply — see item 6), measure+floor coverage, commit a
+  lockfile.
+- **Tier-2 — enterprise ops surface.** No Prometheus/OTel metrics export (rich
+  telemetry trapped in job.data/health page); stuck-job detector has no autonomous
+  alert; `prune_orphan_devices` deletes by device NAME not PK (cross-site name
+  collision risk); SaaS rpm hard-block is advisory-only; retry backoff lacks jitter
+  and ignores Retry-After; no SBOM; no deprecation policy; no consolidated REST/API
+  reference; CODEOWNERS still needs the maintaining team handle.
+
+---
+
 ## Goal
 Keep a durable register of the genuine structural items the audit surfaced, with
 an explicit defer/blocked rationale for each, so they are tracked rather than lost.
