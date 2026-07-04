@@ -42,13 +42,15 @@ platform baseline.
 
 ## Scope and handling notes
 
-- **Forward credential at rest.** The Forward API username/password are stored in
-  the `ForwardSource` model's parameters (a database field). They are masked in
-  every UI/API display and redacted from logs, but they are **not encrypted at
-  rest** — a database dump or backup contains a usable credential. Operators MUST
-  therefore protect the NetBox database at rest (disk/volume encryption, encrypted
-  backups, restricted backup access) and scope the Forward service account to the
-  least privilege the sync needs. Rotate the credential if a backup is exposed.
+- **Forward credential at rest.** The Forward API password is **encrypted at rest**
+  with Fernet, using a key derived from Django's `SECRET_KEY`, before it is stored
+  in the `ForwardSource` parameters; it is also masked in every UI/API display and
+  redacted from logs. A database dump therefore no longer contains a usable
+  password. Two consequences: (1) protect `SECRET_KEY` like a credential (a leaked
+  `SECRET_KEY` + DB dump can recover the password), and (2) **rotating `SECRET_KEY`
+  makes stored Forward passwords undecryptable** — after a rotation, re-enter the
+  password on each Forward source. Still keep the NetBox database and its backups
+  access-controlled, and scope the Forward service account to least privilege.
 - **Sync is an inventory-wide write trust boundary.** A Forward sync creates,
   updates, and deletes DCIM/IPAM objects across NetBox via the branch-merge apply
   path; these writes are **not gated by NetBox object-level permissions**. Treat
