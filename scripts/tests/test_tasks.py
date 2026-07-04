@@ -2505,7 +2505,7 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
                 exited=1,
                 stderr=(
                     "permission denied while trying to connect to the docker API "
-                    "at unix:///Users/captainpacket/.colima/default/docker.sock"
+                    "at unix:///var/run/docker.sock"
                 ),
                 stdout="",
             ),
@@ -3163,7 +3163,7 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
                     stdout="",
                     stderr=(
                         "permission denied while trying to connect to the docker API "
-                        "at unix:///Users/captainpacket/.colima/default/docker.sock"
+                        "at unix:///var/run/docker.sock"
                     ),
                 ),
             ),

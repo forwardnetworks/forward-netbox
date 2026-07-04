@@ -28,6 +28,10 @@ jobs:
         with:
           python-version: "3.12"
       - name: Check commit history for sensitive content
+        env:
+          # Customer identifiers to block are injected from a repo secret so
+          # they are never committed; see utilities/sensitive_content.py.
+          FORWARD_SENSITIVE_PATTERNS: ${{ secrets.FORWARD_SENSITIVE_PATTERNS }}
         run: python scripts/check_sensitive_content.py --all-history
       - name: Install validation dependencies
         run: |
@@ -42,6 +46,17 @@ jobs:
             mkdocs-awesome-pages-plugin \
             mdx-truly-sane-lists \
             pymdown-extensions
+      - name: Audit dependencies for known vulnerabilities (pip-audit)
+        # Non-blocking signal: Dependabot is the enforcing continuous scanner
+        # (.github/dependabot.yml). This surfaces CVEs in the declared runtime
+        # deps per-run without failing on unfixable upstream advisories.
+        continue-on-error: true
+        run: |
+          python -m pip install pip-audit
+          echo httpx > audit-reqs.txt
+          echo 'netboxlabs-netbox-branching>=1.1.0' >> audit-reqs.txt
+          echo pyzipper >> audit-reqs.txt
+          pip-audit --progress-spinner off -r audit-reqs.txt
       - name: Run pre-commit
         run: pre-commit run --all-files
       - name: Check repository harness
@@ -68,6 +83,13 @@ jobs:
             --project-directory development \
             run --rm --no-deps netbox bash -lc \
             "cd /opt/netbox/netbox && python manage.py migrate --noinput"
+      - name: Check for missing plugin migrations (model drift)
+        run: |
+          docker compose --project-name forward-netbox \
+            --project-directory development \
+            run --rm --no-deps netbox bash -lc \
+            "cd /opt/netbox/netbox && \
+            python manage.py makemigrations --check --dry-run forward_netbox"
       - name: Start NetBox web service
         run: |
           docker compose --project-name forward-netbox \

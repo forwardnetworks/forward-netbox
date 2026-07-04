@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from dataclasses import dataclass
@@ -9,6 +10,12 @@ from typing import Sequence
 
 
 LOCAL_PATTERN_FILE = ".sensitive-patterns.local.txt"
+# Newline-separated extra patterns injected at scan time (each line is a literal
+# customer identifier, or `re:<regex>`). CI populates this from a repo secret so
+# customer names can be blocked WITHOUT committing them to the public repo — the
+# gitignored local file is invisible to CI, which is how a customer name once
+# slipped through.
+ENV_PATTERN_VAR = "FORWARD_SENSITIVE_PATTERNS"
 
 
 @dataclass(frozen=True)
@@ -56,6 +63,7 @@ def load_sensitive_patterns(repo_root: Path) -> list[SensitivePattern]:
     local_patterns_path = repo_root / LOCAL_PATTERN_FILE
 
     if not local_patterns_path.exists():
+        patterns.extend(_env_patterns())
         return patterns
 
     for line_number, raw_line in enumerate(
@@ -81,7 +89,34 @@ def load_sensitive_patterns(repo_root: Path) -> list[SensitivePattern]:
             )
         )
 
+    patterns.extend(_env_patterns())
     return patterns
+
+
+def _env_patterns() -> list[SensitivePattern]:
+    """Parse extra patterns from the ENV_PATTERN_VAR env var (CI secret feed)."""
+    raw = os.environ.get(ENV_PATTERN_VAR, "")
+    parsed: list[SensitivePattern] = []
+    for line_number, raw_line in enumerate(raw.splitlines(), start=1):
+        value = raw_line.strip()
+        if not value or value.startswith("#"):
+            continue
+        if value.startswith("re:"):
+            pattern_text = value[3:].strip()
+            label = f"env regex pattern line {line_number}"
+        else:
+            pattern_text = re.escape(value)
+            label = f"env literal pattern line {line_number}"
+        if not pattern_text:
+            continue
+        parsed.append(
+            SensitivePattern(
+                label=label,
+                regex=re.compile(pattern_text, re.IGNORECASE),
+                source=f"${ENV_PATTERN_VAR}",
+            )
+        )
+    return parsed
 
 
 def scan_text(

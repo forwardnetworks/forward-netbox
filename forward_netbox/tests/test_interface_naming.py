@@ -47,7 +47,8 @@ class InterfaceNamesMatchTest(SimpleTestCase):
         self.assertTrue(interface_names_match("Loopback0", "Lo0"))
 
     def test_live_mgmt_abbreviations(self):
-        # Forms observed in live CustomerOrg Mgmt_ tags vs collected (lowercase) names.
+        # Abbreviated interface forms seen in live Mgmt_ tags vs the collected
+        # (lowercase) canonical names.
         self.assertTrue(interface_names_match("v910", "vlan910"))
         self.assertTrue(interface_names_match("v201", "vlan201"))
         self.assertTrue(interface_names_match("Ma0", "mgmt0"))
