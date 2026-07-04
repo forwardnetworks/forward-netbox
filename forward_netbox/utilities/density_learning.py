@@ -6,9 +6,6 @@ from django.utils.dateparse import parse_datetime
 
 MIN_MODEL_DENSITY = 0.01
 MAX_MODEL_DENSITY = 1000.0
-DENSITY_UPDATE_ALPHA = 0.3
-DENSITY_OUTLIER_Z_THRESHOLD = 4.0
-DENSITY_OUTLIER_RATIO_THRESHOLD = 4.0
 DENSITY_BASELINE_SAMPLE_TARGET = 8
 DENSITY_POLICY_MEDIUM_CONFIDENCE_WEIGHT = 0.5
 DENSITY_POLICY_FALLBACK_BASELINE = 1.0
@@ -70,112 +67,6 @@ def normalize_density_profile(profile):
             "last_updated_at": str(item.get("last_updated_at") or ""),
         }
     return normalized
-
-
-def update_density_learning(
-    density_map,
-    density_profile,
-    *,
-    model_string,
-    observed_density,
-    now=None,
-):
-    model = str(model_string or "").strip()
-    observed = clamp_density(observed_density)
-    if not model or observed is None:
-        return (
-            normalize_density_map(density_map),
-            normalize_density_profile(density_profile),
-            {"accepted": False, "reason": "invalid_observation"},
-        )
-
-    now = now or timezone.now()
-    now_iso = now.isoformat()
-    normalized_density = normalize_density_map(density_map)
-    profile = normalize_density_profile(density_profile)
-    current_density = normalized_density.get(model, observed)
-    current = dict(profile.get(model) or {})
-    current.setdefault("density", current_density)
-    current.setdefault("sample_count", 0)
-    current.setdefault("accepted_observations", 0)
-    current.setdefault("rejected_observations", 0)
-    current.setdefault("mean", current_density)
-    current.setdefault("m2", 0.0)
-    current.setdefault("variance", 0.0)
-    current.setdefault("stddev", 0.0)
-
-    accepted, reason = should_accept_observation(current, observed)
-    current["last_observed_density"] = observed
-    current["last_observed_at"] = now_iso
-    if not accepted:
-        current["rejected_observations"] = int(current["rejected_observations"]) + 1
-        profile[model] = normalize_density_profile({model: current})[model]
-        return normalized_density, profile, {"accepted": False, "reason": reason}
-
-    updated_density = clamp_density(
-        (1.0 - DENSITY_UPDATE_ALPHA) * float(current["density"])
-        + (DENSITY_UPDATE_ALPHA * observed)
-    )
-    sample_count = int(current["sample_count"]) + 1
-    mean = float(current["mean"])
-    m2 = float(current["m2"])
-    delta = observed - mean
-    mean += delta / float(sample_count)
-    delta2 = observed - mean
-    m2 += delta * delta2
-    variance = (m2 / float(sample_count - 1)) if sample_count >= 2 else 0.0
-    stddev = math.sqrt(max(0.0, variance))
-
-    current.update(
-        {
-            "density": updated_density,
-            "sample_count": sample_count,
-            "accepted_observations": int(current["accepted_observations"]) + 1,
-            "mean": mean,
-            "m2": m2,
-            "variance": variance,
-            "stddev": stddev,
-            "last_updated_at": now_iso,
-        }
-    )
-    normalized_density[model] = updated_density
-    profile[model] = normalize_density_profile({model: current})[model]
-    return (
-        normalized_density,
-        profile,
-        {
-            "accepted": True,
-            "reason": "accepted",
-        },
-    )
-
-
-def should_accept_observation(profile_entry, observed_density):
-    sample_count = _safe_int(profile_entry.get("sample_count"))
-    mean = _safe_float(profile_entry.get("mean"), default=0.0)
-    stddev = max(0.0, _safe_float(profile_entry.get("stddev"), default=0.0))
-
-    if sample_count < 3:
-        return True, "warmup"
-
-    if mean <= 0:
-        return True, "warmup"
-
-    ratio = float(observed_density) / float(mean)
-    inverse_ratio = float(mean) / float(observed_density)
-    if (
-        ratio >= DENSITY_OUTLIER_RATIO_THRESHOLD
-        or inverse_ratio >= DENSITY_OUTLIER_RATIO_THRESHOLD
-    ):
-        return False, "ratio_outlier"
-
-    if stddev <= 0:
-        return True, "accepted"
-
-    z_score = abs(float(observed_density) - mean) / stddev
-    if z_score >= DENSITY_OUTLIER_Z_THRESHOLD:
-        return False, "zscore_outlier"
-    return True, "accepted"
 
 
 def density_profile_summary(*, density_map, density_profile, default_density_map):

@@ -49,16 +49,14 @@ syncs still validate (proven: a sync with `multi_branch=True` still `clean()`s).
 Naming debris (`multi_branch_lifecycle.py` module, `ForwardFastBootstrapExecutor`
 class) is load-bearing and left for a separate cosmetic rename follow-up.
 
-### 3. Density-learning dead write-loop — DEFER (separate single-purpose PR)
-Refined by the 2026-07-04 investigation. `max_changes_per_branch` and the budget
-*read* path (`branch_budget.effective_row_budget_for_model`, budget hints/preview
-telemetry) are LIVE and stay. But the density-LEARNING *write* loop is already dead:
-`density_learning.update_density_learning` (:75) and `should_accept_observation`
-(:153) have no non-test caller — the profile is never updated from observed runs.
-Removing them (and the `effective_row_budget_for_model`/`build_branch_budget_hints`
-telemetry rewrite) is a legit dead-code removal but strips telemetry-adjacent
-surface with its own density-profile budget-math test fallout, so it is kept OUT of
-the multi_branch change and tracked here as a distinct, single-purpose follow-up.
+### 3. Density-learning dead write-loop — RESOLVED 2026-07-04
+Removed `density_learning.update_density_learning` + `should_accept_observation`
+(no production caller — the learned profile was never updated from observed runs)
+and the three constants only they used, plus their two tests. The budget READ path
+(`density_profile_summary`, `density_budget_policy`, `normalize_density_*`) and
+`max_changes_per_branch` are LIVE and untouched. Suite 937 green (two dead tests
+gone). A broader density simplification (fixed sub-batch size vs. the profile
+machinery) remains a separate, larger question — not scheduled.
 
 ### 4. 1-created/1-deleted idempotency churn — BLOCKED (needs field data)
 The read-only diagnostic shipped (`apply_identity_audit.py` +
