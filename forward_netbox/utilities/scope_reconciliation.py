@@ -153,6 +153,17 @@ def compute_scope_reconciliation(sync) -> dict:
     present_backfilled = netbox_names & backfilled_names
     missing_in_netbox = completed_names - netbox_names
 
+    # Identity-aware: resolve the out-of-scope device NAMES to explicit PKs here, at
+    # scope-compute time, so downstream prune deletes exactly these rows. Device
+    # names are not globally unique, so re-matching by name at delete time is
+    # fragile. NOTE: scope MEMBERSHIP is still name-keyed — distinguishing two
+    # same-named devices in different sites needs a Forward location -> NetBox site
+    # mapping (a separate, larger change); until then a name present in Forward
+    # scope conservatively protects every NetBox device with that name.
+    out_of_scope_pks = list(
+        Device.objects.filter(name__in=out_of_scope).values_list("pk", flat=True)
+    )
+
     # Why are the in-scope devices backfilled? Group by the Forward collection
     # error so operators can act (rotate creds for AUTHENTICATION_FAILED, check
     # reachability for CONNECTION_TIMEOUT, finish onboarding for INCOMPLETE_SETUP)
@@ -217,6 +228,7 @@ def compute_scope_reconciliation(sync) -> dict:
         "_tagged_names": tagged_names,
         "_forward_site_slugs": forward_site_slugs,
         "_out_of_scope": out_of_scope,
+        "_out_of_scope_pks": out_of_scope_pks,
         "_present_backfilled": present_backfilled,
     }
 
@@ -245,16 +257,14 @@ def prune_orphan_devices(sync, *, report=None) -> dict:
         )
 
     orphans = sorted(out_of_scope)
-    # Resolve the out-of-scope names to explicit PKs ONCE, then delete by PK.
-    # NetBox device names are not globally unique, so deleting by `name__in` per
-    # batch re-matches by a non-unique key at delete time; anchoring to PKs
-    # captured up front deletes exactly the rows identified as out of scope and is
-    # robust to a device being renamed between planning and delete. (The scope set
-    # itself is still name-keyed — see compute_scope_reconciliation; making it
-    # site/identity-aware is a separate design item.)
-    orphan_pks = list(
-        Device.objects.filter(name__in=orphans).values_list("pk", flat=True)
-    )
+    # Delete by the explicit device PKs resolved at scope-compute time
+    # (identity-aware) rather than re-matching the non-unique device name at delete
+    # time. Fall back to a name resolution if an older report without PKs is passed.
+    orphan_pks = list(report.get("_out_of_scope_pks") or [])
+    if not orphan_pks and orphans:
+        orphan_pks = list(
+            Device.objects.filter(name__in=orphans).values_list("pk", flat=True)
+        )
     deleted_total = 0
     with transaction.atomic():
         for start in range(0, len(orphan_pks), 500):
