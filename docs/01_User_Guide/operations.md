@@ -199,11 +199,13 @@ builds and uploads to PyPI over OIDC with no stored token.
 The plugin has two operator-facing trust boundaries (see `SECURITY.md` for the
 full policy):
 
-- **Protect the database at rest.** Forward API credentials are stored in the
-  `ForwardSource` record. They are masked in the UI/API and redacted from logs, but
-  are not encrypted at rest, so a database dump/backup contains a live credential.
-  Use disk/volume encryption and encrypted, access-controlled backups, give the
-  Forward service account least privilege, and rotate it if a backup is exposed.
+- **Credential encryption + `SECRET_KEY`.** The Forward API password is encrypted
+  at rest (Fernet, keyed off Django's `SECRET_KEY`) and masked/redacted in the
+  UI/API/logs, so a database dump no longer contains a usable password. Protect
+  `SECRET_KEY` accordingly, and note that **rotating `SECRET_KEY` requires
+  re-entering the password on each Forward source** (old ciphertext can no longer
+  be decrypted). Keep database backups access-controlled and give the Forward
+  service account least privilege.
 - **Restrict who can sync.** A sync performs inventory-wide create/update/delete
   across DCIM/IPAM and is not gated by NetBox object-level permissions. Treat
   creating a Forward source or triggering a sync as broad DCIM/IPAM write access

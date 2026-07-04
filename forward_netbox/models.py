@@ -183,6 +183,24 @@ class ForwardSource(ForwardPluginModelDocsMixin, JobsMixin, PrimaryModel):
         super().clean()
         clean_forward_source(self)
 
+    def save(self, *args, **kwargs):
+        # Encrypt the Forward credential at rest so a DB dump/backup never holds a
+        # usable password. Idempotent: an already-encrypted value is untouched, so
+        # re-saving a source that reuses the stored ciphertext does not
+        # double-encrypt. Decryption happens where the password is actually used
+        # (the ForwardClient); every other reader only checks presence.
+        from .utilities.crypto import encrypt_secret
+
+        parameters = self.parameters or {}
+        password = parameters.get("password")
+        if password:
+            encrypted = encrypt_secret(password)
+            if encrypted != password:
+                parameters = dict(parameters)
+                parameters["password"] = encrypted
+                self.parameters = parameters
+        super().save(*args, **kwargs)
+
     def get_client(self):
         return ForwardClient(self)
 

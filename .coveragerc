@@ -1,11 +1,15 @@
-[coverage:paths]
+[run]
+source =
+    forward_netbox
+omit =
+    */tests/*
+    */migrations/*
+
+[paths]
 source =
     forward_netbox
     /source/forward_netbox
     */site-packages/forward_netbox
-show_missing = True
 
-[coverage:report]
-omit =
-    */tests/*
-    */migrations/*
+[report]
+show_missing = True
