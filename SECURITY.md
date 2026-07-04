@@ -42,9 +42,21 @@ platform baseline.
 
 ## Scope and handling notes
 
-- The plugin stores Forward API credentials in the NetBox database and performs
-  inventory-wide writes to DCIM/IPAM during a sync. Deployments should protect the
-  NetBox database at rest and restrict who can create/trigger Forward syncs.
+- **Forward credential at rest.** The Forward API username/password are stored in
+  the `ForwardSource` model's parameters (a database field). They are masked in
+  every UI/API display and redacted from logs, but they are **not encrypted at
+  rest** — a database dump or backup contains a usable credential. Operators MUST
+  therefore protect the NetBox database at rest (disk/volume encryption, encrypted
+  backups, restricted backup access) and scope the Forward service account to the
+  least privilege the sync needs. Rotate the credential if a backup is exposed.
+- **Sync is an inventory-wide write trust boundary.** A Forward sync creates,
+  updates, and deletes DCIM/IPAM objects across NetBox via the branch-merge apply
+  path; these writes are **not gated by NetBox object-level permissions**. Treat
+  the ability to create a Forward source or trigger a sync as equivalent to
+  broad DCIM/IPAM write access, and restrict it (via NetBox permissions on the
+  plugin's own models and operational process) to trusted operators. Destructive
+  actions (device prune, IPAM delete-tagging) are additionally dry-run-by-default
+  and refuse to act on an empty Forward scope.
 - Do not include customer names, network identifiers, snapshot IDs, or credentials
   in reports committed to this repository; a pre-commit and CI content scanner
   (`scripts/check_sensitive_content.py`) blocks such identifiers.
