@@ -41,6 +41,13 @@ Revert the two `if:`/trigger edits. No code or data change.
   publish failure would also hide real failures once TP is configured.
 
 ## Bundled changes
-CI no longer blocks Dependabot PRs on the plan-doc harness gate, and the PyPI
-publish workflow is manual until Trusted Publishing is configured (stops the
-false failure email on every release tag).
+CI no longer blocks Dependabot PRs on the plan-doc harness gate. `release.yml`
+was briefly switched to manual, then reverted to tag-triggered (plus manual
+dispatch) once the PyPI Trusted Publisher + `pypi` environment were configured
+in the same session, so release tags auto-publish via OIDC.
+
+## Update — TP configured
+The maintainer configured the PyPI Trusted Publisher and `pypi` environment
+during this session, so the manual-only stopgap was reverted immediately:
+`release.yml` is tag-triggered again (`push: tags: ["v*"]` + `workflow_dispatch`).
+The harness-gate Dependabot exemption stands.
