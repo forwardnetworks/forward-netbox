@@ -13,14 +13,20 @@ a committed customer name + hardened the scanner, added SECURITY.md / Dependabot
 pip-audit / migration-drift guard / issue+PR templates / pyproject metadata, and
 made the missing-user sync attribution auditable. **Remaining GA items:**
 
-- **GA-blocker — Trusted Publishing (project).** PyPI upload is a manual laptop
-  twine token (release.py only prints the hint); artifacts unsigned. Move publish
-  into a tag-triggered GitHub Actions job using OIDC Trusted Publishing + PEP 740
-  attestations; retire the token.
-- **GA-blocker — upgrade safety (project).** CI only migrates a fresh empty DB
-  forward; ~30 migrations incl. destructive/rename ones are untested on a populated
-  DB. Add a MigratorTestCase upgrade/downgrade test across the destructive
-  migrations; write UPGRADE + ROLLBACK guides.
+- **GA-blocker — Trusted Publishing — DONE 2026-07-04.** Added
+  `.github/workflows/release.yml`: pushing a `v*` tag builds + publishes to PyPI via
+  OIDC Trusted Publishing with PEP 740 attestations (no stored token); `release.py`
+  now points at it with twine as fallback. **One-time setup still required by the
+  maintainer:** add the GitHub Trusted Publisher on PyPI (owner=forwardnetworks,
+  repo=forward-netbox, workflow=release.yml, environment=pypi) and create a `pypi`
+  GitHub environment. Until that is configured, the first tag-publish will fail and
+  the twine fallback is used.
+- **GA-blocker — upgrade safety — PARTIAL 2026-07-04.** Wrote the UPGRADE +
+  ROLLBACK guide (`docs/01_User_Guide/upgrade.md`): backup-first, migrate, verify,
+  and restore-from-backup rollback with the destructive-migration caveat. **Still a
+  project:** an automated upgrade/downgrade test on a POPULATED DB across the
+  destructive migrations (needs `django-test-migrations` or a hand-rolled migration
+  executor + data fixtures) — deliberately not authored blind.
 - **Decision — support posture / GA framing.** README still carries an
   "unsupported / not an official Forward product / no warranty" disclaimer and
   `Development Status :: 4 - Beta`; site is named "Forward Field Integration". These
