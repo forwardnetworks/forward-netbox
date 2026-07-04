@@ -228,6 +228,14 @@ Two management commands surface problems without watching the UI; schedule them
 Both print a JSON report and exit non-zero on breach when the `--fail-on-*` flag is
 set, so a scheduler can treat a non-zero exit as the alert condition.
 
+## Metrics
+
+`python manage.py forward_metrics` emits plugin metrics in Prometheus
+text-exposition format on stdout (source/sync/ingestion counts, jobs by status,
+wedged-job count, and the age of the most recent completed job). Point a
+node_exporter textfile collector at its output, or run it from a scrape sidecar, to
+graph and alert on Forward sync health in Grafana/Datadog.
+
 ## Upgrades
 
 See the [Upgrade and Rollback](upgrade.md) guide. Always back up the NetBox
