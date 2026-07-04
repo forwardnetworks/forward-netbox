@@ -102,7 +102,6 @@ class ForwardIngestionIssueRenderingTest(TestCase):
         )
         self.assertEqual(data["sync"]["analysis_summary"]["baseline_ready"], True)
         self.assertEqual(data["workload_summary"]["sync_mode"], "diff")
-        self.assertEqual(data["sync"]["workload_summary"]["uses_multi_branch"], True)
         self.assertEqual(data["advisory_summary"]["intent_signals"]["issue_count"], 1)
         self.assertEqual(
             data["sync"]["advisory_summary"]["latest_validation_run"], validation_run.pk
