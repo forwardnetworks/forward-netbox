@@ -37,7 +37,7 @@ platform baseline.
 
 | Version | Supported |
 | --- | --- |
-| Latest `2.2.x` | ✅ |
+| Latest release (currently `2.3.x`) | ✅ |
 | Older releases | ❌ (upgrade to the latest release) |
 
 ## Scope and handling notes
