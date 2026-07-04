@@ -63,7 +63,10 @@ class Command(BaseCommand):
         jobs = Job.objects.filter(object_type_id__in=forward_type_ids)
 
         status_counts = {}
-        for status, _label in JobStatusChoices.CHOICES:
+        # ChoiceSet entries may be (value, label) or (value, label, color); take
+        # the value.
+        for choice in JobStatusChoices.CHOICES:
+            status = choice[0]
             status_counts[status] = jobs.filter(status=status).count()
         lines.append("# HELP forward_jobs Forward background jobs by status.")
         lines.append("# TYPE forward_jobs gauge")
