@@ -211,6 +211,21 @@ full policy):
   delete-tagging) are dry-run-by-default and refuse to act on an empty Forward
   scope.
 
+## Alerting
+
+Two management commands surface problems without watching the UI; schedule them
+(cron, systemd timer, or a NetBox custom script):
+
+- `python manage.py forward_collection_gap_alert --fail-on-breach` — alerts when a
+  sync's backfilled (tagged-but-not-freshly-collected) device count crosses a
+  threshold.
+- `python manage.py forward_stuck_job_alert --fail-on-stuck` — alerts when a
+  forward_netbox background job is wedged (still PENDING/RUNNING in the database but
+  with no live worker execution, e.g. a worker died or the heartbeat went stale).
+
+Both print a JSON report and exit non-zero on breach when the `--fail-on-*` flag is
+set, so a scheduler can treat a non-zero exit as the alert condition.
+
 ## Upgrades
 
 See the [Upgrade and Rollback](upgrade.md) guide. Always back up the NetBox

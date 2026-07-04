@@ -126,6 +126,53 @@ class ForwardJobsTest(TestCase):
             _maybe_enqueue_vsys_parent_link(self.sync)
             enqueue.assert_called_once()
 
+    def _make_active_job(self):
+        from django.contrib.contenttypes.models import ContentType
+
+        return Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=self.sync.pk,
+            name=f"{self.sync.name} - sync",
+            status=JobStatusChoices.STATUS_RUNNING,
+            job_id=uuid4(),
+        )
+
+    def test_stuck_job_alert_flags_a_dead_active_job(self):
+        import json
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        self._make_active_job()
+        out = StringIO()
+        with patch(
+            "forward_netbox.management.commands.forward_stuck_job_alert."
+            "job_has_live_execution",
+            return_value=False,
+        ):
+            call_command("forward_stuck_job_alert", stdout=out)
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload["stuck_job_count"], 1)
+        self.assertIn("alert", payload)
+
+    def test_stuck_job_alert_ignores_a_live_active_job(self):
+        import json
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        self._make_active_job()
+        out = StringIO()
+        with patch(
+            "forward_netbox.management.commands.forward_stuck_job_alert."
+            "job_has_live_execution",
+            return_value=True,
+        ):
+            call_command("forward_stuck_job_alert", stdout=out)
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload["stuck_job_count"], 0)
+        self.assertNotIn("alert", payload)
+
     def test_record_timeout_issue_creates_single_issue_per_ingestion_phase(self):
         issue_1 = record_timeout_issue(
             self.ingestion,
