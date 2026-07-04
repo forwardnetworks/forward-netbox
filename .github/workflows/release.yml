@@ -10,9 +10,11 @@ name: Publish to PyPI
 #   2. In this repo: Settings -> Environments -> create an environment named
 #      "pypi" (optionally add required reviewers to gate publishes).
 "on":
-  push:
-    tags:
-      - "v*"
+  # Manual-only until the PyPI Trusted Publisher + `pypi` environment are
+  # configured (setup notes above). Until then a tag-triggered run only fails
+  # at the OIDC upload and emails a false failure, so tag-triggering is off.
+  # Re-enable `push: {tags: ["v*"]}` once Trusted Publishing is set up.
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
