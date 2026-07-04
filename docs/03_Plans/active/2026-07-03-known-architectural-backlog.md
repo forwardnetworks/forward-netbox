@@ -48,13 +48,16 @@ made the missing-user sync attribution auditable. **Remaining GA items:**
 - **Tier-2 — enterprise ops surface (2026-07-04 status).** DONE: `prune_orphan_devices`
   now deletes by resolved PK; SaaS rpm is clamped to the safe rate on save; retry
   backoff now has jitter + honors Retry-After + a 60s cap; a CODEOWNERS skeleton is
-  in place (team slug TBD by the maintainer). STILL OPEN — genuine features/decisions,
-  not quick fixes: Prometheus/OTel metrics export (feature); an autonomous stuck-job
-  alert command (feature, mirrors `forward_collection_gap_alert`); SBOM generation;
-  a deprecation policy; a consolidated REST/API reference; coverage measurement +
-  floor (a CI-cost + baseline decision); a dependency lockfile (needs the poetry
-  toolchain); and a broader CI NetBox-version matrix (needs a verified-compatible
-  4.6.x patch — the optional-plugin caps in item 6 still apply).
+  in place (team slug TBD by the maintainer). ALSO DONE 2026-07-04:
+  `forward_stuck_job_alert` command (+ tests + ops docs); per-release CycloneDX
+  SBOM (release.yml); deprecation policy (`versioning.md`); consolidated REST API
+  reference (`rest-api.md`). STILL OPEN — genuine features/decisions, not quick
+  fixes: Prometheus/OTel metrics export (feature); coverage measurement + floor (a
+  CI-cost + baseline decision — the repo `.coveragerc` also uses embedded-style
+  `[coverage:*]` sections that need reworking for a standalone run); a dependency
+  lockfile (needs the poetry toolchain); and a broader CI NetBox-version matrix
+  (needs a verified-compatible 4.6.x patch — the optional-plugin caps in item 6
+  still apply).
 
 ---
 
