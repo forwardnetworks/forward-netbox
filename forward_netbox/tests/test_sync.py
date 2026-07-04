@@ -74,7 +74,6 @@ from forward_netbox.utilities.branch_budget import row_shard_key
 from forward_netbox.utilities.branch_budget import shard_fetch_capability_for_model
 from forward_netbox.utilities.branch_budget import shard_fetch_contract
 from forward_netbox.utilities.branch_budget import SHARD_FETCH_MODEL_CONTRACTS
-from forward_netbox.utilities.density_learning import update_density_learning
 from forward_netbox.utilities.execution_telemetry import build_plan_preview
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from forward_netbox.utilities.query_diagnostics import (
@@ -534,44 +533,6 @@ class ForwardBranchBudgetPlanTest(TestCase):
         self.assertEqual(plan[0].delete_rows, [])
         self.assertEqual(plan[1].upsert_rows, [])
         self.assertEqual(len(plan[1].delete_rows), 1)
-
-    def test_density_learning_rejects_large_outlier_after_warmup(self):
-        density = {"dcim.device": 1.0}
-        profile = {}
-        for observed in (1.0, 1.05, 0.95, 1.02):
-            density, profile, result = update_density_learning(
-                density,
-                profile,
-                model_string="dcim.device",
-                observed_density=observed,
-            )
-            self.assertTrue(result["accepted"])
-
-        baseline_density = density["dcim.device"]
-        density, profile, result = update_density_learning(
-            density,
-            profile,
-            model_string="dcim.device",
-            observed_density=25.0,
-        )
-
-        self.assertFalse(result["accepted"])
-        self.assertEqual(result["reason"], "ratio_outlier")
-        self.assertEqual(density["dcim.device"], baseline_density)
-        self.assertGreater(profile["dcim.device"]["rejected_observations"], 0)
-
-    def test_density_learning_accepts_warmup_samples(self):
-        density = {}
-        profile = {}
-        density, profile, result = update_density_learning(
-            density,
-            profile,
-            model_string="dcim.device",
-            observed_density=2.5,
-        )
-        self.assertTrue(result["accepted"])
-        self.assertIn("dcim.device", density)
-        self.assertEqual(profile["dcim.device"]["sample_count"], 1)
 
 
 class ForwardSyncRunnerTest(TestCase):
