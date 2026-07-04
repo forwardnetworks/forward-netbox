@@ -26,7 +26,6 @@ def normalize_forward_sync(sync):
     )
     if "enable_bulk_orm" not in parameters:
         parameters["enable_bulk_orm"] = DEFAULT_ENABLE_BULK_ORM_FOR_NEW_SYNCS
-    parameters["multi_branch"] = True
     max_changes_per_branch = get_state_max_changes_per_branch(
         sync,
         DEFAULT_MAX_CHANGES_PER_BRANCH,
@@ -124,11 +123,6 @@ def get_query_parameters(sync):
     if exclude_tags:
         query_parameters["device_tag_exclude_tags"] = exclude_tags
     return query_parameters
-
-
-def uses_multi_branch(sync):
-    # 2.0: the single-branch path always uses the branching framework.
-    return True
 
 
 def is_model_enabled(sync, model_string):

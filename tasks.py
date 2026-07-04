@@ -918,8 +918,7 @@ def scale_chaos_test(context):
             "forward_netbox.tests.test_api_views.ForwardExecutionRunAPIViewTest "
             "forward_netbox.tests.test_log_export "
             "forward_netbox.tests.test_synthetic_scenarios "
-            "forward_netbox.tests.test_sync_state "
-            "forward_netbox.tests.test_sync.ForwardMultiBranchExecutorAdaptiveSplitTest"
+            "forward_netbox.tests.test_sync_state"
         ),
     )
 

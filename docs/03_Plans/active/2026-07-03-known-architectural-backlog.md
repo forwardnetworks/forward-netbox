@@ -34,19 +34,31 @@ load-bearing; each model is promoted individually behind a parity test. Largest
 structural tax, but an intentional in-flight migration. Converging to bulk-only is
 a multi-release project, not a cleanup edit.
 
-### 2. Unreachable `multi_branch` scaffolding — DEFER (needs careful removal)
-Single-branch is the only executor (`sync_orchestration.py` only builds
-`ForwardSingleBranchExecutor`), yet a `multi_branch` concept still threads through
-`models.py`, `sync_state.py`, `model_validation.py`,
-`sync_facade.uses_multi_branch`, and `multi_branch_lifecycle.py`. Removal touches
-persisted sync `parameters` and the param allowlist, so it wants its own change +
-migration + test pass.
+### 2. Unreachable `multi_branch` scaffolding — RESOLVED 2026-07-04
+Removed. An investigation workflow (adversarial reachability, high confidence)
+confirmed multi-branch execution is unreachable: the only dispatch path builds
+`ForwardSingleBranchExecutor` unconditionally and exactly one branch is ever
+provisioned. Retired the always-True fossil: stopped writing `parameters["multi_branch"]`
+(model_validation, sync_facade, forms ×2, sync_state display), removed the
+`uses_multi_branch()` method/import/definition and the `uses_multi_branch` workload-
+summary key. NO schema migration (the keys lived only in the `parameters` JSON;
+the one real column was on the already-dropped `ForwardExecutionRun`). Back-compat
+preserved: `multi_branch` stays in the `clean_forward_sync` allowlist so old stored
+syncs still validate (proven: a sync with `multi_branch=True` still `clean()`s).
+`max_changes_per_branch` is untouched — it remains a live telemetry/budget param.
+Naming debris (`multi_branch_lifecycle.py` module, `ForwardFastBootstrapExecutor`
+class) is load-bearing and left for a separate cosmetic rename follow-up.
 
-### 3. 10k-changes/branch budget + density learning — DEFER (audit for over-engineering)
-`branch_budget.py` (`DEFAULT_MAX_CHANGES_PER_BRANCH = 10000`) plus
-`density_learning.py` (EWMA density estimator) drive sub-batching. With
-single-branch now the norm, whether the full density apparatus still earns its
-complexity is worth a dedicated audit — it may reduce to a fixed sub-batch size.
+### 3. Density-learning dead write-loop — DEFER (separate single-purpose PR)
+Refined by the 2026-07-04 investigation. `max_changes_per_branch` and the budget
+*read* path (`branch_budget.effective_row_budget_for_model`, budget hints/preview
+telemetry) are LIVE and stay. But the density-LEARNING *write* loop is already dead:
+`density_learning.update_density_learning` (:75) and `should_accept_observation`
+(:153) have no non-test caller — the profile is never updated from observed runs.
+Removing them (and the `effective_row_budget_for_model`/`build_branch_budget_hints`
+telemetry rewrite) is a legit dead-code removal but strips telemetry-adjacent
+surface with its own density-profile budget-math test fallout, so it is kept OUT of
+the multi_branch change and tracked here as a distinct, single-purpose follow-up.
 
 ### 4. 1-created/1-deleted idempotency churn — BLOCKED (needs field data)
 The read-only diagnostic shipped (`apply_identity_audit.py` +
@@ -60,11 +72,20 @@ Real de-dup surface is only ~2 v4/v6 variant pairs (`forward_ip_addresses_*`,
 `forward_prefixes_*`); the 13 `forward_aci_*` queries are genuinely distinct.
 Payoff is small; optional polish, not debt.
 
-### 6. Optional-plugin CI coverage — CONSIDER (small, real)
-28 test skips are honest optional-dependency guards (24 netbox-routing, 3
-netbox-peering-manager, 1 NetBox notify hook) + 1 opt-in scale test. Confirm the
-CI image installs netbox-routing and netbox-peering-manager so routing/peering
-coverage cannot silently vanish; if it does not, that is a genuine (small) gap.
+### 6. Optional-plugin CI coverage — BLOCKED upstream (investigated 2026-07-04)
+Real gap, but not fixable at the current pins. `development/Dockerfile` installs
+`netbox-routing==0.4.2` + `netbox-peering-manager==0.2.2`, but
+`development/configuration/plugins.py` only ENABLES them when `NETBOX_VER`
+starts with `v4.5`. Since 4.5 was dropped and CI is v4.6.4-only, both stay
+disabled and 27 routing/peering tests skip in CI (covering the ~25KB
+`sync_routing_impl.py` BGP/OSPF apply path). Attempting to enable them on 4.6.4
+fails: routing 0.4.2 raises `CheckConstraint.__init__() got an unexpected keyword
+argument 'check'` (NetBox 4.6's Django renamed `check=`→`condition=`), and
+peering-manager 0.2.2 declares `max_version 4.5.99`. So the `v4.5` gate is
+protective, not stale. **To close:** bump both plugins to 4.6-compatible upstream
+releases (when available), update the Dockerfile pins, then enable on 4.6 and
+confirm the 27 tests pass. Until then the skips are expected. (`plugins.py` now
+carries a comment documenting this.)
 
 ## Validation
 Not applicable — no code changes. The audit basis is recorded in the companion
