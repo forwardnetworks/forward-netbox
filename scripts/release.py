@@ -288,7 +288,14 @@ def stage_finish(version: str, notes_file: Path | None = None) -> None:
             str(notes_file),
         ]
     )
-    print("[finish] upload to PyPI with: twine upload " + whl + " " + sdist)
+    print(
+        "[finish] pushing the v"
+        + version
+        + " tag triggers the Trusted-Publishing workflow (.github/workflows/"
+        "release.yml), which builds and uploads to PyPI via OIDC — no token. "
+        "If Trusted Publishing is not yet configured on PyPI, upload manually as a "
+        "fallback with: twine upload " + whl + " " + sdist
+    )
     run(["git", "checkout", "main"])
     run(["git", "merge", "--ff-only", "origin/main"])
 

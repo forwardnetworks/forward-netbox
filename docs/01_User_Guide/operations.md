@@ -190,4 +190,29 @@ invoke release --version X.Y.Z --summary "one-line note" --write
 
 `--write` runs prepare (version bump + compatibility tables) and the local CI
 mirror. Rollout (branch, push, tag, GitHub release, PyPI) only happens with
-`--publish`/`--finish`, after GitHub CI is green.
+`--publish`/`--finish`, after GitHub CI is green. Pushing the `vX.Y.Z` tag
+triggers the Trusted-Publishing workflow (`.github/workflows/release.yml`), which
+builds and uploads to PyPI over OIDC with no stored token.
+
+## Security and deployment hardening
+
+The plugin has two operator-facing trust boundaries (see `SECURITY.md` for the
+full policy):
+
+- **Protect the database at rest.** Forward API credentials are stored in the
+  `ForwardSource` record. They are masked in the UI/API and redacted from logs, but
+  are not encrypted at rest, so a database dump/backup contains a live credential.
+  Use disk/volume encryption and encrypted, access-controlled backups, give the
+  Forward service account least privilege, and rotate it if a backup is exposed.
+- **Restrict who can sync.** A sync performs inventory-wide create/update/delete
+  across DCIM/IPAM and is not gated by NetBox object-level permissions. Treat
+  creating a Forward source or triggering a sync as broad DCIM/IPAM write access
+  and limit it to trusted operators. Destructive actions (device prune, IPAM
+  delete-tagging) are dry-run-by-default and refuse to act on an empty Forward
+  scope.
+
+## Upgrades
+
+See the [Upgrade and Rollback](upgrade.md) guide. Always back up the NetBox
+database before upgrading; restore-from-backup is the supported rollback across a
+schema migration, since some migrations are not fully reversible.
