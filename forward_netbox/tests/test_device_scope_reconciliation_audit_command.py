@@ -184,3 +184,23 @@ class ForwardDeviceScopeReconciliationAuditCommandTest(TestCase):
         self.assertFalse(Device.objects.filter(name="dev-d").exists())
         self.assertTrue(Device.objects.filter(name="dev-a").exists())
         self.assertTrue(Device.objects.filter(name="dev-c").exists())
+
+    def test_out_of_scope_pks_track_device_identity(self):
+        from forward_netbox.utilities.scope_reconciliation import (
+            compute_scope_reconciliation,
+        )
+
+        self._make_devices("dev-a", "dev-d")
+        rows = [{"name": "dev-a", "completed": True}]
+        client = Mock()
+        client.run_nqe_query = Mock(return_value=rows)
+        with (
+            patch.object(ForwardSource, "get_client", return_value=client),
+            patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
+        ):
+            report = compute_scope_reconciliation(self.sync)
+
+        dev_d = Device.objects.get(name="dev-d")
+        self.assertEqual(report["_out_of_scope"], {"dev-d"})
+        # Identity-aware: the out-of-scope set is resolved to the exact device PK.
+        self.assertEqual(list(report["_out_of_scope_pks"]), [dev_d.pk])
