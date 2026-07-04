@@ -53,8 +53,23 @@ def _resolve_request_user(*, sync, job=None):
         return job.user
     if getattr(sync, "user", None) is not None:
         return sync.user
+    # No invoking or owning user. Inventory-wide writes and their ObjectChange
+    # attribution would otherwise SILENTLY run as an arbitrary superuser, leaving
+    # an unexplainable audit trail. Keep the run working (a user FK is required
+    # downstream) but surface the fallback loudly so an operator assigns a proper
+    # sync owner.
     User = get_user_model()
-    return User.objects.filter(is_active=True, is_superuser=True).order_by("pk").first()
+    fallback = (
+        User.objects.filter(is_active=True, is_superuser=True).order_by("pk").first()
+    )
+    logger.warning(
+        "Forward sync %s has no invoking or owning user; attributing changes to "
+        "fallback superuser '%s'. Assign an owner to the sync so inventory writes "
+        "are attributed correctly.",
+        getattr(sync, "pk", "?"),
+        getattr(fallback, "username", None) or "<none>",
+    )
+    return fallback
 
 
 def _normalize_job_log_level(level):

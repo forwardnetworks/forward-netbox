@@ -1,4 +1,11 @@
 site_name: Forward Field Integration Documentation
+# Internal maintainer/field material is kept in the repo but NEVER published.
+# 03_Plans holds field-engagement planning notes; 00_Project_Knowledge holds
+# internal architecture/agent-workflow docs. Excluding them from the build (not
+# just the nav) keeps them out of the rendered site/.
+exclude_docs: |
+  03_Plans/
+  00_Project_Knowledge/
 theme:
   name: material
 plugins:
