@@ -201,7 +201,6 @@ This repository is provided for use at your own risk. It is an unsupported relea
 
 ## Start Here
 
-- [Project Knowledge](00_Project_Knowledge/README.md)
 - [Installation](01_User_Guide/README.md)
 - [Configuration](01_User_Guide/configuration.md)
 - [Usage and Validation](01_User_Guide/usage.md)
@@ -210,8 +209,6 @@ This repository is provided for use at your own risk. It is an unsupported relea
 - [Built-In NQE Reference](02_Reference/built-in-nqe-maps.md)
 - [Device Type Alias Data File](02_Reference/device-type-alias-data-file.md)
 - [Model Mapping Matrix](02_Reference/model-mapping-matrix.md)
-- [Active Implementation Plans](03_Plans/active/README.md)
-- [Technical Debt Tracker](03_Plans/technical-debt.md)
 - [Shipped NQE Query Files](https://github.com/forwardnetworks/forward-netbox/tree/main/forward_netbox/queries)
 
 ## Screenshot Set

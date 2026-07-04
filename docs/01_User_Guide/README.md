@@ -11,16 +11,17 @@ Forward 26.6 is the baseline for async NQE.
 
 ## Package Installation
 
-Install the wheel from GitHub Releases into the same Python environment as NetBox:
+Install the latest release from PyPI into the same Python environment as NetBox:
 
 ```bash
-pip install /path/to/forward_netbox-1.7.2-py3-none-any.whl
+pip install forward-netbox
 ```
 
-Alternatively, install directly from the GitHub source archive:
+Alternatively, install a specific wheel or source archive from GitHub Releases:
 
 ```bash
-pip install /path/to/forward_netbox-1.7.2.tar.gz
+pip install /path/to/forward_netbox-2.2.5-py3-none-any.whl
+pip install /path/to/forward_netbox-2.2.5.tar.gz
 ```
 
 If you mirror the package into a private Python index, pin the same release version:
