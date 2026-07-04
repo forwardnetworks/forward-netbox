@@ -51,3 +51,12 @@ The maintainer configured the PyPI Trusted Publisher and `pypi` environment
 during this session, so the manual-only stopgap was reverted immediately:
 `release.yml` is tag-triggered again (`push: tags: ["v*"]` + `workflow_dispatch`).
 The harness-gate Dependabot exemption stands.
+
+## Update — harness gate scoped to PR events
+The actor-only exemption covered Dependabot's PR runs but not the
+merge-to-main push (actor there is the merger, so the gate re-flagged the dep
+bump with no plan doc and redded main after auto-merge). Scoped the "Check
+repository harness" step to `github.event_name == 'pull_request' &&
+github.actor != 'dependabot[bot]'`: the plan-doc gate enforces on human PRs
+only. Direct pushes stay covered by the local `invoke harness-check` (and its
+`--base` per-commit simulation) before pushing.
