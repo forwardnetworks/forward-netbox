@@ -108,8 +108,10 @@ REQUIRED_TEXT = {
         "Decision Log",
     ],
     ".github/workflows/ci.yml": [
-        "actions/checkout@v6",
-        "actions/setup-python@v6",
+        # Version-agnostic: Dependabot bumps the action major, and pinning a
+        # version here would red every such PR + main after merge.
+        "actions/checkout@",
+        "actions/setup-python@",
         "FORCE_JAVASCRIPT_ACTIONS_TO_NODE24",
         "contents: read",
         "Run harness tests",
