@@ -173,6 +173,22 @@ class ForwardJobsTest(TestCase):
         self.assertEqual(payload["stuck_job_count"], 0)
         self.assertNotIn("alert", payload)
 
+    def test_metrics_command_emits_prometheus_exposition(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        out = StringIO()
+        call_command("forward_metrics", stdout=out)
+        text = out.getvalue()
+        # Prometheus exposition shape: HELP/TYPE lines plus a sample per metric.
+        self.assertIn("# TYPE forward_sources_total gauge", text)
+        self.assertIn("forward_syncs_total ", text)
+        self.assertIn("forward_jobs{status=", text)
+        self.assertIn("forward_stuck_jobs ", text)
+        # At least one source/sync exists (setUp), so the counts are >= 1.
+        self.assertRegex(text, r"forward_syncs_total [1-9]")
+
     def test_record_timeout_issue_creates_single_issue_per_ingestion_phase(self):
         issue_1 = record_timeout_issue(
             self.ingestion,
