@@ -45,12 +45,16 @@ made the missing-user sync attribution auditable. **Remaining GA items:**
   (tested != shipped). Restore a min+latest 4.6.x matrix (note: routing/peering
   optional-plugin caps still apply — see item 6), measure+floor coverage, commit a
   lockfile.
-- **Tier-2 — enterprise ops surface.** No Prometheus/OTel metrics export (rich
-  telemetry trapped in job.data/health page); stuck-job detector has no autonomous
-  alert; `prune_orphan_devices` deletes by device NAME not PK (cross-site name
-  collision risk); SaaS rpm hard-block is advisory-only; retry backoff lacks jitter
-  and ignores Retry-After; no SBOM; no deprecation policy; no consolidated REST/API
-  reference; CODEOWNERS still needs the maintaining team handle.
+- **Tier-2 — enterprise ops surface (2026-07-04 status).** DONE: `prune_orphan_devices`
+  now deletes by resolved PK; SaaS rpm is clamped to the safe rate on save; retry
+  backoff now has jitter + honors Retry-After + a 60s cap; a CODEOWNERS skeleton is
+  in place (team slug TBD by the maintainer). STILL OPEN — genuine features/decisions,
+  not quick fixes: Prometheus/OTel metrics export (feature); an autonomous stuck-job
+  alert command (feature, mirrors `forward_collection_gap_alert`); SBOM generation;
+  a deprecation policy; a consolidated REST/API reference; coverage measurement +
+  floor (a CI-cost + baseline decision); a dependency lockfile (needs the poetry
+  toolchain); and a broader CI NetBox-version matrix (needs a verified-compatible
+  4.6.x patch — the optional-plugin caps in item 6 still apply).
 
 ---
 
