@@ -41,7 +41,8 @@ class ForwardSyncFacadeHelperTest(TestCase):
 
         normalize_forward_sync(sync)
 
-        self.assertTrue(sync.parameters["multi_branch"])
+        # normalize no longer writes the dead "multi_branch" fossil; the live
+        # max_changes_per_branch clamp (0 -> 1) still applies.
         self.assertEqual(sync.parameters["max_changes_per_branch"], 1)
         self.assertTrue(sync.auto_merge)
         self.assertTrue(sync.parameters["enable_bulk_orm"])

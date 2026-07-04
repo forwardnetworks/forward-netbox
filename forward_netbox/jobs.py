@@ -553,7 +553,7 @@ def create_forward_module_bays(job, *args, **kwargs):
 def forward_dependency_preview(job, *args, **kwargs):
     """Background dependency dry-run preview for a sync.
 
-    The dry-run builds a full multi-branch plan against live Forward data, which
+    The dry-run builds a full single-branch plan against live Forward data, which
     far exceeds an HTTP gateway timeout on large fabrics. Run it as a job and
     cache the JSON payload on ``job.data`` so the preview page can render it
     later without a Forward round-trip.

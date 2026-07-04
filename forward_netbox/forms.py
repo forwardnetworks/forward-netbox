@@ -1262,7 +1262,6 @@ class ForwardSyncForm(NetBoxModelForm):
         parameters = {
             "execution_backend": ForwardExecutionBackendChoices.SINGLE_BRANCH,
             "auto_merge": cleaned.get("auto_merge", False),
-            "multi_branch": True,
             "snapshot_id": snapshot_id,
             "enable_bulk_orm": bool(cleaned.get("enable_bulk_orm", False)),
             "bulk_orm_models": list(
@@ -1287,7 +1286,6 @@ class ForwardSyncForm(NetBoxModelForm):
         parameters = {
             "execution_backend": ForwardExecutionBackendChoices.SINGLE_BRANCH,
             "auto_merge": self.cleaned_data.get("auto_merge", False),
-            "multi_branch": True,
             "snapshot_id": self.cleaned_data.get("snapshot_id")
             or LATEST_PROCESSED_SNAPSHOT,
             "enable_bulk_orm": bool(self.cleaned_data.get("enable_bulk_orm", False)),

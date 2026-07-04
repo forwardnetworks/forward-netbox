@@ -405,7 +405,6 @@ def clean_forward_sync(sync):
     ):
         raise ValidationError(_("`bulk_orm_models` must be a list of model strings."))
     parameters["bulk_orm_models"] = sorted(set(bulk_orm_models))
-    parameters["multi_branch"] = True
     try:
         max_changes_per_branch = int(
             parameters.get("max_changes_per_branch", sync.get_max_changes_per_branch())

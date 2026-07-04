@@ -80,7 +80,6 @@ from .utilities.sync_facade import get_maps as build_sync_maps
 from .utilities.sync_facade import get_query_parameters as build_sync_query_parameters
 from .utilities.sync_facade import normalize_forward_sync
 from .utilities.sync_facade import resolve_snapshot_id as resolve_forward_snapshot_id
-from .utilities.sync_facade import uses_multi_branch as uses_forward_multi_branch
 from .utilities.sync_state import clear_branch_run_state as clear_sync_branch_run_state
 from .utilities.sync_state import get_advisory_summary as build_sync_advisory_summary
 from .utilities.sync_state import get_analysis_summary as build_sync_analysis_summary
@@ -551,9 +550,6 @@ class ForwardSync(ForwardPluginModelDocsMixin, JobsMixin, TagsMixin, ChangeLogge
 
     def get_query_parameters(self):
         return build_sync_query_parameters(self)
-
-    def uses_multi_branch(self):
-        return uses_forward_multi_branch(self)
 
     def get_branch_run_state(self):
         return get_sync_branch_run_state(self)
