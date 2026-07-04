@@ -485,7 +485,10 @@ class ForwardClientTest(TestCase):
             result = self.client._request("POST", "/nqe", json_body={"query": "q"})
 
         self.assertEqual(result, response)
-        sleep.assert_any_call(2)
+        self.assertTrue(sleep.called)
+        waits = [call.args[0] for call in sleep.call_args_list]
+        # Linear base backoff (2) plus additive jitter in [0, 2].
+        self.assertTrue(any(2.0 <= wait <= 4.0 for wait in waits))
         response.raise_for_status.assert_called_once()
 
     def test_request_retries_transient_http_status_errors(self):
@@ -517,7 +520,10 @@ class ForwardClientTest(TestCase):
             result = self.client._request("POST", "/nqe", json_body={"query": "q"})
 
         self.assertEqual(result, response_ok)
-        sleep.assert_any_call(2)
+        self.assertTrue(sleep.called)
+        waits = [call.args[0] for call in sleep.call_args_list]
+        # Linear base backoff (2) plus additive jitter in [0, 2].
+        self.assertTrue(any(2.0 <= wait <= 4.0 for wait in waits))
         response_ok.raise_for_status.assert_called_once()
 
     def test_api_usage_summary_counts_http_attempts_retries_and_429s(self):
@@ -2587,3 +2593,36 @@ class ForwardClientTest(TestCase):
             self.client._request.call_args.kwargs["json_body"]["parameters"],
             {"forward_netbox_shard_keys": ["device-1"]},
         )
+
+
+class RetryBackoffHelperTest(TestCase):
+    def test_parse_retry_after_reads_delta_seconds(self):
+        self.assertEqual(forward_api_impl._parse_retry_after("5"), 5)
+        self.assertEqual(forward_api_impl._parse_retry_after(" 12 "), 12)
+
+    def test_parse_retry_after_ignores_absent_or_unparseable(self):
+        self.assertIsNone(forward_api_impl._parse_retry_after(None))
+        self.assertIsNone(
+            forward_api_impl._parse_retry_after("Wed, 21 Oct 2026 07:28:00 GMT")
+        )
+        self.assertEqual(forward_api_impl._parse_retry_after("-3"), 0)
+
+    def test_retry_wait_honors_retry_after_within_ceiling(self):
+        base = forward_api_impl.DEFAULT_FORWARD_API_RETRY_BACKOFF_SECONDS
+        wait = forward_api_impl._retry_wait_seconds(0, retry_after=5)
+        # Retry-After (5) plus additive jitter in [0, base].
+        self.assertGreaterEqual(wait, 5.0)
+        self.assertLessEqual(wait, 5.0 + base)
+
+    def test_retry_wait_caps_a_hostile_retry_after(self):
+        wait = forward_api_impl._retry_wait_seconds(0, retry_after=100000)
+        self.assertEqual(wait, forward_api_impl.MAX_FORWARD_API_RETRY_BACKOFF_SECONDS)
+
+    def test_retry_wait_backoff_grows_and_is_jittered(self):
+        base = forward_api_impl.DEFAULT_FORWARD_API_RETRY_BACKOFF_SECONDS
+        # attempt 0 -> base*1 + jitter[0,base]; attempt 2 -> base*3 + jitter[0,base].
+        for attempt in range(3):
+            wait = forward_api_impl._retry_wait_seconds(attempt)
+            low = base * (attempt + 1)
+            self.assertGreaterEqual(wait, low)
+            self.assertLessEqual(wait, low + base)
