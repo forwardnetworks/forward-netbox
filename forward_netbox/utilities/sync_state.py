@@ -387,7 +387,6 @@ def get_display_parameters(
     parameters["auto_merge"] = bool(
         (sync.parameters or {}).get("auto_merge", sync.auto_merge)
     )
-    parameters["multi_branch"] = sync.uses_multi_branch()
     parameters["diff_fallback_mode"] = (sync.parameters or {}).get(
         "diff_fallback_mode",
         ForwardDiffFallbackModeChoices.ALLOW_FALLBACK,
@@ -555,7 +554,6 @@ def get_workload_summary(sync):
             (sync.parameters or {}).get("execution_backend")
             or ForwardExecutionBackendChoices.BRANCHING
         ),
-        "uses_multi_branch": sync.uses_multi_branch(),
     }
     summary["initial_baseline_lane"] = get_initial_baseline_lane_advice(
         sync,

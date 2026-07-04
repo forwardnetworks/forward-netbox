@@ -608,14 +608,16 @@ class ForwardSyncModelTest(TestCase):
             },
         )
 
+        # Back-compat: a legacy stored "multi_branch" key must still validate
+        # (it stays in the allowlist) even though the plugin no longer writes or
+        # surfaces it.
         sync.clean()
 
-        self.assertTrue(sync.uses_multi_branch())
         self.assertEqual(
             sync.get_max_changes_per_branch(),
             DEFAULT_MAX_CHANGES_PER_BRANCH,
         )
-        self.assertTrue(sync.get_display_parameters()["multi_branch"])
+        self.assertNotIn("multi_branch", sync.get_display_parameters())
         self.assertFalse(sync.get_display_parameters()["auto_merge"])
         self.assertFalse(sync.auto_merge)
 
@@ -673,7 +675,6 @@ class ForwardSyncModelTest(TestCase):
 
         summary = sync.get_workload_summary()
 
-        self.assertTrue(summary["uses_multi_branch"])
         self.assertFalse(summary["baseline_ready"])
         self.assertEqual(summary["branch_run"]["phase"], "planning")
         self.assertEqual(
@@ -962,7 +963,8 @@ class ForwardSyncModelTest(TestCase):
 
         self.assertFalse(sync.auto_merge)
         self.assertFalse(sync.parameters["auto_merge"])
-        self.assertTrue(sync.parameters["multi_branch"])
+        # Legacy "multi_branch" key is preserved untouched (no longer forced or
+        # stripped); the plugin simply ignores it now.
         self.assertEqual(
             sync.parameters["max_changes_per_branch"],
             DEFAULT_MAX_CHANGES_PER_BRANCH,
