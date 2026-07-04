@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+import random
 import threading
 import time
 from urllib.parse import quote
@@ -28,6 +29,9 @@ DEFAULT_LATEST_COLLECTED_SCAN_LIMIT = 10
 DEFAULT_FORWARD_API_TIMEOUT_SECONDS = 1200
 DEFAULT_FORWARD_API_RETRIES = 2
 DEFAULT_FORWARD_API_RETRY_BACKOFF_SECONDS = 2
+# Ceiling on a single retry wait, so a hostile/large Retry-After cannot stall a
+# sync indefinitely.
+MAX_FORWARD_API_RETRY_BACKOFF_SECONDS = 60
 MAX_NQE_PAGE_SIZE = 10000
 DEFAULT_NQE_PAGE_SIZE = 10000
 DEFAULT_NQE_FETCH_ALL_MAX_PAGES = 5000
@@ -60,6 +64,38 @@ READ_CACHE_TIMEOUT_SECONDS = 60
 READ_CACHE_GENERATION_KEY_SUFFIX = ":query-generation"
 _RATE_LIMIT_LOCK = threading.Lock()
 _RATE_LIMIT_LAST_REQUEST_AT = {}
+
+
+def _parse_retry_after(value):
+    """Parse an HTTP ``Retry-After`` header into non-negative seconds.
+
+    Handles the delta-seconds form (an integer). The HTTP-date form is not honored
+    (we fall back to backoff) to avoid clock-skew surprises. Returns ``None`` when
+    absent or unparseable.
+    """
+    if value is None:
+        return None
+    try:
+        seconds = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return max(0, seconds)
+
+
+def _retry_wait_seconds(attempt, retry_after=None):
+    """Compute a retry wait: honor Retry-After if given, else linear backoff, with
+    additive jitter and a hard ceiling.
+
+    Jitter (0..base) avoids many concurrent workers retrying in lockstep and
+    thundering-herd-ing a throttled endpoint.
+    """
+    base = DEFAULT_FORWARD_API_RETRY_BACKOFF_SECONDS
+    if retry_after is not None:
+        wait = float(retry_after)
+    else:
+        wait = base * (attempt + 1)
+    wait += random.uniform(0, base)
+    return min(wait, MAX_FORWARD_API_RETRY_BACKOFF_SECONDS)
 
 
 def _shared_rate_limit_cache():
@@ -624,6 +660,7 @@ class ForwardClient:
         url = self._api_url(path)
         last_connectivity_error = None
         for attempt in range(self.retries + 1):
+            retry_after = None
             try:
                 with httpx.Client(
                     timeout=self.timeout,
@@ -667,6 +704,9 @@ class ForwardClient:
                     self._record_api_usage("http_transient_status_failures")
                     if status_code == 429:
                         self._record_api_usage("http_429_failures")
+                    retry_after = _parse_retry_after(
+                        exc.response.headers.get("Retry-After")
+                    )
                     last_connectivity_error = ForwardConnectivityError(
                         "Forward API request returned transient HTTP "
                         f"{status_code}; retry attempts were exhausted."
@@ -684,7 +724,7 @@ class ForwardClient:
                 raise ForwardClientError(f"Forward API request failed: {exc}") from exc
             if attempt < self.retries:
                 self._record_api_usage("http_retries")
-                time.sleep(DEFAULT_FORWARD_API_RETRY_BACKOFF_SECONDS * (attempt + 1))
+                time.sleep(_retry_wait_seconds(attempt, retry_after))
         raise last_connectivity_error
 
     def get_networks(self):
