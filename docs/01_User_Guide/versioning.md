@@ -34,5 +34,5 @@ release notes and `SECURITY.md`.
 ## Support scope
 
 Security fixes target the latest released minor version (see `SECURITY.md`). The
-project's overall support commitment and warranty are stated in the `README.md`
-Support Disclaimer; consult it before deploying in production.
+project's overall support scope is stated in the `README.md` Support section;
+consult it and the `SECURITY.md` deployment notes before deploying in production.
