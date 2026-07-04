@@ -230,7 +230,12 @@ class ForwardClient:
         )
         self.base_url = source.url.rstrip("/")
         self.username = params.get("username")
-        self.password = params.get("password")
+        # The stored password is encrypted at rest (ForwardSource.save); decrypt it
+        # here, at the one place it is actually used for HTTP auth. A plaintext
+        # value (fresh form input / pre-migration row) passes through unchanged.
+        from .crypto import decrypt_secret
+
+        self.password = decrypt_secret(params.get("password"))
         self.api_requests_per_minute = self._coerce_api_requests_per_minute(
             params.get("api_requests_per_minute")
         )
