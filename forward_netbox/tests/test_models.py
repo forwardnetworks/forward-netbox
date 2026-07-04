@@ -231,6 +231,45 @@ class ForwardSyncModelTest(TestCase):
 
         self.assertEqual(source.parameters["api_requests_per_minute"], 1800)
 
+    def test_source_clamps_saas_api_requests_per_minute_above_safe_rate(self):
+        source = ForwardSource(
+            name="source-api-rpm-over",
+            type="saas",
+            url="https://fwd.app",
+            parameters={
+                "username": "user@example.com",
+                "password": "secret",
+                "verify": True,
+                "timeout": 1200,
+                "network_id": "test-network",
+                "api_requests_per_minute": 60000,
+            },
+        )
+
+        source.clean()
+
+        # Clamped down to the safe SaaS rate so the tenant cannot be throttled out.
+        self.assertEqual(source.parameters["api_requests_per_minute"], 1800)
+
+    def test_source_keeps_high_api_requests_per_minute_for_custom_deployments(self):
+        source = ForwardSource(
+            name="source-api-rpm-custom",
+            type="custom",
+            url="https://forward.example.com",
+            parameters={
+                "username": "user@example.com",
+                "password": "secret",
+                "verify": True,
+                "timeout": 1200,
+                "network_id": "test-network",
+                "api_requests_per_minute": 6000,
+            },
+        )
+
+        source.clean()
+
+        self.assertEqual(source.parameters["api_requests_per_minute"], 6000)
+
     def test_source_preserves_nqe_async_parameters(self):
         source = ForwardSource(
             name="source-nqe-async",
