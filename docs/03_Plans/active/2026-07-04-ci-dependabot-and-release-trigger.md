@@ -59,4 +59,7 @@ bump with no plan doc and redded main after auto-merge). Scoped the "Check
 repository harness" step to `github.event_name == 'pull_request' &&
 github.actor != 'dependabot[bot]'`: the plan-doc gate enforces on human PRs
 only. Direct pushes stay covered by the local `invoke harness-check` (and its
-`--base` per-commit simulation) before pushing.
+`--base` per-commit simulation) before pushing. The `if:` is written as a
+single ≤80-char line (`github.head_ref != '' && github.actor != …`) because
+yamlfmt collapses a folded `>-` block back to one line, which then trips the
+yamllint 80-char rule.
