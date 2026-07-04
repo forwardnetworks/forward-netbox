@@ -245,11 +245,21 @@ def prune_orphan_devices(sync, *, report=None) -> dict:
         )
 
     orphans = sorted(out_of_scope)
+    # Resolve the out-of-scope names to explicit PKs ONCE, then delete by PK.
+    # NetBox device names are not globally unique, so deleting by `name__in` per
+    # batch re-matches by a non-unique key at delete time; anchoring to PKs
+    # captured up front deletes exactly the rows identified as out of scope and is
+    # robust to a device being renamed between planning and delete. (The scope set
+    # itself is still name-keyed — see compute_scope_reconciliation; making it
+    # site/identity-aware is a separate design item.)
+    orphan_pks = list(
+        Device.objects.filter(name__in=orphans).values_list("pk", flat=True)
+    )
     deleted_total = 0
     with transaction.atomic():
-        for start in range(0, len(orphans), 500):
-            batch = orphans[start : start + 500]
-            deleted, _ = Device.objects.filter(name__in=batch).delete()
+        for start in range(0, len(orphan_pks), 500):
+            batch = orphan_pks[start : start + 500]
+            deleted, _ = Device.objects.filter(pk__in=batch).delete()
             deleted_total += deleted
     return {
         "pruned_device_count": len(orphans),
