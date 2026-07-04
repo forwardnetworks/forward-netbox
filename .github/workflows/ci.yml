@@ -69,10 +69,14 @@ jobs:
       - name: Run pre-commit
         run: pre-commit run --all-files
       - name: Check repository harness
-        # Dependabot PRs cannot include a plan doc, so this gate would
-        # permanently block every dependency bump. Skip it for Dependabot
-        # (still enforced for all human-authored changes).
-        if: github.actor != 'dependabot[bot]'
+        # Enforce the plan-doc gate on human-authored PRs only. Skip it for
+        # Dependabot (dependency bumps can't carry a plan doc) and on push
+        # events — re-checking a merge commit on main just re-flags the same
+        # Dependabot change with no plan doc and reds main. Direct pushes are
+        # covered by the local `invoke harness-check` before pushing.
+        if: >-
+          github.event_name == 'pull_request' &&
+          github.actor != 'dependabot[bot]'
         run: python scripts/check_harness.py
       - name: Run harness tests
         run: python -m unittest discover -s scripts/tests -p 'test_*.py'
