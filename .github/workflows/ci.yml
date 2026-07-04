@@ -36,6 +36,15 @@ jobs:
           # they are never committed; see utilities/sensitive_content.py.
           FORWARD_SENSITIVE_PATTERNS: ${{ secrets.FORWARD_SENSITIVE_PATTERNS }}
         run: python scripts/check_sensitive_content.py --all-history
+      - name: Check tracked file content for sensitive content
+        env:
+          # Scans the CONTENT of every tracked file (not just commit
+          # messages) against the same secret, so a customer name in a doc
+          # or test cannot slip past the message-only history scan. Set the
+          # secret with word-boundary regex for short tokens, e.g.
+          # `re:\bADP\b`, to avoid substring false positives.
+          FORWARD_SENSITIVE_PATTERNS: ${{ secrets.FORWARD_SENSITIVE_PATTERNS }}
+        run: python scripts/check_sensitive_content.py --git-files
       - name: Install validation dependencies
         run: |
           python -m pip install --upgrade pip
