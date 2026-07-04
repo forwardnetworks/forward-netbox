@@ -1,0 +1,46 @@
+# CI: exempt Dependabot from harness gate; make release publish manual
+
+**Date:** 2026-07-04
+
+## Goal
+Two post-2.3.0 CI fixes: (1) Dependabot dependency-bump PRs are permanently
+blocked by the harness gate because they cannot include a plan doc; exempt them.
+(2) The tag-triggered PyPI publish fails and emails a false failure on every
+release tag until Trusted Publishing is configured; make it manual until then.
+
+## Constraints
+- Keep the harness gate fully enforced for all human-authored changes — exempt
+  only the `dependabot[bot]` actor.
+- Do not weaken the release publish itself; only change its trigger so it stops
+  auto-firing a guaranteed-failing job.
+
+## Touched Surfaces
+- `.github/workflows/ci.yml` — add `if: github.actor != 'dependabot[bot]'` to the
+  "Check repository harness" step.
+- `.github/workflows/release.yml` — change trigger from `push: tags: ["v*"]` to
+  `workflow_dispatch` (manual), with a comment to revert once TP is set up.
+
+## Approach
+`github.actor` is `dependabot[bot]` for Dependabot-opened PR runs; the `if:`
+skips only the gate step (harness unit tests + tests still run). `release.yml`
+becomes manual-dispatch; 2.3.0 was published via twine, and future releases can
+run it manually or, once the PyPI Trusted Publisher + `pypi` environment exist,
+switch the trigger back to tag-based.
+
+## Validation
+`invoke harness-check`; `yamllint` both workflows; confirm the 6 open Dependabot
+PRs (#27-#32) go green after rebasing onto the updated base.
+
+## Rollback
+Revert the two `if:`/trigger edits. No code or data change.
+
+## Decision Log
+- Exempt by actor, not by disabling the gate: dependency bumps are low-risk and
+  externally reviewed; human changes still need a plan doc.
+- Manual release trigger rather than `continue-on-error` on publish: masking the
+  publish failure would also hide real failures once TP is configured.
+
+## Bundled changes
+CI no longer blocks Dependabot PRs on the plan-doc harness gate, and the PyPI
+publish workflow is manual until Trusted Publishing is configured (stops the
+false failure email on every release tag).
