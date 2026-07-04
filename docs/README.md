@@ -181,9 +181,9 @@ Forward 26.6 is the baseline for async NQE.
 | `v0.1.1` | Added NQE pagination, shared helper composition, and release hygiene updates. |
 | `v0.1.0` | Initial unsupported release of the Forward-to-NetBox sync plugin. |
 
-## Support Disclaimer
+## Support
 
-This repository is provided for use at your own risk. It is an unsupported release and is not an officially supported Forward product.
+Forward Field Integration is an officially maintained Forward Networks integration for NetBox; support targets the latest released version (see the Release Compatibility table). Report bugs via GitHub issues and security vulnerabilities privately per `SECURITY.md`. Review the deployment security notes in `SECURITY.md` before production use.
 
 ## What This Plugin Provides
 
