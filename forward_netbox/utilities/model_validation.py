@@ -155,6 +155,17 @@ def clean_forward_source(source):
                 )
             )
         parameters["api_requests_per_minute"] = api_requests_per_minute
+        # Forward SaaS enforces a per-tenant request-rate ceiling; a value above
+        # the safe SaaS rate can get the tenant throttled or blocked. Clamp SaaS
+        # sources down to the known-safe rate so a misconfigured ceiling cannot
+        # lock the tenant out (custom deployments keep the full range).
+        if (
+            source.type == ForwardSourceDeploymentChoices.SAAS
+            and api_requests_per_minute > DEFAULT_FORWARD_SAAS_API_REQUESTS_PER_MINUTE
+        ):
+            parameters["api_requests_per_minute"] = (
+                DEFAULT_FORWARD_SAAS_API_REQUESTS_PER_MINUTE
+            )
     if parameters.get("nqe_fetch_all_max_pages") is not None:
         try:
             nqe_fetch_all_max_pages = int(parameters.get("nqe_fetch_all_max_pages"))
