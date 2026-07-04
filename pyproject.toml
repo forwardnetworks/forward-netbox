@@ -39,7 +39,7 @@ optional = true
 
 [tool.poetry.group.dev.dependencies]
 build = "^1.2.2"
-invoke = "^2.2.0"
+invoke = ">=2.2,<4.0"
 mkdocs = "^1.6.1"
 mkdocs-awesome-pages-plugin = "^2.10.1"
 mkdocs-material = "^9.6.12"
