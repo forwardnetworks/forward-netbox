@@ -7,11 +7,26 @@ license = "MIT"
 readme = "README.md"
 keywords = ["netbox", "forward", "plugin", "sync", "nqe"]
 classifiers = [
-    "Programming Language :: Python :: 3",
+    "Development Status :: 4 - Beta",
+    "Framework :: Django",
+    "Intended Audience :: System Administrators",
+    "Intended Audience :: Information Technology",
+    "Topic :: System :: Networking",
     "License :: OSI Approved :: MIT License",
-    "Operating System :: OS Independent"
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12"
 ]
 packages = [{include = "forward_netbox"}]
+
+[tool.poetry.urls]
+Homepage = "https://github.com/forwardnetworks/forward-netbox"
+Repository = "https://github.com/forwardnetworks/forward-netbox"
+Documentation = "https://github.com/forwardnetworks/forward-netbox/tree/main/docs"
+Changelog = "https://github.com/forwardnetworks/forward-netbox/blob/main/CHANGELOG.md"
+"Issue Tracker" = "https://github.com/forwardnetworks/forward-netbox/issues"
 
 [tool.poetry.dependencies]
 httpx = ">0.26,<0.29"

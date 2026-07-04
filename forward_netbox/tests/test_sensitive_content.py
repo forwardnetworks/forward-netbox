@@ -1,7 +1,9 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest import mock
 from unittest import TestCase
 
+from forward_netbox.utilities.sensitive_content import ENV_PATTERN_VAR
 from forward_netbox.utilities.sensitive_content import load_sensitive_patterns
 from forward_netbox.utilities.sensitive_content import LOCAL_PATTERN_FILE
 from forward_netbox.utilities.sensitive_content import scan_text
@@ -96,3 +98,24 @@ class SensitiveContentTest(TestCase):
             findings[0].label.startswith("local regex")
             or findings[1].label.startswith("local regex")
         )
+
+    def test_env_var_patterns_block_customer_names_without_a_local_file(self):
+        # CI feeds customer identifiers via the secret-backed env var so they are
+        # caught WITHOUT committing them to the repo (the gitignored local file is
+        # invisible to CI — how a customer name once slipped through). This must
+        # work even when no local pattern file exists.
+        with TemporaryDirectory() as temp_dir:
+            repo_root = Path(temp_dir)  # no LOCAL_PATTERN_FILE present
+            with mock.patch.dict(
+                "os.environ",
+                {ENV_PATTERN_VAR: "\n".join(["Acme Corp", "re:tenant-[a-z]+"])},
+            ):
+                patterns = load_sensitive_patterns(repo_root)
+            findings = scan_text(
+                "acme corp\nTenant-beta\n",
+                source="notes.txt",
+                patterns=patterns,
+            )
+
+        self.assertEqual(len(findings), 2)
+        self.assertTrue(all(f.label.startswith("env ") for f in findings))

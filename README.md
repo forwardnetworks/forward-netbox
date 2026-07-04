@@ -225,10 +225,16 @@ This repository is provided for use at your own risk. It is an unsupported relea
 
 1. Install the plugin into the same Python environment as NetBox:
 
-Install the wheel or source archive from GitHub Releases:
+Install the latest release from PyPI:
 
 ```bash
-pip install /path/to/forward_netbox-0.9.4.1-py3-none-any.whl
+pip install forward-netbox
+```
+
+Or install a specific wheel or source archive from GitHub Releases:
+
+```bash
+pip install /path/to/forward_netbox-2.2.5-py3-none-any.whl
 ```
 
 2. Enable both plugins in the NetBox configuration:
