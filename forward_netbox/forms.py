@@ -436,6 +436,16 @@ class ForwardSourceForm(NetBoxModelForm):
                 "filtered in NetBox."
             ),
         )
+        self.fields["sync_endpoints"] = forms.BooleanField(
+            required=False,
+            label="Import SNMP Endpoints as Devices",
+            help_text=(
+                "Also import Forward SNMP endpoints (generic SSH/SNMP devices "
+                "Forward collects but does not model as first-class devices, "
+                "e.g. Avocent console servers) as NetBox devices, scoped by the "
+                "same device tags."
+            ),
+        )
         self.fields["sync_device_tags"] = FlexibleMultipleChoiceField(
             required=False,
             choices=(),
@@ -605,6 +615,7 @@ class ForwardSourceForm(NetBoxModelForm):
         self.fields["device_tag_include_tags"].initial = include_initial
         self.fields["device_tag_exclude_tags"].initial = exclude_initial
         self.fields["sync_device_tags"].initial = sync_tags_initial
+        self.fields["sync_endpoints"].initial = bool(parameters.get("sync_endpoints"))
         self.fields["device_tag_include_tags"].choices = [
             (tag, tag) for tag in include_initial
         ]
@@ -840,6 +851,7 @@ class ForwardSourceForm(NetBoxModelForm):
             ),
             "apply_device_scope_tags": bool(cleaned.get("apply_device_scope_tags")),
             "sync_device_tags": sync_device_tags,
+            "sync_endpoints": bool(cleaned.get("sync_endpoints")),
         }
         self.instance.type = source_type
         self.instance.url = (
@@ -1033,6 +1045,7 @@ class ForwardSourceForm(NetBoxModelForm):
                 self.cleaned_data.get("apply_device_scope_tags")
             ),
             "sync_device_tags": sync_device_tags,
+            "sync_endpoints": bool(self.cleaned_data.get("sync_endpoints")),
         }
         self.instance.status = ForwardSourceStatusChoices.NEW
         return super().save(*args, **kwargs)
