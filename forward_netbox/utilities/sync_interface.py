@@ -100,7 +100,11 @@ def apply_extras_taggeditem(runner, row):
             "slug": row["tag_slug"],
             "color": row["tag_color"],
         },
-        coalesce_sets=[("slug",)],
+        # Match by slug first, then fall back to name: an existing NetBox tag
+        # with the same name but a different slug (hand-created, or from an
+        # older release) must be REUSED, not re-created — creating it fails the
+        # unique-name constraint. Mirrors _ensure_scope_tag in sync_device.py.
+        coalesce_sets=[("slug",), ("name",)],
     )
     _device_add_tag(runner, device, tag)
 
