@@ -729,10 +729,26 @@ class ForwardSyncDriftReportView(BaseObjectView):
             )
             return redirect(sync.get_absolute_url())
         report = compute_drift_report(job.data)
+        # The drift is computed from the cached preview payload, not live, so a
+        # sync run AFTER the preview makes the numbers stale/misleading. Flag it
+        # so the operator re-runs Preview Dependencies instead of reading old
+        # "everything to create" drift as real.
+        last_ingestion = sync.last_ingestion
+        drift_stale = bool(
+            last_ingestion is not None
+            and job.created is not None
+            and last_ingestion.created > job.created
+        )
         return render(
             request,
             self.template_name,
-            {"object": sync, "report": report},
+            {
+                "object": sync,
+                "report": report,
+                "drift_stale": drift_stale,
+                "last_sync_at": last_ingestion.created if last_ingestion else None,
+                "preview_at": job.created,
+            },
         )
 
 
