@@ -1,41 +1,82 @@
 /**
- * @intent Devices collected by Forward
- * @description It provides a list of devices collected by Forward to be added or
- * updated in NetBox using POST and PATCH requests to the /api/dcim/devices/ REST API endpoint.
+ * @intent Devices collected by Forward (plus optional SNMP endpoints)
+ * @description Devices to add or update in NetBox via POST/PATCH to
+ * /api/dcim/devices/. When sync_endpoints is true, generic SNMP endpoints that
+ * Forward collects but does not model as first-class devices (e.g. Avocent
+ * console servers) are also emitted as device rows, identified from standard
+ * MIB-2 (sysName/sysDescr/sysObjectId) with per-vendor overlays, and scoped by
+ * the same device tags.
  */
 
 import "netbox_utilities";
 
 @query
-f(forward_netbox_shard_keys: List<String>) =
-foreach device in network.devices
-where device.snapshotInfo.result == DeviceSnapshotResult.completed
-where device.platform.vendor != Vendor.FORWARD_CUSTOM
-where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
-let location = device.locationName
-let model = device.platform.model
-let device_type = device.platform.deviceType
-let site_name = if isPresent(location) then toLowerCase(location) else "unknown"
-let site_slug = slugify(site_name)
-let role_name = replace(toString(device_type), "DeviceType.", "")
-let role_slug = slugify(role_name)
-let platform_name = normalizeDevicePlatformName(device)
-let platform_slug = slugify(platform_name)
-let device_type_slug = slugifyNetboxModel(toString(model))
-let manufacturer_name = canonicalManufacturerName(device.platform.vendor)
-let manufacturer_slug = slugify(manufacturer_name)
-select {
-  name: device.name,
-  manufacturer: manufacturer_name,
-  device_type: model,
-  device_type_slug: device_type_slug,
-  site: site_name,
-  site_slug: site_slug,
-  role: device_type,
-  role_slug: role_slug,
-  role_color: "9e9e9e",
-  platform: platform_name,
-  platform_slug: platform_slug,
-  status: "active",
-  manufacturer_slug: manufacturer_slug
-};
+f(forward_netbox_shard_keys: List<String>, sync_endpoints: Bool, device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>) =
+foreach row in (
+  (
+    foreach device in network.devices
+    where device.snapshotInfo.result == DeviceSnapshotResult.completed
+    where device.platform.vendor != Vendor.FORWARD_CUSTOM
+    where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
+    let model = toString(device.platform.model)
+    let role_name = replace(toString(device.platform.deviceType), "DeviceType.", "")
+    let site_name = if isPresent(device.locationName) then toLowerCase(device.locationName) else "unknown"
+    let platform_name = normalizeDevicePlatformName(device)
+    let manufacturer_name = canonicalManufacturerName(device.platform.vendor)
+    let manufacturer_slug = slugify(manufacturer_name)
+    select {
+      name: device.name,
+      manufacturer: manufacturer_name,
+      device_type: model,
+      device_type_slug: slugifyNetboxModel(model),
+      site: site_name,
+      site_slug: slugify(site_name),
+      role: role_name,
+      role_slug: slugify(role_name),
+      role_color: "9e9e9e",
+      platform: platform_name,
+      platform_slug: slugify(platform_name),
+      status: "active",
+      manufacturer_slug: manufacturer_slug
+    }
+  )
+  +
+  (
+    // SNMP endpoints (opt-in): generic SSH/SNMP devices Forward collects but
+    // does not model. Generic identity from MIB-2; Avocent overlay by enterprise
+    // OID 10418. Scoped by the same device tags (endpoints carry tagNames).
+    foreach endpoint in network.endpoints
+    where sync_endpoints
+    where !isEmpty(endpoint.snmpOutputs)
+    where isEmpty(device_tag_include_tags)
+      || (device_tag_include_match == "all"
+        && all(foreach tag in device_tag_include_tags select tag in endpoint.tagNames))
+      || (device_tag_include_match != "all"
+        && any(foreach tag in device_tag_include_tags select tag in endpoint.tagNames))
+    where isEmpty(device_tag_exclude_tags)
+      || !any(foreach tag in device_tag_exclude_tags select tag in endpoint.tagNames)
+    let sysDescrOpt = max(foreach o in endpoint.snmpOutputs where o.requestedOid == "1.3.6.1.2.1.1.1" select max(foreach e in o.rawOidEntries select e.rawValue))
+    let sysObjIdOpt = max(foreach o in endpoint.snmpOutputs where o.requestedOid == "1.3.6.1.2.1.1.2" select max(foreach e in o.rawOidEntries select e.rawValue))
+    let sysDescr = if isPresent(sysDescrOpt) then sysDescrOpt else "SNMP Endpoint"
+    let isAvocent = matches(if isPresent(sysObjIdOpt) then sysObjIdOpt else "", "*10418*")
+    let ep_manuf = if isAvocent then "Avocent" else replaceRegexMatches(sysDescr, re` .*`, "")
+    let ep_role = if isAvocent then "Console Server" else "SNMP Endpoint"
+    let ep_site = if isPresent(endpoint.locationName) then toLowerCase(endpoint.locationName) else "unknown"
+    select {
+      name: endpoint.name,
+      manufacturer: ep_manuf,
+      device_type: sysDescr,
+      device_type_slug: slugifyNetboxModel(sysDescr),
+      site: ep_site,
+      site_slug: slugify(ep_site),
+      role: ep_role,
+      role_slug: slugify(ep_role),
+      role_color: "9e9e9e",
+      platform: ep_manuf,
+      platform_slug: slugify(ep_manuf),
+      status: "active",
+      manufacturer_slug: slugify(ep_manuf)
+    }
+  )
+)
+select row;

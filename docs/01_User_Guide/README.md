@@ -20,14 +20,14 @@ pip install forward-netbox
 Alternatively, install a specific wheel or source archive from GitHub Releases:
 
 ```bash
-pip install /path/to/forward_netbox-2.3.1-py3-none-any.whl
-pip install /path/to/forward_netbox-2.3.1.tar.gz
+pip install /path/to/forward_netbox-2.3.2-py3-none-any.whl
+pip install /path/to/forward_netbox-2.3.2.tar.gz
 ```
 
 If you mirror the package into a private Python index, pin the same release version:
 
 ```bash
-pip install forward-netbox==2.3.1
+pip install forward-netbox==2.3.2
 ```
 
 ## Release Compatibility
@@ -39,7 +39,8 @@ Latest release requires NetBox `4.6.4` and `netbox-branching` `1.1.0+`. Expand f
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v2.3.1` | `4.6.4` required (4.5.x dropped); needs netbox-branching `1.1.0+` | Current release;  |
+| `v2.3.2` | `4.6.4` required (4.5.x dropped); needs netbox-branching `1.1.0+` | Current release; Feature: optional import of Forward SNMP endpoints (e.g. Avocent console servers) as NetBox devices — off by default (`sync_endpoints`), enabled per source and scoped by the same device tags. |
+| `v2.3.1` | `4.6.4` required (4.5.x dropped); needs netbox-branching `1.1.0+` | Superseded by `v2.3.2`;  |
 | `v2.3.0` | `4.6.4` required (4.5.x dropped); needs netbox-branching `1.1.0+` | Superseded by `v2.3.1`; GA/enterprise hardening: encrypted Forward credential at rest, PyPI Trusted Publishing + SBOM, Prometheus metrics + stuck-job alert, populated-DB upgrade test, dead-code removal (multi_branch/density-learning), reliability fixes (jittered/Retry-After backoff, SaaS rate clamp, PK-anchored device prune), and supported-product framing. Drop-in from 2.2.5 — stored credentials auto-encrypt on save; rotating SECRET_KEY requires re-entering them. |
 | `v2.2.5` | `4.6.4` required (4.5.x dropped); needs netbox-branching `1.1.0+` | Superseded by `v2.3.0`; Feature: operator-selectable **Sync Device Tags** — pick which Forward device tags (e.g. `Mgmt_*`) become NetBox device tags (replaces the hardcoded feature-tag set); Fix dependency-preview AttributeError + vsys job pile-up guard (hung pending); test/require NetBox 4.6.4 |
 | `v2.2.4` | `4.6.3` required (4.5.x dropped); needs netbox-branching `1.1.0+` | Superseded by `v2.2.5`; Hotfix: device-analysis NQE (bare foreach) errored refresh + CVE list; surface job errors into job.data |
