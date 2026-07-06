@@ -106,12 +106,18 @@ SHARD_QUERY_PARAMETER_DEFAULT = {SHARD_QUERY_PARAMETER_NAME: []}
 # resolved selection is injected in _prepare_query_parameters.
 SYNC_DEVICE_TAGS_PARAMETER_NAME = "sync_device_tags"
 SYNC_DEVICE_TAGS_PARAMETER_DEFAULT = {SYNC_DEVICE_TAGS_PARAMETER_NAME: []}
+# Opt-in: also import Forward SNMP endpoints (generic SSH/SNMP devices Forward
+# collects but does not model as first-class devices, e.g. Avocent console
+# servers) as NetBox devices. Declared by the device query; default off.
+SYNC_ENDPOINTS_PARAMETER_NAME = "sync_endpoints"
+SYNC_ENDPOINTS_PARAMETER_DEFAULT = {SYNC_ENDPOINTS_PARAMETER_NAME: False}
 DEVICE_TAG_QUERY_PARAMETER_DEFAULTS = {
     "device_tag_include_tags": [],
     "device_tag_include_match": "any",
     "device_tag_exclude_tags": [],
 }
 DEVICE_TAG_PARAMETER_QUERY_FILES = {
+    "forward_devices.nqe",
     "forward_hsrp_groups.nqe",
     "forward_locations.nqe",
     "forward_prefixes_ipv4.nqe",
@@ -138,6 +144,8 @@ def _default_query_parameters(filename: str) -> dict[str, Any]:
         parameters.update(SHARD_QUERY_PARAMETER_DEFAULT)
     if SYNC_DEVICE_TAGS_PARAMETER_NAME in source:
         parameters.update(SYNC_DEVICE_TAGS_PARAMETER_DEFAULT)
+    if SYNC_ENDPOINTS_PARAMETER_NAME in source:
+        parameters.update(SYNC_ENDPOINTS_PARAMETER_DEFAULT)
     return parameters
 
 

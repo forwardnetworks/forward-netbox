@@ -181,6 +181,8 @@ class ForwardQueryContext:
     # Forward tags the operator selected to sync as NetBox device tags (feeds the
     # sync_device_tags query parameter of the device-tag sync query).
     sync_device_tags: list[str] = field(default_factory=list)
+    # Opt-in: import Forward SNMP endpoints (e.g. Avocent) as NetBox devices.
+    sync_endpoints: bool = False
     scoped_device_names: set[str] = field(default_factory=set)
     scoped_site_names: set[str] = field(default_factory=set)
     scoped_matched_tags: dict[str, list[str]] = field(default_factory=dict)
@@ -381,6 +383,7 @@ class ForwardQueryFetcher:
         sync_device_tags = sorted(
             {str(tag).strip() for tag in sync_device_tags if str(tag).strip()}
         )
+        sync_endpoints = bool(source_parameters.get("sync_endpoints"))
         context_cache_key = (
             network_id,
             snapshot_selector,
@@ -463,6 +466,7 @@ class ForwardQueryFetcher:
             device_tag_include_match=include_match,
             device_tag_prune_out_of_scope=prune_out_of_scope,
             sync_device_tags=sync_device_tags,
+            sync_endpoints=sync_endpoints,
             scoped_device_names=scoped_device_names,
             scoped_site_names=scoped_site_names,
             scoped_matched_tags=scoped_matched_tags,
@@ -2122,6 +2126,10 @@ class ForwardQueryFetcher:
         if "sync_device_tags" in spec_parameters:
             sanitized_parameters["sync_device_tags"] = sorted(
                 getattr(context, "sync_device_tags", None) or []
+            )
+        if "sync_endpoints" in spec_parameters:
+            sanitized_parameters["sync_endpoints"] = bool(
+                getattr(context, "sync_endpoints", False)
             )
         if not accepts_device_tag_parameters:
             return sanitized_parameters
