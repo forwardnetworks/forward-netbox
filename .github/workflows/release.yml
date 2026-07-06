@@ -37,7 +37,9 @@ jobs:
       - name: Generate CycloneDX SBOM
         # Software Bill of Materials over the declared runtime deps, kept OUT of
         # dist/ (uploaded to PyPI) and published as its own artifact for
-        # supply-chain review.
+        # supply-chain review. Non-blocking: the SBOM is supplementary and must
+        # never fail the publish (a cyclonedx-py CLI change once did — v2.3.1).
+        continue-on-error: true
         run: |
           python -m pip install cyclonedx-bom
           mkdir -p sbom
@@ -45,7 +47,7 @@ jobs:
           echo 'netboxlabs-netbox-branching>=1.1.0' >> sbom-reqs.txt
           echo pyzipper >> sbom-reqs.txt
           cyclonedx-py requirements sbom-reqs.txt \
-            --output-format JSON --outfile sbom/forward-netbox-sbom.json
+            --output-format JSON --output-file sbom/forward-netbox-sbom.json
       - name: Upload distribution artifacts
         uses: actions/upload-artifact@v4
         with:

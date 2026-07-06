@@ -3606,7 +3606,7 @@ class ForwardSyncRunnerTest(TestCase):
     def test_apply_extras_taggeditem_reuses_existing_tag_by_name_when_slug_differs(
         self,
     ):
-        # Regression (Blake 2.3.0): a NetBox tag with the same NAME but a
+        # Regression (2.3.0 field report): a NetBox tag with the same NAME but a
         # different SLUG must be REUSED, not re-created — the slug-only match
         # missed it and the create failed the unique-name constraint
         # ("Tag with this Name already exists.").
