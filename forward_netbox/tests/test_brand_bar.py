@@ -10,7 +10,7 @@ class BrandBarTemplateTest(TestCase):
     def test_brand_bar_renders_without_leaking_comment(self):
         html = render_to_string("forward_netbox/inc/brand_bar.html")
         self.assertIn("fwd-brand-bar", html)
-        self.assertIn("Integration for NetBox", html)
+        self.assertIn(">Forward</span>", html)
         self.assertIn("fn-logo.svg", html)
         # The {% comment %} block must be stripped — none of its words appear.
         self.assertNotIn("Self-contained", html)

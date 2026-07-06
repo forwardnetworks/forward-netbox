@@ -2,15 +2,57 @@
 
 **Forward Integration for NetBox** (`forward_netbox`) is a NetBox plugin that syncs Forward Networks inventory into NetBox.
 
-## What it does
+[![PyPI](https://img.shields.io/pypi/v/forward-netbox)](https://pypi.org/project/forward-netbox/)
+[![CI](https://github.com/forwardnetworks/forward-netbox/actions/workflows/ci.yml/badge.svg)](https://github.com/forwardnetworks/forward-netbox/actions/workflows/ci.yml)
+
+## Status
+
+Officially maintained. Requires **NetBox `4.6.4`** and **`netbox-branching` `1.1.0+`**;
+Forward **26.6** is the baseline for async NQE. See
+[Release Compatibility](#release-compatibility) for the full matrix.
+
+## What It Does
 
 It pulls your Forward-discovered inventory into NetBox — devices, interfaces, IP addresses, prefixes, VLANs, VRFs, cables, LAGs, MAC addresses, and inventory items. It runs Forward NQE against a chosen snapshot, stages every change in a `netbox_branching` branch so you can review the diff, then merges when it looks right.
 
-It is **one-way: Forward → NetBox.** Forward is the source of truth; the plugin keeps NetBox populated from what Forward collected. (A read-only drift report *compares* the two, but nothing is written back to Forward.)
-
 On top of the import it adds scope control (sync only devices carrying chosen Forward tags), orphan pruning, per-device analysis (reachability, connectivity blast-radius, CVE exposure), a drift report, and snapshot selection.
 
-Forward 26.6 is the baseline for async NQE. Requires NetBox `4.6.4` and `netbox-branching` `1.1.0+`.
+## What It Does Not Do
+
+- **It does not write back to Forward.** The sync is one-way, Forward → NetBox;
+  Forward stays the source of truth and the plugin keeps NetBox populated from
+  what Forward collected. (The drift report only *compares* the two.)
+- **It is not a source of truth for Forward configuration or intent** — it
+  populates NetBox from Forward's collected snapshot, nothing more.
+- **It does not require** the optional `netbox-routing` / `netbox-peering-manager`
+  plugins unless you enable the beta BGP/OSPF maps.
+
+## Screenshots
+
+**Sync — health, enabled models, and actions**
+
+![Forward sync detail](docs/assets/screenshots/sync-detail.png)
+
+**Staged ingestion — progress, snapshot metrics, and issues**
+
+![Forward ingestion detail](docs/assets/screenshots/ingestion-diff.png)
+
+**Drift report — per-model NetBox-vs-Forward divergence**
+
+![Drift report](docs/assets/screenshots/drift-report.png)
+
+**Forward sources**
+
+![Forward sources list](docs/assets/screenshots/sources.png)
+
+## Architecture
+
+Forward NQE runs against a selected snapshot to fetch inventory, each model's
+rows are staged into a `netbox_branching` branch as a reviewable per-model diff,
+and you merge when the changes look correct. Large baselines can use a
+`Fast bootstrap` direct-write backend; steady-state runs use Branching with
+Forward `nqe-diffs` so every change is reviewable. See the
+[Architecture Flow](docs/02_Reference/architecture-flow.md) reference for detail.
 
 ## Release Compatibility
 
