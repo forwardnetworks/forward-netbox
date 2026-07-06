@@ -79,7 +79,7 @@ device_analysis = PluginMenuItem(
 )
 
 menu = PluginMenu(
-    label="Forward Field Integration",
+    label="Forward Integration for NetBox",
     icon_class="mdi mdi-cloud-sync",
     groups=(
         ("Data Sync", (source, sync, ingestion, validation_run)),
