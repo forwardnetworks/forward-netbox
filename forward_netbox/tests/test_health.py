@@ -1115,7 +1115,7 @@ class ForwardSyncHealthTest(TestCase):
         )
 
     def test_drift_report_flags_stale_when_sync_ran_after_preview(self):
-        # Regression (Blake 2.3.0): the drift report is built from the cached
+        # Regression (2.3.0 field report): the drift report is built from the cached
         # preview payload, so a sync run AFTER the preview leaves stale
         # "everything to create" numbers. Flag it.
         preview_at = timezone.now() - timezone.timedelta(hours=2)
