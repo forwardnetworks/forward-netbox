@@ -1093,6 +1093,68 @@ class ForwardSyncHealthTest(TestCase):
         self.assertEqual(report["models"][0]["model"], "dcim.device")
         self.assertTrue(report["models"][1]["in_sync"])
 
+    def _create_dependency_preview_job(self, created_at):
+        return Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=self.sync.pk,
+            name="dependency preview",
+            status=JobStatusChoices.STATUS_COMPLETED,
+            job_id="123e4567-e89b-12d3-a456-426614174050",
+            created=created_at,
+            data={
+                "generated_at": "t",
+                "model_results": [
+                    {
+                        "model": "dcim.device",
+                        "row_count": 3,
+                        "estimated_changes": 3,
+                        "delete_count": 0,
+                    }
+                ],
+            },
+        )
+
+    def test_drift_report_flags_stale_when_sync_ran_after_preview(self):
+        # Regression (Blake 2.3.0): the drift report is built from the cached
+        # preview payload, so a sync run AFTER the preview leaves stale
+        # "everything to create" numbers. Flag it.
+        preview_at = timezone.now() - timezone.timedelta(hours=2)
+        self._create_dependency_preview_job(preview_at)
+        ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector="latestProcessed",
+            snapshot_id="s1",
+            created=timezone.now(),
+        )
+        self.client.force_login(self.user)
+        response = self.client.get(
+            reverse(
+                "plugins:forward_netbox:forwardsync_drift_report",
+                kwargs={"pk": self.sync.pk},
+            )
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context["drift_stale"])
+        self.assertContains(response, "stale")
+
+    def test_drift_report_not_stale_when_preview_is_newest(self):
+        ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector="latestProcessed",
+            snapshot_id="s1",
+            created=timezone.now() - timezone.timedelta(hours=2),
+        )
+        self._create_dependency_preview_job(timezone.now())
+        self.client.force_login(self.user)
+        response = self.client.get(
+            reverse(
+                "plugins:forward_netbox:forwardsync_drift_report",
+                kwargs={"pk": self.sync.pk},
+            )
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.context["drift_stale"])
+
     def test_ingestion_health_check_marks_non_blocking_issue_baseline_as_pass(self):
         ingestion = ForwardIngestion.objects.create(
             sync=self.sync,
