@@ -6,6 +6,11 @@ Forward 26.6 is the baseline for async NQE.
 
 ## Release Compatibility
 
+Latest release requires NetBox `4.6.4` and `netbox-branching` `1.1.0+`. Expand for the full per-release history and notes.
+
+<details>
+<summary>Release compatibility history</summary>
+
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
 | `v2.3.1` | `4.6.4` required; needs netbox-branching `1.1.0+` | Current release;  |
@@ -105,7 +110,12 @@ Forward 26.6 is the baseline for async NQE.
 | `v0.3.0.1` | `4.5.8` validated; `4.5.x` only | Superseded by `v0.3.1` |
 | `v0.3.0` | `4.5.8` validated; `4.5.x` only | Superseded by `v0.3.0.1` |
 
+</details>
+
 ## Version History
+
+<details>
+<summary>Per-release summaries</summary>
 
 | Release | Summary |
 | --- | --- |
@@ -182,6 +192,8 @@ Forward 26.6 is the baseline for async NQE.
 | `v0.1.2` | Improved ingestion safety, diagnostics, and compatibility with existing NetBox data. |
 | `v0.1.1` | Added NQE pagination, shared helper composition, and release hygiene updates. |
 | `v0.1.0` | Initial unsupported release of the Forward-to-NetBox sync plugin. |
+
+</details>
 
 ## Support
 
