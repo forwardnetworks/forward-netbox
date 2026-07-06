@@ -32,6 +32,11 @@ pip install forward-netbox==2.3.1
 
 ## Release Compatibility
 
+Latest release requires NetBox `4.6.4` and `netbox-branching` `1.1.0+`. Expand for the full per-release history and notes.
+
+<details>
+<summary>Release compatibility history</summary>
+
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
 | `v2.3.1` | `4.6.4` required (4.5.x dropped); needs netbox-branching `1.1.0+` | Current release;  |
@@ -130,7 +135,12 @@ pip install forward-netbox==2.3.1
 | `v0.3.0.1` | `4.5.8` validated; `4.5.x` only | Superseded by `v0.3.1` |
 | `v0.3.0` | `4.5.8` validated; `4.5.x` only | Superseded by `v0.3.0.1` |
 
+</details>
+
 ## Version History
+
+<details>
+<summary>Per-release summaries</summary>
 
 | Release | Summary |
 | --- | --- |
@@ -209,6 +219,8 @@ pip install forward-netbox==2.3.1
 | `v0.1.2` | Improved ingestion safety, diagnostics, and compatibility with existing NetBox objects. |
 | `v0.1.1` | Added NQE pagination, shared helper composition, and release/doc cleanup. |
 | `v0.1.0` | Initial unsupported release of the plugin. |
+
+</details>
 
 ## Support Disclaimer
 
