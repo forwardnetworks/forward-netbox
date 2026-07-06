@@ -1,4 +1,4 @@
-site_name: Forward Field Integration Documentation
+site_name: Forward Integration for NetBox Documentation
 # Internal maintainer/field material is kept in the repo but NEVER published.
 # 03_Plans holds field-engagement planning notes; 00_Project_Knowledge holds
 # internal architecture/agent-workflow docs. Excluding them from the build (not

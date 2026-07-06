@@ -1,7 +1,7 @@
 {% load static %}
 {% load i18n %}
 {% comment %}
-Forward Field Integration brand bar. Self-contained, theme-aware (logo wordmark
+Forward Integration for NetBox brand bar. Self-contained, theme-aware (logo wordmark
 uses currentColor), no global NetBox style overrides. ff3506 is Forward's accent.
 {% endcomment %}
 <style>
@@ -10,8 +10,8 @@ uses currentColor), no global NetBox style overrides. ff3506 is Forward's accent
 .fwd-brand-bar .fwd-name{font-weight:600;font-size:.8rem;letter-spacing:.01em;}
 .fwd-brand-bar .fwd-tag{font-size:.72rem;opacity:.6;margin-left:auto;}
 </style>
-<div class="fwd-brand-bar" title="Forward Field Integration">
+<div class="fwd-brand-bar" title="Forward Integration for NetBox">
   <img class="fwd-logo" src="{% static 'forward_netbox/img/fn-logo.svg' %}" alt="Forward">
-  <span class="fwd-name">{% trans "Field Integration" %}</span>
+  <span class="fwd-name">{% trans "Integration for NetBox" %}</span>
   <span class="fwd-tag">{% trans "Forward Networks · NetBox" %}</span>
 </div>
