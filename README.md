@@ -7,9 +7,12 @@
 
 ## Status
 
-Officially maintained. Requires **NetBox `4.6.4`** and **`netbox-branching` `1.1.0+`**;
-Forward **26.6** is the baseline for async NQE. See
-[Release Compatibility](#release-compatibility) for the full matrix.
+- **Support model:** field integration reference — **not** an officially
+  supported Forward Networks product.
+- **Requires:** NetBox `4.6.4`, `netbox-branching` `1.1.0+`; Forward `26.6`
+  baseline for async NQE (full matrix in
+  [Release Compatibility](#release-compatibility)).
+- **Distribution:** PyPI (`forward-netbox`) + GitHub releases.
 
 ## What It Does
 
@@ -164,9 +167,10 @@ Latest release requires NetBox `4.6.4` and `netbox-branching` `1.1.0+`. Expand f
 
 ## Support
 
-Forward Integration for NetBox is an officially maintained Forward Networks integration
-for NetBox. Supported NetBox and `netbox-branching` versions are listed in the
-Release Compatibility table above; support targets the latest released version.
+This is a **field integration** maintained by a Forward Networks SE — a reference
+integration, **not an officially supported Forward Networks product**, provided
+as-is with no SLA. Supported NetBox and `netbox-branching` versions are listed in
+the Release Compatibility table above; fixes target the latest released version.
 
 - **Bugs / feature requests:** open a GitHub issue using the provided templates.
 - **Security vulnerabilities:** report privately per [SECURITY.md](SECURITY.md) —

@@ -114,7 +114,7 @@ Latest release requires NetBox `4.6.4` and `netbox-branching` `1.1.0+`. Expand f
 
 ## Support
 
-Forward Integration for NetBox is an officially maintained Forward Networks integration for NetBox; support targets the latest released version (see the Release Compatibility table). Report bugs via GitHub issues and security vulnerabilities privately per `SECURITY.md`. Review the deployment security notes in `SECURITY.md` before production use.
+Forward Integration for NetBox is a **field integration** maintained by a Forward Networks SE — a reference integration, not an officially supported Forward Networks product, provided as-is with no SLA. Fixes target the latest released version (see the Release Compatibility table). Report bugs via GitHub issues and security vulnerabilities privately per `SECURITY.md`. Review the deployment security notes in `SECURITY.md` before production use.
 
 ## What This Plugin Provides
 
