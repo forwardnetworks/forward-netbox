@@ -1,10 +1,23 @@
 # Forward Field Integration
 
-**Forward Field Integration** (`forward_netbox`) is a NetBox plugin that syncs Forward inventory into NetBox through direct Forward API connectivity and NQE while preserving the branch-backed sync, diff, and merge workflow.
+**Forward Field Integration** (`forward_netbox`) is a NetBox plugin that syncs Forward Networks inventory into NetBox.
 
-Forward 26.6 is the baseline for async NQE.
+## What it does
+
+It pulls your Forward-discovered inventory into NetBox — devices, interfaces, IP addresses, prefixes, VLANs, VRFs, cables, LAGs, MAC addresses, and inventory items. It runs Forward NQE against a chosen snapshot, stages every change in a `netbox_branching` branch so you can review the diff, then merges when it looks right.
+
+It is **one-way: Forward → NetBox.** Forward is the source of truth; the plugin keeps NetBox populated from what Forward collected. (A read-only drift report *compares* the two, but nothing is written back to Forward.)
+
+On top of the import it adds scope control (sync only devices carrying chosen Forward tags), orphan pruning, per-device analysis (reachability, connectivity blast-radius, CVE exposure), a drift report, and snapshot selection.
+
+Forward 26.6 is the baseline for async NQE. Requires NetBox `4.6.4` and `netbox-branching` `1.1.0+`.
 
 ## Release Compatibility
+
+Latest release requires NetBox `4.6.4` and `netbox-branching` `1.1.0+`. Expand for the full per-release history and notes.
+
+<details>
+<summary>Release compatibility history</summary>
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
@@ -105,7 +118,12 @@ Forward 26.6 is the baseline for async NQE.
 | `v0.3.0.1` | `4.5.8` validated; `4.5.x` only | Superseded by `v0.3.1` |
 | `v0.3.0` | `4.5.8` validated; `4.5.x` only | Superseded by `v0.3.0.1` |
 
+</details>
+
 ## Version History
+
+<details>
+<summary>Per-release summaries</summary>
 
 | Release | Summary |
 | --- | --- |
@@ -184,6 +202,8 @@ Forward 26.6 is the baseline for async NQE.
 | `v0.1.2` | Improved ingestion safety, diagnostics, and compatibility with custom NetBox data. |
 | `v0.1.1` | Added pagination, shared built-in NQE helpers, and release/doc cleanup. |
 | `v0.1.0` | Initial unsupported NetBox plugin release with built-in Forward sync workflow and seeded NQE maps. |
+
+</details>
 
 ## Support
 
