@@ -60,6 +60,7 @@ def clean_forward_source(source):
             "device_tag_prune_out_of_scope",
             "apply_device_scope_tags",
             "sync_device_tags",
+            "sync_endpoints",
         }
     )
     if invalid:
@@ -75,6 +76,8 @@ def clean_forward_source(source):
         raise ValidationError(_("Provide a Forward username and password."))
     if not isinstance(parameters.get("verify", True), bool):
         raise ValidationError(_("`verify` must be a boolean."))
+    if not isinstance(parameters.get("sync_endpoints", False), bool):
+        raise ValidationError(_("`sync_endpoints` must be a boolean."))
     if parameters.get("network_id") is not None and not isinstance(
         parameters.get("network_id"), str
     ):
