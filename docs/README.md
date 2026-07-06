@@ -1,4 +1,4 @@
-# Forward Field Integration Documentation
+# Forward Integration for NetBox Documentation
 
 `forward_netbox` connects NetBox directly to Forward, executes NQE against a selected Forward snapshot, and stages the resulting changes in a NetBox branch for review and merge by default. Large trusted baselines can optionally use fast bootstrap direct writes before returning to the Branching workflow.
 
@@ -112,92 +112,9 @@ Latest release requires NetBox `4.6.4` and `netbox-branching` `1.1.0+`. Expand f
 
 </details>
 
-## Version History
-
-<details>
-<summary>Per-release summaries</summary>
-
-| Release | Summary |
-| --- | --- |
-| `v1.4.3` | Hardens query provenance with source-backed query-id repair during preflight, adds async execution path readiness for 26.6 with resilient NDJSON/JSONL result handling, and proves CIMC/APIC platform/type updates from command-source evidence while preserving prior 1.4 protections. |
-| `v1.4.2` | Adds CIMC platform separation, visible query-drift repair and dependency preview on the sync detail page, and keeps module-bay merge hardening plus parent-interface description preservation. |
-| `v1.4.1.1` | Prevents optional module sync from creating `dcim.modulebay` side-effect changes during merge, skips missing module bays with a readiness/import warning, and keeps LAG member rows from clearing existing parent interface descriptions. |
-| `v1.4.1` | Publishes the 1.4 patch release line with query-ID drift remediation and support-bundle diagnostics on top of the parent-device contract and release surfaces. |
-| `v1.3.6` | Enforces a hard parent-device sync contract so child models cannot run without `dcim.device`, preventing stale sync configs from skipping the device shard and breaking dependent imports. |
-| `v1.3.5.5` | Adds compressed support-bundle ZIP downloads with optional password protection and folds live source/query-drift/data-file diagnostics into the troubleshooting bundle. |
-| `v1.3.5.4` | Republishes the `v1.3.5.3` query-contract hardening as the prior patch release. |
-| `v1.3.5.3` | Preserves the claimed-step and payload-compaction protections from `v1.3.5.2`, adds strict shipped-query parameter-contract validation, strips legacy tag aliases from runtime NQE payloads, and keeps support-bundle previews summary-only. |
-| `v1.3.5.2` | Prevents shard execution drift by tying resume/overlap workers to the claimed execution step and compacts sync execution payloads (`plan_items`, workload previews, and advisory branch summaries) so large runs remain user-visible but lightweight in UI/log exports. |
-| `v1.3.5.1` | Removes the raw `model_results` payload from sync telemetry summaries and stops unparameterized query IDs from inheriting source-level tag parameters, which keeps sync-detail rendering responsive while preserving the saved-query-ID path. |
-| `v1.3.5` | Tightens the saved-query-ID path for 1.3.x, keeps shipped maps parameter-compatible with `forward_netbox_shard_keys`, and uses command-inventory signals to avoid misclassifying ACI platforms during repeat syncs. |
-| `v1.3.4` | Makes non-retryable Branching merge errors operator-visible by persisting the failure reason before the job terminates, marks branches still stuck in `Merging` as `Failed`, preserves timeout/transient retry behavior, and adds disabled-by-default async NQE client support for the future Forward 26.6 execution API. |
-| `v1.3.3` | Refreshes shipped NQE syntax so saved query IDs accept the standard `forward_netbox_shard_keys` parameter payload, republishes the saved validation-folder query set, and validates the affected saved query IDs against a live Forward SaaS dataset. |
-| `v1.3.2` | Adds optional `netbox-cisco-aci` plugin support with disabled-by-default ACI fabric, pod, node, tenant, VRF, and filter maps; keeps deeper ACI policy maps conservative until source identity is proven; and hardens duplicate ACI node observations so repeat syncs remain no-op when source data is unchanged. |
-| `v1.3.1` | Fixes repeat prefix sync accounting by treating unchanged NetBox `ipam.prefix` rows as unchanged, avoids dependency VRF metadata rewrites from prefix/IP/FHRP imports, removes the legacy sync column-filter shard path, and preserves the `v1.3.0` parameterized NQE path. |
-| `v1.3.0` | Eliminates default Forward NQE column-filter shard fetches in favor of query-side `forward_netbox_shard_keys` parameters, keeps local shard safety filtering, and preserves branch boundaries while reducing Forward SaaS API/NQE pressure. |
-| `v1.2.3` | Coalesces compatible sibling shard column-filter fetches into bounded EQUALS_ANY requests, caches prefetched sibling rows locally to avoid repeated Forward calls, and surfaces local Branching change-explainability summaries in support bundles and the ingestion UI. |
-| `v1.2.2` | Adds operator-visible Forward API usage budgets/rate evidence in Sync Health and support bundles, extends repeat-sync no-op hardening across key adapters, and persists successful staged deletes into ingestion statistics so active delete shards are visible before merge accounting catches up. |
-| `v1.2.1` | Fixes repeat prefix sync churn where otherwise unchanged `ipam.prefix` rows could be updated only because the VRF foreign key was re-resolved; built-in prefix maps now use exact `prefix + vrf` identity while prefix shard fetches still use parameterized NQE. |
-| `v1.2.0` | Adds optional NetBox-native HSRP/VRRP FHRP import from Forward native FHRP state, bounded access/native interface VLAN assignment from existing site-scoped VLANs, keeps FHRP upgrade behavior safe for existing 1.1 IPAM data, and hardens current NetBox job-test compatibility. |
-| `v1.1.1` | Adds optional NetBox-native HSRP/VRRP FHRP import from Forward native FHRP state, bounded access/native interface VLAN assignment from existing site-scoped VLANs, keeps FHRP upgrade behavior safe for existing 1.1 IPAM data, and hardens current NetBox job-test compatibility. |
-| `v1.1.0` | Adds Forward SaaS API request pacing, parameterized prefix shard execution, single-pass interface NQE, configured max-shard persistence in smoke evidence, and release-validation gates for API/NQE scale validation. |
-| `v1.0.0` | Introduced the first `v1.0.0` release line and initial API/NQE release validation flow before the 1.1 runtime and request-pacing enhancements. |
-| `v0.9.4.6` | Tightens delete-heavy `dcim.device` cleanup planning to about 500 planned delete rows per 10k branch-change budget after live shard evidence showed the earlier estimate was still too high. |
-| `v0.9.4.5` | Plans delete-heavy `dcim.device` cleanup shards with a conservative row budget so tag-scope prune runs do not pack thousands of cascading device deletes into one Branching shard. |
-| `v0.9.4.4` | Clarifies large branching progress by clamping utilization display to 100% during intermediate accounting overshoots and showing current shard row progress in the ingestion UI. |
-| `v0.9.4.3` | Converts NetBox protected-reference delete failures into dependency skips so large tag-scope prune/device cleanup runs continue without shard-failing delete rows. |
-| `v0.9.4.1.1` | Keeps the shared 4.5/4.6 branch line, execution ledger, support logging, and scale hardening while preserving the read-only advisory surfaces from `v0.9.0`. |
-| `v0.9.0` | Adds read-only analysis, workload preview, advisory summaries, and native log export for troubleshooting while keeping lifecycle enrichment and predict deferred. |
-| `v0.8.6.3` | Hardens beta routing scope resolution, filters invalid BGP ASN rows in shipped NQE, skips positionless virtual-chassis rows conservatively, and lets fast bootstrap retain its diff baseline when only optional model issues remain. |
-| `v0.8.6.2` | Hardens issue and job-log rendering for JSON safety when unexpected nested payload objects leak into failure data. |
-| `v0.8.6.1` | Clarifies NQE map bulk edit labels and help text so operators use repository query paths and understand query IDs are resolved automatically during sync and diff execution. |
-| `v0.8.6` | Publishes flattened built-in NQE to Forward org repositories, filters IPv4 host/any/loopback prefix artifacts, reports IP rows missing imported parent prefixes on full baselines, and prevents stale virtual-chassis/device/routing row failures from blocking unrelated models. |
-| `v0.8.5` | Makes the beta routing and module maps broadly available by default, preserves the conservative bundled virtual chassis map, handles Forward repository query lookups that return a `queries` list, and makes failed sync activity show the terminal failure instead of stale row heartbeat text. |
-| `v0.8.3` | Isolates stale or invalid per-model query output, rejects virtual-chassis rows missing `vc_position`, records row issues without aborting later multi-branch shards, and prevents dirty runs from becoming diff baselines. |
-| `v0.8.2` | Adds portable repository `query_path` execution with Forward-backed selectors, true native bulk edit for publishing bundled NQE into the Forward Org Repository, binding selected maps to repository paths, restoring bundled raw NQE, and clearer skipping for IP address rows whose interface cannot be resolved. |
-| `v0.8.1.1` | Emits `vc_position` in the built-in virtual chassis NQE map for vPC and MLAG memberships so NetBox does not reject virtual chassis device assignments without a member position. |
-| `v0.8.1` | Runs fast bootstrap inside native NetBox change tracking, shows branchless ingestion changes from `ObjectChange` rows, updates fast-bootstrap counters from real object changes, warns about undersized worker timeouts, and retries transient Forward API HTTP timeouts/gateway responses. |
-| `v0.8.0` | Adds an opt-in fast bootstrap direct-write backend for trusted large baselines, keeps NQE validation and row adapters shared with Branching, and skips LAG cable endpoints that NetBox cannot cable directly. |
-| `v0.7.1` | Keeps the NetBox-native multi-branch workflow stable while hardening cable ingestion, retry handling, and shard re-planning for large runs. |
-| `v0.7.0` | Splits the remaining sync orchestration, reporting, and validation helpers into dedicated boundaries, adds shard heartbeat visibility, and preserves the NetBox-native branch workflow. |
-| `v0.6.5` | Adds audited validation force-allow overrides and routing evidence enrichment while reducing skipped routing rows through conservative NQE-side identity inference. |
-| `v0.6.4` | Adds beta optional routing and peering imports for `netbox-routing` and `netbox-peering-manager`, including BGP peers, BGP address families, OSPF objects, peering sessions, routing diagnostics, and query-ID-aware built-in map handling. |
-| `v0.6.3` | Models Forward aggregate interfaces as native NetBox LAGs, attaches member interfaces through `Interface.lag`, and keeps the MTU value sourced from Forward's normalized interface field. |
-| `v0.6.2` | Canonicalizes duplicate global-table IP address rows by host IP before import and records row-scoped apply/delete failures as ingestion issues without aborting the rest of the shard. |
-| `v0.6.1` | Filters interface IP rows that NetBox cannot assign, such as subnet network IDs and IPv4 broadcasts, while reporting aggregate diagnostics for filtered addresses. |
-| `v0.6.0` | Adds beta native `dcim.module` import for chassis modules and similar bay-aware hardware, improves inventory item normalization, and avoids duplicate generic inventory rows when beta module sync is enabled. |
-| `v0.5.9.1` | Keeps job logs visible during execution by persisting plugin log entries into the native NetBox job log tab while preserving the full plugin ingestion log view. |
-| `v0.5.9` | Balances query preflight and workload fetch with bounded parallelism, reducing long planning pauses on large datasets. |
-| `v0.5.8` | Defers event flushing until commit so large prefix ingestions do not trip transaction state changes mid-run. |
-| `v0.5.5` | Applies a consistent model conflict policy for cable sync rows: skip occupied-interface conflicts, aggregate warning spam, and keep non-conflict updates/creates unchanged. |
-| `v0.5.4` | Persists ingestion change counters so list/detail values stay consistent after branch merge cleanup, matching merge summaries. |
-| `v0.5.3` | Surfaces preflight activity and elapsed phase timing on sync detail, emits early phase logs before ingestion rows, and sets source status to `Syncing` while runs are active. |
-| `v0.5.2.1` | Fixes plugin admin version display and ships inferred cable query parser compatibility update (no `let` declarations) while preserving synthetic endpoint filtering. |
-| `v0.4.0` | Corrects built-in IPv4/IPv6 prefix NQE filters to exclude host routes (`/32` and `/128`) from prefix import and validates the behavior against a live smoke dataset. |
-| `v0.3.1` | Adds optional data-file-aware device type alias maps, a Device Type Library alias data-file builder, and documentation for the snapshot requirement while keeping the default no-data-file maps available. |
-| `v0.3.0.1` | Fixes the validation-run list UI by removing unsupported edit actions from read-only validation records, and adds Playwright coverage for the validation-run list route. |
-| `v0.3.0` | Adds the NetBox 4.5.8-validated harness architecture with first-class validation runs, drift policies, query-fetch boundaries, model-result reporting, and Playwright-covered UI workflow validation. |
-| `v0.2.4` | Hardens native multi-branch resilience with adaptive shard splitting and retry on branch-budget overflow, plus model-density tracking to keep large initial syncs within NetBox branching guidance. |
-| `v0.2.3` | Adds native sync preflight validation before full multi-branch planning so invalid model/query rows fail earlier in the UI/API run path. |
-| `v0.2.2` | NQE-only correction release: filters zero-length prefixes, broadens interface coverage for IP assignment targets, and enforces inventory `part_id` length limits. |
-| `v0.2.1` | Makes NetBox-native multi-branch execution the only UI/API sync path and exposes the branch budget in the sync form. |
-| `v0.2.0` | Adds NetBox-native multi-branch baseline syncs for large datasets, uses NetBox outbound proxy routing for Forward API calls, and keeps branch event queues bounded during large imports. |
-| `v0.1.6.0` | Adds explicit diff baselines, Forward `nqe-diffs` execution for eligible `query_id` maps, and updated large-dataset guidance for baseline versus incremental syncs. |
-| `v0.1.5.1` | Patch release that validates and hardens null-VRF coalesce behavior and inventory-item serial bounds against the live dataset. |
-| `v0.1.5` | Fixes null VRF coalesce handling, imports loopback interfaces for IP attachment, and hardens inventory-item identity fallbacks. |
-| `v0.1.4.2` | CI/package patch release that applies repository formatting/import-order fixes and publishes a clean artifact line. |
-| `v0.1.4.1` | Patch release that bounds built-in `dcim.virtualchassis` names and domains to NetBox limits. |
-| `v0.1.4` | Hardened built-in NQE mappings and docs for large dataset syncs. |
-| `v0.1.3` | Enforced deterministic model identity contracts across sync ingestion. |
-| `v0.1.2` | Improved ingestion safety, diagnostics, and compatibility with existing NetBox data. |
-| `v0.1.1` | Added NQE pagination, shared helper composition, and release hygiene updates. |
-| `v0.1.0` | Initial unsupported release of the Forward-to-NetBox sync plugin. |
-
-</details>
-
 ## Support
 
-Forward Field Integration is an officially maintained Forward Networks integration for NetBox; support targets the latest released version (see the Release Compatibility table). Report bugs via GitHub issues and security vulnerabilities privately per `SECURITY.md`. Review the deployment security notes in `SECURITY.md` before production use.
+Forward Integration for NetBox is an officially maintained Forward Networks integration for NetBox; support targets the latest released version (see the Release Compatibility table). Report bugs via GitHub issues and security vulnerabilities privately per `SECURITY.md`. Review the deployment security notes in `SECURITY.md` before production use.
 
 ## What This Plugin Provides
 
