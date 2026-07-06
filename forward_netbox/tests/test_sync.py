@@ -3603,6 +3603,34 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertEqual(tag.color, "2196f3")
         self.assertIn(tag, device.tags.all())
 
+    def test_apply_extras_taggeditem_reuses_existing_tag_by_name_when_slug_differs(
+        self,
+    ):
+        # Regression (Blake 2.3.0): a NetBox tag with the same NAME but a
+        # different SLUG must be REUSED, not re-created — the slug-only match
+        # missed it and the create failed the unique-name constraint
+        # ("Tag with this Name already exists.").
+        device = self._create_device("device-1")
+        existing = Tag.objects.create(
+            name="Prot_BGP", slug="prot_bgp_legacy", color="9e9e9e"
+        )
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        runner._apply_extras_taggeditem(
+            {
+                "device": "device-1",
+                "tag": "Prot_BGP",
+                "tag_slug": "prot-bgp",
+                "tag_color": "2196f3",
+            }
+        )
+
+        self.assertEqual(Tag.objects.filter(name="Prot_BGP").count(), 1)
+        existing.refresh_from_db()
+        self.assertIn(existing, device.tags.all())
+
     def test_apply_extras_taggeditem_reuses_cached_assignment_without_db_queries(self):
         self._create_device("device-1")
         runner = ForwardSyncRunner(

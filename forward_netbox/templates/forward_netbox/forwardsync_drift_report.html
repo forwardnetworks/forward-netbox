@@ -11,6 +11,16 @@
 {% endblock extra_controls %}
 
 {% block content %}
+{% if drift_stale %}
+  <div class="alert alert-warning d-flex align-items-center" role="alert">
+    <i class="mdi mdi-alert me-2" aria-hidden="true"></i>
+    <div>
+      {% trans "This drift is computed from a dependency preview, but a newer sync has run since — the numbers below are stale." %}
+      {% trans "Preview:" %} {{ preview_at|placeholder }} · {% trans "Last sync:" %} {{ last_sync_at|placeholder }}.
+      {% trans "Re-run Preview Dependencies for current drift." %}
+    </div>
+  </div>
+{% endif %}
 <div class="row mb-3">
   <div class="col col-md-4">
     <div class="card">
