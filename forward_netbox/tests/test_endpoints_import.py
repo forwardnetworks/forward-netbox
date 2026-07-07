@@ -49,3 +49,30 @@ class EndpointImportWiringTest(SimpleTestCase):
             "manufacturer_slug:",
         ):
             self.assertIn(field, src)
+
+
+from django.test import TestCase  # noqa: E402
+
+from forward_netbox.forms import ForwardSourceForm  # noqa: E402
+
+
+class EndpointFormRenderTest(TestCase):
+    """The opt-in toggle must actually render in the source form."""
+
+    def test_sync_endpoints_toggle_is_in_a_fieldset(self):
+        form = ForwardSourceForm()
+        self.assertIn("sync_endpoints", form.fields)
+        rendered = []
+        for fs in form.fieldsets:
+            rendered.extend(
+                str(name)
+                for name in (
+                    getattr(fs, "items", None) or getattr(fs, "fields", None) or []
+                )
+            )
+        self.assertIn(
+            "sync_endpoints",
+            rendered,
+            "sync_endpoints field exists but is not in any FieldSet, so the "
+            "form never renders the toggle.",
+        )
