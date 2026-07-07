@@ -669,6 +669,7 @@ class ForwardSourceForm(NetBoxModelForm):
                     "device_tag_prune_out_of_scope",
                     "apply_device_scope_tags",
                     "sync_device_tags",
+                    "sync_endpoints",
                     name="Parameters",
                 )
             )
@@ -700,6 +701,7 @@ class ForwardSourceForm(NetBoxModelForm):
                     "device_tag_prune_out_of_scope",
                     "apply_device_scope_tags",
                     "sync_device_tags",
+                    "sync_endpoints",
                     name="Parameters",
                 )
             )

@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v2.4.0
+
+Fix: the "Import SNMP Endpoints as Devices" toggle now renders on the source form (the field shipped in 2.3.2 but was not in any fieldset, so it never showed), letting operators enable endpoint import from the GUI.
+
 ## v2.3.2
 
 Feature: optional import of Forward SNMP endpoints (e.g. Avocent console servers) as NetBox devices — off by default (`sync_endpoints`), enabled per source and scoped by the same device tags.
