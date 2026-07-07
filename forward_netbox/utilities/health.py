@@ -88,6 +88,61 @@ DATA_FILE_PROBES = {
 }
 
 
+# Bundled queries that gate an opt-in, parameter-driven feature. When the
+# operator enables the feature but the map runs a pinned direct query ID, a
+# stale org query silently ignores the injected parameter, so the toggle
+# appears to do nothing. Elevate that map's drift from a quiet "info" to an
+# actionable "warn" naming the exact remediation.
+_OPTIN_FEATURE_QUERY_FILES = {
+    "forward_devices.nqe": ("sync_endpoints", "Import SNMP Endpoints as Devices"),
+    "forward_device_feature_tags.nqe": ("sync_device_tags", "Sync Device Tags"),
+}
+
+
+def _optin_feature_enabled(source_parameters, param_name):
+    value = (source_parameters or {}).get(param_name)
+    if isinstance(value, (list, tuple, set)):
+        return len(value) > 0
+    return bool(value)
+
+
+def _elevate_optin_pinned_query_drift(query_drift, source_parameters):
+    """Make silent pinned-query drift loud when it hides an enabled opt-in feature.
+
+    A direct query ID that predates ``sync_endpoints`` / ``sync_device_tags``
+    runs an old org query that ignores the parameter, so the toggle looks like a
+    no-op. Publishing the bundled queries to the org and refreshing the pinned
+    IDs is the fix; surface it as a warning instead of a silent info badge.
+    """
+    for item in query_drift or []:
+        if not isinstance(item, dict):
+            continue
+        if item.get("status") != "direct_query_id_unverified":
+            continue
+        feature = _OPTIN_FEATURE_QUERY_FILES.get(
+            str(item.get("expected_filename") or "")
+        )
+        if not feature:
+            continue
+        param_name, label = feature
+        if not _optin_feature_enabled(source_parameters, param_name):
+            continue
+        item["status"] = "direct_query_id_optin_stale_risk"
+        item["severity"] = "warn"
+        item["message"] = (
+            f"“{label}” is enabled, but this map runs a pinned Forward query ID. "
+            "If that query predates the feature it is silently ignored, so "
+            "nothing new syncs."
+        )
+        item["remediation"] = (
+            "Publish the bundled queries to your Forward org folder (Overwrite "
+            "on), then use Refresh Query IDs on this Health page, then re-run the "
+            "sync."
+        )
+        item["remediation_action"] = "refresh_query_ids"
+    return query_drift
+
+
 def sync_health_summary(sync):
     optional_plugin_capabilities = integration_capability_summary()
     maps = [
@@ -150,6 +205,9 @@ def sync_health_summary(sync):
             dependency_parent_coverage
         )
     query_drift = [local_query_binding_drift(query_map) for query_map in maps]
+    _elevate_optin_pinned_query_drift(
+        query_drift, getattr(getattr(sync, "source", None), "parameters", None) or {}
+    )
     query_drift_summary = _query_drift_summary(query_drift)
     next_run = _next_run_expectation(sync, maps, raw_maps)
     checks = _health_checks(
