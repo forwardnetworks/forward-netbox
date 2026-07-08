@@ -20,14 +20,14 @@ pip install forward-netbox
 Alternatively, install a specific wheel or source archive from GitHub Releases:
 
 ```bash
-pip install /path/to/forward_netbox-2.4.1-py3-none-any.whl
-pip install /path/to/forward_netbox-2.4.1.tar.gz
+pip install /path/to/forward_netbox-2.4.2-py3-none-any.whl
+pip install /path/to/forward_netbox-2.4.2.tar.gz
 ```
 
 If you mirror the package into a private Python index, pin the same release version:
 
 ```bash
-pip install forward-netbox==2.4.1
+pip install forward-netbox==2.4.2
 ```
 
 ## Release Compatibility
@@ -39,7 +39,8 @@ Latest release requires NetBox `4.6.4` and `netbox-branching` `1.1.0+`. Expand f
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v2.4.1` | `4.6.4` required (4.5.x dropped); needs netbox-branching `1.1.0+` | Current release; Fix: opt-in features (SNMP endpoint import, device-tag sync) silently did nothing on sources that run org-managed **pinned** Forward query IDs predating the feature — the sync Health page now raises an actionable warning instead of a silent badge. Remediation: publish the bundled queries to your Forward org folder (Overwrite on), then use Refresh Query IDs, then re-sync. |
+| `v2.4.2` | `4.6.4` required (4.5.x dropped); needs netbox-branching `1.1.0+` | Current release; Fix: endpoint import (`sync_endpoints`) and device-tag sync (`sync_device_tags`) now work with the alias-aware and rules-aware query variants (`forward_devices_with_netbox_aliases`, `forward_device_feature_tags_with_rules`), not just the base queries — operators running the variants saw the toggles silently do nothing. Adds a **Publish Bundled Queries** button on the sync Health page and a Health warning when an opt-in feature is enabled but no enabled map provides it. The alias-aware device query now emits the clean role name (e.g. `ROUTER`) to match the base query — expect a one-time role update on alias-mapped devices. |
+| `v2.4.1` | `4.6.4` required (4.5.x dropped); needs netbox-branching `1.1.0+` | Superseded by `v2.4.2`; Fix: opt-in features (SNMP endpoint import, device-tag sync) silently did nothing on sources that run org-managed **pinned** Forward query IDs predating the feature — the sync Health page now raises an actionable warning instead of a silent badge. Remediation: publish the bundled queries to your Forward org folder (Overwrite on), then use Refresh Query IDs, then re-sync. |
 | `v2.4.0` | `4.6.4` required (4.5.x dropped); needs netbox-branching `1.1.0+` | Superseded by `v2.4.1`; Fix: the "Import SNMP Endpoints as Devices" toggle now renders on the source form (the field shipped in 2.3.2 but was not in any fieldset, so it never showed), letting operators enable endpoint import from the GUI. |
 | `v2.3.2` | `4.6.4` required (4.5.x dropped); needs netbox-branching `1.1.0+` | Superseded by `v2.4.0`; Feature: optional import of Forward SNMP endpoints (e.g. Avocent console servers) as NetBox devices — off by default (`sync_endpoints`), enabled per source and scoped by the same device tags. |
 | `v2.3.1` | `4.6.4` required (4.5.x dropped); needs netbox-branching `1.1.0+` | Superseded by `v2.3.2`;  |

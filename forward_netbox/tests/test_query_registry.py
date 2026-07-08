@@ -1551,7 +1551,6 @@ class QueryRegistryTest(TestCase):
 
         for query_name in (
             "Forward Device Models with NetBox Device Type Aliases",
-            "Forward Devices with NetBox Device Type Aliases",
             "Forward Device Feature Tags with Rules",
         ):
             query = re.sub(r"/\*.*?\*/", "", rows[query_name]["query"], flags=re.S)
@@ -1580,6 +1579,27 @@ class QueryRegistryTest(TestCase):
                 query,
                 msg=f"{query_name} should not bind extensions before devices.",
             )
+
+    def test_alias_device_query_wraps_endpoint_union_and_stays_device_parallel(self):
+        # The alias-aware device query gains the SNMP-endpoint branch, so (like
+        # the base forward_devices query) it wraps a `foreach row in ((devices)
+        # + (endpoints))` union. Device-parallel is preserved because it still
+        # references network.devices exactly once (endpoints are a separate
+        # collection).
+        rows = {row["name"]: row for row in builtin_nqe_map_rows()}
+        query = re.sub(
+            r"/\*.*?\*/",
+            "",
+            rows["Forward Devices with NetBox Device Type Aliases"]["query"],
+            flags=re.S,
+        )
+        self.assertIn("foreach row in (", query)
+        self.assertIn("network.endpoints", query)
+        self.assertEqual(
+            query.count("network.devices"),
+            1,
+            msg="alias device query must reference network.devices exactly once.",
+        )
 
     def test_interface_query_includes_loopbacks_for_ip_bearing_logical_interfaces(self):
         spec = next(

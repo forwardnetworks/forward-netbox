@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v2.4.2
+
+Fix: endpoint import (`sync_endpoints`) and device-tag sync (`sync_device_tags`) now work with the alias-aware and rules-aware query variants (`forward_devices_with_netbox_aliases`, `forward_device_feature_tags_with_rules`), not just the base queries — operators running the variants saw the toggles silently do nothing (validated live: 355 Avocent endpoints import; `Mgmt_*` tags sync). Adds a **Publish Bundled Queries** button on the sync Health page (beside Refresh Query IDs) and a Health warning when an opt-in feature is enabled but no enabled map provides it. The alias-aware device query now emits the clean role name (e.g. `ROUTER`) to match the base query — expect a one-time role update on alias-mapped devices.
+
 ## v2.4.1
 
 Fix: opt-in features (SNMP endpoint import, device-tag sync) silently did nothing on sources that run org-managed **pinned** Forward query IDs predating the feature — the sync Health page now raises an actionable warning instead of a silent badge. Remediation: publish the bundled queries to your Forward org folder (Overwrite on), then use Refresh Query IDs, then re-sync.
