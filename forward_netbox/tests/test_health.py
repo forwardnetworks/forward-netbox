@@ -1011,6 +1011,52 @@ class ForwardSyncHealthTest(TestCase):
         )
         self.assertFalse(refresh_query_ids.call_args.kwargs["pin_commit"])
 
+    def test_sync_publish_bundled_queries_posts_to_repair_action(self):
+        self.client.force_login(self.user)
+        result = Mock(matched=True)
+        client = Mock()
+        with patch.object(ForwardSource, "get_client", return_value=client), patch(
+            "forward_netbox.views.publish_builtin_nqe_map_queries",
+            return_value=[result],
+        ) as publish:
+            response = self.client.post(
+                reverse(
+                    "plugins:forward_netbox:forwardsync_publish_bundled_queries",
+                    kwargs={"pk": self.sync.pk},
+                )
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            response["Location"],
+            reverse(
+                "plugins:forward_netbox:forwardsync_health",
+                kwargs={"pk": self.sync.pk},
+            ),
+        )
+        publish.assert_called_once()
+        self.assertEqual(publish.call_args.kwargs["client"], client)
+        self.assertEqual(
+            publish.call_args.kwargs["directory"], "/forward_netbox_validation/"
+        )
+        self.assertTrue(publish.call_args.kwargs["overwrite"])
+
+    def test_sync_publish_bundled_queries_surfaces_write_permission_error(self):
+        self.client.force_login(self.user)
+        with patch.object(ForwardSource, "get_client", return_value=Mock()), patch(
+            "forward_netbox.views.publish_builtin_nqe_map_queries",
+            side_effect=Exception("403 Forbidden"),
+        ):
+            response = self.client.post(
+                reverse(
+                    "plugins:forward_netbox:forwardsync_publish_bundled_queries",
+                    kwargs={"pk": self.sync.pk},
+                ),
+                follow=True,
+            )
+
+        self.assertContains(response, "NQE-library write permission")
+
     def test_sync_detail_surfaces_query_drift_and_dependency_preview_actions(self):
         self.client.force_login(self.user)
 

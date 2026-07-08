@@ -521,14 +521,22 @@
         <a class="btn btn-sm btn-outline-primary" href="{% url 'plugins:forward_netbox:forwardsync_query_drift' pk=object.pk %}">
           {% trans "Export Live Query Drift Check" %}
         </a>
+        {% if perms.forward_netbox.change_forwardnqemap %}
+        <form method="post" action="{% url 'plugins:forward_netbox:forwardsync_publish_bundled_queries' pk=object.pk %}" class="d-inline ms-2">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-sm btn-outline-primary">
+            {% trans "Publish Bundled Queries" %}
+          </button>
+        </form>
         <form method="post" action="{% url 'plugins:forward_netbox:forwardsync_refresh_query_ids' pk=object.pk %}" class="d-inline ms-2">
           {% csrf_token %}
           <button type="submit" class="btn btn-sm btn-outline-secondary">
             {% trans "Refresh Query IDs" %}
           </button>
         </form>
+        {% endif %}
         <span class="text-muted ms-2">
-          {% trans "Export diagnostics, or refresh enabled maps to the canonical validation-folder query IDs." %}
+          {% trans "Publish the bundled queries to your Forward org (updates endpoint/tag features), then refresh enabled maps to the validation-folder query IDs." %}
         </span>
       </div>
       <div class="table-responsive">
