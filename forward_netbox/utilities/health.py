@@ -56,6 +56,8 @@ from .health_summary_blocks import validation_summary as _validation_summary_imp
 from .plugin_integrations import integration_capability_summary
 from .query_binding import local_query_binding_drift
 from .query_binding_resolution import _QUERY_DRIFT_STATUS_LABELS
+from .query_binding_resolution import builtin_query_default_for_map
+from .query_registry import _default_query_parameters
 from .sync_facade import resolve_snapshot_id
 
 
@@ -151,6 +153,118 @@ def _elevate_optin_pinned_query_drift(query_drift, source_parameters):
     return query_drift
 
 
+def _optin_feature_map_state_check(sync):
+    """Warn when an opt-in feature is enabled but no enabled map provides it.
+
+    Setting ``sync_endpoints`` / ``sync_device_tags`` on the source does nothing
+    unless an enabled NQE map runs a query that declares that parameter. This bit
+    a design partner whose enabled device/tag maps were the "with aliases" /
+    "with rules" variants that (before this release) did not carry the feature —
+    a silent misconfiguration the drift checks cannot see. Returns None when no
+    opt-in feature is enabled.
+    """
+    source_parameters = getattr(getattr(sync, "source", None), "parameters", None) or {}
+    features = (
+        ("sync_endpoints", "Import SNMP Endpoints as Devices"),
+        ("sync_device_tags", "Sync Device Tags"),
+    )
+    enabled_features = [
+        (param, label)
+        for param, label in features
+        if _optin_feature_enabled(source_parameters, param)
+    ]
+    if not enabled_features:
+        return None
+    provided_params = set()
+    for query_map in sync.get_maps():
+        if not getattr(query_map, "enabled", True):
+            continue
+        if not sync.is_model_enabled(query_map.model_string):
+            continue
+        query_default, _reason = builtin_query_default_for_map(query_map)
+        if not query_default:
+            continue
+        provided_params |= set(
+            _default_query_parameters(query_default["filename"]) or {}
+        )
+    problems = [
+        f"“{label}” is enabled, but no enabled NQE map runs a query that "
+        f"provides it — enable a map whose query declares {param} (or publish "
+        "the bundled queries), or it never syncs."
+        for param, label in enabled_features
+        if param not in provided_params
+    ]
+    if problems:
+        return _check(
+            name="Opt-in feature maps", status="warn", message=" ".join(problems)
+        )
+    return _check(
+        name="Opt-in feature maps",
+        status="pass",
+        message="Enabled opt-in features have an enabled query map that provides them.",
+    )
+
+
+# Base builtin query <-> its opt-in data-file variant. The variant REPLACES the
+# base for the same model (device-type aliasing / feature-tag rules); enabling
+# both makes two maps emit rows for the same model, which double-applies and
+# churns. (Distinct from the IPv4/IPv6 splits, which are different queries for
+# the same model on purpose — those are not listed here.)
+_BASE_VARIANT_QUERY_PAIRS = (
+    (
+        "forward_devices.nqe",
+        "forward_devices_with_netbox_aliases.nqe",
+        "Forward device",
+    ),
+    (
+        "forward_device_models.nqe",
+        "forward_device_models_with_netbox_aliases.nqe",
+        "Forward device-type",
+    ),
+    (
+        "forward_device_feature_tags.nqe",
+        "forward_device_feature_tags_with_rules.nqe",
+        "Forward device-tag",
+    ),
+)
+
+
+def _base_variant_conflict_check(sync):
+    """Warn when a base query and its opt-in variant are both enabled.
+
+    The alias/rules variants replace their base for the same NetBox model, so
+    running both emits duplicate/conflicting rows (device_type churn). A design
+    partner had both the base and the alias-aware device map enabled. Returns
+    None when there is no conflict.
+    """
+    enabled_files = set()
+    for query_map in sync.get_maps():
+        if not getattr(query_map, "enabled", True):
+            continue
+        if not sync.is_model_enabled(query_map.model_string):
+            continue
+        query_default, _reason = builtin_query_default_for_map(query_map)
+        if query_default:
+            enabled_files.add(str(query_default.get("filename")))
+    conflicts = [
+        label
+        for base, variant, label in _BASE_VARIANT_QUERY_PAIRS
+        if base in enabled_files and variant in enabled_files
+    ]
+    if not conflicts:
+        return None
+    joined = ", ".join(conflicts)
+    return _check(
+        name="Conflicting query variants",
+        status="warn",
+        message=(
+            f"Both the base and the opt-in variant are enabled for: {joined}. "
+            "The variant replaces the base for the same model, so running both "
+            "double-applies rows and churns — disable one of each pair."
+        ),
+    )
+
+
 def sync_health_summary(sync):
     optional_plugin_capabilities = integration_capability_summary()
     maps = [
@@ -238,6 +352,12 @@ def sync_health_summary(sync):
         compatibility_cache=compatibility_cache,
         next_run=next_run,
     )
+    optin_feature_check = _optin_feature_map_state_check(sync)
+    if optin_feature_check is not None:
+        checks.append(optin_feature_check)
+    variant_conflict_check = _base_variant_conflict_check(sync)
+    if variant_conflict_check is not None:
+        checks.append(variant_conflict_check)
 
     return {
         "source": _source_summary(sync),

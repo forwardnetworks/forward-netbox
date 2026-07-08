@@ -1,77 +1,125 @@
 /**
- * @intent Devices collected by Forward with NetBox device type library aliases
+ * @intent Devices collected by Forward with NetBox device type library aliases (plus optional SNMP endpoints)
  * @description Alias-aware variant of Forward Devices. Requires a Forward NQE
  * data file named netbox_device_type_aliases with value rows generated from the
  * NetBox Device Type Library. If that data file is not uploaded and attached to
- * the network, use the default forward_devices.nqe query instead.
+ * the network, use the default forward_devices.nqe query instead. When
+ * sync_endpoints is true, generic SNMP endpoints that Forward collects but does
+ * not model as first-class devices (e.g. Avocent console servers) are also
+ * emitted as device rows, identified from standard MIB-2 (sysName/sysDescr/
+ * sysObjectId) with per-vendor overlays, and scoped by the same device tags.
  */
 
 import "netbox_utilities";
 
 @query
-f(forward_netbox_shard_keys: List<String>) =
-foreach device in network.devices
-let aliases = network.extensions.netbox_device_type_aliases
-where device.snapshotInfo.result == DeviceSnapshotResult.completed
-where device.platform.vendor != Vendor.FORWARD_CUSTOM
-where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
-let location = device.locationName
-let raw_model = toString(device.platform.model)
-let raw_model_slug = slugifyNetboxModel(raw_model)
-let device_type = device.platform.deviceType
-let site_name = if isPresent(location) then toLowerCase(location) else "unknown"
-let site_slug = slugify(site_name)
-let role_name = replace(toString(device_type), "DeviceType.", "")
-let role_slug = slugify(role_name)
-let platform_name = normalizeDevicePlatformName(device)
-let platform_slug = slugify(platform_name)
-let vendor = device.platform.vendor
-let data_manufacturer_name = if isPresent(aliases.value) then max(
-    foreach alias in aliases.value
-    where alias.record_type == "manufacturer_override"
-    where alias.forward_vendor == toString(vendor)
-    select alias.manufacturer
+f(forward_netbox_shard_keys: List<String>, sync_endpoints: Bool, device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>) =
+foreach row in (
+  (
+    foreach device in network.devices
+    let aliases = network.extensions.netbox_device_type_aliases
+    where device.snapshotInfo.result == DeviceSnapshotResult.completed
+    where device.platform.vendor != Vendor.FORWARD_CUSTOM
+    where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
+    let location = device.locationName
+    let raw_model = toString(device.platform.model)
+    let raw_model_slug = slugifyNetboxModel(raw_model)
+    let device_type = device.platform.deviceType
+    let site_name = if isPresent(location) then toLowerCase(location) else "unknown"
+    let site_slug = slugify(site_name)
+    let role_name = replace(toString(device_type), "DeviceType.", "")
+    let role_slug = slugify(role_name)
+    let platform_name = normalizeDevicePlatformName(device)
+    let platform_slug = slugify(platform_name)
+    let vendor = device.platform.vendor
+    let data_manufacturer_name = if isPresent(aliases.value) then max(
+        foreach alias in aliases.value
+        where alias.record_type == "manufacturer_override"
+        where alias.forward_vendor == toString(vendor)
+        select alias.manufacturer
+      )
+      else null : String
+    let data_manufacturer_slug = if isPresent(aliases.value) then max(
+        foreach alias in aliases.value
+        where alias.record_type == "manufacturer_override"
+        where alias.forward_vendor == toString(vendor)
+        select alias.manufacturer_slug
+      )
+      else null : String
+    let manufacturer_name = if isPresent(data_manufacturer_name) then data_manufacturer_name else canonicalManufacturerName(vendor)
+    let manufacturer_slug = if isPresent(data_manufacturer_slug) then data_manufacturer_slug else slugify(manufacturer_name)
+    let mapped_model = if isPresent(aliases.value) then max(
+        foreach alias in aliases.value
+        where alias.record_type == "device_type_alias"
+        where alias.forward_manufacturer_slug == manufacturer_slug
+        where alias.forward_model_slug == raw_model_slug
+        select alias.netbox_model
+      )
+      else null : String
+    let mapped_slug = if isPresent(aliases.value) then max(
+        foreach alias in aliases.value
+        where alias.record_type == "device_type_alias"
+        where alias.forward_manufacturer_slug == manufacturer_slug
+        where alias.forward_model_slug == raw_model_slug
+        select alias.netbox_slug
+      )
+      else null : String
+    let device_type_model = if isPresent(mapped_model) then mapped_model else raw_model
+    let device_type_slug = if isPresent(mapped_slug) then mapped_slug else raw_model_slug
+    select {
+      name: device.name,
+      manufacturer: manufacturer_name,
+      device_type: device_type_model,
+      device_type_slug: device_type_slug,
+      site: site_name,
+      site_slug: site_slug,
+      role: role_name,
+      role_slug: role_slug,
+      role_color: "9e9e9e",
+      platform: platform_name,
+      platform_slug: platform_slug,
+      status: "active",
+      manufacturer_slug: manufacturer_slug
+    }
   )
-  else null : String
-let data_manufacturer_slug = if isPresent(aliases.value) then max(
-    foreach alias in aliases.value
-    where alias.record_type == "manufacturer_override"
-    where alias.forward_vendor == toString(vendor)
-    select alias.manufacturer_slug
+  +
+  (
+    // SNMP endpoints (opt-in): identical branch to forward_devices.nqe. Generic
+    // SSH/SNMP devices Forward collects but does not model. Generic identity from
+    // MIB-2; Avocent overlay by enterprise OID 10418. Scoped by the same device
+    // tags (endpoints carry tagNames).
+    foreach endpoint in network.endpoints
+    where sync_endpoints
+    where !isEmpty(endpoint.snmpOutputs)
+    where isEmpty(device_tag_include_tags)
+      || (device_tag_include_match == "all"
+        && all(foreach tag in device_tag_include_tags select tag in endpoint.tagNames))
+      || (device_tag_include_match != "all"
+        && any(foreach tag in device_tag_include_tags select tag in endpoint.tagNames))
+    where isEmpty(device_tag_exclude_tags)
+      || !any(foreach tag in device_tag_exclude_tags select tag in endpoint.tagNames)
+    let sysDescrOpt = max(foreach o in endpoint.snmpOutputs where o.requestedOid == "1.3.6.1.2.1.1.1" select max(foreach e in o.rawOidEntries select e.rawValue))
+    let sysObjIdOpt = max(foreach o in endpoint.snmpOutputs where o.requestedOid == "1.3.6.1.2.1.1.2" select max(foreach e in o.rawOidEntries select e.rawValue))
+    let sysDescr = if isPresent(sysDescrOpt) then sysDescrOpt else "SNMP Endpoint"
+    let isAvocent = matches(if isPresent(sysObjIdOpt) then sysObjIdOpt else "", "*10418*")
+    let ep_manuf = if isAvocent then "Avocent" else replaceRegexMatches(sysDescr, re` .*`, "")
+    let ep_role = if isAvocent then "Console Server" else "SNMP Endpoint"
+    let ep_site = if isPresent(endpoint.locationName) then toLowerCase(endpoint.locationName) else "unknown"
+    select {
+      name: endpoint.name,
+      manufacturer: ep_manuf,
+      device_type: sysDescr,
+      device_type_slug: slugifyNetboxModel(sysDescr),
+      site: ep_site,
+      site_slug: slugify(ep_site),
+      role: ep_role,
+      role_slug: slugify(ep_role),
+      role_color: "9e9e9e",
+      platform: ep_manuf,
+      platform_slug: slugify(ep_manuf),
+      status: "active",
+      manufacturer_slug: slugify(ep_manuf)
+    }
   )
-  else null : String
-let manufacturer_name = if isPresent(data_manufacturer_name) then data_manufacturer_name else canonicalManufacturerName(vendor)
-let manufacturer_slug = if isPresent(data_manufacturer_slug) then data_manufacturer_slug else slugify(manufacturer_name)
-let mapped_model = if isPresent(aliases.value) then max(
-    foreach alias in aliases.value
-    where alias.record_type == "device_type_alias"
-    where alias.forward_manufacturer_slug == manufacturer_slug
-    where alias.forward_model_slug == raw_model_slug
-    select alias.netbox_model
-  )
-  else null : String
-let mapped_slug = if isPresent(aliases.value) then max(
-    foreach alias in aliases.value
-    where alias.record_type == "device_type_alias"
-    where alias.forward_manufacturer_slug == manufacturer_slug
-    where alias.forward_model_slug == raw_model_slug
-    select alias.netbox_slug
-  )
-  else null : String
-let device_type_model = if isPresent(mapped_model) then mapped_model else raw_model
-let device_type_slug = if isPresent(mapped_slug) then mapped_slug else raw_model_slug
-select {
-  name: device.name,
-  manufacturer: manufacturer_name,
-  device_type: device_type_model,
-  device_type_slug: device_type_slug,
-  site: site_name,
-  site_slug: site_slug,
-  role: device_type,
-  role_slug: role_slug,
-  role_color: "9e9e9e",
-  platform: platform_name,
-  platform_slug: platform_slug,
-  status: "active",
-  manufacturer_slug: manufacturer_slug
-};
+)
+select row;
