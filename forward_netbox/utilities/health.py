@@ -55,6 +55,7 @@ from .health_summary_blocks import throughput_summary as _throughput_summary_imp
 from .health_summary_blocks import validation_summary as _validation_summary_impl
 from .plugin_integrations import integration_capability_summary
 from .query_binding import local_query_binding_drift
+from .query_binding_resolution import _QUERY_DRIFT_STATUS_LABELS
 from .sync_facade import resolve_snapshot_id
 
 
@@ -128,6 +129,13 @@ def _elevate_optin_pinned_query_drift(query_drift, source_parameters):
         if not _optin_feature_enabled(source_parameters, param_name):
             continue
         item["status"] = "direct_query_id_optin_stale_risk"
+        # Refresh the pre-baked badge label too — _query_drift_result computed
+        # status_label from the old status, so mutating status alone leaves a
+        # stale "Org-managed (pinned)" badge on the elevated row.
+        item["status_label"] = _QUERY_DRIFT_STATUS_LABELS.get(
+            "direct_query_id_optin_stale_risk",
+            "Pinned — may predate an enabled feature",
+        )
         item["severity"] = "warn"
         item["message"] = (
             f"“{label}” is enabled, but this map runs a pinned Forward query ID. "

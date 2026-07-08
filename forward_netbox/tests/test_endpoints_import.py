@@ -63,6 +63,7 @@ class OptInPinnedDriftElevationTest(SimpleTestCase):
         return {
             "expected_filename": filename,
             "status": "direct_query_id_unverified",
+            "status_label": "Org-managed (pinned)",
             "severity": "info",
             "message": "Org-managed pinned.",
         }
@@ -73,6 +74,9 @@ class OptInPinnedDriftElevationTest(SimpleTestCase):
         self.assertEqual(drift[0]["severity"], "warn")
         self.assertEqual(drift[0]["status"], "direct_query_id_optin_stale_risk")
         self.assertIn("Refresh Query IDs", drift[0]["remediation"])
+        # Badge label must track the elevated status, not the stale build-time one.
+        self.assertNotEqual(drift[0].get("status_label"), "Org-managed (pinned)")
+        self.assertIn("predate", drift[0].get("status_label", ""))
 
     def test_endpoints_disabled_leaves_pinned_device_query_silent(self):
         drift = [self._pinned("forward_devices.nqe")]
