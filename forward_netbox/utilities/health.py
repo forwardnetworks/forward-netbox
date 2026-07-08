@@ -136,17 +136,23 @@ def _elevate_optin_pinned_query_drift(query_drift, source_parameters):
         # stale "Org-managed (pinned)" badge on the elevated row.
         item["status_label"] = _QUERY_DRIFT_STATUS_LABELS.get(
             "direct_query_id_optin_stale_risk",
-            "Pinned — may predate an enabled feature",
+            "Pinned — can't verify locally",
         )
         item["severity"] = "warn"
+        # This is a "can't verify locally" heads-up, not a confirmed failure:
+        # the Health page can't read a pinned query's contents, so it warns for
+        # any pinned map with the feature on — including one that's already
+        # current after publishing. Point at the live check, don't claim failure.
         item["message"] = (
-            f"“{label}” is enabled, but this map runs a pinned Forward query ID. "
-            "If that query predates the feature it is silently ignored, so "
-            "nothing new syncs."
+            f"“{label}” is enabled and this map runs a pinned Forward query ID, "
+            "which the Health page can't inspect locally to confirm it includes "
+            "the feature. If those rows aren't importing, the pinned query may "
+            "predate the feature."
         )
         item["remediation"] = (
-            "Publish the bundled queries to your Forward org folder (Overwrite "
-            "on), then use Refresh Query IDs on this Health page, then re-run the "
+            "Use Export Live Query Drift on this page to confirm the pinned "
+            "query matches the current bundled source. If it doesn't, use "
+            "Publish Bundled Queries, then Refresh Query IDs, then re-run the "
             "sync."
         )
         item["remediation_action"] = "refresh_query_ids"
