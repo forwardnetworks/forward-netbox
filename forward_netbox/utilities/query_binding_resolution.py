@@ -436,7 +436,7 @@ def _committed_query_source(committed_query: dict) -> str:
 # read like an error.
 _QUERY_DRIFT_STATUS_LABELS = {
     "direct_query_id_unverified": "Org-managed (pinned)",
-    "direct_query_id_optin_stale_risk": "Pinned — may predate an enabled feature",
+    "direct_query_id_optin_stale_risk": "Pinned — can't verify locally",
 }
 
 
