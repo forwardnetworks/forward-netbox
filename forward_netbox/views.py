@@ -1262,6 +1262,79 @@ class ForwardSyncRefreshQueryIdsView(BaseObjectView):
         )
 
 
+@register_model_view(
+    ForwardSync, "publish_bundled_queries", path="publish-bundled-queries"
+)
+class ForwardSyncPublishBundledQueriesView(BaseObjectView):
+    queryset = ForwardSync.objects.all()
+
+    def get_required_permission(self):
+        return "forward_netbox.change_forwardnqemap"
+
+    def post(self, request, pk):
+        sync = get_object_or_404(self.queryset, pk=pk)
+        client = sync.source.get_client()
+        maps = [
+            query_map.pk
+            for query_map in sync.get_maps()
+            if sync.is_model_enabled(query_map.model_string)
+        ]
+        queryset = ForwardNQEMap.objects.filter(pk__in=maps).select_related(
+            "netbox_model"
+        )
+        try:
+            results = publish_builtin_nqe_map_queries(
+                client=client,
+                directory="/forward_netbox_validation/",
+                queryset=queryset,
+                overwrite=True,
+                commit_message="Publish Forward NetBox NQE maps",
+                pin_commit=False,
+            )
+        except Exception as exc:  # noqa: BLE001 - surface any publish failure clearly
+            messages.error(
+                request,
+                _(
+                    "Unable to publish bundled queries to the Forward org library: "
+                    "%(error)s. Publishing writes to the Forward Org Repository and "
+                    "needs a source login with NQE-library write permission "
+                    "(Forward Network Operator or equivalent)."
+                )
+                % {"error": str(exc)},
+            )
+            return redirect(
+                reverse(
+                    "plugins:forward_netbox:forwardsync_health", kwargs={"pk": sync.pk}
+                )
+            )
+        published = [result for result in results if result.matched]
+        skipped = [result for result in results if not result.matched]
+        if published:
+            messages.success(
+                request,
+                _(
+                    "Published %(count)s bundled quer(y/ies) to the Forward org "
+                    "library and bound the enabled maps to repository paths, so "
+                    "they resolve the current query at each sync."
+                )
+                % {"count": len(published)},
+            )
+        if skipped:
+            messages.warning(
+                request,
+                _(
+                    "%(count)s NQE map(s) could not be published; confirm the "
+                    "source can write to the /forward_netbox_validation folder."
+                )
+                % {"count": len(skipped)},
+            )
+        if not published and not skipped:
+            messages.info(request, _("No enabled NQE maps were available to publish."))
+        return redirect(
+            reverse("plugins:forward_netbox:forwardsync_health", kwargs={"pk": sync.pk})
+        )
+
+
 @register_model_view(ForwardSync, "source_health", path="source-health")
 class ForwardSyncSourceHealthView(BaseObjectView):
     queryset = ForwardSync.objects.all()
