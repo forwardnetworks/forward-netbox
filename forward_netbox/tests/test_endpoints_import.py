@@ -51,6 +51,61 @@ class EndpointImportWiringTest(SimpleTestCase):
             self.assertIn(field, src)
 
 
+from forward_netbox.utilities.health import (  # noqa: E402
+    _elevate_optin_pinned_query_drift,
+)
+
+
+class OptInPinnedDriftElevationTest(SimpleTestCase):
+    """Enabling an opt-in feature on a stale pinned query must warn, not stay silent."""
+
+    def _pinned(self, filename):
+        return {
+            "expected_filename": filename,
+            "status": "direct_query_id_unverified",
+            "status_label": "Org-managed (pinned)",
+            "severity": "info",
+            "message": "Org-managed pinned.",
+        }
+
+    def test_endpoints_enabled_elevates_pinned_device_query(self):
+        drift = [self._pinned("forward_devices.nqe")]
+        _elevate_optin_pinned_query_drift(drift, {"sync_endpoints": True})
+        self.assertEqual(drift[0]["severity"], "warn")
+        self.assertEqual(drift[0]["status"], "direct_query_id_optin_stale_risk")
+        self.assertIn("Refresh Query IDs", drift[0]["remediation"])
+        # Badge label must track the elevated status, not the stale build-time one.
+        self.assertNotEqual(drift[0].get("status_label"), "Org-managed (pinned)")
+        self.assertIn("predate", drift[0].get("status_label", ""))
+
+    def test_endpoints_disabled_leaves_pinned_device_query_silent(self):
+        drift = [self._pinned("forward_devices.nqe")]
+        _elevate_optin_pinned_query_drift(drift, {"sync_endpoints": False})
+        self.assertEqual(drift[0]["severity"], "info")
+        self.assertEqual(drift[0]["status"], "direct_query_id_unverified")
+
+    def test_nonempty_device_tags_elevate_pinned_feature_tag_query(self):
+        drift = [self._pinned("forward_device_feature_tags.nqe")]
+        _elevate_optin_pinned_query_drift(drift, {"sync_device_tags": ["Mgmt_Lo0"]})
+        self.assertEqual(drift[0]["severity"], "warn")
+
+    def test_empty_device_tags_leave_feature_tag_query_silent(self):
+        drift = [self._pinned("forward_device_feature_tags.nqe")]
+        _elevate_optin_pinned_query_drift(drift, {"sync_device_tags": []})
+        self.assertEqual(drift[0]["severity"], "info")
+
+    def test_non_pinned_modes_untouched(self):
+        drift = [
+            {
+                "expected_filename": "forward_devices.nqe",
+                "status": "bundled_raw_match",
+                "severity": "pass",
+            }
+        ]
+        _elevate_optin_pinned_query_drift(drift, {"sync_endpoints": True})
+        self.assertEqual(drift[0]["severity"], "pass")
+
+
 from django.test import TestCase  # noqa: E402
 
 from forward_netbox.forms import ForwardSourceForm  # noqa: E402
