@@ -99,3 +99,48 @@ class OptInFeatureMapStateCheckTest(SimpleTestCase):
         )
         self.assertEqual(result["status"], "warn")
         self.assertIn("Sync Device Tags", result["message"])
+
+
+class BaseVariantConflictCheckTest(SimpleTestCase):
+    """Warn when a base query and its opt-in variant are both enabled."""
+
+    def _check(self, enabled_map_files):
+        maps = [
+            types.SimpleNamespace(
+                enabled=True, model_string="dcim.device", _file=filename
+            )
+            for filename in enabled_map_files
+        ]
+        sync = types.SimpleNamespace(
+            get_maps=lambda: maps,
+            is_model_enabled=lambda model_string: True,
+        )
+
+        def fake_default(query_map):
+            return ({"filename": query_map._file}, None)
+
+        with mock.patch.object(
+            health, "builtin_query_default_for_map", side_effect=fake_default
+        ):
+            return health._base_variant_conflict_check(sync)
+
+    def test_base_and_alias_variant_both_enabled_warns(self):
+        result = self._check(
+            ["forward_devices.nqe", "forward_devices_with_netbox_aliases.nqe"]
+        )
+        self.assertEqual(result["status"], "warn")
+        self.assertIn("Forward device", result["message"])
+
+    def test_only_base_enabled_returns_none(self):
+        self.assertIsNone(self._check(["forward_devices.nqe"]))
+
+    def test_only_variant_enabled_returns_none(self):
+        self.assertIsNone(self._check(["forward_devices_with_netbox_aliases.nqe"]))
+
+    def test_ipv4_ipv6_split_does_not_warn(self):
+        # Same model, different queries by design — not a base/variant pair.
+        self.assertIsNone(
+            self._check(
+                ["forward_ip_addresses_ipv4.nqe", "forward_ip_addresses_ipv6.nqe"]
+            )
+        )

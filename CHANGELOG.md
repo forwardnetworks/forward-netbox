@@ -4,7 +4,7 @@ Generated from the README compatibility table by `scripts/gen_changelog.py`. Do 
 
 ## v2.4.2
 
-Fix: endpoint import (`sync_endpoints`) and device-tag sync (`sync_device_tags`) now work with the alias-aware and rules-aware query variants (`forward_devices_with_netbox_aliases`, `forward_device_feature_tags_with_rules`), not just the base queries — operators running the variants saw the toggles silently do nothing (validated live: 355 Avocent endpoints import; `Mgmt_*` tags sync). Adds a **Publish Bundled Queries** button on the sync Health page (beside Refresh Query IDs) and a Health warning when an opt-in feature is enabled but no enabled map provides it. The alias-aware device query now emits the clean role name (e.g. `ROUTER`) to match the base query — expect a one-time role update on alias-mapped devices.
+Fix: endpoint import (`sync_endpoints`) and device-tag sync (`sync_device_tags`) now work with the alias-aware and rules-aware query variants (`forward_devices_with_netbox_aliases`, `forward_device_feature_tags_with_rules`), not just the base queries — operators running the variants saw the toggles silently do nothing (validated live: 355 Avocent endpoints import; `Mgmt_*` tags sync). Adds a **Publish Bundled Queries** button on the sync Health page (beside Refresh Query IDs) and two Health warnings: when an opt-in feature is enabled but no enabled map provides it, and when a base query and its opt-in variant are both enabled (they double-apply rows for the same model and churn — enable one). The alias-aware device query now emits the clean role name (e.g. `ROUTER`) to match the base query — expect a one-time role update on alias-mapped devices.
 
 ## v2.4.1
 

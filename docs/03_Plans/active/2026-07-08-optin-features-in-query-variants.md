@@ -39,6 +39,8 @@ this stops being a silent failure.
   (Overwrite on), with a clear write-permission error.
 - Add a Health check that warns when an opt-in feature is enabled but no enabled
   map runs a query that provides it.
+- Add a Health check that warns when a base query and its opt-in variant are both
+  enabled (they double-apply rows for the same model and churn).
 
 ## Validation
 

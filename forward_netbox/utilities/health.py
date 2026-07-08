@@ -205,6 +205,66 @@ def _optin_feature_map_state_check(sync):
     )
 
 
+# Base builtin query <-> its opt-in data-file variant. The variant REPLACES the
+# base for the same model (device-type aliasing / feature-tag rules); enabling
+# both makes two maps emit rows for the same model, which double-applies and
+# churns. (Distinct from the IPv4/IPv6 splits, which are different queries for
+# the same model on purpose — those are not listed here.)
+_BASE_VARIANT_QUERY_PAIRS = (
+    (
+        "forward_devices.nqe",
+        "forward_devices_with_netbox_aliases.nqe",
+        "Forward device",
+    ),
+    (
+        "forward_device_models.nqe",
+        "forward_device_models_with_netbox_aliases.nqe",
+        "Forward device-type",
+    ),
+    (
+        "forward_device_feature_tags.nqe",
+        "forward_device_feature_tags_with_rules.nqe",
+        "Forward device-tag",
+    ),
+)
+
+
+def _base_variant_conflict_check(sync):
+    """Warn when a base query and its opt-in variant are both enabled.
+
+    The alias/rules variants replace their base for the same NetBox model, so
+    running both emits duplicate/conflicting rows (device_type churn). A design
+    partner had both the base and the alias-aware device map enabled. Returns
+    None when there is no conflict.
+    """
+    enabled_files = set()
+    for query_map in sync.get_maps():
+        if not getattr(query_map, "enabled", True):
+            continue
+        if not sync.is_model_enabled(query_map.model_string):
+            continue
+        query_default, _reason = builtin_query_default_for_map(query_map)
+        if query_default:
+            enabled_files.add(str(query_default.get("filename")))
+    conflicts = [
+        label
+        for base, variant, label in _BASE_VARIANT_QUERY_PAIRS
+        if base in enabled_files and variant in enabled_files
+    ]
+    if not conflicts:
+        return None
+    joined = ", ".join(conflicts)
+    return _check(
+        name="Conflicting query variants",
+        status="warn",
+        message=(
+            f"Both the base and the opt-in variant are enabled for: {joined}. "
+            "The variant replaces the base for the same model, so running both "
+            "double-applies rows and churns — disable one of each pair."
+        ),
+    )
+
+
 def sync_health_summary(sync):
     optional_plugin_capabilities = integration_capability_summary()
     maps = [
@@ -295,6 +355,9 @@ def sync_health_summary(sync):
     optin_feature_check = _optin_feature_map_state_check(sync)
     if optin_feature_check is not None:
         checks.append(optin_feature_check)
+    variant_conflict_check = _base_variant_conflict_check(sync)
+    if variant_conflict_check is not None:
+        checks.append(variant_conflict_check)
 
     return {
         "source": _source_summary(sync),
