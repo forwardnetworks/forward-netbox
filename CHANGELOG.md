@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v2.4.1
+
+Fix: opt-in features (SNMP endpoint import, device-tag sync) silently did nothing on sources that run org-managed **pinned** Forward query IDs predating the feature — the sync Health page now raises an actionable warning instead of a silent badge. Remediation: publish the bundled queries to your Forward org folder (Overwrite on), then use Refresh Query IDs, then re-sync.
+
 ## v2.4.0
 
 Fix: the "Import SNMP Endpoints as Devices" toggle now renders on the source form (the field shipped in 2.3.2 but was not in any fieldset, so it never showed), letting operators enable endpoint import from the GUI.
