@@ -1,0 +1,28 @@
+/**
+ * @intent Forward hardware end-of-life notices per device type (netbox-dlm)
+ * @description Distinct device models with vendor hardware end-of-life dates
+ * from Forward's per-part support analysis (chassis parts), for the optional
+ * netbox-dlm plugin's HardwareNotice model. Part support data is only present
+ * for vendors Forward tracks (Cisco, Palo Alto Networks, Fortinet).
+ */
+
+import "netbox_utilities";
+
+@query
+f(forward_netbox_shard_keys: List<String>) =
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
+let model = device.platform.model
+foreach part in device.platform.components
+where part.partType == DevicePartType.CHASSIS
+where isPresent(part.support)
+select distinct {
+  device_type: model,
+  device_type_slug: slugifyNetboxModel(model),
+  end_of_support: part.support.lastSupportDate,
+  end_of_security_patches: part.support.lastVulnerabilityDate,
+  end_of_sw_releases: part.support.lastMaintenanceDate,
+  documentation_url: substring(part.support.announcementUrl, 0, 200)
+};

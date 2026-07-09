@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v2.5.0
+
+Feature: optional **netbox-dlm** (Device Lifecycle Management) integration — three new opt-in NQE maps sync Forward's end-of-life analysis into the netbox-dlm plugin: OS software versions with vendor EOL dates per (platform, version), hardware end-of-life notices per device type (Cisco/Palo Alto/Fortinet part support), and each device's running software version. Disabled by default; requires the netbox-dlm plugin (run `makemigrations netbox_dlm && migrate` after installing it — it ships no migrations). Fix: syncs no longer crash mid-provision when an installed plugin's migrations were never applied (`relation ... does not exist`) — a preflight now fails in seconds with the app name and remedy, and a new **Database tables** Health check surfaces the gap before you sync.
+
 ## v2.4.5
 
 Fix: sync no longer crashes on netbox-branching **1.1.1** (`SquashMergeStrategy has no attribute '_split_bidirectional_cycles'` — 1.1.1 removed that internal helper; the bidirectional-cycle split is now built into the plugin and the dependency is bounded to `<1.2`). Also fixes SNMP-endpoint rows failing validation: the bundled endpoint query branches now clamp sysDescr-derived `device_type` to NetBox's 100-char limit (`substring`) and guard empty slugs — the fix lives in the NQE queries (the source of truth), so **Publish Bundled Queries** again after upgrading (fixes the `Ensure this value has at most 100 characters` rejects and the `At least one coalesce lookup must be provided` error).

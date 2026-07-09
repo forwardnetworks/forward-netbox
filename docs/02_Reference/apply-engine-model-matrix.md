@@ -51,6 +51,9 @@ These models remain adapter-required with explicit blocker codes:
 - `netbox_cisco_aci.acitenant` | `plugin_model_dependencies`
 - `netbox_cisco_aci.acivrf` | `plugin_model_dependencies`
 - `netbox_peering_manager.peeringsession` | `plugin_model_dependencies`
+- `netbox_dlm.devicesoftware` | `plugin_model_dependencies`
+- `netbox_dlm.hardwarenotice` | `plugin_model_dependencies`
+- `netbox_dlm.softwareversion` | `plugin_model_dependencies`
 - `netbox_routing.bgpaddressfamily` | `plugin_model_dependencies`
 - `netbox_routing.bgppeer` | `plugin_model_dependencies`
 - `netbox_routing.bgppeeraddressfamily` | `plugin_model_dependencies`

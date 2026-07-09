@@ -20,6 +20,12 @@ from .sync_device import apply_dcim_device
 from .sync_device import apply_dcim_virtualchassis
 from .sync_device import delete_dcim_device
 from .sync_device import delete_dcim_virtualchassis
+from .sync_dlm import apply_netbox_dlm_devicesoftware
+from .sync_dlm import apply_netbox_dlm_hardwarenotice
+from .sync_dlm import apply_netbox_dlm_softwareversion
+from .sync_dlm import delete_netbox_dlm_devicesoftware
+from .sync_dlm import delete_netbox_dlm_hardwarenotice
+from .sync_dlm import delete_netbox_dlm_softwareversion
 from .sync_events import EventsClearer
 from .sync_execution import run_sync_stage
 from .sync_interface import apply_dcim_interface
@@ -202,6 +208,12 @@ _SYNC_RUNNER_IMPORT_ANCHORS = (
     sync_record_aggregated_conflict_warning,
     sync_record_aggregated_skip_warning,
     sync_record_issue,
+    apply_netbox_dlm_devicesoftware,
+    apply_netbox_dlm_hardwarenotice,
+    apply_netbox_dlm_softwareversion,
+    delete_netbox_dlm_devicesoftware,
+    delete_netbox_dlm_hardwarenotice,
+    delete_netbox_dlm_softwareversion,
     apply_netbox_peering_manager_peeringsession,
     apply_netbox_routing_bgpaddressfamily,
     apply_netbox_routing_bgppeer,

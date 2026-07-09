@@ -31,6 +31,9 @@ UNIQUE_LOOKUP_CACHE_FIELD_SETS = {
     "ipam.vlan": (("site", "vid"),),
     "ipam.prefix": (("prefix", "vrf"), ("prefix", "vrf__isnull")),
     "netbox_peering_manager.peeringsession": (("bgp_peer",),),
+    "netbox_dlm.softwareversion": (("platform", "version"),),
+    "netbox_dlm.hardwarenotice": (("device_type",),),
+    "netbox_dlm.devicesoftware": (("device",),),
     "netbox_routing.bgprouter": (
         ("assigned_object_type", "assigned_object_id", "asn"),
     ),
@@ -742,6 +745,7 @@ DEPENDENCY_PARENT_DEVICE_FIELDS = {
     "netbox_routing.bgppeeraddressfamily": ("device",),
     "netbox_routing.ospfinstance": ("device",),
     "netbox_routing.ospfinterface": ("device",),
+    "netbox_dlm.devicesoftware": ("name",),
 }
 DEPENDENCY_PARENT_DEVICE_MODELS = tuple(DEPENDENCY_PARENT_DEVICE_FIELDS)
 
@@ -856,6 +860,7 @@ def _dependency_device_names(model_string, rows):
         "netbox_routing.bgppeeraddressfamily": ("device",),
         "netbox_routing.ospfinstance": ("device",),
         "netbox_routing.ospfinterface": ("device",),
+        "netbox_dlm.devicesoftware": ("name",),
     }.get(model_string, ())
     return {
         str(row.get(field)).strip()

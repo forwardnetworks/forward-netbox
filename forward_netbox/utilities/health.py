@@ -1,5 +1,6 @@
 from collections import Counter
 
+from .branching import missing_branch_table_report
 from .execution_ledger import api_usage_support_summary
 from .execution_ledger import dependency_lookup_cache_support_summary
 from .execution_ledger import (
@@ -271,6 +272,35 @@ def _base_variant_conflict_check(sync):
     )
 
 
+def _database_tables_check():
+    """Fail loudly when an installed app's tables were never migrated.
+
+    Branch provisioning replicates every branchable table with CREATE TABLE
+    LIKE; a plugin in PLUGINS whose migrations were never applied kills the
+    sync mid-provision. Surface it on the Health page with the remedy.
+    """
+    try:
+        report = missing_branch_table_report()
+    except Exception:  # noqa: BLE001 - diagnostics must never break Health
+        return None
+    if not report:
+        return _check(
+            name="Database tables",
+            status="pass",
+            message="Every branch-replicated table exists in the database.",
+        )
+    detail = "; ".join(f"{app}: {', '.join(tables)}" for app, tables in report.items())
+    return _check(
+        name="Database tables",
+        status="fail",
+        message=(
+            f"Installed apps have missing database tables ({detail}) — branch "
+            "provisioning will fail. Apply their migrations "
+            "(python manage.py migrate) or remove the plugin from PLUGINS."
+        ),
+    )
+
+
 def sync_health_summary(sync):
     optional_plugin_capabilities = integration_capability_summary()
     maps = [
@@ -364,6 +394,9 @@ def sync_health_summary(sync):
     variant_conflict_check = _base_variant_conflict_check(sync)
     if variant_conflict_check is not None:
         checks.append(variant_conflict_check)
+    database_tables_check = _database_tables_check()
+    if database_tables_check is not None:
+        checks.append(database_tables_check)
 
     return {
         "source": _source_summary(sync),
