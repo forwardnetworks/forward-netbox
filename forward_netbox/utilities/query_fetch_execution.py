@@ -392,6 +392,7 @@ class ForwardQueryFetcher:
             tuple(exclude_tags),
             include_match,
             prune_out_of_scope,
+            sync_endpoints,
             branch_run_state.get("ingestion_id"),
             branch_run_state.get("pending_ingestion_id"),
             branch_run_state.get("current_ingestion_id"),
@@ -406,6 +407,7 @@ class ForwardQueryFetcher:
             include_tags=include_tags,
             exclude_tags=exclude_tags,
             include_match=include_match,
+            sync_endpoints=sync_endpoints,
         )
         cached_context = self._load_context_artifact(context_artifact)
         if cached_context is None:
@@ -428,21 +430,30 @@ class ForwardQueryFetcher:
                 scoped_device_names,
                 scoped_site_names,
                 scoped_matched_tags,
+                endpoint_scope_failed,
             ) = self._resolve_scoped_tag_scope(
                 network_id=network_id,
                 snapshot_id=snapshot_id,
                 include_tags=include_tags,
                 exclude_tags=exclude_tags,
                 include_match=include_match,
+                sync_endpoints=sync_endpoints,
             )
-            self._save_context_artifact(
-                context_artifact,
-                snapshot_info=snapshot_info,
-                snapshot_metrics=snapshot_metrics,
-                scoped_device_names=scoped_device_names,
-                scoped_site_names=scoped_site_names,
-                scoped_matched_tags=scoped_matched_tags,
-            )
+            if endpoint_scope_failed:
+                # The scoped set carries no endpoint names, so emitting endpoint
+                # rows would get them dropped locally — and pruned as deletes.
+                # Disable endpoint emission for this run and do NOT persist the
+                # endpoint-less scope under the endpoints-on artifact key.
+                sync_endpoints = False
+            else:
+                self._save_context_artifact(
+                    context_artifact,
+                    snapshot_info=snapshot_info,
+                    snapshot_metrics=snapshot_metrics,
+                    scoped_device_names=scoped_device_names,
+                    scoped_site_names=scoped_site_names,
+                    scoped_matched_tags=scoped_matched_tags,
+                )
         else:
             snapshot_info = dict(cached_context.get("snapshot_info") or {})
             snapshot_metrics = dict(cached_context.get("snapshot_metrics") or {})
@@ -483,13 +494,16 @@ class ForwardQueryFetcher:
         include_tags: list[str],
         exclude_tags: list[str],
         include_match: str,
+        sync_endpoints: bool = False,
     ) -> dict[str, Any] | None:
         run = active_execution_run(self.sync)
         if run is None:
             return None
         artifact_run_id = f"shared-sync-{getattr(self.sync, 'pk', 'unknown')}"
         payload = {
-            "version": 2,
+            # v3: scoped_device_names now varies with the endpoint-import
+            # toggle, so the cache key must too.
+            "version": 3,
             "artifact_scope": "query_context",
             "cache_scope": "shared_sync",
             "sync_id": getattr(self.sync, "pk", None),
@@ -499,6 +513,7 @@ class ForwardQueryFetcher:
             "device_tag_include": sorted(include_tags or []),
             "device_tag_exclude": sorted(exclude_tags or []),
             "device_tag_include_match": include_match or "any",
+            "sync_endpoints": bool(sync_endpoints),
         }
         return {
             "key": fetch_artifact_key(payload),
@@ -575,9 +590,10 @@ class ForwardQueryFetcher:
         include_tags: list[str],
         exclude_tags: list[str],
         include_match: str,
-    ) -> tuple[set[str], set[str], dict[str, list[str]]]:
+        sync_endpoints: bool = False,
+    ) -> tuple[set[str], set[str], dict[str, list[str]], bool]:
         if not include_tags and not exclude_tags:
-            return set(), set(), {}
+            return set(), set(), {}, False
         scope_where = build_device_tag_scope_where(
             include_tags, exclude_tags, include_match
         )
@@ -656,7 +672,77 @@ class ForwardQueryFetcher:
                 exclude_tags=exclude_tags,
                 include_match=include_match,
             )
-        return names, sites, matched_tags_by_device
+        endpoint_scope_failed = False
+        if sync_endpoints:
+            endpoint_names = self._resolve_scoped_endpoint_names(
+                network_id=network_id,
+                snapshot_id=snapshot_id,
+                exclude_tags=exclude_tags,
+            )
+            if endpoint_names is None:
+                endpoint_scope_failed = True
+            else:
+                names |= endpoint_names
+        return names, sites, matched_tags_by_device, endpoint_scope_failed
+
+    def _resolve_scoped_endpoint_names(
+        self,
+        *,
+        network_id: str,
+        snapshot_id: str,
+        exclude_tags: list[str],
+    ) -> set[str] | None:
+        """Names of SNMP endpoints that opt-in endpoint import will emit.
+
+        Device-tag include scope narrows the modeled-device universe; SNMP
+        endpoints (e.g. Avocent console servers) rarely carry those device
+        scoping tags, so requiring them silently excludes every endpoint. When
+        endpoint import is enabled the endpoint names are unioned into the
+        scoped-device set so the local scope filter (and out-of-scope prune)
+        keeps their rows. Exclude tags still apply as the safety valve.
+
+        Returns ``None`` when the probe fails. The caller must then disable
+        endpoint emission for the run entirely (not just proceed with an empty
+        set): the device query would still emit endpoint rows, the local scope
+        filter would drop them, and with prune-out-of-scope enabled the dropped
+        rows would be emitted as DELETES of previously imported endpoints.
+        """
+        where = ["where !isEmpty(endpoint.snmpOutputs)"]
+        for tag in exclude_tags:
+            where.append(f"where !({_nqe_string_literal(tag)} in endpoint.tagNames)")
+        query = "\n".join(
+            [
+                "foreach endpoint in network.endpoints",
+                *where,
+                "select { name: endpoint.name }",
+            ]
+        )
+        try:
+            rows = self.client.run_nqe_query(
+                query=query,
+                network_id=network_id,
+                snapshot_id=snapshot_id,
+                fetch_all=True,
+            )
+        except (ForwardClientError, ForwardConnectivityError, ForwardQueryError) as exc:
+            self.logger.log_warning(
+                "Forward endpoint scope probe failed; SNMP endpoint import is "
+                f"disabled for this run: {_safe_exception_summary(exc)}",
+                obj=self.sync,
+            )
+            return None
+        endpoint_names = {
+            str(row.get("name") or "").strip()
+            for row in rows
+            if str(row.get("name") or "").strip()
+        }
+        if endpoint_names:
+            self.logger.log_info(
+                f"Added {len(endpoint_names)} SNMP endpoint(s) to the device tag "
+                "scope for opt-in endpoint import.",
+                obj=self.sync,
+            )
+        return endpoint_names
 
     def _warn_if_scope_all_backfilled(
         self,

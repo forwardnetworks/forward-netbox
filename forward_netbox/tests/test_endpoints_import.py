@@ -135,3 +135,129 @@ class EndpointFormRenderTest(TestCase):
             "sync_endpoints field exists but is not in any FieldSet, so the "
             "form never renders the toggle.",
         )
+
+
+from forward_netbox.utilities.query_fetch_execution import (  # noqa: E402
+    ForwardQueryFetcher,
+)
+
+
+class EndpointScopeUnionTest(TestCase):
+    """Tag-scoped syncs must keep opt-in endpoint rows, not silently drop them.
+
+    scoped_device_names was built from network.devices only, so the local scope
+    filter removed every endpoint row (and prune would delete them). With
+    sync_endpoints on, endpoint names join the scoped set; exclude tags still
+    apply to the endpoint probe.
+    """
+
+    def _fetcher(self, client):
+        from unittest.mock import Mock
+
+        return ForwardQueryFetcher(Mock(), client, Mock())
+
+    def test_scope_union_includes_endpoint_names(self):
+        from unittest.mock import Mock
+
+        client = Mock()
+        client.run_nqe_query.side_effect = [
+            [{"name": "dev-1", "site": "dc1", "tagNames": ["ACI"]}],  # device scope
+            [{"name": "avocent-1"}, {"name": "avocent-2"}],  # endpoint probe
+        ]
+        fetcher = self._fetcher(client)
+        names, _sites, _matched, failed = fetcher._resolve_scoped_tag_scope(
+            network_id="n",
+            snapshot_id="s",
+            include_tags=["ACI"],
+            exclude_tags=[],
+            include_match="any",
+            sync_endpoints=True,
+        )
+        self.assertEqual(names, {"dev-1", "avocent-1", "avocent-2"})
+        self.assertFalse(failed)
+
+    def test_scope_without_endpoints_flag_is_unchanged(self):
+        from unittest.mock import Mock
+
+        client = Mock()
+        client.run_nqe_query.return_value = [
+            {"name": "dev-1", "site": "dc1", "tagNames": ["ACI"]}
+        ]
+        fetcher = self._fetcher(client)
+        names, _sites, _matched, failed = fetcher._resolve_scoped_tag_scope(
+            network_id="n",
+            snapshot_id="s",
+            include_tags=["ACI"],
+            exclude_tags=[],
+            include_match="any",
+        )
+        self.assertEqual(names, {"dev-1"})
+        self.assertFalse(failed)
+        client.run_nqe_query.assert_called_once()
+
+    def test_endpoint_probe_honors_exclude_tags(self):
+        from unittest.mock import Mock
+
+        client = Mock()
+        client.run_nqe_query.return_value = [{"name": "avocent-1"}]
+        fetcher = self._fetcher(client)
+        fetcher._resolve_scoped_endpoint_names(
+            network_id="n", snapshot_id="s", exclude_tags=["Decom"]
+        )
+        query = client.run_nqe_query.call_args.kwargs["query"]
+        self.assertIn("network.endpoints", query)
+        self.assertIn('"Decom" in endpoint.tagNames', query)
+
+    def test_endpoint_probe_failure_warns_and_returns_none(self):
+        from unittest.mock import Mock
+
+        from forward_netbox.exceptions import ForwardClientError
+
+        client = Mock()
+        client.run_nqe_query.side_effect = ForwardClientError("boom")
+        fetcher = self._fetcher(client)
+        names = fetcher._resolve_scoped_endpoint_names(
+            network_id="n", snapshot_id="s", exclude_tags=[]
+        )
+        self.assertIsNone(names)
+        fetcher.logger.log_warning.assert_called_once()
+
+    def test_endpoint_probe_failure_flags_scope_as_failed(self):
+        # If the probe fails but the query still emitted endpoint rows, the
+        # local filter would drop them — and prune would DELETE previously
+        # imported endpoints. The failure flag lets resolve_context disable
+        # endpoint emission for the run instead.
+        from unittest.mock import Mock
+
+        from forward_netbox.exceptions import ForwardClientError
+
+        client = Mock()
+        client.run_nqe_query.side_effect = [
+            [{"name": "dev-1", "site": "dc1", "tagNames": ["ACI"]}],
+            ForwardClientError("boom"),
+        ]
+        fetcher = self._fetcher(client)
+        names, _sites, _matched, failed = fetcher._resolve_scoped_tag_scope(
+            network_id="n",
+            snapshot_id="s",
+            include_tags=["ACI"],
+            exclude_tags=[],
+            include_match="any",
+            sync_endpoints=True,
+        )
+        self.assertEqual(names, {"dev-1"})
+        self.assertTrue(failed)
+
+
+class EndpointBranchIncludeScopeRemovalTest(SimpleTestCase):
+    """The endpoint branch must not gate on device INCLUDE tags (exclude only)."""
+
+    def test_endpoint_branches_do_not_filter_include_tags(self):
+        for filename in (
+            "forward_devices.nqe",
+            "forward_devices_with_netbox_aliases.nqe",
+        ):
+            src = _read_query(filename)
+            endpoint_branch = src.split("network.endpoints", 1)[1]
+            self.assertIn("device_tag_exclude_tags", endpoint_branch, filename)
+            self.assertNotIn("device_tag_include_tags", endpoint_branch, filename)
