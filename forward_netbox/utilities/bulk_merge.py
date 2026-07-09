@@ -25,8 +25,11 @@ import heapq
 import logging
 from collections import defaultdict
 
+from django.contrib.contenttypes.fields import GenericForeignKey
+from django.contrib.contenttypes.models import ContentType
 from django.db import DEFAULT_DB_ALIAS
 from django.db import IntegrityError
+from django.db import models
 from django.db import transaction
 from django.db.models import Q
 from mptt.models import MPTTModel
@@ -144,6 +147,92 @@ def _defer_self_referential_create_fks(to_process, change_logger):
         )
 
 
+def _create_has_fk_to(collapsed, target_model_class, target_obj_id):
+    """True when ``collapsed``'s postchange data holds an FK to the target object.
+
+    Local mirror of netbox_branching 1.1.0's ``SquashMergeStrategy._has_fk_to``
+    (concrete FKs plus GenericForeignKeys), which 1.1.1 removed along with
+    ``_split_bidirectional_cycles``.
+    """
+    if not collapsed.postchange_data:
+        return False
+    for field in collapsed.model_class._meta.get_fields():
+        if not isinstance(field, models.ForeignKey):
+            continue
+        fk_value = collapsed.postchange_data.get(field.name)
+        if not fk_value:
+            continue
+        if field.related_model == target_model_class and fk_value == target_obj_id:
+            return True
+    target_ct_id = ContentType.objects.get_for_model(target_model_class).pk
+    for field in collapsed.model_class._meta.private_fields:
+        if not isinstance(field, GenericForeignKey):
+            continue
+        # ObjectChange data may store the CT FK as either the field name or
+        # its *_id column.
+        ct_value = collapsed.postchange_data.get(
+            field.ct_field
+        ) or collapsed.postchange_data.get(f"{field.ct_field}_id")
+        fk_value = collapsed.postchange_data.get(field.fk_field)
+        if ct_value == target_ct_id and fk_value == target_obj_id:
+            return True
+    return False
+
+
+def _split_bidirectional_create_cycles(collapsed_changes, change_logger):
+    """Split CREATE pairs joined by bidirectional FKs (A -> B and B -> A).
+
+    netbox_branching 1.1.0 shipped this as
+    ``SquashMergeStrategy._split_bidirectional_cycles``; 1.1.1 removed it in
+    favour of cycle breaking inside its own ordering pass — which this module
+    does not use (we run our own topological sort), so the 2-node pre-pass must
+    exist locally. Mirrors the 1.1.0 idiom: NULL the nullable FK on one CREATE
+    and append a synthetic UPDATE that restores it after both rows exist.
+    """
+    creates = {
+        key: c
+        for key, c in collapsed_changes.items()
+        if c.final_action == ActionType.CREATE
+    }
+    for key_a, create_a in list(creates.items()):
+        if not create_a.postchange_data:
+            continue
+        for field in create_a.model_class._meta.get_fields():
+            if not (isinstance(field, models.ForeignKey) and field.null):
+                continue
+            fk_value = create_a.postchange_data.get(field.name)
+            if not fk_value:
+                continue
+            related_model = field.related_model
+            target_ct = ContentType.objects.get_for_model(related_model)
+            app_label, model = target_ct.natural_key()
+            key_b = (f"{app_label}.{model}", fk_value)
+            create_b = creates.get(key_b)
+            if create_b is None:
+                continue
+            if not _create_has_fk_to(create_b, create_a.model_class, key_a[1]):
+                continue
+            change_logger.info(
+                "  Detected bidirectional cycle: %s:%s <-> %s:%s (via %s)",
+                create_a.model_class.__name__,
+                key_a[1],
+                create_b.model_class.__name__,
+                key_b[1],
+                field.name,
+            )
+            original_postchange = dict(create_a.postchange_data)
+            create_a.postchange_data[field.name] = None
+            update_key = (key_a[0], key_a[1], f"update_{field.name}")
+            update_collapsed = CollapsedChange(update_key, create_a.model_class)
+            update_collapsed.change_count = 1
+            update_collapsed.final_action = ActionType.UPDATE
+            update_collapsed.prechange_data = dict(create_a.postchange_data)
+            update_collapsed.postchange_data = original_postchange
+            update_collapsed.last_change = create_a.last_change
+            collapsed_changes[update_key] = update_collapsed
+            break
+
+
 def _is_bulk_safe(model_class) -> bool:
     """A model may be bulk_create'd on merge only if it is not an MPTT tree.
 
@@ -236,7 +325,15 @@ def _order_collapsed_changes_fast(collapsed_changes, change_logger, operation):
 
     # Build the FK dependency graph exactly as the framework does (populates each
     # CollapsedChange.depends_on). Cheap O(V * fields); reused verbatim.
-    SquashMergeStrategy._split_bidirectional_cycles(to_process, change_logger)
+    # netbox_branching 1.1.1 removed _split_bidirectional_cycles (its own
+    # ordering now breaks cycles inline, which our sort does not use) — prefer
+    # the framework helper when present, else the local mirror.
+    _split_cycles = getattr(
+        SquashMergeStrategy,
+        "_split_bidirectional_cycles",
+        _split_bidirectional_create_cycles,
+    )
+    _split_cycles(to_process, change_logger)
     # Then split deferred self-referential FKs (primary_ip4/6, oob_ip, VC master)
     # out of CREATEs — these form 3-node cycles the framework's 2-node split misses
     # (device -> primary_ip -> assigned interface -> device). Must run before the
@@ -311,7 +408,16 @@ def _order_collapsed_changes_fast(collapsed_changes, change_logger, operation):
         remaining = {
             k: set(v.depends_on) for k, v in to_process.items() if indeg.get(k, 0) > 0
         }
-        SquashMergeStrategy._log_cycle_details(remaining, to_process, change_logger)
+        _log_cycles = getattr(SquashMergeStrategy, "_log_cycle_details", None)
+        if _log_cycles is not None:
+            _log_cycles(remaining, to_process, change_logger)
+        else:
+            for cycle_key in list(remaining)[:5]:
+                change_logger.error(
+                    "  Unresolvable dependency node: %s -> %s",
+                    cycle_key,
+                    sorted(remaining[cycle_key]),
+                )
         raise Exception(
             f"Cycle detected in dependency graph. {len(remaining)} changes are "
             f"involved in circular dependencies and cannot be ordered."

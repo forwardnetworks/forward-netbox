@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v2.4.5
+
+Fix: sync no longer crashes on netbox-branching **1.1.1** (`SquashMergeStrategy has no attribute '_split_bidirectional_cycles'` — 1.1.1 removed that internal helper; the bidirectional-cycle split is now built into the plugin and the dependency is bounded to `<1.2`). Also fixes SNMP-endpoint rows failing validation: the bundled endpoint query branches now clamp sysDescr-derived `device_type` to NetBox's 100-char limit (`substring`) and guard empty slugs — the fix lives in the NQE queries (the source of truth), so **Publish Bundled Queries** again after upgrading (fixes the `Ensure this value has at most 100 characters` rejects and the `At least one coalesce lookup must be provided` error).
+
 ## v2.4.4
 
 Fix: SNMP-endpoint import now works on **tag-scoped** syncs — the device-tag include scope silently excluded every endpoint, both query-side and in the plugin's local scope filter (whose scoped-device set was built from modeled devices only, so endpoint rows were always dropped; with prune enabled they would even be deleted). Endpoint import now ignores the include scope (exclude tags still apply) and endpoint names join the scoped set (validated live: 355 Avocent endpoints import under a tag-scoped sync). Also fixes the merge-phase `Tag with this Name already exists` issues: a same-named/same-slug tag already on main is now treated as merged instead of failing the branch's tag create.

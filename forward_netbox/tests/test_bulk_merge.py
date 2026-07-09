@@ -267,7 +267,9 @@ class OrderingComplexityTest(TransactionTestCase):
         objs = self._stub_changes(n, chain=chain)
         logger = logging.getLogger("forward_netbox.tests.ordering")
         with (
-            patch.object(SquashMergeStrategy, "_split_bidirectional_cycles"),
+            patch.object(
+                SquashMergeStrategy, "_split_bidirectional_cycles", create=True
+            ),
             patch.object(
                 SquashMergeStrategy,
                 "_build_fk_dependency_graph",
@@ -327,9 +329,11 @@ class OrderingComplexityTest(TransactionTestCase):
         objs = {0: a, 1: b}
         logger = logging.getLogger("forward_netbox.tests.ordering")
         with (
-            patch.object(SquashMergeStrategy, "_split_bidirectional_cycles"),
+            patch.object(
+                SquashMergeStrategy, "_split_bidirectional_cycles", create=True
+            ),
             patch.object(SquashMergeStrategy, "_build_fk_dependency_graph"),
-            patch.object(SquashMergeStrategy, "_log_cycle_details"),
+            patch.object(SquashMergeStrategy, "_log_cycle_details", create=True),
             patch.object(bulk_merge.squash_dependency_graph_built, "send"),
         ):
             with self.assertRaises(Exception):
@@ -620,3 +624,80 @@ class BulkMergeTagNameCollisionTest(TransactionTestCase):
             collapsed = call.args[0]
             self.assertNotEqual(collapsed.key[0], "extras.tag")
         self.assertEqual(Tag.objects.filter(name="Mgmt_Coll").count(), 1)
+
+
+class BranchingCompatCycleSplitTest(TestCase):
+    """Ordering must survive netbox_branching 1.1.1, which removed
+    SquashMergeStrategy._split_bidirectional_cycles (sync died with
+    AttributeError). The vendored splitter must break a bidirectional CREATE
+    pair (Device.virtual_chassis <-> VirtualChassis.master) the same way."""
+
+    def _bidirectional_pair(self):
+        from types import SimpleNamespace
+
+        from dcim.models import Device
+        from dcim.models import VirtualChassis
+        from netbox_branching.merge_strategies.squash import CollapsedChange
+
+        from forward_netbox.utilities.bulk_merge import ActionType
+
+        dev = CollapsedChange(("dcim.device", 1), Device)
+        dev.final_action = ActionType.CREATE
+        dev.postchange_data = {"name": "vc-member", "virtual_chassis": 5}
+        dev.last_change = SimpleNamespace(time=1, pk=1, request_id=uuid.uuid4())
+
+        vc = CollapsedChange(("dcim.virtualchassis", 5), VirtualChassis)
+        vc.final_action = ActionType.CREATE
+        vc.postchange_data = {"name": "vc-1", "master": 1}
+        vc.last_change = SimpleNamespace(time=2, pk=2, request_id=uuid.uuid4())
+        return {dev.key: dev, vc.key: vc}
+
+    def test_vendored_splitter_breaks_bidirectional_create_pair(self):
+        from forward_netbox.utilities.bulk_merge import (
+            _split_bidirectional_create_cycles,
+        )
+
+        to_process = self._bidirectional_pair()
+        _split_bidirectional_create_cycles(to_process, logging.getLogger("compat-test"))
+
+        synthetic = [k for k in to_process if len(k) == 3]
+        self.assertEqual(len(synthetic), 1)
+        nulled = [
+            c
+            for c in to_process.values()
+            if c.final_action.value == "create"
+            and c.postchange_data.get("virtual_chassis") is None
+            or c.final_action.value == "create"
+            and c.postchange_data.get("master") is None
+        ]
+        self.assertTrue(nulled, "one CREATE of the pair must have its FK NULLed")
+
+    def test_ordering_succeeds_when_framework_splitter_is_absent(self):
+        # Simulate netbox_branching 1.1.1, which removed the class attribute
+        # (delete it for the duration of the ordering call, then restore).
+        from netbox_branching.merge_strategies.squash import SquashMergeStrategy
+
+        from forward_netbox.utilities.bulk_merge import (
+            _order_collapsed_changes_fast,
+        )
+
+        to_process = self._bidirectional_pair()
+        original = SquashMergeStrategy.__dict__.get("_split_bidirectional_cycles")
+        if original is not None:
+            delattr(SquashMergeStrategy, "_split_bidirectional_cycles")
+        try:
+            self.assertFalse(
+                hasattr(SquashMergeStrategy, "_split_bidirectional_cycles")
+            )
+            ordered = _order_collapsed_changes_fast(
+                to_process, logging.getLogger("compat-test"), operation="merge"
+            )
+        finally:
+            if original is not None:
+                setattr(SquashMergeStrategy, "_split_bidirectional_cycles", original)
+        # The function orders an internal copy: 2 CREATEs plus the synthetic
+        # UPDATEs added by the cycle splitter(s). Success = no cycle exception
+        # and both original keys present in the ordering.
+        ordered_keys = {c.key[:2] for c in ordered}
+        for key in to_process:
+            self.assertIn(key[:2], ordered_keys)

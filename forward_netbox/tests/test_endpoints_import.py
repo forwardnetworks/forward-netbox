@@ -261,3 +261,31 @@ class EndpointBranchIncludeScopeRemovalTest(SimpleTestCase):
             endpoint_branch = src.split("network.endpoints", 1)[1]
             self.assertIn("device_tag_exclude_tags", endpoint_branch, filename)
             self.assertNotIn("device_tag_include_tags", endpoint_branch, filename)
+
+
+class EndpointIdentityClampTest(SimpleTestCase):
+    """Endpoint identity must be clamped in the QUERY, not mutated in Python.
+
+    NQE is the source of truth: sysDescr is free-form (observed >250 chars, or
+    symbol-only strings that slugify to nothing), so the endpoint branches clamp
+    device_type to 100 chars via substring() and guard empty slugs — NetBox
+    receives exactly what the query emitted.
+    """
+
+    def test_endpoint_branches_clamp_model_and_guard_slugs(self):
+        for filename in (
+            "forward_devices.nqe",
+            "forward_devices_with_netbox_aliases.nqe",
+        ):
+            src = _read_query(filename)
+            endpoint_branch = src.split("network.endpoints", 1)[1]
+            self.assertIn("substring(sysDescr, 0, 100)", endpoint_branch, filename)
+            self.assertIn(
+                'if ep_model_slug_raw == "" then "unknown"', endpoint_branch, filename
+            )
+            self.assertIn(
+                'if ep_manuf_raw == "" then "Unknown"', endpoint_branch, filename
+            )
+            # The select must emit the clamped values, never raw sysDescr.
+            self.assertIn("device_type: ep_model,", endpoint_branch, filename)
+            self.assertNotIn("device_type: sysDescr", endpoint_branch, filename)
