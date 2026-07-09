@@ -55,24 +55,33 @@ foreach row in (
     let sysDescrOpt = max(foreach o in endpoint.snmpOutputs where o.requestedOid == "1.3.6.1.2.1.1.1" select max(foreach e in o.rawOidEntries select e.rawValue))
     let sysObjIdOpt = max(foreach o in endpoint.snmpOutputs where o.requestedOid == "1.3.6.1.2.1.1.2" select max(foreach e in o.rawOidEntries select e.rawValue))
     let sysDescr = if isPresent(sysDescrOpt) then sysDescrOpt else "SNMP Endpoint"
+    // NetBox caps DeviceType.model/slug and Manufacturer.name at 100 chars, and
+    // sysDescr is free-form text (observed >250 chars, or symbol-only strings
+    // that slugify to nothing) — clamp identity here so rows arrive valid.
+    let ep_model = substring(sysDescr, 0, 100)
+    let ep_model_slug_raw = substring(slugifyNetboxModel(ep_model), 0, 100)
+    let ep_model_slug = if ep_model_slug_raw == "" then "unknown" else ep_model_slug_raw
     let isAvocent = matches(if isPresent(sysObjIdOpt) then sysObjIdOpt else "", "*10418*")
-    let ep_manuf = if isAvocent then "Avocent" else replaceRegexMatches(sysDescr, re` .*`, "")
+    let ep_manuf_raw = if isAvocent then "Avocent" else substring(replaceRegexMatches(sysDescr, re` .*`, ""), 0, 100)
+    let ep_manuf = if ep_manuf_raw == "" then "Unknown" else ep_manuf_raw
+    let ep_manuf_slug_raw = slugify(ep_manuf)
+    let ep_manuf_slug = if ep_manuf_slug_raw == "" then "unknown" else ep_manuf_slug_raw
     let ep_role = if isAvocent then "Console Server" else "SNMP Endpoint"
     let ep_site = if isPresent(endpoint.locationName) then toLowerCase(endpoint.locationName) else "unknown"
     select {
       name: endpoint.name,
       manufacturer: ep_manuf,
-      device_type: sysDescr,
-      device_type_slug: slugifyNetboxModel(sysDescr),
+      device_type: ep_model,
+      device_type_slug: ep_model_slug,
       site: ep_site,
       site_slug: slugify(ep_site),
       role: ep_role,
       role_slug: slugify(ep_role),
       role_color: "9e9e9e",
       platform: ep_manuf,
-      platform_slug: slugify(ep_manuf),
+      platform_slug: ep_manuf_slug,
       status: "active",
-      manufacturer_slug: slugify(ep_manuf)
+      manufacturer_slug: ep_manuf_slug
     }
   )
 )

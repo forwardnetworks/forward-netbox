@@ -263,60 +263,29 @@ class EndpointBranchIncludeScopeRemovalTest(SimpleTestCase):
             self.assertNotIn("device_tag_include_tags", endpoint_branch, filename)
 
 
-from forward_netbox.utilities.query_fetch_execution import (  # noqa: E402
-    _sanitize_device_rows,
-)
+class EndpointIdentityClampTest(SimpleTestCase):
+    """Endpoint identity must be clamped in the QUERY, not mutated in Python.
 
-
-class DeviceRowSanitizeTest(SimpleTestCase):
-    """Endpoint rows carry raw sysDescr as device_type — clamp to NetBox limits.
-
-    Observed in the field: sysDescr up to 251 chars rejected with "Ensure this
-    value has at most 100 characters", and a symbol-only sysDescr slugified to
-    "" triggering "At least one coalesce lookup must be provided".
+    NQE is the source of truth: sysDescr is free-form (observed >250 chars, or
+    symbol-only strings that slugify to nothing), so the endpoint branches clamp
+    device_type to 100 chars via substring() and guard empty slugs — NetBox
+    receives exactly what the query emitted.
     """
 
-    def test_long_device_type_and_slug_clamped_to_100(self):
-        row = {
-            "name": "ep-1",
-            "device_type": "X" * 251,
-            "device_type_slug": "x" * 251,
-        }
-        _sanitize_device_rows("dcim.device", [row])
-        self.assertLessEqual(len(row["device_type"]), 100)
-        self.assertLessEqual(len(row["device_type_slug"]), 100)
-
-    def test_empty_slug_gets_fallback_from_value(self):
-        row = {"name": "ep-2", "device_type": "ACS 6000", "device_type_slug": ""}
-        _sanitize_device_rows("dcim.device", [row])
-        self.assertEqual(row["device_type_slug"], "acs-6000")
-
-    def test_symbol_only_value_gets_unknown_slug(self):
-        row = {"name": "ep-3", "device_type": "!!##!!", "device_type_slug": ""}
-        _sanitize_device_rows("dcim.device", [row])
-        self.assertEqual(row["device_type_slug"], "unknown")
-
-    def test_all_taxonomy_pairs_clamped(self):
-        row = {
-            "name": "ep-4",
-            "manufacturer": "M" * 150,
-            "manufacturer_slug": "m" * 150,
-            "platform": "P" * 150,
-            "platform_slug": "p" * 150,
-            "role": "R" * 150,
-            "role_slug": "r" * 150,
-            "site": "S" * 150,
-            "site_slug": "s" * 150,
-        }
-        _sanitize_device_rows("dcim.device", [row])
-        for field in row:
-            if field != "name":
-                self.assertLessEqual(len(row[field]), 100, field)
-
-    def test_normal_rows_and_other_models_untouched(self):
-        row = {"name": "dev-1", "device_type": "ISR4331", "device_type_slug": "isr4331"}
-        _sanitize_device_rows("dcim.device", [row])
-        self.assertEqual(row["device_type"], "ISR4331")
-        iface_row = {"name": "Gi0/0", "device": "X" * 251}
-        _sanitize_device_rows("dcim.interface", [iface_row])
-        self.assertEqual(len(iface_row["device"]), 251)
+    def test_endpoint_branches_clamp_model_and_guard_slugs(self):
+        for filename in (
+            "forward_devices.nqe",
+            "forward_devices_with_netbox_aliases.nqe",
+        ):
+            src = _read_query(filename)
+            endpoint_branch = src.split("network.endpoints", 1)[1]
+            self.assertIn("substring(sysDescr, 0, 100)", endpoint_branch, filename)
+            self.assertIn(
+                'if ep_model_slug_raw == "" then "unknown"', endpoint_branch, filename
+            )
+            self.assertIn(
+                'if ep_manuf_raw == "" then "Unknown"', endpoint_branch, filename
+            )
+            # The select must emit the clamped values, never raw sysDescr.
+            self.assertIn("device_type: ep_model,", endpoint_branch, filename)
+            self.assertNotIn("device_type: sysDescr", endpoint_branch, filename)

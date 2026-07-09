@@ -11,7 +11,9 @@ rows failing validation on long/degenerate sysDescr-derived identity fields.
 - No schema or migration changes; drop-in from 2.4.4.
 - On netbox-branching 1.1.0 behavior must stay bit-identical (prefer the
   framework helper when present).
-- Identity clamping must not alter device names (row identity / scope keys).
+- Identity clamping must not alter endpoint names (row identity / scope
+  keys) and must live in the queries — NQE is the source of truth; the plugin
+  must not normalize or mutate rows.
 - Never commit the ADP network id / token.
 
 ## Touched Surfaces
@@ -19,8 +21,8 @@ rows failing validation on long/degenerate sysDescr-derived identity fields.
 - `forward_netbox/utilities/bulk_merge.py` (vendored
   `_split_bidirectional_create_cycles` + `_create_has_fk_to`, guarded
   `_log_cycle_details`)
-- `forward_netbox/utilities/query_fetch_execution.py`
-  (`_sanitize_device_rows`, called from `_apply_device_tag_scope`)
+- `forward_netbox/queries/forward_devices.nqe` and
+  `forward_devices_with_netbox_aliases.nqe` (endpoint identity clamping)
 - `pyproject.toml` (`netboxlabs-netbox-branching >=1.1.0,<1.2.0`)
 - Tests: `test_bulk_merge.py`, `test_endpoints_import.py`
 
@@ -38,11 +40,12 @@ rows failing validation on long/degenerate sysDescr-derived identity fields.
 2. Endpoint rows emit `device_type` from the raw SNMP sysDescr, which exceeds
    NetBox's 100-char `DeviceType.model`/`slug` limits (observed 251 chars → 18
    per-row rejects) and can slugify to `""` (the
-   `At least one coalesce lookup must be provided` error). Fix: clamp the
-   device-row taxonomy fields (device_type/manufacturer/platform/role/site +
-   slugs) to 100 chars with slug fallbacks in `_sanitize_device_rows`, invoked
-   from `_apply_device_tag_scope` so every fetch path (full, diff, preflight,
-   sample) sees clamped values. Device `name` is never modified.
+   `At least one coalesce lookup must be provided` error). Fix: clamp identity
+   **in the bundled NQE queries** — the endpoint branches derive
+   `ep_model = substring(sysDescr, 0, 100)`, slugify the clamped value, and
+   guard empty slugs/manufacturers with explicit fallbacks. NQE stays the
+   source of truth; the plugin does not normalize or mutate rows. Because the
+   queries changed, operators must Publish Bundled Queries after upgrading.
 
 ## Validation
 
@@ -62,9 +65,10 @@ Revert the branch — pure Python + dependency-range change; no data migration.
   plugin runs its own topological sort for bulk merge, so it needs the
   pre-pass regardless of framework version; preferring the framework helper
   when present keeps 1.1.0 unchanged.
-- Clamp in the plugin (fetch layer) rather than the NQE queries: NQE lacks a
-  reliable truncation primitive, and clamping centrally also protects custom
-  queries and future variants.
+- Clamp in the NQE queries rather than the plugin: NQE's `substring`
+  builtin self-clamps indices, the transformation is visible in the query text
+  operators publish and review, and the plugin never silently rewrites what
+  the query emitted (maintainer decision — NQE is the source of truth).
 - Upper-bound the branching dependency (`<1.2.0`): the bulk merge borrows
   framework internals by design; an install-time conflict is a clearer failure
   than a mid-merge AttributeError.
