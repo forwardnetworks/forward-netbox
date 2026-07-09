@@ -41,7 +41,9 @@ class ScopeMatchedTagsResolveTest(TestCase):
             {"name": "d3", "site": "s", "tagNames": ["TagA", "TagB"]},
             {"name": "d4", "site": "s", "tagNames": ["TagX"]},
         ]
-        names, sites, matched, _failed = self._fetcher(client)._resolve_scoped_tag_scope(
+        names, sites, matched, _failed = self._fetcher(
+            client
+        )._resolve_scoped_tag_scope(
             network_id="net-1",
             snapshot_id="snap",
             include_tags=["TagA", "TagB"],
