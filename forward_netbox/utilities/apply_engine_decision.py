@@ -262,9 +262,33 @@ ADAPTER_REQUIRED_MODELS = {
     "netbox_cisco_aci.acifilter",
     "netbox_cisco_aci.acil3out",
     "netbox_cisco_aci.acistaticportbinding",
+    "netbox_dlm.softwareversion",
+    "netbox_dlm.hardwarenotice",
+    "netbox_dlm.devicesoftware",
 }
 
 ADAPTER_MODEL_BLOCKERS = {
+    "netbox_dlm.softwareversion": {
+        "blocker_code": "plugin_model_dependencies",
+        "blocker_reason": (
+            "DLM software-version writes require plugin model and platform "
+            "dependency resolution handled by the adapter."
+        ),
+    },
+    "netbox_dlm.hardwarenotice": {
+        "blocker_code": "plugin_model_dependencies",
+        "blocker_reason": (
+            "DLM hardware-notice writes require plugin model and device-type "
+            "dependency resolution handled by the adapter."
+        ),
+    },
+    "netbox_dlm.devicesoftware": {
+        "blocker_code": "plugin_model_dependencies",
+        "blocker_reason": (
+            "DLM device-software writes require device and software-version "
+            "dependency resolution handled by the adapter."
+        ),
+    },
     "dcim.cable": {
         "blocker_code": "relationship_identity_directionality",
         "blocker_reason": (

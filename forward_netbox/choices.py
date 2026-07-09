@@ -13,6 +13,12 @@ FORWARD_BGP_MODELS = (
     "netbox_peering_manager.peeringsession",
 )
 
+FORWARD_DLM_MODELS = (
+    "netbox_dlm.softwareversion",
+    "netbox_dlm.hardwarenotice",
+    "netbox_dlm.devicesoftware",
+)
+
 FORWARD_ACI_MODELS = (
     "netbox_cisco_aci.acifabric",
     "netbox_cisco_aci.acipod",
@@ -49,6 +55,7 @@ FORWARD_SUPPORTED_MODELS = (
     "dcim.module",
     *FORWARD_BGP_MODELS,
     *FORWARD_ACI_MODELS,
+    *FORWARD_DLM_MODELS,
 )
 
 FORWARD_OPTIONAL_MODELS = {
@@ -56,6 +63,7 @@ FORWARD_OPTIONAL_MODELS = {
     "dcim.module",
     *FORWARD_BGP_MODELS,
     *FORWARD_ACI_MODELS,
+    *FORWARD_DLM_MODELS,
 }
 
 
