@@ -41,7 +41,7 @@ class ScopeMatchedTagsResolveTest(TestCase):
             {"name": "d3", "site": "s", "tagNames": ["TagA", "TagB"]},
             {"name": "d4", "site": "s", "tagNames": ["TagX"]},
         ]
-        names, sites, matched = self._fetcher(client)._resolve_scoped_tag_scope(
+        names, sites, matched, _failed = self._fetcher(client)._resolve_scoped_tag_scope(
             network_id="net-1",
             snapshot_id="snap",
             include_tags=["TagA", "TagB"],
@@ -65,7 +65,7 @@ class ScopeMatchedTagsResolveTest(TestCase):
             exclude_tags=[],
             include_match="any",
         )
-        self.assertEqual(result, (set(), set(), {}))
+        self.assertEqual(result, (set(), set(), {}, False))
 
     def test_context_as_dict_carries_full_matched_map(self):
         ctx = ForwardQueryContext(

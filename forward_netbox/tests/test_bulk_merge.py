@@ -569,3 +569,54 @@ class DeferredSelfRefFKSplitTest(TestCase):
         self.assertIn(upd_key, to_process)
         self.assertEqual(to_process[upd_key].postchange_data["lag"], 99)
         self.assertIn(cc.key, to_process[upd_key].depends_on)
+
+
+class BulkMergeTagNameCollisionTest(TransactionTestCase):
+    """A branch tag CREATE that collides by NAME with a main-side tag skips.
+
+    While a merge applies device UPDATEs (ordered before CREATEs),
+    netbox_branching sets device tags by name, get_or_creating the tag on main
+    with a new pk. The branch's tag CREATE then violated the unique name
+    constraint and surfaced as a ValidationError ingestion issue even though the
+    desired end state (tag exists) was already reached.
+    """
+
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+
+        self.user = get_user_model().objects.create_user(username="tag-merge-user")
+        self.request = RequestFactory().get(reverse("home"))
+        self.request.user = self.user
+        self.logger = logging.getLogger("forward_netbox.tests.bulk_merge")
+
+    def test_tag_create_name_collision_skips_instead_of_failing(self):
+        from extras.models import Tag
+
+        branch = provision_branch(user=self.user, name="Tag Collision")
+        with activate_branch(branch), event_tracking(self.request):
+            self.request.id = uuid.uuid4()
+            self.request.user = self.user
+            Tag.objects.create(name="Mgmt_Coll", slug="mgmt-coll")
+
+        # Simulate the mid-merge name-based get_or_create on main: same name,
+        # different pk than the branch row.
+        Tag.objects.create(name="Mgmt_Coll", slug="mgmt-coll")
+
+        changes = branch.get_unmerged_changes().order_by("time")
+        apply_one = Mock(return_value=False)  # fallback would record an issue
+        applied, failed, _models = bulk_merge_changes(
+            branch,
+            changes,
+            self.request,
+            self.user,
+            self.logger,
+            apply_one=apply_one,
+        )
+
+        self.assertEqual(failed, 0)
+        # The colliding create must be skipped in the batch path, never routed
+        # to the per-object fallback (which would raise the ValidationError).
+        for call in apply_one.call_args_list:
+            collapsed = call.args[0]
+            self.assertNotEqual(collapsed.key[0], "extras.tag")
+        self.assertEqual(Tag.objects.filter(name="Mgmt_Coll").count(), 1)
