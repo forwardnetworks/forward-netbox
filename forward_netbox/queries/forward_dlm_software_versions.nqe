@@ -1,0 +1,28 @@
+/**
+ * @intent Forward OS software versions with end-of-life dates (netbox-dlm)
+ * @description Distinct (platform, OS version) pairs with vendor end-of-life
+ * dates from Forward's OS support analysis, for the optional netbox-dlm
+ * plugin's SoftwareVersion model. Only devices whose OS has a known vendor
+ * end-of-life announcement are emitted (device.platform.osSupport is absent
+ * otherwise).
+ */
+
+import "netbox_utilities";
+
+@query
+f(forward_netbox_shard_keys: List<String>) =
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
+where isPresent(device.platform.osSupport)
+where isPresent(device.platform.osVersion)
+let support = device.platform.osSupport
+let platform_name = normalizeDevicePlatformName(device)
+select distinct {
+  platform: platform_name,
+  platform_slug: slugify(platform_name),
+  version: substring(device.platform.osVersion, 0, 50),
+  end_of_support: support.lastSupportDate,
+  documentation_url: substring(support.announcementUrl, 0, 200)
+};

@@ -15,6 +15,7 @@ from netbox_branching.models import Branch
 from ..choices import ForwardSyncStatusChoices
 from .branch_budget import build_branch_plan
 from .branching import build_branch_request
+from .branching import missing_branch_table_report
 from .fast_bootstrap_executor import ForwardFastBootstrapExecutor
 from .multi_branch_lifecycle import create_noop_ingestion
 from .multi_branch_lifecycle import run_item_in_branch
@@ -29,6 +30,19 @@ class ForwardSingleBranchExecutor(ForwardFastBootstrapExecutor):
 
     def run(self):
         self._set_runtime_phase("initializing", "Starting single-branch preflight.")
+        # Fail in seconds — before the expensive fetch and before provisioning
+        # would die mid-CREATE TABLE on a table that was never migrated.
+        missing_tables = missing_branch_table_report()
+        if missing_tables:
+            detail = "; ".join(
+                f"{app}: {', '.join(tables)}" for app, tables in missing_tables.items()
+            )
+            raise SyncError(
+                "Cannot provision a branch: database tables are missing for "
+                f"installed apps ({detail}). Apply their migrations "
+                "(python manage.py migrate) or remove the plugin from PLUGINS, "
+                "then re-run the sync."
+            )
         fetcher = ForwardQueryFetcher(self.sync, self.client, self.logger)
         context = fetcher.resolve_context()
         self._set_runtime_phase(

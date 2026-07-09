@@ -1,0 +1,25 @@
+/**
+ * @intent Forward per-device running software version (netbox-dlm)
+ * @description The OS version each Forward-collected device is running, for
+ * the optional netbox-dlm plugin's DeviceSoftware model (one row per device).
+ * The apply adapter ensures the matching SoftwareVersion exists (end-of-life
+ * dates come from the Forward DLM Software Versions map when the vendor
+ * publishes them).
+ */
+
+import "netbox_utilities";
+
+@query
+f(forward_netbox_shard_keys: List<String>) =
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
+where isPresent(device.platform.osVersion)
+let platform_name = normalizeDevicePlatformName(device)
+select {
+  name: device.name,
+  platform: platform_name,
+  platform_slug: slugify(platform_name),
+  version: substring(device.platform.osVersion, 0, 50)
+};

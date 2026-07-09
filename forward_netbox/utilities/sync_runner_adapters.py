@@ -42,6 +42,12 @@ from .sync_device import apply_dcim_device
 from .sync_device import apply_dcim_virtualchassis
 from .sync_device import delete_dcim_device
 from .sync_device import delete_dcim_virtualchassis
+from .sync_dlm import apply_netbox_dlm_devicesoftware
+from .sync_dlm import apply_netbox_dlm_hardwarenotice
+from .sync_dlm import apply_netbox_dlm_softwareversion
+from .sync_dlm import delete_netbox_dlm_devicesoftware
+from .sync_dlm import delete_netbox_dlm_hardwarenotice
+from .sync_dlm import delete_netbox_dlm_softwareversion
 from .sync_interface import apply_dcim_interface
 from .sync_interface import apply_dcim_macaddress
 from .sync_interface import apply_extras_taggeditem
@@ -915,6 +921,24 @@ class ForwardSyncRunnerAdapterMixin:
 
     def _apply_netbox_peering_manager_peeringsession(self, row):
         return apply_netbox_peering_manager_peeringsession(self, row)
+
+    def _apply_netbox_dlm_softwareversion(self, row):
+        return apply_netbox_dlm_softwareversion(self, row)
+
+    def _apply_netbox_dlm_hardwarenotice(self, row):
+        return apply_netbox_dlm_hardwarenotice(self, row)
+
+    def _apply_netbox_dlm_devicesoftware(self, row):
+        return apply_netbox_dlm_devicesoftware(self, row)
+
+    def _delete_netbox_dlm_softwareversion(self, row):
+        return delete_netbox_dlm_softwareversion(self, row)
+
+    def _delete_netbox_dlm_hardwarenotice(self, row):
+        return delete_netbox_dlm_hardwarenotice(self, row)
+
+    def _delete_netbox_dlm_devicesoftware(self, row):
+        return delete_netbox_dlm_devicesoftware(self, row)
 
     def _apply_netbox_cisco_aci_acifabric(self, row):
         return apply_netbox_cisco_aci_acifabric(self, row)
