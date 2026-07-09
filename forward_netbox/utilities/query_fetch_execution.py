@@ -253,6 +253,53 @@ _PRIMARY_SCOPE_DEVICE_FIELD_BY_MODEL = {
 }
 
 
+# NetBox 4.6 max_lengths for the device-row taxonomy fields. SNMP-endpoint rows
+# derive device_type from the raw sysDescr string, which can exceed the
+# DeviceType.model/slug 100-char limits (observed up to 251 chars) and, for
+# symbol-only sysDescrs, slugify to "" — both of which reject the row at
+# validation ("Ensure this value has at most 100 characters" /
+# "At least one coalesce lookup must be provided").
+_DEVICE_ROW_FIELD_PAIRS = (
+    ("device_type", "device_type_slug"),
+    ("manufacturer", "manufacturer_slug"),
+    ("platform", "platform_slug"),
+    ("role", "role_slug"),
+    ("site", "site_slug"),
+)
+_DEVICE_ROW_MAX_LENGTH = 100
+
+
+def _sanitize_device_rows(model_string: str, rows: list[dict]) -> None:
+    if model_string != "dcim.device":
+        return
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        for field_name, slug_field in _DEVICE_ROW_FIELD_PAIRS:
+            value = row.get(field_name)
+            value_clamped = False
+            if isinstance(value, str) and len(value) > _DEVICE_ROW_MAX_LENGTH:
+                value = value[:_DEVICE_ROW_MAX_LENGTH].rstrip()
+                row[field_name] = value
+                value_clamped = True
+            if value_clamped:
+                # Recompute the slug from the clamped value so every raw string
+                # that clamps to the same value yields the same slug — two
+                # different long sysDescrs must not mint two DeviceTypes with
+                # the same model and diverging slugs.
+                row[slug_field] = (
+                    slugify(value)[:_DEVICE_ROW_MAX_LENGTH].rstrip("-_ ") or "unknown"
+                )
+                continue
+            slug = row.get(slug_field)
+            if isinstance(slug, str) and len(slug) > _DEVICE_ROW_MAX_LENGTH:
+                slug = slug[:_DEVICE_ROW_MAX_LENGTH].rstrip("-_ ")
+                row[slug_field] = slug
+            if isinstance(value, str) and value and not row.get(slug_field):
+                fallback = slugify(value)[:_DEVICE_ROW_MAX_LENGTH].rstrip("-_ ")
+                row[slug_field] = fallback or "unknown"
+
+
 def _row_device_names(model_string: str, row: dict[str, Any]) -> set[str]:
     names: set[str] = set()
     if model_string == "dcim.device":
@@ -1843,6 +1890,12 @@ class ForwardQueryFetcher:
         original_shard_scope = dict(shard_scope or {}) if shard_scope else None
 
         def _return(rows, delete_rows, sync_mode, metadata):
+            # Sanitize on every exit — including fetch-artifact cache hits,
+            # which would otherwise replay rows persisted before clamping
+            # (e.g. resuming a run whose endpoint rows carried >100-char
+            # sysDescr-derived device_type values).
+            _sanitize_device_rows(model_string, rows or [])
+            _sanitize_device_rows(model_string, delete_rows or [])
             metadata = dict(metadata or {})
             if fetch_artifact_descriptor is not None:
                 fetch_parameters = dict(metadata.get("fetch_parameters") or {})
@@ -2251,6 +2304,10 @@ class ForwardQueryFetcher:
     def _apply_device_tag_scope(
         self, model_string: str, rows: list[dict], context: ForwardQueryContext
     ) -> tuple[list[dict], list[dict]]:
+        # Every fetch path (full, diff, preflight, sample) funnels through here,
+        # so clamp device-row identity fields to NetBox max lengths before any
+        # scoping decision or apply-time validation sees them.
+        _sanitize_device_rows(model_string, rows)
         scoped_devices = context.scoped_device_names or set()
         tag_scope_enabled = bool(
             context.device_tag_include_tags or context.device_tag_exclude_tags
