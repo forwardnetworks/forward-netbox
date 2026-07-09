@@ -28,6 +28,7 @@ from collections import defaultdict
 from django.db import DEFAULT_DB_ALIAS
 from django.db import IntegrityError
 from django.db import transaction
+from django.db.models import Q
 from mptt.models import MPTTModel
 from netbox_branching.merge_strategies.squash import ActionType
 from netbox_branching.merge_strategies.squash import CollapsedChange
@@ -398,6 +399,31 @@ def bulk_merge_changes(
         existing = set(
             model_class.objects.filter(pk__in=all_pks).values_list("pk", flat=True)
         )
+        # Tags collide by NAME, not pk: while the merge applies device UPDATEs
+        # (ordered before CREATEs), netbox_branching sets device tags by name,
+        # which get_or_creates the tag on main with a NEW pk. The branch's tag
+        # CREATE then violates the unique name/slug constraint. Treat a
+        # same-named (or same-slug) main-side tag as already merged. If the
+        # branch create carried different non-unique attrs (color/description),
+        # they converge on the next sync: its branch is provisioned from a main
+        # that has the tag, so the apply-time coalesce records an UPDATE.
+        existing_names: set[str] = set()
+        existing_slugs: set[str] = set()
+        if getattr(model_class._meta, "label_lower", "") == "extras.tag":
+            pending_names = [
+                str((c.postchange_data or {}).get("name") or "") for c in pending
+            ]
+            pending_slugs = [
+                str((c.postchange_data or {}).get("slug") or "") for c in pending
+            ]
+            name_filter = Q(name__in=[n for n in pending_names if n]) | Q(
+                slug__in=[s for s in pending_slugs if s]
+            )
+            for name, slug in model_class.objects.filter(name_filter).values_list(
+                "name", "slug"
+            ):
+                existing_names.add(str(name))
+                existing_slugs.add(str(slug))
         skipped = 0
         objects = []
         built = []  # (collapsed, deserialized) for rows we actually create
@@ -405,6 +431,14 @@ def bulk_merge_changes(
             if collapsed_change.key[1] in existing:
                 skipped += 1
                 continue
+            if existing_names or existing_slugs:
+                data = collapsed_change.postchange_data or {}
+                if (
+                    str(data.get("name") or "") in existing_names
+                    or str(data.get("slug") or "") in existing_slugs
+                ):
+                    skipped += 1
+                    continue
             try:
                 deserialized = _deserialize(
                     model_class, collapsed_change, change_logger

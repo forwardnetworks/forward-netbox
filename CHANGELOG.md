@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v2.4.4
+
+Fix: SNMP-endpoint import now works on **tag-scoped** syncs — the device-tag include scope silently excluded every endpoint, both query-side and in the plugin's local scope filter (whose scoped-device set was built from modeled devices only, so endpoint rows were always dropped; with prune enabled they would even be deleted). Endpoint import now ignores the include scope (exclude tags still apply) and endpoint names join the scoped set (validated live: 355 Avocent endpoints import under a tag-scoped sync). Also fixes the merge-phase `Tag with this Name already exists` issues: a same-named/same-slug tag already on main is now treated as merged instead of failing the branch's tag create.
+
 ## v2.4.3
 
 Fix: the pinned-query opt-in Health warning (2.4.1) over-claimed failure — it reads "nothing new syncs" and fires on any pinned map with the feature on, even after the query is fixed, because the Health page can't read a pinned query's contents. Reworded to a "Pinned — can't verify locally" heads-up that points at **Export Live Query Drift** to confirm (`source_matches_bundled`), instead of asserting failure. No behavior change.

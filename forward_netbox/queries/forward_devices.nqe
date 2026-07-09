@@ -44,15 +44,12 @@ foreach row in (
   (
     // SNMP endpoints (opt-in): generic SSH/SNMP devices Forward collects but
     // does not model. Generic identity from MIB-2; Avocent overlay by enterprise
-    // OID 10418. Scoped by the same device tags (endpoints carry tagNames).
+    // OID 10418. Device-tag INCLUDE scope narrows modeled devices only —
+    // endpoints rarely carry device scoping tags, so requiring them silently
+    // excluded every endpoint on scoped syncs. Exclude tags still apply.
     foreach endpoint in network.endpoints
     where sync_endpoints
     where !isEmpty(endpoint.snmpOutputs)
-    where isEmpty(device_tag_include_tags)
-      || (device_tag_include_match == "all"
-        && all(foreach tag in device_tag_include_tags select tag in endpoint.tagNames))
-      || (device_tag_include_match != "all"
-        && any(foreach tag in device_tag_include_tags select tag in endpoint.tagNames))
     where isEmpty(device_tag_exclude_tags)
       || !any(foreach tag in device_tag_exclude_tags select tag in endpoint.tagNames)
     let sysDescrOpt = max(foreach o in endpoint.snmpOutputs where o.requestedOid == "1.3.6.1.2.1.1.1" select max(foreach e in o.rawOidEntries select e.rawValue))
