@@ -391,6 +391,24 @@ BUILTIN_OPTIONAL_QUERY_MAPS = [
         "enabled": False,
     },
     {
+        "model_string": "netbox_dlm.softwareversion",
+        "name": "Forward DLM Software Versions",
+        "filename": "forward_dlm_software_versions.nqe",
+        "enabled": False,
+    },
+    {
+        "model_string": "netbox_dlm.hardwarenotice",
+        "name": "Forward DLM Hardware Notices",
+        "filename": "forward_dlm_hardware_notices.nqe",
+        "enabled": False,
+    },
+    {
+        "model_string": "netbox_dlm.devicesoftware",
+        "name": "Forward DLM Device Software",
+        "filename": "forward_dlm_device_software.nqe",
+        "enabled": False,
+    },
+    {
         "model_string": "dcim.module",
         "name": "Forward Modules",
         "filename": "forward_modules.nqe",

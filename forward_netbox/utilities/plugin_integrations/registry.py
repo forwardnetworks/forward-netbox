@@ -297,10 +297,45 @@ PEERING_INTEGRATION = OptionalPluginIntegration(
 )
 
 
+DLM_INTEGRATION = OptionalPluginIntegration(
+    key="lifecycle.netbox_dlm",
+    app_label="netbox_dlm",
+    display_name="NetBox Device Lifecycle Management",
+    required_models=(
+        "netbox_dlm.softwareversion",
+        "netbox_dlm.hardwarenotice",
+        "netbox_dlm.devicesoftware",
+    ),
+    supported_models=(
+        "netbox_dlm.softwareversion",
+        "netbox_dlm.hardwarenotice",
+        "netbox_dlm.devicesoftware",
+    ),
+    query_maps=(
+        "Forward DLM Software Versions",
+        "Forward DLM Hardware Notices",
+        "Forward DLM Device Software",
+    ),
+    package_names=("netbox-dlm", "netbox_dlm"),
+    adapter_module="forward_netbox.utilities.sync_dlm",
+    enabled_by_default=False,
+    status="beta_surface",
+    notes=(
+        "Beta lifecycle import surface backed by the optional netbox-dlm "
+        "plugin: OS end-of-life dates per (platform, version), hardware "
+        "end-of-life notices per device type, and each device's running "
+        "software version from Forward's support analysis.",
+        "netbox-dlm ships no migrations; run `manage.py makemigrations "
+        "netbox_dlm && manage.py migrate` after installing it.",
+    ),
+)
+
+
 OPTIONAL_PLUGIN_INTEGRATIONS = (
     ROUTING_INTEGRATION,
     PEERING_INTEGRATION,
     ACI_INTEGRATION,
+    DLM_INTEGRATION,
 )
 
 

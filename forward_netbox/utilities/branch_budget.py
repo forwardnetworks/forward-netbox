@@ -21,6 +21,9 @@ DENSITY_ROW_BUDGET_WIDEN_POLICIES = {"high_confidence_learned_density"}
 DEFAULT_MODEL_CHANGE_DENSITY = {
     "dcim.cable": 3.0,
     "dcim.module": 2.0,
+    "netbox_dlm.softwareversion": 1.0,
+    "netbox_dlm.hardwarenotice": 1.0,
+    "netbox_dlm.devicesoftware": 1.0,
     "netbox_routing.bgppeer": 5.0,
     "netbox_routing.bgpaddressfamily": 2.0,
     "netbox_routing.bgppeeraddressfamily": 2.0,
@@ -70,6 +73,9 @@ APPLY_DEPENDENCY_MODEL_ORDER = (
     "netbox_routing.bgpaddressfamily",
     "netbox_routing.bgppeeraddressfamily",
     "netbox_peering_manager.peeringsession",
+    "netbox_dlm.softwareversion",
+    "netbox_dlm.hardwarenotice",
+    "netbox_dlm.devicesoftware",
     "netbox_cisco_aci.acifabric",
     "netbox_cisco_aci.acipod",
     "netbox_cisco_aci.acinode",
@@ -110,6 +116,9 @@ APPLY_PARENT_MODEL_DEPENDENCIES = {
         "dcim.interface",
         "netbox_routing.ospfinstance",
     ),
+    "netbox_dlm.softwareversion": ("dcim.platform",),
+    "netbox_dlm.hardwarenotice": ("dcim.devicetype",),
+    "netbox_dlm.devicesoftware": ("dcim.device", "netbox_dlm.softwareversion"),
     "netbox_routing.bgppeer": ("dcim.device", "ipam.vrf"),
     "netbox_routing.bgpaddressfamily": ("dcim.device", "ipam.vrf"),
     "netbox_routing.bgppeeraddressfamily": (
@@ -141,6 +150,9 @@ APPLY_PARENT_MODEL_DEPENDENCIES = {
     ),
 }
 DELETE_DEPENDENCY_MODEL_ORDER = (
+    "netbox_dlm.devicesoftware",
+    "netbox_dlm.hardwarenotice",
+    "netbox_dlm.softwareversion",
     "dcim.cable",
     "ipam.fhrpgroup",
     "ipam.ipaddress",
@@ -310,6 +322,16 @@ SHARD_FETCH_PARAMETER_KEYS = "forward_netbox_shard_keys"
 SHARD_FETCH_PARAMETER_MODE_NAME = "forward_netbox_shard_mode"
 SHARD_FETCH_PARAMETER_BUCKET = "forward_netbox_shard_bucket"
 SHARD_FETCH_PARAMETER_BUCKET_COUNT = "forward_netbox_shard_bucket_count"
+
+
+def _fallback_bucket_key_family(model_string):
+    field_sets = default_coalesce_fields_for_model(model_string)
+    if not field_sets:
+        return ""
+    first = field_sets[0]
+    if not first:
+        return ""
+    return ",".join(str(field_name) for field_name in first if str(field_name))
 
 
 def _model_fetch_fallback_contract(model_string):
@@ -687,16 +709,6 @@ def _structured_parameter_contract(model_string, shard_keys):
             "fetch_column_filters": [],
         }
     return {}
-
-
-def _fallback_bucket_key_family(model_string):
-    field_sets = default_coalesce_fields_for_model(model_string)
-    if not field_sets:
-        return ""
-    first = field_sets[0]
-    if not first:
-        return ""
-    return ",".join(str(field_name) for field_name in first if str(field_name))
 
 
 def _parse_structured_shard_key(shard_key):

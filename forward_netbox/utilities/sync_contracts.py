@@ -273,6 +273,21 @@ MODEL_SYNC_CONTRACTS: dict[str, ModelSyncContract] = {
             ("device", "neighbor_address"),
         ),
     ),
+    "netbox_dlm.softwareversion": ModelSyncContract(
+        required_fields=("platform", "platform_slug", "version"),
+        allowed_coalesce_fields=("platform", "platform_slug", "version"),
+        default_coalesce_fields=(("platform_slug", "version"),),
+    ),
+    "netbox_dlm.hardwarenotice": ModelSyncContract(
+        required_fields=("device_type", "device_type_slug"),
+        allowed_coalesce_fields=("device_type", "device_type_slug"),
+        default_coalesce_fields=(("device_type_slug",),),
+    ),
+    "netbox_dlm.devicesoftware": ModelSyncContract(
+        required_fields=("name", "platform", "platform_slug", "version"),
+        allowed_coalesce_fields=("name",),
+        default_coalesce_fields=(("name",),),
+    ),
     "netbox_cisco_aci.acifabric": ModelSyncContract(
         required_fields=("name", "fabric_id"),
         allowed_coalesce_fields=("name",),

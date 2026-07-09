@@ -19,6 +19,7 @@ class OptionalPluginIntegrationRegistryTest(TestCase):
                 "routing.netbox_routing",
                 "peering.netbox_peering_manager",
                 "aci.netbox_cisco_aci",
+                "lifecycle.netbox_dlm",
             ],
         )
         self.assertEqual(
@@ -42,6 +43,7 @@ class OptionalPluginIntegrationRegistryTest(TestCase):
                 "routing.netbox_routing",
                 "peering.netbox_peering_manager",
                 "aci.netbox_cisco_aci",
+                "lifecycle.netbox_dlm",
             },
         )
         self.assertEqual(
@@ -60,6 +62,7 @@ class OptionalPluginIntegrationRegistryTest(TestCase):
                 "netbox-routing": "1.0.0",
                 "netbox-peering-manager": "1.0.0",
                 "netbox-cisco-aci": "0.2.1",
+                "netbox-dlm": "0.1.0",
             }
             return versions[package_name]
 

@@ -250,6 +250,7 @@ _PRIMARY_SCOPE_DEVICE_FIELD_BY_MODEL = {
     "netbox_routing.ospfarea": "device",
     "netbox_routing.ospfinterface": "device",
     "netbox_peering_manager.peeringsession": "device",
+    "netbox_dlm.devicesoftware": "name",
 }
 
 
