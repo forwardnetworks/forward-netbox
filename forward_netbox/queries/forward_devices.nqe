@@ -22,9 +22,9 @@ foreach row in (
     // "" — NetBox rejects a blank DeviceType.model, so fall back to "Unknown"
     // rather than drop the device.
     let model_raw = toString(device.platform.model)
-    let model = if model_raw == "" then "Unknown" else model_raw
+    let model = if isPresent(model_raw) && model_raw != "" then model_raw else "Unknown"
     let model_slug_raw = slugifyNetboxModel(model)
-    let model_slug = if model_slug_raw == "" then "unknown" else model_slug_raw
+    let model_slug = if isPresent(model_slug_raw) && model_slug_raw != "" then model_slug_raw else "unknown"
     let role_name = replace(toString(device.platform.deviceType), "DeviceType.", "")
     let site_name = if isPresent(device.locationName) then toLowerCase(device.locationName) else "unknown"
     let platform_name = normalizeDevicePlatformName(device)
@@ -60,7 +60,7 @@ foreach row in (
       || !any(foreach tag in device_tag_exclude_tags select tag in endpoint.tagNames)
     let sysDescrOpt = max(foreach o in endpoint.snmpOutputs where o.requestedOid == "1.3.6.1.2.1.1.1" select max(foreach e in o.rawOidEntries select e.rawValue))
     let sysObjIdOpt = max(foreach o in endpoint.snmpOutputs where o.requestedOid == "1.3.6.1.2.1.1.2" select max(foreach e in o.rawOidEntries select e.rawValue))
-    let sysDescr = if isPresent(sysDescrOpt) then sysDescrOpt else "SNMP Endpoint"
+    let sysDescr = if isPresent(sysDescrOpt) && sysDescrOpt != "" then sysDescrOpt else "SNMP Endpoint"
     // NetBox caps DeviceType.model/slug and Manufacturer.name at 100 chars, and
     // sysDescr is free-form text (observed >250 chars, or symbol-only strings
     // that slugify to nothing) — clamp identity here so rows arrive valid.

@@ -21,21 +21,31 @@ fallback device type instead of dropping it.
 
 ## Approach
 
-`toString(device.platform.model)` stringifies to `""` for a device whose model
-Forward could not determine; `device_type: model` then reaches NetBox blank and
-`DeviceType.model`/`slug` reject it. The endpoint branch already guards this;
-the device branch never did. Both device queries now derive
-`model = if model_raw == "" then "Unknown" else model_raw` (aliases: guard the
-post-alias `device_type_model`), with `"unknown"` slug fallbacks — mirroring the
-2.4.5 endpoint clamp. Query change ⇒ operators Publish Bundled Queries after
-upgrading.
+A `dcim.device` row reaching NetBox with a blank `device_type` is rejected
+(`model: This field cannot be blank`). Two sources, both in the bundled
+device/endpoint queries:
+
+1. **Device with no model.** `toString(device.platform.model)` is *null* (not
+   `""`) for a device Forward couldn't resolve a model for, so a naive
+   `== ""` guard misses it. Both queries now use a null-safe guard
+   (`if isPresent(model_raw) && model_raw != "" then model_raw else "Unknown"`),
+   the aliases variant guarding `raw_model` at source.
+2. **Endpoint with empty sysDescr (the common case).** SNMP endpoints emit as
+   `dcim.device` rows; `device_type` comes from `sysDescr`. An endpoint
+   reporting a present-but-empty sysDescr passed the `isPresent`-only fallback,
+   so `ep_model = substring("", 0, 100) = ""`. The fallback now also rejects
+   empty: `if isPresent(sysDescrOpt) && sysDescrOpt != "" then sysDescrOpt else
+   "SNMP Endpoint"`.
+
+Query-only change ⇒ operators Publish Bundled Queries after upgrading.
 
 ## Validation
 
-NQE lint clean on both queries; a structure test asserts both device branches
-carry the `"Unknown"` model fallback and the empty-slug guard. Full suite + lint
-+ harness green. (Field-reported by a design partner: 1 of 1332 rows rejected on
-blank model; the sync did not crash.)
+NQE lint clean on both queries; structure tests assert the null-safe device
+guard and the empty-sysDescr endpoint guard in both files. Live on the validation-org demo
+network: **0 blank device_type / slug / manufacturer across all 5645 rows** in
+both queries (was 4 blank before the endpoint guard). Full suite + lint +
+harness green. Field-reported: rows rejected on blank model; sync did not crash.
 
 ## Rollback
 
