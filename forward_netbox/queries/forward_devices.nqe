@@ -60,15 +60,34 @@ foreach row in (
       || !any(foreach tag in device_tag_exclude_tags select tag in endpoint.tagNames)
     let sysDescrOpt = max(foreach o in endpoint.snmpOutputs where o.requestedOid == "1.3.6.1.2.1.1.1" select max(foreach e in o.rawOidEntries select e.rawValue))
     let sysObjIdOpt = max(foreach o in endpoint.snmpOutputs where o.requestedOid == "1.3.6.1.2.1.1.2" select max(foreach e in o.rawOidEntries select e.rawValue))
-    let sysDescr = if isPresent(sysDescrOpt) && sysDescrOpt != "" then sysDescrOpt else "SNMP Endpoint"
+    let hasDescr = isPresent(sysDescrOpt) && sysDescrOpt != ""
+    let sysDescr = if hasDescr then sysDescrOpt else "SNMP Endpoint"
+    // Collapse embedded newlines/tabs/whitespace runs to a single space so a
+    // multiline sysDescr (IOS banners etc.) can't leak junk into the platform
+    // name or the 100-char clamp.
+    let sysDescrClean = replaceRegexMatches(sysDescr, re`\s+`, " ")
+    let sysObjId = if isPresent(sysObjIdOpt) then sysObjIdOpt else ""
+    let sdLower = toLowerCase(sysDescrClean)
+    // Avocent overlay: enterprise OIDs 10418 (Avocent/Vertiv) and 2925 (Cyclades,
+    // pre-acquisition), plus product-name signatures for units that report no
+    // distinct sysObjectID (Cyclades/AlterPath fold into Avocent).
+    let isAvocent = matches(sysObjId, "1.3.6.1.4.1.10418.*")
+      || matches(sysObjId, "1.3.6.1.4.1.2925.*")
+      || matches(sdLower, "*avocent*")
+      || matches(sdLower, "*cyclades*")
+      || matches(sdLower, "*alterpath*")
     // NetBox caps DeviceType.model/slug and Manufacturer.name at 100 chars, and
     // sysDescr is free-form text (observed >250 chars, or symbol-only strings
     // that slugify to nothing) — clamp identity here so rows arrive valid.
-    let ep_model = substring(sysDescr, 0, 100)
+    let ep_model = substring(sysDescrClean, 0, 100)
     let ep_model_slug_raw = substring(slugifyNetboxModel(ep_model), 0, 100)
     let ep_model_slug = if ep_model_slug_raw == "" then "unknown" else ep_model_slug_raw
-    let isAvocent = matches(if isPresent(sysObjIdOpt) then sysObjIdOpt else "", "*10418*")
-    let ep_manuf_raw = if isAvocent then "Avocent" else substring(replaceRegexMatches(sysDescr, re` .*`, ""), 0, 100)
+    // Manufacturer: Avocent when the overlay matches; else the first token of the
+    // cleaned sysDescr; "Unknown" when there was no sysDescr at all (so the
+    // fabricated "SNMP Endpoint" default never masquerades as a vendor).
+    let ep_manuf_raw = if isAvocent then "Avocent"
+      else if hasDescr then substring(replaceRegexMatches(sysDescrClean, re` .*`, ""), 0, 100)
+      else "Unknown"
     let ep_manuf = if ep_manuf_raw == "" then "Unknown" else ep_manuf_raw
     let ep_manuf_slug_raw = slugify(ep_manuf)
     let ep_manuf_slug = if ep_manuf_slug_raw == "" then "unknown" else ep_manuf_slug_raw

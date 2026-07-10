@@ -4,6 +4,8 @@
 #   - SoftwareVersion  <- device.platform.osSupport (per platform + OS version)
 #   - HardwareNotice   <- device.platform.components[].support (per DeviceType)
 #   - DeviceSoftware   <- device.platform.osVersion (one row per device)
+#   - CVE              <- network.cveDatabase.cves (global catalog)
+#   - Vulnerability    <- device.cveFindings (one row per device + CVE)
 #
 # netbox-dlm's README expects DeviceSoftware to be populated by external sync
 # tooling; this adapter is that tooling. All writes go through the standard
@@ -180,6 +182,64 @@ def apply_netbox_dlm_devicesoftware(runner, row):
     return device_software
 
 
+def ensure_dlm_cve(runner, row):
+    """Create-if-missing CVE by unique cve_id. update_values is empty so this
+    never clobbers the rich catalog row the cve map applies first (matches the
+    ensure_dlm_software_version safety net used by device software)."""
+    CVE = _dlm_model(runner, "CVE", "netbox_dlm.cve")
+    cve_id = str(row.get("cve_id") or "").strip()
+    cve, _ = runner._coalesce_update_or_create(
+        CVE,
+        coalesce_lookups=[{"cve_id": cve_id}],
+        create_values={"cve_id": cve_id},
+        update_values={},
+    )
+    return cve
+
+
+def apply_netbox_dlm_cve(runner, row):
+    CVE = _dlm_model(runner, "CVE", "netbox_dlm.cve")
+    values = runner._model_field_values(
+        CVE,
+        {
+            "cve_id": str(row.get("cve_id") or "").strip(),
+            "name": str(row.get("name") or "").strip(),
+            "description": str(row.get("description") or ""),
+            "severity": str(row.get("severity") or "").strip(),
+        },
+    )
+    cve, _ = runner._upsert_values_from_defaults(
+        "netbox_dlm.cve",
+        CVE,
+        values=values,
+        coalesce_sets=[("cve_id",)],
+    )
+    return cve
+
+
+def apply_netbox_dlm_vulnerability(runner, row):
+    Vulnerability = _dlm_model(runner, "Vulnerability", "netbox_dlm.vulnerability")
+    device = _lookup_device(
+        runner, row, "netbox_dlm.vulnerability", "DLM vulnerability"
+    )
+    # Ensure both required FK targets exist even when the cve / software-version
+    # maps are not enabled for this sync (create-if-missing, never overwriting a
+    # richer catalog / versions row).
+    software_version = ensure_dlm_software_version(runner, row, with_dates=False)
+    cve = ensure_dlm_cve(runner, row)
+    values = runner._model_field_values(
+        Vulnerability,
+        {"cve": cve, "software_version": software_version, "device": device},
+    )
+    vulnerability, _ = runner._upsert_values_from_defaults(
+        "netbox_dlm.vulnerability",
+        Vulnerability,
+        values=values,
+        coalesce_sets=[("cve", "software_version", "device")],
+    )
+    return vulnerability
+
+
 def delete_netbox_dlm_softwareversion(runner, row):
     SoftwareVersion = _dlm_model(
         runner, "SoftwareVersion", "netbox_dlm.softwareversion"
@@ -215,3 +275,39 @@ def delete_netbox_dlm_devicesoftware(runner, row):
     if device is None:
         return False
     return runner._delete_by_coalesce(DeviceSoftware, [{"device": device}])
+
+
+def delete_netbox_dlm_cve(runner, row):
+    CVE = _dlm_model(runner, "CVE", "netbox_dlm.cve")
+    return runner._delete_by_coalesce(
+        CVE, [{"cve_id": str(row.get("cve_id") or "").strip()}]
+    )
+
+
+def delete_netbox_dlm_vulnerability(runner, row):
+    Vulnerability = _dlm_model(runner, "Vulnerability", "netbox_dlm.vulnerability")
+    from dcim.models import Platform
+
+    CVE = _dlm_model(runner, "CVE", "netbox_dlm.cve")
+    SoftwareVersion = _dlm_model(
+        runner, "SoftwareVersion", "netbox_dlm.softwareversion"
+    )
+    cve = runner._get_unique_or_raise(
+        CVE, {"cve_id": str(row.get("cve_id") or "").strip()}
+    )
+    platform = runner._get_unique_or_raise(
+        Platform, {"slug": str(row.get("platform_slug") or "").strip()}
+    )
+    software_version = None
+    if platform is not None:
+        software_version = runner._get_unique_or_raise(
+            SoftwareVersion,
+            {"platform": platform, "version": str(row.get("version") or "").strip()},
+        )
+    device = runner._lookup_device_by_name(row.get("name"))
+    if cve is None or software_version is None or device is None:
+        return False
+    return runner._delete_by_coalesce(
+        Vulnerability,
+        [{"cve": cve, "software_version": software_version, "device": device}],
+    )

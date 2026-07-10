@@ -1,0 +1,34 @@
+/**
+ * @intent Forward per-device CVE vulnerabilities (netbox-dlm)
+ * @description Each (device, CVE) pair where Forward flags the device as
+ * vulnerable, for the optional netbox-dlm plugin's Vulnerability model. The
+ * software_version FK is the (platform, version) natural key the DLM Device
+ * Software map already emits; the required isPresent(osVersion) guard lives here
+ * so a device with no OS version (which could not build a SoftwareVersion) never
+ * produces a Vulnerability row. The apply adapter ensures the matching CVE and
+ * SoftwareVersion exist. status defaults to "open" (set by the model).
+ */
+
+import "netbox_utilities";
+
+@primaryKey(name, cve_id)
+@query
+f(forward_netbox_shard_keys: List<String>) =
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
+where isPresent(device.platform.osVersion)
+let platform_name = normalizeDevicePlatformName(device)
+// One row per (device, CVE): a device may flag the same CVE under both CONFIG
+// and PLATFORM basis, but the Vulnerability model is keyed on (cve,
+// software_version, device) with no basis, so collapse to distinct cveIds.
+let cve_ids = distinct(foreach finding in device.cveFindings where finding.isVulnerable select finding.cveId)
+foreach cve_id in cve_ids
+select {
+  name: device.name,
+  cve_id: substring(cve_id, 0, 20),
+  platform: platform_name,
+  platform_slug: slugify(platform_name),
+  version: substring(device.platform.osVersion, 0, 50)
+};

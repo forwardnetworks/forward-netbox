@@ -288,6 +288,16 @@ MODEL_SYNC_CONTRACTS: dict[str, ModelSyncContract] = {
         allowed_coalesce_fields=("name",),
         default_coalesce_fields=(("name",),),
     ),
+    "netbox_dlm.cve": ModelSyncContract(
+        required_fields=("cve_id",),
+        allowed_coalesce_fields=("cve_id",),
+        default_coalesce_fields=(("cve_id",),),
+    ),
+    "netbox_dlm.vulnerability": ModelSyncContract(
+        required_fields=("name", "cve_id", "platform", "platform_slug", "version"),
+        allowed_coalesce_fields=("cve_id", "platform_slug", "version", "name"),
+        default_coalesce_fields=(("cve_id", "platform_slug", "version", "name"),),
+    ),
     "netbox_cisco_aci.acifabric": ModelSyncContract(
         required_fields=("name", "fabric_id"),
         allowed_coalesce_fields=("name",),
