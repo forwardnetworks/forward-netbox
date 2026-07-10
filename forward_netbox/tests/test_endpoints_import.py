@@ -291,15 +291,33 @@ class EndpointIdentityClampTest(SimpleTestCase):
             self.assertNotIn("device_type: sysDescr", endpoint_branch, filename)
 
 
-class DeviceModelBlankGuardTest(SimpleTestCase):
-    """A device with no model must fall back, not reject on blank DeviceType.model."""
+class BlankDeviceTypeGuardTest(SimpleTestCase):
+    """No row may reach NetBox with a blank device_type (rejects DeviceType.model).
 
-    def test_both_device_queries_guard_empty_model(self):
+    Two sources of blank device_type: a device with no resolved model
+    (device.platform.model null/empty) and an SNMP endpoint reporting a
+    present-but-empty sysDescr. Both must fall back in the query.
+    """
+
+    def test_device_branch_guards_empty_or_null_model(self):
         for filename in (
             "forward_devices.nqe",
             "forward_devices_with_netbox_aliases.nqe",
         ):
-            src = _read_query(filename)
-            device_branch = src.split("network.endpoints", 1)[0]
+            device_branch = _read_query(filename).split("network.endpoints", 1)[0]
             self.assertIn('"Unknown"', device_branch, filename)
-            self.assertIn('== "" then "unknown"', device_branch, filename)
+            # null-safe guard, not just == "" (model stringifies to null).
+            self.assertIn("isPresent(", device_branch, filename)
+
+    def test_endpoint_branch_guards_empty_sysdescr(self):
+        for filename in (
+            "forward_devices.nqe",
+            "forward_devices_with_netbox_aliases.nqe",
+        ):
+            endpoint_branch = _read_query(filename).split("network.endpoints", 1)[1]
+            # An empty (present-but-"") sysDescr must fall back, not become "".
+            self.assertIn(
+                'isPresent(sysDescrOpt) && sysDescrOpt != "" then sysDescrOpt',
+                endpoint_branch,
+                filename,
+            )
