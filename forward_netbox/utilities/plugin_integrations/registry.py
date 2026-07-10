@@ -332,8 +332,9 @@ DLM_INTEGRATION = OptionalPluginIntegration(
         "end-of-life notices per device type, each device's running "
         "software version, the CVE catalog, and per-device CVE "
         "vulnerabilities from Forward's support and security analysis.",
-        "netbox-dlm ships no migrations; run `manage.py makemigrations "
-        "netbox_dlm && manage.py migrate` after installing it.",
+        "netbox-dlm 0.2.0+ ships migrations — run `manage.py migrate` after "
+        "installing it. (0.1.0 shipped none: run `manage.py makemigrations "
+        "netbox_dlm && manage.py migrate`.)",
     ),
 )
 
