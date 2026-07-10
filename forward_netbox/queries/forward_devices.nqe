@@ -18,7 +18,13 @@ foreach row in (
     where device.snapshotInfo.result == DeviceSnapshotResult.completed
     where device.platform.vendor != Vendor.FORWARD_CUSTOM
     where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
-    let model = toString(device.platform.model)
+    // A device Forward collected but couldn't determine a model stringifies to
+    // "" — NetBox rejects a blank DeviceType.model, so fall back to "Unknown"
+    // rather than drop the device.
+    let model_raw = toString(device.platform.model)
+    let model = if model_raw == "" then "Unknown" else model_raw
+    let model_slug_raw = slugifyNetboxModel(model)
+    let model_slug = if model_slug_raw == "" then "unknown" else model_slug_raw
     let role_name = replace(toString(device.platform.deviceType), "DeviceType.", "")
     let site_name = if isPresent(device.locationName) then toLowerCase(device.locationName) else "unknown"
     let platform_name = normalizeDevicePlatformName(device)
@@ -28,7 +34,7 @@ foreach row in (
       name: device.name,
       manufacturer: manufacturer_name,
       device_type: model,
-      device_type_slug: slugifyNetboxModel(model),
+      device_type_slug: model_slug,
       site: site_name,
       site_slug: slugify(site_name),
       role: role_name,
