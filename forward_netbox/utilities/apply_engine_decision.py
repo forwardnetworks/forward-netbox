@@ -265,6 +265,8 @@ ADAPTER_REQUIRED_MODELS = {
     "netbox_dlm.softwareversion",
     "netbox_dlm.hardwarenotice",
     "netbox_dlm.devicesoftware",
+    "netbox_dlm.cve",
+    "netbox_dlm.vulnerability",
 }
 
 ADAPTER_MODEL_BLOCKERS = {
@@ -287,6 +289,20 @@ ADAPTER_MODEL_BLOCKERS = {
         "blocker_reason": (
             "DLM device-software writes require device and software-version "
             "dependency resolution handled by the adapter."
+        ),
+    },
+    "netbox_dlm.cve": {
+        "blocker_code": "plugin_model_dependencies",
+        "blocker_reason": (
+            "DLM CVE writes require plugin model resolution and unique cve_id "
+            "upsert handled by the adapter."
+        ),
+    },
+    "netbox_dlm.vulnerability": {
+        "blocker_code": "plugin_model_dependencies",
+        "blocker_reason": (
+            "DLM vulnerability writes require cve, software-version, and device "
+            "foreign-key resolution handled by the adapter."
         ),
     },
     "dcim.cable": {

@@ -22,6 +22,8 @@ DLM_MODEL_STRINGS = (
     "netbox_dlm.softwareversion",
     "netbox_dlm.hardwarenotice",
     "netbox_dlm.devicesoftware",
+    "netbox_dlm.cve",
+    "netbox_dlm.vulnerability",
 )
 
 
@@ -82,11 +84,52 @@ class DlmQueryStructureTest(SimpleTestCase):
         for field in ("name:", "platform_slug:", "version:"):
             self.assertIn(field, src)
 
+    def test_cve_query_shape(self):
+        src = _read_query("forward_dlm_cves.nqe")
+        # Global catalog off the CVE database, keyed on the unique cve_id.
+        self.assertIn("network.cveDatabase.cves", src)
+        self.assertIn("@primaryKey(cve_id)", src)
+        for field in ("cve_id:", "name:", "description:", "severity:"):
+            self.assertIn(field, src)
+        # Severity maps to the 5 netbox-dlm CVESeverityChoices via enum-direct
+        # comparison (the deprecated Cve.severity/description fields are avoided
+        # in favour of the per-vendor infos).
+        self.assertIn("cve.vendorInfos", src)
+        for choice in ('"critical"', '"high"', '"medium"', '"low"', '"none"'):
+            self.assertIn(choice, src)
+        for sev in (
+            "Severity.CRITICAL",
+            "Severity.HIGH",
+            "Severity.MEDIUM",
+            "Severity.LOW",
+            "Severity.NONE",
+        ):
+            self.assertIn(sev, src)
+        # cve_id clamped to the 20-char column.
+        self.assertIn("substring(cve.cveId, 0, 20)", src)
+
+    def test_vulnerability_query_shape(self):
+        src = _read_query("forward_dlm_vulnerabilities.nqe")
+        # Device-scoped: only vulnerable findings, only devices that can build a
+        # SoftwareVersion FK (isPresent(osVersion)); dual-basis collapsed.
+        self.assertIn("device.cveFindings", src)
+        self.assertIn("isVulnerable", src)
+        self.assertIn("isPresent(device.platform.osVersion)", src)
+        self.assertIn("distinct(", src)
+        self.assertIn("@primaryKey(name, cve_id)", src)
+        # Emits the same (platform, version) natural key as device software so
+        # the software_version FK resolves to the same row.
+        for field in ("name:", "cve_id:", "platform:", "platform_slug:", "version:"):
+            self.assertIn(field, src)
+        self.assertIn("substring(device.platform.osVersion, 0, 50)", src)
+
     def test_queries_seed_shard_parameter(self):
         for filename in (
             "forward_dlm_software_versions.nqe",
             "forward_dlm_hardware_notices.nqe",
             "forward_dlm_device_software.nqe",
+            "forward_dlm_cves.nqe",
+            "forward_dlm_vulnerabilities.nqe",
         ):
             params = _default_query_parameters(filename)
             self.assertIn("forward_netbox_shard_keys", params, filename)

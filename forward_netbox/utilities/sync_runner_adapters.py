@@ -42,12 +42,16 @@ from .sync_device import apply_dcim_device
 from .sync_device import apply_dcim_virtualchassis
 from .sync_device import delete_dcim_device
 from .sync_device import delete_dcim_virtualchassis
+from .sync_dlm import apply_netbox_dlm_cve
 from .sync_dlm import apply_netbox_dlm_devicesoftware
 from .sync_dlm import apply_netbox_dlm_hardwarenotice
 from .sync_dlm import apply_netbox_dlm_softwareversion
+from .sync_dlm import apply_netbox_dlm_vulnerability
+from .sync_dlm import delete_netbox_dlm_cve
 from .sync_dlm import delete_netbox_dlm_devicesoftware
 from .sync_dlm import delete_netbox_dlm_hardwarenotice
 from .sync_dlm import delete_netbox_dlm_softwareversion
+from .sync_dlm import delete_netbox_dlm_vulnerability
 from .sync_interface import apply_dcim_interface
 from .sync_interface import apply_dcim_macaddress
 from .sync_interface import apply_extras_taggeditem
@@ -931,6 +935,12 @@ class ForwardSyncRunnerAdapterMixin:
     def _apply_netbox_dlm_devicesoftware(self, row):
         return apply_netbox_dlm_devicesoftware(self, row)
 
+    def _apply_netbox_dlm_cve(self, row):
+        return apply_netbox_dlm_cve(self, row)
+
+    def _apply_netbox_dlm_vulnerability(self, row):
+        return apply_netbox_dlm_vulnerability(self, row)
+
     def _delete_netbox_dlm_softwareversion(self, row):
         return delete_netbox_dlm_softwareversion(self, row)
 
@@ -939,6 +949,12 @@ class ForwardSyncRunnerAdapterMixin:
 
     def _delete_netbox_dlm_devicesoftware(self, row):
         return delete_netbox_dlm_devicesoftware(self, row)
+
+    def _delete_netbox_dlm_cve(self, row):
+        return delete_netbox_dlm_cve(self, row)
+
+    def _delete_netbox_dlm_vulnerability(self, row):
+        return delete_netbox_dlm_vulnerability(self, row)
 
     def _apply_netbox_cisco_aci_acifabric(self, row):
         return apply_netbox_cisco_aci_acifabric(self, row)
