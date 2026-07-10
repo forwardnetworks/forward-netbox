@@ -409,6 +409,18 @@ BUILTIN_OPTIONAL_QUERY_MAPS = [
         "enabled": False,
     },
     {
+        "model_string": "netbox_dlm.cve",
+        "name": "Forward DLM CVEs",
+        "filename": "forward_dlm_cves.nqe",
+        "enabled": False,
+    },
+    {
+        "model_string": "netbox_dlm.vulnerability",
+        "name": "Forward DLM Vulnerabilities",
+        "filename": "forward_dlm_vulnerabilities.nqe",
+        "enabled": False,
+    },
+    {
         "model_string": "dcim.module",
         "name": "Forward Modules",
         "filename": "forward_modules.nqe",
