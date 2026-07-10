@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v2.5.1
+
+Fix: a device Forward collected without a resolved model (`device.platform.model` empty) was rejected with `model: This field cannot be blank` — the bundled device queries now fall back to a `Unknown` device type (with slug fallbacks) instead of dropping the device. Query-only change; **Publish Bundled Queries** after upgrading.
+
 ## v2.5.0
 
 Feature: optional **netbox-dlm** (Device Lifecycle Management) integration — three new opt-in NQE maps sync Forward's end-of-life analysis into the netbox-dlm plugin: OS software versions with vendor EOL dates per (platform, version), hardware end-of-life notices per device type (Cisco/Palo Alto/Fortinet part support), and each device's running software version. Disabled by default; requires the netbox-dlm plugin (run `makemigrations netbox_dlm && migrate` after installing it — it ships no migrations). Fix: syncs no longer crash mid-provision when an installed plugin's migrations were never applied (`relation ... does not exist`) — a preflight now fails in seconds with the app name and remedy, and a new **Database tables** Health check surfaces the gap before you sync.

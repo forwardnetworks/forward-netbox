@@ -289,3 +289,17 @@ class EndpointIdentityClampTest(SimpleTestCase):
             # The select must emit the clamped values, never raw sysDescr.
             self.assertIn("device_type: ep_model,", endpoint_branch, filename)
             self.assertNotIn("device_type: sysDescr", endpoint_branch, filename)
+
+
+class DeviceModelBlankGuardTest(SimpleTestCase):
+    """A device with no model must fall back, not reject on blank DeviceType.model."""
+
+    def test_both_device_queries_guard_empty_model(self):
+        for filename in (
+            "forward_devices.nqe",
+            "forward_devices_with_netbox_aliases.nqe",
+        ):
+            src = _read_query(filename)
+            device_branch = src.split("network.endpoints", 1)[0]
+            self.assertIn('"Unknown"', device_branch, filename)
+            self.assertIn('== "" then "unknown"', device_branch, filename)
