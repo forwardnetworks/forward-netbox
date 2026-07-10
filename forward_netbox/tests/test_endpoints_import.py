@@ -279,7 +279,8 @@ class EndpointIdentityClampTest(SimpleTestCase):
         ):
             src = _read_query(filename)
             endpoint_branch = src.split("network.endpoints", 1)[1]
-            self.assertIn("substring(sysDescr, 0, 100)", endpoint_branch, filename)
+            # Model is clamped off the whitespace-collapsed sysDescr.
+            self.assertIn("substring(sysDescrClean, 0, 100)", endpoint_branch, filename)
             self.assertIn(
                 'if ep_model_slug_raw == "" then "unknown"', endpoint_branch, filename
             )
@@ -317,7 +318,59 @@ class BlankDeviceTypeGuardTest(SimpleTestCase):
             endpoint_branch = _read_query(filename).split("network.endpoints", 1)[1]
             # An empty (present-but-"") sysDescr must fall back, not become "".
             self.assertIn(
-                'isPresent(sysDescrOpt) && sysDescrOpt != "" then sysDescrOpt',
+                'let hasDescr = isPresent(sysDescrOpt) && sysDescrOpt != ""',
                 endpoint_branch,
                 filename,
             )
+            self.assertIn(
+                'if hasDescr then sysDescrOpt else "SNMP Endpoint"',
+                endpoint_branch,
+                filename,
+            )
+            # A missing sysDescr must NOT masquerade as a vendor named "SNMP":
+            # the manufacturer falls back to "Unknown" instead.
+            self.assertIn('else "Unknown"', endpoint_branch, filename)
+
+
+class AvocentUnificationTest(SimpleTestCase):
+    """One physical vendor = one platform. Avocent/Cyclades/AlterPath fold into
+    'Avocent' via enterprise OIDs 10418 + 2925 and product-name signatures, and a
+    multiline sysDescr is whitespace-collapsed before the first-token manufacturer
+    is derived (so 'Cisco\\nTechnical\\nCopyright...' can't leak in)."""
+
+    def _endpoint_branch(self, filename):
+        return _read_query(filename).split("network.endpoints", 1)[1]
+
+    def test_avocent_overlay_covers_both_oids_and_brand_signatures(self):
+        for filename in (
+            "forward_devices.nqe",
+            "forward_devices_with_netbox_aliases.nqe",
+        ):
+            branch = self._endpoint_branch(filename)
+            self.assertIn("1.3.6.1.4.1.10418.*", branch, filename)
+            self.assertIn("1.3.6.1.4.1.2925.*", branch, filename)
+            for sig in ("*avocent*", "*cyclades*", "*alterpath*"):
+                self.assertIn(sig, branch, filename)
+
+    def test_multiline_sysdescr_is_collapsed_before_tokenizing(self):
+        for filename in (
+            "forward_devices.nqe",
+            "forward_devices_with_netbox_aliases.nqe",
+        ):
+            branch = self._endpoint_branch(filename)
+            self.assertIn(
+                'replaceRegexMatches(sysDescr, re`\\s+`, " ")', branch, filename
+            )
+            # The first-token manufacturer derives from the cleaned string.
+            self.assertIn(
+                'replaceRegexMatches(sysDescrClean, re` .*`, "")', branch, filename
+            )
+
+    def test_endpoint_branches_stay_byte_identical(self):
+        # The two device queries share the endpoint branch verbatim; the parity
+        # is what lets a single fix land in both.
+        base = _read_query("forward_devices.nqe").split("network.endpoints", 1)[1]
+        alias = _read_query("forward_devices_with_netbox_aliases.nqe").split(
+            "network.endpoints", 1
+        )[1]
+        self.assertEqual(base, alias)

@@ -1,0 +1,35 @@
+/**
+ * @intent Forward CVE catalog (netbox-dlm)
+ * @description Every CVE in Forward's vulnerability database, for the optional
+ * netbox-dlm plugin's CVE model. Global reference data (not device-scoped): one
+ * row per catalog CVE. Severity is the worst-case across the CVE's per-vendor
+ * infos, mapped to netbox-dlm CVESeverityChoices; description is one vendor's
+ * text. The Forward->NetBox mapping and all length clamps live in this query
+ * (NQE is the source of truth); the apply adapter only upserts by the unique
+ * cve_id. cvss scores, published date, link and the affected_software M2M are
+ * intentionally left blank (minimal parse).
+ */
+
+@primaryKey(cve_id)
+@query
+f(forward_netbox_shard_keys: List<String>) =
+foreach cve in network.cveDatabase.cves
+// Worst-case severity across per-vendor infos -> netbox-dlm CVESeverityChoices
+// (none/low/medium/high/critical). Enums compared directly. An entry with no
+// vendor severity clamps to "" (blank allowed, no default) so the adapter's
+// full_clean() never rejects the row.
+let severity =
+  if any(foreach vi in cve.vendorInfos where vi.severity == Severity.CRITICAL select true) then "critical"
+  else if any(foreach vi in cve.vendorInfos where vi.severity == Severity.HIGH select true) then "high"
+  else if any(foreach vi in cve.vendorInfos where vi.severity == Severity.MEDIUM select true) then "medium"
+  else if any(foreach vi in cve.vendorInfos where vi.severity == Severity.LOW select true) then "low"
+  else if any(foreach vi in cve.vendorInfos where vi.severity == Severity.NONE select true) then "none"
+  else ""
+let desc_opt = max(foreach vi in cve.vendorInfos select vi.description)
+let description = if isPresent(desc_opt) then desc_opt else ""
+select {
+  cve_id: substring(cve.cveId, 0, 20),
+  name: substring(cve.cveId, 0, 200),
+  description: description,
+  severity: severity
+};
