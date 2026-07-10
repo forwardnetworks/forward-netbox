@@ -64,8 +64,12 @@ foreach row in (
         select alias.netbox_slug
       )
       else null : String
-    let device_type_model = if isPresent(mapped_model) then mapped_model else raw_model
-    let device_type_slug = if isPresent(mapped_slug) then mapped_slug else raw_model_slug
+    // A device with no model stringifies to "" — NetBox rejects a blank
+    // DeviceType.model, so fall back to "Unknown" rather than drop the device.
+    let device_type_model_raw = if isPresent(mapped_model) then mapped_model else raw_model
+    let device_type_model = if device_type_model_raw == "" then "Unknown" else device_type_model_raw
+    let device_type_slug_raw = if isPresent(mapped_slug) then mapped_slug else raw_model_slug
+    let device_type_slug = if device_type_slug_raw == "" then "unknown" else device_type_slug_raw
     select {
       name: device.name,
       manufacturer: manufacturer_name,
