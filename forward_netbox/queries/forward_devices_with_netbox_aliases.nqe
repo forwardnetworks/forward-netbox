@@ -22,7 +22,8 @@ foreach row in (
     where device.platform.vendor != Vendor.FORWARD_CUSTOM
     where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
     let location = device.locationName
-    let raw_model = toString(device.platform.model)
+    let raw_model_opt = toString(device.platform.model)
+    let raw_model = if isPresent(raw_model_opt) && raw_model_opt != "" then raw_model_opt else "Unknown"
     let raw_model_slug = slugifyNetboxModel(raw_model)
     let device_type = device.platform.deviceType
     let site_name = if isPresent(location) then toLowerCase(location) else "unknown"
@@ -67,9 +68,9 @@ foreach row in (
     // A device with no model stringifies to "" — NetBox rejects a blank
     // DeviceType.model, so fall back to "Unknown" rather than drop the device.
     let device_type_model_raw = if isPresent(mapped_model) then mapped_model else raw_model
-    let device_type_model = if device_type_model_raw == "" then "Unknown" else device_type_model_raw
+    let device_type_model = if isPresent(device_type_model_raw) && device_type_model_raw != "" then device_type_model_raw else "Unknown"
     let device_type_slug_raw = if isPresent(mapped_slug) then mapped_slug else raw_model_slug
-    let device_type_slug = if device_type_slug_raw == "" then "unknown" else device_type_slug_raw
+    let device_type_slug = if isPresent(device_type_slug_raw) && device_type_slug_raw != "" then device_type_slug_raw else "unknown"
     select {
       name: device.name,
       manufacturer: manufacturer_name,
@@ -101,7 +102,7 @@ foreach row in (
       || !any(foreach tag in device_tag_exclude_tags select tag in endpoint.tagNames)
     let sysDescrOpt = max(foreach o in endpoint.snmpOutputs where o.requestedOid == "1.3.6.1.2.1.1.1" select max(foreach e in o.rawOidEntries select e.rawValue))
     let sysObjIdOpt = max(foreach o in endpoint.snmpOutputs where o.requestedOid == "1.3.6.1.2.1.1.2" select max(foreach e in o.rawOidEntries select e.rawValue))
-    let sysDescr = if isPresent(sysDescrOpt) then sysDescrOpt else "SNMP Endpoint"
+    let sysDescr = if isPresent(sysDescrOpt) && sysDescrOpt != "" then sysDescrOpt else "SNMP Endpoint"
     // NetBox caps DeviceType.model/slug and Manufacturer.name at 100 chars, and
     // sysDescr is free-form text (observed >250 chars, or symbol-only strings
     // that slugify to nothing) — clamp identity here so rows arrive valid.
