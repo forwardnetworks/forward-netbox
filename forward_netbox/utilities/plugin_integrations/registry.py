@@ -305,16 +305,22 @@ DLM_INTEGRATION = OptionalPluginIntegration(
         "netbox_dlm.softwareversion",
         "netbox_dlm.hardwarenotice",
         "netbox_dlm.devicesoftware",
+        "netbox_dlm.cve",
+        "netbox_dlm.vulnerability",
     ),
     supported_models=(
         "netbox_dlm.softwareversion",
         "netbox_dlm.hardwarenotice",
         "netbox_dlm.devicesoftware",
+        "netbox_dlm.cve",
+        "netbox_dlm.vulnerability",
     ),
     query_maps=(
         "Forward DLM Software Versions",
         "Forward DLM Hardware Notices",
         "Forward DLM Device Software",
+        "Forward DLM CVEs",
+        "Forward DLM Vulnerabilities",
     ),
     package_names=("netbox-dlm", "netbox_dlm"),
     adapter_module="forward_netbox.utilities.sync_dlm",
@@ -323,10 +329,12 @@ DLM_INTEGRATION = OptionalPluginIntegration(
     notes=(
         "Beta lifecycle import surface backed by the optional netbox-dlm "
         "plugin: OS end-of-life dates per (platform, version), hardware "
-        "end-of-life notices per device type, and each device's running "
-        "software version from Forward's support analysis.",
-        "netbox-dlm ships no migrations; run `manage.py makemigrations "
-        "netbox_dlm && manage.py migrate` after installing it.",
+        "end-of-life notices per device type, each device's running "
+        "software version, the CVE catalog, and per-device CVE "
+        "vulnerabilities from Forward's support and security analysis.",
+        "netbox-dlm 0.2.0+ ships migrations — run `manage.py migrate` after "
+        "installing it. (0.1.0 shipped none: run `manage.py makemigrations "
+        "netbox_dlm && manage.py migrate`.)",
     ),
 )
 

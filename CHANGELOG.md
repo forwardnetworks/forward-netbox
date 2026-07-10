@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v2.5.2
+
+Feature: optional **netbox-dlm CVE + Vulnerability** feed — two new opt-in NQE maps import Forward's security analysis into the netbox-dlm plugin: the **CVE catalog** (`network.cveDatabase.cves`, worst-case per-vendor severity mapped to the plugin's severity choices) and **per-device vulnerabilities** (`device.cveFindings`, one row per device↔CVE). Disabled by default; requires the netbox-dlm plugin (0.2.0+ ships migrations — run `migrate`; 0.1.0 needs `makemigrations netbox_dlm` first). The Vulnerability map is large (~16 rows/device) — enable it scoped or on a fresh branch first. Fix: **SNMP endpoint platform unification** — Avocent/Cyclades/AlterPath (enterprise OIDs `10418` + `2925` plus product-name signatures) now resolve to a single `Avocent` platform instead of fragmenting across `Avocent`/`AlterPath`/`SNMP`; a multiline `sysDescr` is whitespace-collapsed so it can't leak a junk platform name, and a missing `sysDescr` falls back to `Unknown` rather than a fake `SNMP` vendor. Query-only endpoint change; **Publish Bundled Queries** after upgrading.
+
 ## v2.5.1
 
 Fix: rows with a blank `device_type` were rejected with `model: This field cannot be blank` — a device with no resolved model (`device.platform.model` null) and, more commonly, an SNMP endpoint reporting an empty `sysDescr`. The bundled queries now guard both (null-safe/empty-safe fallbacks to `Unknown` / `SNMP Endpoint`) instead of dropping the row (live-verified: 0 blank device types across 5645 rows). Query-only change; **Publish Bundled Queries** after upgrading.
