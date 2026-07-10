@@ -4,7 +4,7 @@ Generated from the README compatibility table by `scripts/gen_changelog.py`. Do 
 
 ## v2.5.1
 
-Fix: a device Forward collected without a resolved model (`device.platform.model` empty) was rejected with `model: This field cannot be blank` — the bundled device queries now fall back to a `Unknown` device type (with slug fallbacks) instead of dropping the device. Query-only change; **Publish Bundled Queries** after upgrading.
+Fix: rows with a blank `device_type` were rejected with `model: This field cannot be blank` — a device with no resolved model (`device.platform.model` null) and, more commonly, an SNMP endpoint reporting an empty `sysDescr`. The bundled queries now guard both (null-safe/empty-safe fallbacks to `Unknown` / `SNMP Endpoint`) instead of dropping the row (live-verified: 0 blank device types across 5645 rows). Query-only change; **Publish Bundled Queries** after upgrading.
 
 ## v2.5.0
 
