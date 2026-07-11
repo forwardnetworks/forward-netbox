@@ -354,6 +354,7 @@ def clean_forward_sync(sync):
             "skip_unchanged_snapshot",
             "set_primary_ip_from_mgmt_tag",
             "diff_fallback_mode",
+            "webhook_secret",
             # Post-sync overlay toggles (opt-in, except vsys parent-link which is
             # default-on and opts OUT with auto_link_vsys_parents=False).
             "auto_tag_backfilled",
@@ -372,6 +373,8 @@ def clean_forward_sync(sync):
     if not isinstance(snapshot_id, str):
         raise ValidationError(_("`snapshot_id` must be a string."))
     parameters["snapshot_id"] = snapshot_id
+    if not isinstance(parameters.get("webhook_secret", ""), str):
+        raise ValidationError(_("`webhook_secret` must be a string."))
     # 2.0: single-branch is the only execution backend. Normalize any value
     # (including legacy branching / fast_bootstrap) to it.
     parameters["execution_backend"] = ForwardExecutionBackendChoices.SINGLE_BRANCH
