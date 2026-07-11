@@ -20,15 +20,42 @@ pip install forward-netbox
 Alternatively, install a specific wheel or source archive from GitHub Releases:
 
 ```bash
-pip install /path/to/forward_netbox-2.5.2-py3-none-any.whl
-pip install /path/to/forward_netbox-2.5.2.tar.gz
+pip install /path/to/forward_netbox-2.5.3-py3-none-any.whl
+pip install /path/to/forward_netbox-2.5.3.tar.gz
 ```
 
 If you mirror the package into a private Python index, pin the same release version:
 
 ```bash
-pip install forward-netbox==2.5.2
+pip install forward-netbox==2.5.3
 ```
+
+## Editions: core vs integrations
+
+`forward-netbox` is a single package with two install profiles:
+
+- **Core** — `pip install forward-netbox`. Syncs the NetBox-builtin models
+  (devices, interfaces, IP addresses, prefixes, VLANs, VRFs, cables, MAC
+  addresses, inventory items, modules). Pulls **no** optional NetBox-plugin
+  dependencies — nothing extra to install, migrate, or maintain.
+- **Integrations** — `pip install forward-netbox[integrations]`. Also installs
+  the optional NetBox plugins whose models Forward can populate. Each integration
+  is opt-in: its sync maps ship **disabled** and stay dormant until the plugin is
+  installed, added to `PLUGINS`, migrated, and the map is enabled — so a core
+  install never sees them.
+
+| Extra | Installs plugin | Adds Forward sync maps for |
+| --- | --- | --- |
+| `forward-netbox[dlm]` | `netbox-dlm` | SoftwareVersion, HardwareNotice, DeviceSoftware, CVE, Vulnerability |
+| `forward-netbox[routing]` | `netbox-routing` | BGP peers / address families, OSPF instances / areas / interfaces |
+| `forward-netbox[aci]` | `netbox-cisco-aci` | Cisco ACI fabric / pod / node / tenant / VRF / EPG / contract / … |
+| `forward-netbox[peering]` | `netbox-peering-manager` | Peering sessions |
+| `forward-netbox[integrations]` | all of the above | every optional map |
+
+Installing an extra only installs the plugin package. You must still add each
+plugin to `PLUGINS` in `configuration.py` and run `migrate` (some ship their own
+migrations, e.g. netbox-dlm `0.2.0+`; older builds need
+`makemigrations netbox_dlm` first).
 
 ## Release Compatibility
 
@@ -39,7 +66,8 @@ Latest release requires NetBox `4.6.4` and `netbox-branching` `1.1.0+`. Expand f
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v2.5.2` | `4.6.4` required (4.5.x dropped); needs netbox-branching `1.1.0` – `1.1.x` | Current release; Feature: optional **netbox-dlm CVE + Vulnerability** feed — two new opt-in NQE maps import Forward's security analysis into the netbox-dlm plugin: the **CVE catalog** (`network.cveDatabase.cves`, worst-case per-vendor severity mapped to the plugin's severity choices) and **per-device vulnerabilities** (`device.cveFindings`, one row per device↔CVE). Disabled by default; requires the netbox-dlm plugin (0.2.0+ ships migrations — run `migrate`; 0.1.0 needs `makemigrations netbox_dlm` first). The Vulnerability map is large (~16 rows/device) — enable it scoped or on a fresh branch first. Fix: **SNMP endpoint platform unification** — Avocent/Cyclades/AlterPath (enterprise OIDs `10418` + `2925` plus product-name signatures) now resolve to a single `Avocent` platform instead of fragmenting across `Avocent`/`AlterPath`/`SNMP`; a multiline `sysDescr` is whitespace-collapsed so it can't leak a junk platform name, and a missing `sysDescr` falls back to `Unknown` rather than a fake `SNMP` vendor. Query-only endpoint change; **Publish Bundled Queries** after upgrading. |
+| `v2.5.3` | `4.6.4` required (4.5.x dropped); needs netbox-branching `1.1.0` – `1.1.x` | Current release; **Editions** — `forward-netbox` is now one package with two install profiles: core (`pip install forward-netbox`, NetBox-builtin models only, no optional-plugin dependencies) and integrations (`pip install forward-netbox[integrations]`, or per-plugin `[dlm]`/`[routing]`/`[aci]`/`[peering]`) which install the opt-in netbox-dlm / netbox-routing / netbox-cisco-aci / netbox-peering-manager maps (still disabled until the plugin is installed and enabled). Fix: enabling the **netbox-routing** models no longer crashes the sync with `TypeError: '<' not supported between instances of 'NoneType' and 'int'` — the BGP/OSPF dependency-lookup cache sorted scope keys whose global-table VRF pk is `None` against a VRF peer on the same router/device; the sort is now None-safe. Fix: **Drift Report clarity** — the report replays a cached dependency-preview, so a stale or empty-baseline preview could read as real drift (field report: 18/19 models showing 100% pending). Now (1) an **empty-baseline hint** when every model shows all Forward rows pending with zero removals (the "preview ran before data was ingested/merged" signature — it is everything Forward has, not real mismatches), (2) the **staleness banner** also fires when the preview is over a day old (not only when a newer sync ran since), and (3) a **Preview Dependencies** button on the report to recompute on the spot. No query or data change. |
+| `v2.5.2` | `4.6.4` required (4.5.x dropped); needs netbox-branching `1.1.0` – `1.1.x` | Superseded by `v2.5.3`; Feature: optional **netbox-dlm CVE + Vulnerability** feed — two new opt-in NQE maps import Forward's security analysis into the netbox-dlm plugin: the **CVE catalog** (`network.cveDatabase.cves`, worst-case per-vendor severity mapped to the plugin's severity choices) and **per-device vulnerabilities** (`device.cveFindings`, one row per device↔CVE). Disabled by default; requires the netbox-dlm plugin (0.2.0+ ships migrations — run `migrate`; 0.1.0 needs `makemigrations netbox_dlm` first). The Vulnerability map is large (~16 rows/device) — enable it scoped or on a fresh branch first. Fix: **SNMP endpoint platform unification** — Avocent/Cyclades/AlterPath (enterprise OIDs `10418` + `2925` plus product-name signatures) now resolve to a single `Avocent` platform instead of fragmenting across `Avocent`/`AlterPath`/`SNMP`; a multiline `sysDescr` is whitespace-collapsed so it can't leak a junk platform name, and a missing `sysDescr` falls back to `Unknown` rather than a fake `SNMP` vendor. Query-only endpoint change; **Publish Bundled Queries** after upgrading. |
 | `v2.5.1` | `4.6.4` required (4.5.x dropped); needs netbox-branching `1.1.0` – `1.1.x` | Superseded by `v2.5.2`; Fix: rows with a blank `device_type` were rejected with `model: This field cannot be blank` — a device with no resolved model (`device.platform.model` null) and, more commonly, an SNMP endpoint reporting an empty `sysDescr`. The bundled queries now guard both (null-safe/empty-safe fallbacks to `Unknown` / `SNMP Endpoint`) instead of dropping the row (live-verified: 0 blank device types across 5645 rows). Query-only change; **Publish Bundled Queries** after upgrading. |
 | `v2.5.0` | `4.6.4` required (4.5.x dropped); needs netbox-branching `1.1.0` – `1.1.x` | Superseded by `v2.5.1`; Feature: optional **netbox-dlm** (Device Lifecycle Management) integration — three new opt-in NQE maps sync Forward's end-of-life analysis into the netbox-dlm plugin: OS software versions with vendor EOL dates per (platform, version), hardware end-of-life notices per device type (Cisco/Palo Alto/Fortinet part support), and each device's running software version. Disabled by default; requires the netbox-dlm plugin (run `makemigrations netbox_dlm && migrate` after installing it — it ships no migrations). Fix: syncs no longer crash mid-provision when an installed plugin's migrations were never applied (`relation ... does not exist`) — a preflight now fails in seconds with the app name and remedy, and a new **Database tables** Health check surfaces the gap before you sync. |
 | `v2.4.5` | `4.6.4` required (4.5.x dropped); needs netbox-branching `1.1.0` – `1.1.x` | Superseded by `v2.5.0`; Fix: sync no longer crashes on netbox-branching **1.1.1** (`SquashMergeStrategy has no attribute '_split_bidirectional_cycles'` — 1.1.1 removed that internal helper; the bidirectional-cycle split is now built into the plugin and the dependency is bounded to `<1.2`). Also fixes SNMP-endpoint rows failing validation: the bundled endpoint query branches now clamp sysDescr-derived `device_type` to NetBox's 100-char limit (`substring`) and guard empty slugs — the fix lives in the NQE queries (the source of truth), so **Publish Bundled Queries** again after upgrading (fixes the `Ensure this value has at most 100 characters` rejects and the `At least one coalesce lookup must be provided` error). |
