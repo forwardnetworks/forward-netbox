@@ -1201,6 +1201,156 @@ class ForwardSyncHealthTest(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertFalse(response.context["drift_stale"])
 
+    def test_compute_drift_report_flags_full_create_empty_baseline(self):
+        # Every model fully pending with no removals across >=3 models is the
+        # empty/unmerged-baseline fingerprint (field report: 18/19 models all
+        # showing pending == forward rows).
+        from forward_netbox.utilities.drift_report import compute_drift_report
+
+        report = compute_drift_report(
+            {
+                "model_results": [
+                    {
+                        "model": "dcim.device",
+                        "row_count": 10,
+                        "estimated_changes": 10,
+                        "delete_count": 0,
+                    },
+                    {
+                        "model": "dcim.interface",
+                        "row_count": 50,
+                        "estimated_changes": 50,
+                        "delete_count": 0,
+                    },
+                    {
+                        "model": "ipam.prefix",
+                        "row_count": 5,
+                        "estimated_changes": 5,
+                        "delete_count": 0,
+                    },
+                ]
+            }
+        )
+        self.assertTrue(report["looks_like_full_create"])
+        self.assertEqual(report["full_create_model_count"], 3)
+
+    def test_compute_drift_report_not_full_create_on_real_delta(self):
+        from forward_netbox.utilities.drift_report import compute_drift_report
+
+        # A partial change or any removal is a genuine delta, not the fingerprint.
+        report = compute_drift_report(
+            {
+                "model_results": [
+                    {
+                        "model": "dcim.device",
+                        "row_count": 10,
+                        "estimated_changes": 2,
+                        "delete_count": 0,
+                    },
+                    {
+                        "model": "dcim.interface",
+                        "row_count": 50,
+                        "estimated_changes": 50,
+                        "delete_count": 1,
+                    },
+                    {
+                        "model": "ipam.prefix",
+                        "row_count": 5,
+                        "estimated_changes": 5,
+                        "delete_count": 0,
+                    },
+                ]
+            }
+        )
+        self.assertFalse(report["looks_like_full_create"])
+
+    def test_compute_drift_report_not_full_create_below_model_floor(self):
+        from forward_netbox.utilities.drift_report import compute_drift_report
+
+        # A single tiny scope is not the multi-model empty-baseline signature.
+        report = compute_drift_report(
+            {
+                "model_results": [
+                    {
+                        "model": "dcim.device",
+                        "row_count": 3,
+                        "estimated_changes": 3,
+                        "delete_count": 0,
+                    },
+                ]
+            }
+        )
+        self.assertFalse(report["looks_like_full_create"])
+
+    def test_drift_report_flags_stale_when_preview_is_old(self):
+        # A preview older than a day is stale even when no sync ran after it —
+        # the field case where a 4-day-old "everything to create" preview showed
+        # no warning at all. Job.created is auto_now_add, so force the age with a
+        # queryset update (a plain create() timestamp is ignored).
+        job = self._create_dependency_preview_job(timezone.now())
+        Job.objects.filter(pk=job.pk).update(
+            created=timezone.now() - timezone.timedelta(days=2)
+        )
+        # No ingestion after the preview — isolate the absolute-age path from the
+        # relative "newer sync ran" path.
+        ForwardIngestion.objects.filter(sync=self.sync).delete()
+        self.client.force_login(self.user)
+        response = self.client.get(
+            reverse(
+                "plugins:forward_netbox:forwardsync_drift_report",
+                kwargs={"pk": self.sync.pk},
+            )
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context["drift_stale"])
+        self.assertTrue(response.context["drift_stale_old_preview"])
+        self.assertFalse(response.context["drift_stale_newer_sync"])
+        self.assertContains(response, "over a day old")
+
+    def test_drift_report_surfaces_full_create_hint(self):
+        # The empty-baseline hint explains a 100%-pending preview so operators do
+        # not read it as real drift. Fresh preview so the stale banner is absent.
+        Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=self.sync.pk,
+            name="dependency preview",
+            status=JobStatusChoices.STATUS_COMPLETED,
+            job_id="123e4567-e89b-12d3-a456-426614174051",
+            created=timezone.now(),
+            data={
+                "model_results": [
+                    {
+                        "model": "dcim.device",
+                        "row_count": 10,
+                        "estimated_changes": 10,
+                        "delete_count": 0,
+                    },
+                    {
+                        "model": "dcim.interface",
+                        "row_count": 50,
+                        "estimated_changes": 50,
+                        "delete_count": 0,
+                    },
+                    {
+                        "model": "ipam.prefix",
+                        "row_count": 5,
+                        "estimated_changes": 5,
+                        "delete_count": 0,
+                    },
+                ]
+            },
+        )
+        self.client.force_login(self.user)
+        response = self.client.get(
+            reverse(
+                "plugins:forward_netbox:forwardsync_drift_report",
+                kwargs={"pk": self.sync.pk},
+            )
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context["report"]["looks_like_full_create"])
+        self.assertContains(response, "everything Forward has")
+
     def test_ingestion_health_check_marks_non_blocking_issue_baseline_as_pass(self):
         ingestion = ForwardIngestion.objects.create(
             sync=self.sync,

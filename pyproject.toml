@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "forward-netbox"
-version = "2.5.2"
+version = "2.5.3"
 description = "NetBox plugin to sync Forward data into NetBox via built-in NQE queries"
 authors = ["Craig Johnson <craigjohnson@forwardnetworks.com>"]
 license = "MIT"
@@ -33,6 +33,27 @@ httpx = ">0.26,<0.29"
 netboxlabs-netbox-branching = ">=1.1.0,<1.2.0"
 pyzipper = ">=0.3.6,<0.5.0"
 python = "^3.10"
+# Optional NetBox-plugin integrations. The core install pulls none of these;
+# their sync maps stay dormant until the plugin is installed AND enabled. Pull
+# them with an extra, e.g. `pip install forward-netbox[integrations]` (all) or a
+# single one like `forward-netbox[dlm]`. You must still add each plugin to
+# PLUGINS in configuration.py and run migrations — see the release notes.
+netbox-dlm = {version = ">=0.2.0", optional = true}
+netbox-routing = {version = ">=0.4.0", optional = true}
+netbox-cisco-aci = {version = ">=0.4.0", optional = true}
+netbox-peering-manager = {version = "*", optional = true}
+
+[tool.poetry.extras]
+dlm = ["netbox-dlm"]
+routing = ["netbox-routing"]
+aci = ["netbox-cisco-aci"]
+peering = ["netbox-peering-manager"]
+integrations = [
+    "netbox-dlm",
+    "netbox-routing",
+    "netbox-cisco-aci",
+    "netbox-peering-manager",
+]
 
 [tool.poetry.group.dev]
 optional = true
