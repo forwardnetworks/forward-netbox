@@ -2,6 +2,8 @@
 
 This reference lists the built-in NQE maps that ship with `forward_netbox`.
 
+Maps targeting `netbox_routing.*`, `netbox_peering_manager.*`, `netbox_cisco_aci.*`, or `netbox_dlm.*` require the matching optional plugin, shipped in the **integrations** edition (`pip install forward-netbox[integrations]`, or a single extra like `[dlm]`). The **core** edition (`pip install forward-netbox`) ships only the NetBox-builtin maps. See [Editions](../01_User_Guide/README.md#editions-core-vs-integrations).
+
 Each entry includes:
 
 - the map name

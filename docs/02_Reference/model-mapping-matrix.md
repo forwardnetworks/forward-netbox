@@ -2,6 +2,8 @@
 
 This matrix summarizes how the shipped Forward NQE maps populate each NetBox model.
 
+Maps for `netbox_routing.*`, `netbox_peering_manager.*`, `netbox_cisco_aci.*`, and `netbox_dlm.*` require the matching optional plugin — install the **integrations** edition (`pip install forward-netbox[integrations]`, or a single extra like `[dlm]`) and enable the map. The **core** edition (`pip install forward-netbox`) ships only the NetBox-builtin models below. See [Editions](../01_User_Guide/README.md#editions-core-vs-integrations).
+
 `Exact` means the Forward data maps cleanly to the NetBox object without a major semantic compromise. `Best-fit` means the plugin intentionally approximates the Forward concept to the closest useful NetBox model.
 
 | NetBox Model | Built-In Query | Forward Source Shape | Mapping Style | Notes |

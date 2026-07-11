@@ -31,8 +31,9 @@ On top of the import it adds scope control (sync only devices carrying chosen Fo
 - **It is not a source of truth for Forward configuration or intent** — it
   populates NetBox from Forward's collected snapshot, nothing more.
 - **It does not require** the optional `netbox-routing` / `netbox-peering-manager`
-  / `netbox-dlm` plugins unless you enable the beta BGP/OSPF or device-lifecycle
-  maps.
+  / `netbox-cisco-aci` / `netbox-dlm` plugins — the **core** edition ships without
+  them. Install `forward-netbox[integrations]` and enable the relevant maps to use
+  the beta BGP/OSPF, Cisco ACI, or device-lifecycle surfaces.
 
 ## Screenshots
 
@@ -234,18 +235,23 @@ use.
 
 ## Quickstart
 
-1. Install the plugin into the same Python environment as NetBox:
+1. Install the plugin into the same Python environment as NetBox. `forward-netbox`
+   ships two profiles — **core** (NetBox-builtin models only) and **integrations**
+   (adds the optional `netbox-dlm` / `netbox-routing` / `netbox-cisco-aci` /
+   `netbox-peering-manager` maps). See
+   [Editions](docs/01_User_Guide/README.md#editions-core-vs-integrations).
 
 Install the latest release from PyPI:
 
 ```bash
-pip install forward-netbox
+pip install forward-netbox                # core
+pip install forward-netbox[integrations]  # + optional plugin maps
 ```
 
 Or install a specific wheel or source archive from GitHub Releases:
 
 ```bash
-pip install /path/to/forward_netbox-2.2.5-py3-none-any.whl
+pip install /path/to/forward_netbox-2.5.3-py3-none-any.whl
 ```
 
 2. Enable both plugins in the NetBox configuration:
