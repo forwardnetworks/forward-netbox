@@ -5,6 +5,14 @@
 {% block title %}{{ object }} - {% trans "Drift Report" %}{% endblock %}
 
 {% block extra_controls %}
+  {% if perms.forward_netbox.run_forwardsync %}
+    <form method="post" action="{% url 'plugins:forward_netbox:forwardsync_dependency_preview' pk=object.pk %}" class="d-inline">
+      {% csrf_token %}
+      <button type="submit" class="btn btn-primary">
+        <i class="mdi mdi-refresh" aria-hidden="true"></i>&nbsp;{% trans "Preview Dependencies" %}
+      </button>
+    </form>
+  {% endif %}
   <a class="btn btn-outline-secondary" href="{{ object.get_absolute_url }}">
     <i class="mdi mdi-arrow-left" aria-hidden="true"></i>&nbsp;{% trans "Sync" %}
   </a>
@@ -15,9 +23,22 @@
   <div class="alert alert-warning d-flex align-items-center" role="alert">
     <i class="mdi mdi-alert me-2" aria-hidden="true"></i>
     <div>
-      {% trans "This drift is computed from a dependency preview, but a newer sync has run since — the numbers below are stale." %}
+      {% if drift_stale_newer_sync %}
+        {% trans "This drift is computed from a dependency preview, but a newer sync has run since — the numbers below are stale." %}
+      {% else %}
+        {% trans "This drift is computed from a dependency preview that is over a day old — the numbers below may be stale." %}
+      {% endif %}
       {% trans "Preview:" %} {{ preview_at|placeholder }} · {% trans "Last sync:" %} {{ last_sync_at|placeholder }}.
       {% trans "Re-run Preview Dependencies for current drift." %}
+    </div>
+  </div>
+{% endif %}
+{% if report.looks_like_full_create %}
+  <div class="alert alert-info d-flex align-items-center" role="alert">
+    <i class="mdi mdi-information-outline me-2" aria-hidden="true"></i>
+    <div>
+      {% blocktrans with n=report.full_create_model_count total=report.model_count drift=report.total_drift %}Every model with data ({{ n }} of {{ total }}) shows all Forward rows as pending with no removals. That is the signature of a preview taken against an empty or unmerged NetBox — it is "everything Forward has," not {{ drift }} real mismatches.{% endblocktrans %}
+      {% trans "If this is a first sync it is expected; otherwise re-run Preview Dependencies after a completed, merged sync." %}
     </div>
   </div>
 {% endif %}

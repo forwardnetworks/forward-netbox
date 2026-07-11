@@ -153,3 +153,4 @@ development/fetch-artifacts/
 docs/03_Plans/evidence/*monitor*.json
 docs/03_Plans/evidence/*autorecover*.json
 docs/03_Plans/evidence/*chaos-stage*.json
+dist_gh/
