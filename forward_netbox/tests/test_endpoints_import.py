@@ -249,18 +249,47 @@ class EndpointScopeUnionTest(TestCase):
         self.assertTrue(failed)
 
 
-class EndpointBranchIncludeScopeRemovalTest(SimpleTestCase):
-    """The endpoint branch must not gate on device INCLUDE tags (exclude only)."""
+class EndpointBranchIncludeScopeTest(SimpleTestCase):
+    """The endpoint include gate is opt-in: by default the endpoint branch
+    filters by exclude tags only (2.4.4 behavior); include tags apply only
+    behind scope_endpoints_by_include_tags, honoring the "all"/"any" match.
+    """
 
-    def test_endpoint_branches_do_not_filter_include_tags(self):
+    def test_endpoint_branches_gate_include_tags_behind_toggle(self):
         for filename in (
             "forward_devices.nqe",
             "forward_devices_with_netbox_aliases.nqe",
         ):
             src = _read_query(filename)
+            self.assertIn("scope_endpoints_by_include_tags: Bool", src, filename)
             endpoint_branch = src.split("network.endpoints", 1)[1]
             self.assertIn("device_tag_exclude_tags", endpoint_branch, filename)
-            self.assertNotIn("device_tag_include_tags", endpoint_branch, filename)
+            # Include tags are referenced ONLY behind the opt-in toggle: the
+            # gate short-circuits to true when the toggle is off.
+            self.assertIn(
+                "where !scope_endpoints_by_include_tags", endpoint_branch, filename
+            )
+            self.assertIn("isEmpty(device_tag_include_tags)", endpoint_branch, filename)
+            # Both match modes are honored ("all" = no include tag missing;
+            # otherwise "any").
+            self.assertIn(
+                'device_tag_include_match == "all"', endpoint_branch, filename
+            )
+            self.assertIn(
+                "select !(tag in endpoint.tagNames)", endpoint_branch, filename
+            )
+            self.assertIn(
+                'device_tag_include_match != "all"', endpoint_branch, filename
+            )
+
+    def test_device_query_declares_toggle_default_off(self):
+        for filename in (
+            "forward_devices.nqe",
+            "forward_devices_with_netbox_aliases.nqe",
+        ):
+            params = _default_query_parameters(filename)
+            self.assertIn("scope_endpoints_by_include_tags", params, filename)
+            self.assertIs(params["scope_endpoints_by_include_tags"], False, filename)
 
 
 class EndpointIdentityClampTest(SimpleTestCase):
@@ -374,3 +403,287 @@ class AvocentUnificationTest(SimpleTestCase):
             "network.endpoints", 1
         )[1]
         self.assertEqual(base, alias)
+
+
+from forward_netbox.utilities.forward_api import (  # noqa: E402
+    build_endpoint_tag_scope_where,
+)
+
+
+class EndpointIncludeScopeProbeTest(TestCase):
+    """The endpoint scope probe must apply the same include gate the query
+    branch does (a drift would make the local filter drop rows the branch
+    emits — with prune enabled, DELETEs of previously imported endpoints).
+    """
+
+    def _fetcher(self, client):
+        from unittest.mock import Mock
+
+        return ForwardQueryFetcher(Mock(), client, Mock())
+
+    def test_probe_toggle_off_is_exclude_only(self):
+        from unittest.mock import Mock
+
+        client = Mock()
+        client.run_nqe_query.return_value = [{"name": "avocent-1"}]
+        fetcher = self._fetcher(client)
+        fetcher._resolve_scoped_endpoint_names(
+            network_id="n",
+            snapshot_id="s",
+            exclude_tags=["Decom"],
+            include_tags=["scope-a"],
+            include_match="any",
+            scope_endpoints_by_include_tags=False,
+        )
+        query = client.run_nqe_query.call_args.kwargs["query"]
+        self.assertIn('"Decom" in endpoint.tagNames', query)
+        # 2.4.4 regression guard: the include tag must NOT gate the probe when
+        # the toggle is off.
+        self.assertNotIn("scope-a", query)
+
+    def test_probe_toggle_on_applies_include_any(self):
+        from unittest.mock import Mock
+
+        client = Mock()
+        client.run_nqe_query.return_value = [{"name": "avocent-1"}]
+        fetcher = self._fetcher(client)
+        fetcher._resolve_scoped_endpoint_names(
+            network_id="n",
+            snapshot_id="s",
+            exclude_tags=[],
+            include_tags=["scope-a", "scope-b"],
+            include_match="any",
+            scope_endpoints_by_include_tags=True,
+        )
+        query = client.run_nqe_query.call_args.kwargs["query"]
+        self.assertIn(
+            'where ("scope-a" in endpoint.tagNames || "scope-b" in endpoint.tagNames)',
+            query,
+        )
+
+    def test_probe_toggle_on_applies_include_all(self):
+        from unittest.mock import Mock
+
+        client = Mock()
+        client.run_nqe_query.return_value = []
+        fetcher = self._fetcher(client)
+        fetcher._resolve_scoped_endpoint_names(
+            network_id="n",
+            snapshot_id="s",
+            exclude_tags=[],
+            include_tags=["scope-a", "scope-b"],
+            include_match="all",
+            scope_endpoints_by_include_tags=True,
+        )
+        query = client.run_nqe_query.call_args.kwargs["query"]
+        self.assertIn('where "scope-a" in endpoint.tagNames', query)
+        self.assertIn('where "scope-b" in endpoint.tagNames', query)
+
+    def test_builder_mirrors_device_scope_semantics(self):
+        # Golden parity with build_device_tag_scope_where, targeting
+        # endpoint.tagNames.
+        self.assertEqual(
+            build_endpoint_tag_scope_where(["A"], ["X"], "any"),
+            [
+                'where ("A" in endpoint.tagNames)',
+                'where !("X" in endpoint.tagNames)',
+            ],
+        )
+        self.assertEqual(
+            build_endpoint_tag_scope_where(["A", "B"], [], "all"),
+            [
+                'where "A" in endpoint.tagNames',
+                'where "B" in endpoint.tagNames',
+            ],
+        )
+        self.assertEqual(
+            build_endpoint_tag_scope_where([], ["X"], "any"),
+            ['where !("X" in endpoint.tagNames)'],
+        )
+
+    def test_scope_union_threads_toggle_to_probe(self):
+        from unittest.mock import Mock
+
+        client = Mock()
+        client.run_nqe_query.side_effect = [
+            [{"name": "dev-1", "site": "dc1", "tagNames": ["scope-a"]}],
+            [{"name": "avocent-1"}],
+        ]
+        fetcher = self._fetcher(client)
+        names, _sites, _matched, failed = fetcher._resolve_scoped_tag_scope(
+            network_id="n",
+            snapshot_id="s",
+            include_tags=["scope-a"],
+            exclude_tags=[],
+            include_match="any",
+            sync_endpoints=True,
+            scope_endpoints_by_include_tags=True,
+        )
+        self.assertEqual(names, {"dev-1", "avocent-1"})
+        self.assertFalse(failed)
+        endpoint_query = client.run_nqe_query.call_args_list[1].kwargs["query"]
+        self.assertIn('"scope-a" in endpoint.tagNames', endpoint_query)
+
+
+class ScopeMaskingWarningTest(TestCase):
+    """A tag scope that matches 0 collected devices while endpoints still
+    import used to present as a confusing partial import (devices appear,
+    interfaces/IPs empty). The resolver must say so explicitly.
+    """
+
+    def _fetcher(self, client):
+        from unittest.mock import Mock
+
+        return ForwardQueryFetcher(Mock(), client, Mock())
+
+    def test_zero_collected_devices_with_endpoints_warns(self):
+        from unittest.mock import Mock
+
+        client = Mock()
+        client.run_nqe_query.side_effect = [
+            [],  # device scope: no collected device carries the tag
+            [],  # all-backfilled probe (fires whenever the scope is empty)
+            [{"name": "avocent-1"}, {"name": "avocent-2"}],  # endpoint probe
+        ]
+        fetcher = self._fetcher(client)
+        names, _sites, _matched, failed = fetcher._resolve_scoped_tag_scope(
+            network_id="n",
+            snapshot_id="s",
+            include_tags=["scope-a"],
+            exclude_tags=[],
+            include_match="any",
+            sync_endpoints=True,
+        )
+        self.assertEqual(names, {"avocent-1", "avocent-2"})
+        self.assertFalse(failed)
+        warnings = [
+            str(call.args[0]) for call in fetcher.logger.log_warning.call_args_list
+        ]
+        self.assertTrue(
+            any(
+                "matched 0 collected devices" in message
+                and "interfaces and IP addresses" in message
+                for message in warnings
+            ),
+            warnings,
+        )
+
+    def test_matched_devices_do_not_warn_about_masking(self):
+        from unittest.mock import Mock
+
+        client = Mock()
+        client.run_nqe_query.side_effect = [
+            [{"name": "dev-1", "site": "dc1", "tagNames": ["scope-a"]}],
+            [{"name": "avocent-1"}],
+        ]
+        fetcher = self._fetcher(client)
+        fetcher._resolve_scoped_tag_scope(
+            network_id="n",
+            snapshot_id="s",
+            include_tags=["scope-a"],
+            exclude_tags=[],
+            include_match="any",
+            sync_endpoints=True,
+        )
+        warnings = [
+            str(call.args[0]) for call in fetcher.logger.log_warning.call_args_list
+        ]
+        self.assertFalse(
+            any("matched 0 collected devices" in message for message in warnings),
+            warnings,
+        )
+
+
+class EndpointScopeToggleFormTest(TestCase):
+    """The opt-in include-scope toggle must render and round-trip."""
+
+    def test_toggle_is_in_a_fieldset(self):
+        form = ForwardSourceForm()
+        self.assertIn("scope_endpoints_by_include_tags", form.fields)
+        rendered = []
+        for fs in form.fieldsets:
+            rendered.extend(
+                str(name)
+                for name in (
+                    getattr(fs, "items", None) or getattr(fs, "fields", None) or []
+                )
+            )
+        self.assertIn("scope_endpoints_by_include_tags", rendered)
+
+
+class ScopeEndpointsAllowlistTest(TestCase):
+    """clean_forward_source must accept the new source key (bool only)."""
+
+    def _source(self, **parameters):
+        from forward_netbox.models import ForwardSource
+
+        return ForwardSource(
+            name="allowlist-src",
+            type="saas",
+            url="https://fwd.app",
+            parameters={
+                "username": "user@example.com",
+                "password": "secret",
+                "verify": True,
+                **parameters,
+            },
+        )
+
+    def test_bool_value_is_accepted(self):
+        from forward_netbox.utilities.model_validation import clean_forward_source
+
+        clean_forward_source(self._source(scope_endpoints_by_include_tags=True))
+
+    def test_non_bool_value_is_rejected(self):
+        from django.core.exceptions import ValidationError
+
+        from forward_netbox.utilities.model_validation import clean_forward_source
+
+        with self.assertRaises(ValidationError):
+            clean_forward_source(self._source(scope_endpoints_by_include_tags="yes"))
+
+
+class DuplicateDeviceNameLookupTest(TestCase):
+    """NetBox Device.name is unique per site, not globally; a duplicate name
+    must resolve deterministically instead of raising MultipleObjectsReturned
+    and failing the whole apply workload (field report: SNMP endpoints raise
+    collision odds).
+    """
+
+    def test_duplicate_name_resolves_to_earliest_and_warns(self):
+        from unittest.mock import Mock
+
+        from dcim.models import Device
+        from dcim.models import DeviceRole
+        from dcim.models import DeviceType
+        from dcim.models import Manufacturer
+        from dcim.models import Site
+
+        from forward_netbox.utilities.sync_primitives import get_device_by_name
+
+        manufacturer = Manufacturer.objects.create(name="M", slug="m")
+        device_type = DeviceType.objects.create(
+            manufacturer=manufacturer, model="T", slug="t"
+        )
+        role = DeviceRole.objects.create(name="R", slug="r")
+        site_a = Site.objects.create(name="Site A", slug="site-a")
+        site_b = Site.objects.create(name="Site B", slug="site-b")
+        first = Device.objects.create(
+            name="dup-1", device_type=device_type, role=role, site=site_a
+        )
+        Device.objects.create(
+            name="dup-1", device_type=device_type, role=role, site=site_b
+        )
+
+        runner = Mock()
+        runner._device_by_name_cache = {}
+        runner._missing_device_by_name_cache = set()
+
+        device = get_device_by_name(runner, "dup-1")
+
+        self.assertEqual(device.pk, first.pk)
+        runner.logger.log_warning.assert_called_once()
+        self.assertIn(
+            "Multiple NetBox devices share the name",
+            str(runner.logger.log_warning.call_args.args[0]),
+        )

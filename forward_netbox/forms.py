@@ -446,6 +446,19 @@ class ForwardSourceForm(NetBoxModelForm):
                 "same device tags."
             ),
         )
+        self.fields["scope_endpoints_by_include_tags"] = forms.BooleanField(
+            required=False,
+            label="Scope SNMP Endpoints by Include Tags",
+            help_text=(
+                "Require imported SNMP endpoints to also carry the device "
+                "include tags above (all/any per the include match). Only "
+                "applies when include tags are set and endpoint import is on. "
+                "Endpoints without an include tag will not import — and may be "
+                "pruned if prune-out-of-scope is enabled. Leave off to import "
+                "every SNMP endpoint regardless of include tags (exclude tags "
+                "always apply)."
+            ),
+        )
         self.fields["sync_device_tags"] = FlexibleMultipleChoiceField(
             required=False,
             choices=(),
@@ -616,6 +629,9 @@ class ForwardSourceForm(NetBoxModelForm):
         self.fields["device_tag_exclude_tags"].initial = exclude_initial
         self.fields["sync_device_tags"].initial = sync_tags_initial
         self.fields["sync_endpoints"].initial = bool(parameters.get("sync_endpoints"))
+        self.fields["scope_endpoints_by_include_tags"].initial = bool(
+            parameters.get("scope_endpoints_by_include_tags")
+        )
         self.fields["device_tag_include_tags"].choices = [
             (tag, tag) for tag in include_initial
         ]
@@ -670,6 +686,7 @@ class ForwardSourceForm(NetBoxModelForm):
                     "apply_device_scope_tags",
                     "sync_device_tags",
                     "sync_endpoints",
+                    "scope_endpoints_by_include_tags",
                     name="Parameters",
                 )
             )
@@ -702,6 +719,7 @@ class ForwardSourceForm(NetBoxModelForm):
                     "apply_device_scope_tags",
                     "sync_device_tags",
                     "sync_endpoints",
+                    "scope_endpoints_by_include_tags",
                     name="Parameters",
                 )
             )
@@ -854,6 +872,9 @@ class ForwardSourceForm(NetBoxModelForm):
             "apply_device_scope_tags": bool(cleaned.get("apply_device_scope_tags")),
             "sync_device_tags": sync_device_tags,
             "sync_endpoints": bool(cleaned.get("sync_endpoints")),
+            "scope_endpoints_by_include_tags": bool(
+                cleaned.get("scope_endpoints_by_include_tags")
+            ),
         }
         self.instance.type = source_type
         self.instance.url = (
@@ -1048,6 +1069,9 @@ class ForwardSourceForm(NetBoxModelForm):
             ),
             "sync_device_tags": sync_device_tags,
             "sync_endpoints": bool(self.cleaned_data.get("sync_endpoints")),
+            "scope_endpoints_by_include_tags": bool(
+                self.cleaned_data.get("scope_endpoints_by_include_tags")
+            ),
         }
         self.instance.status = ForwardSourceStatusChoices.NEW
         return super().save(*args, **kwargs)

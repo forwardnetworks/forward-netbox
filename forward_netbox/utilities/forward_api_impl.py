@@ -201,6 +201,32 @@ def build_device_tag_scope_where(include_tags, exclude_tags, include_match):
     return clauses
 
 
+def build_endpoint_tag_scope_where(include_tags, exclude_tags, include_match):
+    """Return NQE ``where`` clause lines for the SNMP-endpoint tag scope.
+
+    Mirrors the endpoint branch of the bundled device queries (same
+    "all"/"any" include semantics as ``build_device_tag_scope_where``, applied
+    to ``endpoint.tagNames``). The endpoint scope probe and the query branch
+    must keep identical predicates: if the probe excluded an endpoint the
+    branch still emits, the local scope filter would drop the emitted row —
+    and with prune-out-of-scope enabled, previously imported endpoints would
+    be DELETED. Pass ``include_tags=[]`` when include scoping of endpoints is
+    disabled (the default; endpoints then filter by exclude tags only).
+    """
+    clauses: list[str] = []
+    include_exprs = [
+        f"{_nqe_string_literal(tag)} in endpoint.tagNames" for tag in include_tags
+    ]
+    if include_exprs:
+        if include_match == "all":
+            clauses.extend(f"where {expr}" for expr in include_exprs)
+        else:
+            clauses.append(f"where ({' || '.join(include_exprs)})")
+    for tag in exclude_tags:
+        clauses.append(f"where !({_nqe_string_literal(tag)} in endpoint.tagNames)")
+    return clauses
+
+
 class ForwardClient:
     def __init__(self, source):
         self.source = source
