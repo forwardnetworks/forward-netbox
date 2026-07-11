@@ -20,10 +20,13 @@ Run these in the NetBox Python environment (and inside every worker container in
 containerized deployment):
 
 ```bash
-# 1. Install the target version.
-pip install --upgrade forward-netbox            # latest
+# 1. Install the target version. Keep the [integrations] extra if you run the
+#    optional plugin maps (netbox-dlm / netbox-routing / netbox-cisco-aci /
+#    netbox-peering-manager); plain forward-netbox is the core edition.
+pip install --upgrade forward-netbox                 # core
+pip install --upgrade "forward-netbox[integrations]" # keep optional plugin maps
 # or pin explicitly:
-# pip install forward-netbox==<version>
+# pip install "forward-netbox[integrations]==<version>"
 
 # 2. Apply database migrations.
 cd /opt/netbox/netbox && python manage.py migrate
