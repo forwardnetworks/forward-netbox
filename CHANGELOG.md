@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v2.5.5
+
+Fix: **prune orphans no longer fails on protected plugin references** — with netbox-routing (or another optional plugin) in play, deleting out-of-scope devices hit `ProtectedError` (e.g. BGP peers whose peer/source IPs live on a pruned device's interfaces) and the single-transaction prune rolled back **everything**. The prune now sweeps the exact PROTECT-ing rows Django reports (children first, per the delete dependency order, plugin-agnostic) and retries, uses one transaction **per batch** so one stuck batch can't void the rest, and reports what it swept as `pruned_dependent_rows` in the job data and the reconciliation audit. A blocker owned by an in-scope neighbor (its peer FK targets a pruned device's IP) is swept too — the next sync recreates it from Forward. Python-only; no query change.
+
 ## v2.5.4
 
 Fix: **tag-scoped SNMP endpoint + missing-interfaces clarity** — (1) new opt-in **Scope SNMP Endpoints by Include Tags** source toggle: imported endpoints must also carry the device include tags ("all"/"any" per the include match; default off preserves the 2.4.4 import-all-endpoints behavior; exclude tags always apply). Query change; **Publish Bundled Queries** + Refresh Query IDs after upgrading. (2) A tag scope matching **0 collected devices** while endpoints still import now logs an explicit warning — that state made devices appear while interfaces/IP addresses stayed empty (they require collected devices in scope; check the snapshot selector, e.g. `latestCollected`). (3) Duplicate device names across sites no longer fail the apply workload with `MultipleObjectsReturned` — the by-name lookup resolves deterministically to the earliest device and warns.
