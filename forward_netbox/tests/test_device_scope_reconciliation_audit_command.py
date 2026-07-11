@@ -204,3 +204,114 @@ class ForwardDeviceScopeReconciliationAuditCommandTest(TestCase):
         self.assertEqual(report["_out_of_scope"], {"dev-d"})
         # Identity-aware: the out-of-scope set is resolved to the exact device PK.
         self.assertEqual(list(report["_out_of_scope_pks"]), [dev_d.pk])
+
+
+class PruneProtectorSweepTest(TestCase):
+    """Pruning devices must sweep PROTECT-ing optional-plugin rows instead of
+    failing wholesale (field report: netbox_routing BGP peers protect the
+    interface IPs of pruned devices, and the single-transaction prune rolled
+    back everything with ProtectedError).
+    """
+
+    def setUp(self):
+        mfr = Manufacturer.objects.create(name="MfrP", slug="mfr-p")
+        self.dt = DeviceType.objects.create(manufacturer=mfr, model="dt-p", slug="dt-p")
+        self.role = DeviceRole.objects.create(name="RoleP", slug="role-p")
+        self.site = Site.objects.create(name="SiteP", slug="site-p")
+
+    def _device(self, name):
+        return Device.objects.create(
+            name=name, device_type=self.dt, role=self.role, site=self.site
+        )
+
+    def test_grouping_orders_children_before_parents_and_unknown_last(self):
+        from forward_netbox.utilities.scope_reconciliation import (
+            _group_protected_objects_by_rank,
+        )
+
+        peer = Mock()
+        peer._meta.label_lower = "netbox_routing.bgppeer"
+        session = Mock()
+        session._meta.label_lower = "netbox_peering_manager.peeringsession"
+        stranger = Mock()
+        stranger._meta.label_lower = "someplugin.unknownmodel"
+        groups = _group_protected_objects_by_rank([peer, stranger, session])
+        labels = [label for label, _objects in groups]
+        # Delete order: peering sessions before the BGP peers they protect;
+        # models without a known rank go last.
+        self.assertEqual(
+            labels,
+            [
+                "netbox_peering_manager.peeringsession",
+                "netbox_routing.bgppeer",
+                "someplugin.unknownmodel",
+            ],
+        )
+
+    def test_sweep_deletes_blockers_and_retries(self):
+        from django.db.models.deletion import ProtectedError
+
+        from forward_netbox.utilities import scope_reconciliation
+
+        # Two real rows stand in for PROTECT-ing plugin objects (the sweep only
+        # needs __class__ + pk, so any deletable model works without plugins).
+        blocker_a = self._device("blocker-a")
+        blocker_b = self._device("blocker-b")
+        target = self._device("prune-me")
+
+        real_delete = Device.objects.filter(pk__in=[target.pk]).delete
+        calls = {"n": 0}
+
+        class FakeManagerProxy:
+            def filter(self, **kwargs):
+                proxy = Mock()
+
+                def _delete():
+                    calls["n"] += 1
+                    if calls["n"] == 1:
+                        raise ProtectedError(
+                            "Cannot delete some instances of model 'Device'",
+                            {blocker_a, blocker_b},
+                        )
+                    return real_delete()
+
+                proxy.delete = _delete
+                return proxy
+
+        fake_device = Mock()
+        fake_device.objects = FakeManagerProxy()
+        with patch.object(scope_reconciliation, "Device", fake_device):
+            deleted, tally = scope_reconciliation._delete_devices_sweeping_protectors(
+                [target.pk]
+            )
+
+        # Blockers swept via their real model manager, then the retry succeeded.
+        self.assertFalse(Device.objects.filter(name="blocker-a").exists())
+        self.assertFalse(Device.objects.filter(name="blocker-b").exists())
+        self.assertFalse(Device.objects.filter(name="prune-me").exists())
+        self.assertEqual(deleted, 1)
+        self.assertEqual(tally, {"dcim.device": 2})
+
+    def test_sweep_cap_reraises_with_tally(self):
+        from django.db.models.deletion import ProtectedError
+
+        from forward_netbox.utilities import scope_reconciliation
+
+        class AlwaysProtected:
+            def filter(self, **kwargs):
+                proxy = Mock()
+
+                def _delete():
+                    # Empty protected set: nothing sweepable, so the loop can
+                    # never make progress and must hit the cap.
+                    raise ProtectedError("still protected", set())
+
+                proxy.delete = _delete
+                return proxy
+
+        fake_device = Mock()
+        fake_device.objects = AlwaysProtected()
+        with patch.object(scope_reconciliation, "Device", fake_device):
+            with self.assertRaises(ProtectedError) as ctx:
+                scope_reconciliation._delete_devices_sweeping_protectors([1])
+        self.assertIn("sweep passes", str(ctx.exception.args[0]))
