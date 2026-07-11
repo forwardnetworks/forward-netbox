@@ -1,0 +1,63 @@
+/**
+ * @intent Forward hardware end-of-life notices per device type with NetBox aliases (netbox-dlm)
+ * @description Alias-aware variant of Forward DLM Hardware Notices. Maps the
+ * device model to its NetBox Device Type Library name via the
+ * netbox_device_type_aliases data file, so the emitted device_type matches the
+ * one the alias-aware device query (forward_devices_with_netbox_aliases) created
+ * — otherwise the notice's DeviceType lookup misses the aliased name and the row
+ * is skipped. Requires that data file attached to the network; if you run the
+ * base forward_devices.nqe (no aliases), enable the base
+ * forward_dlm_hardware_notices query instead. Part support data is only present
+ * for vendors Forward tracks (Cisco, Palo Alto Networks, Fortinet).
+ */
+
+import "netbox_utilities";
+
+@query
+f(forward_netbox_shard_keys: List<String>) =
+foreach device in network.devices
+let aliases = network.extensions.netbox_device_type_aliases
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
+let raw_model_opt = toString(device.platform.model)
+let raw_model = if isPresent(raw_model_opt) && raw_model_opt != "" then raw_model_opt else "Unknown"
+let raw_model_slug = slugifyNetboxModel(raw_model)
+let vendor = device.platform.vendor
+let data_manufacturer_slug = if isPresent(aliases.value) then max(
+    foreach alias in aliases.value
+    where alias.record_type == "manufacturer_override"
+    where alias.forward_vendor == toString(vendor)
+    select alias.manufacturer_slug
+  )
+  else null : String
+let manufacturer_slug = if isPresent(data_manufacturer_slug) then data_manufacturer_slug else slugify(canonicalManufacturerName(vendor))
+let mapped_model = if isPresent(aliases.value) then max(
+    foreach alias in aliases.value
+    where alias.record_type == "device_type_alias"
+    where alias.forward_manufacturer_slug == manufacturer_slug
+    where alias.forward_model_slug == raw_model_slug
+    select alias.netbox_model
+  )
+  else null : String
+let mapped_slug = if isPresent(aliases.value) then max(
+    foreach alias in aliases.value
+    where alias.record_type == "device_type_alias"
+    where alias.forward_manufacturer_slug == manufacturer_slug
+    where alias.forward_model_slug == raw_model_slug
+    select alias.netbox_slug
+  )
+  else null : String
+let device_type_model = if isPresent(mapped_model) then mapped_model else raw_model
+let device_type_slug = if isPresent(mapped_slug) then mapped_slug else raw_model_slug
+foreach part in device.platform.components
+where part.partType == DevicePartType.CHASSIS
+where isPresent(part.support)
+select distinct {
+  device_type: device_type_model,
+  device_type_slug: device_type_slug,
+  end_of_support: part.support.lastSupportDate,
+  end_of_security_patches: part.support.lastVulnerabilityDate,
+  end_of_sw_releases: part.support.lastMaintenanceDate,
+  documentation_url: substring(part.support.announcementUrl, 0, 200)
+};
