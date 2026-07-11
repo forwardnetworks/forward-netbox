@@ -11,7 +11,7 @@
 import "netbox_utilities";
 
 @query
-f(forward_netbox_shard_keys: List<String>, sync_endpoints: Bool, device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>) =
+f(forward_netbox_shard_keys: List<String>, sync_endpoints: Bool, scope_endpoints_by_include_tags: Bool, device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>) =
 foreach row in (
   (
     foreach device in network.devices
@@ -50,14 +50,23 @@ foreach row in (
   (
     // SNMP endpoints (opt-in): generic SSH/SNMP devices Forward collects but
     // does not model. Generic identity from MIB-2; Avocent overlay by enterprise
-    // OID 10418. Device-tag INCLUDE scope narrows modeled devices only —
-    // endpoints rarely carry device scoping tags, so requiring them silently
-    // excluded every endpoint on scoped syncs. Exclude tags still apply.
+    // OID 10418. By default the device-tag INCLUDE scope narrows modeled devices
+    // only (endpoints on networks whose endpoints carry no scoping tags would
+    // otherwise silently vanish on scoped syncs). When
+    // scope_endpoints_by_include_tags is on, endpoints must also carry the
+    // include tags ("all"/"any" per device_tag_include_match, matching the
+    // device scope resolver). Exclude tags always apply.
     foreach endpoint in network.endpoints
     where sync_endpoints
     where !isEmpty(endpoint.snmpOutputs)
     where isEmpty(device_tag_exclude_tags)
       || !any(foreach tag in device_tag_exclude_tags select tag in endpoint.tagNames)
+    where !scope_endpoints_by_include_tags
+      || isEmpty(device_tag_include_tags)
+      || (device_tag_include_match == "all"
+        && !any(foreach tag in device_tag_include_tags select !(tag in endpoint.tagNames)))
+      || (device_tag_include_match != "all"
+        && any(foreach tag in device_tag_include_tags select tag in endpoint.tagNames))
     let sysDescrOpt = max(foreach o in endpoint.snmpOutputs where o.requestedOid == "1.3.6.1.2.1.1.1" select max(foreach e in o.rawOidEntries select e.rawValue))
     let sysObjIdOpt = max(foreach o in endpoint.snmpOutputs where o.requestedOid == "1.3.6.1.2.1.1.2" select max(foreach e in o.rawOidEntries select e.rawValue))
     let hasDescr = isPresent(sysDescrOpt) && sysDescrOpt != ""

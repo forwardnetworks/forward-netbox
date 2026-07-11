@@ -111,6 +111,13 @@ SYNC_DEVICE_TAGS_PARAMETER_DEFAULT = {SYNC_DEVICE_TAGS_PARAMETER_NAME: []}
 # servers) as NetBox devices. Declared by the device query; default off.
 SYNC_ENDPOINTS_PARAMETER_NAME = "sync_endpoints"
 SYNC_ENDPOINTS_PARAMETER_DEFAULT = {SYNC_ENDPOINTS_PARAMETER_NAME: False}
+# Opt-in: endpoints must also carry the device include tags (by default the
+# include scope narrows modeled devices only). Declared by the device query;
+# default off (preserves the 2.4.4 endpoints-ignore-include-scope behavior).
+SCOPE_ENDPOINTS_BY_INCLUDE_TAGS_PARAMETER_NAME = "scope_endpoints_by_include_tags"
+SCOPE_ENDPOINTS_BY_INCLUDE_TAGS_PARAMETER_DEFAULT = {
+    SCOPE_ENDPOINTS_BY_INCLUDE_TAGS_PARAMETER_NAME: False
+}
 DEVICE_TAG_QUERY_PARAMETER_DEFAULTS = {
     "device_tag_include_tags": [],
     "device_tag_include_match": "any",
@@ -147,6 +154,8 @@ def _default_query_parameters(filename: str) -> dict[str, Any]:
         parameters.update(SYNC_DEVICE_TAGS_PARAMETER_DEFAULT)
     if SYNC_ENDPOINTS_PARAMETER_NAME in source:
         parameters.update(SYNC_ENDPOINTS_PARAMETER_DEFAULT)
+    if SCOPE_ENDPOINTS_BY_INCLUDE_TAGS_PARAMETER_NAME in source:
+        parameters.update(SCOPE_ENDPOINTS_BY_INCLUDE_TAGS_PARAMETER_DEFAULT)
     return parameters
 
 
