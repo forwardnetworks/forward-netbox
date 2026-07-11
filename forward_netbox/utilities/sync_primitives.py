@@ -906,6 +906,22 @@ def _dependency_routing_interface_alias_pairs(model_string, rows):
     }
 
 
+def _sorted_dependency_scope_keys(keys):
+    """Deterministic order for dependency-lookup chunking, tolerant of None.
+
+    Routing scope keys carry a VRF pk that is None for global-table peers/
+    instances alongside int VRF pks under the same router/device pk (e.g. a
+    device with both a global BGP peer and a VRF peer). A plain ``sorted()`` then
+    compares ``None < int`` and raises TypeError once the routing models are
+    enabled. PKs and process ids are always >= 1, so a -1 sentinel orders None
+    first without colliding; chunk order does not affect the lookup results.
+    """
+    return sorted(
+        keys,
+        key=lambda item: tuple(-1 if part is None else part for part in item),
+    )
+
+
 def _prime_routing_bgp_identity_cache(runner, model_string, rows):
     if model_string not in {
         "netbox_routing.bgppeer",
@@ -1035,7 +1051,8 @@ def _prime_routing_bgp_identity_cache(runner, model_string, rows):
     found_scope_keys = set()
     if requested_scope_keys:
         for chunk in _chunks(
-            sorted(requested_scope_keys), DEPENDENCY_LOOKUP_PAIR_CHUNK_SIZE
+            _sorted_dependency_scope_keys(requested_scope_keys),
+            DEPENDENCY_LOOKUP_PAIR_CHUNK_SIZE,
         ):
             router_ids = {router_id for router_id, _vrf_id in chunk}
             query = Q(router_id__in=router_ids)
@@ -1118,7 +1135,8 @@ def _prime_routing_ospf_identity_cache(runner, model_string, rows):
     found_instance_keys = set()
     if requested_instance_keys:
         for chunk in _chunks(
-            sorted(requested_instance_keys), DEPENDENCY_LOOKUP_PAIR_CHUNK_SIZE
+            _sorted_dependency_scope_keys(requested_instance_keys),
+            DEPENDENCY_LOOKUP_PAIR_CHUNK_SIZE,
         ):
             device_ids = {device_id for device_id, _vrf_id, _process_id in chunk}
             process_ids = {process_id for _device_id, _vrf_id, process_id in chunk}
