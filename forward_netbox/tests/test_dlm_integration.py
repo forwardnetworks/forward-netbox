@@ -78,6 +78,24 @@ class DlmQueryStructureTest(SimpleTestCase):
         ):
             self.assertIn(field, src)
 
+    def test_hardware_notices_aliases_query_shape(self):
+        # Alias-aware variant: same chassis-part support fields, but the
+        # device_type is mapped through the netbox_device_type_aliases data file
+        # (as the alias-aware device query does) so the notice's DeviceType
+        # lookup matches the aliased name instead of skipping on the raw model.
+        src = _read_query("forward_dlm_hardware_notices_with_netbox_aliases.nqe")
+        self.assertIn("DevicePartType.CHASSIS", src)
+        self.assertIn("network.extensions.netbox_device_type_aliases", src)
+        self.assertIn("device_type_alias", src)
+        self.assertIn("device_type: device_type_model", src)
+        for field in (
+            "end_of_support:",
+            "end_of_security_patches:",
+            "end_of_sw_releases:",
+            "device_type_slug:",
+        ):
+            self.assertIn(field, src)
+
     def test_device_software_query_shape(self):
         src = _read_query("forward_dlm_device_software.nqe")
         self.assertIn("device.platform.osVersion", src)
@@ -127,6 +145,7 @@ class DlmQueryStructureTest(SimpleTestCase):
         for filename in (
             "forward_dlm_software_versions.nqe",
             "forward_dlm_hardware_notices.nqe",
+            "forward_dlm_hardware_notices_with_netbox_aliases.nqe",
             "forward_dlm_device_software.nqe",
             "forward_dlm_cves.nqe",
             "forward_dlm_vulnerabilities.nqe",

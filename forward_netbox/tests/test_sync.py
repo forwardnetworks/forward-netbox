@@ -8934,3 +8934,45 @@ class QueryParameterCompatibilityTest(TestCase):
         worker_count = fetcher._query_fetch_worker_count(32)
 
         self.assertEqual(worker_count, 6)
+
+
+from django.test import SimpleTestCase  # noqa: E402
+
+from forward_netbox.utilities.sync_primitives import (  # noqa: E402
+    _sorted_dependency_scope_keys,
+)
+
+
+class DependencyScopeKeySortTest(SimpleTestCase):
+    """Routing dependency-cache scope keys carry a None VRF pk (global table)
+    alongside int VRF pks under the same router/device pk. A plain sorted() then
+    raised `'<' not supported between instances of 'NoneType' and 'int'` the
+    moment the routing models were enabled (field report: sync failed, blank
+    model, phase Sync). The None-safe key must order without raising.
+    """
+
+    def test_plain_sorted_would_raise_on_mixed_none_vrf(self):
+        # Documents the original bug: a global-table peer (None) and a VRF peer
+        # (int) sharing a router pk.
+        with self.assertRaises(TypeError):
+            sorted({(1, None), (1, 42)})
+        with self.assertRaises(TypeError):
+            sorted({(1, None, 5), (1, 42, 5)})
+
+    def test_none_safe_sort_bgp_two_tuple(self):
+        keys = {(1, None), (1, 42), (2, None), (2, 7)}
+        ordered = _sorted_dependency_scope_keys(keys)
+        self.assertEqual(ordered, [(1, None), (1, 42), (2, None), (2, 7)])
+
+    def test_none_safe_sort_ospf_three_tuple(self):
+        # (device.pk, vrf_pk|None, process_id) — None in the middle position.
+        keys = {(1, None, 100), (1, 42, 100), (1, None, 200)}
+        ordered = _sorted_dependency_scope_keys(keys)
+        self.assertEqual(ordered, [(1, None, 100), (1, None, 200), (1, 42, 100)])
+
+    def test_none_safe_sort_is_deterministic(self):
+        keys = {(3, None), (1, 9), (1, None)}
+        self.assertEqual(
+            _sorted_dependency_scope_keys(keys),
+            _sorted_dependency_scope_keys(set(keys)),
+        )

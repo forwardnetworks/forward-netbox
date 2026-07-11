@@ -403,6 +403,12 @@ BUILTIN_OPTIONAL_QUERY_MAPS = [
         "enabled": False,
     },
     {
+        "model_string": "netbox_dlm.hardwarenotice",
+        "name": "Forward DLM Hardware Notices with NetBox Aliases",
+        "filename": "forward_dlm_hardware_notices_with_netbox_aliases.nqe",
+        "enabled": False,
+    },
+    {
         "model_string": "netbox_dlm.devicesoftware",
         "name": "Forward DLM Device Software",
         "filename": "forward_dlm_device_software.nqe",

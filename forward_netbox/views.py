@@ -695,6 +695,9 @@ class ForwardSyncRefreshDeviceAnalysisView(BaseObjectView):
 class ForwardSyncDriftReportView(BaseObjectView):
     queryset = ForwardSync.objects.all()
     template_name = "forward_netbox/forwardsync_drift_report.html"
+    # A cached preview older than this is flagged stale even when no sync ran
+    # after it — an old "everything to create" preview misleads operators.
+    STALE_PREVIEW_AGE = timezone.timedelta(hours=24)
 
     def get_required_permission(self):
         return "forward_netbox.view_forwardsync"
@@ -729,16 +732,19 @@ class ForwardSyncDriftReportView(BaseObjectView):
             )
             return redirect(sync.get_absolute_url())
         report = compute_drift_report(job.data)
-        # The drift is computed from the cached preview payload, not live, so a
-        # sync run AFTER the preview makes the numbers stale/misleading. Flag it
-        # so the operator re-runs Preview Dependencies instead of reading old
-        # "everything to create" drift as real.
+        # The drift is computed from the cached preview payload, not live, so it
+        # goes stale two ways: (1) a sync ran AFTER the preview, or (2) the
+        # preview is simply old. Either leaves misleading "everything to create"
+        # numbers, so flag it and point the operator at Preview Dependencies.
         last_ingestion = sync.last_ingestion
-        drift_stale = bool(
+        newer_sync_ran = bool(
             last_ingestion is not None
             and job.created is not None
             and last_ingestion.created > job.created
         )
+        preview_age = timezone.now() - job.created if job.created else None
+        preview_is_old = bool(preview_age and preview_age > self.STALE_PREVIEW_AGE)
+        drift_stale = newer_sync_ran or preview_is_old
         return render(
             request,
             self.template_name,
@@ -746,6 +752,8 @@ class ForwardSyncDriftReportView(BaseObjectView):
                 "object": sync,
                 "report": report,
                 "drift_stale": drift_stale,
+                "drift_stale_newer_sync": newer_sync_ran,
+                "drift_stale_old_preview": preview_is_old,
                 "last_sync_at": last_ingestion.created if last_ingestion else None,
                 "preview_at": job.created,
             },
