@@ -545,6 +545,19 @@ def get_device_by_name(runner, device_name):
     except Device.DoesNotExist:
         runner._missing_device_by_name_cache.add(device_name)
         raise
+    except Device.MultipleObjectsReturned:
+        # NetBox Device.name is unique per site, not globally, so a duplicate
+        # name (likelier once SNMP endpoints import as devices) raised straight
+        # through here and failed the entire apply workload for the model.
+        # Resolve deterministically to the earliest row instead and say so; the
+        # by-name cache keeps this to one warning per duplicate name.
+        device = Device.objects.filter(name=device_name).order_by("pk").first()
+        runner.logger.log_warning(
+            f"Multiple NetBox devices share the name `{device_name}`; using the "
+            f"earliest (id {device.pk}). Rows keyed to this name may attach to "
+            "another site's device — consider renaming the duplicates.",
+            obj=runner.sync,
+        )
     remember_lookup_object(runner, device)
     return device
 
