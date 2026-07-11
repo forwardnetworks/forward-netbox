@@ -1,3 +1,5 @@
+import hmac
+
 from core.api.serializers_.jobs import JobSerializer
 from core.exceptions import SyncError
 from django.contrib.contenttypes.models import ContentType
@@ -619,6 +621,58 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
             return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
         return Response(
             JobSerializer(job, context={"request": request}).data, status=201
+        )
+
+    @extend_schema(methods=["post"], request=EmptySerializer())
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path="webhook",
+        authentication_classes=[],
+        permission_classes=[],
+    )
+    def webhook(self, request, pk):
+        """Push-triggered sync for external webhook senders (e.g. Forward).
+
+        The NetBox-native inbound path is ``POST .../sync/`` with an API token
+        (``Authorization: Token ...``) — prefer it whenever the sender can set
+        headers. This endpoint exists for senders that cannot: it authenticates
+        with a per-sync shared secret (the sync's ``webhook_secret`` parameter)
+        via the ``X-Forward-Webhook-Secret`` header or, as a last resort, the
+        ``?secret=`` query parameter. An empty/unset secret disables the
+        endpoint. Responses are deliberately opaque on failure (one 403, never
+        revealing whether the sync exists or a secret is configured), and an
+        already-queued/running sync is acknowledged without re-queueing so
+        webhook retries stay idempotent.
+        """
+        sync = ForwardSync.objects.filter(pk=pk).first()
+        provided = str(
+            request.headers.get("X-Forward-Webhook-Secret")
+            or request.GET.get("secret")
+            or ""
+        )
+        configured = (
+            str((sync.parameters or {}).get("webhook_secret") or "") if sync else ""
+        )
+        if not sync or not configured or not hmac.compare_digest(provided, configured):
+            raise PermissionDenied("Invalid webhook credentials.")
+        from ..jobs import _sync_has_active_job
+
+        for job_suffix in ("adhoc", "scheduled"):
+            if _sync_has_active_job(sync, f"{sync.name} - {job_suffix}"):
+                return Response(
+                    {"status": "already_running"},
+                    status=status.HTTP_202_ACCEPTED,
+                )
+        try:
+            # user=None falls back to the sync owner, so job provenance is the
+            # configured sync user rather than an anonymous request.
+            job = sync.enqueue_sync_job(adhoc=True)
+        except SyncError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
+        return Response(
+            {"status": "queued", "job_id": job.pk},
+            status=status.HTTP_202_ACCEPTED,
         )
 
     @extend_schema(

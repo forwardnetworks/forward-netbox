@@ -567,3 +567,118 @@ class ForwardValidationRunAPIViewTest(TestCase):
         self.assertTrue(validation_run.allowed)
         self.assertEqual(validation_run.status, ForwardValidationStatusChoices.PASSED)
         self.assertEqual(validation_run.override_reason, "Accepted for lab validation.")
+
+
+class ForwardSyncWebhookAPITest(TestCase):
+    """Secret-authenticated push-triggered sync endpoint.
+
+    The NetBox-native inbound path is POST .../sync/ with an API token; the
+    webhook action exists for senders that cannot set an Authorization header.
+    It must be opaque on failure (single 403 regardless of why), disabled when
+    no secret is configured, and idempotent for webhook retries.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.source = ForwardSource.objects.create(
+            name="webhook-src",
+            type="saas",
+            url="https://fwd.app",
+            status="ready",
+            parameters={
+                "username": "user@example.com",
+                "password": "secret",
+                "verify": True,
+                "network_id": "net-1",
+            },
+        )
+        cls.sync = ForwardSync.objects.create(
+            name="webhook-sync",
+            source=cls.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "webhook_secret": "s3cret-value",
+            },
+        )
+        cls.bare_sync = ForwardSync.objects.create(
+            name="webhook-less-sync",
+            source=cls.source,
+            parameters={"snapshot_id": LATEST_PROCESSED_SNAPSHOT},
+        )
+
+    def _post(self, pk, *, header=None, query=""):
+        # Go through the real router URL so the @action initkwargs
+        # (authentication_classes=[] / permission_classes=[]) apply exactly as
+        # they do in production; a manual as_view() call would skip them.
+        extra = {}
+        if header is not None:
+            extra["HTTP_X_FORWARD_WEBHOOK_SECRET"] = header
+        return self.client.post(
+            f"/api/plugins/forward/sync/{pk}/webhook/{query}", **extra
+        )
+
+    def test_header_secret_enqueues(self):
+        with (
+            patch("forward_netbox.jobs._sync_has_active_job", return_value=False),
+            patch.object(
+                ForwardSync, "enqueue_sync_job", return_value=Mock(pk=42)
+            ) as enqueue,
+        ):
+            response = self._post(self.sync.pk, header="s3cret-value")
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.json()["status"], "queued")
+        self.assertEqual(response.json()["job_id"], 42)
+        enqueue.assert_called_once_with(adhoc=True)
+
+    def test_query_secret_enqueues(self):
+        with (
+            patch("forward_netbox.jobs._sync_has_active_job", return_value=False),
+            patch.object(
+                ForwardSync, "enqueue_sync_job", return_value=Mock(pk=7)
+            ) as enqueue,
+        ):
+            response = self._post(self.sync.pk, query="?secret=s3cret-value")
+        self.assertEqual(response.status_code, 202)
+        enqueue.assert_called_once()
+
+    def test_wrong_secret_is_opaque_403(self):
+        with patch.object(ForwardSync, "enqueue_sync_job") as enqueue:
+            response = self._post(self.sync.pk, header="nope")
+        self.assertEqual(response.status_code, 403)
+        enqueue.assert_not_called()
+
+    def test_unset_secret_disables_endpoint(self):
+        # Empty provided + empty configured must NOT match: the endpoint is
+        # disabled until the operator sets a secret.
+        with patch.object(ForwardSync, "enqueue_sync_job") as enqueue:
+            response = self._post(self.bare_sync.pk, header="")
+        self.assertEqual(response.status_code, 403)
+        enqueue.assert_not_called()
+
+    def test_unknown_sync_is_opaque_403(self):
+        response = self._post(999999, header="s3cret-value")
+        self.assertEqual(response.status_code, 403)
+
+    def test_active_job_acknowledged_without_requeue(self):
+        with (
+            patch("forward_netbox.jobs._sync_has_active_job", return_value=True),
+            patch.object(ForwardSync, "enqueue_sync_job") as enqueue,
+        ):
+            response = self._post(self.sync.pk, header="s3cret-value")
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.json()["status"], "already_running")
+        enqueue.assert_not_called()
+
+    def test_sync_error_maps_to_409(self):
+        from core.exceptions import SyncError
+
+        with (
+            patch("forward_netbox.jobs._sync_has_active_job", return_value=False),
+            patch.object(
+                ForwardSync,
+                "enqueue_sync_job",
+                side_effect=SyncError("waiting for merge"),
+            ),
+        ):
+            response = self._post(self.sync.pk, header="s3cret-value")
+        self.assertEqual(response.status_code, 409)

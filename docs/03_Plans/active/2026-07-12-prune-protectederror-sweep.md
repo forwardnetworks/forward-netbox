@@ -1,8 +1,24 @@
-# 2.5.5 — prune orphans: sweep protected plugin references
+# 2.5.5 — prune protected-reference sweep + push-triggered sync (webhooks)
 
 Status: implemented on `fix/2.5.5-prune-protectederror`.
 
 ## Goal
+
+Second item (maintainer-added mid-release): **push-triggered sync**. The
+operator wants Forward to push a webhook that starts a sync instead of polling
+on a schedule. The NetBox-native inbound path already exists
+(token-authenticated `POST /api/plugins/forward/sync/<id>/sync/`) and the docs
+now lead with it; a new `POST .../webhook/` action covers senders that cannot
+set an `Authorization` header: per-sync `webhook_secret` (sync form, Execution
+fieldset; empty disables), `X-Forward-Webhook-Secret` header or `?secret=`
+fallback, `hmac.compare_digest`, one opaque 403 for every failure cause,
+already-running acknowledged with 202 and no re-queue (webhook-retry
+idempotent), SyncError mapped to 409, job attributed to the sync's configured
+user (never anonymous). Tests exercise the real router URL so the action's
+`authentication_classes=[]`/`permission_classes=[]` initkwargs are proven in
+the production wiring. Docs: Operations Guide "Push-triggered sync (webhooks)".
+
+First item (the original 2.5.5 driver):
 
 Field report: the "prune orphans" job errored with
 `ProtectedError: Cannot delete some instances of model 'Device' ...
