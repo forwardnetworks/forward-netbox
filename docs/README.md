@@ -2,6 +2,8 @@
 
 `forward_netbox` connects NetBox directly to Forward, executes NQE against a selected Forward snapshot, and stages the resulting changes in a NetBox branch for review and merge by default. Large trusted baselines can optionally use fast bootstrap direct writes before returning to the Branching workflow.
 
+It installs in two profiles: **core** (`pip install forward-netbox`, NetBox-builtin models only) and **integrations** (`pip install forward-netbox[integrations]`, which adds the optional `netbox-dlm` / `netbox-routing` / `netbox-cisco-aci` / `netbox-peering-manager` maps). See [Editions](01_User_Guide/README.md#editions-core-vs-integrations).
+
 Forward 26.6 is the baseline for async NQE.
 
 ## Release Compatibility
