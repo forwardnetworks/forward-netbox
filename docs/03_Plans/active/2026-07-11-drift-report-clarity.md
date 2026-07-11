@@ -4,7 +4,8 @@ Status: implemented on `fix/2.5.3-drift-report-clarity`.
 
 ## Goal
 
-Three things, all Python/packaging (no query change, so no ADP republish):
+Four things (three Python/packaging; one opt-in query variant needing an ADP
+republish):
 
 1. **Editions split** — make `forward-netbox` a single package with two install
    profiles: **core** (`pip install forward-netbox`, NetBox-builtin models only,
@@ -83,7 +84,12 @@ affect any sync. Reverting the extras just removes the convenience install path.
 - **Routing fix via a None-safe sort, not filtering None keys:** global-table
   (None VRF) scope keys are legitimate lookups and must stay in the batch; only
   their sort position needed guarding.
-- **Hardware-notice alias skips deferred to a fast-follow (2.5.4):** that fix is
-  a new NQE query variant needing an ADP republish; keeping it out of 2.5.3
-  leaves this release query-free (no republish) so the routing crash fix ships
-  immediately. The skips are benign (sync succeeds).
+- **Hardware-notice alias fix included** (rolled into 2.5.3 per maintainer):
+  operators running the alias-aware device query saw netbox-dlm hardware notices
+  skip (`device type X is not in NetBox yet`) because the notice looked up the
+  raw Forward model while the aliased device query created the DeviceType under
+  its NetBox-library name. New opt-in **forward_dlm_hardware_notices_with_netbox_aliases**
+  variant applies the same alias mapping (live-verified on ADP: 24 device types
+  that skipped now resolve, 0 misses). It is the only query change in the release,
+  so operators on pinned org queries need **Publish Bundled Queries** after
+  upgrading.

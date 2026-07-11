@@ -318,6 +318,7 @@ DLM_INTEGRATION = OptionalPluginIntegration(
     query_maps=(
         "Forward DLM Software Versions",
         "Forward DLM Hardware Notices",
+        "Forward DLM Hardware Notices with NetBox Aliases",
         "Forward DLM Device Software",
         "Forward DLM CVEs",
         "Forward DLM Vulnerabilities",
