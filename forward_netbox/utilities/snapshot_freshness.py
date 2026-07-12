@@ -7,6 +7,7 @@ from ..exceptions import ForwardQueryError
 from .forward_api import LATEST_COLLECTED_SNAPSHOT
 from .forward_api import LATEST_PROCESSED_SNAPSHOT
 from .sync_facade import device_tag_scope
+from .sync_facade import sync_run_job_names
 
 
 ACTIVE_JOB_STATUSES = {
@@ -103,7 +104,14 @@ def latest_processed_catchup_decision(
         return decision
 
     if getattr(sync, "pk", None):
-        active_jobs = sync.jobs.filter(status__in=ACTIVE_JOB_STATUSES)
+        # Only an actual sync RUN suppresses catch-up. The sync's job set also
+        # holds standing-schedule rows (fixed names, permanently SCHEDULED) and
+        # button jobs; matching on status alone would disable catch-up forever
+        # once any standing schedule exists.
+        active_jobs = sync.jobs.filter(
+            status__in=ACTIVE_JOB_STATUSES,
+            name__in=sync_run_job_names(sync),
+        )
         if current_job is not None and getattr(current_job, "pk", None):
             active_jobs = active_jobs.exclude(pk=current_job.pk)
         if active_jobs.exists():

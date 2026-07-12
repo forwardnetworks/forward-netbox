@@ -1,9 +1,12 @@
+from core.choices import JobStatusChoices
 from django.contrib.contenttypes.models import ContentType
 from django.db import connection
 from django.db.models.signals import post_migrate
+from django.db.models.signals import pre_delete
 from django.dispatch import receiver
 
 from .models import ForwardNQEMap
+from .models import ForwardSync
 from .utilities.query_registry import builtin_nqe_map_rows
 from .utilities.query_registry import BUILTIN_OPTIONAL_QUERY_MAPS
 
@@ -77,3 +80,17 @@ def seed_builtin_nqe_maps(sender, **kwargs):
             update_fields.append("enabled")
         if update_fields:
             query_map.save(update_fields=update_fields)
+
+
+@receiver(pre_delete, sender=ForwardSync)
+def cancel_enqueued_jobs_on_sync_delete(sender, instance, **kwargs):
+    """Cancel enqueued/scheduled jobs before the sync row disappears.
+
+    The JobsMixin GenericRelation cascade removes Job rows through the SQL
+    collector, which skips Job.delete()'s RQ-cancel override — a standing
+    schedule (2.5.6 JobRunner recurrence) would leave a live RQ scheduler
+    entry firing against a deleted sync forever. Deleting each job here goes
+    through the override and cancels the queued/scheduled RQ task.
+    """
+    for job in instance.jobs.filter(status__in=JobStatusChoices.ENQUEUED_STATE_CHOICES):
+        job.delete()
