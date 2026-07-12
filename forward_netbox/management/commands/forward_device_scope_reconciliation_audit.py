@@ -87,6 +87,8 @@ class Command(BaseCommand):
                 payload["prune_applied"] = True
                 payload["pruned_object_count"] = result["pruned_object_count"]
                 payload["pruned_device_count"] = result["pruned_device_count"]
+                if result.get("pruned_dependent_rows"):
+                    payload["pruned_dependent_rows"] = result["pruned_dependent_rows"]
             else:
                 payload["prune_dry_run_note"] = (
                     "Dry run: re-run with --apply to delete these devices."
