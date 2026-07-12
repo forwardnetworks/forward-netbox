@@ -466,3 +466,37 @@ class DanglingRoutingCleanupRealSchemaTest(TestCase):
         tally = _cleanup_dangling_routing_objects({999999})
         self.assertFalse(BGPRouter.objects.filter(pk=router.pk).exists())
         self.assertGreaterEqual(sum(tally.values()), 1)
+
+
+class RoutingDanglingAuditCommandTest(TestCase):
+    """Read-only dangling audit: clean skip without the plugin; real-schema
+    path is skip-gated until netbox_routing supports the 4.6 baseline."""
+
+    def test_skips_cleanly_without_plugin(self):
+        from django.apps import apps as django_apps
+
+        if django_apps.is_installed("netbox_routing"):
+            self.skipTest("netbox_routing installed; covered by the real test")
+        out = StringIO()
+        call_command("forward_routing_dangling_audit", stdout=out)
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload["skipped"], "netbox_routing is not installed")
+
+    def test_reports_danglers_with_plugin(self):
+        from django.apps import apps as django_apps
+
+        if not django_apps.is_installed("netbox_routing"):
+            self.skipTest("netbox_routing is not installed")
+        from django.contrib.contenttypes.models import ContentType
+
+        from dcim.models import Device
+
+        BGPRouter = django_apps.get_model("netbox_routing", "bgprouter")
+        device_ct = ContentType.objects.get_for_model(Device)
+        BGPRouter.objects.create(
+            assigned_object_type=device_ct, assigned_object_id=999999
+        )
+        out = StringIO()
+        call_command("forward_routing_dangling_audit", stdout=out)
+        payload = json.loads(out.getvalue())
+        self.assertGreaterEqual(payload["dangling"]["bgprouter"], 1)

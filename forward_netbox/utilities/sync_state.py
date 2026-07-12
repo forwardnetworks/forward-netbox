@@ -395,6 +395,16 @@ def get_display_parameters(
         sync,
         max_changes_per_branch_default,
     )
+    # Echo the standing-schedule intent keys when present: API clients that
+    # GET-modify-PATCH the parameters dict must round-trip them, otherwise a
+    # stored explicit-cancel 0 degrades to "absent" (which reconcile treats
+    # as a pre-intent install to adopt).
+    for intent_key in (
+        "validation_schedule_interval",
+        "preview_schedule_interval",
+    ):
+        if intent_key in (sync.parameters or {}):
+            parameters[intent_key] = int((sync.parameters or {}).get(intent_key) or 0)
     model_change_density = get_model_change_density(sync)
     density_profile = get_model_change_density_profile(sync)
     if model_change_density:

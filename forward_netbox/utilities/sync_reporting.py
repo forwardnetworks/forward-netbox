@@ -368,10 +368,11 @@ def apply_model_rows(runner, model_string, rows):
     processed_rows = 0
     for row in rows:
         processed_rows += 1
+        pre_row_events = runner.events_clearer.snapshot()
         try:
             with transaction.atomic():
                 result = handler(row)
-            runner.events_clearer.increment()
+                runner.events_clearer.increment()
             if result == "unchanged":
                 runner.logger.increment_statistics(model_string, outcome="unchanged")
             elif result is False:
@@ -379,6 +380,7 @@ def apply_model_rows(runner, model_string, rows):
             else:
                 runner.logger.increment_statistics(model_string, outcome="applied")
         except ForwardDependencySkipError as exc:
+            runner.events_clearer.restore(pre_row_events)
             logger.exception("Failed applying %s row", model_string)
             runner.logger.increment_statistics(model_string, outcome="skipped")
             record_issue(
@@ -392,6 +394,7 @@ def apply_model_rows(runner, model_string, rows):
                 log_level="info",
             )
         except (ForwardSearchError, ForwardQueryError, ForwardSyncDataError) as exc:
+            runner.events_clearer.restore(pre_row_events)
             logger.exception("Failed applying %s row", model_string)
             mark_dependency_failed(runner, model_string, row)
             runner.logger.increment_statistics(model_string, outcome="failed")
@@ -405,6 +408,7 @@ def apply_model_rows(runner, model_string, rows):
                 defaults=getattr(exc, "defaults", {}),
             )
         except (ValidationError, IntegrityError) as exc:
+            runner.events_clearer.restore(pre_row_events)
             logger.exception("Failed applying %s row", model_string)
             mark_dependency_failed(runner, model_string, row)
             runner.logger.increment_statistics(model_string, outcome="failed")
@@ -416,6 +420,7 @@ def apply_model_rows(runner, model_string, rows):
                 exception=exc,
             )
         except Exception as exc:
+            runner.events_clearer.restore(pre_row_events)
             logger.exception("Failed applying %s row", model_string)
             mark_dependency_failed(runner, model_string, row)
             runner.logger.increment_statistics(model_string, outcome="failed")
@@ -565,10 +570,11 @@ def delete_model_rows(runner, model_string, rows):
     pending_deleted = 0
     for row in rows:
         processed_rows += 1
+        pre_row_events = runner.events_clearer.snapshot()
         try:
             with transaction.atomic():
                 deleted = handler(row)
-            runner.events_clearer.increment()
+                runner.events_clearer.increment()
             if deleted:
                 runner.logger.increment_statistics(model_string, outcome="applied")
                 pending_deleted += 1
@@ -578,6 +584,7 @@ def delete_model_rows(runner, model_string, rows):
             else:
                 runner.logger.increment_statistics(model_string, outcome="skipped")
         except ForwardDependencySkipError as exc:
+            runner.events_clearer.restore(pre_row_events)
             logger.info("Skipped deleting %s row due to dependency", model_string)
             runner.logger.increment_statistics(model_string, outcome="skipped")
             record_issue(
@@ -591,6 +598,7 @@ def delete_model_rows(runner, model_string, rows):
                 log_level="info",
             )
         except (ForwardSearchError, ForwardQueryError) as exc:
+            runner.events_clearer.restore(pre_row_events)
             logger.exception("Failed deleting %s row", model_string)
             runner.logger.increment_statistics(model_string, outcome="failed")
             record_issue(
@@ -603,6 +611,7 @@ def delete_model_rows(runner, model_string, rows):
                 defaults=getattr(exc, "defaults", {}),
             )
         except (ValidationError, IntegrityError) as exc:
+            runner.events_clearer.restore(pre_row_events)
             logger.exception("Failed deleting %s row", model_string)
             runner.logger.increment_statistics(model_string, outcome="failed")
             record_issue(
@@ -613,6 +622,7 @@ def delete_model_rows(runner, model_string, rows):
                 exception=exc,
             )
         except Exception as exc:
+            runner.events_clearer.restore(pre_row_events)
             logger.exception("Failed deleting %s row", model_string)
             runner.logger.increment_statistics(model_string, outcome="failed")
             record_issue(

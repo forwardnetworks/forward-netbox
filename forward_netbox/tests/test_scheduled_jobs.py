@@ -1041,3 +1041,151 @@ class SyncFormScheduleTest(TestCase):
         self.assertEqual(instance.parameters["validation_schedule_interval"], 720)
         # Blank field = explicit cancel (stored 0, not absent).
         self.assertEqual(instance.parameters["preview_schedule_interval"], 0)
+
+
+class DeviceCVETabTest(TestCase):
+    """CVE device tab is registered only when netbox_dlm is installed (core
+    installs must carry no dead tab); content is skip-gated on the plugin."""
+
+    def test_registration_matches_plugin_presence(self):
+        from django.apps import apps as django_apps
+
+        import forward_netbox.views as views
+
+        self.assertEqual(
+            django_apps.is_installed("netbox_dlm"),
+            hasattr(views, "ForwardDeviceCVEView"),
+        )
+
+    def test_tab_lists_device_cves(self):
+        from django.apps import apps as django_apps
+
+        if not django_apps.is_installed("netbox_dlm"):
+            self.skipTest("netbox_dlm is not installed")
+        from django.contrib.auth import get_user_model
+
+        from dcim.models import Device
+        from dcim.models import DeviceRole
+        from dcim.models import DeviceType
+        from dcim.models import Manufacturer
+        from dcim.models import Site
+
+        manufacturer = Manufacturer.objects.create(name="cve-mfr", slug="cve-mfr")
+        device_type = DeviceType.objects.create(
+            manufacturer=manufacturer, model="cve-dt", slug="cve-dt"
+        )
+        role = DeviceRole.objects.create(name="cve-role", slug="cve-role")
+        site = Site.objects.create(name="cve-site", slug="cve-site")
+        device = Device.objects.create(
+            name="cve-device",
+            device_type=device_type,
+            role=role,
+            site=site,
+        )
+        from dcim.models import Platform
+
+        CVE = django_apps.get_model("netbox_dlm", "cve")
+        SoftwareVersion = django_apps.get_model("netbox_dlm", "softwareversion")
+        Vulnerability = django_apps.get_model("netbox_dlm", "vulnerability")
+        platform = Platform.objects.create(name="cve-plat", slug="cve-plat")
+        # netbox_dlm.Vulnerability requires software_version (not null).
+        software_version = SoftwareVersion.objects.create(
+            platform=platform, version="1.0"
+        )
+        cve = CVE.objects.create(
+            cve_id="CVE-2026-0001", name="test", severity="critical"
+        )
+        Vulnerability.objects.create(
+            device=device, cve=cve, software_version=software_version
+        )
+        admin = get_user_model().objects.create_superuser(
+            username="cve_admin", password="TestPassword123!"
+        )
+        self.client.force_login(admin)
+        response = self.client.get(f"/dcim/devices/{device.pk}/forward-cves/")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"CVE-2026-0001", response.content)
+
+
+class PatchIntentHookTest(TestCase):
+    """REST PATCH of the intent keys reconciles immediately (backlog item:
+    was 'takes effect at the next reconcile point')."""
+
+    @classmethod
+    def setUpTestData(cls):
+        from django.contrib.auth import get_user_model
+
+        User = get_user_model()
+        cls.admin = User.objects.create_superuser(
+            username="patch_admin",
+            password="TestPassword123!",
+            email="patch_admin@example.com",
+        )
+        cls.sync = _make_sync("sched-patch")
+
+    def _patch(self, data):
+        from rest_framework.test import APIRequestFactory
+        from rest_framework.test import force_authenticate
+
+        from forward_netbox.api.views import ForwardSyncViewSet
+
+        factory = APIRequestFactory()
+        request = factory.patch(
+            f"/api/plugins/forward/sync/{self.sync.pk}/", data, format="json"
+        )
+        force_authenticate(request, user=self.admin)
+        view = ForwardSyncViewSet.as_view({"patch": "partial_update"})
+        return view(request, pk=self.sync.pk)
+
+    def test_intent_patch_triggers_reconcile(self):
+        params = {
+            **(self.sync.parameters or {}),
+            "validation_schedule_interval": 720,
+        }
+        with patch(
+            "forward_netbox.utilities.sync_facade.reconcile_standing_schedules"
+        ) as reconcile:
+            response = self._patch({"parameters": params})
+        self.assertEqual(response.status_code, 200, response.data)
+        reconcile.assert_called_once()
+
+    def test_non_intent_patch_does_not_reconcile(self):
+        with patch(
+            "forward_netbox.utilities.sync_facade.reconcile_standing_schedules"
+        ) as reconcile:
+            response = self._patch({"name": "sched-patch"})
+        self.assertEqual(response.status_code, 200, response.data)
+        reconcile.assert_not_called()
+
+    def test_display_parameters_echo_intent_keys(self):
+        # GET-modify-PATCH round-trips must not degrade a stored explicit 0
+        # to "absent" (absent = adopt semantics).
+        from forward_netbox.utilities.branch_budget import (
+            DEFAULT_MAX_CHANGES_PER_BRANCH,
+        )
+        from forward_netbox.utilities.sync_state import get_display_parameters
+
+        self.sync.parameters = {
+            **(self.sync.parameters or {}),
+            "preview_schedule_interval": 0,
+        }
+        self.sync.save()
+        display = get_display_parameters(
+            self.sync,
+            max_changes_per_branch_default=DEFAULT_MAX_CHANGES_PER_BRANCH,
+        )
+        self.assertEqual(display["preview_schedule_interval"], 0)
+
+    def test_persist_is_key_isolated_under_stale_instance(self):
+        # Transactional persist reads the locked row, so a stale in-memory
+        # instance cannot clobber the other kind's key.
+        from forward_netbox.utilities.sync_facade import (
+            persist_standing_schedule_interval,
+        )
+
+        stale = ForwardSync.objects.get(pk=self.sync.pk)
+        persist_standing_schedule_interval(self.sync, "validation", 720)
+        persist_standing_schedule_interval(stale, "dependency_preview", 1440)
+        self.sync.refresh_from_db()
+        self.assertEqual(self.sync.parameters["validation_schedule_interval"], 720)
+        self.assertEqual(self.sync.parameters["preview_schedule_interval"], 1440)

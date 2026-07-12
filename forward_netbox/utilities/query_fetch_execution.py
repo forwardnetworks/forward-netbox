@@ -19,6 +19,7 @@ from ..choices import ForwardDiffFallbackModeChoices
 from ..choices import ForwardExecutionBackendChoices
 from ..exceptions import ForwardClientError
 from ..exceptions import ForwardConnectivityError
+from ..exceptions import ForwardFetchBudgetExceededError
 from ..exceptions import ForwardQueryError
 from .apply_engine import apply_engine_decision_for
 from .branch_budget import BranchPlanItem
@@ -81,6 +82,7 @@ DEVICE_NAME_SCOPED_MODELS = DEVICE_SHARD_MODELS | {
 # branching executor's claimed index (the class of crash Partner hit on ipam.vlan).
 DEFAULT_WORKLOAD_FETCH_RETRY_ATTEMPTS = 2
 DEFAULT_WORKLOAD_FETCH_RETRY_BACKOFF_SECONDS = 3.0
+DEFAULT_WORKLOAD_FETCH_TIMEOUT_SECONDS = 0
 _TRANSIENT_FETCH_ERROR_TOKENS = (
     "timeout",
     "timed out",
@@ -104,6 +106,8 @@ def _is_transient_fetch_error(exc):
     ForwardQueryError (a malformed or unpublished query, or a source defect) is
     never transient — retrying it just wastes time.
     """
+    if isinstance(exc, ForwardFetchBudgetExceededError):
+        return False
     if isinstance(exc, ForwardConnectivityError):
         return True
     if isinstance(exc, ForwardQueryError):
@@ -1085,6 +1089,20 @@ class ForwardQueryFetcher:
             backoff = DEFAULT_WORKLOAD_FETCH_RETRY_BACKOFF_SECONDS
         return max(0, attempts), max(0.0, backoff)
 
+    def _workload_fetch_timeout_seconds(self):
+        source = getattr(self.sync, "source", None)
+        parameters = dict(getattr(source, "parameters", {}) or {})
+        try:
+            timeout = int(
+                parameters.get(
+                    "workload_fetch_timeout_seconds",
+                    DEFAULT_WORKLOAD_FETCH_TIMEOUT_SECONDS,
+                )
+            )
+        except (TypeError, ValueError):
+            timeout = DEFAULT_WORKLOAD_FETCH_TIMEOUT_SECONDS
+        return max(0, timeout)
+
     def _query_diagnostics_enabled(self) -> bool:
         source = getattr(self.sync, "source", None)
         parameters = dict(getattr(source, "parameters", {}) or {})
@@ -1515,6 +1533,8 @@ class ForwardQueryFetcher:
         model_string, spec, baseline, coalesce_fields, shard_scope = job
         baseline_snapshot_id = getattr(baseline, "snapshot_id", "") or ""
         started = time.perf_counter()
+        budget = self._workload_fetch_timeout_seconds()
+        deadline = (time.monotonic() + budget) if budget else None
         attempts, backoff = self._workload_fetch_retry_config()
         for attempt in range(attempts + 1):
             try:
@@ -1526,6 +1546,7 @@ class ForwardQueryFetcher:
                     coalesce_fields,
                     shard_scope=shard_scope,
                     return_fetch_meta=True,
+                    deadline=deadline,
                 )
                 if validate_rows:
                     self.validate_rows(
@@ -1540,7 +1561,11 @@ class ForwardQueryFetcher:
                 ForwardConnectivityError,
                 ForwardQueryError,
             ) as exc:
-                if attempt < attempts and _is_transient_fetch_error(exc):
+                if (
+                    attempt < attempts
+                    and _is_transient_fetch_error(exc)
+                    and (deadline is None or time.monotonic() < deadline)
+                ):
                     self.logger.log_warning(
                         (
                             f"Transient fetch error for {model_string} "
@@ -1553,6 +1578,11 @@ class ForwardQueryFetcher:
                         time.sleep(backoff * (attempt + 1))
                     continue
                 runtime_ms = round((time.perf_counter() - started) * 1000, 1)
+                if isinstance(exc, ForwardFetchBudgetExceededError):
+                    self.logger.log_warning(
+                        f"Fetch budget exceeded for {model_string} after {budget} second(s): {exc}",
+                        obj=self.sync,
+                    )
                 return (
                     self._failure_result(
                         context,
@@ -1692,7 +1722,11 @@ class ForwardQueryFetcher:
             ),
             diagnostics=[
                 {
-                    "name": "query_validation_failure",
+                    "name": (
+                        "fetch_budget_exceeded"
+                        if isinstance(exc, ForwardFetchBudgetExceededError)
+                        else "query_validation_failure"
+                    ),
                     "message": self._failure_message(model_string, spec, exc),
                 }
             ],
@@ -1888,6 +1922,7 @@ class ForwardQueryFetcher:
         *,
         shard_scope=None,
         return_fetch_meta=False,
+        deadline=None,
     ):
         fetch_artifact_descriptor = None
         original_shard_scope = dict(shard_scope or {}) if shard_scope else None
@@ -2011,6 +2046,7 @@ class ForwardQueryFetcher:
                     context=context,
                     before_snapshot_id=baseline.snapshot_id,
                     parameters=parameters,
+                    deadline=deadline,
                 )
                 rows, delete_rows = runner._split_diff_rows(model_string, diff_rows)
                 rows, _ = self._apply_device_tag_scope(model_string, rows, context)
@@ -2038,6 +2074,8 @@ class ForwardQueryFetcher:
                     },
                 )
             except (ForwardClientError, ForwardConnectivityError) as exc:
+                if isinstance(exc, ForwardFetchBudgetExceededError):
+                    raise
                 safe_exc = _safe_exception_summary(exc)
                 if self._require_diff_execution():
                     raise ForwardQueryError(
@@ -2094,8 +2132,11 @@ class ForwardQueryFetcher:
                 context=context,
                 parameters=parameters,
                 fetch_all=True,
+                deadline=deadline,
             )
         except (ForwardClientError, ForwardConnectivityError) as exc:
+            if isinstance(exc, ForwardFetchBudgetExceededError):
+                raise
             safe_exc = _safe_exception_summary(exc)
             if shard_scope and shard_scope.get("fetch_mode") != "model":
                 raise ForwardQueryError(
@@ -2427,6 +2468,7 @@ class ForwardQueryFetcher:
         parameters: dict[str, Any],
         limit: int | None = None,
         fetch_all: bool = False,
+        deadline=None,
     ):
         return self.client.run_nqe_query(
             query=spec.query,
@@ -2437,6 +2479,7 @@ class ForwardQueryFetcher:
             parameters=parameters,
             limit=limit,
             fetch_all=fetch_all,
+            deadline=deadline,
         )
 
     def _run_nqe_diff(
@@ -2446,6 +2489,7 @@ class ForwardQueryFetcher:
         context: ForwardQueryContext,
         before_snapshot_id: str,
         parameters: dict[str, Any],
+        deadline=None,
     ):
         return self.client.run_nqe_diff(
             query_id=spec.run_query_id,
@@ -2454,6 +2498,7 @@ class ForwardQueryFetcher:
             before_snapshot_id=before_snapshot_id,
             after_snapshot_id=context.snapshot_id,
             fetch_all=True,
+            deadline=deadline,
         )
 
     def _run_nqe_diff_without_parameters(

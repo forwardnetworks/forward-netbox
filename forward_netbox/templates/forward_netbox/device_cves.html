@@ -1,0 +1,57 @@
+{% extends 'dcim/device/base.html' %}
+{% load i18n %}
+
+{% block content %}
+  <div class="row">
+    <div class="col col-12">
+      <div class="card">
+        <h5 class="card-header">{% trans "CVE Exposure (Forward)" %}</h5>
+        <div class="card-body">
+          <p class="text-muted">
+            {% trans "CVE findings from Forward's OS-version-aware analysis, synced into the Device Lifecycle plugin. Rows refresh with each Forward sync run that has the Vulnerability map enabled." %}
+          </p>
+          <p>
+            {% if severity_totals.critical %}<span class="badge text-bg-danger">{{ severity_totals.critical }} {% trans "critical" %}</span>{% endif %}
+            {% if severity_totals.high %}<span class="badge text-bg-warning">{{ severity_totals.high }} {% trans "high" %}</span>{% endif %}
+            {% if severity_totals.medium %}<span class="badge text-bg-info">{{ severity_totals.medium }} {% trans "medium" %}</span>{% endif %}
+            {% if severity_totals.low %}<span class="badge text-bg-secondary">{{ severity_totals.low }} {% trans "low" %}</span>{% endif %}
+          </p>
+          <div class="table-responsive">
+            <table class="table table-hover">
+              <thead>
+                <tr>
+                  <th>{% trans "CVE" %}</th>
+                  <th>{% trans "Severity" %}</th>
+                  <th>{% trans "Software Version" %}</th>
+                  <th>{% trans "Description" %}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for vulnerability in vulnerabilities %}
+                <tr>
+                  <td>
+                    <a href="{{ vulnerability.cve.get_absolute_url }}">{{ vulnerability.cve.cve_id }}</a>
+                  </td>
+                  <td>
+                    {% with severity=vulnerability.cve.severity|lower %}
+                      {% if severity == "critical" %}<span class="badge text-bg-danger">{{ vulnerability.cve.severity }}</span>
+                      {% elif severity == "high" %}<span class="badge text-bg-warning">{{ vulnerability.cve.severity }}</span>
+                      {% elif severity == "medium" %}<span class="badge text-bg-info">{{ vulnerability.cve.severity }}</span>
+                      {% elif severity %}<span class="badge text-bg-secondary">{{ vulnerability.cve.severity }}</span>
+                      {% else %}&mdash;{% endif %}
+                    {% endwith %}
+                  </td>
+                  <td>{{ vulnerability.software_version|default:"—" }}</td>
+                  <td class="text-wrap" style="max-width: 40rem;">{{ vulnerability.cve.description|truncatechars:240|default:"—" }}</td>
+                </tr>
+                {% empty %}
+                <tr><td colspan="4" class="text-muted">{% trans "No CVE findings for this device." %}</td></tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+{% endblock %}
