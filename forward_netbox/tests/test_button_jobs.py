@@ -243,3 +243,106 @@ class ButtonJobAPIActionTest(TestCase):
         self.assertEqual(response.status_code, 202)
         self.assertEqual(response.data["status"], "already_running")
         self.assertEqual(response.data["job_id"], active.pk)
+
+
+class ButtonJobRunnerParityTest(TestCase):
+    """JobRunner classes for the three remaining button jobs (backlog:
+    conversion for parity with ValidationJob/DependencyPreviewJob). Their
+    fixed Meta.names must stay byte-identical to the BUTTON_JOB_SPECS
+    suffixes — the overlap guard's exact-name arm depends on it — and the
+    guard must stay instance-scoped (a fixed-name row on another sync must
+    not block this one)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.source = ForwardSource.objects.create(
+            name="runner-src",
+            type="saas",
+            url="https://fwd.app",
+            status="ready",
+            parameters={
+                "username": "user@example.com",
+                "password": "secret",
+                "verify": True,
+                "network_id": "net-1",
+            },
+        )
+        cls.sync = ForwardSync.objects.create(
+            name="runner-sync",
+            source=cls.source,
+            parameters={"snapshot_id": "latestProcessed"},
+        )
+        cls.other_sync = ForwardSync.objects.create(
+            name="runner-sync-2",
+            source=cls.source,
+            parameters={"snapshot_id": "latestProcessed"},
+        )
+
+    def test_meta_names_match_button_spec_suffixes(self):
+        from forward_netbox.jobs import CreateModuleBaysJob
+        from forward_netbox.jobs import PruneOrphansJob
+        from forward_netbox.jobs import TagDeleteEligibleIpamJob
+
+        self.assertEqual(PruneOrphansJob.name, BUTTON_JOB_SPECS["prune_orphans"][1])
+        self.assertEqual(
+            TagDeleteEligibleIpamJob.name,
+            BUTTON_JOB_SPECS["tag_delete_eligible_ipam"][1],
+        )
+        self.assertEqual(
+            CreateModuleBaysJob.name, BUTTON_JOB_SPECS["create_module_bays"][1]
+        )
+
+    def test_fixed_name_occurrence_blocks_same_sync_button(self):
+        Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=self.sync.pk,
+            name="prune orphans",
+            status=JobStatusChoices.STATUS_RUNNING,
+            job_id="123e4567-e89b-12d3-a456-426614176001",
+        )
+        with self.assertRaises(JobAlreadyActive):
+            enqueue_button_job(self.sync, "prune_orphans", None)
+
+    def test_fixed_name_occurrence_on_other_sync_does_not_block(self):
+        Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=self.other_sync.pk,
+            name="prune orphans",
+            status=JobStatusChoices.STATUS_RUNNING,
+            job_id="123e4567-e89b-12d3-a456-426614176002",
+        )
+        with patch(
+            "forward_netbox.utilities.sync_facade.Job.enqueue",
+            return_value=Mock(pk=60),
+        ) as enqueue:
+            enqueue_button_job(self.sync, "prune_orphans", None)
+        enqueue.assert_called_once()
+
+    def test_runner_run_invokes_work(self):
+        from forward_netbox.jobs import CreateModuleBaysJob
+        from forward_netbox.jobs import PruneOrphansJob
+        from forward_netbox.jobs import TagDeleteEligibleIpamJob
+
+        pairs = (
+            (PruneOrphansJob, "forward_netbox.jobs._prune_forward_orphans_work"),
+            (
+                TagDeleteEligibleIpamJob,
+                "forward_netbox.jobs._tag_delete_eligible_ipam_work",
+            ),
+            (
+                CreateModuleBaysJob,
+                "forward_netbox.jobs._create_module_bays_work",
+            ),
+        )
+        for index, (runner_cls, work_path) in enumerate(pairs):
+            with self.subTest(runner=runner_cls.__name__):
+                job = Job.objects.create(
+                    object_type=ContentType.objects.get_for_model(ForwardSync),
+                    object_id=self.sync.pk,
+                    name=runner_cls.name,
+                    status=JobStatusChoices.STATUS_RUNNING,
+                    job_id=f"123e4567-e89b-12d3-a456-42661417610{index}",
+                )
+                with patch(work_path) as work:
+                    runner_cls(job).run()
+                work.assert_called_once_with(job)
