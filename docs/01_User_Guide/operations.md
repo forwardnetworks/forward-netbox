@@ -149,6 +149,24 @@ dependency plan (a heavy live dry-run). When it finishes, **View Last Preview**
 renders the cached result and `?format=json` downloads it. The preview never runs
 the dry-run in the web request, so it does not time out on large fabrics.
 
+### Recovering a sync wedged by a dead worker
+
+If an RQ worker is hard-killed mid-merge, the sync is left `MERGING` (and its
+branch `MERGING`) forever — the `forward_stuck_job_alert` command only
+*detects* this. The companion command recovers it:
+
+```
+python manage.py forward_stuck_job_recover            # classify + report only
+python manage.py forward_stuck_job_recover --apply    # act
+```
+
+A wedged `MERGING` sync whose worker is dead (no live RQ execution, past a
+15-minute grace) is re-enqueued for merge — idempotent, resuming the unmerged
+suffix — up to 4 attempts, after which it is failed with an issue recorded. A
+dead sync-run is failed cleanly so its schedule resumes. Never touches a
+live merge or a `ready_to_merge` (operator review) sync. Cron `--apply` for
+hands-off recovery.
+
 ### Auditing dangling netbox-routing rows
 
 The post-prune sweep only covers devices the plugin itself pruned. Devices
