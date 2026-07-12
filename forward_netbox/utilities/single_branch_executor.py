@@ -108,9 +108,42 @@ class ForwardSingleBranchExecutor(ForwardFastBootstrapExecutor):
         # Stage every workload into the single branch. Reuse the proven per-shard
         # staging path (active_branch + current_request, per-object apply ->
         # branch ObjectChanges); all plan items land in ONE branch. There is no
-        # size-sharding: items are split only by dependency phase / operation,
-        # and every one targets the same branch.
-        plan = build_branch_plan(workloads)
+        # every plan item targets the same branch. Optional budget splitting
+        # partitions oversized workloads for bounded staging/progress units.
+        max_changes_per_branch = self.sync.get_max_changes_per_branch()
+        warned_models = set()
+        for workload in workloads:
+            if workload.estimated_changes > max_changes_per_branch:
+                self.logger.log_warning(
+                    f"{workload.model_string} workload has "
+                    f"{workload.estimated_changes} estimated changes, exceeding "
+                    f"the branch budget of {max_changes_per_branch}."
+                )
+                warned_models.add(workload.model_string)
+        if self.sync.parameters.get("enable_branch_budget_split"):
+            oversized_bucket_policy = (
+                "fail"
+                if self.sync.parameters.get("branch_budget_enforcement") == "strict"
+                else "warn"
+            )
+            plan = build_branch_plan(
+                workloads,
+                max_changes_per_branch=max_changes_per_branch,
+                oversized_bucket_policy=oversized_bucket_policy,
+            )
+        else:
+            plan = build_branch_plan(workloads)
+        for item in plan:
+            if (
+                item.estimated_changes > max_changes_per_branch
+                and item.model_string not in warned_models
+            ):
+                self.logger.log_warning(
+                    f"{item.model_string} plan item has {item.estimated_changes} "
+                    f"estimated changes, exceeding the branch budget of "
+                    f"{max_changes_per_branch}."
+                )
+                warned_models.add(item.model_string)
         total = len(plan)
         context_dict = context.as_dict()
         for item in plan:

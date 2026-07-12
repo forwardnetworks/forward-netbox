@@ -343,7 +343,18 @@ def _dependency_dry_run_payload(sync):
     fetcher = ForwardQueryFetcher(sync, sync.source.get_client(), sync.logger)
     context = fetcher.resolve_context()
     workloads = fetcher.fetch_workloads(context)
-    plan = build_branch_plan(workloads)
+    if sync.parameters.get("enable_branch_budget_split"):
+        plan = build_branch_plan(
+            workloads,
+            max_changes_per_branch=sync.get_max_changes_per_branch(),
+            oversized_bucket_policy=(
+                "fail"
+                if sync.parameters.get("branch_budget_enforcement") == "strict"
+                else "warn"
+            ),
+        )
+    else:
+        plan = build_branch_plan(workloads)
     plan_preview = build_plan_preview(
         plan, max_changes_per_branch=sync.get_max_changes_per_branch()
     )
