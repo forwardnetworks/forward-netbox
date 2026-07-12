@@ -1041,3 +1041,57 @@ class SyncFormScheduleTest(TestCase):
         self.assertEqual(instance.parameters["validation_schedule_interval"], 720)
         # Blank field = explicit cancel (stored 0, not absent).
         self.assertEqual(instance.parameters["preview_schedule_interval"], 0)
+
+
+class DeviceCVETabTest(TestCase):
+    """CVE device tab is registered only when netbox_dlm is installed (core
+    installs must carry no dead tab); content is skip-gated on the plugin."""
+
+    def test_registration_matches_plugin_presence(self):
+        from django.apps import apps as django_apps
+
+        import forward_netbox.views as views
+
+        self.assertEqual(
+            django_apps.is_installed("netbox_dlm"),
+            hasattr(views, "ForwardDeviceCVEView"),
+        )
+
+    def test_tab_lists_device_cves(self):
+        from django.apps import apps as django_apps
+
+        if not django_apps.is_installed("netbox_dlm"):
+            self.skipTest("netbox_dlm is not installed")
+        from django.contrib.auth import get_user_model
+
+        from dcim.models import Device
+        from dcim.models import DeviceRole
+        from dcim.models import DeviceType
+        from dcim.models import Manufacturer
+        from dcim.models import Site
+
+        manufacturer = Manufacturer.objects.create(name="cve-mfr", slug="cve-mfr")
+        device_type = DeviceType.objects.create(
+            manufacturer=manufacturer, model="cve-dt", slug="cve-dt"
+        )
+        role = DeviceRole.objects.create(name="cve-role", slug="cve-role")
+        site = Site.objects.create(name="cve-site", slug="cve-site")
+        device = Device.objects.create(
+            name="cve-device",
+            device_type=device_type,
+            role=role,
+            site=site,
+        )
+        CVE = django_apps.get_model("netbox_dlm", "cve")
+        Vulnerability = django_apps.get_model("netbox_dlm", "vulnerability")
+        cve = CVE.objects.create(
+            cve_id="CVE-2026-0001", name="test", severity="critical"
+        )
+        Vulnerability.objects.create(device=device, cve=cve)
+        admin = get_user_model().objects.create_superuser(
+            username="cve_admin", password="TestPassword123!"
+        )
+        self.client.force_login(admin)
+        response = self.client.get(f"/dcim/devices/{device.pk}/forward-cves/")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"CVE-2026-0001", response.content)

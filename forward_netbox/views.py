@@ -1918,3 +1918,54 @@ class ForwardValidationRunDeleteView(generic.ObjectDeleteView):
 class ForwardValidationRunBulkDeleteView(generic.BulkDeleteView):
     queryset = ForwardValidationRun.objects.all()
     table = ForwardValidationRunTable
+
+
+# --- Device CVE tab (optional netbox_dlm integration) -----------------------
+# The 2.5.2 Vulnerability feed lands one netbox_dlm row per device+CVE; this
+# tab surfaces the actual CVEs behind a device's exposure count without a
+# Forward round-trip. Registered only when the plugin is installed so core
+# installs carry no dead tab.
+from django.apps import apps as django_apps  # noqa: E402
+
+if django_apps.is_installed("netbox_dlm"):
+    from dcim.models import Device  # noqa: E402
+
+    def _device_vulnerabilities(device):
+        Vulnerability = django_apps.get_model("netbox_dlm", "vulnerability")
+        return (
+            Vulnerability.objects.filter(device=device)
+            .select_related("cve", "software_version")
+            .order_by("cve__severity", "cve__cve_id")
+        )
+
+    @register_model_view(Device, "forward_cves", path="forward-cves")
+    class ForwardDeviceCVEView(generic.ObjectView):
+        queryset = Device.objects.all()
+        template_name = "forward_netbox/device_cves.html"
+        tab = ViewTab(
+            label=_("CVEs"),
+            badge=lambda obj: _device_vulnerabilities(obj).count(),
+            permission="dcim.view_device",
+            hide_if_empty=True,
+        )
+
+        def get_extra_context(self, request, instance):
+            vulnerabilities = list(_device_vulnerabilities(instance))
+            order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+            vulnerabilities.sort(
+                key=lambda v: (
+                    order.get((v.cve.severity or "").lower(), 4),
+                    v.cve.cve_id,
+                )
+            )
+            return {
+                "vulnerabilities": vulnerabilities,
+                "severity_totals": {
+                    label: sum(
+                        1
+                        for v in vulnerabilities
+                        if (v.cve.severity or "").lower() == label
+                    )
+                    for label in ("critical", "high", "medium", "low")
+                },
+            }
