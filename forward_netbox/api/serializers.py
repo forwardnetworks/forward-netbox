@@ -36,8 +36,11 @@ class JobScheduleRequestSerializer(serializers.Serializer):
     interval = serializers.IntegerField(
         required=False,
         allow_null=True,
-        min_value=1,
-        help_text="Recurrence interval in minutes; requires the RQ scheduler.",
+        min_value=0,
+        help_text=(
+            "Recurrence interval in minutes; requires the RQ scheduler. "
+            "0 cancels the standing schedule."
+        ),
     )
 
     def __init__(self, *args, min_interval=1, **kwargs):
@@ -56,11 +59,15 @@ class JobScheduleRequestSerializer(serializers.Serializer):
         # dedup slot as the standing schedule and silently replace it, so
         # one-shot delayed runs are rejected outright: an empty body runs
         # immediately, interval creates the standing schedule.
-        if data.get("schedule_at") and not data.get("interval"):
+        interval = data.get("interval")
+        if interval == 0 and data.get("schedule_at"):
+            raise serializers.ValidationError(
+                {"interval": "interval 0 cancels the schedule; omit schedule_at."}
+            )
+        if data.get("schedule_at") and interval is None:
             raise serializers.ValidationError(
                 {"interval": "schedule_at requires interval."}
             )
-        interval = data.get("interval")
         if interval and interval < self.min_interval:
             raise serializers.ValidationError(
                 {

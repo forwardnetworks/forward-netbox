@@ -436,3 +436,33 @@ class DanglingRoutingCleanupTest(TestCase):
             result["pruned_dangling_rows"], {"netbox_routing.bgprouter": 2}
         )
         self.assertFalse(Device.objects.filter(name="dangle-orphan").exists())
+
+
+class DanglingRoutingCleanupRealSchemaTest(TestCase):
+    """Real-schema exercise of the dangler sweep. netbox_routing does not
+    support the NetBox 4.6 baseline yet, so this is skip-gated: it starts
+    running (and closes the mock-only coverage gap) the moment the plugin
+    becomes installable in CI."""
+
+    def test_sweep_against_real_models(self):
+        from django.apps import apps as django_apps
+
+        if not django_apps.is_installed("netbox_routing"):
+            self.skipTest("netbox_routing is not installed")
+        from django.contrib.contenttypes.models import ContentType
+
+        from dcim.models import Device
+        from forward_netbox.utilities.scope_reconciliation import (
+            _cleanup_dangling_routing_objects,
+        )
+
+        BGPRouter = django_apps.get_model("netbox_routing", "bgprouter")
+        device_ct = ContentType.objects.get_for_model(Device)
+        # A dangling router: its GenericFK points at a device pk that no
+        # longer exists.
+        router = BGPRouter.objects.create(
+            assigned_object_type=device_ct, assigned_object_id=999999
+        )
+        tally = _cleanup_dangling_routing_objects({999999})
+        self.assertFalse(BGPRouter.objects.filter(pk=router.pk).exists())
+        self.assertGreaterEqual(sum(tally.values()), 1)

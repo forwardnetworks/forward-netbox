@@ -1202,6 +1202,26 @@ class ForwardSyncForm(NetBoxModelForm):
             "Use a long random value; an already-running sync is not re-queued."
         ),
     )
+    validation_schedule_interval = forms.IntegerField(
+        required=False,
+        min_value=1,
+        label="Recurring validation (minutes)",
+        help_text=(
+            "Run query validation on a standing schedule every N minutes. "
+            "Blank disables. The first run starts on save; the schedule "
+            "self-heals after worker restarts."
+        ),
+    )
+    preview_schedule_interval = forms.IntegerField(
+        required=False,
+        min_value=60,
+        label="Recurring dependency preview (minutes)",
+        help_text=(
+            "Refresh the dependency preview on a standing schedule every N "
+            "minutes (minimum 60 — it is a full live dry-run; daily or less "
+            "is recommended on large fabrics). Blank disables."
+        ),
+    )
 
     class Meta:
         model = ForwardSync
@@ -1238,6 +1258,12 @@ class ForwardSyncForm(NetBoxModelForm):
             ForwardDiffFallbackModeChoices.ALLOW_FALLBACK,
         )
         self.fields["webhook_secret"].initial = parameters.get("webhook_secret", "")
+        self.fields["validation_schedule_interval"].initial = (
+            parameters.get("validation_schedule_interval") or None
+        )
+        self.fields["preview_schedule_interval"].initial = (
+            parameters.get("preview_schedule_interval") or None
+        )
         selected_snapshot_id = (
             self.data.get("snapshot_id")
             if self.is_bound
@@ -1275,6 +1301,11 @@ class ForwardSyncForm(NetBoxModelForm):
                 "interval",
                 "webhook_secret",
                 name="Execution",
+            ),
+            FieldSet(
+                "validation_schedule_interval",
+                "preview_schedule_interval",
+                name="Standing Schedules",
             ),
             FieldSet("tags", name="Tags"),
         ]
@@ -1329,6 +1360,12 @@ class ForwardSyncForm(NetBoxModelForm):
             "diff_fallback_mode": cleaned.get("diff_fallback_mode")
             or ForwardDiffFallbackModeChoices.ALLOW_FALLBACK,
             "webhook_secret": str(cleaned.get("webhook_secret") or ""),
+            "validation_schedule_interval": int(
+                cleaned.get("validation_schedule_interval") or 0
+            ),
+            "preview_schedule_interval": int(
+                cleaned.get("preview_schedule_interval") or 0
+            ),
         }
         for model_string in forward_configured_models():
             parameters[model_string] = cleaned.get(model_string, False)
@@ -1355,13 +1392,25 @@ class ForwardSyncForm(NetBoxModelForm):
             "diff_fallback_mode": self.cleaned_data.get("diff_fallback_mode")
             or ForwardDiffFallbackModeChoices.ALLOW_FALLBACK,
             "webhook_secret": str(self.cleaned_data.get("webhook_secret") or ""),
+            "validation_schedule_interval": int(
+                self.cleaned_data.get("validation_schedule_interval") or 0
+            ),
+            "preview_schedule_interval": int(
+                self.cleaned_data.get("preview_schedule_interval") or 0
+            ),
         }
         for model_string in forward_configured_models():
             parameters[model_string] = self.cleaned_data.get(model_string, False)
         self.instance.parameters = parameters
         self.instance.auto_merge = self.cleaned_data.get("auto_merge", False)
         self.instance.status = ForwardSyncStatusChoices.NEW
-        return super().save(*args, **kwargs)
+        instance = super().save(*args, **kwargs)
+        # Make the enqueued Job rows match the stored schedule intent
+        # (creates, replaces, or cancels the standing schedules).
+        from .utilities.sync_facade import reconcile_standing_schedules
+
+        reconcile_standing_schedules(instance)
+        return instance
 
 
 class ForwardSyncBulkEditForm(NetBoxModelBulkEditForm):

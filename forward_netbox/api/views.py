@@ -5,6 +5,7 @@ from core.exceptions import SyncError
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import PermissionDenied
 from drf_spectacular.utils import extend_schema
+from drf_spectacular.utils import OpenApiResponse
 from netbox.api.viewsets import NetBoxModelViewSet
 from netbox.api.viewsets import NetBoxReadOnlyModelViewSet
 from rest_framework import status
@@ -676,6 +677,24 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
             status=status.HTTP_202_ACCEPTED,
         )
 
+    def _standing_schedule_pk(self, sync, kind):
+        """pk of the current enqueued standing-schedule row (or None) — lets
+        the schedule actions answer 200 for an idempotent re-post vs 201 for
+        a created/replaced schedule."""
+        from core.choices import JobStatusChoices
+
+        from ..utilities.sync_facade import STANDING_SCHEDULE_JOB_NAMES
+
+        row = (
+            sync.jobs.filter(
+                name=STANDING_SCHEDULE_JOB_NAMES[kind],
+                status__in=JobStatusChoices.ENQUEUED_STATE_CHOICES,
+            )
+            .order_by("-created")
+            .first()
+        )
+        return row.pk if row else None
+
     def _parse_schedule(self, request, min_interval=1):
         """Validate optional schedule_at/interval from the request body.
 
@@ -692,7 +711,18 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
     @extend_schema(
         methods=["post"],
         request=JobScheduleRequestSerializer(),
-        responses={201: JobSerializer()},
+        responses={
+            200: OpenApiResponse(
+                description=(
+                    "Idempotent schedule re-post (job returned) or "
+                    '{"status": "cancelled", "removed": N} for interval 0.'
+                )
+            ),
+            201: JobSerializer(),
+            202: OpenApiResponse(
+                description='{"status": "already_running", "job_id": N}'
+            ),
+        },
     )
     @action(detail=True, methods=["post"])
     def validate(self, request, pk):
@@ -702,8 +732,13 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
             )
         sync = self.get_object()
         schedule_at, interval = self._parse_schedule(request)
+        from ..utilities.sync_facade import cancel_standing_schedule
         from ..utilities.sync_facade import JobAlreadyActive
 
+        if interval == 0:
+            removed = cancel_standing_schedule(sync, "validation")
+            return Response({"status": "cancelled", "removed": removed})
+        existing_pk = self._standing_schedule_pk(sync, "validation")
         try:
             job = sync.enqueue_validation_job(
                 user=request.user,
@@ -712,18 +747,28 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
                 interval=interval,
             )
         except JobAlreadyActive as exc:
-            return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
+            return Response(
+                {
+                    "status": "already_running",
+                    "job_id": exc.job.pk,
+                    "detail": str(exc),
+                },
+                status=status.HTTP_202_ACCEPTED,
+            )
         return Response(
-            JobSerializer(job, context={"request": request}).data, status=201
+            JobSerializer(job, context={"request": request}).data,
+            status=200 if interval and job.pk == existing_pk else 201,
         )
 
     def _enqueue_button_job_response(self, request, kind):
         """Shared body for the button-job actions: permission check mirroring
-        the HTML view, overlap guard via enqueue_button_job (409 on an active
-        equivalent job, matching the sync action's SyncError->409 pattern)."""
+        the HTML view, overlap guard via enqueue_button_job (202
+        already_running on an active equivalent job — idempotent for
+        retry-blind schedulers, matching the webhook endpoint)."""
         from ..utilities.sync_facade import button_job_permission
         from ..utilities.sync_facade import enqueue_button_job
         from ..utilities.sync_facade import JobAlreadyActive
+        from ..utilities.sync_facade import JobBlockedBySyncRun
 
         permission = button_job_permission(kind)
         if not request.user.has_perm(permission):
@@ -734,7 +779,7 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
         # silently ignoring them here would 201 a one-shot run the caller
         # believes is a standing schedule.
         if isinstance(request.data, dict) and (
-            request.data.get("schedule_at") or request.data.get("interval")
+            "schedule_at" in request.data or "interval" in request.data
         ):
             return Response(
                 {
@@ -749,8 +794,28 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
         sync = self.get_object()
         try:
             job = enqueue_button_job(sync, kind, request.user)
+        except JobBlockedBySyncRun as exc:
+            # Distinct from already_running: the requested work is NOT
+            # queued (prune refuses while a sync run is active). Still 2xx
+            # so retry-blind crons stay green; the status string says why,
+            # and the post-sync auto-prune covers the gap when enabled.
+            return Response(
+                {
+                    "status": "blocked_by_sync_run",
+                    "job_id": exc.job.pk,
+                    "detail": str(exc),
+                },
+                status=status.HTTP_202_ACCEPTED,
+            )
         except JobAlreadyActive as exc:
-            return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
+            return Response(
+                {
+                    "status": "already_running",
+                    "job_id": exc.job.pk,
+                    "detail": str(exc),
+                },
+                status=status.HTTP_202_ACCEPTED,
+            )
         return Response(
             JobSerializer(job, context={"request": request}).data, status=201
         )
@@ -758,18 +823,31 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
     @extend_schema(
         methods=["post"],
         request=JobScheduleRequestSerializer(),
-        responses={201: JobSerializer()},
+        responses={
+            200: OpenApiResponse(
+                description=(
+                    "Idempotent schedule re-post (job returned) or "
+                    '{"status": "cancelled", "removed": N} for interval 0.'
+                )
+            ),
+            201: JobSerializer(),
+            202: OpenApiResponse(
+                description='{"status": "already_running", "job_id": N}'
+            ),
+        },
     )
     @action(detail=True, methods=["post"], url_path="dependency-preview")
     def dependency_preview(self, request, pk):
         # The preview is a full live dry-run against Forward; a sub-hourly
         # standing schedule degenerates to back-to-back runs on large fabrics.
         schedule_at, interval = self._parse_schedule(request, min_interval=60)
-        if schedule_at or interval:
-            # Standing schedule: fixed JobRunner name + enqueue_once dedup
-            # (one schedule per sync). Immediate runs below keep the legacy
-            # per-sync job name the drift report and preview GET match on.
+        if interval == 0 or schedule_at or interval:
+            # Standing-schedule management: fixed JobRunner name +
+            # enqueue_once dedup (one schedule per sync); interval=0 cancels.
+            # Immediate runs below keep the legacy per-sync job name the
+            # drift report and preview GET match on.
             from ..utilities.sync_facade import button_job_permission
+            from ..utilities.sync_facade import cancel_standing_schedule
             from ..utilities.sync_facade import enqueue_preview_schedule
 
             permission = button_job_permission("dependency_preview")
@@ -778,6 +856,10 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
                     f"This user does not have the `{permission}` permission."
                 )
             sync = self.get_object()
+            if interval == 0:
+                removed = cancel_standing_schedule(sync, "dependency_preview")
+                return Response({"status": "cancelled", "removed": removed})
+            existing_pk = self._standing_schedule_pk(sync, "dependency_preview")
             job = enqueue_preview_schedule(
                 sync,
                 user=request.user,
@@ -785,26 +867,51 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
                 interval=interval,
             )
             return Response(
-                JobSerializer(job, context={"request": request}).data, status=201
+                JobSerializer(job, context={"request": request}).data,
+                status=200 if job.pk == existing_pk else 201,
             )
         return self._enqueue_button_job_response(request, "dependency_preview")
 
     @extend_schema(
-        methods=["post"], request=EmptySerializer(), responses={201: JobSerializer()}
+        methods=["post"],
+        request=EmptySerializer(),
+        responses={
+            201: JobSerializer(),
+            202: OpenApiResponse(
+                description=(
+                    '{"status": "already_running"|"blocked_by_sync_run", '
+                    '"job_id": N}'
+                )
+            ),
+        },
     )
     @action(detail=True, methods=["post"], url_path="prune-orphans")
     def prune_orphans(self, request, pk):
         return self._enqueue_button_job_response(request, "prune_orphans")
 
     @extend_schema(
-        methods=["post"], request=EmptySerializer(), responses={201: JobSerializer()}
+        methods=["post"],
+        request=EmptySerializer(),
+        responses={
+            201: JobSerializer(),
+            202: OpenApiResponse(
+                description='{"status": "already_running", "job_id": N}'
+            ),
+        },
     )
     @action(detail=True, methods=["post"], url_path="tag-delete-eligible-ipam")
     def tag_delete_eligible_ipam(self, request, pk):
         return self._enqueue_button_job_response(request, "tag_delete_eligible_ipam")
 
     @extend_schema(
-        methods=["post"], request=EmptySerializer(), responses={201: JobSerializer()}
+        methods=["post"],
+        request=EmptySerializer(),
+        responses={
+            201: JobSerializer(),
+            202: OpenApiResponse(
+                description='{"status": "already_running", "job_id": N}'
+            ),
+        },
     )
     @action(detail=True, methods=["post"], url_path="create-module-bays")
     def create_module_bays(self, request, pk):

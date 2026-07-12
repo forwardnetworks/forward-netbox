@@ -355,6 +355,54 @@ def sync_forwardsync(job, *args, **kwargs):
                     sync.pk,
                     new_scheduled_time,
                 )
+        # Self-heal standing schedules: core recurrence lives in JobRunner
+        # handle()'s finally, so a hard-killed worker mid-occurrence silently
+        # drops the chain. Recreate from the intent stored in sync.parameters
+        # (no-op while the chain is healthy).
+        try:
+            from .utilities.sync_facade import reconcile_standing_schedules
+
+            # Re-read parameters: adhoc runs never refresh the start-of-run
+            # snapshot, and a schedule change made mid-run must not be
+            # reverted by a stale reconcile.
+            sync.refresh_from_db(fields=["parameters"])
+            reconcile_standing_schedules(sync)
+        except Exception:
+            logger.warning(
+                "Standing-schedule reconcile failed for ForwardSync %s.",
+                sync.pk,
+                exc_info=True,
+            )
+
+
+def _trim_validation_runs(sync):
+    """Retention for recurring validation: keep the newest N runs per sync.
+
+    NetBox job housekeeping prunes old Job rows but the runs (job FK
+    SET_NULL) would accumulate forever under a standing schedule. Configure
+    with PLUGINS_CONFIG["forward_netbox"]["validation_run_retention"]
+    (default 100; 0 disables trimming)."""
+    from .choices import forward_plugin_settings
+    from .models import ForwardValidationRun
+
+    keep = int(forward_plugin_settings().get("validation_run_retention", 100) or 0)
+    if keep <= 0:
+        return
+    stale_pks = (
+        ForwardValidationRun.objects.filter(sync=sync)
+        .order_by("-pk")
+        .values_list("pk", flat=True)[keep:]
+    )
+    if stale_pks:
+        deleted, _ = ForwardValidationRun.objects.filter(
+            pk__in=list(stale_pks)
+        ).delete()
+        logger.info(
+            "Trimmed %s old validation runs for ForwardSync %s (retention %s).",
+            deleted,
+            sync.pk,
+            keep,
+        )
 
 
 def _validate_forwardsync_work(job):
@@ -376,6 +424,15 @@ def _validate_forwardsync_work(job):
         # is exposed via job.data instead.
         job.data = {**(job.data or {}), "validation_run_id": validation_run.pk}
         job.save(update_fields=["data"])
+        try:
+            _trim_validation_runs(sync)
+        except Exception:
+            # Housekeeping must never mark a successful validation ERRORED.
+            logger.warning(
+                "Validation-run retention trim failed for sync %s.",
+                sync.pk,
+                exc_info=True,
+            )
     except Exception as exc:
         safe_save_job_data(job, sync)
         if type(exc) in (SyncError, JobTimeoutException):
@@ -841,10 +898,18 @@ def _fail_nonretryable_merging_branch(ingestion, message):
 
 
 def _skip_if_immediate_equivalent_active(job, per_sync_suffix):
-    """Standing-schedule occurrence overlap guard (reverse direction of
-    enqueue_button_job's fixed-name check): if an immediate per-sync-named
-    equivalent is already pending/running, skip this occurrence instead of
-    stacking a duplicate heavy run. Returns True when skipped."""
+    """Standing-schedule occurrence guard, three checks in one:
+
+    1. sync deleted -> stop the recurrence chain;
+    2. stored intent disagrees with this occurrence -> cancelled (0) stops
+       the chain, a different interval re-aligns it (this is what makes a
+       cancel/replace that raced a RUNNING occurrence self-terminate instead
+       of resurrecting the old schedule), an ABSENT key is backfilled from
+       this occurrence (pre-intent 2.5.6 chains);
+    3. an immediate per-sync-named equivalent is pending/running -> skip
+       this occurrence instead of stacking a duplicate heavy run.
+
+    Returns True when the occurrence should be skipped."""
     sync = ForwardSync.objects.filter(pk=job.object_id).first()
     if sync is None:
         # Sync deleted out from under the schedule: record why and stop the
@@ -859,6 +924,37 @@ def _skip_if_immediate_equivalent_active(job, per_sync_suffix):
             job.object_id,
         )
         return True
+    kind = {
+        "validation": "validation",
+        "dependency preview": "dependency_preview",
+    }[job.name]
+    from .utilities.sync_facade import persist_standing_schedule_interval
+    from .utilities.sync_facade import STANDING_SCHEDULE_PARAM_KEYS
+
+    key = STANDING_SCHEDULE_PARAM_KEYS[kind]
+    parameters = sync.parameters or {}
+    if job.interval:
+        if key not in parameters:
+            # Pre-intent chain (2.5.6): adopt it.
+            persist_standing_schedule_interval(sync, kind, job.interval)
+        else:
+            desired = int(parameters.get(key) or 0)
+            if desired <= 0:
+                job.data = {"skipped": "schedule_cancelled"}
+                job.interval = None
+                job.save(update_fields=["data", "interval"])
+                logger.info(
+                    "Stopping standing '%s' schedule for sync %s: cancelled.",
+                    job.name,
+                    sync.pk,
+                )
+                return True
+            if desired != job.interval:
+                # Intent changed (e.g. mid-run replace): re-align this
+                # chain's recurrence instead of leaving a stale-interval
+                # duplicate behind.
+                job.interval = desired
+                job.save(update_fields=["interval"])
     duplicate = (
         sync.jobs.filter(
             name__startswith=f"{sync.name} - {per_sync_suffix}",
