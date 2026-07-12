@@ -23,6 +23,7 @@ from .serializers import ForwardSourceSerializer
 from .serializers import ForwardSyncSerializer
 from .serializers import ForwardValidationRunOverrideSerializer
 from .serializers import ForwardValidationRunSerializer
+from .serializers import JobScheduleRequestSerializer
 from forward_netbox.filtersets import ForwardDeviceAnalysisFilterSet
 from forward_netbox.filtersets import ForwardDriftPolicyFilterSet
 from forward_netbox.filtersets import ForwardNQEMapFilterSet
@@ -675,8 +676,21 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
             status=status.HTTP_202_ACCEPTED,
         )
 
+    def _parse_schedule(self, request):
+        """Validate optional schedule_at/interval from the request body.
+
+        Returns (schedule_at, interval) — both None means immediate run."""
+        serializer = JobScheduleRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        return (
+            serializer.validated_data.get("schedule_at"),
+            serializer.validated_data.get("interval"),
+        )
+
     @extend_schema(
-        methods=["post"], request=EmptySerializer(), responses={201: JobSerializer()}
+        methods=["post"],
+        request=JobScheduleRequestSerializer(),
+        responses={201: JobSerializer()},
     )
     @action(detail=True, methods=["post"])
     def validate(self, request, pk):
@@ -685,7 +699,13 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
                 "This user does not have permission to validate a Forward sync."
             )
         sync = self.get_object()
-        job = sync.enqueue_validation_job(user=request.user, adhoc=True)
+        schedule_at, interval = self._parse_schedule(request)
+        job = sync.enqueue_validation_job(
+            user=request.user,
+            adhoc=True,
+            schedule_at=schedule_at,
+            interval=interval,
+        )
         return Response(
             JobSerializer(job, context={"request": request}).data, status=201
         )
@@ -707,18 +727,41 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
         try:
             job = enqueue_button_job(sync, kind, request.user)
         except JobAlreadyActive as exc:
-            return Response(
-                {"detail": str(exc)}, status=status.HTTP_409_CONFLICT
-            )
+            return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
         return Response(
             JobSerializer(job, context={"request": request}).data, status=201
         )
 
     @extend_schema(
-        methods=["post"], request=EmptySerializer(), responses={201: JobSerializer()}
+        methods=["post"],
+        request=JobScheduleRequestSerializer(),
+        responses={201: JobSerializer()},
     )
     @action(detail=True, methods=["post"], url_path="dependency-preview")
     def dependency_preview(self, request, pk):
+        schedule_at, interval = self._parse_schedule(request)
+        if schedule_at or interval:
+            # Standing schedule: fixed JobRunner name + enqueue_once dedup
+            # (one schedule per sync). Immediate runs below keep the legacy
+            # per-sync job name the drift report and preview GET match on.
+            from ..utilities.sync_facade import button_job_permission
+            from ..utilities.sync_facade import enqueue_preview_schedule
+
+            permission = button_job_permission("dependency_preview")
+            if not request.user.has_perm(permission):
+                raise PermissionDenied(
+                    f"This user does not have the `{permission}` permission."
+                )
+            sync = self.get_object()
+            job = enqueue_preview_schedule(
+                sync,
+                user=request.user,
+                schedule_at=schedule_at,
+                interval=interval,
+            )
+            return Response(
+                JobSerializer(job, context={"request": request}).data, status=201
+            )
         return self._enqueue_button_job_response(request, "dependency_preview")
 
     @extend_schema(

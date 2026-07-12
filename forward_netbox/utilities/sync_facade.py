@@ -166,9 +166,26 @@ def enqueue_sync_job(sync, adhoc=False, user=None):
     )
 
 
-def enqueue_validation_job(sync, adhoc=False, user=None):
+def enqueue_validation_job(
+    sync, adhoc=False, user=None, schedule_at=None, interval=None
+):
     if not user:
         user = sync.user
+    if schedule_at or interval:
+        # Standing schedule: one per sync (enqueue_once dedup keys on the
+        # ValidationJob fixed name + the sync instance); recurrence is handled
+        # by JobRunner after each run completes. Cancel by deleting the
+        # scheduled job from the Jobs list.
+        from django.utils import timezone
+
+        from ..jobs import ValidationJob
+
+        return ValidationJob.enqueue_once(
+            instance=sync,
+            user=user,
+            schedule_at=schedule_at or timezone.now(),
+            interval=interval,
+        )
     return Job.enqueue(
         import_string("forward_netbox.jobs.validate_forwardsync"),
         instance=sync,
@@ -180,14 +197,29 @@ def enqueue_validation_job(sync, adhoc=False, user=None):
     )
 
 
+def enqueue_preview_schedule(sync, user=None, schedule_at=None, interval=None):
+    """Standing dependency-preview schedule (immediate runs use
+    enqueue_button_job, which keeps the legacy per-sync job name)."""
+    from django.utils import timezone
+
+    from ..jobs import DependencyPreviewJob
+
+    if not user:
+        user = sync.user
+    return DependencyPreviewJob.enqueue_once(
+        instance=sync,
+        user=user,
+        schedule_at=schedule_at or timezone.now(),
+        interval=interval,
+    )
+
+
 class JobAlreadyActive(Exception):
     """An equivalent job is already pending/running for this sync."""
 
     def __init__(self, job):
         self.job = job
-        super().__init__(
-            f"Job `{job.name}` is already {job.status} (job #{job.pk})."
-        )
+        super().__init__(f"Job `{job.name}` is already {job.status} (job #{job.pk}).")
 
 
 # The operator-facing background jobs ("button jobs") share one enqueue path so

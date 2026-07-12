@@ -5,9 +5,9 @@ from datetime import timedelta
 from core.choices import JobStatusChoices
 from core.exceptions import SyncError
 from core.models import Job
-from core.models import ObjectType
 from django.contrib.auth import get_user_model
 from netbox.context_managers import event_tracking
+from netbox.jobs import JobRunner
 from netbox_branching.choices import BranchStatusChoices
 from netbox_branching.models import Branch
 from rq.timeouts import JobTimeoutException
@@ -352,11 +352,10 @@ def sync_forwardsync(job, *args, **kwargs):
                 )
 
 
-def validate_forwardsync(job, *args, **kwargs):
+def _validate_forwardsync_work(job):
+    """Shared validation body (legacy dotted-path shim + ValidationJob)."""
     sync = ForwardSync.objects.get(pk=job.object_id)
-
     try:
-        job.start()
         sync.logger = SyncLogging(job=job.pk)
         validation_run = ForwardValidationRunner(
             sync,
@@ -365,16 +364,30 @@ def validate_forwardsync(job, *args, **kwargs):
             job=job,
         ).run_query_validation()
         safe_save_job_data(job, sync)
-        job.object_type = ObjectType.objects.get_for_model(validation_run)
-        job.object_id = validation_run.pk
-        job.save(update_fields=["object_type", "object_id"])
-        job.terminate()
+        # Keep the job bound to the SYNC. The pre-2.6 rebind of
+        # object_type/object_id to the validation run would make JobRunner
+        # recurrence re-enqueue with instance=job.object and silently re-target
+        # the run instead of the sync; nothing consumed the rebind, so the run
+        # is exposed via job.data instead.
+        job.data = {**(job.data or {}), "validation_run_id": validation_run.pk}
+        job.save(update_fields=["data"])
     except Exception as exc:
         safe_save_job_data(job, sync)
-        job.terminate(status=JobStatusChoices.STATUS_ERRORED)
         if type(exc) in (SyncError, JobTimeoutException):
             logger.error(exc)
-        else:
+        raise
+
+
+def validate_forwardsync(job, *args, **kwargs):
+    # Legacy dotted-path shim: pre-2.6 queued Job rows and the immediate
+    # (non-scheduled) enqueue path reference this callable directly.
+    try:
+        job.start()
+        _validate_forwardsync_work(job)
+        job.terminate()
+    except Exception as exc:
+        job.terminate(status=JobStatusChoices.STATUS_ERRORED)
+        if type(exc) not in (SyncError, JobTimeoutException):
             raise
 
 
@@ -573,24 +586,16 @@ def create_forward_module_bays(job, *args, **kwargs):
             raise
 
 
-def forward_dependency_preview(job, *args, **kwargs):
-    """Background dependency dry-run preview for a sync.
-
-    The dry-run builds a full single-branch plan against live Forward data, which
-    far exceeds an HTTP gateway timeout on large fabrics. Run it as a job and
-    cache the JSON payload on ``job.data`` so the preview page can render it
-    later without a Forward round-trip.
-    """
+def _dependency_preview_work(job):
+    """Shared preview body (legacy dotted-path shim + DependencyPreviewJob)."""
     from .views import _dependency_dry_run_payload
 
     sync = ForwardSync.objects.get(pk=job.object_id)
     try:
-        job.start()
         sync.logger = SyncLogging(job=job.pk)
         payload = _dependency_dry_run_payload(sync)
         job.data = json_safe_value(payload)
         job.save(update_fields=["data"])
-        job.terminate()
     except Exception as exc:
         # Record the failure on the job so it is visible in the UI (the Data
         # panel) instead of an empty Error field with null data.
@@ -599,6 +604,25 @@ def forward_dependency_preview(job, *args, **kwargs):
             "error_type": exc.__class__.__name__,
         }
         job.save(update_fields=["data"])
+        if type(exc) in (SyncError, JobTimeoutException):
+            logger.error(exc)
+        raise
+
+
+def forward_dependency_preview(job, *args, **kwargs):
+    """Background dependency dry-run preview for a sync.
+
+    The dry-run builds a full single-branch plan against live Forward data, which
+    far exceeds an HTTP gateway timeout on large fabrics. Run it as a job and
+    cache the JSON payload on ``job.data`` so the preview page can render it
+    later without a Forward round-trip. Legacy dotted-path shim: pre-2.6 queued
+    Job rows and the immediate button path reference this callable directly.
+    """
+    try:
+        job.start()
+        _dependency_preview_work(job)
+        job.terminate()
+    except Exception as exc:
         job.terminate(status=JobStatusChoices.STATUS_ERRORED)
         if type(exc) in (SyncError, JobTimeoutException):
             logger.error(exc)
@@ -805,3 +829,30 @@ def _fail_nonretryable_merging_branch(ingestion, message):
         obj=ingestion,
     )
     return True
+
+
+class DependencyPreviewJob(JobRunner):
+    """Recurring-capable dependency preview.
+
+    Standing schedules use the fixed ``Meta.name`` so ``enqueue_once`` dedup
+    (which filters on ``cls.name`` + instance) works; the name still satisfies
+    the ``icontains "dependency preview"`` lookups on the preview/drift pages,
+    and per-sync scoping rides on the ``instance=sync`` binding. Immediate
+    button/API runs keep the legacy per-sync name via the plain-function shim.
+    """
+
+    class Meta:
+        name = "dependency preview"
+
+    def run(self, *args, **kwargs):
+        _dependency_preview_work(self.job)
+
+
+class ValidationJob(JobRunner):
+    """Recurring-capable sync validation (see DependencyPreviewJob notes)."""
+
+    class Meta:
+        name = "validation"
+
+    def run(self, *args, **kwargs):
+        _validate_forwardsync_work(self.job)

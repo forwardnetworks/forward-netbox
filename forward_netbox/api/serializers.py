@@ -28,6 +28,19 @@ class EmptySerializer(serializers.Serializer):
     pass
 
 
+class JobScheduleRequestSerializer(serializers.Serializer):
+    """Optional standing-schedule parameters for job-enqueue actions. Both
+    fields absent = immediate one-shot run (the legacy behavior)."""
+
+    schedule_at = serializers.DateTimeField(required=False, allow_null=True)
+    interval = serializers.IntegerField(
+        required=False,
+        allow_null=True,
+        min_value=1,
+        help_text="Recurrence interval in minutes; requires the RQ scheduler.",
+    )
+
+
 class ForwardNQEMapSerializer(NestedGroupModelSerializer):
     netbox_model = ContentTypeField(
         queryset=ContentType.objects.filter(FORWARD_SUPPORTED_SYNC_MODELS)
