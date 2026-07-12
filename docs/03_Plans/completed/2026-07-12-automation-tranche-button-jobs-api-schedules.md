@@ -1,4 +1,6 @@
-# 2.6 Automation Tranche: Button-Job Guardrails, REST Parity, Standing Schedules, Prune Danglers
+# 2.5.6 Automation Tranche: Button-Job Guardrails, REST Parity, Standing Schedules, Prune Danglers
+
+(Developed as the "2.6" tranche; released as 2.5.6.)
 
 ## Goal
 
@@ -75,9 +77,13 @@ Four chunks, one commit each:
   semantics, API status codes (201/403/409/400), schedule routing to
   `enqueue_once`, the sync-binding invariant, and empty-body fall-through to
   legacy behavior.
-- Before merge: live smoke on the dev stack — schedule a preview with
-  `interval`, confirm recurrence re-enqueues with the fixed name and the
-  preview/drift pages still resolve the newest payload.
+- Live smoke on the dev stack: enqueue_once idempotency proven (same params
+  -> same Job pk, interval change -> single replaced row, never >1 standing
+  row) — this caught the schedule_at-defaulting churn fixed in b52fa2f.
+- Post-tranche 44-agent audit (6 lenses, adversarial verify): 37 confirmed
+  findings; the blocker (standing SCHEDULED row permanently suppressing
+  snapshot catch-up) and all should-fixes rolled into the 2.5.6 hardening
+  commit; see the release-2.5.6 plan's Decision Log for accepted deferrals.
 
 ## Rollback
 
