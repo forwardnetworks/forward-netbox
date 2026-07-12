@@ -199,6 +199,43 @@ Use a long random secret and rotate it from the sync form. Combined with
 **Skip scheduled runs on an unchanged snapshot**, a webhook per Forward
 processing event keeps NetBox current without any polling schedule.
 
+## Automating operator jobs (API + standing schedules)
+
+The four operator buttons are also exposed as token-authenticated REST
+actions, so an external scheduler can drive them:
+
+```bash
+POST /api/plugins/forward/sync/<id>/dependency-preview/
+POST /api/plugins/forward/sync/<id>/prune-orphans/
+POST /api/plugins/forward/sync/<id>/tag-delete-eligible-ipam/
+POST /api/plugins/forward/sync/<id>/create-module-bays/
+```
+
+Each returns `201` with the job on success, `403` without the matching
+permission (same permission as the button), and `409` when an equivalent job
+is already queued or running — duplicates never stack, and prune is
+additionally refused while a sync run is active.
+
+**Standing schedules.** `validate` and `dependency-preview` accept optional
+schedule parameters in the request body:
+
+```bash
+curl -X POST https://netbox.example.com/api/plugins/forward/sync/<id>/dependency-preview/ \
+  -H "Authorization: Token <api-token>" -H "Content-Type: application/json" \
+  -d '{"interval": 1440}'          # minutes; optional "schedule_at" ISO datetime
+```
+
+- An empty body keeps the one-shot behavior unchanged.
+- `interval` (minutes, ≥ 1) creates a recurring schedule; re-posting updates
+  rather than duplicates it (one standing schedule per sync per job type).
+- Recurrence requires the RQ scheduler: run the worker with
+  `python manage.py rqworker --with-scheduler` (the NetBox Docker images do
+  by default; verify if you run a custom worker unit).
+- To cancel, delete the scheduled job from the NetBox **Jobs** list — there
+  is no separate cancel endpoint.
+- The dependency preview is a full live dry-run against Forward; on large
+  fabrics schedule it **daily or less often**, not hourly.
+
 ## Apply engine
 
 Models apply through either the per-row **adapter** or the batched **bulk-ORM**
