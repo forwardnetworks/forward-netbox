@@ -1420,3 +1420,135 @@ class ForwardSyncHealthTest(TestCase):
             source=source,
             parameters={"snapshot_id": "latestProcessed"},
         )
+
+
+class DLMHardwareNoticeAliasCheckTest(TestCase):
+    """#1: config-time base/alias hardware-notice mismatch warning."""
+
+    def _map(self, name, model_string="netbox_dlm.hardwarenotice", enabled=True):
+        return Mock(name=name, model_string=model_string, enabled=enabled)
+
+    def _named(self, name, **kw):
+        m = self._map(name, **kw)
+        m.name = name
+        return m
+
+    def test_no_notice_map_returns_none(self):
+        from forward_netbox.utilities.health_checks import (
+            dlm_hardware_notice_alias_check,
+        )
+
+        self.assertIsNone(dlm_hardware_notice_alias_check([]))
+
+    def test_alias_query_with_base_notice_warns(self):
+        from forward_netbox.utilities.health_checks import (
+            dlm_hardware_notice_alias_check,
+        )
+
+        maps = [
+            self._named(
+                "Forward Devices with NetBox Device Type Aliases",
+                model_string="dcim.devicetype",
+            ),
+            self._named("Forward DLM Hardware Notices"),
+        ]
+        result = dlm_hardware_notice_alias_check(maps)
+        self.assertEqual(result["status"], "warn")
+        self.assertIn("alias-aware device query", result["message"])
+
+    def test_matched_variants_pass(self):
+        from forward_netbox.utilities.health_checks import (
+            dlm_hardware_notice_alias_check,
+        )
+
+        maps = [
+            self._named(
+                "Forward Devices with NetBox Device Type Aliases",
+                model_string="dcim.devicetype",
+            ),
+            self._named("Forward DLM Hardware Notices with NetBox Aliases"),
+        ]
+        self.assertEqual(dlm_hardware_notice_alias_check(maps)["status"], "pass")
+
+    def test_base_query_with_alias_notice_warns(self):
+        from forward_netbox.utilities.health_checks import (
+            dlm_hardware_notice_alias_check,
+        )
+
+        maps = [
+            self._named("Forward Devices", model_string="dcim.device"),
+            self._named("Forward DLM Hardware Notices with NetBox Aliases"),
+        ]
+        self.assertEqual(dlm_hardware_notice_alias_check(maps)["status"], "warn")
+
+
+class DLMDependencyReadinessCheckTest(TestCase):
+    """#3: readiness signal from the last ingestion's DLM dependency skips."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.source = ForwardSource.objects.create(
+            name="dlm-ready-src",
+            type="saas",
+            url="https://fwd.app",
+            parameters={
+                "username": "u@example.com",
+                "password": "x",
+                "verify": True,
+                "network_id": "n",
+            },
+        )
+        cls.sync = ForwardSync.objects.create(
+            name="dlm-ready-sync",
+            source=cls.source,
+            parameters={"snapshot_id": "latestProcessed"},
+        )
+
+    def _named(self, name, model_string):
+        m = Mock(model_string=model_string, enabled=True)
+        m.name = name
+        return m
+
+    def test_warns_when_last_run_skipped_dlm_rows(self):
+        from forward_netbox.choices import ForwardIngestionPhaseChoices
+        from forward_netbox.models import ForwardIngestionIssue
+        from forward_netbox.utilities.health_checks import (
+            dlm_dependency_readiness_check,
+        )
+
+        ingestion = ForwardIngestion.objects.create(sync=self.sync)
+        for i in range(3):
+            ForwardIngestionIssue.objects.create(
+                ingestion=ingestion,
+                phase=ForwardIngestionPhaseChoices.SYNC,
+                model="netbox_dlm.hardwarenotice",
+                message=f"skip {i}",
+                exception="ForwardDependencySkipError",
+            )
+        maps = [
+            self._named("Forward DLM Hardware Notices", "netbox_dlm.hardwarenotice")
+        ]
+        result = dlm_dependency_readiness_check(maps, ingestion)
+        self.assertEqual(result["status"], "warn")
+        self.assertIn("3 DLM row", result["message"])
+
+    def test_pass_when_no_skips(self):
+        from forward_netbox.utilities.health_checks import (
+            dlm_dependency_readiness_check,
+        )
+
+        ingestion = ForwardIngestion.objects.create(sync=self.sync)
+        maps = [
+            self._named("Forward DLM Hardware Notices", "netbox_dlm.hardwarenotice")
+        ]
+        self.assertEqual(
+            dlm_dependency_readiness_check(maps, ingestion)["status"], "pass"
+        )
+
+    def test_none_when_no_dlm_maps_enabled(self):
+        from forward_netbox.utilities.health_checks import (
+            dlm_dependency_readiness_check,
+        )
+
+        ingestion = ForwardIngestion.objects.create(sync=self.sync)
+        self.assertIsNone(dlm_dependency_readiness_check([], ingestion))

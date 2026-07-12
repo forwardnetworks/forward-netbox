@@ -179,6 +179,24 @@ python manage.py forward_routing_dangling_audit [--fail-on-dangling]
 
 Skips cleanly when netbox-routing is not installed.
 
+## DLM data not appearing?
+
+If DLM maps are enabled but hardware notices / vulnerabilities aren't landing,
+the sync **Health** panel now flags the two common causes:
+
+- **DLM hardware-notice alias** — warns when the alias-aware device query is
+  active but the *base* hardware-notice map is enabled (or vice versa). The
+  notice looks up the DeviceType by the name the device query emits; a
+  mismatch skips every notice ("device type not in NetBox yet"). Switch to
+  **"Forward DLM Hardware Notices with NetBox Aliases"** when you run the
+  alias-aware device query.
+- **DLM dependency readiness** — warns when the last run skipped DLM rows
+  because their device types / devices aren't synced. DLM notices and
+  vulnerabilities hang off synced devices, so fix device (and device-type)
+  sync first; the CVE *catalog* is device-independent and populates on its
+  own. A flood of "not in NetBox yet" skips is now collapsed into one summary
+  issue instead of one row per device type.
+
 ## Device CVE tab (netbox-dlm)
 
 With the netbox-dlm plugin installed and the 2.5.2 **CVE / Vulnerability**

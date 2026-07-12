@@ -121,6 +121,39 @@ def record_aggregated_skip_warning(
     runner._aggregated_skip_warning_counts[key] = count + 1
 
 
+def emit_dependency_skip_issue_summary(runner, model_string):
+    """One rolled-up issue when dependency skips for a model exceeded the
+    per-model detail cap (the individual rows past the cap were suppressed)."""
+    total = runner._dependency_skip_issue_counts.get(model_string, 0)
+    limit = runner.DEPENDENCY_SKIP_ISSUE_DETAIL_LIMIT
+    if total <= limit:
+        return
+    samples = runner._dependency_skip_issue_samples.get(model_string, [])
+    remainder = total - limit
+    examples = ", ".join(samples)
+    example_str = f" e.g. {examples}" if examples else ""
+    remedy = (
+        " Enable the parent sync (device types / devices) first, or — for DLM "
+        "hardware notices with the alias-aware device query — use the "
+        "'Forward DLM Hardware Notices with NetBox Aliases' map."
+    )
+    from ..exceptions import ForwardDependencySkipError
+
+    record_issue(
+        runner,
+        model_string,
+        (
+            f"{total} {model_string} row(s) skipped because their NetBox parent "
+            f"is not synced yet ({remainder} beyond the first {limit} shown "
+            f"individually){example_str}.{remedy}"
+        ),
+        {},
+        exception=ForwardDependencySkipError("dependency-skip-summary"),
+        context={"dependency_skip_summary": True},
+        log_level="warning",
+    )
+
+
 def emit_aggregated_skip_warning_summaries(runner, model_string):
     rollup_reasons = getattr(runner, "SKIP_WARNING_ROLLUP_REASONS", frozenset())
     # Rollup reasons: one actionable summary (total + a few examples + remedy).
@@ -277,6 +310,29 @@ def record_issue(
         if exception is not None
         else "ForwardSyncDataError"
     )
+    # Collapse a flood of per-parent dependency-skip rows (each distinct missing
+    # device type / device is a unique message, so record_issue's dedup never
+    # merges them). Keep the first N as detail, then count the rest into one
+    # summary issue emitted by emit_dependency_skip_issue_summary.
+    if exception_name == "ForwardDependencySkipError" and not (context or {}).get(
+        "dependency_skip_summary"
+    ):
+        seen = runner._dependency_skip_issue_counts.get(model_string, 0) + 1
+        runner._dependency_skip_issue_counts[model_string] = seen
+        if seen > runner.DEPENDENCY_SKIP_ISSUE_DETAIL_LIMIT:
+            samples = runner._dependency_skip_issue_samples.setdefault(model_string, [])
+            example = str(
+                (context or {}).get("device_type")
+                or (context or {}).get("device")
+                or ""
+            )
+            if example and example not in samples and len(samples) < 5:
+                samples.append(example)
+            if log_level == "info":
+                runner.logger.log_info(
+                    f"{model_string}: {message}", obj=runner.ingestion
+                )
+            return None
     context_data = json_safe_value(dict(context or {}))
     defaults_data = json_safe_value(dict(defaults or {}))
     issue_key = (
@@ -446,6 +502,7 @@ def apply_model_rows(runner, model_string, rows):
     )
     emit_aggregated_conflict_warning_summaries(runner, model_string)
     emit_aggregated_skip_warning_summaries(runner, model_string)
+    emit_dependency_skip_issue_summary(runner, model_string)
     runner.events_clearer.clear()
 
 
