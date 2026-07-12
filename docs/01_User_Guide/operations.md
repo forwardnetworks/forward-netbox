@@ -149,6 +149,16 @@ dependency plan (a heavy live dry-run). When it finishes, **View Last Preview**
 renders the cached result and `?format=json` downloads it. The preview never runs
 the dry-run in the web request, so it does not time out on large fabrics.
 
+## Device CVE tab (netbox-dlm)
+
+With the netbox-dlm plugin installed and the 2.5.2 **CVE / Vulnerability**
+maps enabled, every device with findings gets a **CVEs** tab on its detail
+page: severity totals plus one row per CVE (id, severity, affected software
+version, description) — the actual CVEs behind the exposure count, no
+Forward round-trip. The tab hides itself when a device has no findings and
+is not registered at all on core installs without the plugin. Rows refresh
+with each sync run that has the Vulnerability map enabled.
+
 ## Running a sync
 
 - **Run** / **Adhoc Ingestion** enqueues the sync job.
