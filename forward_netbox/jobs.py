@@ -5,9 +5,9 @@ from datetime import timedelta
 from core.choices import JobStatusChoices
 from core.exceptions import SyncError
 from core.models import Job
-from core.models import ObjectType
 from django.contrib.auth import get_user_model
 from netbox.context_managers import event_tracking
+from netbox.jobs import JobRunner
 from netbox_branching.choices import BranchStatusChoices
 from netbox_branching.models import Branch
 from rq.timeouts import JobTimeoutException
@@ -242,17 +242,22 @@ def _maybe_enqueue_auto_prune(sync):
     if not (sync.parameters or {}).get("auto_prune_orphans"):
         return
     try:
-        from django.utils.module_loading import import_string
+        from .utilities.sync_facade import enqueue_button_job
+        from .utilities.sync_facade import JobAlreadyActive
 
-        name = f"{sync.name} - prune orphans (auto)"
-        if _sync_has_active_job(sync, name):
+        # Shares the button-job guard (prefix match also blocks when a MANUAL
+        # prune is running). during_sync_ok: this hook fires from inside the
+        # still-running sync job, after its apply work completed.
+        try:
+            enqueue_button_job(
+                sync,
+                "prune_orphans",
+                sync.user,
+                name_suffix_extra=" (auto)",
+                during_sync_ok=True,
+            )
+        except JobAlreadyActive:
             return
-        Job.enqueue(
-            import_string("forward_netbox.jobs.prune_forward_orphans"),
-            instance=sync,
-            user=sync.user,
-            name=name,
-        )
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("Auto prune-orphans enqueue failed: %s", exc)
 
@@ -305,15 +310,20 @@ def sync_forwardsync(job, *args, **kwargs):
         if sync.interval and not kwargs.get("adhoc"):
             new_scheduled_time = local_now() + timedelta(minutes=sync.interval)
             sync.refresh_from_db()
+            from .utilities.sync_facade import sync_run_job_names
+
             should_skip = not sync.scheduled or (
                 sync.scheduled
                 and sync.scheduled > job.started
+                # Name-scoped to sync RUNS: standing-schedule rows are
+                # permanently SCHEDULED and would satisfy a status-only check.
                 and sync.jobs.filter(
                     status__in=[
                         JobStatusChoices.STATUS_SCHEDULED,
                         JobStatusChoices.STATUS_PENDING,
                         JobStatusChoices.STATUS_RUNNING,
-                    ]
+                    ],
+                    name__in=sync_run_job_names(sync),
                 )
                 .exclude(pk=job.pk)
                 .exists()
@@ -347,11 +357,10 @@ def sync_forwardsync(job, *args, **kwargs):
                 )
 
 
-def validate_forwardsync(job, *args, **kwargs):
+def _validate_forwardsync_work(job):
+    """Shared validation body (legacy dotted-path shim + ValidationJob)."""
     sync = ForwardSync.objects.get(pk=job.object_id)
-
     try:
-        job.start()
         sync.logger = SyncLogging(job=job.pk)
         validation_run = ForwardValidationRunner(
             sync,
@@ -360,16 +369,30 @@ def validate_forwardsync(job, *args, **kwargs):
             job=job,
         ).run_query_validation()
         safe_save_job_data(job, sync)
-        job.object_type = ObjectType.objects.get_for_model(validation_run)
-        job.object_id = validation_run.pk
-        job.save(update_fields=["object_type", "object_id"])
-        job.terminate()
+        # Keep the job bound to the SYNC. The pre-2.6 rebind of
+        # object_type/object_id to the validation run would make JobRunner
+        # recurrence re-enqueue with instance=job.object and silently re-target
+        # the run instead of the sync; nothing consumed the rebind, so the run
+        # is exposed via job.data instead.
+        job.data = {**(job.data or {}), "validation_run_id": validation_run.pk}
+        job.save(update_fields=["data"])
     except Exception as exc:
         safe_save_job_data(job, sync)
-        job.terminate(status=JobStatusChoices.STATUS_ERRORED)
         if type(exc) in (SyncError, JobTimeoutException):
             logger.error(exc)
-        else:
+        raise
+
+
+def validate_forwardsync(job, *args, **kwargs):
+    # Legacy dotted-path shim: pre-2.6 queued Job rows and the immediate
+    # (non-scheduled) enqueue path reference this callable directly.
+    try:
+        job.start()
+        _validate_forwardsync_work(job)
+        job.terminate()
+    except Exception as exc:
+        job.terminate(status=JobStatusChoices.STATUS_ERRORED)
+        if type(exc) not in (SyncError, JobTimeoutException):
             raise
 
 
@@ -398,6 +421,10 @@ def prune_forward_orphans(job, *args, **kwargs):
             # PROTECT-ing optional-plugin rows (e.g. netbox_routing BGP peers)
             # swept so the device cascade could proceed.
             "pruned_dependent_rows": device_result.get("pruned_dependent_rows", {}),
+            # netbox_routing rows whose GenericFKs pointed at the pruned
+            # devices, swept post-delete (they never PROTECT, so they would
+            # otherwise dangle silently).
+            "pruned_dangling_rows": device_result.get("pruned_dangling_rows", {}),
         }
         job.save(update_fields=["data"])
         job.terminate()
@@ -568,24 +595,16 @@ def create_forward_module_bays(job, *args, **kwargs):
             raise
 
 
-def forward_dependency_preview(job, *args, **kwargs):
-    """Background dependency dry-run preview for a sync.
-
-    The dry-run builds a full single-branch plan against live Forward data, which
-    far exceeds an HTTP gateway timeout on large fabrics. Run it as a job and
-    cache the JSON payload on ``job.data`` so the preview page can render it
-    later without a Forward round-trip.
-    """
+def _dependency_preview_work(job):
+    """Shared preview body (legacy dotted-path shim + DependencyPreviewJob)."""
     from .views import _dependency_dry_run_payload
 
     sync = ForwardSync.objects.get(pk=job.object_id)
     try:
-        job.start()
         sync.logger = SyncLogging(job=job.pk)
         payload = _dependency_dry_run_payload(sync)
         job.data = json_safe_value(payload)
         job.save(update_fields=["data"])
-        job.terminate()
     except Exception as exc:
         # Record the failure on the job so it is visible in the UI (the Data
         # panel) instead of an empty Error field with null data.
@@ -594,6 +613,25 @@ def forward_dependency_preview(job, *args, **kwargs):
             "error_type": exc.__class__.__name__,
         }
         job.save(update_fields=["data"])
+        if type(exc) in (SyncError, JobTimeoutException):
+            logger.error(exc)
+        raise
+
+
+def forward_dependency_preview(job, *args, **kwargs):
+    """Background dependency dry-run preview for a sync.
+
+    The dry-run builds a full single-branch plan against live Forward data, which
+    far exceeds an HTTP gateway timeout on large fabrics. Run it as a job and
+    cache the JSON payload on ``job.data`` so the preview page can render it
+    later without a Forward round-trip. Legacy dotted-path shim: pre-2.6 queued
+    Job rows and the immediate button path reference this callable directly.
+    """
+    try:
+        job.start()
+        _dependency_preview_work(job)
+        job.terminate()
+    except Exception as exc:
         job.terminate(status=JobStatusChoices.STATUS_ERRORED)
         if type(exc) in (SyncError, JobTimeoutException):
             logger.error(exc)
@@ -800,3 +838,78 @@ def _fail_nonretryable_merging_branch(ingestion, message):
         obj=ingestion,
     )
     return True
+
+
+def _skip_if_immediate_equivalent_active(job, per_sync_suffix):
+    """Standing-schedule occurrence overlap guard (reverse direction of
+    enqueue_button_job's fixed-name check): if an immediate per-sync-named
+    equivalent is already pending/running, skip this occurrence instead of
+    stacking a duplicate heavy run. Returns True when skipped."""
+    sync = ForwardSync.objects.filter(pk=job.object_id).first()
+    if sync is None:
+        # Sync deleted out from under the schedule: record why and stop the
+        # recurrence (handle()'s finally re-enqueues only when job.interval
+        # is set on this in-memory instance).
+        job.data = {"skipped": "sync_deleted"}
+        job.interval = None
+        job.save(update_fields=["data", "interval"])
+        logger.warning(
+            "Stopping standing '%s' schedule: bound ForwardSync %s no longer exists.",
+            job.name,
+            job.object_id,
+        )
+        return True
+    duplicate = (
+        sync.jobs.filter(
+            name__startswith=f"{sync.name} - {per_sync_suffix}",
+            status__in=[
+                JobStatusChoices.STATUS_PENDING,
+                JobStatusChoices.STATUS_RUNNING,
+            ],
+        )
+        .exclude(pk=job.pk)
+        .first()
+    )
+    if duplicate is not None:
+        job.data = {"skipped": "immediate_equivalent_active", "job_id": duplicate.pk}
+        job.save(update_fields=["data"])
+        logger.info(
+            "Skipping standing '%s' occurrence for sync %s: job %s is already %s.",
+            job.name,
+            sync.pk,
+            duplicate.pk,
+            duplicate.status,
+        )
+        return True
+    return False
+
+
+class DependencyPreviewJob(JobRunner):
+    """Recurring-capable dependency preview.
+
+    Standing schedules use the fixed ``Meta.name`` so ``enqueue_once`` dedup
+    (which filters on ``cls.name`` + instance) works; the name still satisfies
+    the ``icontains "dependency preview"`` lookups on the preview/drift pages,
+    and per-sync scoping rides on the ``instance=sync`` binding. Immediate
+    button/API runs keep the legacy per-sync name via the plain-function shim.
+    """
+
+    class Meta:
+        name = "dependency preview"
+
+    def run(self, *args, **kwargs):
+        if _skip_if_immediate_equivalent_active(self.job, "dependency preview"):
+            return
+        _dependency_preview_work(self.job)
+
+
+class ValidationJob(JobRunner):
+    """Recurring-capable sync validation (see DependencyPreviewJob notes)."""
+
+    class Meta:
+        name = "validation"
+
+    def run(self, *args, **kwargs):
+        if _skip_if_immediate_equivalent_active(self.job, "validation"):
+            return
+        _validate_forwardsync_work(self.job)

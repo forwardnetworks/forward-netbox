@@ -273,6 +273,7 @@ def prune_orphan_devices(sync, *, report=None) -> dict:
             Device.objects.filter(name__in=orphans).values_list("pk", flat=True)
         )
     deleted_total, protector_tally = _delete_devices_sweeping_protectors(orphan_pks)
+    dangler_tally = _cleanup_dangling_routing_objects(orphan_pks)
     result = {
         "pruned_device_count": len(orphans),
         "pruned_object_count": deleted_total,
@@ -280,6 +281,8 @@ def prune_orphan_devices(sync, *, report=None) -> dict:
     }
     if protector_tally:
         result["pruned_dependent_rows"] = protector_tally
+    if dangler_tally:
+        result["pruned_dangling_rows"] = dangler_tally
     return result
 
 
@@ -350,6 +353,94 @@ def _delete_devices_sweeping_protectors(orphan_pks):
                     set(),
                 )
     return deleted_total, protector_tally
+
+
+def _cleanup_dangling_routing_objects(pruned_device_pks):
+    """Delete netbox_routing rows left dangling by a device prune.
+
+    BGPRouter (and via it scopes, address families, peers, settings) attaches
+    to devices through a GenericFK, which has no database on_delete: pruning a
+    device never raises ProtectedError for these, so they silently accumulate.
+    Scoped STRICTLY to this run's pruned device pks - never a blanket
+    unresolvable-GenericFK sweep, which would hit routers assigned to sites/
+    clusters/VMs and operator-created data. No plugin imports; everything via
+    apps.get_model behind apps.is_installed.
+    """
+    if not pruned_device_pks:
+        return {}
+    from django.apps import apps
+
+    if not apps.is_installed("netbox_routing"):
+        return {}
+    from django.contrib.contenttypes.models import ContentType
+
+    BGPRouter = apps.get_model("netbox_routing", "BGPRouter")
+    BGPScope = apps.get_model("netbox_routing", "BGPScope")
+    BGPAddressFamily = apps.get_model("netbox_routing", "BGPAddressFamily")
+    BGPPeer = apps.get_model("netbox_routing", "BGPPeer")
+    BGPSetting = apps.get_model("netbox_routing", "BGPSetting")
+    BGPPeerAddressFamily = apps.get_model("netbox_routing", "BGPPeerAddressFamily")
+
+    device_ct = ContentType.objects.get_for_model(Device)
+    router_pks = list(
+        BGPRouter.objects.filter(
+            assigned_object_type=device_ct,
+            assigned_object_id__in=list(pruned_device_pks),
+        ).values_list("pk", flat=True)
+    )
+    if not router_pks:
+        return {}
+    scope_pks = list(
+        BGPScope.objects.filter(router_id__in=router_pks).values_list("pk", flat=True)
+    )
+    af_pks = list(
+        BGPAddressFamily.objects.filter(scope_id__in=scope_pks).values_list(
+            "pk", flat=True
+        )
+    )
+    peer_pks = list(
+        BGPPeer.objects.filter(scope_id__in=scope_pks).values_list("pk", flat=True)
+    )
+
+    tally: dict[str, int] = {}
+
+    def _sweep(model, queryset):
+        deleted, _detail = queryset.delete()
+        if deleted:
+            label = model._meta.label_lower
+            tally[label] = tally.get(label, 0) + deleted
+
+    # Children before the rows they protect (mirrors
+    # DELETE_DEPENDENCY_MODEL_ORDER and the PROTECT FK chain).
+    with transaction.atomic():
+        peer_ct = ContentType.objects.get_for_model(BGPPeer)
+        _sweep(
+            BGPPeerAddressFamily,
+            BGPPeerAddressFamily.objects.filter(
+                assigned_object_type=peer_ct, assigned_object_id__in=peer_pks
+            ),
+        )
+        setting_filters = []
+        for model, pks in (
+            (BGPPeer, peer_pks),
+            (BGPAddressFamily, af_pks),
+            (BGPScope, scope_pks),
+            (BGPRouter, router_pks),
+        ):
+            if pks:
+                setting_filters.append((ContentType.objects.get_for_model(model), pks))
+        for ct, pks in setting_filters:
+            _sweep(
+                BGPSetting,
+                BGPSetting.objects.filter(
+                    assigned_object_type=ct, assigned_object_id__in=pks
+                ),
+            )
+        _sweep(BGPPeer, BGPPeer.objects.filter(pk__in=peer_pks))
+        _sweep(BGPAddressFamily, BGPAddressFamily.objects.filter(pk__in=af_pks))
+        _sweep(BGPScope, BGPScope.objects.filter(pk__in=scope_pks))
+        _sweep(BGPRouter, BGPRouter.objects.filter(pk__in=router_pks))
+    return tally
 
 
 def _occupied_site_ids() -> set:
