@@ -28,6 +28,51 @@ class EmptySerializer(serializers.Serializer):
     pass
 
 
+class JobScheduleRequestSerializer(serializers.Serializer):
+    """Optional standing-schedule parameters for job-enqueue actions. Both
+    fields absent = immediate one-shot run (the legacy behavior)."""
+
+    schedule_at = serializers.DateTimeField(required=False, allow_null=True)
+    interval = serializers.IntegerField(
+        required=False,
+        allow_null=True,
+        min_value=1,
+        help_text="Recurrence interval in minutes; requires the RQ scheduler.",
+    )
+
+    def __init__(self, *args, min_interval=1, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.min_interval = min_interval
+
+    def validate_schedule_at(self, value):
+        from django.utils import timezone
+
+        if value and value < timezone.now():
+            raise serializers.ValidationError("schedule_at must be in the future.")
+        return value
+
+    def validate(self, data):
+        # schedule_at without interval would occupy the same enqueue_once
+        # dedup slot as the standing schedule and silently replace it, so
+        # one-shot delayed runs are rejected outright: an empty body runs
+        # immediately, interval creates the standing schedule.
+        if data.get("schedule_at") and not data.get("interval"):
+            raise serializers.ValidationError(
+                {"interval": "schedule_at requires interval."}
+            )
+        interval = data.get("interval")
+        if interval and interval < self.min_interval:
+            raise serializers.ValidationError(
+                {
+                    "interval": (
+                        f"interval must be at least {self.min_interval} "
+                        "minutes for this action."
+                    )
+                }
+            )
+        return data
+
+
 class ForwardNQEMapSerializer(NestedGroupModelSerializer):
     netbox_model = ContentTypeField(
         queryset=ContentType.objects.filter(FORWARD_SUPPORTED_SYNC_MODELS)

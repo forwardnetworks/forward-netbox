@@ -238,6 +238,64 @@ form if exposed. Forward's delivery retry/timeout behavior is not documented;
 keep a low-frequency scheduled sync with **Skip scheduled runs on an unchanged
 snapshot** as the safety net for missed deliveries.
 
+## Automating operator jobs (API + standing schedules)
+
+The four operator buttons are also exposed as token-authenticated REST
+actions, so an external scheduler can drive them:
+
+```bash
+POST /api/plugins/forward/sync/<id>/dependency-preview/
+POST /api/plugins/forward/sync/<id>/prune-orphans/
+POST /api/plugins/forward/sync/<id>/tag-delete-eligible-ipam/
+POST /api/plugins/forward/sync/<id>/create-module-bays/
+```
+
+Each returns `201` with the job on success, `403` without permission, and
+`409` when an equivalent job is already queued or running — duplicates never
+stack (across buttons, API calls, and scheduled occurrences), and prune is
+additionally refused while a sync run is active. A `409` is benign for a
+retrying scheduler: the work it wanted is already happening. Permissions: in
+addition to each button's own permission (e.g. `dcim.delete_device` for
+prune), NetBox's API token layer requires `forward_netbox.add_forwardsync`
+for any POST to this viewset — grant both to the service account.
+**Validate** (`POST .../validate/`) follows the same contract, including the
+`409` on a duplicate. These four actions do not accept schedule parameters —
+a body containing `schedule_at`/`interval` is rejected with `400` rather
+than silently running once.
+
+**Standing schedules.** `validate` and `dependency-preview` accept optional
+schedule parameters in the request body:
+
+```bash
+curl -X POST https://netbox.example.com/api/plugins/forward/sync/<id>/dependency-preview/ \
+  -H "Authorization: Token <api-token>" -H "Content-Type: application/json" \
+  -d '{"interval": 1440}'          # minutes; optional future "schedule_at"
+```
+
+- An empty body keeps the one-shot behavior unchanged.
+- `interval` creates a recurring schedule (one per sync per job type).
+  Without `schedule_at` the first run starts immediately, then recurs.
+  `schedule_at` must be in the future and requires `interval`. The preview
+  enforces a 60-minute floor — it is a full live dry-run against Forward;
+  on large fabrics schedule it **daily or less often**.
+- Re-posting the same `interval` (no `schedule_at`) is a no-op; including
+  `schedule_at`, or changing parameters, re-anchors/replaces the schedule.
+  Avoid re-posting or cancelling while an occurrence is mid-run — wait for
+  it to finish (the running occurrence completes either way and can
+  re-create the row you just changed).
+- Recurrence requires the RQ scheduler. NetBox's `manage.py rqworker`
+  command enables it unconditionally; only a worker started with a bare
+  `rq worker` (bypassing the management command) lacks it.
+- To cancel, delete the scheduled job from the NetBox **Jobs** list — there
+  is no separate cancel endpoint. Deleting the sync also cancels its
+  scheduled jobs.
+- If a worker is hard-killed (OOM/SIGKILL) mid-occurrence, the schedule dies
+  silently with the occurrence — if the expected job stops appearing in the
+  Jobs list, re-POST the schedule.
+- Each recurring validation creates a Validation Run record; NetBox's job
+  retention prunes old Job rows but the runs persist. Keep intervals modest
+  (e.g. daily) or clear old runs periodically.
+
 ## Apply engine
 
 Models apply through either the per-row **adapter** or the batched **bulk-ORM**

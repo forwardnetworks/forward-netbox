@@ -1,6 +1,10 @@
+from core.choices import JobStatusChoices
 from core.exceptions import SyncError
 from core.models import Job
+from django.db.models import Q
 from django.utils.module_loading import import_string
+from django_pglocks import advisory_lock
+from netbox.constants import ADVISORY_LOCK_KEYS
 
 from ..choices import forward_configured_models
 from ..choices import FORWARD_OPTIONAL_MODELS
@@ -144,6 +148,17 @@ def get_model_strings(sync):
     return enabled_models(sync)
 
 
+def sync_run_job_names(sync):
+    """The two job names that represent an actual sync RUN for this sync.
+
+    Gates that ask "is another sync run queued/running?" must match on these
+    names only: since 2.5.6 a sync can also carry permanently-SCHEDULED
+    standing-schedule rows (fixed JobRunner names "dependency preview" /
+    "validation") plus per-sync button jobs, and a status-only filter would
+    treat those as an active sync run forever."""
+    return (f"{sync.name} - adhoc", f"{sync.name} - scheduled")
+
+
 def enqueue_sync_job(sync, adhoc=False, user=None):
     if sync.is_waiting_for_branch_merge:
         raise SyncError(
@@ -165,15 +180,159 @@ def enqueue_sync_job(sync, adhoc=False, user=None):
     )
 
 
-def enqueue_validation_job(sync, adhoc=False, user=None):
+def enqueue_validation_job(
+    sync, adhoc=False, user=None, schedule_at=None, interval=None
+):
     if not user:
         user = sync.user
-    return Job.enqueue(
-        import_string("forward_netbox.jobs.validate_forwardsync"),
+    if schedule_at or interval:
+        # Standing schedule: one per sync (enqueue_once dedup keys on the
+        # ValidationJob fixed name + the sync instance); recurrence is handled
+        # by JobRunner after each run completes. Cancel by deleting the
+        # scheduled job from the Jobs list. Pass schedule_at through untouched:
+        # core dedup keeps the existing row only when schedule_at is falsy or
+        # matches, so defaulting it to now() here would delete + recreate the
+        # schedule on every re-post instead of being idempotent.
+        from ..jobs import ValidationJob
+
+        return ValidationJob.enqueue_once(
+            instance=sync,
+            user=user,
+            schedule_at=schedule_at,
+            interval=interval,
+        )
+    with advisory_lock(ADVISORY_LOCK_KEYS["job-schedules"]):
+        active = (
+            sync.jobs.filter(
+                Q(name__startswith=f"{sync.name} - validation") | Q(name="validation"),
+                status__in=_ACTIVE_JOB_STATUSES,
+            )
+            .order_by("pk")
+            .first()
+        )
+        if active is not None:
+            raise JobAlreadyActive(active)
+        return Job.enqueue(
+            import_string("forward_netbox.jobs.validate_forwardsync"),
+            instance=sync,
+            user=user,
+            name=f"{sync.name} - validation",
+            adhoc=adhoc,
+            schedule_at=None,
+            interval=None,
+        )
+
+
+def enqueue_preview_schedule(sync, user=None, schedule_at=None, interval=None):
+    """Standing dependency-preview schedule (immediate runs use
+    enqueue_button_job, which keeps the legacy per-sync job name). schedule_at
+    passes through untouched so enqueue_once re-posts stay idempotent (see
+    enqueue_validation_job); interval-only means run now, then recur."""
+    from ..jobs import DependencyPreviewJob
+
+    if not user:
+        user = sync.user
+    return DependencyPreviewJob.enqueue_once(
         instance=sync,
         user=user,
-        name=f"{sync.name} - validation",
-        adhoc=adhoc,
-        schedule_at=None,
-        interval=None,
+        schedule_at=schedule_at,
+        interval=interval,
     )
+
+
+class JobAlreadyActive(Exception):
+    """An equivalent job is already pending/running for this sync."""
+
+    def __init__(self, job):
+        self.job = job
+        super().__init__(f"Job `{job.name}` is already {job.status} (job #{job.pk}).")
+
+
+# The operator-facing background jobs ("button jobs") share one enqueue path so
+# the HTML buttons and the REST API actions get identical job names (several
+# lookups match on these strings - do NOT rename), permission expectations, and
+# overlap behavior.
+BUTTON_JOB_SPECS = {
+    "dependency_preview": (
+        "forward_netbox.jobs.forward_dependency_preview",
+        "dependency preview",
+        "forward_netbox.run_forwardsync",
+    ),
+    "prune_orphans": (
+        "forward_netbox.jobs.prune_forward_orphans",
+        "prune orphans",
+        "dcim.delete_device",
+    ),
+    "tag_delete_eligible_ipam": (
+        "forward_netbox.jobs.tag_forward_delete_eligible_ipam",
+        "tag delete-eligible IPAM",
+        "ipam.change_prefix",
+    ),
+    "create_module_bays": (
+        "forward_netbox.jobs.create_forward_module_bays",
+        "create module bays",
+        "dcim.add_modulebay",
+    ),
+}
+
+_ACTIVE_JOB_STATUSES = (
+    JobStatusChoices.STATUS_PENDING,
+    JobStatusChoices.STATUS_RUNNING,
+)
+
+
+def button_job_permission(kind):
+    return BUTTON_JOB_SPECS[kind][2]
+
+
+def enqueue_button_job(sync, kind, user, *, name_suffix_extra="", during_sync_ok=False):
+    """Enqueue an operator button job with a shared overlap guard.
+
+    Raises ``JobAlreadyActive`` instead of stacking a duplicate when an
+    equivalent job is already pending/running. The guard is a PREFIX match on
+    the job name so variants block each other (a manual "prune orphans" click
+    refuses while "prune orphans (auto)" runs, and vice versa). Pruning also
+    refuses while the sync itself is queued/running - deleting devices
+    mid-ingest would race the apply. ``during_sync_ok`` skips only that
+    sync-running check: the post-sync auto-prune hook enqueues from INSIDE the
+    still-running sync job, which is safe by construction (the sync's apply
+    work is already complete).
+    """
+    dotted_path, suffix, _permission = BUTTON_JOB_SPECS[kind]
+    name = f"{sync.name} - {suffix}"
+    # Same lock core enqueue_once takes: closes the check-then-enqueue race
+    # between two concurrent POSTs (and against the scheduler creating a
+    # standing occurrence at the same moment).
+    with advisory_lock(ADVISORY_LOCK_KEYS["job-schedules"]):
+        # Two name shapes count as "the same job already active": the per-sync
+        # immediate names (prefix match so " (auto)" variants block each
+        # other), and the fixed JobRunner name used by standing-schedule
+        # occurrences (exact match; the permanently-SCHEDULED schedule row
+        # itself must NOT block, so the status filter stays pending/running).
+        active = (
+            sync.jobs.filter(
+                Q(name__startswith=name) | Q(name=suffix),
+                status__in=_ACTIVE_JOB_STATUSES,
+            )
+            .order_by("pk")
+            .first()
+        )
+        if active is not None:
+            raise JobAlreadyActive(active)
+        if kind == "prune_orphans" and not during_sync_ok:
+            running_sync = (
+                sync.jobs.filter(
+                    name__in=sync_run_job_names(sync),
+                    status__in=_ACTIVE_JOB_STATUSES,
+                )
+                .order_by("pk")
+                .first()
+            )
+            if running_sync is not None:
+                raise JobAlreadyActive(running_sync)
+        return Job.enqueue(
+            import_string(dotted_path),
+            instance=sync,
+            user=user,
+            name=f"{name}{name_suffix_extra}",
+        )
