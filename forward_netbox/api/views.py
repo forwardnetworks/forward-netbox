@@ -690,6 +690,58 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
             JobSerializer(job, context={"request": request}).data, status=201
         )
 
+    def _enqueue_button_job_response(self, request, kind):
+        """Shared body for the button-job actions: permission check mirroring
+        the HTML view, overlap guard via enqueue_button_job (409 on an active
+        equivalent job, matching the sync action's SyncError->409 pattern)."""
+        from ..utilities.sync_facade import button_job_permission
+        from ..utilities.sync_facade import enqueue_button_job
+        from ..utilities.sync_facade import JobAlreadyActive
+
+        permission = button_job_permission(kind)
+        if not request.user.has_perm(permission):
+            raise PermissionDenied(
+                f"This user does not have the `{permission}` permission."
+            )
+        sync = self.get_object()
+        try:
+            job = enqueue_button_job(sync, kind, request.user)
+        except JobAlreadyActive as exc:
+            return Response(
+                {"detail": str(exc)}, status=status.HTTP_409_CONFLICT
+            )
+        return Response(
+            JobSerializer(job, context={"request": request}).data, status=201
+        )
+
+    @extend_schema(
+        methods=["post"], request=EmptySerializer(), responses={201: JobSerializer()}
+    )
+    @action(detail=True, methods=["post"], url_path="dependency-preview")
+    def dependency_preview(self, request, pk):
+        return self._enqueue_button_job_response(request, "dependency_preview")
+
+    @extend_schema(
+        methods=["post"], request=EmptySerializer(), responses={201: JobSerializer()}
+    )
+    @action(detail=True, methods=["post"], url_path="prune-orphans")
+    def prune_orphans(self, request, pk):
+        return self._enqueue_button_job_response(request, "prune_orphans")
+
+    @extend_schema(
+        methods=["post"], request=EmptySerializer(), responses={201: JobSerializer()}
+    )
+    @action(detail=True, methods=["post"], url_path="tag-delete-eligible-ipam")
+    def tag_delete_eligible_ipam(self, request, pk):
+        return self._enqueue_button_job_response(request, "tag_delete_eligible_ipam")
+
+    @extend_schema(
+        methods=["post"], request=EmptySerializer(), responses={201: JobSerializer()}
+    )
+    @action(detail=True, methods=["post"], url_path="create-module-bays")
+    def create_module_bays(self, request, pk):
+        return self._enqueue_button_job_response(request, "create_module_bays")
+
 
 class ForwardIngestionViewSet(NetBoxReadOnlyModelViewSet):
     queryset = ForwardIngestion.objects.all()
