@@ -251,50 +251,63 @@ POST /api/plugins/forward/sync/<id>/create-module-bays/
 ```
 
 Each returns `201` with the job on success, `403` without permission, and
-`409` when an equivalent job is already queued or running — duplicates never
-stack (across buttons, API calls, and scheduled occurrences), and prune is
-additionally refused while a sync run is active. A `409` is benign for a
-retrying scheduler: the work it wanted is already happening. Permissions: in
-addition to each button's own permission (e.g. `dcim.delete_device` for
-prune), NetBox's API token layer requires `forward_netbox.add_forwardsync`
-for any POST to this viewset — grant both to the service account.
-**Validate** (`POST .../validate/`) follows the same contract, including the
-`409` on a duplicate. These four actions do not accept schedule parameters —
-a body containing `schedule_at`/`interval` is rejected with `400` rather
-than silently running once.
+`202 {"status": "already_running", "job_id": N}` when an equivalent job is
+already queued or running — duplicates never stack (across buttons, API
+calls, and scheduled occurrences) and retries from a calendar-blind cron
+stay green. Prune while a sync run is active answers
+`202 {"status": "blocked_by_sync_run"}` instead: that prune did **not** run
+(enable post-sync auto-prune to cover the gap, or retry after the sync). Permissions: in addition to each button's own permission (e.g.
+`dcim.delete_device` for prune), NetBox's API token layer requires
+`forward_netbox.add_forwardsync` for any POST to this viewset — grant both
+to the service account. **Validate** (`POST .../validate/`) follows the same
+contract. These four actions do not accept schedule parameters — a body
+containing `schedule_at`/`interval` is rejected with `400` rather than
+silently running once.
 
-**Standing schedules.** `validate` and `dependency-preview` accept optional
-schedule parameters in the request body:
+**Standing schedules.** Set them on the sync form (**Standing Schedules**
+section: recurring validation / recurring dependency preview, in minutes;
+blank disables) or via the API on `validate` and `dependency-preview`:
 
 ```bash
 curl -X POST https://netbox.example.com/api/plugins/forward/sync/<id>/dependency-preview/ \
   -H "Authorization: Token <api-token>" -H "Content-Type: application/json" \
-  -d '{"interval": 1440}'          # minutes; optional future "schedule_at"
+  -d '{"interval": 1440}'          # minutes; 0 cancels; optional future "schedule_at"
 ```
 
 - An empty body keeps the one-shot behavior unchanged.
-- `interval` creates a recurring schedule (one per sync per job type).
-  Without `schedule_at` the first run starts immediately, then recurs.
-  `schedule_at` must be in the future and requires `interval`. The preview
-  enforces a 60-minute floor — it is a full live dry-run against Forward;
-  on large fabrics schedule it **daily or less often**.
-- Re-posting the same `interval` (no `schedule_at`) is a no-op; including
-  `schedule_at`, or changing parameters, re-anchors/replaces the schedule.
-  Avoid re-posting or cancelling while an occurrence is mid-run — wait for
-  it to finish (the running occurrence completes either way and can
-  re-create the row you just changed).
+- `interval` creates a recurring schedule (one per sync per job type) and
+  records the intent on the sync. Without `schedule_at` the first run starts
+  immediately, then recurs. `schedule_at` must be in the future and requires
+  `interval`. The preview enforces a 60-minute floor — it is a full live
+  dry-run against Forward; on large fabrics schedule it **daily or less
+  often**.
+- Responses: `201` created/replaced, `200` when the identical schedule
+  already existed (idempotent re-post), `200 {"status": "cancelled"}` for
+  `interval: 0`.
+- **To cancel**: blank the form field, or POST `{"interval": 0}`. Deleting
+  the scheduled job from the Jobs list alone is not enough anymore — the
+  recorded intent recreates it (see self-healing below). Deleting the sync
+  cancels its schedules. Cancelling while an occurrence is mid-run is safe:
+  the in-flight run finishes, then its chain reads the cancelled intent and
+  stops itself.
+- **Self-healing**: the schedule intent lives on the sync; the plugin
+  re-creates a missing schedule at the end of every sync run, every
+  occurrence re-checks the intent (a stale or duplicate chain re-aligns or
+  stops itself), and schedules created on 2.5.6 (before intent storage) are
+  adopted automatically. A worker hard-killed mid-occurrence (OOM/SIGKILL)
+  no longer silently kills the schedule. The sync detail page shows each
+  standing schedule and its next run.
+- Editing the intent keys directly via a REST `PATCH` of `parameters` is
+  validated (non-negative minutes; preview ≥ 60) but only takes effect at
+  the next sync run, form save, or occurrence — the API actions above apply
+  immediately.
 - Recurrence requires the RQ scheduler. NetBox's `manage.py rqworker`
   command enables it unconditionally; only a worker started with a bare
   `rq worker` (bypassing the management command) lacks it.
-- To cancel, delete the scheduled job from the NetBox **Jobs** list — there
-  is no separate cancel endpoint. Deleting the sync also cancels its
-  scheduled jobs.
-- If a worker is hard-killed (OOM/SIGKILL) mid-occurrence, the schedule dies
-  silently with the occurrence — if the expected job stops appearing in the
-  Jobs list, re-POST the schedule.
-- Each recurring validation creates a Validation Run record; NetBox's job
-  retention prunes old Job rows but the runs persist. Keep intervals modest
-  (e.g. daily) or clear old runs periodically.
+- Recurring validation trims its own history: the newest 100 Validation Runs
+  per sync are kept (configure with
+  `PLUGINS_CONFIG["forward_netbox"]["validation_run_retention"]`; `0`
+  disables trimming).
 
 ## Apply engine
 

@@ -355,6 +355,8 @@ def clean_forward_sync(sync):
             "set_primary_ip_from_mgmt_tag",
             "diff_fallback_mode",
             "webhook_secret",
+            "validation_schedule_interval",
+            "preview_schedule_interval",
             # Post-sync overlay toggles (opt-in, except vsys parent-link which is
             # default-on and opts OUT with auto_link_vsys_parents=False).
             "auto_tag_backfilled",
@@ -375,6 +377,28 @@ def clean_forward_sync(sync):
     parameters["snapshot_id"] = snapshot_id
     if not isinstance(parameters.get("webhook_secret", ""), str):
         raise ValidationError(_("`webhook_secret` must be a string."))
+    for schedule_key in (
+        "validation_schedule_interval",
+        "preview_schedule_interval",
+    ):
+        # Only normalize when present: an ABSENT key means a pre-2.5.7 sync
+        # whose schedule rows predate intent storage (reconcile adopts them);
+        # writing a default here would read as an explicit cancel.
+        if schedule_key not in parameters:
+            continue
+        value = parameters.get(schedule_key)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValidationError(
+                _(f"`{schedule_key}` must be a non-negative integer (minutes).")
+            )
+        if schedule_key == "preview_schedule_interval" and 0 < value < 60:
+            raise ValidationError(
+                _(
+                    "`preview_schedule_interval` must be at least 60 minutes "
+                    "(the dependency preview is a full live dry-run)."
+                )
+            )
+        parameters[schedule_key] = value
     # 2.0: single-branch is the only execution backend. Normalize any value
     # (including legacy branching / fast_bootstrap) to it.
     parameters["execution_backend"] = ForwardExecutionBackendChoices.SINGLE_BRANCH

@@ -146,8 +146,9 @@ class ButtonJobEnqueueTest(TestCase):
 
 
 class ButtonJobAPIActionTest(TestCase):
-    """REST parity for the four button jobs (chunk 2): per-action permission,
-    201 + JobSerializer on success, 409 when an equivalent job is active."""
+    """REST parity for the four button jobs: per-action permission, 201 +
+    JobSerializer on success, 202 already_running when an equivalent job is
+    active (idempotent for retry-blind schedulers)."""
 
     KINDS = (
         ("dependency_preview", "dependency preview"),
@@ -228,8 +229,10 @@ class ButtonJobAPIActionTest(TestCase):
                 self.assertEqual(response.status_code, 403, kind)
                 enqueue.assert_not_called()
 
-    def test_active_job_maps_to_409(self):
-        Job.objects.create(
+    def test_active_job_maps_to_202_already_running(self):
+        # Idempotent for retry-blind schedulers (cron), matching the webhook:
+        # the work is already queued/running, so acknowledge instead of 409.
+        active = Job.objects.create(
             object_type=ContentType.objects.get_for_model(ForwardSync),
             object_id=self.sync.pk,
             name="btn-api-sync - dependency preview",
@@ -237,5 +240,6 @@ class ButtonJobAPIActionTest(TestCase):
             job_id="123e4567-e89b-12d3-a456-426614174199",
         )
         response = self._post(self.admin, "dependency_preview")
-        self.assertEqual(response.status_code, 409)
-        self.assertIn("already", response.data["detail"])
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.data["status"], "already_running")
+        self.assertEqual(response.data["job_id"], active.pk)
