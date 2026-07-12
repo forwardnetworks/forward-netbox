@@ -199,6 +199,45 @@ Use a long random secret and rotate it from the sync form. Combined with
 **Skip scheduled runs on an unchanged snapshot**, a webhook per Forward
 processing event keeps NetBox current without any polling schedule.
 
+### Configuring Forward as the sender
+
+Forward Enterprise ships an outbound webhook feature (**Settings > System >
+Webhooks**, Forward Org Admin required) with a **"New Snapshot ready"**
+(`SNAPSHOT_READY`) event — exactly the trigger for a push sync. Two Forward
+limitations shape the setup:
+
+- **Forward cannot set custom HTTP headers** on its webhooks (verified against
+  the webhook schema: no header/auth/token fields; the only auth-adjacent
+  option is a Basic Authentication toggle). The token path and the
+  `X-Forward-Webhook-Secret` header path above are therefore not usable *from
+  Forward* — they remain the right choice for senders that control headers
+  (scripts, CI, middleware).
+- The webhook URL is the one field Forward fully controls, so **use the query
+  form** and treat the secret as rotatable:
+
+```
+https://netbox.example.com/api/plugins/forward/sync/<id>/webhook/?secret=<secret>
+```
+
+Setup in the Forward UI:
+
+1. **Settings > System > Webhooks > Add a webhook.**
+2. URL: the `?secret=` URL above. Content type: JSON.
+3. Event: **New Snapshot ready**; select the network(s) the sync covers
+   (empty = all networks).
+4. The payload template is operator-editable (`$networkId`, `$snapshotId`,
+   `$type` variables) — the NetBox endpoint ignores the body, so the default
+   template is fine.
+5. Use **Test connection** — it also shows the source IPs Forward will send
+   from, useful when NetBox sits behind a firewall or allowlist.
+
+Notes: the endpoint is idempotent for Forward's retries (an already-running
+sync is acknowledged, not re-queued). Serve NetBox over HTTPS and remember a
+query-string secret can appear in proxy/access logs — rotate it from the sync
+form if exposed. Forward's delivery retry/timeout behavior is not documented;
+keep a low-frequency scheduled sync with **Skip scheduled runs on an unchanged
+snapshot** as the safety net for missed deliveries.
+
 ## Apply engine
 
 Models apply through either the per-row **adapter** or the batched **bulk-ORM**
