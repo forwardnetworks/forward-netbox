@@ -315,3 +315,128 @@ class PruneProtectorSweepTest(TestCase):
             with self.assertRaises(ProtectedError) as ctx:
                 scope_reconciliation._delete_devices_sweeping_protectors([1])
         self.assertIn("sweep passes", str(ctx.exception.args[0]))
+
+
+class DanglingRoutingCleanupTest(TestCase):
+    """GenericFK routing rows (BGPRouter -> scopes -> AFs/peers -> settings)
+    never block a device delete, so they dangle after a prune. The sweep is
+    scoped to THIS run's pruned device pks and is plugin-absent safe.
+    CI has no netbox_routing, so the plugin path is exercised via mocks.
+    """
+
+    def test_absent_plugin_returns_empty(self):
+        from forward_netbox.utilities.scope_reconciliation import (
+            _cleanup_dangling_routing_objects,
+        )
+
+        # netbox_routing genuinely absent in CI: early return, no model access.
+        self.assertEqual(_cleanup_dangling_routing_objects([1, 2]), {})
+
+    def test_empty_pks_short_circuits(self):
+        from forward_netbox.utilities.scope_reconciliation import (
+            _cleanup_dangling_routing_objects,
+        )
+
+        with patch("django.apps.apps.is_installed") as is_installed:
+            self.assertEqual(_cleanup_dangling_routing_objects([]), {})
+        is_installed.assert_not_called()
+
+    def test_sweep_order_and_tally_with_mocked_plugin(self):
+        from forward_netbox.utilities import scope_reconciliation
+
+        deletions = []
+
+        def make_model(label, list_pks=(), delete_count=1):
+            model = Mock()
+            model._meta.label_lower = label
+            manager = Mock()
+
+            def _filter(**kwargs):
+                qs = Mock()
+                qs.values_list = Mock(return_value=list(list_pks))
+                def _delete():
+                    deletions.append((label, kwargs))
+                    return (delete_count, {})
+                qs.delete = _delete
+                return qs
+
+            manager.filter = _filter
+            model.objects = manager
+            return model
+
+        models = {
+            "BGPRouter": make_model("netbox_routing.bgprouter", [10]),
+            "BGPScope": make_model("netbox_routing.bgpscope", [20]),
+            "BGPAddressFamily": make_model("netbox_routing.bgpaddressfamily", [30]),
+            "BGPPeer": make_model("netbox_routing.bgppeer", [40]),
+            "BGPSetting": make_model("netbox_routing.bgpsetting"),
+            "BGPPeerAddressFamily": make_model(
+                "netbox_routing.bgppeeraddressfamily"
+            ),
+        }
+
+        with (
+            patch(
+                "django.apps.apps.is_installed", return_value=True
+            ),
+            patch(
+                "django.apps.apps.get_model",
+                side_effect=lambda app, name: models[name],
+            ),
+            patch(
+                "forward_netbox.utilities.scope_reconciliation.transaction.atomic",
+            ),
+            patch(
+                "django.contrib.contenttypes.models.ContentType.objects"
+            ) as ct_objects,
+        ):
+            ct_objects.get_for_model = Mock(side_effect=lambda m: f"ct:{m}")
+            tally = scope_reconciliation._cleanup_dangling_routing_objects([1, 2])
+
+        deleted_labels = [label for label, _kwargs in deletions]
+        # Children first: peer-AFs -> settings (per parent CT) -> peers -> AFs
+        # -> scopes -> routers.
+        self.assertEqual(deleted_labels[0], "netbox_routing.bgppeeraddressfamily")
+        self.assertEqual(
+            deleted_labels[-4:],
+            [
+                "netbox_routing.bgppeer",
+                "netbox_routing.bgpaddressfamily",
+                "netbox_routing.bgpscope",
+                "netbox_routing.bgprouter",
+            ],
+        )
+        self.assertTrue(
+            all(label == "netbox_routing.bgpsetting" for label in deleted_labels[1:-4])
+        )
+        # Tally keyed by label_lower; every mocked delete returned 1.
+        self.assertEqual(tally["netbox_routing.bgprouter"], 1)
+        self.assertEqual(tally["netbox_routing.bgppeer"], 1)
+
+    def test_prune_result_carries_dangling_tally(self):
+        from forward_netbox.utilities import scope_reconciliation
+
+        mfr = Manufacturer.objects.create(name="MfrD", slug="mfr-d")
+        dt = DeviceType.objects.create(manufacturer=mfr, model="dt-d", slug="dt-d")
+        role = DeviceRole.objects.create(name="RoleD", slug="role-d")
+        site = Site.objects.create(name="SiteD", slug="site-d")
+        orphan = Device.objects.create(
+            name="dangle-orphan", device_type=dt, role=role, site=site
+        )
+        report = {
+            "_out_of_scope": {"dangle-orphan"},
+            "_tagged_names": {"kept-device"},
+            "_out_of_scope_pks": [orphan.pk],
+        }
+        with patch.object(
+            scope_reconciliation,
+            "_cleanup_dangling_routing_objects",
+            return_value={"netbox_routing.bgprouter": 2},
+        ):
+            result = scope_reconciliation.prune_orphan_devices(
+                Mock(), report=report
+            )
+        self.assertEqual(
+            result["pruned_dangling_rows"], {"netbox_routing.bgprouter": 2}
+        )
+        self.assertFalse(Device.objects.filter(name="dangle-orphan").exists())
