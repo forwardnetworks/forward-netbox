@@ -369,6 +369,26 @@ mirror. Rollout (branch, push, tag, GitHub release, PyPI) only happens with
 triggers the Trusted-Publishing workflow (`.github/workflows/release.yml`), which
 builds and uploads to PyPI over OIDC with no stored token.
 
+## Large-fabric fetch safety
+
+By default a workload's Forward fetch is bounded only by counts (HTTP request
+timeout, async poll count, pagination page/row caps). On very large fabrics a
+single pathological shard can still consume hours while the sync sits in the
+planning phase. Set an optional per-workload **wall-clock** budget on the
+source parameters:
+
+```
+workload_fetch_timeout_seconds: 10800   # 3 hours; 0 (default) = disabled
+```
+
+When set, one monotonic deadline spans all retries and the diff→full fallback
+for that workload; on breach the fetch stops cooperatively (mid-poll or
+between pages), the model is recorded as failed with a `fetch_budget_exceeded`
+diagnostic (non-destructive — no deletes/prune run for a model that never
+fetched), and the sync proceeds with the other models. Leave it at 0 unless a
+sync is hanging; size it above your largest legitimate model fetch (2M-row
+IPAM models are real at scale).
+
 ## Security and deployment hardening
 
 The plugin has two operator-facing trust boundaries (see `SECURITY.md` for the

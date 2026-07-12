@@ -22,6 +22,10 @@ class ForwardClientError(ForwardSyncError):
     """Raised when a Forward API request fails."""
 
 
+class ForwardFetchBudgetExceededError(ForwardClientError):
+    """Per-workload wall-clock fetch budget exceeded."""
+
+
 class ForwardConnectivityError(ForwardClientError):
     """Raised when a Forward API call cannot be reached."""
 

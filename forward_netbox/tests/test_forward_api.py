@@ -2626,3 +2626,70 @@ class RetryBackoffHelperTest(TestCase):
             low = base * (attempt + 1)
             self.assertGreaterEqual(wait, low)
             self.assertLessEqual(wait, low + base)
+
+
+class WorkloadFetchBudgetTest(TestCase):
+    """Opt-in per-workload wall-clock fetch budget (backlog: a slow shard must
+    not silently hang a multi-hour sync)."""
+
+    def test_budget_error_is_not_transient(self):
+        from forward_netbox.exceptions import ForwardConnectivityError
+        from forward_netbox.exceptions import ForwardFetchBudgetExceededError
+        from forward_netbox.utilities.query_fetch_execution import (
+            _is_transient_fetch_error,
+        )
+
+        # A budget breach must fall straight through to failure, never retry.
+        self.assertFalse(
+            _is_transient_fetch_error(ForwardFetchBudgetExceededError("slow"))
+        )
+        # Sanity: a real transient error still retries.
+        self.assertTrue(_is_transient_fetch_error(ForwardConnectivityError("boom")))
+
+    def test_timeout_seconds_reads_source_param_and_defaults_off(self):
+        from types import MethodType
+
+        from forward_netbox.utilities.query_fetch_execution import (
+            DEFAULT_WORKLOAD_FETCH_TIMEOUT_SECONDS,
+        )
+        from forward_netbox.utilities.query_fetch_execution import (
+            ForwardQueryFetcher,
+        )
+
+        probe = SimpleNamespace()
+        probe._workload_fetch_timeout_seconds = MethodType(
+            ForwardQueryFetcher._workload_fetch_timeout_seconds, probe
+        )
+        probe.sync = SimpleNamespace(
+            source=SimpleNamespace(parameters={"workload_fetch_timeout_seconds": 900})
+        )
+        self.assertEqual(probe._workload_fetch_timeout_seconds(), 900)
+        probe.sync = SimpleNamespace(source=SimpleNamespace(parameters={}))
+        self.assertEqual(
+            probe._workload_fetch_timeout_seconds(),
+            DEFAULT_WORKLOAD_FETCH_TIMEOUT_SECONDS,
+        )
+
+    def test_async_poll_raises_when_deadline_passed(self):
+        import time
+
+        from forward_netbox.exceptions import ForwardFetchBudgetExceededError
+
+        client = ForwardClient(
+            SimpleNamespace(
+                url="https://fwd.app",
+                parameters={
+                    "username": "u@example.com",
+                    "password": "x",
+                    "verify": True,
+                },
+            )
+        )
+        past = time.monotonic() - 1
+        with self.assertRaises(ForwardFetchBudgetExceededError):
+            client._wait_for_nqe_async_completion(
+                network_id="n",
+                execution_key="k",
+                status="RUNNING",
+                deadline=past,
+            )
