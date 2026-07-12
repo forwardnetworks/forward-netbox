@@ -566,6 +566,48 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
     serializer_class = ForwardSyncSerializer
     filterset_class = ForwardSyncFilterSet
 
+    # A REST PATCH/PUT that changes the standing-schedule intent keys must
+    # take effect immediately (the form path already reconciles on save).
+    # Hooked HERE, not in the serializer: core perform_update wraps
+    # serializer.save() in transaction.atomic, so a serializer-level hook
+    # would enqueue RQ entries inside a transaction that can still roll
+    # back. After super() returns, the write is committed. Intent-key-only
+    # comparison keeps this inert for every other parameters change.
+    def perform_update(self, serializer):
+        from forward_netbox.utilities.sync_facade import (
+            reconcile_standing_schedules,
+        )
+        from forward_netbox.utilities.sync_facade import (
+            standing_schedule_intent,
+        )
+
+        # Snapshot from the DB: NetBox's ValidatedModelSerializer applies the
+        # incoming attrs to serializer.instance during validation (before
+        # perform_update runs), so the in-memory instance already holds the
+        # NEW parameters here.
+        stored = (
+            ForwardSync.objects.filter(pk=serializer.instance.pk)
+            .values_list("parameters", flat=True)
+            .first()
+        )
+        before = standing_schedule_intent(stored)
+        super().perform_update(serializer)
+        if standing_schedule_intent(serializer.instance.parameters) != before:
+            reconcile_standing_schedules(serializer.instance, user=self.request.user)
+
+    def perform_create(self, serializer):
+        from forward_netbox.utilities.sync_facade import (
+            reconcile_standing_schedules,
+        )
+        from forward_netbox.utilities.sync_facade import (
+            standing_schedule_intent,
+        )
+
+        super().perform_create(serializer)
+        intent = standing_schedule_intent(serializer.instance.parameters)
+        if any(present and desired > 0 for present, desired in intent.values()):
+            reconcile_standing_schedules(serializer.instance, user=self.request.user)
+
     @action(detail=False, methods=["get"], url_path="available-snapshots")
     def available_snapshots(self, request):
         source_id = request.GET.get("source_id")

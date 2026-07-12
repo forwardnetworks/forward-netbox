@@ -20,3 +20,17 @@ class EventsClearer:
             transaction.on_commit(lambda: flush_events(events))
         clear_events.send(sender=None)
         self.counter = 0
+
+    def snapshot(self):
+        """Copy of the current queued-events map.
+
+        The events_queue contextvar is NOT transactional, so a per-row save()
+        that then rolls back (isolated-row savepoint) leaves its events in the
+        queue to be flushed by the next clear(). Snapshot before an isolated
+        row and restore() on failure to drop exactly that row's events. Shallow
+        copy is safe: receivers only add new keys, never mutate existing ones.
+        """
+        return dict(events_queue.get() or {})
+
+    def restore(self, snapshot):
+        events_queue.set(dict(snapshot))
