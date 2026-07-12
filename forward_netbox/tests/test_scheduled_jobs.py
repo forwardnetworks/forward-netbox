@@ -188,6 +188,10 @@ class ScheduleAPITest(TestCase):
 
     def test_validate_with_interval_schedules(self):
         job_row = self._scheduled_job_row("validation", "01")
+        # Detach: no enqueued row may exist at request time (the action
+        # answers 200 for an idempotent re-post); the instance stays usable
+        # as the mock return value.
+        Job.objects.filter(pk=job_row.pk).delete()
         with patch(
             "forward_netbox.jobs.ValidationJob.enqueue_once",
             return_value=job_row,
@@ -200,6 +204,7 @@ class ScheduleAPITest(TestCase):
 
     def test_preview_with_interval_schedules(self):
         job_row = self._scheduled_job_row("dependency preview", "02")
+        Job.objects.filter(pk=job_row.pk).delete()
         with patch(
             "forward_netbox.jobs.DependencyPreviewJob.enqueue_once",
             return_value=job_row,
@@ -220,7 +225,8 @@ class ScheduleAPITest(TestCase):
     def test_invalid_interval_is_400(self):
         for action_name in ("validate", "dependency_preview"):
             with self.subTest(action=action_name):
-                response = self._post(self.admin, action_name, {"interval": 0})
+                # 0 is the cancel sentinel (valid); negatives are rejected.
+                response = self._post(self.admin, action_name, {"interval": -5})
                 self.assertEqual(response.status_code, 400)
 
     def test_preview_without_schedule_still_uses_button_path(self):
@@ -548,6 +554,7 @@ class ScheduleAPIValidationTest(TestCase):
             status=JobStatusChoices.STATUS_SCHEDULED,
             job_id="123e4567-e89b-12d3-a456-426614174910",
         )
+        Job.objects.filter(pk=job_row.pk).delete()
         with patch(
             "forward_netbox.jobs.ValidationJob.enqueue_once",
             return_value=job_row,
@@ -562,7 +569,7 @@ class ScheduleAPIValidationTest(TestCase):
         self.assertIn("does not support scheduling", response.data["detail"])
         enqueue.assert_not_called()
 
-    def test_duplicate_immediate_validate_is_409(self):
+    def test_duplicate_immediate_validate_is_202_already_running(self):
         Job.objects.create(
             object_type=ContentType.objects.get_for_model(ForwardSync),
             object_id=self.sync.pk,
@@ -571,7 +578,8 @@ class ScheduleAPIValidationTest(TestCase):
             job_id="123e4567-e89b-12d3-a456-426614174911",
         )
         response = self._post("validate", {})
-        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.data["status"], "already_running")
 
 
 class EnqueueOnceIntegrationTest(TestCase):
@@ -614,3 +622,422 @@ class EnqueueOnceIntegrationTest(TestCase):
             for job in (j3, j2, j1):
                 if job is not None and Job.objects.filter(pk=job.pk).exists():
                     job.delete()
+
+
+class DesiredStateScheduleTest(TestCase):
+    """2.5.7: schedule intent lives in sync.parameters; reconcile makes Job
+    rows match it (form save + end-of-sync self-heal)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.sync = _make_sync("sched-intent")
+
+    def test_api_schedule_persists_intent(self):
+        with patch(
+            "forward_netbox.jobs.DependencyPreviewJob.enqueue_once",
+            return_value=Mock(pk=40),
+        ):
+            enqueue_preview_schedule(self.sync, interval=1440)
+        self.sync.refresh_from_db()
+        self.assertEqual(self.sync.parameters["preview_schedule_interval"], 1440)
+
+    def test_cancel_clears_intent_and_rows(self):
+        from forward_netbox.utilities.sync_facade import (
+            cancel_standing_schedule,
+        )
+
+        self.sync.parameters = {
+            **(self.sync.parameters or {}),
+            "preview_schedule_interval": 1440,
+        }
+        self.sync.save()
+        row = Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=self.sync.pk,
+            name="dependency preview",
+            status=JobStatusChoices.STATUS_SCHEDULED,
+            interval=1440,
+            job_id="123e4567-e89b-12d3-a456-426614175001",
+        )
+        removed = cancel_standing_schedule(self.sync, "dependency_preview")
+        self.assertEqual(removed, 1)
+        self.assertFalse(Job.objects.filter(pk=row.pk).exists())
+        self.sync.refresh_from_db()
+        # Cancel stores an EXPLICIT 0 (absent means pre-intent 2.5.6 rows
+        # that reconcile must adopt, not cancel).
+        self.assertEqual(self.sync.parameters["preview_schedule_interval"], 0)
+
+    def test_reconcile_recreates_missing_schedule(self):
+        # Self-heal: intent stored but no enqueued row (e.g. worker was
+        # hard-killed mid-occurrence) -> reconcile recreates the chain.
+        from forward_netbox.utilities.sync_facade import (
+            reconcile_standing_schedules,
+        )
+
+        self.sync.parameters = {
+            **(self.sync.parameters or {}),
+            "validation_schedule_interval": 720,
+        }
+        self.sync.save()
+        with patch(
+            "forward_netbox.jobs.ValidationJob.enqueue_once",
+            return_value=Mock(pk=41),
+        ) as once:
+            reconcile_standing_schedules(self.sync)
+        once.assert_called_once()
+        self.assertEqual(once.call_args.kwargs["interval"], 720)
+
+    def test_reconcile_removes_rows_with_cancelled_intent(self):
+        from forward_netbox.utilities.sync_facade import (
+            reconcile_standing_schedules,
+        )
+
+        self.sync.parameters = {
+            **(self.sync.parameters or {}),
+            "validation_schedule_interval": 0,
+        }
+        self.sync.save()
+        row = Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=self.sync.pk,
+            name="validation",
+            status=JobStatusChoices.STATUS_SCHEDULED,
+            interval=60,
+            job_id="123e4567-e89b-12d3-a456-426614175002",
+        )
+        reconcile_standing_schedules(self.sync)
+        self.assertFalse(Job.objects.filter(pk=row.pk).exists())
+
+
+class ScheduleCancelAPITest(TestCase):
+    """interval=0 cancels the standing schedule via the API."""
+
+    @classmethod
+    def setUpTestData(cls):
+        from django.contrib.auth import get_user_model
+
+        User = get_user_model()
+        cls.admin = User.objects.create_superuser(
+            username="cancel_admin",
+            password="TestPassword123!",
+            email="cancel_admin@example.com",
+        )
+        cls.sync = _make_sync("sched-cancel")
+
+    def _post(self, action_name, data):
+        from rest_framework.test import APIRequestFactory
+        from rest_framework.test import force_authenticate
+
+        from forward_netbox.api.views import ForwardSyncViewSet
+
+        factory = APIRequestFactory()
+        request = factory.post(
+            f"/api/plugins/forward/sync/{self.sync.pk}/x/", data, format="json"
+        )
+        force_authenticate(request, user=self.admin)
+        view = ForwardSyncViewSet.as_view({"post": action_name})
+        return view(request, pk=self.sync.pk)
+
+    def test_interval_zero_cancels(self):
+        self.sync.parameters = {
+            **(self.sync.parameters or {}),
+            "validation_schedule_interval": 1440,
+        }
+        self.sync.save()
+        row = Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=self.sync.pk,
+            name="validation",
+            status=JobStatusChoices.STATUS_SCHEDULED,
+            interval=1440,
+            job_id="123e4567-e89b-12d3-a456-426614175101",
+        )
+        response = self._post("validate", {"interval": 0})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["status"], "cancelled")
+        self.assertEqual(response.data["removed"], 1)
+        self.assertFalse(Job.objects.filter(pk=row.pk).exists())
+        self.sync.refresh_from_db()
+        self.assertEqual(self.sync.parameters["validation_schedule_interval"], 0)
+
+    def test_interval_zero_with_schedule_at_is_400(self):
+        response = self._post(
+            "validate", {"interval": 0, "schedule_at": "2033-01-01T00:00:00Z"}
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_idempotent_repost_returns_200(self):
+        row = Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=self.sync.pk,
+            name="validation",
+            status=JobStatusChoices.STATUS_SCHEDULED,
+            interval=1440,
+            job_id="123e4567-e89b-12d3-a456-426614175102",
+        )
+        with patch(
+            "forward_netbox.jobs.ValidationJob.enqueue_once",
+            return_value=row,
+        ):
+            response = self._post("validate", {"interval": 1440})
+        self.assertEqual(response.status_code, 200)
+
+    def test_new_schedule_returns_201(self):
+        row = Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=self.sync.pk,
+            name="validation",
+            status=JobStatusChoices.STATUS_SCHEDULED,
+            interval=720,
+            job_id="123e4567-e89b-12d3-a456-426614175103",
+        )
+        # No enqueued row exists at request time (deleted from the DB; the
+        # detached instance stays usable as the mock's return value).
+        Job.objects.filter(pk=row.pk).delete()
+        with patch(
+            "forward_netbox.jobs.ValidationJob.enqueue_once",
+            return_value=row,
+        ):
+            response = self._post("validate", {"interval": 720})
+        self.assertEqual(response.status_code, 201)
+
+
+class ValidationRunRetentionTest(TestCase):
+    """Recurring validation must not accumulate runs forever."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.sync = _make_sync("sched-retain")
+
+    def test_trim_keeps_newest_n(self):
+        from forward_netbox.jobs import _trim_validation_runs
+        from forward_netbox.models import ForwardValidationRun
+
+        all_pks = [
+            ForwardValidationRun.objects.create(sync=self.sync).pk for _i in range(7)
+        ]
+        with patch(
+            "forward_netbox.choices.forward_plugin_settings",
+            return_value={"validation_run_retention": 5},
+        ):
+            _trim_validation_runs(self.sync)
+        remaining = set(
+            ForwardValidationRun.objects.filter(sync=self.sync).values_list(
+                "pk", flat=True
+            )
+        )
+        # The NEWEST five survive (a flipped ordering would keep the oldest).
+        self.assertEqual(remaining, set(sorted(all_pks, reverse=True)[:5]))
+
+    def test_zero_disables_trim(self):
+        from forward_netbox.jobs import _trim_validation_runs
+        from forward_netbox.models import ForwardValidationRun
+
+        for _i in range(3):
+            ForwardValidationRun.objects.create(sync=self.sync)
+        with patch(
+            "forward_netbox.choices.forward_plugin_settings",
+            return_value={"validation_run_retention": 0},
+        ):
+            _trim_validation_runs(self.sync)
+        self.assertEqual(ForwardValidationRun.objects.filter(sync=self.sync).count(), 3)
+
+
+class OccurrenceIntentGuardTest(TestCase):
+    """The occurrence re-reads the stored intent at each firing: cancelled
+    (0) stops the chain, a changed interval re-aligns it, an absent key is
+    backfilled (2.5.6 chains). This is what makes cancel/replace racing a
+    RUNNING occurrence self-terminate instead of resurrecting."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.sync = _make_sync("sched-intent2")
+
+    def _occurrence(self, name, interval, suffix):
+        return Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=self.sync.pk,
+            name=name,
+            status=JobStatusChoices.STATUS_RUNNING,
+            interval=interval,
+            job_id=f"123e4567-e89b-12d3-a456-4266141752{suffix}",
+        )
+
+    def _set_intent(self, key, value):
+        params = dict(self.sync.parameters or {})
+        params[key] = value
+        self.sync.parameters = params
+        self.sync.save()
+
+    def test_cancelled_intent_stops_the_chain(self):
+        from forward_netbox.jobs import _skip_if_immediate_equivalent_active
+
+        self._set_intent("validation_schedule_interval", 0)
+        occurrence = self._occurrence("validation", 720, "01")
+        self.assertTrue(_skip_if_immediate_equivalent_active(occurrence, "validation"))
+        occurrence.refresh_from_db()
+        self.assertIsNone(occurrence.interval)
+        self.assertEqual(occurrence.data["skipped"], "schedule_cancelled")
+
+    def test_changed_intent_realigns_the_chain(self):
+        from forward_netbox.jobs import _skip_if_immediate_equivalent_active
+
+        self._set_intent("validation_schedule_interval", 1440)
+        occurrence = self._occurrence("validation", 720, "02")
+        self.assertFalse(_skip_if_immediate_equivalent_active(occurrence, "validation"))
+        occurrence.refresh_from_db()
+        self.assertEqual(occurrence.interval, 1440)
+
+    def test_absent_intent_is_backfilled_from_the_chain(self):
+        from forward_netbox.jobs import _skip_if_immediate_equivalent_active
+
+        occurrence = self._occurrence("dependency preview", 1440, "03")
+        self.assertFalse(
+            _skip_if_immediate_equivalent_active(occurrence, "dependency preview")
+        )
+        self.sync.refresh_from_db()
+        self.assertEqual(self.sync.parameters["preview_schedule_interval"], 1440)
+
+
+class ReconcileAdoptionTest(TestCase):
+    """Upgrade path: 2.5.6 schedules exist as Job rows without stored intent;
+    reconcile must ADOPT them (backfill intent), never cancel them."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.sync = _make_sync("sched-adopt")
+
+    def test_orphan_chain_is_adopted_not_cancelled(self):
+        from forward_netbox.utilities.sync_facade import (
+            reconcile_standing_schedules,
+        )
+
+        row = Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=self.sync.pk,
+            name="validation",
+            status=JobStatusChoices.STATUS_SCHEDULED,
+            interval=1440,
+            job_id="123e4567-e89b-12d3-a456-426614175301",
+        )
+        reconcile_standing_schedules(self.sync)
+        self.assertTrue(Job.objects.filter(pk=row.pk).exists())
+        self.sync.refresh_from_db()
+        self.assertEqual(self.sync.parameters["validation_schedule_interval"], 1440)
+
+    def test_validation_api_schedule_persists_intent(self):
+        # The validation-kind twin of the preview persist test.
+        with patch(
+            "forward_netbox.jobs.ValidationJob.enqueue_once",
+            return_value=Mock(pk=50),
+        ):
+            enqueue_validation_job(self.sync, interval=720)
+        self.sync.refresh_from_db()
+        self.assertEqual(self.sync.parameters["validation_schedule_interval"], 720)
+
+
+class BlockedBySyncRunAPITest(TestCase):
+    """Prune refused during a sync run answers a DISTINCT 202 status: the
+    requested work is not queued (unlike already_running)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        from django.contrib.auth import get_user_model
+
+        User = get_user_model()
+        cls.admin = User.objects.create_superuser(
+            username="blocked_admin",
+            password="TestPassword123!",
+            email="blocked_admin@example.com",
+        )
+        cls.sync = _make_sync("sched-blocked")
+
+    def test_prune_during_sync_is_202_blocked(self):
+        from rest_framework.test import APIRequestFactory
+        from rest_framework.test import force_authenticate
+
+        from forward_netbox.api.views import ForwardSyncViewSet
+
+        Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=self.sync.pk,
+            name="sched-blocked - adhoc",
+            status=JobStatusChoices.STATUS_RUNNING,
+            job_id="123e4567-e89b-12d3-a456-426614175401",
+        )
+        factory = APIRequestFactory()
+        request = factory.post(
+            f"/api/plugins/forward/sync/{self.sync.pk}/x/", {}, format="json"
+        )
+        force_authenticate(request, user=self.admin)
+        view = ForwardSyncViewSet.as_view({"post": "prune_orphans"})
+        response = view(request, pk=self.sync.pk)
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.data["status"], "blocked_by_sync_run")
+
+    def test_interval_zero_on_prune_is_400(self):
+        # Key-presence guard: 0 is falsy but must still be rejected.
+        from rest_framework.test import APIRequestFactory
+        from rest_framework.test import force_authenticate
+
+        from forward_netbox.api.views import ForwardSyncViewSet
+
+        factory = APIRequestFactory()
+        request = factory.post(
+            f"/api/plugins/forward/sync/{self.sync.pk}/x/",
+            {"interval": 0},
+            format="json",
+        )
+        force_authenticate(request, user=self.admin)
+        view = ForwardSyncViewSet.as_view({"post": "prune_orphans"})
+        response = view(request, pk=self.sync.pk)
+        self.assertEqual(response.status_code, 400)
+
+
+class SyncFormScheduleTest(TestCase):
+    """The 2.5.7 form path: fields round-trip through parameters and save
+    reconciles the Job rows."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.sync = _make_sync("sched-form")
+
+    def _form_data(self, **overrides):
+        data = {
+            "name": self.sync.name,
+            "source": self.sync.source.pk,
+            "snapshot_id": "latestProcessed",
+            "dcim.device": True,
+        }
+        data.update(overrides)
+        return data
+
+    def test_initial_from_parameters(self):
+        from forward_netbox.forms import ForwardSyncForm
+
+        self.sync.parameters = {
+            **(self.sync.parameters or {}),
+            "preview_schedule_interval": 1440,
+        }
+        self.sync.save()
+        form = ForwardSyncForm(instance=self.sync)
+        self.assertEqual(form.fields["preview_schedule_interval"].initial, 1440)
+
+    def test_save_persists_intent_and_reconciles(self):
+        from forward_netbox.forms import ForwardSyncForm
+
+        with patch.object(self.sync.source.__class__, "get_client") as get_client:
+            get_client.return_value.get_snapshots.return_value = []
+            form = ForwardSyncForm(
+                data=self._form_data(validation_schedule_interval=720),
+                instance=self.sync,
+            )
+            self.assertTrue(form.is_valid(), form.errors)
+            with patch(
+                "forward_netbox.utilities.sync_facade." "reconcile_standing_schedules"
+            ) as reconcile:
+                instance = form.save()
+        reconcile.assert_called_once_with(instance)
+        self.assertEqual(instance.parameters["validation_schedule_interval"], 720)
+        # Blank field = explicit cancel (stored 0, not absent).
+        self.assertEqual(instance.parameters["preview_schedule_interval"], 0)

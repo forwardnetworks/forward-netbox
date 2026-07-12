@@ -195,6 +195,7 @@ def enqueue_validation_job(
         # schedule on every re-post instead of being idempotent.
         from ..jobs import ValidationJob
 
+        persist_standing_schedule_interval(sync, "validation", interval)
         return ValidationJob.enqueue_once(
             instance=sync,
             user=user,
@@ -223,6 +224,124 @@ def enqueue_validation_job(
         )
 
 
+# Desired state for the two standing schedules lives in sync.parameters so it
+# survives the Job rows themselves (a hard-killed worker mid-occurrence loses
+# the recurrence chain; reconcile recreates it from the stored intent).
+STANDING_SCHEDULE_PARAM_KEYS = {
+    "validation": "validation_schedule_interval",
+    "dependency_preview": "preview_schedule_interval",
+}
+STANDING_SCHEDULE_JOB_NAMES = {
+    "validation": "validation",
+    "dependency_preview": "dependency preview",
+}
+
+
+def persist_standing_schedule_interval(sync, kind, interval):
+    """Record the desired standing-schedule interval on the sync.
+
+    0 is stored explicitly — it means "operator cancelled", which reconcile
+    treats differently from an ABSENT key (absent = pre-2.5.7 install whose
+    schedule rows predate intent storage and must be adopted, not cancelled).
+    Re-reads parameters from the DB to narrow the read-modify-write window
+    against a concurrent form save."""
+    key = STANDING_SCHEDULE_PARAM_KEYS[kind]
+    fresh = (
+        sync.__class__.objects.filter(pk=sync.pk)
+        .values_list("parameters", flat=True)
+        .first()
+    )
+    parameters = dict(fresh or sync.parameters or {})
+    parameters[key] = int(interval or 0)
+    sync.parameters = parameters
+    sync.__class__.objects.filter(pk=sync.pk).update(parameters=parameters)
+
+
+def cancel_standing_schedule(sync, kind):
+    """Cancel the standing schedule: store intent 0 and delete its pending/
+    scheduled rows (through Job.delete() so the RQ entry is cancelled).
+
+    A RUNNING occurrence is deliberately left alone — deleting its row does
+    not stop the worker, and core recurrence would re-INSERT and re-enqueue
+    from in-memory state (schedule resurrection). Instead the occurrence's
+    intent guard sees the stored 0 at its next firing and terminates the
+    chain itself. Returns the number of rows removed."""
+    persist_standing_schedule_interval(sync, kind, 0)
+    removed = 0
+    for job in sync.jobs.filter(
+        name=STANDING_SCHEDULE_JOB_NAMES[kind],
+        status__in=[
+            JobStatusChoices.STATUS_PENDING,
+            JobStatusChoices.STATUS_SCHEDULED,
+        ],
+    ):
+        job.delete()
+        removed += 1
+    return removed
+
+
+def reconcile_standing_schedules(sync, user=None):
+    """Make the enqueued Job rows match the stored schedule intent.
+
+    Called from form save and at the end of each sync run (self-heal: core
+    JobRunner recurrence lives in handle()'s finally, so a hard-killed worker
+    silently drops the chain; enqueue_once here is a no-op while the chain is
+    healthy and recreates it when it vanished)."""
+    from ..jobs import DependencyPreviewJob
+    from ..jobs import ValidationJob
+
+    job_classes = {
+        "validation": ValidationJob,
+        "dependency_preview": DependencyPreviewJob,
+    }
+    parameters = sync.parameters or {}
+    for kind, key in STANDING_SCHEDULE_PARAM_KEYS.items():
+        name = STANDING_SCHEDULE_JOB_NAMES[kind]
+        if key not in parameters:
+            # Pre-intent install (2.5.6 created schedules via the API without
+            # storing intent): ADOPT an existing chain instead of cancelling
+            # it — backfill the intent from the live row.
+            orphan = (
+                sync.jobs.filter(
+                    name=name,
+                    status__in=JobStatusChoices.ENQUEUED_STATE_CHOICES,
+                    interval__gt=0,
+                )
+                .order_by("-created")
+                .first()
+            )
+            if orphan is not None:
+                persist_standing_schedule_interval(sync, kind, orphan.interval)
+            continue
+        desired = int(parameters.get(key) or 0)
+        if desired > 0:
+            kept = job_classes[kind].enqueue_once(
+                instance=sync,
+                user=user or sync.user,
+                schedule_at=None,
+                interval=desired,
+            )
+            # Sweep surplus chains (e.g. an interval change that raced a
+            # running occurrence left a second recurrence chain behind).
+            for job in sync.jobs.filter(
+                name=name,
+                status__in=[
+                    JobStatusChoices.STATUS_PENDING,
+                    JobStatusChoices.STATUS_SCHEDULED,
+                ],
+            ).exclude(pk=kept.pk):
+                job.delete()
+        else:
+            for job in sync.jobs.filter(
+                name=name,
+                status__in=[
+                    JobStatusChoices.STATUS_PENDING,
+                    JobStatusChoices.STATUS_SCHEDULED,
+                ],
+            ):
+                job.delete()
+
+
 def enqueue_preview_schedule(sync, user=None, schedule_at=None, interval=None):
     """Standing dependency-preview schedule (immediate runs use
     enqueue_button_job, which keeps the legacy per-sync job name). schedule_at
@@ -232,6 +351,7 @@ def enqueue_preview_schedule(sync, user=None, schedule_at=None, interval=None):
 
     if not user:
         user = sync.user
+    persist_standing_schedule_interval(sync, "dependency_preview", interval)
     return DependencyPreviewJob.enqueue_once(
         instance=sync,
         user=user,
@@ -246,6 +366,12 @@ class JobAlreadyActive(Exception):
     def __init__(self, job):
         self.job = job
         super().__init__(f"Job `{job.name}` is already {job.status} (job #{job.pk}).")
+
+
+class JobBlockedBySyncRun(JobAlreadyActive):
+    """The requested job is refused while a sync run is active (prune). The
+    requested work is NOT queued — distinct from JobAlreadyActive so the API
+    does not imply the work is already happening."""
 
 
 # The operator-facing background jobs ("button jobs") share one enqueue path so
@@ -329,7 +455,7 @@ def enqueue_button_job(sync, kind, user, *, name_suffix_extra="", during_sync_ok
                 .first()
             )
             if running_sync is not None:
-                raise JobAlreadyActive(running_sync)
+                raise JobBlockedBySyncRun(running_sync)
         return Job.enqueue(
             import_string(dotted_path),
             instance=sync,
