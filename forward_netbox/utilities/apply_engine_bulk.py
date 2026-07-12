@@ -10,6 +10,28 @@ CREATE_ONLY_UPDATE_FIELDS_BY_MODEL: dict[str, frozenset] = {}
 # model's total row count (a single shard can be ~500k rows).
 EMIT_OBJECT_CHANGE_CHUNK = 1000
 
+_APPLY_LOOKUP_CHUNK_SIZE = 500
+
+
+def _chunks(items, size=_APPLY_LOOKUP_CHUNK_SIZE):
+    for index in range(0, len(items), size):
+        yield items[index : index + size]
+
+
+def _device_scoped_name_query(pairs):
+    from django.db.models import Q
+
+    grouped_names_by_device = {}
+    for device_name, interface_name in pairs:
+        grouped_names_by_device.setdefault(device_name, set()).add(interface_name)
+    query = Q()
+    for device_name, interface_names in grouped_names_by_device.items():
+        query |= Q(
+            device__name=device_name,
+            name__in=sorted(interface_names),
+        )
+    return query
+
 
 def _isolate_bulk_objects(
     model, objects, operation, runner, model_string, *, fields=None
@@ -290,7 +312,9 @@ def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str,
             for value in (row.get("slug"), row.get("name"))
             if value not in ("", None)
         }
-        sites = Site.objects.filter(Q(slug__in=site_values) | Q(name__in=site_values))
+        sites = []
+        for batch in _chunks(list(site_values)):
+            sites.extend(Site.objects.filter(Q(slug__in=batch) | Q(name__in=batch)))
         site_by_slug = {site.slug: site for site in sites if site.slug}
         site_by_name = {site.name: site for site in sites if site.name}
     if model_string == "dcim.devicetype":
@@ -309,9 +333,11 @@ def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str,
             for value in (row.get("slug"), row.get("name"))
             if value not in ("", None)
         }
-        manufacturers = Manufacturer.objects.filter(
-            Q(slug__in=manufacturer_values) | Q(name__in=manufacturer_values)
-        )
+        manufacturers = []
+        for batch in _chunks(list(manufacturer_values)):
+            manufacturers.extend(
+                Manufacturer.objects.filter(Q(slug__in=batch) | Q(name__in=batch))
+            )
         manufacturer_by_slug = {
             manufacturer.slug: manufacturer
             for manufacturer in manufacturers
@@ -326,11 +352,11 @@ def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str,
         requested_vrf_names = {
             row.get("vrf") for row in rows if row.get("vrf") not in ("", None)
         }
-        existing_vrf_names = set(
-            VRF.objects.filter(name__in=requested_vrf_names).values_list(
-                "name", flat=True
+        existing_vrf_names = set()
+        for batch in _chunks(list(requested_vrf_names)):
+            existing_vrf_names.update(
+                VRF.objects.filter(name__in=batch).values_list("name", flat=True)
             )
-        )
         # Create only VRFs that do not exist yet. Upserting here would rewrite an
         # existing VRF's rd/description/enforce_unique with these empty defaults,
         # clobbering values set by the ipam.vrf map.
@@ -340,11 +366,11 @@ def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str,
         ]
         if missing_vrf_rows:
             bulk_orm_apply_simple_models(runner, "ipam.vrf", missing_vrf_rows)
-        vrf_by_name = {
-            vrf.name: vrf
-            for vrf in VRF.objects.filter(name__in=requested_vrf_names)
-            if vrf.name
-        }
+        vrf_by_name = {}
+        for batch in _chunks(list(requested_vrf_names)):
+            for vrf in VRF.objects.filter(name__in=batch):
+                if vrf.name:
+                    vrf_by_name[vrf.name] = vrf
 
     lookup_values = {field_name: [] for field_name in lookup_fields}
     normalized_rows: list[dict[str, Any]] = []
@@ -414,25 +440,20 @@ def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str,
             nullable_lookup_fields=nullable_lookup_fields,
         )
 
-    existing_qs = model.objects.none()
-    if any(lookup_values.values()):
-        query = Q()
-        for field_name, values in lookup_values.items():
-            if values:
-                query |= Q(**{f"{field_name}__in": values})
-        existing_qs = model.objects.filter(query)
-
     existing_by_lookup = {lookup_set: {} for lookup_set in lookup_sets}
-    for obj in existing_qs:
-        for lookup_set in lookup_sets:
-            key = lookup_key_from_object(
-                obj,
-                lookup_set,
-                model_string=model_string,
-                nullable_fields=nullable_lookup_fields,
-            )
-            if key is not None:
-                existing_by_lookup[lookup_set][key] = obj
+    if any(lookup_values.values()):
+        for field_name, values in lookup_values.items():
+            for batch in _chunks(list(values)):
+                for obj in model.objects.filter(**{f"{field_name}__in": batch}):
+                    for lookup_set in lookup_sets:
+                        key = lookup_key_from_object(
+                            obj,
+                            lookup_set,
+                            model_string=model_string,
+                            nullable_fields=nullable_lookup_fields,
+                        )
+                        if key is not None:
+                            existing_by_lookup[lookup_set][key] = obj
 
     create_objects = []
     update_objects = []
@@ -580,8 +601,11 @@ def bulk_orm_apply_macaddress(runner, rows: list[dict[str, Any]]):
     device_names = {
         row.get("device") for row in rows if row.get("device") not in ("", None)
     }
-    interface_names = {
-        row.get("interface") for row in rows if row.get("interface") not in ("", None)
+    interface_pairs = {
+        (row.get("device"), row.get("interface"))
+        for row in rows
+        if row.get("device") not in ("", None)
+        and row.get("interface") not in ("", None)
     }
     mac_values = {
         row.get("mac") or row.get("mac_address")
@@ -589,20 +613,20 @@ def bulk_orm_apply_macaddress(runner, rows: list[dict[str, Any]]):
         if (row.get("mac") or row.get("mac_address")) not in ("", None)
     }
 
-    devices_by_name = {
-        device.name: device for device in Device.objects.filter(name__in=device_names)
-    }
-    interfaces_by_key = {
-        (interface.device.name, interface.name): interface
-        for interface in Interface.objects.select_related("device").filter(
-            device__name__in=device_names,
-            name__in=interface_names,
-        )
-    }
-    macs_by_address = {
-        _canonical_mac(mac.mac_address): mac
-        for mac in MACAddress.objects.filter(mac_address__in=mac_values)
-    }
+    devices_by_name = {}
+    for batch in _chunks(list(device_names)):
+        for device in Device.objects.filter(name__in=batch):
+            devices_by_name[device.name] = device
+    interfaces_by_key = {}
+    # Pair chunking avoids a device/interface Cartesian product across batches.
+    for batch in _chunks(list(interface_pairs)):
+        query = _device_scoped_name_query(batch)
+        for interface in Interface.objects.select_related("device").filter(query):
+            interfaces_by_key[(interface.device.name, interface.name)] = interface
+    macs_by_address = {}
+    for batch in _chunks(list(mac_values)):
+        for mac in MACAddress.objects.filter(mac_address__in=batch):
+            macs_by_address[_canonical_mac(mac.mac_address)] = mac
 
     create_objects = {}
     update_objects = {}
@@ -854,9 +878,10 @@ def bulk_orm_apply_interface(runner, rows: list[dict[str, Any]]):
     ]
 
     device_names = {row.get("device") for row in rows if row.get("device")}
-    devices_by_name = {
-        device.name: device for device in Device.objects.filter(name__in=device_names)
-    }
+    devices_by_name = {}
+    for batch in _chunks(list(device_names)):
+        for device in Device.objects.filter(name__in=batch):
+            devices_by_name[device.name] = device
 
     create_objects = {}
     update_objects = {}
@@ -1101,7 +1126,6 @@ def bulk_orm_apply_device(runner, rows: list[dict[str, Any]]):
     from dcim.models import Site
     from django.db import IntegrityError
     from django.db import transaction
-    from django.db.models import Q
 
     from ..exceptions import ForwardDependencySkipError
     from ..exceptions import ForwardSearchError
@@ -1145,7 +1169,11 @@ def bulk_orm_apply_device(runner, rows: list[dict[str, Any]]):
         return True
 
     def _index(model, slug_values, name_values):
-        objs = model.objects.filter(Q(slug__in=slug_values) | Q(name__in=name_values))
+        objs = []
+        for batch in _chunks(list(slug_values)):
+            objs.extend(model.objects.filter(slug__in=batch))
+        for batch in _chunks(list(name_values)):
+            objs.extend(model.objects.filter(name__in=batch))
         by_slug, by_name = {}, {}
         for obj in objs:
             if obj.slug:
@@ -1166,16 +1194,19 @@ def bulk_orm_apply_device(runner, rows: list[dict[str, Any]]):
     # DeviceType has no `name`; it is keyed by slug and `model`.
     dt_slug_v = {r.get("device_type_slug") for r in rows if r.get("device_type_slug")}
     dt_model_v = {r.get("device_type") for r in rows if r.get("device_type")}
-    dts = DeviceType.objects.filter(Q(slug__in=dt_slug_v) | Q(model__in=dt_model_v))
+    dts = []
+    for batch in _chunks(list(dt_slug_v)):
+        dts.extend(DeviceType.objects.filter(slug__in=batch))
+    for batch in _chunks(list(dt_model_v)):
+        dts.extend(DeviceType.objects.filter(model__in=batch))
     dt_by_slug = {dt.slug: dt for dt in dts if dt.slug}
     dt_by_model = {dt.model: dt for dt in dts if dt.model}
 
-    existing_by_name = {
-        d.name: d
-        for d in Device.objects.filter(
-            name__in={r["name"] for r in rows if r.get("name")}
-        )
-    }
+    existing_by_name = {}
+    existing_device_names = {r["name"] for r in rows if r.get("name")}
+    for batch in _chunks(list(existing_device_names)):
+        for device in Device.objects.filter(name__in=batch):
+            existing_by_name[device.name] = device
 
     create_objects = {}
     update_objects = {}
@@ -1338,16 +1369,21 @@ def bulk_orm_apply_ipaddress(runner, rows: list[dict[str, Any]]):
     ]
 
     device_names = {row.get("device") for row in rows if row.get("device")}
-    interface_names = {row.get("interface") for row in rows if row.get("interface")}
-    devices_by_name = {
-        device.name: device for device in Device.objects.filter(name__in=device_names)
+    interface_pairs = {
+        (row.get("device"), row.get("interface"))
+        for row in rows
+        if row.get("device") and row.get("interface")
     }
-    interfaces_by_key = {
-        (interface.device.name, interface.name): interface
-        for interface in Interface.objects.select_related("device").filter(
-            device__name__in=device_names, name__in=interface_names
-        )
-    }
+    devices_by_name = {}
+    for batch in _chunks(list(device_names)):
+        for device in Device.objects.filter(name__in=batch):
+            devices_by_name[device.name] = device
+    interfaces_by_key = {}
+    # Pair chunking avoids a device/interface Cartesian product across batches.
+    for batch in _chunks(list(interface_pairs)):
+        query = _device_scoped_name_query(batch)
+        for interface in Interface.objects.select_related("device").filter(query):
+            interfaces_by_key[(interface.device.name, interface.name)] = interface
 
     # Pre-ensure VRFs once (the adapter ensures-or-creates per row).
     vrf_by_name = {}
@@ -1371,15 +1407,16 @@ def bulk_orm_apply_ipaddress(runner, rows: list[dict[str, Any]]):
             continue
     existing_by_key = {}
     if host_ips:
-        host_filter = reduce(
-            operator.or_, (Q(address__net_host=host) for host in host_ips)
-        )
-        # order_by("pk") + first-wins so a duplicate global IP (same host, same
-        # VRF) resolves to the lowest pk deterministically.
-        for ip in IPAddress.objects.filter(host_filter).order_by("pk"):
-            key = (str(ip.address.ip), ip.vrf_id)
-            if key not in existing_by_key:
-                existing_by_key[key] = ip
+        for batch in _chunks(list(host_ips)):
+            host_filter = reduce(
+                operator.or_, (Q(address__net_host=host) for host in batch)
+            )
+            # order_by("pk") + first-wins so a duplicate global IP (same host,
+            # same VRF) resolves to the lowest pk deterministically.
+            for ip in IPAddress.objects.filter(host_filter).order_by("pk"):
+                key = (str(ip.address.ip), ip.vrf_id)
+                if key not in existing_by_key:
+                    existing_by_key[key] = ip
 
     create_objects = {}
     update_objects = {}
@@ -1578,6 +1615,7 @@ def bulk_orm_apply_virtualchassis(runner, rows: list[dict[str, Any]]):
     from dcim.models import Device
     from dcim.models import VirtualChassis
     from django.core.exceptions import ValidationError
+    from django.db import IntegrityError
     from django.db import transaction
 
     from ..exceptions import ForwardDependencySkipError
@@ -1627,12 +1665,14 @@ def bulk_orm_apply_virtualchassis(runner, rows: list[dict[str, Any]]):
         runner.events_clearer.clear()
         return True
 
-    existing_vcs = {
-        vc.name: vc for vc in VirtualChassis.objects.filter(name__in=vc_names)
-    }
-    existing_devices = {
-        device.name: device for device in Device.objects.filter(name__in=device_names)
-    }
+    existing_vcs = {}
+    for batch in _chunks(list(vc_names)):
+        for vc in VirtualChassis.objects.filter(name__in=batch):
+            existing_vcs[vc.name] = vc
+    existing_devices = {}
+    for batch in _chunks(list(device_names)):
+        for device in Device.objects.filter(name__in=batch):
+            existing_devices[device.name] = device
     create_vcs = []
     update_vcs = []
     vcs_by_name = dict(existing_vcs)
@@ -1642,41 +1682,100 @@ def bulk_orm_apply_virtualchassis(runner, rows: list[dict[str, Any]]):
         vc = vcs_by_name.get(vc_name)
         if vc is None:
             vc = VirtualChassis(name=vc_name, domain=domain)
-            vc.full_clean()
+            try:
+                vc.full_clean()
+            except Exception as exc:  # noqa: BLE001 - isolate one row
+                runner._record_issue(
+                    "dcim.virtualchassis",
+                    "Virtual-chassis row failed validation; isolated so the "
+                    f"shard continues: {exc}",
+                    row,
+                    exception=exc,
+                )
+                runner.logger.increment_statistics(
+                    "dcim.virtualchassis", outcome="failed"
+                )
+                continue
             create_vcs.append(vc)
             vcs_by_name[vc_name] = vc
             continue
         if vc.domain != domain:
+            previous_domain = vc.domain
             vc.domain = domain
-            vc.full_clean()
+            try:
+                vc.full_clean()
+            except Exception as exc:  # noqa: BLE001 - isolate one row
+                vc.domain = previous_domain
+                if vc in create_vcs:
+                    create_vcs.remove(vc)
+                    vcs_by_name.pop(vc_name, None)
+                if vc in update_vcs:
+                    update_vcs.remove(vc)
+                runner._record_issue(
+                    "dcim.virtualchassis",
+                    "Virtual-chassis row failed validation; isolated so the "
+                    f"shard continues: {exc}",
+                    row,
+                    exception=exc,
+                )
+                runner.logger.increment_statistics(
+                    "dcim.virtualchassis", outcome="failed"
+                )
+                continue
             update_vcs.append(vc)
 
-    with transaction.atomic():
-        if create_vcs:
-            VirtualChassis.objects.bulk_create(create_vcs, batch_size=1000)
-        if update_vcs:
-            VirtualChassis.objects.bulk_update(
-                update_vcs,
-                fields=["domain"],
-                batch_size=1000,
-            )
-
-    vcs_by_name = {
-        vc.name: vc for vc in VirtualChassis.objects.filter(name__in=vc_names)
-    }
-    occupied_positions = {
-        (device.virtual_chassis_id, device.vc_position): device
-        for device in Device.objects.filter(
-            virtual_chassis_id__in=[
-                vc.pk for vc in vcs_by_name.values() if getattr(vc, "pk", None)
-            ],
-            vc_position__isnull=False,
+    try:
+        with transaction.atomic():
+            if create_vcs:
+                VirtualChassis.objects.bulk_create(create_vcs, batch_size=1000)
+            if update_vcs:
+                VirtualChassis.objects.bulk_update(
+                    update_vcs,
+                    fields=["domain"],
+                    batch_size=1000,
+                )
+    except IntegrityError as exc:
+        runner.logger.log_warning(
+            f"Bulk write for dcim.virtualchassis hit a constraint error ({exc}); "
+            "retrying row-by-row to isolate the offending row(s).",
+            obj=runner.sync,
         )
-    }
+        _isolate_bulk_objects(
+            VirtualChassis,
+            create_vcs,
+            "create",
+            runner,
+            "dcim.virtualchassis",
+        )
+        _isolate_bulk_objects(
+            VirtualChassis,
+            update_vcs,
+            "update",
+            runner,
+            "dcim.virtualchassis",
+            fields=["domain"],
+        )
+
+    vcs_by_name = {}
+    for batch in _chunks(list(vc_names)):
+        for vc in VirtualChassis.objects.filter(name__in=batch):
+            vcs_by_name[vc.name] = vc
+    occupied_positions = {}
+    virtual_chassis_ids = [
+        vc.pk for vc in vcs_by_name.values() if getattr(vc, "pk", None)
+    ]
+    for batch in _chunks(virtual_chassis_ids):
+        for device in Device.objects.filter(
+            virtual_chassis_id__in=batch,
+            vc_position__isnull=False,
+        ):
+            occupied_positions[(device.virtual_chassis_id, device.vc_position)] = device
     devices_to_update = []
 
     for row, vc_name in usable_rows:
-        vc = vcs_by_name[vc_name]
+        vc = vcs_by_name.get(vc_name)
+        if vc is None:
+            continue
         if not row.get("device"):
             runner.logger.increment_statistics(
                 "dcim.virtualchassis",
@@ -1781,13 +1880,29 @@ def bulk_orm_apply_virtualchassis(runner, rows: list[dict[str, Any]]):
         )
         runner.events_clearer.increment()
 
-    with transaction.atomic():
-        if devices_to_update:
-            Device.objects.bulk_update(
-                devices_to_update,
-                fields=["virtual_chassis", "vc_position"],
-                batch_size=1000,
-            )
+    try:
+        with transaction.atomic():
+            if devices_to_update:
+                Device.objects.bulk_update(
+                    devices_to_update,
+                    fields=["virtual_chassis", "vc_position"],
+                    batch_size=1000,
+                )
+    except IntegrityError as exc:
+        runner.logger.log_warning(
+            f"Bulk device membership write for dcim.virtualchassis hit a "
+            f"constraint error ({exc}); retrying row-by-row to isolate the "
+            "offending row(s).",
+            obj=runner.sync,
+        )
+        _isolate_bulk_objects(
+            Device,
+            devices_to_update,
+            "update",
+            runner,
+            "dcim.virtualchassis",
+            fields=["virtual_chassis", "vc_position"],
+        )
 
     runner.events_clearer.clear()
     return True
@@ -1866,7 +1981,6 @@ def bulk_orm_apply_tree_models(
     nullable_lookup_fields: tuple[str, ...] = (),
 ):
     from django.db import transaction
-    from django.db.models import Q
 
     from .sync_primitives import _model_field_value_matches
 
@@ -1887,16 +2001,23 @@ def bulk_orm_apply_tree_models(
                 if value not in ("", None):
                     lookup_values[field_name].append(value)
 
-        existing_qs = model.objects.none()
+        existing_objects = {}
         if any(lookup_values.values()):
+            # Single combined-OR prefetch (one SELECT, reused across every row
+            # in the shard). Tree models (devicerole/platform/prefix) are the
+            # lowest-volume apply path, so this is left unchunked on purpose —
+            # the lookup-cache-reuse test pins the single-query behavior.
+            from django.db.models import Q
+
             query = Q()
             for field_name, values in lookup_values.items():
                 if values:
                     query |= Q(**{f"{field_name}__in": values})
-            existing_qs = model.objects.filter(query).order_by("pk")
+            for obj in model.objects.filter(query).order_by("pk"):
+                existing_objects[obj.pk] = obj
 
         lookup_cache = {lookup_set: {} for lookup_set in lookup_sets}
-        for obj in existing_qs:
+        for obj in sorted(existing_objects.values(), key=lambda item: item.pk):
             for lookup_set in lookup_sets:
                 key = lookup_key_from_object(
                     obj,
@@ -1924,8 +2045,22 @@ def bulk_orm_apply_tree_models(
                     break
             if existing is None:
                 obj = model(**values)
-                obj.full_clean()
-                obj.save()
+                pre_row_events = runner.events_clearer.snapshot()
+                try:
+                    with transaction.atomic():
+                        obj.full_clean()
+                        obj.save()
+                except Exception as exc:  # noqa: BLE001 - isolate one row
+                    runner.events_clearer.restore(pre_row_events)
+                    runner._record_issue(
+                        model_string,
+                        "Tree-model row failed; isolated so the shard "
+                        f"continues: {exc}",
+                        values,
+                        exception=exc,
+                    )
+                    runner.logger.increment_statistics(model_string, outcome="failed")
+                    continue
                 runner.logger.increment_statistics(model_string, outcome="applied")
                 runner.events_clearer.increment()
                 for lookup_set in lookup_sets:
@@ -1939,22 +2074,37 @@ def bulk_orm_apply_tree_models(
                         lookup_cache[lookup_set][lookup_key] = obj
                 continue
 
-            changed = False
-            for field_name in fields:
-                if field_name in create_only_fields:
-                    continue
-                incoming = values.get(field_name)
-                if not _model_field_value_matches(
-                    model, existing, field_name, incoming
-                ):
-                    setattr(existing, field_name, incoming)
-                    changed = True
+            pre_row_events = runner.events_clearer.snapshot()
+            try:
+                with transaction.atomic():
+                    changed = False
+                    for field_name in fields:
+                        if field_name in create_only_fields:
+                            continue
+                        incoming = values.get(field_name)
+                        if not _model_field_value_matches(
+                            model, existing, field_name, incoming
+                        ):
+                            setattr(existing, field_name, incoming)
+                            changed = True
+                    if changed:
+                        # Existing objects already satisfy DB constraints; skip
+                        # validate_unique/validate_constraints (both issue DB queries).
+                        existing.clean_fields()
+                        existing.clean()
+                        existing.save()
+            except Exception as exc:  # noqa: BLE001 - isolate one row
+                runner.events_clearer.restore(pre_row_events)
+                existing.refresh_from_db()
+                runner._record_issue(
+                    model_string,
+                    "Tree-model row failed; isolated so the shard " f"continues: {exc}",
+                    values,
+                    exception=exc,
+                )
+                runner.logger.increment_statistics(model_string, outcome="failed")
+                continue
             if changed:
-                # Existing objects already satisfy DB constraints; skip
-                # validate_unique/validate_constraints (both issue DB queries).
-                existing.clean_fields()
-                existing.clean()
-                existing.save()
                 runner.logger.increment_statistics(model_string, outcome="applied")
                 runner.events_clearer.increment()
                 continue
