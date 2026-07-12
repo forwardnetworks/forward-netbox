@@ -1082,12 +1082,22 @@ class DeviceCVETabTest(TestCase):
             role=role,
             site=site,
         )
+        from dcim.models import Platform
+
         CVE = django_apps.get_model("netbox_dlm", "cve")
+        SoftwareVersion = django_apps.get_model("netbox_dlm", "softwareversion")
         Vulnerability = django_apps.get_model("netbox_dlm", "vulnerability")
+        platform = Platform.objects.create(name="cve-plat", slug="cve-plat")
+        # netbox_dlm.Vulnerability requires software_version (not null).
+        software_version = SoftwareVersion.objects.create(
+            platform=platform, version="1.0"
+        )
         cve = CVE.objects.create(
             cve_id="CVE-2026-0001", name="test", severity="critical"
         )
-        Vulnerability.objects.create(device=device, cve=cve)
+        Vulnerability.objects.create(
+            device=device, cve=cve, software_version=software_version
+        )
         admin = get_user_model().objects.create_superuser(
             username="cve_admin", password="TestPassword123!"
         )
