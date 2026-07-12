@@ -310,15 +310,20 @@ def sync_forwardsync(job, *args, **kwargs):
         if sync.interval and not kwargs.get("adhoc"):
             new_scheduled_time = local_now() + timedelta(minutes=sync.interval)
             sync.refresh_from_db()
+            from .utilities.sync_facade import sync_run_job_names
+
             should_skip = not sync.scheduled or (
                 sync.scheduled
                 and sync.scheduled > job.started
+                # Name-scoped to sync RUNS: standing-schedule rows are
+                # permanently SCHEDULED and would satisfy a status-only check.
                 and sync.jobs.filter(
                     status__in=[
                         JobStatusChoices.STATUS_SCHEDULED,
                         JobStatusChoices.STATUS_PENDING,
                         JobStatusChoices.STATUS_RUNNING,
-                    ]
+                    ],
+                    name__in=sync_run_job_names(sync),
                 )
                 .exclude(pk=job.pk)
                 .exists()
@@ -416,6 +421,10 @@ def prune_forward_orphans(job, *args, **kwargs):
             # PROTECT-ing optional-plugin rows (e.g. netbox_routing BGP peers)
             # swept so the device cascade could proceed.
             "pruned_dependent_rows": device_result.get("pruned_dependent_rows", {}),
+            # netbox_routing rows whose GenericFKs pointed at the pruned
+            # devices, swept post-delete (they never PROTECT, so they would
+            # otherwise dangle silently).
+            "pruned_dangling_rows": device_result.get("pruned_dangling_rows", {}),
         }
         job.save(update_fields=["data"])
         job.terminate()
@@ -831,6 +840,50 @@ def _fail_nonretryable_merging_branch(ingestion, message):
     return True
 
 
+def _skip_if_immediate_equivalent_active(job, per_sync_suffix):
+    """Standing-schedule occurrence overlap guard (reverse direction of
+    enqueue_button_job's fixed-name check): if an immediate per-sync-named
+    equivalent is already pending/running, skip this occurrence instead of
+    stacking a duplicate heavy run. Returns True when skipped."""
+    sync = ForwardSync.objects.filter(pk=job.object_id).first()
+    if sync is None:
+        # Sync deleted out from under the schedule: record why and stop the
+        # recurrence (handle()'s finally re-enqueues only when job.interval
+        # is set on this in-memory instance).
+        job.data = {"skipped": "sync_deleted"}
+        job.interval = None
+        job.save(update_fields=["data", "interval"])
+        logger.warning(
+            "Stopping standing '%s' schedule: bound ForwardSync %s no longer exists.",
+            job.name,
+            job.object_id,
+        )
+        return True
+    duplicate = (
+        sync.jobs.filter(
+            name__startswith=f"{sync.name} - {per_sync_suffix}",
+            status__in=[
+                JobStatusChoices.STATUS_PENDING,
+                JobStatusChoices.STATUS_RUNNING,
+            ],
+        )
+        .exclude(pk=job.pk)
+        .first()
+    )
+    if duplicate is not None:
+        job.data = {"skipped": "immediate_equivalent_active", "job_id": duplicate.pk}
+        job.save(update_fields=["data"])
+        logger.info(
+            "Skipping standing '%s' occurrence for sync %s: job %s is already %s.",
+            job.name,
+            sync.pk,
+            duplicate.pk,
+            duplicate.status,
+        )
+        return True
+    return False
+
+
 class DependencyPreviewJob(JobRunner):
     """Recurring-capable dependency preview.
 
@@ -845,6 +898,8 @@ class DependencyPreviewJob(JobRunner):
         name = "dependency preview"
 
     def run(self, *args, **kwargs):
+        if _skip_if_immediate_equivalent_active(self.job, "dependency preview"):
+            return
         _dependency_preview_work(self.job)
 
 
@@ -855,4 +910,6 @@ class ValidationJob(JobRunner):
         name = "validation"
 
     def run(self, *args, **kwargs):
+        if _skip_if_immediate_equivalent_active(self.job, "validation"):
+            return
         _validate_forwardsync_work(self.job)

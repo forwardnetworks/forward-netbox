@@ -1,7 +1,10 @@
 from core.choices import JobStatusChoices
 from core.exceptions import SyncError
 from core.models import Job
+from django.db.models import Q
 from django.utils.module_loading import import_string
+from django_pglocks import advisory_lock
+from netbox.constants import ADVISORY_LOCK_KEYS
 
 from ..choices import forward_configured_models
 from ..choices import FORWARD_OPTIONAL_MODELS
@@ -145,6 +148,17 @@ def get_model_strings(sync):
     return enabled_models(sync)
 
 
+def sync_run_job_names(sync):
+    """The two job names that represent an actual sync RUN for this sync.
+
+    Gates that ask "is another sync run queued/running?" must match on these
+    names only: since 2.5.6 a sync can also carry permanently-SCHEDULED
+    standing-schedule rows (fixed JobRunner names "dependency preview" /
+    "validation") plus per-sync button jobs, and a status-only filter would
+    treat those as an active sync run forever."""
+    return (f"{sync.name} - adhoc", f"{sync.name} - scheduled")
+
+
 def enqueue_sync_job(sync, adhoc=False, user=None):
     if sync.is_waiting_for_branch_merge:
         raise SyncError(
@@ -187,15 +201,26 @@ def enqueue_validation_job(
             schedule_at=schedule_at,
             interval=interval,
         )
-    return Job.enqueue(
-        import_string("forward_netbox.jobs.validate_forwardsync"),
-        instance=sync,
-        user=user,
-        name=f"{sync.name} - validation",
-        adhoc=adhoc,
-        schedule_at=None,
-        interval=None,
-    )
+    with advisory_lock(ADVISORY_LOCK_KEYS["job-schedules"]):
+        active = (
+            sync.jobs.filter(
+                Q(name__startswith=f"{sync.name} - validation") | Q(name="validation"),
+                status__in=_ACTIVE_JOB_STATUSES,
+            )
+            .order_by("pk")
+            .first()
+        )
+        if active is not None:
+            raise JobAlreadyActive(active)
+        return Job.enqueue(
+            import_string("forward_netbox.jobs.validate_forwardsync"),
+            instance=sync,
+            user=user,
+            name=f"{sync.name} - validation",
+            adhoc=adhoc,
+            schedule_at=None,
+            interval=None,
+        )
 
 
 def enqueue_preview_schedule(sync, user=None, schedule_at=None, interval=None):
@@ -275,18 +300,29 @@ def enqueue_button_job(sync, kind, user, *, name_suffix_extra="", during_sync_ok
     """
     dotted_path, suffix, _permission = BUTTON_JOB_SPECS[kind]
     name = f"{sync.name} - {suffix}"
-    active = (
-        sync.jobs.filter(name__startswith=name, status__in=_ACTIVE_JOB_STATUSES)
-        .order_by("pk")
-        .first()
-    )
-    if active is not None:
-        raise JobAlreadyActive(active)
-    if kind == "prune_orphans" and not during_sync_ok:
-        for run_suffix in ("adhoc", "scheduled"):
+    # Same lock core enqueue_once takes: closes the check-then-enqueue race
+    # between two concurrent POSTs (and against the scheduler creating a
+    # standing occurrence at the same moment).
+    with advisory_lock(ADVISORY_LOCK_KEYS["job-schedules"]):
+        # Two name shapes count as "the same job already active": the per-sync
+        # immediate names (prefix match so " (auto)" variants block each
+        # other), and the fixed JobRunner name used by standing-schedule
+        # occurrences (exact match; the permanently-SCHEDULED schedule row
+        # itself must NOT block, so the status filter stays pending/running).
+        active = (
+            sync.jobs.filter(
+                Q(name__startswith=name) | Q(name=suffix),
+                status__in=_ACTIVE_JOB_STATUSES,
+            )
+            .order_by("pk")
+            .first()
+        )
+        if active is not None:
+            raise JobAlreadyActive(active)
+        if kind == "prune_orphans" and not during_sync_ok:
             running_sync = (
                 sync.jobs.filter(
-                    name=f"{sync.name} - {run_suffix}",
+                    name__in=sync_run_job_names(sync),
                     status__in=_ACTIVE_JOB_STATUSES,
                 )
                 .order_by("pk")
@@ -294,9 +330,9 @@ def enqueue_button_job(sync, kind, user, *, name_suffix_extra="", during_sync_ok
             )
             if running_sync is not None:
                 raise JobAlreadyActive(running_sync)
-    return Job.enqueue(
-        import_string(dotted_path),
-        instance=sync,
-        user=user,
-        name=f"{name}{name_suffix_extra}",
-    )
+        return Job.enqueue(
+            import_string(dotted_path),
+            instance=sync,
+            user=user,
+            name=f"{name}{name_suffix_extra}",
+        )

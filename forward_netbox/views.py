@@ -870,8 +870,14 @@ class ForwardStartValidationView(BaseObjectView):
         return redirect(sync.get_absolute_url())
 
     def post(self, request, pk):
+        from .utilities.sync_facade import JobAlreadyActive
+
         sync = get_object_or_404(self.queryset, pk=pk)
-        job = sync.enqueue_validation_job(user=request.user, adhoc=True)
+        try:
+            job = sync.enqueue_validation_job(user=request.user, adhoc=True)
+        except JobAlreadyActive as exc:
+            messages.warning(request, str(exc))
+            return redirect(sync.get_absolute_url())
         messages.success(request, f"Queued job #{job.pk} to validate {sync}.")
         return redirect(sync.get_absolute_url())
 

@@ -676,11 +676,13 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
             status=status.HTTP_202_ACCEPTED,
         )
 
-    def _parse_schedule(self, request):
+    def _parse_schedule(self, request, min_interval=1):
         """Validate optional schedule_at/interval from the request body.
 
         Returns (schedule_at, interval) — both None means immediate run."""
-        serializer = JobScheduleRequestSerializer(data=request.data)
+        serializer = JobScheduleRequestSerializer(
+            data=request.data, min_interval=min_interval
+        )
         serializer.is_valid(raise_exception=True)
         return (
             serializer.validated_data.get("schedule_at"),
@@ -700,12 +702,17 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
             )
         sync = self.get_object()
         schedule_at, interval = self._parse_schedule(request)
-        job = sync.enqueue_validation_job(
-            user=request.user,
-            adhoc=True,
-            schedule_at=schedule_at,
-            interval=interval,
-        )
+        from ..utilities.sync_facade import JobAlreadyActive
+
+        try:
+            job = sync.enqueue_validation_job(
+                user=request.user,
+                adhoc=True,
+                schedule_at=schedule_at,
+                interval=interval,
+            )
+        except JobAlreadyActive as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
         return Response(
             JobSerializer(job, context={"request": request}).data, status=201
         )
@@ -723,6 +730,22 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
             raise PermissionDenied(
                 f"This user does not have the `{permission}` permission."
             )
+        # Only validate and dependency-preview accept schedule parameters;
+        # silently ignoring them here would 201 a one-shot run the caller
+        # believes is a standing schedule.
+        if isinstance(request.data, dict) and (
+            request.data.get("schedule_at") or request.data.get("interval")
+        ):
+            return Response(
+                {
+                    "detail": (
+                        "This action does not support scheduling; only the "
+                        "validate and dependency-preview actions accept "
+                        "schedule_at/interval."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         sync = self.get_object()
         try:
             job = enqueue_button_job(sync, kind, request.user)
@@ -739,7 +762,9 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
     )
     @action(detail=True, methods=["post"], url_path="dependency-preview")
     def dependency_preview(self, request, pk):
-        schedule_at, interval = self._parse_schedule(request)
+        # The preview is a full live dry-run against Forward; a sub-hourly
+        # standing schedule degenerates to back-to-back runs on large fabrics.
+        schedule_at, interval = self._parse_schedule(request, min_interval=60)
         if schedule_at or interval:
             # Standing schedule: fixed JobRunner name + enqueue_once dedup
             # (one schedule per sync). Immediate runs below keep the legacy
