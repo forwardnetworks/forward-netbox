@@ -149,6 +149,18 @@ dependency plan (a heavy live dry-run). When it finishes, **View Last Preview**
 renders the cached result and `?format=json` downloads it. The preview never runs
 the dry-run in the web request, so it does not time out on large fabrics.
 
+### Auditing dangling netbox-routing rows
+
+The post-prune sweep only covers devices the plugin itself pruned. Devices
+deleted by hand (or other tooling) can still leave netbox-routing BGP rows
+whose device references dangle. Read-only report:
+
+```
+python manage.py forward_routing_dangling_audit [--fail-on-dangling]
+```
+
+Skips cleanly when netbox-routing is not installed.
+
 ## Device CVE tab (netbox-dlm)
 
 With the netbox-dlm plugin installed and the 2.5.2 **CVE / Vulnerability**
