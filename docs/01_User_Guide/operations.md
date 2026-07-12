@@ -149,6 +149,46 @@ dependency plan (a heavy live dry-run). When it finishes, **View Last Preview**
 renders the cached result and `?format=json` downloads it. The preview never runs
 the dry-run in the web request, so it does not time out on large fabrics.
 
+### Recovering a sync wedged by a dead worker
+
+If an RQ worker is hard-killed mid-merge, the sync is left `MERGING` (and its
+branch `MERGING`) forever — the `forward_stuck_job_alert` command only
+*detects* this. The companion command recovers it:
+
+```
+python manage.py forward_stuck_job_recover            # classify + report only
+python manage.py forward_stuck_job_recover --apply    # act
+```
+
+A wedged `MERGING` sync whose worker is dead (no live RQ execution, past a
+15-minute grace) is re-enqueued for merge — idempotent, resuming the unmerged
+suffix — up to 4 attempts, after which it is failed with an issue recorded. A
+dead sync-run is failed cleanly so its schedule resumes. Never touches a
+live merge or a `ready_to_merge` (operator review) sync. Cron `--apply` for
+hands-off recovery.
+
+### Auditing dangling netbox-routing rows
+
+The post-prune sweep only covers devices the plugin itself pruned. Devices
+deleted by hand (or other tooling) can still leave netbox-routing BGP rows
+whose device references dangle. Read-only report:
+
+```
+python manage.py forward_routing_dangling_audit [--fail-on-dangling]
+```
+
+Skips cleanly when netbox-routing is not installed.
+
+## Device CVE tab (netbox-dlm)
+
+With the netbox-dlm plugin installed and the 2.5.2 **CVE / Vulnerability**
+maps enabled, every device with findings gets a **CVEs** tab on its detail
+page: severity totals plus one row per CVE (id, severity, affected software
+version, description) — the actual CVEs behind the exposure count, no
+Forward round-trip. The tab hides itself when a device has no findings and
+is not registered at all on core installs without the plugin. Rows refresh
+with each sync run that has the Vulnerability map enabled.
+
 ## Running a sync
 
 - **Run** / **Adhoc Ingestion** enqueues the sync job.
@@ -346,6 +386,26 @@ mirror. Rollout (branch, push, tag, GitHub release, PyPI) only happens with
 `--publish`/`--finish`, after GitHub CI is green. Pushing the `vX.Y.Z` tag
 triggers the Trusted-Publishing workflow (`.github/workflows/release.yml`), which
 builds and uploads to PyPI over OIDC with no stored token.
+
+## Large-fabric fetch safety
+
+By default a workload's Forward fetch is bounded only by counts (HTTP request
+timeout, async poll count, pagination page/row caps). On very large fabrics a
+single pathological shard can still consume hours while the sync sits in the
+planning phase. Set an optional per-workload **wall-clock** budget on the
+source parameters:
+
+```
+workload_fetch_timeout_seconds: 10800   # 3 hours; 0 (default) = disabled
+```
+
+When set, one monotonic deadline spans all retries and the diff→full fallback
+for that workload; on breach the fetch stops cooperatively (mid-poll or
+between pages), the model is recorded as failed with a `fetch_budget_exceeded`
+diagnostic (non-destructive — no deletes/prune run for a model that never
+fetched), and the sync proceeds with the other models. Leave it at 0 unless a
+sync is hanging; size it above your largest legitimate model fetch (2M-row
+IPAM models are real at scale).
 
 ## Security and deployment hardening
 

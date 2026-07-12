@@ -1,4 +1,6 @@
 import hashlib
+import logging
+import math
 from dataclasses import dataclass
 from dataclasses import field
 
@@ -10,6 +12,8 @@ from .density_learning import normalize_density_profile
 from .sync_contracts import canonical_cable_endpoint_identity
 from .sync_contracts import default_coalesce_fields_for_model
 from .sync_contracts import row_coalesce_field_is_complete
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_CHANGES_PER_BRANCH = 10000
 BRANCH_RUN_STATE_PARAMETER = "_branch_run"
@@ -514,6 +518,7 @@ class BranchWorkload:
     query_parameters: dict = field(default_factory=dict)
     fetch_column_filters: list = field(default_factory=list)
     operation: str = BRANCH_PLAN_OPERATION_MIXED
+    shard_keys: tuple[str, ...] = ()
 
     @property
     def estimated_changes(self):
@@ -591,6 +596,108 @@ def row_shard_key(model_string, row, coalesce_fields):
 
 def shard_key_digest(shard_key):
     return hashlib.sha256(str(shard_key).encode("utf-8")).hexdigest()
+
+
+def split_workload(
+    workload, *, max_row_budget, oversized_bucket_policy="warn"
+) -> list[BranchWorkload]:
+    if max_row_budget < 1:
+        raise ValueError("`max_row_budget` must be at least 1.")
+    if oversized_bucket_policy not in {"warn", "fail"}:
+        raise ValueError("`oversized_bucket_policy` must be `warn` or `fail`.")
+    if workload.estimated_changes <= max_row_budget:
+        return [workload]
+
+    buckets = []
+    for row_kind, rows in (
+        ("upsert_rows", workload.upsert_rows),
+        ("delete_rows", workload.delete_rows),
+    ):
+        grouped = {}
+        for index, row in enumerate(rows):
+            try:
+                key = row_shard_key(
+                    workload.model_string, row, workload.coalesce_fields
+                )
+            except ForwardQueryError:
+                key = f"row:{index}"
+            grouped.setdefault(key, []).append(row)
+        for key, bucket_rows in grouped.items():
+            buckets.append((key, row_kind, bucket_rows))
+
+    ordered_buckets = sorted(
+        buckets,
+        key=lambda item: (-len(item[2]), shard_key_digest(item[0]), item[1]),
+    )
+    branch_count = math.ceil(workload.estimated_changes / max_row_budget)
+    packed = [
+        {"upsert_rows": [], "delete_rows": [], "shard_keys": [], "oversized": False}
+        for _ in range(branch_count)
+    ]
+    for key, row_kind, bucket_rows in ordered_buckets:
+        bucket_size = len(bucket_rows)
+        is_oversized = bucket_size > max_row_budget
+        if is_oversized:
+            message = (
+                f"`{workload.model_string}` shard bucket `{key}` has {bucket_size} "
+                f"rows, exceeding the branch budget of {max_row_budget}."
+            )
+            if oversized_bucket_policy == "fail":
+                raise ForwardQueryError(message)
+            logger.warning(message)
+
+        candidate = None
+        if not is_oversized:
+            for chunk in sorted(
+                packed,
+                key=lambda item: len(item["upsert_rows"]) + len(item["delete_rows"]),
+            ):
+                chunk_size = len(chunk["upsert_rows"]) + len(chunk["delete_rows"])
+                if (
+                    not chunk["oversized"]
+                    and chunk_size + bucket_size <= max_row_budget
+                ):
+                    candidate = chunk
+                    break
+        if candidate is None:
+            candidate = {
+                "upsert_rows": [],
+                "delete_rows": [],
+                "shard_keys": [],
+                "oversized": is_oversized,
+            }
+            packed.append(candidate)
+        candidate[row_kind].extend(bucket_rows)
+        candidate["shard_keys"].append(key)
+        candidate["oversized"] = candidate["oversized"] or is_oversized
+
+    return [
+        BranchWorkload(
+            model_string=workload.model_string,
+            label=workload.label,
+            upsert_rows=chunk["upsert_rows"],
+            delete_rows=chunk["delete_rows"],
+            sync_mode=workload.sync_mode,
+            coalesce_fields=workload.coalesce_fields,
+            query_name=workload.query_name,
+            execution_mode=workload.execution_mode,
+            execution_value=workload.execution_value,
+            query_runtime_ms=workload.query_runtime_ms,
+            baseline_snapshot_id=workload.baseline_snapshot_id,
+            apply_engine=workload.apply_engine,
+            apply_engine_reason=workload.apply_engine_reason,
+            apply_engine_decision=workload.apply_engine_decision,
+            fetch_mode=workload.fetch_mode,
+            fetch_key_family=workload.fetch_key_family,
+            fetch_parameters=workload.fetch_parameters,
+            query_parameters=workload.query_parameters,
+            fetch_column_filters=workload.fetch_column_filters,
+            operation=workload.operation,
+            shard_keys=tuple(sorted(chunk["shard_keys"])),
+        )
+        for chunk in packed
+        if chunk["upsert_rows"] or chunk["delete_rows"]
+    ]
 
 
 def shard_fetch_contract(model_string, shard_keys):
@@ -813,17 +920,43 @@ def _workload_for_operation(workload, *, upsert_rows, delete_rows, operation):
     )
 
 
-def build_branch_plan(workloads):
-    """One branch-plan item per dependency-phased workload.
+def build_branch_plan(
+    workloads, *, max_changes_per_branch=None, oversized_bucket_policy="warn"
+):
+    """Build dependency-phased plan items, optionally split by row budget.
 
-    2.0: single-branch ingest applies every workload in one branch, so the plan
-    is simply the dependency-ordered workloads (no size-based sharding).
+    The default remains one item per workload for 2.0 compatibility. A caller
+    must supply a budget to opt into deterministic shard-key bucket packing.
     """
+    phased_workloads = dependency_phased_workloads(workloads)
+    if max_changes_per_branch is None:
+        plan_workloads = [(workload, workload.label) for workload in phased_workloads]
+    else:
+        plan_workloads = []
+        for workload in phased_workloads:
+            chunks = split_workload(
+                workload,
+                max_row_budget=max_changes_per_branch,
+                oversized_bucket_policy=oversized_bucket_policy,
+            )
+            chunk_count = len(chunks)
+            plan_workloads.extend(
+                (
+                    chunk,
+                    (
+                        f"{chunk.label} shard {chunk_index}/{chunk_count}"
+                        if chunk_count > 1
+                        else chunk.label
+                    ),
+                )
+                for chunk_index, chunk in enumerate(chunks, start=1)
+            )
+
     return [
         BranchPlanItem(
             index=index,
             model_string=workload.model_string,
-            label=workload.label,
+            label=label,
             estimated_changes=workload.estimated_changes,
             upsert_rows=workload.upsert_rows,
             delete_rows=workload.delete_rows,
@@ -843,10 +976,9 @@ def build_branch_plan(workloads):
             query_parameters=workload.query_parameters,
             fetch_column_filters=workload.fetch_column_filters,
             operation=workload.operation,
+            shard_keys=workload.shard_keys,
         )
-        for index, workload in enumerate(
-            dependency_phased_workloads(workloads), start=1
-        )
+        for index, (workload, label) in enumerate(plan_workloads, start=1)
     ]
 
 

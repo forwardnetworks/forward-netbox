@@ -108,7 +108,13 @@ def run_item_in_branch(executor, item, context, ingestion, branch, *, total_plan
             "model_results",
         ],
     )
-    executor.logger.init_statistics(item.model_string, 0)
+    initialized_models = getattr(executor, "_statistics_initialized_models", None)
+    if initialized_models is None:
+        initialized_models = set()
+        executor._statistics_initialized_models = initialized_models
+    if item.model_string not in initialized_models:
+        executor.logger.init_statistics(item.model_string, 0)
+        initialized_models.add(item.model_string)
     executor.logger.add_statistics_total(item.model_string, item.estimated_changes)
     touch_branch_run_progress(
         executor.sync,
