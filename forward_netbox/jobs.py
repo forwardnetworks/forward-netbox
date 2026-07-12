@@ -395,6 +395,9 @@ def prune_forward_orphans(job, *args, **kwargs):
             "pruned_device_count": device_result.get("pruned_device_count", 0),
             "out_of_scope_sample": device_result.get("out_of_scope_sample", []),
             "pruned_site_count": site_result.get("pruned_site_count", 0),
+            # PROTECT-ing optional-plugin rows (e.g. netbox_routing BGP peers)
+            # swept so the device cascade could proceed.
+            "pruned_dependent_rows": device_result.get("pruned_dependent_rows", {}),
         }
         job.save(update_fields=["data"])
         job.terminate()

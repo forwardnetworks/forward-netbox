@@ -156,6 +156,49 @@ the dry-run in the web request, so it does not time out on large fabrics.
 - **Export Support Bundle** / **Export ZIP** collects diagnostics (live source
   health, query drift, data-file checks) for support.
 
+## Push-triggered sync (webhooks)
+
+Instead of polling on a schedule, an external system (e.g. a Forward webhook
+that fires when a new snapshot finishes processing) can push a sync run.
+
+**Preferred — the NetBox-native API path.** If the sender can set an
+`Authorization` header, use the standard token-authenticated action; it gets
+NetBox token auth, object permissions, and job provenance for free:
+
+```bash
+curl -X POST https://netbox.example.com/api/plugins/forward/sync/<id>/sync/ \
+  -H "Authorization: Token <api-token>"
+```
+
+Create a dedicated service account with the `forward_netbox.run_forwardsync`
+permission and a write-enabled token for this.
+
+**Fallback — the shared-secret webhook endpoint.** For senders that cannot set
+an `Authorization` header, set **Webhook secret** on the sync (Execution
+section of the sync form; empty disables the endpoint), then:
+
+```bash
+curl -X POST https://netbox.example.com/api/plugins/forward/sync/<id>/webhook/ \
+  -H "X-Forward-Webhook-Secret: <secret>"
+# or, only if the sender cannot set ANY header (the secret will appear in
+# access logs — prefer the header):
+#   POST .../webhook/?secret=<secret>
+```
+
+Behavior:
+
+- `202 {"status": "queued", "job_id": N}` — sync enqueued (attributed to the
+  sync's configured user).
+- `202 {"status": "already_running"}` — a run is already queued or running;
+  nothing is re-queued, so webhook retries stay idempotent.
+- `403` — wrong or missing secret, no secret configured, or unknown sync. The
+  response is deliberately identical for all failure causes.
+- `409` — the sync cannot start (e.g. waiting for a branch merge).
+
+Use a long random secret and rotate it from the sync form. Combined with
+**Skip scheduled runs on an unchanged snapshot**, a webhook per Forward
+processing event keeps NetBox current without any polling schedule.
+
 ## Apply engine
 
 Models apply through either the per-row **adapter** or the batched **bulk-ORM**

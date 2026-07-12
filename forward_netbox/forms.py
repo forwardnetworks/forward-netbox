@@ -1190,6 +1190,18 @@ class ForwardSyncForm(NetBoxModelForm):
         label="Drift policy",
         help_text="Optional validation policy applied before branch creation.",
     )
+    webhook_secret = forms.CharField(
+        required=False,
+        label="Webhook secret",
+        widget=forms.PasswordInput(render_value=True),
+        help_text=(
+            "Shared secret for the push-triggered sync endpoint "
+            "(POST /api/plugins/forward/sync/<id>/webhook/ with the "
+            "X-Forward-Webhook-Secret header, or ?secret= for senders that "
+            "cannot set headers). Leave empty to disable the webhook endpoint. "
+            "Use a long random value; an already-running sync is not re-queued."
+        ),
+    )
 
     class Meta:
         model = ForwardSync
@@ -1225,6 +1237,7 @@ class ForwardSyncForm(NetBoxModelForm):
             "diff_fallback_mode",
             ForwardDiffFallbackModeChoices.ALLOW_FALLBACK,
         )
+        self.fields["webhook_secret"].initial = parameters.get("webhook_secret", "")
         selected_snapshot_id = (
             self.data.get("snapshot_id")
             if self.is_bound
@@ -1260,6 +1273,7 @@ class ForwardSyncForm(NetBoxModelForm):
                 "diff_fallback_mode",
                 "scheduled",
                 "interval",
+                "webhook_secret",
                 name="Execution",
             ),
             FieldSet("tags", name="Tags"),
@@ -1314,6 +1328,7 @@ class ForwardSyncForm(NetBoxModelForm):
             ),
             "diff_fallback_mode": cleaned.get("diff_fallback_mode")
             or ForwardDiffFallbackModeChoices.ALLOW_FALLBACK,
+            "webhook_secret": str(cleaned.get("webhook_secret") or ""),
         }
         for model_string in forward_configured_models():
             parameters[model_string] = cleaned.get(model_string, False)
@@ -1339,6 +1354,7 @@ class ForwardSyncForm(NetBoxModelForm):
             ),
             "diff_fallback_mode": self.cleaned_data.get("diff_fallback_mode")
             or ForwardDiffFallbackModeChoices.ALLOW_FALLBACK,
+            "webhook_secret": str(self.cleaned_data.get("webhook_secret") or ""),
         }
         for model_string in forward_configured_models():
             parameters[model_string] = self.cleaned_data.get(model_string, False)
