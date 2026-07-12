@@ -134,6 +134,23 @@
             <th scope="row">{% trans "Interval" %}</th>
             <td>{{ object.interval|placeholder }}</td>
           </tr>
+          {% for schedule in standing_schedules %}
+          <tr>
+            <th scope="row">{{ schedule.label }} {% trans "schedule" %}</th>
+            <td>
+              {% if schedule.interval %}
+                {% trans "every" %} {{ schedule.interval }} {% trans "minutes" %}
+                {% if schedule.next_run %}
+                  &mdash; {% trans "next" %} {{ schedule.next_run }}
+                {% elif not schedule.job %}
+                  &mdash; <span class="text-warning">{% trans "no queued occurrence (self-heals on next sync run)" %}</span>
+                {% endif %}
+              {% else %}
+                <span class="text-muted">{% trans "orphaned schedule row (blank the field on the sync form to clear)" %}</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
           <tr>
             <th scope="row">{% trans "User" %}</th>
             <td>{{ object.user|placeholder }}</td>

@@ -652,7 +652,42 @@ class ForwardSyncView(generic.ObjectView):
         }
         if instance.last_ingestion:
             data.update(instance.last_ingestion.get_statistics())
+        data["standing_schedules"] = self._standing_schedules(instance)
         return data
+
+    @staticmethod
+    def _standing_schedules(instance):
+        from core.choices import JobStatusChoices
+
+        from .utilities.sync_facade import STANDING_SCHEDULE_JOB_NAMES
+        from .utilities.sync_facade import STANDING_SCHEDULE_PARAM_KEYS
+
+        parameters = instance.parameters or {}
+        rows = []
+        labels = {
+            "validation": "Validation",
+            "dependency_preview": "Dependency preview",
+        }
+        for kind, key in STANDING_SCHEDULE_PARAM_KEYS.items():
+            interval = int(parameters.get(key) or 0)
+            job = (
+                instance.jobs.filter(
+                    name=STANDING_SCHEDULE_JOB_NAMES[kind],
+                    status__in=JobStatusChoices.ENQUEUED_STATE_CHOICES,
+                )
+                .order_by("pk")
+                .first()
+            )
+            if interval or job:
+                rows.append(
+                    {
+                        "label": labels[kind],
+                        "interval": interval,
+                        "job": job,
+                        "next_run": getattr(job, "scheduled", None),
+                    }
+                )
+        return rows
 
 
 @register_model_view(
