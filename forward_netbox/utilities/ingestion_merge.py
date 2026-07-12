@@ -190,6 +190,13 @@ def sync_merge_ingestion(ingestion, *, mark_baseline_ready=None, remove_branch=T
         last_synced=forwardsync.last_synced,
     )
     if forwardsync.status == ForwardSyncStatusChoices.COMPLETED:
+        # Merge succeeded: clear any stuck-recovery retry bookkeeping so a
+        # future wedge starts from a fresh budget.
+        if (forwardsync.parameters or {}).get("stuck_recovery"):
+            cleared = dict(forwardsync.parameters or {})
+            cleared.pop("stuck_recovery", None)
+            forwardsync.parameters = cleared
+            ForwardSync.objects.filter(pk=forwardsync.pk).update(parameters=cleared)
         decision = latest_processed_catchup_decision(
             forwardsync,
             current_snapshot_id=getattr(ingestion, "snapshot_id", ""),

@@ -372,6 +372,7 @@ def clean_forward_sync(sync):
             "preview_schedule_interval",
             "enable_branch_budget_split",
             "branch_budget_enforcement",
+            "stuck_recovery",
             # Post-sync overlay toggles (opt-in, except vsys parent-link which is
             # default-on and opts OUT with auto_link_vsys_parents=False).
             "auto_tag_backfilled",
