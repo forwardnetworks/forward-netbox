@@ -45,6 +45,7 @@ def clean_forward_source(source):
             "nqe_identical_full_page_streak_limit",
             "nqe_async_poll_interval_seconds",
             "nqe_async_max_polls",
+            "workload_fetch_timeout_seconds",
             "query_preflight_enabled",
             "query_preflight_row_limit",
             "query_diagnostics_enabled",
@@ -172,6 +173,18 @@ def clean_forward_source(source):
             parameters["api_requests_per_minute"] = (
                 DEFAULT_FORWARD_SAAS_API_REQUESTS_PER_MINUTE
             )
+    if parameters.get("workload_fetch_timeout_seconds") is not None:
+        try:
+            wf_timeout = int(parameters.get("workload_fetch_timeout_seconds"))
+        except (TypeError, ValueError):
+            raise ValidationError(
+                _("`workload_fetch_timeout_seconds` must be an integer.")
+            )
+        if wf_timeout < 0:
+            raise ValidationError(
+                _("`workload_fetch_timeout_seconds` must be >= 0 (0 disables).")
+            )
+        parameters["workload_fetch_timeout_seconds"] = wf_timeout
     if parameters.get("nqe_fetch_all_max_pages") is not None:
         try:
             nqe_fetch_all_max_pages = int(parameters.get("nqe_fetch_all_max_pages"))
@@ -357,6 +370,8 @@ def clean_forward_sync(sync):
             "webhook_secret",
             "validation_schedule_interval",
             "preview_schedule_interval",
+            "enable_branch_budget_split",
+            "branch_budget_enforcement",
             # Post-sync overlay toggles (opt-in, except vsys parent-link which is
             # default-on and opts OUT with auto_link_vsys_parents=False).
             "auto_tag_backfilled",
