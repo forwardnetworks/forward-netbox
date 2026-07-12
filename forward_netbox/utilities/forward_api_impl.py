@@ -10,6 +10,7 @@ import httpx
 
 from ..exceptions import ForwardClientError
 from ..exceptions import ForwardConnectivityError
+from ..exceptions import ForwardFetchBudgetExceededError
 
 try:
     from utilities.proxy import resolve_proxies
@@ -1675,10 +1676,16 @@ class ForwardClient:
         )
         return response.json() or {}
 
-    def _wait_for_nqe_async_completion(self, *, network_id, execution_key, status):
+    def _wait_for_nqe_async_completion(
+        self, *, network_id, execution_key, status, deadline=None
+    ):
         current_status = status or {}
         poll_ceiling = self.nqe_async_poll_interval_seconds
         for poll_index in range(self.nqe_async_max_polls + 1):
+            if deadline is not None and time.monotonic() >= deadline:
+                raise ForwardFetchBudgetExceededError(
+                    "Forward NQE fetch exceeded the per-workload wall-clock budget"
+                )
             state = self._nqe_async_status_state(current_status)
             outcome = self._nqe_async_outcome(current_status)
             if state == "COMPLETED":
@@ -1744,6 +1751,7 @@ class ForwardClient:
         item_format="JSON",
         column_filters=None,
         fetch_all=False,
+        deadline=None,
     ):
         if bool(query) == bool(query_id):
             raise ForwardClientError(
@@ -1771,6 +1779,7 @@ class ForwardClient:
             offset=offset,
             column_filters=column_filters,
             fetch_all=fetch_all,
+            deadline=deadline,
         )
 
     def _run_nqe_query_async(
@@ -1786,6 +1795,7 @@ class ForwardClient:
         offset=0,
         column_filters=None,
         fetch_all=False,
+        deadline=None,
     ):
         self._record_api_usage("nqe_query_calls")
         self._record_api_usage("nqe_async_query_calls")
@@ -1802,6 +1812,7 @@ class ForwardClient:
             network_id=network_id,
             execution_key=execution_key,
             status=initial_status,
+            deadline=deadline,
         )
         records, total_num_items = self._fetch_nqe_async_result_page(
             network_id=network_id,
@@ -1824,6 +1835,10 @@ class ForwardClient:
         )
 
         while True:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise ForwardFetchBudgetExceededError(
+                    "Forward NQE fetch exceeded the per-workload wall-clock budget"
+                )
             if expected_total is not None and len(all_records) >= expected_total:
                 return all_records
             if expected_total is None and last_page_size < limit:
@@ -1895,6 +1910,7 @@ class ForwardClient:
         item_format="JSON",
         column_filters=None,
         fetch_all=False,
+        deadline=None,
     ):
         if not query_id:
             raise ForwardClientError("`query_id` must be supplied.")
@@ -1949,6 +1965,10 @@ class ForwardClient:
         )
 
         while True:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise ForwardFetchBudgetExceededError(
+                    "Forward NQE fetch exceeded the per-workload wall-clock budget"
+                )
             if expected_total is not None and len(all_rows) >= expected_total:
                 return all_rows
             if expected_total is None and last_page_size < limit:
