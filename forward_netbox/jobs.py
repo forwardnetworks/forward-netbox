@@ -453,21 +453,17 @@ def validate_forwardsync(job, *args, **kwargs):
             raise
 
 
-def prune_forward_orphans(job, *args, **kwargs):
-    """Background prune of out-of-scope NetBox devices for a sync.
-
-    Run as a job because deleting many devices cascades to their interfaces and
-    IP addresses (plus change-logging signals) and easily exceeds an HTTP gateway
-    timeout on large fabrics.
-    """
-    from .utilities.scope_reconciliation import EmptyForwardScopeError
+def _prune_forward_orphans_work(job):
+    """Shared prune body (legacy dotted-path shim + PruneOrphansJob). Writes
+    job.data (success or error dict) and re-raises; the caller decides
+    terminate status and swallow-vs-propagate."""
     from .utilities.scope_reconciliation import compute_scope_reconciliation
+    from .utilities.scope_reconciliation import EmptyForwardScopeError
     from .utilities.scope_reconciliation import prune_orphan_devices
     from .utilities.scope_reconciliation import prune_orphan_sites
 
     sync = ForwardSync.objects.get(pk=job.object_id)
     try:
-        job.start()
         report = compute_scope_reconciliation(sync)
         device_result = prune_orphan_devices(sync, report=report)
         site_result = prune_orphan_sites(sync, report=report)
@@ -484,12 +480,11 @@ def prune_forward_orphans(job, *args, **kwargs):
             "pruned_dangling_rows": device_result.get("pruned_dangling_rows", {}),
         }
         job.save(update_fields=["data"])
-        job.terminate()
     except EmptyForwardScopeError as exc:
         job.data = {"error": str(exc)}
         job.save(update_fields=["data"])
-        job.terminate(status=JobStatusChoices.STATUS_ERRORED)
         logger.error(exc)
+        raise
     except Exception as exc:
         # Record the failure on the job so it is visible in the UI (the Data panel)
         # instead of an empty Error field with null data.
@@ -498,10 +493,30 @@ def prune_forward_orphans(job, *args, **kwargs):
             "error_type": exc.__class__.__name__,
         }
         job.save(update_fields=["data"])
-        job.terminate(status=JobStatusChoices.STATUS_ERRORED)
         if type(exc) in (SyncError, JobTimeoutException):
             logger.error(exc)
-        else:
+        raise
+
+
+def prune_forward_orphans(job, *args, **kwargs):
+    """Background prune of out-of-scope NetBox devices for a sync.
+
+    Run as a job because deleting many devices cascades to their interfaces and
+    IP addresses (plus change-logging signals) and easily exceeds an HTTP gateway
+    timeout on large fabrics. Legacy dotted-path shim: pre-existing queued Job
+    rows and the immediate button/API path reference this callable directly.
+    """
+    from .utilities.scope_reconciliation import EmptyForwardScopeError
+
+    try:
+        job.start()
+        _prune_forward_orphans_work(job)
+        job.terminate()
+    except Exception as exc:
+        job.terminate(status=JobStatusChoices.STATUS_ERRORED)
+        if type(exc) not in (SyncError, JobTimeoutException) and not isinstance(
+            exc, EmptyForwardScopeError
+        ):
             raise
 
 
@@ -599,16 +614,26 @@ def tag_forward_delete_eligible_ipam(job, *args, **kwargs):
     may tag/untag many objects (with change-logging signals). Tag-only — never
     deletes.
     """
+    try:
+        job.start()
+        _tag_delete_eligible_ipam_work(job)
+        job.terminate()
+    except Exception as exc:
+        job.terminate(status=JobStatusChoices.STATUS_ERRORED)
+        if type(exc) not in (SyncError, JobTimeoutException):
+            raise
+
+
+def _tag_delete_eligible_ipam_work(job):
+    """Shared tag-eligible-IPAM body (shim + TagDeleteEligibleIpamJob)."""
     from .utilities.logging import SyncLogging
     from .utilities.scope_ipam_audit import tag_delete_eligible_ipam
 
     sync = ForwardSync.objects.get(pk=job.object_id)
     try:
-        job.start()
         client = sync.source.get_client()
         job.data = tag_delete_eligible_ipam(sync, client, SyncLogging())
         job.save(update_fields=["data"])
-        job.terminate()
     except Exception as exc:
         # Record the failure on the job so it is visible in the UI (the Data
         # panel) instead of an empty Error field with null data.
@@ -617,26 +642,34 @@ def tag_forward_delete_eligible_ipam(job, *args, **kwargs):
             "error_type": exc.__class__.__name__,
         }
         job.save(update_fields=["data"])
-        job.terminate(status=JobStatusChoices.STATUS_ERRORED)
         if type(exc) in (SyncError, JobTimeoutException):
             logger.error(exc)
-        else:
-            raise
+        raise
 
 
 def create_forward_module_bays(job, *args, **kwargs):
     """Background creation of missing module bays for a sync (out-of-band ORM)."""
+    try:
+        job.start()
+        _create_module_bays_work(job)
+        job.terminate()
+    except Exception as exc:
+        job.terminate(status=JobStatusChoices.STATUS_ERRORED)
+        if type(exc) not in (SyncError, JobTimeoutException):
+            raise
+
+
+def _create_module_bays_work(job):
+    """Shared module-bay-creation body (shim + CreateModuleBaysJob)."""
     from .utilities.module_readiness import compute_module_readiness_for_sync
     from .utilities.module_readiness import create_missing_module_bays
 
     sync = ForwardSync.objects.get(pk=job.object_id)
     try:
-        job.start()
         report = compute_module_readiness_for_sync(sync)
         result = create_missing_module_bays(report)
         job.data = result
         job.save(update_fields=["data"])
-        job.terminate()
     except Exception as exc:
         # Record the failure on the job so it is visible in the UI (the Data
         # panel) instead of an empty Error field with null data.
@@ -645,11 +678,9 @@ def create_forward_module_bays(job, *args, **kwargs):
             "error_type": exc.__class__.__name__,
         }
         job.save(update_fields=["data"])
-        job.terminate(status=JobStatusChoices.STATUS_ERRORED)
         if type(exc) in (SyncError, JobTimeoutException):
             logger.error(exc)
-        else:
-            raise
+        raise
 
 
 def _dependency_preview_work(job):
@@ -1009,3 +1040,43 @@ class ValidationJob(JobRunner):
         if _skip_if_immediate_equivalent_active(self.job, "validation"):
             return
         _validate_forwardsync_work(self.job)
+
+
+class PruneOrphansJob(JobRunner):
+    """JobRunner parity for the prune button job. Immediate runs keep the
+    legacy per-sync name via the prune_forward_orphans shim; nothing enqueues
+    this class today. NO schedule exposure: the API rejects schedule bodies
+    for this action — if that ever changes, run() must first gate on an
+    active sync run (JobBlockedBySyncRun in enqueue_button_job does not cover
+    runner occurrences) and enqueue_once callers MUST pass instance=sync
+    (get_jobs(instance=None) matches the fixed name globally)."""
+
+    class Meta:
+        # Byte-identical to BUTTON_JOB_SPECS["prune_orphans"][1]: the overlap
+        # guard's exact-name arm depends on it.
+        name = "prune orphans"
+
+    def run(self, *args, **kwargs):
+        _prune_forward_orphans_work(self.job)
+
+
+class TagDeleteEligibleIpamJob(JobRunner):
+    """JobRunner parity for the delete-eligible IPAM tag job (see
+    PruneOrphansJob notes)."""
+
+    class Meta:
+        name = "tag delete-eligible IPAM"
+
+    def run(self, *args, **kwargs):
+        _tag_delete_eligible_ipam_work(self.job)
+
+
+class CreateModuleBaysJob(JobRunner):
+    """JobRunner parity for the module-bay creation job (see PruneOrphansJob
+    notes)."""
+
+    class Meta:
+        name = "create module bays"
+
+    def run(self, *args, **kwargs):
+        _create_module_bays_work(self.job)

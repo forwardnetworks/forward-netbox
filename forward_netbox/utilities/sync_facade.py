@@ -1,6 +1,7 @@
 from core.choices import JobStatusChoices
 from core.exceptions import SyncError
 from core.models import Job
+from django.db import transaction as db_transaction
 from django.db.models import Q
 from django.utils.module_loading import import_string
 from django_pglocks import advisory_lock
@@ -237,24 +238,37 @@ STANDING_SCHEDULE_JOB_NAMES = {
 }
 
 
+def standing_schedule_intent(parameters):
+    """Comparable snapshot of the schedule-intent keys. Presence matters:
+    absent != (present, 0) — absent means a pre-2.5.7 install whose chains
+    reconcile adopts, stored 0 means an explicit operator cancel."""
+    parameters = parameters or {}
+    return {
+        key: (key in parameters, int(parameters.get(key) or 0))
+        for key in STANDING_SCHEDULE_PARAM_KEYS.values()
+    }
+
+
 def persist_standing_schedule_interval(sync, kind, interval):
     """Record the desired standing-schedule interval on the sync.
 
     0 is stored explicitly — it means "operator cancelled", which reconcile
     treats differently from an ABSENT key (absent = pre-2.5.7 install whose
     schedule rows predate intent storage and must be adopted, not cancelled).
-    Re-reads parameters from the DB to narrow the read-modify-write window
-    against a concurrent form save."""
+    Transactional: locks the sync row so concurrent writers (validation vs
+    preview persist, occurrence-guard backfill, form save) cannot clobber
+    each other's parameter keys."""
     key = STANDING_SCHEDULE_PARAM_KEYS[kind]
-    fresh = (
-        sync.__class__.objects.filter(pk=sync.pk)
-        .values_list("parameters", flat=True)
-        .first()
-    )
-    parameters = dict(fresh or sync.parameters or {})
-    parameters[key] = int(interval or 0)
-    sync.parameters = parameters
-    sync.__class__.objects.filter(pk=sync.pk).update(parameters=parameters)
+    with db_transaction.atomic():
+        locked = sync.__class__.objects.select_for_update().filter(pk=sync.pk).first()
+        if locked is None:
+            # Sync deleted mid-flight (occurrence-guard race) — nothing to
+            # persist against.
+            return
+        parameters = dict(locked.parameters or {})
+        parameters[key] = int(interval or 0)
+        sync.parameters = parameters
+        sync.__class__.objects.filter(pk=sync.pk).update(parameters=parameters)
 
 
 def cancel_standing_schedule(sync, kind):
