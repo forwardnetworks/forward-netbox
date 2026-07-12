@@ -815,16 +815,15 @@ class ForwardSyncDependencyPreviewView(BaseObjectView):
     def post(self, request, pk):
         # Building the dependency plan is a heavy live Forward dry-run that exceeds
         # an HTTP gateway timeout on large fabrics, so it runs as a background job.
-        from core.models import Job
-        from django.utils.module_loading import import_string
+        from .utilities.sync_facade import enqueue_button_job
+        from .utilities.sync_facade import JobAlreadyActive
 
         sync = get_object_or_404(self.queryset, pk=pk)
-        job = Job.enqueue(
-            import_string("forward_netbox.jobs.forward_dependency_preview"),
-            instance=sync,
-            user=request.user,
-            name=f"{sync.name} - dependency preview",
-        )
+        try:
+            job = enqueue_button_job(sync, "dependency_preview", request.user)
+        except JobAlreadyActive as exc:
+            messages.warning(request, str(exc))
+            return redirect(sync.get_absolute_url())
         messages.success(
             request,
             _(
@@ -990,16 +989,15 @@ class ForwardSyncTagDeleteEligibleIpamView(BaseObjectView):
         # fetch no longer reports so an operator can review and delete them by
         # hand. Runs as a background job: it issues live Forward fetches per IPAM
         # model and may tag/untag many objects. Tag-only — never deletes.
-        from core.models import Job
-        from django.utils.module_loading import import_string
+        from .utilities.sync_facade import enqueue_button_job
+        from .utilities.sync_facade import JobAlreadyActive
 
         sync = get_object_or_404(self.queryset, pk=pk)
-        job = Job.enqueue(
-            import_string("forward_netbox.jobs.tag_forward_delete_eligible_ipam"),
-            instance=sync,
-            user=request.user,
-            name=f"{sync.name} - tag delete-eligible IPAM",
-        )
+        try:
+            job = enqueue_button_job(sync, "tag_delete_eligible_ipam", request.user)
+        except JobAlreadyActive as exc:
+            messages.warning(request, str(exc))
+            return redirect(sync.get_absolute_url())
         messages.success(
             request,
             _(
@@ -1037,16 +1035,15 @@ class ForwardSyncPruneOrphansView(BaseObjectView):
         # Pruning cascades device deletes (interfaces, IPs, change-log signals)
         # and can far exceed an HTTP gateway timeout on large fabrics, so it runs
         # as a background job rather than synchronously in the request.
-        from core.models import Job
-        from django.utils.module_loading import import_string
+        from .utilities.sync_facade import enqueue_button_job
+        from .utilities.sync_facade import JobAlreadyActive
 
         sync = get_object_or_404(self.queryset, pk=pk)
-        job = Job.enqueue(
-            import_string("forward_netbox.jobs.prune_forward_orphans"),
-            instance=sync,
-            user=request.user,
-            name=f"{sync.name} - prune orphans",
-        )
+        try:
+            job = enqueue_button_job(sync, "prune_orphans", request.user)
+        except JobAlreadyActive as exc:
+            messages.warning(request, str(exc))
+            return redirect(sync.get_absolute_url())
         messages.success(
             request,
             _(
@@ -1108,16 +1105,15 @@ class ForwardSyncCreateModuleBaysView(BaseObjectView):
     def post(self, request, pk):
         # Creating many module bays (with full_clean + save per bay) can exceed an
         # HTTP gateway timeout on large fabrics, so it runs as a background job.
-        from core.models import Job
-        from django.utils.module_loading import import_string
+        from .utilities.sync_facade import enqueue_button_job
+        from .utilities.sync_facade import JobAlreadyActive
 
         sync = get_object_or_404(self.queryset, pk=pk)
-        job = Job.enqueue(
-            import_string("forward_netbox.jobs.create_forward_module_bays"),
-            instance=sync,
-            user=request.user,
-            name=f"{sync.name} - create module bays",
-        )
+        try:
+            job = enqueue_button_job(sync, "create_module_bays", request.user)
+        except JobAlreadyActive as exc:
+            messages.warning(request, str(exc))
+            return redirect(sync.get_absolute_url())
         messages.success(
             request,
             _(

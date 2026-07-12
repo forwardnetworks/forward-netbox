@@ -242,17 +242,22 @@ def _maybe_enqueue_auto_prune(sync):
     if not (sync.parameters or {}).get("auto_prune_orphans"):
         return
     try:
-        from django.utils.module_loading import import_string
+        from .utilities.sync_facade import enqueue_button_job
+        from .utilities.sync_facade import JobAlreadyActive
 
-        name = f"{sync.name} - prune orphans (auto)"
-        if _sync_has_active_job(sync, name):
+        # Shares the button-job guard (prefix match also blocks when a MANUAL
+        # prune is running). during_sync_ok: this hook fires from inside the
+        # still-running sync job, after its apply work completed.
+        try:
+            enqueue_button_job(
+                sync,
+                "prune_orphans",
+                sync.user,
+                name_suffix_extra=" (auto)",
+                during_sync_ok=True,
+            )
+        except JobAlreadyActive:
             return
-        Job.enqueue(
-            import_string("forward_netbox.jobs.prune_forward_orphans"),
-            instance=sync,
-            user=sync.user,
-            name=name,
-        )
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("Auto prune-orphans enqueue failed: %s", exc)
 

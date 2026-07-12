@@ -1,3 +1,4 @@
+from core.choices import JobStatusChoices
 from core.exceptions import SyncError
 from core.models import Job
 from django.utils.module_loading import import_string
@@ -176,4 +177,93 @@ def enqueue_validation_job(sync, adhoc=False, user=None):
         adhoc=adhoc,
         schedule_at=None,
         interval=None,
+    )
+
+
+class JobAlreadyActive(Exception):
+    """An equivalent job is already pending/running for this sync."""
+
+    def __init__(self, job):
+        self.job = job
+        super().__init__(
+            f"Job `{job.name}` is already {job.status} (job #{job.pk})."
+        )
+
+
+# The operator-facing background jobs ("button jobs") share one enqueue path so
+# the HTML buttons and the REST API actions get identical job names (several
+# lookups match on these strings - do NOT rename), permission expectations, and
+# overlap behavior.
+BUTTON_JOB_SPECS = {
+    "dependency_preview": (
+        "forward_netbox.jobs.forward_dependency_preview",
+        "dependency preview",
+        "forward_netbox.run_forwardsync",
+    ),
+    "prune_orphans": (
+        "forward_netbox.jobs.prune_forward_orphans",
+        "prune orphans",
+        "dcim.delete_device",
+    ),
+    "tag_delete_eligible_ipam": (
+        "forward_netbox.jobs.tag_forward_delete_eligible_ipam",
+        "tag delete-eligible IPAM",
+        "ipam.change_prefix",
+    ),
+    "create_module_bays": (
+        "forward_netbox.jobs.create_forward_module_bays",
+        "create module bays",
+        "dcim.add_modulebay",
+    ),
+}
+
+_ACTIVE_JOB_STATUSES = (
+    JobStatusChoices.STATUS_PENDING,
+    JobStatusChoices.STATUS_RUNNING,
+)
+
+
+def button_job_permission(kind):
+    return BUTTON_JOB_SPECS[kind][2]
+
+
+def enqueue_button_job(sync, kind, user, *, name_suffix_extra="", during_sync_ok=False):
+    """Enqueue an operator button job with a shared overlap guard.
+
+    Raises ``JobAlreadyActive`` instead of stacking a duplicate when an
+    equivalent job is already pending/running. The guard is a PREFIX match on
+    the job name so variants block each other (a manual "prune orphans" click
+    refuses while "prune orphans (auto)" runs, and vice versa). Pruning also
+    refuses while the sync itself is queued/running - deleting devices
+    mid-ingest would race the apply. ``during_sync_ok`` skips only that
+    sync-running check: the post-sync auto-prune hook enqueues from INSIDE the
+    still-running sync job, which is safe by construction (the sync's apply
+    work is already complete).
+    """
+    dotted_path, suffix, _permission = BUTTON_JOB_SPECS[kind]
+    name = f"{sync.name} - {suffix}"
+    active = (
+        sync.jobs.filter(name__startswith=name, status__in=_ACTIVE_JOB_STATUSES)
+        .order_by("pk")
+        .first()
+    )
+    if active is not None:
+        raise JobAlreadyActive(active)
+    if kind == "prune_orphans" and not during_sync_ok:
+        for run_suffix in ("adhoc", "scheduled"):
+            running_sync = (
+                sync.jobs.filter(
+                    name=f"{sync.name} - {run_suffix}",
+                    status__in=_ACTIVE_JOB_STATUSES,
+                )
+                .order_by("pk")
+                .first()
+            )
+            if running_sync is not None:
+                raise JobAlreadyActive(running_sync)
+    return Job.enqueue(
+        import_string(dotted_path),
+        instance=sync,
+        user=user,
+        name=f"{name}{name_suffix_extra}",
     )
