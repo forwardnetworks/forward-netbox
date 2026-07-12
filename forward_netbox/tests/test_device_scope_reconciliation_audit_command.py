@@ -354,9 +354,11 @@ class DanglingRoutingCleanupTest(TestCase):
             def _filter(**kwargs):
                 qs = Mock()
                 qs.values_list = Mock(return_value=list(list_pks))
+
                 def _delete():
                     deletions.append((label, kwargs))
                     return (delete_count, {})
+
                 qs.delete = _delete
                 return qs
 
@@ -370,15 +372,11 @@ class DanglingRoutingCleanupTest(TestCase):
             "BGPAddressFamily": make_model("netbox_routing.bgpaddressfamily", [30]),
             "BGPPeer": make_model("netbox_routing.bgppeer", [40]),
             "BGPSetting": make_model("netbox_routing.bgpsetting"),
-            "BGPPeerAddressFamily": make_model(
-                "netbox_routing.bgppeeraddressfamily"
-            ),
+            "BGPPeerAddressFamily": make_model("netbox_routing.bgppeeraddressfamily"),
         }
 
         with (
-            patch(
-                "django.apps.apps.is_installed", return_value=True
-            ),
+            patch("django.apps.apps.is_installed", return_value=True),
             patch(
                 "django.apps.apps.get_model",
                 side_effect=lambda app, name: models[name],
@@ -433,9 +431,7 @@ class DanglingRoutingCleanupTest(TestCase):
             "_cleanup_dangling_routing_objects",
             return_value={"netbox_routing.bgprouter": 2},
         ):
-            result = scope_reconciliation.prune_orphan_devices(
-                Mock(), report=report
-            )
+            result = scope_reconciliation.prune_orphan_devices(Mock(), report=report)
         self.assertEqual(
             result["pruned_dangling_rows"], {"netbox_routing.bgprouter": 2}
         )

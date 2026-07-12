@@ -73,9 +73,7 @@ class ButtonJobEnqueueTest(TestCase):
 
     def test_pending_duplicate_raises(self):
         self._job("button-sync - dependency preview")
-        with patch(
-            "forward_netbox.utilities.sync_facade.Job.enqueue"
-        ) as enqueue:
+        with patch("forward_netbox.utilities.sync_facade.Job.enqueue") as enqueue:
             with self.assertRaises(JobAlreadyActive):
                 enqueue_button_job(self.sync, "dependency_preview", None)
         enqueue.assert_not_called()
@@ -114,9 +112,7 @@ class ButtonJobEnqueueTest(TestCase):
             )
 
     def test_active_sync_blocks_prune_but_not_other_kinds(self):
-        self._job(
-            "button-sync - adhoc", status=JobStatusChoices.STATUS_RUNNING
-        )
+        self._job("button-sync - adhoc", status=JobStatusChoices.STATUS_RUNNING)
         with self.assertRaises(JobAlreadyActive):
             enqueue_button_job(self.sync, "prune_orphans", None)
         with patch(
@@ -130,9 +126,7 @@ class ButtonJobEnqueueTest(TestCase):
         # The post-sync auto-prune hook enqueues from inside the still-running
         # sync job; it must bypass the sync-running check but still honor the
         # duplicate-prune guard.
-        self._job(
-            "button-sync - adhoc", status=JobStatusChoices.STATUS_RUNNING
-        )
+        self._job("button-sync - adhoc", status=JobStatusChoices.STATUS_RUNNING)
         with patch(
             "forward_netbox.utilities.sync_facade.Job.enqueue",
             return_value=Mock(pk=4),

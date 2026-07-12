@@ -391,9 +391,7 @@ def _cleanup_dangling_routing_objects(pruned_device_pks):
     if not router_pks:
         return {}
     scope_pks = list(
-        BGPScope.objects.filter(router_id__in=router_pks).values_list(
-            "pk", flat=True
-        )
+        BGPScope.objects.filter(router_id__in=router_pks).values_list("pk", flat=True)
     )
     af_pks = list(
         BGPAddressFamily.objects.filter(scope_id__in=scope_pks).values_list(
@@ -430,9 +428,7 @@ def _cleanup_dangling_routing_objects(pruned_device_pks):
             (BGPRouter, router_pks),
         ):
             if pks:
-                setting_filters.append(
-                    (ContentType.objects.get_for_model(model), pks)
-                )
+                setting_filters.append((ContentType.objects.get_for_model(model), pks))
         for ct, pks in setting_filters:
             _sweep(
                 BGPSetting,
