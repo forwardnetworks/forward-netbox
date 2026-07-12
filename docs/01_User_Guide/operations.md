@@ -226,8 +226,10 @@ curl -X POST https://netbox.example.com/api/plugins/forward/sync/<id>/dependency
 ```
 
 - An empty body keeps the one-shot behavior unchanged.
-- `interval` (minutes, ≥ 1) creates a recurring schedule; re-posting updates
-  rather than duplicates it (one standing schedule per sync per job type).
+- `interval` (minutes, ≥ 1) creates a recurring schedule; re-posting the same
+  parameters is a no-op and changing them replaces the schedule (one standing
+  schedule per sync per job type). Without `schedule_at` the first run starts
+  immediately, then recurs.
 - Recurrence requires the RQ scheduler: run the worker with
   `python manage.py rqworker --with-scheduler` (the NetBox Docker images do
   by default; verify if you run a custom worker unit).

@@ -175,15 +175,16 @@ def enqueue_validation_job(
         # Standing schedule: one per sync (enqueue_once dedup keys on the
         # ValidationJob fixed name + the sync instance); recurrence is handled
         # by JobRunner after each run completes. Cancel by deleting the
-        # scheduled job from the Jobs list.
-        from django.utils import timezone
-
+        # scheduled job from the Jobs list. Pass schedule_at through untouched:
+        # core dedup keeps the existing row only when schedule_at is falsy or
+        # matches, so defaulting it to now() here would delete + recreate the
+        # schedule on every re-post instead of being idempotent.
         from ..jobs import ValidationJob
 
         return ValidationJob.enqueue_once(
             instance=sync,
             user=user,
-            schedule_at=schedule_at or timezone.now(),
+            schedule_at=schedule_at,
             interval=interval,
         )
     return Job.enqueue(
@@ -199,9 +200,9 @@ def enqueue_validation_job(
 
 def enqueue_preview_schedule(sync, user=None, schedule_at=None, interval=None):
     """Standing dependency-preview schedule (immediate runs use
-    enqueue_button_job, which keeps the legacy per-sync job name)."""
-    from django.utils import timezone
-
+    enqueue_button_job, which keeps the legacy per-sync job name). schedule_at
+    passes through untouched so enqueue_once re-posts stay idempotent (see
+    enqueue_validation_job); interval-only means run now, then recur."""
     from ..jobs import DependencyPreviewJob
 
     if not user:
@@ -209,7 +210,7 @@ def enqueue_preview_schedule(sync, user=None, schedule_at=None, interval=None):
     return DependencyPreviewJob.enqueue_once(
         instance=sync,
         user=user,
-        schedule_at=schedule_at or timezone.now(),
+        schedule_at=schedule_at,
         interval=interval,
     )
 

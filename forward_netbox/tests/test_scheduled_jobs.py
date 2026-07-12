@@ -107,13 +107,18 @@ class ScheduleEnqueueTest(TestCase):
         self.assertEqual(kwargs["interval"], 1440)
         self.assertEqual(kwargs["user"], self.sync.user)
 
-    def test_validation_interval_without_schedule_at_defaults_to_now(self):
+    def test_validation_interval_without_schedule_at_passes_none(self):
+        # schedule_at must pass through untouched: core enqueue_once only
+        # treats a re-post as idempotent when schedule_at is falsy or matches
+        # the existing row, so defaulting to now() would churn the schedule.
+        # None + interval = run now, then recur.
         with patch(
             "forward_netbox.jobs.ValidationJob.enqueue_once",
             return_value=Mock(pk=11),
         ) as once:
             enqueue_validation_job(self.sync, interval=720)
-        self.assertIsNotNone(once.call_args.kwargs["schedule_at"])
+        self.assertIsNone(once.call_args.kwargs["schedule_at"])
+        self.assertEqual(once.call_args.kwargs["interval"], 720)
 
     def test_validation_without_schedule_keeps_legacy_path(self):
         # The immediate path must keep the per-sync name (dotted-path shim) —
