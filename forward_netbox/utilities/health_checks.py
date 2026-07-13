@@ -222,9 +222,23 @@ def dlm_dependency_readiness_check(maps, latest_ingestion):
         return None
     skip_counts = {}
     for model in relevant:
-        skip_counts[model] = latest_ingestion.issues.filter(
+        issue_contexts = latest_ingestion.issues.filter(
             model=model, exception__icontains="ForwardDependencySkipError"
-        ).count()
+        ).values_list("coalesce_fields", flat=True)
+        detail_count = 0
+        summary_counts = []
+        for context in issue_contexts:
+            context = context or {}
+            if context.get("dependency_skip_summary"):
+                try:
+                    summary_counts.append(
+                        int(context.get("dependency_skip_count") or 0)
+                    )
+                except (TypeError, ValueError):
+                    pass
+            else:
+                detail_count += 1
+        skip_counts[model] = max([detail_count, *summary_counts])
     total = sum(skip_counts.values())
     if total == 0:
         return check(
@@ -562,8 +576,9 @@ def query_drift_check_message(query_drift, *, query_drift_summary=None):
     if info_count:
         return (
             f"{info_count} enabled direct-query-ID map(s) require live Forward "
-            f"repository lookup for full drift verification; use Refresh Query "
-            f"IDs after local query edits to keep saved IDs aligned.{remediation_preview}"
+            f"repository lookup for full drift verification; use Publish Bundled "
+            f"Queries to update built-in maps and convert them to live repository "
+            f"paths.{remediation_preview}"
         )
     return f"Enabled maps match local bundled query metadata.{remediation_preview}"
 

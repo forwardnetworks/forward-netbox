@@ -132,12 +132,12 @@ def _elevate_optin_pinned_query_drift(query_drift, source_parameters):
         if not _optin_feature_enabled(source_parameters, param_name):
             continue
         item["status"] = "direct_query_id_optin_stale_risk"
-        # Refresh the pre-baked badge label too — _query_drift_result computed
+        # Refresh the pre-baked badge label too - _query_drift_result computed
         # status_label from the old status, so mutating status alone leaves a
-        # stale "Org-managed (pinned)" badge on the elevated row.
+        # stale direct-ID badge on the elevated row.
         item["status_label"] = _QUERY_DRIFT_STATUS_LABELS.get(
             "direct_query_id_optin_stale_risk",
-            "Pinned — can't verify locally",
+            "Direct ID - can't verify locally",
         )
         item["severity"] = "warn"
         # This is a "can't verify locally" heads-up, not a confirmed failure:
@@ -153,10 +153,10 @@ def _elevate_optin_pinned_query_drift(query_drift, source_parameters):
         item["remediation"] = (
             "Use Export Live Query Drift on this page to confirm the pinned "
             "query matches the current bundled source. If it doesn't, use "
-            "Publish Bundled Queries, then Refresh Query IDs, then re-run the "
-            "sync."
+            "Publish Bundled Queries to update the org query and convert the "
+            "map to a live repository path, then re-run the sync."
         )
-        item["remediation_action"] = "refresh_query_ids"
+        item["remediation_action"] = "publish_bundled_queries"
     return query_drift
 
 
@@ -303,9 +303,10 @@ def _database_tables_check():
 
 def sync_health_summary(sync):
     optional_plugin_capabilities = integration_capability_summary()
+    all_maps = list(sync.get_maps())
     maps = [
         query_map
-        for query_map in sync.get_maps()
+        for query_map in all_maps
         if sync.is_model_enabled(query_map.model_string)
     ]
     latest_ingestion = sync.last_ingestion
@@ -317,7 +318,7 @@ def sync_health_summary(sync):
     data_file_maps = [
         query_map for query_map in maps if _looks_data_file_dependent(query_map)
     ]
-    model_summary = _model_summary(sync, maps)
+    model_summary = _model_summary(sync, all_maps)
     apply_engines = _apply_engine_summary(sync, model_summary["enabled_models"])
     fetch_contracts = _fetch_contract_summary(model_summary["enabled_models"])
     query_pushdown = _query_pushdown_summary(execution_run)

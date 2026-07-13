@@ -287,6 +287,47 @@ class QueryRegistryTest(TestCase):
             },
         )
 
+    def test_path_bound_map_resolves_new_head_after_query_republish(self):
+        content_type = ContentType.objects.get(app_label="dcim", model="device")
+        query_map = ForwardNQEMap.objects.create(
+            name="Forward Devices",
+            netbox_model=content_type,
+            query_repository="org",
+            query_path="/forward_netbox_validation/forward_devices",
+            query_id="",
+            built_in=True,
+        )
+        specs = get_query_specs("dcim.device", maps=[query_map])
+        client = Mock()
+        client.get_nqe_repository_query_index.side_effect = [
+            {
+                "by_path": {
+                    query_map.query_path: {
+                        "queryId": "Q_devices_v1",
+                        "lastCommitId": "commit-1",
+                    }
+                }
+            },
+            {
+                "by_path": {
+                    query_map.query_path: {
+                        "queryId": "Q_devices_v2",
+                        "lastCommitId": "commit-2",
+                    }
+                }
+            },
+        ]
+
+        first = resolve_query_specs_for_client(specs, client)[0]
+        second = resolve_query_specs_for_client(specs, client)[0]
+
+        self.assertEqual(first.run_query_id, "Q_devices_v1")
+        self.assertEqual(first.commit_id, "commit-1")
+        self.assertEqual(second.run_query_id, "Q_devices_v2")
+        self.assertEqual(second.commit_id, "commit-2")
+        self.assertEqual(specs[0].execution_mode, "query_path")
+        client.get_committed_nqe_query.assert_not_called()
+
     def test_resolve_query_specs_for_client_batches_head_path_queries_by_repository(
         self,
     ):

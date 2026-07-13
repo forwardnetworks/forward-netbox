@@ -133,23 +133,43 @@ def emit_dependency_skip_issue_summary(runner, model_string):
     examples = ", ".join(samples)
     example_str = f" e.g. {examples}" if examples else ""
     remedy = (
-        " Enable the parent sync (device types / devices) first, or — for DLM "
-        "hardware notices with the alias-aware device query — use the "
+        " Enable the parent sync (device types / devices) first. For DLM "
+        "hardware notices with the alias-aware device query, use the "
         "'Forward DLM Hardware Notices with NetBox Aliases' map."
     )
-    from ..exceptions import ForwardDependencySkipError
+    message = (
+        f"{total} {model_string} row(s) skipped because their NetBox parent "
+        f"is not synced yet ({remainder} beyond the first {limit} shown "
+        f"individually){example_str}.{remedy}"
+    )
+    context = {
+        "dependency_skip_summary": True,
+        "dependency_skip_count": total,
+        "detail_limit": limit,
+    }
+    from ..models import ForwardIngestionIssue
 
-    record_issue(
+    existing = ForwardIngestionIssue.objects.filter(
+        ingestion=runner.ingestion,
+        phase=ForwardIngestionPhaseChoices.SYNC,
+        model=model_string,
+        exception="ForwardDependencySkipError",
+        coalesce_fields__dependency_skip_summary=True,
+    ).first()
+    if existing is not None:
+        existing.message = message
+        existing.coalesce_fields = json_safe_value(context)
+        existing.save(update_fields=["message", "coalesce_fields"])
+        runner.logger.log_warning(f"{model_string}: {message}", obj=runner.ingestion)
+        return existing
+
+    return record_issue(
         runner,
         model_string,
-        (
-            f"{total} {model_string} row(s) skipped because their NetBox parent "
-            f"is not synced yet ({remainder} beyond the first {limit} shown "
-            f"individually){example_str}.{remedy}"
-        ),
+        message,
         {},
         exception=ForwardDependencySkipError("dependency-skip-summary"),
-        context={"dependency_skip_summary": True},
+        context=context,
         log_level="warning",
     )
 

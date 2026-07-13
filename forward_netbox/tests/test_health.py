@@ -8,6 +8,7 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
 from django.test import override_settings
+from django.test import SimpleTestCase
 from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
@@ -25,6 +26,7 @@ from forward_netbox.utilities.health import live_source_health_check
 from forward_netbox.utilities.health import sync_health_summary
 from forward_netbox.utilities.health_checks import ingestion_check_message
 from forward_netbox.utilities.health_checks import ingestion_check_status
+from forward_netbox.utilities.health_checks import query_drift_check_message
 from forward_netbox.utilities.health_summary_blocks import large_run_tuning_summary
 from forward_netbox.utilities.query_registry import read_compiled_builtin_query_source
 
@@ -36,6 +38,18 @@ BGP_PLUGIN_CONFIG = {
         "enable_bgp_sync": True,
     },
 }
+
+
+class HealthCheckMessageTest(SimpleTestCase):
+    def test_direct_query_id_guidance_uses_publish_workflow(self):
+        message = query_drift_check_message(
+            [{"severity": "info"}],
+            query_drift_summary={"remediation_actions": []},
+        )
+
+        self.assertIn("Publish Bundled Queries", message)
+        self.assertIn("live repository paths", message)
+        self.assertNotIn("Refresh Query IDs", message)
 
 
 class ForwardSyncHealthTest(TestCase):
@@ -980,37 +994,6 @@ class ForwardSyncHealthTest(TestCase):
         self.assertEqual(path_result["requested_commit_id"], "head")
         self.assertEqual(path_result["commit_binding"], "latest_commit")
 
-    def test_sync_refresh_query_ids_posts_to_repair_action(self):
-        self.client.force_login(self.user)
-        result = Mock(matched=True)
-        client = Mock()
-        with patch.object(ForwardSource, "get_client", return_value=client), patch(
-            "forward_netbox.views.refresh_query_id_bindings_from_repository_folder",
-            return_value=[result],
-        ) as refresh_query_ids:
-            response = self.client.post(
-                reverse(
-                    "plugins:forward_netbox:forwardsync_refresh_query_ids",
-                    kwargs={"pk": self.sync.pk},
-                )
-            )
-
-        self.assertEqual(response.status_code, 302)
-        self.assertEqual(
-            response["Location"],
-            reverse(
-                "plugins:forward_netbox:forwardsync_health",
-                kwargs={"pk": self.sync.pk},
-            ),
-        )
-        refresh_query_ids.assert_called_once()
-        self.assertEqual(refresh_query_ids.call_args.kwargs["client"], client)
-        self.assertEqual(
-            refresh_query_ids.call_args.kwargs["directory"],
-            "/forward_netbox_validation/",
-        )
-        self.assertFalse(refresh_query_ids.call_args.kwargs["pin_commit"])
-
     def test_sync_publish_bundled_queries_posts_to_repair_action(self):
         self.client.force_login(self.user)
         result = Mock(matched=True)
@@ -1064,7 +1047,8 @@ class ForwardSyncHealthTest(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Query Drift")
-        self.assertContains(response, "Refresh Query IDs")
+        self.assertContains(response, "Publish Bundled Queries")
+        self.assertNotContains(response, "Refresh Query IDs")
         self.assertContains(response, "Preview Dependencies")
         self.assertContains(
             response,
@@ -1532,6 +1516,42 @@ class DLMDependencyReadinessCheckTest(TestCase):
         self.assertEqual(result["status"], "warn")
         self.assertIn("3 DLM row", result["message"])
 
+    def test_uses_rollup_count_instead_of_persisted_issue_count(self):
+        from forward_netbox.choices import ForwardIngestionPhaseChoices
+        from forward_netbox.models import ForwardIngestionIssue
+        from forward_netbox.utilities.health_checks import (
+            dlm_dependency_readiness_check,
+        )
+
+        ingestion = ForwardIngestion.objects.create(sync=self.sync)
+        for i in range(10):
+            ForwardIngestionIssue.objects.create(
+                ingestion=ingestion,
+                phase=ForwardIngestionPhaseChoices.SYNC,
+                model="netbox_dlm.hardwarenotice",
+                message=f"skip {i}",
+                exception="ForwardDependencySkipError",
+            )
+        ForwardIngestionIssue.objects.create(
+            ingestion=ingestion,
+            phase=ForwardIngestionPhaseChoices.SYNC,
+            model="netbox_dlm.hardwarenotice",
+            message="15 rows skipped",
+            exception="ForwardDependencySkipError",
+            coalesce_fields={
+                "dependency_skip_summary": True,
+                "dependency_skip_count": 15,
+            },
+        )
+        maps = [
+            self._named("Forward DLM Hardware Notices", "netbox_dlm.hardwarenotice")
+        ]
+
+        result = dlm_dependency_readiness_check(maps, ingestion)
+
+        self.assertEqual(result["status"], "warn")
+        self.assertIn("15 DLM row", result["message"])
+
     def test_pass_when_no_skips(self):
         from forward_netbox.utilities.health_checks import (
             dlm_dependency_readiness_check,
@@ -1635,3 +1655,26 @@ class EnabledMapModelNotSelectedTest(TestCase):
         )
         self.assertEqual(entry["status"], "warn")
         self.assertIn("Forward DLM Vulnerabilities", entry["message"])
+
+    def test_sync_health_summary_keeps_unselected_optional_maps_for_check(self):
+        content_type = ContentType.objects.get(app_label="dcim", model="module")
+        ForwardNQEMap.objects.create(
+            name="Test Optional Modules",
+            netbox_model=content_type,
+            query="@query\n",
+            enabled=True,
+        )
+        sync = self._sync()
+
+        summary = sync_health_summary(sync)
+
+        self.assertIn(
+            "Test Optional Modules",
+            summary["models"]["enabled_optional_maps_without_model"],
+        )
+        entry = next(
+            check
+            for check in summary["checks"]
+            if check["name"] == "Enabled map, model not selected"
+        )
+        self.assertEqual(entry["status"], "warn")

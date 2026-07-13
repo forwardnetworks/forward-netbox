@@ -156,13 +156,13 @@ class SingleBranchExecutorTest(TransactionTestCase):
             parameters={"snapshot_id": "latestProcessed"},
         )
 
-    def _context(self):
+    def _context(self, snapshot_id="snap-1"):
         from forward_netbox.utilities.query_fetch_execution import ForwardQueryContext
 
         return ForwardQueryContext(
             network_id="net-1",
             snapshot_selector="latestProcessed",
-            snapshot_id="snap-1",
+            snapshot_id=snapshot_id,
         )
 
     def _site_workloads(self):
@@ -181,15 +181,16 @@ class SingleBranchExecutorTest(TransactionTestCase):
             )
         ]
 
-    def _run_executor(self):
+    def _run_executor(self, *, workloads=None, snapshot_id="snap-1"):
         from forward_netbox.utilities.query_fetch import ForwardQueryFetcher
         from forward_netbox.utilities.single_branch_executor import (
             ForwardSingleBranchExecutor,
         )
         from forward_netbox.utilities.validation import ForwardValidationRunner
 
-        context = self._context()
-        workloads = self._site_workloads()
+        context = self._context(snapshot_id)
+        if workloads is None:
+            workloads = self._site_workloads()
         logger = Mock()
         self.sync.logger = logger
         provision_calls = []
@@ -223,6 +224,35 @@ class SingleBranchExecutorTest(TransactionTestCase):
         # All 15 sites merged into main.
         self.assertEqual(Site.objects.filter(slug__startswith="sbe-site-").count(), 15)
         self.assertTrue(ingestions[0].baseline_ready)
+
+    def test_single_branch_repeat_run_applies_delete_phase(self):
+        from forward_netbox.utilities.branch_budget import BranchWorkload
+
+        first_workload = BranchWorkload(
+            model_string="dcim.site",
+            label="dcim.site | Forward Locations",
+            upsert_rows=[
+                {"name": "Keep Site", "slug": "sbe-keep-site"},
+                {"name": "Delete Site", "slug": "sbe-delete-site"},
+            ],
+            coalesce_fields=[["slug"], ["name"]],
+            query_name="Forward Locations",
+        )
+        self._run_executor(workloads=[first_workload], snapshot_id="snap-1")
+        self.assertTrue(Site.objects.filter(slug="sbe-delete-site").exists())
+
+        second_workload = BranchWorkload(
+            model_string="dcim.site",
+            label="dcim.site | Forward Locations",
+            upsert_rows=[{"name": "Keep Site", "slug": "sbe-keep-site"}],
+            delete_rows=[{"name": "Delete Site", "slug": "sbe-delete-site"}],
+            coalesce_fields=[["slug"], ["name"]],
+            query_name="Forward Locations",
+        )
+        self._run_executor(workloads=[second_workload], snapshot_id="snap-2")
+
+        self.assertTrue(Site.objects.filter(slug="sbe-keep-site").exists())
+        self.assertFalse(Site.objects.filter(slug="sbe-delete-site").exists())
 
 
 class OrderingComplexityTest(TransactionTestCase):

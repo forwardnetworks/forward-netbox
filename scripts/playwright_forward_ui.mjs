@@ -83,9 +83,9 @@ async function login(page) {
   await page.waitForURL(/\/plugins\/forward\/sync\/?$/);
 }
 
-async function screenshot(page, name) {
+async function screenshot(page, name, { fullPage = true } = {}) {
   const target = path.join(artifactDir, name);
-  await page.screenshot({ path: target, fullPage: true, type: "jpeg", quality: 85 });
+  await page.screenshot({ path: target, fullPage, type: "jpeg", quality: 85 });
   return target;
 }
 
@@ -154,7 +154,6 @@ async function main() {
     await expectVisible(page, "Analysis Summary");
     await expectVisible(page, "Advisory Summary");
     await expectVisible(page, "Export Support Bundle");
-    await expectVisible(page, "Execution Runs");
     await expectVisible(page, "Health");
     await expectVisible(page, "ui-harness-drift-policy");
     await expectVisible(page, "latestProcessed");
@@ -163,7 +162,7 @@ async function main() {
     await assertNoHorizontalOverflow(page, "desktop sync detail");
     evidence.screenshots.push(await screenshot(page, "desktop-sync-detail.jpg"));
     evidence.checks.push(
-      "sync detail exposes validation, native branch budget, run controls, support export, and current activity",
+      "sync detail exposes validation, single-branch run controls, support export, and current activity",
     );
 
     await page.locator('a[href*="/sync/"][href$="/health/"]').first().click();
@@ -173,6 +172,11 @@ async function main() {
     await expectVisible(page, "Local Query Drift");
     await expectVisible(page, "Export Live Query Drift Check");
     await expectVisible(page, "Export Live Data File Check");
+    await expectVisible(page, "Publish Bundled Queries");
+    assert(
+      (await page.getByText("Refresh Query IDs", { exact: true }).count()) === 0,
+      "sync health should not expose the retired Refresh Query IDs action",
+    );
     await expectVisible(page, "Large Run Tuning");
     await expectVisible(page, "Adaptive capacity");
     await expectVisible(page, "Next tuning batch");
@@ -180,48 +184,11 @@ async function main() {
     await expectVisible(page, "Next run");
     await expectVisible(page, "Health Details");
     await assertNoHorizontalOverflow(page, "desktop sync health");
-    evidence.screenshots.push(await screenshot(page, "desktop-sync-health.jpg"));
-    evidence.checks.push(
-      "sync health tab renders local diagnostics, query binding state, explicit live source export, explicit live query drift export, and explicit live data file export",
+    evidence.screenshots.push(
+      await screenshot(page, "desktop-sync-health.jpg", { fullPage: false }),
     );
-
-    await page.goto(`${baseURL}/plugins/forward/sync/`, {
-      waitUntil: "domcontentloaded",
-    });
-    await page.getByRole("link", { name: "ui-harness-sync" }).first().click();
-
-    await page.locator('a[href*="/sync/"][href$="/execution_runs/"]').first().click();
-    await expectVisible(page, "Execution Runs");
-    await expectVisible(page, "ui-harness-sync");
-    await expectVisible(page, "Completed");
-    await assertNoHorizontalOverflow(page, "desktop execution run list");
-    evidence.checks.push("sync execution-runs tab renders ledger records");
-
-    await page.getByRole("link", { name: /ui-harness-sync execution/i }).first().click();
-    await expectVisible(page, "Execution Run");
-    await expectVisible(page, "Synthetic UI harness execution completed.");
-    await expectVisible(page, "Export Support Bundle");
-    await expectVisible(page, "Reconcile");
-    await expectVisible(page, "Plan Preview");
-    await expectVisible(page, "Model Change Density");
-    await assertNoHorizontalOverflow(page, "desktop execution run detail");
-    evidence.screenshots.push(await screenshot(page, "desktop-execution-run-detail.jpg"));
-    evidence.checks.push("execution run detail exposes support bundle and recovery controls");
-
-    await page.getByRole("link", { name: "Steps" }).first().click();
-    await expectVisible(page, "FETCH MODE");
-    await expectVisible(page, "dcim.interface");
-    await expectVisible(page, "nqe_parameters");
-    await assertNoHorizontalOverflow(page, "desktop execution step list");
-    evidence.checks.push("execution step table exposes fetch mode and model progress");
-
-    await page.locator('a[href*="/execution-step/"]').first().click();
-    await expectVisible(page, "Execution Step");
-    await expectVisible(page, "Query Parameters");
-    await expectVisible(page, "forward_netbox_shard_keys");
-    await assertNoHorizontalOverflow(page, "desktop execution step detail");
     evidence.checks.push(
-      "execution step detail exposes query parameter pushdown evidence",
+      "sync health tab renders local diagnostics, live query-path publishing, and explicit live source/query/data-file exports without the retired refresh action",
     );
 
     await page.goto(`${baseURL}/plugins/forward/validation-run/`, {
@@ -276,10 +243,13 @@ async function main() {
     await expectVisible(page, "Model Selection");
     await expectVisible(page, "Execution");
     await expectVisible(page, "Drift policy");
-    await expectVisible(page, "Max changes per branch");
     await expectVisible(page, "Auto merge");
+    await expectVisible(page, "Use safe bulk ORM models");
+    await expectVisible(page, "Diff fallback mode");
     await assertNoHorizontalOverflow(page, "desktop sync form");
-    evidence.checks.push("sync creation form exposes branch budget and auto merge controls");
+    evidence.checks.push(
+      "sync creation form exposes single-branch merge, apply-engine, and diff fallback controls",
+    );
 
     await page.goto(`${baseURL}/plugins/forward/nqe-map/add/`, {
       waitUntil: "domcontentloaded",
@@ -332,11 +302,11 @@ async function main() {
     await expectVisible(page, "Repository Folder");
     await expectVisible(page, "Overwrite existing repository queries");
     await expectVisible(page, "Commit message");
-    await expectVisible(page, "Map Query ID Choices");
+    await expectVisible(page, "Map Query Path Choices");
     await expectVisible(page, "Forward Locations");
     await expectVisible(page, "Pin current commit");
-    await expectVisible(page, "Bulk edit stores direct query IDs");
-    await expectVisible(page, "resolves and stores the current Forward query ID");
+    await expectVisible(page, "Repository-path operations clear direct query IDs");
+    await expectVisible(page, "resolved at sync time");
     await assertNoHorizontalOverflow(page, "desktop NQE map list");
     evidence.checks.push(
       "native NQE map bulk edit exposes bidirectional query reference controls",

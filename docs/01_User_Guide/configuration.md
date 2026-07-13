@@ -294,6 +294,17 @@ The repository query files are also linked directly under [`forward_netbox/queri
 
 If you want Forward to own the modular source instead of storing raw NQE inside NetBox:
 
+For the enabled built-in maps on one sync, the shortest path is **Publish
+Bundled Queries** on the sync detail or Health page. That action overwrites the
+matching bundled queries in `/forward_netbox_validation/`, commits changed
+source, and binds the enabled maps to live Org Repository paths. Run it once
+after an upgrade that changes bundled queries or when converting older direct-ID
+bindings. An existing `commit_id` remains pinned; a blank commit follows
+repository head.
+
+For an explicit map selection or a different repository folder, use the native
+NQE Map bulk edit workflow:
+
 1. In NetBox, open `Plugins > Forward > NQE Maps`.
 2. Select the maps to publish and bind. To publish every visible built-in map,
    use the table header checkbox, then click the native `Edit Selected` bulk

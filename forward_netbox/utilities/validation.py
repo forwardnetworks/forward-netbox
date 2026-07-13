@@ -214,8 +214,8 @@ class ForwardValidationRunner:
                 "mode is `Require diff`: a diff run that cannot fetch rows is treated "
                 "as a hard failure instead of retrying a full fetch. Set the sync's "
                 "diff fallback mode to `Allow full fallback` to recover automatically, "
-                "and use Refresh Query IDs on the Health page if the query maps "
-                "drifted."
+                "and use Publish Bundled Queries on the Health page if built-in "
+                "query maps drifted."
             )
 
         return reasons

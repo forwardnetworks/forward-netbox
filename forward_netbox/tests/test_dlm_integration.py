@@ -257,6 +257,31 @@ class DependencySkipIssueRollupTest(TestCase):
             "15 netbox_dlm.hardwarenotice row(s) skipped", summary.first().message
         )
 
+        for i in range(15, 20):
+            record_issue(
+                runner,
+                model,
+                f"Skipping DLM hardware notice because device type `DT-{i}` is not in NetBox yet.",
+                {"device_type": f"DT-{i}"},
+                exception=ForwardDependencySkipError(
+                    "skip", context={"device_type": f"DT-{i}"}
+                ),
+                context={"device_type": f"DT-{i}"},
+                log_level="info",
+            )
+        emit_dependency_skip_issue_summary(runner, model)
+
+        summary = ForwardIngestionIssue.objects.filter(
+            ingestion=ingestion,
+            model=model,
+            coalesce_fields__dependency_skip_summary=True,
+        )
+        self.assertEqual(summary.count(), 1)
+        self.assertIn(
+            "20 netbox_dlm.hardwarenotice row(s) skipped", summary.first().message
+        )
+        self.assertEqual(summary.first().coalesce_fields["dependency_skip_count"], 20)
+
     def test_no_summary_below_cap(self):
         from forward_netbox.exceptions import ForwardDependencySkipError
         from forward_netbox.models import ForwardIngestion

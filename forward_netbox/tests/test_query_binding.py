@@ -13,9 +13,6 @@ from forward_netbox.utilities.query_binding import build_nqe_map_bindings
 from forward_netbox.utilities.query_binding import live_query_binding_drift
 from forward_netbox.utilities.query_binding import local_query_binding_drift
 from forward_netbox.utilities.query_binding import publish_builtin_nqe_map_queries
-from forward_netbox.utilities.query_binding import (
-    refresh_query_id_bindings_from_repository_folder,
-)
 from forward_netbox.utilities.query_binding import restore_builtin_raw_query_bindings
 from forward_netbox.utilities.query_registry import read_builtin_query_source
 from forward_netbox.utilities.query_registry import read_compiled_builtin_query_source
@@ -108,7 +105,7 @@ class NQEMapBindingTest(TestCase):
         self.assertEqual(bindings[0].query_id, "Q_devices")
         client.get_nqe_repository_query_index.assert_not_called()
 
-    def test_apply_bindings_switches_matching_model_to_query_id_mode(self):
+    def test_apply_bindings_switches_matching_model_to_repository_path(self):
         netbox_model = ContentType.objects.get(app_label="dcim", model="device")
         query_map = ForwardNQEMap.objects.create(
             name="Custom Device Import",
@@ -161,11 +158,14 @@ class NQEMapBindingTest(TestCase):
         self.assertTrue(results[0].matched)
         self.assertEqual(results[0].map_id, query_map.pk)
         query_map.refresh_from_db()
-        self.assertEqual(query_map.query_id, "Q_devices")
+        self.assertEqual(query_map.query_id, "")
         self.assertEqual(query_map.query_repository, "org")
-        self.assertEqual(query_map.query_path, "")
+        self.assertEqual(
+            query_map.query_path,
+            "/forward_netbox_validation/forward_devices",
+        )
         self.assertEqual(query_map.query, "")
-        self.assertEqual(query_map.commit_id, "")
+        self.assertEqual(query_map.commit_id, "old-commit")
 
     def test_bulk_edit_view_binds_selected_maps_through_native_bulk_edit(self):
         source = ForwardSource.objects.create(
@@ -183,7 +183,7 @@ class NQEMapBindingTest(TestCase):
             name="Custom Device Import",
             netbox_model=netbox_model,
             query='select {name: "device-1"}',
-            commit_id="",
+            commit_id="old-commit",
         )
         form = ForwardNQEMapBulkEditForm(
             data={
@@ -232,10 +232,14 @@ class NQEMapBindingTest(TestCase):
 
         self.assertEqual([obj.pk for obj in updated], [query_map.pk])
         query_map.refresh_from_db()
-        self.assertEqual(query_map.query_id, "Q_devices")
+        self.assertEqual(query_map.query_id, "")
         self.assertEqual(query_map.query_repository, "org")
-        self.assertEqual(query_map.query_path, "")
+        self.assertEqual(
+            query_map.query_path,
+            "/forward_netbox_validation/forward_devices",
+        )
         self.assertEqual(query_map.query, "")
+        self.assertEqual(query_map.commit_id, "")
 
     def test_bulk_edit_view_restores_selected_maps_to_raw_query_text(self):
         netbox_model = ContentType.objects.get(app_label="dcim", model="device")
@@ -333,8 +337,8 @@ class NQEMapBindingTest(TestCase):
         self.assertEqual(drift["status"], "direct_query_id_unverified")
         self.assertEqual(drift["severity"], "info")
         self.assertEqual(drift["commit_binding"], "latest_commit")
-        self.assertIn("Refresh Query IDs", drift["remediation"])
-        self.assertEqual(drift["remediation_action"], "refresh_query_ids")
+        self.assertIn("Publish Bundled Queries", drift["remediation"])
+        self.assertEqual(drift["remediation_action"], "publish_bundled_queries")
 
     def test_live_query_binding_drift_reports_repository_source_match(self):
         netbox_model = ContentType.objects.get(app_label="dcim", model="device")
@@ -475,8 +479,8 @@ class NQEMapBindingTest(TestCase):
         self.assertEqual(drift["status"], "direct_query_id_unverified")
         self.assertEqual(drift["severity"], "warn")
         self.assertEqual(drift["live_status"], "direct_query_id_not_found")
-        self.assertIn("Refresh Query IDs", drift["remediation"])
-        self.assertEqual(drift["remediation_action"], "refresh_query_ids")
+        self.assertIn("Publish Bundled Queries", drift["remediation"])
+        self.assertEqual(drift["remediation_action"], "publish_bundled_queries")
 
     def test_publish_builtin_queries_adds_sources_commits_and_binds_selected_maps(self):
         netbox_model = ContentType.objects.get(app_label="dcim", model="device")
@@ -572,8 +576,11 @@ class NQEMapBindingTest(TestCase):
         self.assertTrue(any(result.matched for result in results))
         query_map.refresh_from_db()
         self.assertEqual(query_map.query_repository, "org")
-        self.assertEqual(query_map.query_id, "OQ_devices")
-        self.assertEqual(query_map.query_path, "")
+        self.assertEqual(query_map.query_id, "")
+        self.assertEqual(
+            query_map.query_path,
+            "/forward_netbox_validation/forward_devices",
+        )
         self.assertEqual(query_map.query, "")
         self.assertEqual(query_map.commit_id, "commit-1")
 
@@ -663,8 +670,12 @@ class NQEMapBindingTest(TestCase):
 
         self.assertEqual([obj.pk for obj in updated], [query_map.pk])
         query_map.refresh_from_db()
-        self.assertEqual(query_map.query_id, "OQ_devices")
-        self.assertEqual(query_map.query_path, "")
+        self.assertEqual(query_map.query_id, "")
+        self.assertEqual(
+            query_map.query_path,
+            "/forward_netbox_validation/forward_devices",
+        )
+        self.assertEqual(query_map.commit_id, "")
         self.assertEqual(client.get_nqe_repository_query_index.call_count, 2)
         client.get_nqe_repository_query_index.assert_any_call(
             repository="org",
@@ -714,15 +725,67 @@ class NQEMapBindingTest(TestCase):
             directory="/forward_netbox_validation/",
             queryset=ForwardNQEMap.objects.filter(pk=query_map.pk),
             commit_message="Publish Forward NetBox NQE maps",
-            pin_commit=True,
+            pin_commit=False,
         )
 
         self.assertEqual(len(results), 1)
         self.assertTrue(results[0].matched)
+        query_map.refresh_from_db()
+        self.assertEqual(query_map.query_id, "")
+        self.assertEqual(
+            query_map.query_path,
+            "/forward_netbox_validation/forward_devices",
+        )
+        self.assertEqual(query_map.commit_id, "")
         client.get_nqe_repository_query_index.assert_called_once_with(
             repository="org",
             directory="/forward_netbox_validation/",
         )
+
+    def test_publish_builtin_queries_preserves_existing_commit_pin(self):
+        netbox_model = ContentType.objects.get(app_label="dcim", model="device")
+        query_map = ForwardNQEMap.objects.create(
+            name="Forward Devices",
+            netbox_model=netbox_model,
+            query_id="Q_devices_old",
+            commit_id="commit-pinned",
+        )
+        client = Mock()
+        client.get_nqe_repository_query_index.return_value = {
+            "rows": [
+                {
+                    "queryId": "Q_devices_head",
+                    "path": "/forward_netbox_validation/forward_devices",
+                    "lastCommitId": "commit-head",
+                }
+            ],
+            "by_path": {
+                "/forward_netbox_validation/forward_devices": {
+                    "queryId": "Q_devices_head",
+                    "path": "/forward_netbox_validation/forward_devices",
+                    "lastCommitId": "commit-head",
+                }
+            },
+            "by_query_id": {},
+        }
+
+        results = publish_builtin_nqe_map_queries(
+            client=client,
+            directory="/forward_netbox_validation/",
+            queryset=ForwardNQEMap.objects.filter(pk=query_map.pk),
+            commit_message="Publish Forward NetBox NQE maps",
+            pin_commit=False,
+        )
+
+        self.assertEqual(len(results), 1)
+        self.assertTrue(results[0].matched)
+        query_map.refresh_from_db()
+        self.assertEqual(query_map.query_id, "")
+        self.assertEqual(
+            query_map.query_path,
+            "/forward_netbox_validation/forward_devices",
+        )
+        self.assertEqual(query_map.commit_id, "commit-pinned")
 
     def test_publish_builtin_queries_resolves_commit_id_for_existing_path(self):
         netbox_model = ContentType.objects.get(app_label="dcim", model="device")
@@ -785,7 +848,11 @@ class NQEMapBindingTest(TestCase):
         )
         self.assertTrue(any(result.matched for result in results))
         query_map.refresh_from_db()
-        self.assertEqual(query_map.query_id, "OQ_devices")
+        self.assertEqual(query_map.query_id, "")
+        self.assertEqual(
+            query_map.query_path,
+            "/forward_netbox_validation/forward_devices",
+        )
         self.assertEqual(query_map.commit_id, "commit-1")
 
     def test_publish_builtin_queries_skips_edit_when_overwrite_source_unchanged(self):
@@ -845,7 +912,7 @@ class NQEMapBindingTest(TestCase):
         client.edit_org_nqe_query.assert_not_called()
         client.commit_org_nqe_queries.assert_not_called()
 
-    def test_refresh_query_ids_uses_map_name_to_resolve_same_model_candidates(self):
+    def test_apply_bindings_uses_map_name_to_resolve_same_model_candidates(self):
         netbox_model = ContentType.objects.get(app_label="dcim", model="device")
         query_map = ForwardNQEMap.objects.create(
             name="Forward Devices with NetBox Device Type Aliases",
@@ -891,19 +958,29 @@ class NQEMapBindingTest(TestCase):
             },
         }
 
-        results = refresh_query_id_bindings_from_repository_folder(
+        bindings = build_nqe_map_bindings(
             client=client,
+            repository="org",
             directory="/forward_netbox_validation/",
+        )
+        results = apply_nqe_map_bindings(
+            bindings,
             queryset=ForwardNQEMap.objects.filter(pk=query_map.pk),
         )
 
         self.assertEqual(len(results), 1)
         self.assertTrue(results[0].matched)
-        self.assertEqual(results[0].query_id, "Q_alias")
+        self.assertEqual(
+            results[0].query_path,
+            "/forward_netbox_validation/forward_devices_with_netbox_aliases",
+        )
         query_map.refresh_from_db()
-        self.assertEqual(query_map.query_id, "Q_alias")
-        self.assertEqual(query_map.query_path, "")
-        self.assertEqual(query_map.commit_id, "")
+        self.assertEqual(query_map.query_id, "")
+        self.assertEqual(
+            query_map.query_path,
+            "/forward_netbox_validation/forward_devices_with_netbox_aliases",
+        )
+        self.assertEqual(query_map.commit_id, "old-commit")
 
     def test_apply_bindings_skips_ambiguous_same_model_maps(self):
         netbox_model = ContentType.objects.get(app_label="ipam", model="prefix")
@@ -1072,8 +1149,11 @@ class NQEMapBindingTest(TestCase):
         self.assertTrue(results[0].matched)
         self.assertEqual(results[0].query_filename, "forward_prefixes_ipv4.nqe")
         query_map.refresh_from_db()
-        self.assertEqual(query_map.query_id, "Q_ipv4")
-        self.assertEqual(query_map.query_path, "")
+        self.assertEqual(query_map.query_id, "")
+        self.assertEqual(
+            query_map.query_path,
+            "/forward_netbox_validation/forward_prefixes_ipv4",
+        )
 
     def test_apply_explicit_bindings_rejects_wrong_model_selection(self):
         netbox_model = ContentType.objects.get(app_label="dcim", model="device")
