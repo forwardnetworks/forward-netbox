@@ -3306,10 +3306,29 @@ class RuntimeOptimizationTaskTest(unittest.TestCase):
 
         manage_py.assert_called_once()
         command = manage_py.call_args.args[1]
-        self.assertIn("test_full_site_ingestion_then_diff_delete", command)
-        self.assertIn(
-            "test_branch_plan_runs_prune_deletes_in_dependency_order", command
-        )
+        self.assertIn("test_single_branch_repeat_run_applies_delete_phase", command)
+        self.assertIn("test_branch_plan_splits_mixed_workloads", command)
+
+    def test_scale_chaos_uses_current_scenario_tests(self):
+        context = self._context()
+        with patch.object(tasks, "_run_tests_with_shared_runtime_fallback") as run:
+            tasks.scale_chaos_test.body(context)
+
+        test_label = run.call_args.kwargs["test_label"]
+        self.assertIn("BulkMergeIntegrationTest", test_label)
+        self.assertIn("SingleBranchExecutorTest", test_label)
+        self.assertIn("StuckRecoveryTest", test_label)
+        self.assertIn("forward_netbox.tests.test_api_views", test_label)
+        self.assertNotIn("ForwardExecutionRunAPIViewTest", test_label)
+        self.assertNotIn("test_synthetic_scenarios", test_label)
+
+    def test_github_ci_uses_current_scenario_tests(self):
+        repo_root = Path(__file__).resolve().parents[2]
+        workflow = (repo_root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+
+        for test_label in tasks.SCENARIO_TEST_LABELS.split():
+            self.assertIn(test_label, workflow)
+        self.assertNotIn("test_synthetic_scenarios", workflow)
 
     def test_optimize_runtime_scales_workers_and_tunes_postgres(self):
         context = self._context()
@@ -3894,7 +3913,7 @@ class SharedRuntimeTestGuardTaskTest(unittest.TestCase):
             compose_calls[1],
             (
                 "forward-netbox-ui-test",
-                "up -d --wait --wait-timeout 300 netbox",
+                "up -d --build --wait --wait-timeout 300 netbox",
                 {"FORWARD_NETBOX_HOST_PORT": "18081"},
             ),
         )

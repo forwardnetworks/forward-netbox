@@ -8,6 +8,7 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
 from django.test import override_settings
+from django.test import SimpleTestCase
 from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
@@ -25,6 +26,7 @@ from forward_netbox.utilities.health import live_source_health_check
 from forward_netbox.utilities.health import sync_health_summary
 from forward_netbox.utilities.health_checks import ingestion_check_message
 from forward_netbox.utilities.health_checks import ingestion_check_status
+from forward_netbox.utilities.health_checks import query_drift_check_message
 from forward_netbox.utilities.health_summary_blocks import large_run_tuning_summary
 from forward_netbox.utilities.query_registry import read_compiled_builtin_query_source
 
@@ -36,6 +38,18 @@ BGP_PLUGIN_CONFIG = {
         "enable_bgp_sync": True,
     },
 }
+
+
+class HealthCheckMessageTest(SimpleTestCase):
+    def test_direct_query_id_guidance_uses_publish_workflow(self):
+        message = query_drift_check_message(
+            [{"severity": "info"}],
+            query_drift_summary={"remediation_actions": []},
+        )
+
+        self.assertIn("Publish Bundled Queries", message)
+        self.assertIn("live repository paths", message)
+        self.assertNotIn("Refresh Query IDs", message)
 
 
 class ForwardSyncHealthTest(TestCase):
@@ -980,37 +994,6 @@ class ForwardSyncHealthTest(TestCase):
         self.assertEqual(path_result["requested_commit_id"], "head")
         self.assertEqual(path_result["commit_binding"], "latest_commit")
 
-    def test_sync_refresh_query_ids_posts_to_repair_action(self):
-        self.client.force_login(self.user)
-        result = Mock(matched=True)
-        client = Mock()
-        with patch.object(ForwardSource, "get_client", return_value=client), patch(
-            "forward_netbox.views.refresh_query_id_bindings_from_repository_folder",
-            return_value=[result],
-        ) as refresh_query_ids:
-            response = self.client.post(
-                reverse(
-                    "plugins:forward_netbox:forwardsync_refresh_query_ids",
-                    kwargs={"pk": self.sync.pk},
-                )
-            )
-
-        self.assertEqual(response.status_code, 302)
-        self.assertEqual(
-            response["Location"],
-            reverse(
-                "plugins:forward_netbox:forwardsync_health",
-                kwargs={"pk": self.sync.pk},
-            ),
-        )
-        refresh_query_ids.assert_called_once()
-        self.assertEqual(refresh_query_ids.call_args.kwargs["client"], client)
-        self.assertEqual(
-            refresh_query_ids.call_args.kwargs["directory"],
-            "/forward_netbox_validation/",
-        )
-        self.assertFalse(refresh_query_ids.call_args.kwargs["pin_commit"])
-
     def test_sync_publish_bundled_queries_posts_to_repair_action(self):
         self.client.force_login(self.user)
         result = Mock(matched=True)
@@ -1064,7 +1047,8 @@ class ForwardSyncHealthTest(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Query Drift")
-        self.assertContains(response, "Refresh Query IDs")
+        self.assertContains(response, "Publish Bundled Queries")
+        self.assertNotContains(response, "Refresh Query IDs")
         self.assertContains(response, "Preview Dependencies")
         self.assertContains(
             response,
@@ -1420,3 +1404,277 @@ class ForwardSyncHealthTest(TestCase):
             source=source,
             parameters={"snapshot_id": "latestProcessed"},
         )
+
+
+class DLMHardwareNoticeAliasCheckTest(TestCase):
+    """#1: config-time base/alias hardware-notice mismatch warning."""
+
+    def _map(self, name, model_string="netbox_dlm.hardwarenotice", enabled=True):
+        return Mock(name=name, model_string=model_string, enabled=enabled)
+
+    def _named(self, name, **kw):
+        m = self._map(name, **kw)
+        m.name = name
+        return m
+
+    def test_no_notice_map_returns_none(self):
+        from forward_netbox.utilities.health_checks import (
+            dlm_hardware_notice_alias_check,
+        )
+
+        self.assertIsNone(dlm_hardware_notice_alias_check([]))
+
+    def test_alias_query_with_base_notice_warns(self):
+        from forward_netbox.utilities.health_checks import (
+            dlm_hardware_notice_alias_check,
+        )
+
+        maps = [
+            self._named(
+                "Forward Devices with NetBox Device Type Aliases",
+                model_string="dcim.devicetype",
+            ),
+            self._named("Forward DLM Hardware Notices"),
+        ]
+        result = dlm_hardware_notice_alias_check(maps)
+        self.assertEqual(result["status"], "warn")
+        self.assertIn("alias-aware device query", result["message"])
+
+    def test_matched_variants_pass(self):
+        from forward_netbox.utilities.health_checks import (
+            dlm_hardware_notice_alias_check,
+        )
+
+        maps = [
+            self._named(
+                "Forward Devices with NetBox Device Type Aliases",
+                model_string="dcim.devicetype",
+            ),
+            self._named("Forward DLM Hardware Notices with NetBox Aliases"),
+        ]
+        self.assertEqual(dlm_hardware_notice_alias_check(maps)["status"], "pass")
+
+    def test_base_query_with_alias_notice_warns(self):
+        from forward_netbox.utilities.health_checks import (
+            dlm_hardware_notice_alias_check,
+        )
+
+        maps = [
+            self._named("Forward Devices", model_string="dcim.device"),
+            self._named("Forward DLM Hardware Notices with NetBox Aliases"),
+        ]
+        self.assertEqual(dlm_hardware_notice_alias_check(maps)["status"], "warn")
+
+
+class DLMDependencyReadinessCheckTest(TestCase):
+    """#3: readiness signal from the last ingestion's DLM dependency skips."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.source = ForwardSource.objects.create(
+            name="dlm-ready-src",
+            type="saas",
+            url="https://fwd.app",
+            parameters={
+                "username": "u@example.com",
+                "password": "x",
+                "verify": True,
+                "network_id": "n",
+            },
+        )
+        cls.sync = ForwardSync.objects.create(
+            name="dlm-ready-sync",
+            source=cls.source,
+            parameters={"snapshot_id": "latestProcessed"},
+        )
+
+    def _named(self, name, model_string):
+        m = Mock(model_string=model_string, enabled=True)
+        m.name = name
+        return m
+
+    def test_warns_when_last_run_skipped_dlm_rows(self):
+        from forward_netbox.choices import ForwardIngestionPhaseChoices
+        from forward_netbox.models import ForwardIngestionIssue
+        from forward_netbox.utilities.health_checks import (
+            dlm_dependency_readiness_check,
+        )
+
+        ingestion = ForwardIngestion.objects.create(sync=self.sync)
+        for i in range(3):
+            ForwardIngestionIssue.objects.create(
+                ingestion=ingestion,
+                phase=ForwardIngestionPhaseChoices.SYNC,
+                model="netbox_dlm.hardwarenotice",
+                message=f"skip {i}",
+                exception="ForwardDependencySkipError",
+            )
+        maps = [
+            self._named("Forward DLM Hardware Notices", "netbox_dlm.hardwarenotice")
+        ]
+        result = dlm_dependency_readiness_check(maps, ingestion)
+        self.assertEqual(result["status"], "warn")
+        self.assertIn("3 DLM row", result["message"])
+
+    def test_uses_rollup_count_instead_of_persisted_issue_count(self):
+        from forward_netbox.choices import ForwardIngestionPhaseChoices
+        from forward_netbox.models import ForwardIngestionIssue
+        from forward_netbox.utilities.health_checks import (
+            dlm_dependency_readiness_check,
+        )
+
+        ingestion = ForwardIngestion.objects.create(sync=self.sync)
+        for i in range(10):
+            ForwardIngestionIssue.objects.create(
+                ingestion=ingestion,
+                phase=ForwardIngestionPhaseChoices.SYNC,
+                model="netbox_dlm.hardwarenotice",
+                message=f"skip {i}",
+                exception="ForwardDependencySkipError",
+            )
+        ForwardIngestionIssue.objects.create(
+            ingestion=ingestion,
+            phase=ForwardIngestionPhaseChoices.SYNC,
+            model="netbox_dlm.hardwarenotice",
+            message="15 rows skipped",
+            exception="ForwardDependencySkipError",
+            coalesce_fields={
+                "dependency_skip_summary": True,
+                "dependency_skip_count": 15,
+            },
+        )
+        maps = [
+            self._named("Forward DLM Hardware Notices", "netbox_dlm.hardwarenotice")
+        ]
+
+        result = dlm_dependency_readiness_check(maps, ingestion)
+
+        self.assertEqual(result["status"], "warn")
+        self.assertIn("15 DLM row", result["message"])
+
+    def test_pass_when_no_skips(self):
+        from forward_netbox.utilities.health_checks import (
+            dlm_dependency_readiness_check,
+        )
+
+        ingestion = ForwardIngestion.objects.create(sync=self.sync)
+        maps = [
+            self._named("Forward DLM Hardware Notices", "netbox_dlm.hardwarenotice")
+        ]
+        self.assertEqual(
+            dlm_dependency_readiness_check(maps, ingestion)["status"], "pass"
+        )
+
+    def test_none_when_no_dlm_maps_enabled(self):
+        from forward_netbox.utilities.health_checks import (
+            dlm_dependency_readiness_check,
+        )
+
+        ingestion = ForwardIngestion.objects.create(sync=self.sync)
+        self.assertIsNone(dlm_dependency_readiness_check([], ingestion))
+
+
+class EnabledMapModelNotSelectedTest(TestCase):
+    """Correction (Blake 2.5.8): an optional-model map enabled in the NQE Maps
+    list but whose model is NOT selected in the sync runs silently — surface it."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.source = ForwardSource.objects.create(
+            name="darkmap-src",
+            type="saas",
+            url="https://fwd.app",
+            parameters={
+                "username": "u@example.com",
+                "password": "x",
+                "verify": True,
+                "network_id": "n",
+            },
+        )
+
+    def _sync(self, **model_selection):
+        return ForwardSync.objects.create(
+            name=f"darkmap-{len(model_selection)}-{id(model_selection)}",
+            source=self.source,
+            parameters={"snapshot_id": "latestProcessed", **model_selection},
+        )
+
+    def _map(self, name, model_string):
+        m = Mock(model_string=model_string, enabled=True)
+        m.name = name
+        return m
+
+    def test_optional_map_enabled_without_model_selected_flagged(self):
+        from forward_netbox.utilities.health_apply_fetch import model_summary
+
+        # CVE map enabled globally, but netbox_dlm.cve NOT selected on the sync.
+        sync = self._sync()
+        maps = [self._map("Forward DLM CVEs", "netbox_dlm.cve")]
+        summary = model_summary(sync, maps)
+        self.assertEqual(
+            summary["enabled_optional_maps_without_model"], ["Forward DLM CVEs"]
+        )
+
+    def test_selected_optional_model_not_flagged(self):
+        from forward_netbox.utilities.health_apply_fetch import model_summary
+
+        sync = self._sync(**{"netbox_dlm.cve": True})
+        maps = [self._map("Forward DLM CVEs", "netbox_dlm.cve")]
+        summary = model_summary(sync, maps)
+        self.assertEqual(summary["enabled_optional_maps_without_model"], [])
+
+    def test_health_check_warns(self):
+        from forward_netbox.utilities.health_checks import health_checks
+
+        checks = health_checks(
+            sync=self._sync(),
+            maps=[],
+            model_summary={
+                "enabled_models_without_map": [],
+                "enabled_optional_maps_without_model": ["Forward DLM Vulnerabilities"],
+            },
+            query_drift={},
+            query_drift_summary={},
+            raw_maps=[],
+            data_file_maps=[],
+            validation_run=None,
+            latest_ingestion=None,
+            execution_run=None,
+            capacity_summary=None,
+            query_pushdown=None,
+            large_run_tuning=None,
+            dependency_preflight=None,
+            delete_wave=None,
+            throughput=None,
+            compatibility_cache=None,
+            next_run={"mode": "diff_eligible", "message": ""},
+            branching_available_fn=lambda: True,
+        )
+        entry = next(
+            c for c in checks if c["name"] == "Enabled map, model not selected"
+        )
+        self.assertEqual(entry["status"], "warn")
+        self.assertIn("Forward DLM Vulnerabilities", entry["message"])
+
+    def test_sync_health_summary_keeps_unselected_optional_maps_for_check(self):
+        content_type = ContentType.objects.get(app_label="dcim", model="module")
+        ForwardNQEMap.objects.create(
+            name="Test Optional Modules",
+            netbox_model=content_type,
+            query="@query\n",
+            enabled=True,
+        )
+        sync = self._sync()
+
+        summary = sync_health_summary(sync)
+
+        self.assertIn(
+            "Test Optional Modules",
+            summary["models"]["enabled_optional_maps_without_model"],
+        )
+        entry = next(
+            check
+            for check in summary["checks"]
+            if check["name"] == "Enabled map, model not selected"
+        )
+        self.assertEqual(entry["status"], "warn")

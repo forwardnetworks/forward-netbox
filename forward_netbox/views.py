@@ -81,7 +81,6 @@ from .utilities.query_binding import apply_explicit_nqe_map_bindings
 from .utilities.query_binding import build_nqe_map_bindings
 from .utilities.query_binding import live_query_binding_drift
 from .utilities.query_binding import publish_builtin_nqe_map_queries
-from .utilities.query_binding import refresh_query_id_bindings_from_repository_folder
 from .utilities.query_binding import restore_builtin_raw_query_bindings
 from .utilities.support_bundle_archive import support_bundle_zip_response
 from .utilities.sync_state import get_execution_display_state
@@ -1264,58 +1263,6 @@ class ForwardSyncQueryDriftView(BaseObjectView):
         }
         filename = f"forward-sync-{sync.pk}-live-query-drift.json"
         return _download_json_response(json_safe_value(payload), filename)
-
-
-@register_model_view(ForwardSync, "refresh_query_ids", path="refresh-query-ids")
-class ForwardSyncRefreshQueryIdsView(BaseObjectView):
-    queryset = ForwardSync.objects.all()
-
-    def get_required_permission(self):
-        return "forward_netbox.change_forwardnqemap"
-
-    def post(self, request, pk):
-        sync = get_object_or_404(self.queryset, pk=pk)
-        client = sync.source.get_client()
-        maps = [
-            query_map.pk
-            for query_map in sync.get_maps()
-            if sync.is_model_enabled(query_map.model_string)
-        ]
-        queryset = ForwardNQEMap.objects.filter(pk__in=maps).select_related(
-            "netbox_model"
-        )
-        results = refresh_query_id_bindings_from_repository_folder(
-            client=client,
-            directory="/forward_netbox_validation/",
-            repository="org",
-            queryset=queryset,
-            pin_commit=False,
-        )
-        refreshed = [result for result in results if result.matched]
-        skipped = [result for result in results if not result.matched]
-        if refreshed:
-            messages.success(
-                request,
-                _(
-                    "Refreshed %(count)s enabled NQE map(s) to canonical "
-                    "validation-folder query IDs."
-                )
-                % {"count": len(refreshed)},
-            )
-        if skipped:
-            messages.warning(
-                request,
-                _(
-                    "%(count)s NQE map(s) could not be refreshed automatically; "
-                    "export live query drift for details."
-                )
-                % {"count": len(skipped)},
-            )
-        if not refreshed and not skipped:
-            messages.info(request, _("No enabled NQE maps were available to refresh."))
-        return redirect(
-            reverse("plugins:forward_netbox:forwardsync_health", kwargs={"pk": sync.pk})
-        )
 
 
 @register_model_view(

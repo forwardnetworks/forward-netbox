@@ -280,6 +280,11 @@ class ForwardSyncRunner(ForwardSyncRunnerContractMixin, ForwardSyncRunnerAdapter
     # (total + a few examples + the forward_module_readiness remediation) at the
     # end of the model instead of logging a wall of near-identical per-row lines.
     SKIP_WARNING_ROLLUP_REASONS = frozenset({"missing-module-bay", "shared-vip"})
+    # Cap on per-model ForwardDependencySkipError ISSUE ROWS (each distinct
+    # missing parent is a unique message, so they are not deduped). Beyond this
+    # the rows are collapsed into one actionable summary issue per model
+    # (emit_dependency_skip_issue_summary) instead of flooding the panel.
+    DEPENDENCY_SKIP_ISSUE_DETAIL_LIMIT = 10
     MODULE_NATIVE_INVENTORY_PART_TYPES = {
         "FABRIC MODULE",
         "LINE CARD",
@@ -345,6 +350,8 @@ class ForwardSyncRunner(ForwardSyncRunnerContractMixin, ForwardSyncRunnerAdapter
         self._aggregated_skip_warning_counts: dict[tuple[str, str], int] = {}
         self._aggregated_skip_warning_suppressed: dict[tuple[str, str], int] = {}
         self._aggregated_skip_warning_samples: dict[tuple[str, str], list[str]] = {}
+        self._dependency_skip_issue_counts: dict[str, int] = {}
+        self._dependency_skip_issue_samples: dict[str, list[str]] = {}
         self.events_clearer = EventsClearer()
 
     def run(self):

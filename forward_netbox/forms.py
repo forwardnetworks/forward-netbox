@@ -1649,9 +1649,9 @@ class ForwardNQEMapBulkEditForm(NetBoxModelBulkEditForm):
         required=False,
         label="Query Bulk Operation",
         help_text=(
-            "Bulk edit stores direct query IDs for diff support. Choose a "
-            "repository-path operation to resolve the selected queries from the "
-            "selected source and save the current query ID on each map."
+            "Repository-path operations clear direct query IDs and save the "
+            "selected repository paths so each sync resolves the current query. "
+            "Enable commit pinning only when a fixed revision is required."
         ),
     )
     bind_query_source = forms.ModelChoiceField(
@@ -1660,8 +1660,7 @@ class ForwardNQEMapBulkEditForm(NetBoxModelBulkEditForm):
         label="Forward Source for Query Lookup",
         help_text=(
             "Choose the Forward source used to read the repository folder and "
-            "resolve each selected repository path into its current Forward "
-            "query ID."
+            "validate the repository paths selected for these maps."
         ),
     )
     bind_query_repository = forms.ChoiceField(
@@ -1757,8 +1756,8 @@ class ForwardNQEMapBulkEditForm(NetBoxModelBulkEditForm):
                 ),
                 help_text=(
                     "Select the repository query path for this NetBox map. Saving "
-                    "this field resolves and stores the current Forward query ID "
-                    "for diff execution. Leave blank to keep this map unchanged."
+                    "this field stores the path so the current Forward query ID is "
+                    "resolved at sync time. Leave blank to keep this map unchanged."
                 ),
             )
             _configure_api_select(
@@ -1786,7 +1785,7 @@ class ForwardNQEMapBulkEditForm(NetBoxModelBulkEditForm):
             ),
             FieldSet(
                 *self.selected_query_path_fields,
-                name="Map Query ID Choices",
+                name="Map Query Path Choices",
             ),
             FieldSet("enabled", name="Map State"),
         )
