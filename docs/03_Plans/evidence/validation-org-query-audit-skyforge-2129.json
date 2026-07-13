@@ -10,7 +10,7 @@
       "expected_path": "/forward_netbox_validation/forward_locations",
       "filename": "forward_locations.nqe",
       "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
-      "live_query_id": "Q_d2c808e527da7c7b8b6fcef045ce8b0e32b5508b",
+      "live_query_id": "<redacted-query-id>",
       "query_name": "Forward Locations",
       "source_matches": true
     },
@@ -18,7 +18,7 @@
       "expected_path": "/forward_netbox_validation/forward_device_vendors",
       "filename": "forward_device_vendors.nqe",
       "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
-      "live_query_id": "Q_ee27fb7a74b4074f7736391e10093d953f7a454f",
+      "live_query_id": "<redacted-query-id>",
       "query_name": "Forward Device Vendors",
       "source_matches": true
     },
@@ -26,7 +26,7 @@
       "expected_path": "/forward_netbox_validation/forward_device_types",
       "filename": "forward_device_types.nqe",
       "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
-      "live_query_id": "Q_bb37a81ebfd7d401861b0313a1e0c0fefc40991b",
+      "live_query_id": "<redacted-query-id>",
       "query_name": "Forward Device Types",
       "source_matches": true
     },
@@ -34,7 +34,7 @@
       "expected_path": "/forward_netbox_validation/forward_platforms",
       "filename": "forward_platforms.nqe",
       "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
-      "live_query_id": "Q_45f742fd80a8029a0ee28fc9d5a876e0f667818d",
+      "live_query_id": "<redacted-query-id>",
       "query_name": "Forward Platforms",
       "source_matches": true
     },
@@ -42,7 +42,7 @@
       "expected_path": "/forward_netbox_validation/forward_device_models",
       "filename": "forward_device_models.nqe",
       "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
-      "live_query_id": "Q_8c4604c92864a2db73fd8ef6368dc0ca68c799df",
+      "live_query_id": "<redacted-query-id>",
       "query_name": "Forward Device Models",
       "source_matches": true
     },
@@ -50,7 +50,7 @@
       "expected_path": "/forward_netbox_validation/forward_devices",
       "filename": "forward_devices.nqe",
       "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
-      "live_query_id": "Q_8ffcf388c59811c6acc5652a735b5bc63a0b78ba",
+      "live_query_id": "<redacted-query-id>",
       "query_name": "Forward Devices",
       "source_matches": true
     },
@@ -58,7 +58,7 @@
       "expected_path": "/forward_netbox_validation/forward_virtual_chassis",
       "filename": "forward_virtual_chassis.nqe",
       "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
-      "live_query_id": "Q_dde667371bd5475f9849becd57c175c1e459070d",
+      "live_query_id": "<redacted-query-id>",
       "query_name": "Forward Virtual Chassis",
       "source_matches": true
     },
@@ -66,7 +66,7 @@
       "expected_path": "/forward_netbox_validation/forward_device_feature_tags",
       "filename": "forward_device_feature_tags.nqe",
       "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
-      "live_query_id": "Q_13f7d492df81e7f58cd26e3141e7644bd43c5d19",
+      "live_query_id": "<redacted-query-id>",
       "query_name": "Forward Device Feature Tags",
       "source_matches": true
     },
@@ -74,7 +74,7 @@
       "expected_path": "/forward_netbox_validation/forward_interfaces",
       "filename": "forward_interfaces.nqe",
       "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
-      "live_query_id": "Q_5073ff598f8e318a924cd99bbc628f7a6bd07329",
+      "live_query_id": "<redacted-query-id>",
       "query_name": "Forward Interfaces",
       "source_matches": true
     },
@@ -82,7 +82,7 @@
       "expected_path": "/forward_netbox_validation/forward_inferred_interface_cables",
       "filename": "forward_inferred_interface_cables.nqe",
       "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
-      "live_query_id": "Q_f258a2ed5645b8e23db35bd1cdcdcb02433c9fc4",
+      "live_query_id": "<redacted-query-id>",
       "query_name": "Forward Inferred Interface Cables",
       "source_matches": true
     },
@@ -90,7 +90,7 @@
       "expected_path": "/forward_netbox_validation/forward_mac_addresses",
       "filename": "forward_mac_addresses.nqe",
       "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
-      "live_query_id": "Q_6138424e15ae5401565f6def033889e8b5495d19",
+      "live_query_id": "<redacted-query-id>",
       "query_name": "Forward MAC Addresses",
       "source_matches": true
     },
@@ -98,7 +98,7 @@
       "expected_path": "/forward_netbox_validation/forward_vlans",
       "filename": "forward_vlans.nqe",
       "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
-      "live_query_id": "Q_13ddf9f530e222f94b3360eafc94e5af14c48769",
+      "live_query_id": "<redacted-query-id>",
       "query_name": "Forward VLANs",
       "source_matches": true
     },
@@ -106,7 +106,7 @@
       "expected_path": "/forward_netbox_validation/forward_vrfs",
       "filename": "forward_vrfs.nqe",
       "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
-      "live_query_id": "Q_5152e0e3b054b2b25fd7ddacf280032adf740744",
+      "live_query_id": "<redacted-query-id>",
       "query_name": "Forward VRFs",
       "source_matches": true
     },
@@ -114,7 +114,7 @@
       "expected_path": "/forward_netbox_validation/forward_prefixes_ipv4",
       "filename": "forward_prefixes_ipv4.nqe",
       "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
-      "live_query_id": "Q_6a7fd7f122d3b4899e176c553652273631430367",
+      "live_query_id": "<redacted-query-id>",
       "query_name": "Forward IPv4 Prefixes",
       "source_matches": true
     },
@@ -122,7 +122,7 @@
       "expected_path": "/forward_netbox_validation/forward_prefixes_ipv6",
       "filename": "forward_prefixes_ipv6.nqe",
       "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
-      "live_query_id": "Q_31b4961369cca23fdf559e3e11290c6668b4bc16",
+      "live_query_id": "<redacted-query-id>",
       "query_name": "Forward IPv6 Prefixes",
       "source_matches": true
     },
@@ -130,7 +130,7 @@
       "expected_path": "/forward_netbox_validation/forward_ip_addresses",
       "filename": "forward_ip_addresses.nqe",
       "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
-      "live_query_id": "Q_5c98cafd1fe2fc53cc78dcbaea3f45f25b14f41e",
+      "live_query_id": "<redacted-query-id>",
       "query_name": "Forward IP Addresses",
       "source_matches": true
     },
@@ -138,7 +138,7 @@
       "expected_path": "/forward_netbox_validation/forward_hsrp_groups",
       "filename": "forward_hsrp_groups.nqe",
       "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
-      "live_query_id": "Q_af62ebb70c7592e7d531729253fb7810cbf9f5e8",
+      "live_query_id": "<redacted-query-id>",
       "query_name": "Forward HSRP Groups",
       "source_matches": true
     },
@@ -146,7 +146,7 @@
       "expected_path": "/forward_netbox_validation/forward_inventory_items",
       "filename": "forward_inventory_items.nqe",
       "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
-      "live_query_id": "Q_d313963e6ceac113010a5f5ebe29ccb1314f77bd",
+      "live_query_id": "<redacted-query-id>",
       "query_name": "Forward Inventory Items",
       "source_matches": true
     },
@@ -154,7 +154,7 @@
       "expected_path": "/forward_netbox_validation/forward_device_models_with_netbox_aliases",
       "filename": "forward_device_models_with_netbox_aliases.nqe",
       "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
-      "live_query_id": "Q_3748acdd688b718ebe5774a8e7bd180df1120cac",
+      "live_query_id": "<redacted-query-id>",
       "query_name": "Forward Device Models with NetBox Device Type Aliases",
       "source_matches": true
     },
@@ -162,7 +162,7 @@
       "expected_path": "/forward_netbox_validation/forward_devices_with_netbox_aliases",
       "filename": "forward_devices_with_netbox_aliases.nqe",
       "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
-      "live_query_id": "Q_d731a345bf424ef5b81bc62bca99741b6262cb89",
+      "live_query_id": "<redacted-query-id>",
       "query_name": "Forward Devices with NetBox Device Type Aliases",
       "source_matches": true
     },
@@ -170,7 +170,7 @@
       "expected_path": "/forward_netbox_validation/forward_aci_command_inventory",
       "filename": "forward_aci_command_inventory.nqe",
       "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
-      "live_query_id": "Q_f1702b67d264b6692b54b3305cf5361a2be1d74d",
+      "live_query_id": "<redacted-query-id>",
       "query_name": "Forward ACI Command Inventory",
       "source_matches": true
     },
@@ -178,7 +178,7 @@
       "expected_path": "/forward_netbox_validation/forward_device_feature_tags_with_rules",
       "filename": "forward_device_feature_tags_with_rules.nqe",
       "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
-      "live_query_id": "Q_5ae0b59b4799678519acc2bcc04c6da42db782ef",
+      "live_query_id": "<redacted-query-id>",
       "query_name": "Forward Device Feature Tags with Rules",
       "source_matches": true
     },
@@ -186,7 +186,7 @@
       "expected_path": "/forward_netbox_validation/forward_modules",
       "filename": "forward_modules.nqe",
       "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
-      "live_query_id": "Q_f610a210bb70eae65e381c5d60bd8e3b29bed90f",
+      "live_query_id": "<redacted-query-id>",
       "query_name": "Forward Modules",
       "source_matches": true
     },
@@ -194,7 +194,7 @@
       "expected_path": "/forward_netbox_validation/forward_aci_apic_cimc_inventory",
       "filename": "forward_aci_apic_cimc_inventory.nqe",
       "live_commit_id": "be8df934f41448ad9cbcd7edae1a79979675783a",
-      "live_query_id": "Q_bcbbe395125f883112be6f75416cc4f720944d95",
+      "live_query_id": "<redacted-query-id>",
       "query_name": "Forward ACI APIC CIMC Inventory",
       "source_matches": true
     }

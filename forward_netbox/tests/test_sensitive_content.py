@@ -14,6 +14,7 @@ class SensitiveContentTest(TestCase):
         patterns = load_sensitive_patterns(Path.cwd())
         network_id = "".join(["54", "321"])
         snapshot_id = "".join(["98", "765"])
+        query_id = "Q_" + ("a" * 40)
         plus_alias = "".join(["operator", "+tenant", "@forwardnetworks.com"])
 
         findings = scan_text(
@@ -21,6 +22,7 @@ class SensitiveContentTest(TestCase):
                 [
                     f"network-id: {network_id}",
                     f"snapshot {snapshot_id}",
+                    f"query-id: {query_id}",
                     plus_alias,
                 ]
             ),
@@ -28,10 +30,10 @@ class SensitiveContentTest(TestCase):
             patterns=patterns,
         )
 
-        self.assertEqual(len(findings), 3)
+        self.assertEqual(len(findings), 4)
         self.assertEqual(
             [finding.line_number for finding in findings],
-            [1, 2, 3],
+            [1, 2, 3, 4],
         )
 
     def test_builtin_patterns_ignore_generic_api_field_names(self):

@@ -749,7 +749,7 @@
       "expected_path": "/forward_netbox_validation/forward_locations",
       "filename": "forward_locations.nqe",
       "live_commit_id": "",
-      "live_query_id": "Q_e03711498f08f101281e800327c9ea7fdbaff0b7",
+      "live_query_id": "<redacted-query-id>",
       "message": "Forward repository query was found, but the API response did not include source text for comparison.",
       "query_name": "Forward Locations",
       "remediation": "Republish the bundled query set or fix the repository API response so query source can be verified."
@@ -759,7 +759,7 @@
       "expected_path": "/forward_netbox_validation/forward_device_vendors",
       "filename": "forward_device_vendors.nqe",
       "live_commit_id": "",
-      "live_query_id": "Q_9280ab83e4629d0c2adfcd8e471c6fb1f13023e7",
+      "live_query_id": "<redacted-query-id>",
       "message": "Forward repository query was found, but the API response did not include source text for comparison.",
       "query_name": "Forward Device Vendors",
       "remediation": "Republish the bundled query set or fix the repository API response so query source can be verified."
@@ -769,7 +769,7 @@
       "expected_path": "/forward_netbox_validation/forward_device_types",
       "filename": "forward_device_types.nqe",
       "live_commit_id": "",
-      "live_query_id": "Q_c0684e140d6575882baeaaa58e2e2184d6fa8141",
+      "live_query_id": "<redacted-query-id>",
       "message": "Forward repository query was found, but the API response did not include source text for comparison.",
       "query_name": "Forward Device Types",
       "remediation": "Republish the bundled query set or fix the repository API response so query source can be verified."
@@ -779,7 +779,7 @@
       "expected_path": "/forward_netbox_validation/forward_platforms",
       "filename": "forward_platforms.nqe",
       "live_commit_id": "",
-      "live_query_id": "Q_154ce88d2f6b9e896aff0e3d925a682d7d4247ad",
+      "live_query_id": "<redacted-query-id>",
       "message": "Forward repository query was found, but the API response did not include source text for comparison.",
       "query_name": "Forward Platforms",
       "remediation": "Republish the bundled query set or fix the repository API response so query source can be verified."
@@ -789,7 +789,7 @@
       "expected_path": "/forward_netbox_validation/forward_device_models",
       "filename": "forward_device_models.nqe",
       "live_commit_id": "",
-      "live_query_id": "Q_3a3d430d498f5b067c9192071f3ba26b77149fd2",
+      "live_query_id": "<redacted-query-id>",
       "message": "Forward repository query was found, but the API response did not include source text for comparison.",
       "query_name": "Forward Device Models",
       "remediation": "Republish the bundled query set or fix the repository API response so query source can be verified."
@@ -799,7 +799,7 @@
       "expected_path": "/forward_netbox_validation/forward_devices",
       "filename": "forward_devices.nqe",
       "live_commit_id": "",
-      "live_query_id": "Q_165cd577bd4824d31f8be0ecbb34554488ab1935",
+      "live_query_id": "<redacted-query-id>",
       "message": "Forward repository query was found, but the API response did not include source text for comparison.",
       "query_name": "Forward Devices",
       "remediation": "Republish the bundled query set or fix the repository API response so query source can be verified."
@@ -809,7 +809,7 @@
       "expected_path": "/forward_netbox_validation/forward_virtual_chassis",
       "filename": "forward_virtual_chassis.nqe",
       "live_commit_id": "",
-      "live_query_id": "Q_323e8fd4d193019bbab372c0a38520f1b8329447",
+      "live_query_id": "<redacted-query-id>",
       "message": "Forward repository query was found, but the API response did not include source text for comparison.",
       "query_name": "Forward Virtual Chassis",
       "remediation": "Republish the bundled query set or fix the repository API response so query source can be verified."
@@ -819,7 +819,7 @@
       "expected_path": "/forward_netbox_validation/forward_device_feature_tags",
       "filename": "forward_device_feature_tags.nqe",
       "live_commit_id": "",
-      "live_query_id": "Q_22a01ad9fbe2e87d1743a7138cec7c11cac488f1",
+      "live_query_id": "<redacted-query-id>",
       "message": "Forward repository query was found, but the API response did not include source text for comparison.",
       "query_name": "Forward Device Feature Tags",
       "remediation": "Republish the bundled query set or fix the repository API response so query source can be verified."
@@ -829,7 +829,7 @@
       "expected_path": "/forward_netbox_validation/forward_interfaces",
       "filename": "forward_interfaces.nqe",
       "live_commit_id": "",
-      "live_query_id": "Q_6880f8f10067fe097663658dad78408186028ae5",
+      "live_query_id": "<redacted-query-id>",
       "message": "Forward repository query was found, but the API response did not include source text for comparison.",
       "query_name": "Forward Interfaces",
       "remediation": "Republish the bundled query set or fix the repository API response so query source can be verified."
@@ -839,7 +839,7 @@
       "expected_path": "/forward_netbox_validation/forward_inferred_interface_cables",
       "filename": "forward_inferred_interface_cables.nqe",
       "live_commit_id": "",
-      "live_query_id": "Q_e2d9446ad61046a3e59fdeec7a019b81be359ed7",
+      "live_query_id": "<redacted-query-id>",
       "message": "Forward repository query was found, but the API response did not include source text for comparison.",
       "query_name": "Forward Inferred Interface Cables",
       "remediation": "Republish the bundled query set or fix the repository API response so query source can be verified."
@@ -849,7 +849,7 @@
       "expected_path": "/forward_netbox_validation/forward_mac_addresses",
       "filename": "forward_mac_addresses.nqe",
       "live_commit_id": "",
-      "live_query_id": "Q_6e89803f86d96513a16791037ea1149d28c60de9",
+      "live_query_id": "<redacted-query-id>",
       "message": "Forward repository query was found, but the API response did not include source text for comparison.",
       "query_name": "Forward MAC Addresses",
       "remediation": "Republish the bundled query set or fix the repository API response so query source can be verified."
@@ -859,7 +859,7 @@
       "expected_path": "/forward_netbox_validation/forward_vlans",
       "filename": "forward_vlans.nqe",
       "live_commit_id": "",
-      "live_query_id": "Q_4641f6889770ea70562d2ba62f4452e4fb995803",
+      "live_query_id": "<redacted-query-id>",
       "message": "Forward repository query was found, but the API response did not include source text for comparison.",
       "query_name": "Forward VLANs",
       "remediation": "Republish the bundled query set or fix the repository API response so query source can be verified."
@@ -869,7 +869,7 @@
       "expected_path": "/forward_netbox_validation/forward_vrfs",
       "filename": "forward_vrfs.nqe",
       "live_commit_id": "",
-      "live_query_id": "Q_37de0d95162018c801c95ca15b3101816d5fd806",
+      "live_query_id": "<redacted-query-id>",
       "message": "Forward repository query was found, but the API response did not include source text for comparison.",
       "query_name": "Forward VRFs",
       "remediation": "Republish the bundled query set or fix the repository API response so query source can be verified."
@@ -879,7 +879,7 @@
       "expected_path": "/forward_netbox_validation/forward_prefixes_ipv4",
       "filename": "forward_prefixes_ipv4.nqe",
       "live_commit_id": "",
-      "live_query_id": "Q_531c736e897e14cd81dc10df052bc7ca8a157284",
+      "live_query_id": "<redacted-query-id>",
       "message": "Forward repository query was found, but the API response did not include source text for comparison.",
       "query_name": "Forward IPv4 Prefixes",
       "remediation": "Republish the bundled query set or fix the repository API response so query source can be verified."
@@ -889,7 +889,7 @@
       "expected_path": "/forward_netbox_validation/forward_prefixes_ipv6",
       "filename": "forward_prefixes_ipv6.nqe",
       "live_commit_id": "",
-      "live_query_id": "Q_1763b4d03c3bfe6c82032770c6788f6752bcf801",
+      "live_query_id": "<redacted-query-id>",
       "message": "Forward repository query was found, but the API response did not include source text for comparison.",
       "query_name": "Forward IPv6 Prefixes",
       "remediation": "Republish the bundled query set or fix the repository API response so query source can be verified."
@@ -899,7 +899,7 @@
       "expected_path": "/forward_netbox_validation/forward_ip_addresses",
       "filename": "forward_ip_addresses.nqe",
       "live_commit_id": "",
-      "live_query_id": "Q_035408308b0e2192d047e08209b65b6253791faa",
+      "live_query_id": "<redacted-query-id>",
       "message": "Forward repository query was found, but the API response did not include source text for comparison.",
       "query_name": "Forward IP Addresses",
       "remediation": "Republish the bundled query set or fix the repository API response so query source can be verified."
@@ -909,7 +909,7 @@
       "expected_path": "/forward_netbox_validation/forward_hsrp_groups",
       "filename": "forward_hsrp_groups.nqe",
       "live_commit_id": "",
-      "live_query_id": "Q_c891889b4a0320c069860a935cb4e52a46744b58",
+      "live_query_id": "<redacted-query-id>",
       "message": "Forward repository query was found, but the API response did not include source text for comparison.",
       "query_name": "Forward HSRP Groups",
       "remediation": "Republish the bundled query set or fix the repository API response so query source can be verified."
@@ -919,7 +919,7 @@
       "expected_path": "/forward_netbox_validation/forward_inventory_items",
       "filename": "forward_inventory_items.nqe",
       "live_commit_id": "",
-      "live_query_id": "Q_2bfb68cd5615e65b59d4b66ac7aec71b36f5dbbc",
+      "live_query_id": "<redacted-query-id>",
       "message": "Forward repository query was found, but the API response did not include source text for comparison.",
       "query_name": "Forward Inventory Items",
       "remediation": "Republish the bundled query set or fix the repository API response so query source can be verified."
@@ -929,7 +929,7 @@
       "expected_path": "/forward_netbox_validation/forward_device_models_with_netbox_aliases",
       "filename": "forward_device_models_with_netbox_aliases.nqe",
       "live_commit_id": "",
-      "live_query_id": "Q_cfde8285a47d6d75cc845391ccf96deb4231cd42",
+      "live_query_id": "<redacted-query-id>",
       "message": "Forward repository query was found, but the API response did not include source text for comparison.",
       "query_name": "Forward Device Models with NetBox Device Type Aliases",
       "remediation": "Republish the bundled query set or fix the repository API response so query source can be verified."
@@ -939,7 +939,7 @@
       "expected_path": "/forward_netbox_validation/forward_devices_with_netbox_aliases",
       "filename": "forward_devices_with_netbox_aliases.nqe",
       "live_commit_id": "",
-      "live_query_id": "Q_d9b48989eeb91a758750d76a27d6f7d13d07ca9f",
+      "live_query_id": "<redacted-query-id>",
       "message": "Forward repository query was found, but the API response did not include source text for comparison.",
       "query_name": "Forward Devices with NetBox Device Type Aliases",
       "remediation": "Republish the bundled query set or fix the repository API response so query source can be verified."
@@ -949,7 +949,7 @@
       "expected_path": "/forward_netbox_validation/forward_aci_command_inventory",
       "filename": "forward_aci_command_inventory.nqe",
       "live_commit_id": "",
-      "live_query_id": "Q_32666e931a1ae14d9db84baf4e77af2cd55198c9",
+      "live_query_id": "<redacted-query-id>",
       "message": "Forward repository query was found, but the API response did not include source text for comparison.",
       "query_name": "Forward ACI Command Inventory",
       "remediation": "Republish the bundled query set or fix the repository API response so query source can be verified."
@@ -959,7 +959,7 @@
       "expected_path": "/forward_netbox_validation/forward_device_feature_tags_with_rules",
       "filename": "forward_device_feature_tags_with_rules.nqe",
       "live_commit_id": "",
-      "live_query_id": "Q_f5a0f5758c42e1a0ada125734ca24dfe2601f1cf",
+      "live_query_id": "<redacted-query-id>",
       "message": "Forward repository query was found, but the API response did not include source text for comparison.",
       "query_name": "Forward Device Feature Tags with Rules",
       "remediation": "Republish the bundled query set or fix the repository API response so query source can be verified."
@@ -969,7 +969,7 @@
       "expected_path": "/forward_netbox_validation/forward_modules",
       "filename": "forward_modules.nqe",
       "live_commit_id": "",
-      "live_query_id": "Q_e96fce329ede6af94473b196504c3632378c9c4d",
+      "live_query_id": "<redacted-query-id>",
       "message": "Forward repository query was found, but the API response did not include source text for comparison.",
       "query_name": "Forward Modules",
       "remediation": "Republish the bundled query set or fix the repository API response so query source can be verified."
@@ -979,7 +979,7 @@
       "expected_path": "/forward_netbox_validation/forward_bgp_peers",
       "filename": "forward_bgp_peers.nqe",
       "live_commit_id": "",
-      "live_query_id": "Q_86122238295606b6206c52ec2b92413303235e42",
+      "live_query_id": "<redacted-query-id>",
       "message": "Forward repository query was found, but the API response did not include source text for comparison.",
       "query_name": "Forward BGP Peers",
       "remediation": "Republish the bundled query set or fix the repository API response so query source can be verified."
@@ -989,7 +989,7 @@
       "expected_path": "/forward_netbox_validation/forward_bgp_address_families",
       "filename": "forward_bgp_address_families.nqe",
       "live_commit_id": "",
-      "live_query_id": "Q_87c0fd3f6c838d1c10c34d1dfd03e6ba9f5edbf0",
+      "live_query_id": "<redacted-query-id>",
       "message": "Forward repository query was found, but the API response did not include source text for comparison.",
       "query_name": "Forward BGP Address Families",
       "remediation": "Republish the bundled query set or fix the repository API response so query source can be verified."
@@ -999,7 +999,7 @@
       "expected_path": "/forward_netbox_validation/forward_bgp_peer_address_families",
       "filename": "forward_bgp_peer_address_families.nqe",
       "live_commit_id": "",
-      "live_query_id": "Q_431c02e31c749e6c5e34f6fe6378225a7615a7f1",
+      "live_query_id": "<redacted-query-id>",
       "message": "Forward repository query was found, but the API response did not include source text for comparison.",
       "query_name": "Forward BGP Peer Address Families",
       "remediation": "Republish the bundled query set or fix the repository API response so query source can be verified."
@@ -1009,7 +1009,7 @@
       "expected_path": "/forward_netbox_validation/forward_ospf_instances",
       "filename": "forward_ospf_instances.nqe",
       "live_commit_id": "",
-      "live_query_id": "Q_33c9b6ccf8b26b3ed389f596478f4b67eada6e9f",
+      "live_query_id": "<redacted-query-id>",
       "message": "Forward repository query was found, but the API response did not include source text for comparison.",
       "query_name": "Forward OSPF Instances",
       "remediation": "Republish the bundled query set or fix the repository API response so query source can be verified."
@@ -1019,7 +1019,7 @@
       "expected_path": "/forward_netbox_validation/forward_ospf_areas",
       "filename": "forward_ospf_areas.nqe",
       "live_commit_id": "",
-      "live_query_id": "Q_fc833fc4904081d2d4724e92b284100ff772e36f",
+      "live_query_id": "<redacted-query-id>",
       "message": "Forward repository query was found, but the API response did not include source text for comparison.",
       "query_name": "Forward OSPF Areas",
       "remediation": "Republish the bundled query set or fix the repository API response so query source can be verified."
@@ -1029,7 +1029,7 @@
       "expected_path": "/forward_netbox_validation/forward_ospf_interfaces",
       "filename": "forward_ospf_interfaces.nqe",
       "live_commit_id": "",
-      "live_query_id": "Q_f092716726503224dac0697a64e7f8eba37ace3d",
+      "live_query_id": "<redacted-query-id>",
       "message": "Forward repository query was found, but the API response did not include source text for comparison.",
       "query_name": "Forward OSPF Interfaces",
       "remediation": "Republish the bundled query set or fix the repository API response so query source can be verified."
@@ -1039,7 +1039,7 @@
       "expected_path": "/forward_netbox_validation/forward_peering_sessions",
       "filename": "forward_peering_sessions.nqe",
       "live_commit_id": "",
-      "live_query_id": "Q_c954faafdef590d7b98221974b1a08f9884e6c32",
+      "live_query_id": "<redacted-query-id>",
       "message": "Forward repository query was found, but the API response did not include source text for comparison.",
       "query_name": "Forward Peering Sessions",
       "remediation": "Republish the bundled query set or fix the repository API response so query source can be verified."
@@ -1049,7 +1049,7 @@
       "expected_path": "/forward_netbox_validation/forward_aci_fabrics",
       "filename": "forward_aci_fabrics.nqe",
       "live_commit_id": "",
-      "live_query_id": "Q_910ec49fd4ed600ba850c79e2b718224771ea0b2",
+      "live_query_id": "<redacted-query-id>",
       "message": "Forward repository query was found, but the API response did not include source text for comparison.",
       "query_name": "Forward ACI Fabrics",
       "remediation": "Republish the bundled query set or fix the repository API response so query source can be verified."
@@ -1059,7 +1059,7 @@
       "expected_path": "/forward_netbox_validation/forward_aci_pods",
       "filename": "forward_aci_pods.nqe",
       "live_commit_id": "",
-      "live_query_id": "Q_3eabba5698b22048305cecd9a20fb05a117bd81a",
+      "live_query_id": "<redacted-query-id>",
       "message": "Forward repository query was found, but the API response did not include source text for comparison.",
       "query_name": "Forward ACI Pods",
       "remediation": "Republish the bundled query set or fix the repository API response so query source can be verified."
@@ -1069,7 +1069,7 @@
       "expected_path": "/forward_netbox_validation/forward_aci_nodes",
       "filename": "forward_aci_nodes.nqe",
       "live_commit_id": "",
-      "live_query_id": "Q_4689ea72c2f43ed85f75f953d2ab07b89b6c80ba",
+      "live_query_id": "<redacted-query-id>",
       "message": "Forward repository query was found, but the API response did not include source text for comparison.",
       "query_name": "Forward ACI Nodes",
       "remediation": "Republish the bundled query set or fix the repository API response so query source can be verified."
@@ -1079,7 +1079,7 @@
       "expected_path": "/forward_netbox_validation/forward_aci_apic_nodes",
       "filename": "forward_aci_apic_nodes.nqe",
       "live_commit_id": "",
-      "live_query_id": "Q_b8c2765b54098a6c00d06ace1c018c16769ce7ad",
+      "live_query_id": "<redacted-query-id>",
       "message": "Forward repository query was found, but the API response did not include source text for comparison.",
       "query_name": "Forward ACI APIC Nodes",
       "remediation": "Republish the bundled query set or fix the repository API response so query source can be verified."
@@ -1089,7 +1089,7 @@
       "expected_path": "/forward_netbox_validation/forward_aci_tenants",
       "filename": "forward_aci_tenants.nqe",
       "live_commit_id": "",
-      "live_query_id": "Q_618c7508dd5dc4eb8eeccbe4cbd89d7c142eebf1",
+      "live_query_id": "<redacted-query-id>",
       "message": "Forward repository query was found, but the API response did not include source text for comparison.",
       "query_name": "Forward ACI Tenants",
       "remediation": "Republish the bundled query set or fix the repository API response so query source can be verified."
@@ -1099,7 +1099,7 @@
       "expected_path": "/forward_netbox_validation/forward_aci_vrfs",
       "filename": "forward_aci_vrfs.nqe",
       "live_commit_id": "",
-      "live_query_id": "Q_e8977db98a54642ed3afed3ad80479768b5d89ea",
+      "live_query_id": "<redacted-query-id>",
       "message": "Forward repository query was found, but the API response did not include source text for comparison.",
       "query_name": "Forward ACI VRFs",
       "remediation": "Republish the bundled query set or fix the repository API response so query source can be verified."
@@ -1109,7 +1109,7 @@
       "expected_path": "/forward_netbox_validation/forward_aci_bridge_domains",
       "filename": "forward_aci_bridge_domains.nqe",
       "live_commit_id": "",
-      "live_query_id": "Q_f21e3222cf2fc1624fbb95495788faf601dc34c7",
+      "live_query_id": "<redacted-query-id>",
       "message": "Forward repository query was found, but the API response did not include source text for comparison.",
       "query_name": "Forward ACI Bridge Domains",
       "remediation": "Republish the bundled query set or fix the repository API response so query source can be verified."
@@ -1119,7 +1119,7 @@
       "expected_path": "/forward_netbox_validation/forward_aci_app_profiles",
       "filename": "forward_aci_app_profiles.nqe",
       "live_commit_id": "",
-      "live_query_id": "Q_c8c5b18392f62f3c8073b9acb5fd6380fa1fd2f5",
+      "live_query_id": "<redacted-query-id>",
       "message": "Forward repository query was found, but the API response did not include source text for comparison.",
       "query_name": "Forward ACI Application Profiles",
       "remediation": "Republish the bundled query set or fix the repository API response so query source can be verified."
@@ -1129,7 +1129,7 @@
       "expected_path": "/forward_netbox_validation/forward_aci_endpoint_groups",
       "filename": "forward_aci_endpoint_groups.nqe",
       "live_commit_id": "",
-      "live_query_id": "Q_58b65b01d794787f889d29697568aec26ee94298",
+      "live_query_id": "<redacted-query-id>",
       "message": "Forward repository query was found, but the API response did not include source text for comparison.",
       "query_name": "Forward ACI Endpoint Groups",
       "remediation": "Republish the bundled query set or fix the repository API response so query source can be verified."
@@ -1139,7 +1139,7 @@
       "expected_path": "/forward_netbox_validation/forward_aci_contracts",
       "filename": "forward_aci_contracts.nqe",
       "live_commit_id": "",
-      "live_query_id": "Q_b9caa70d54dbfd46fa6c272cdc9e6c2f58fe8676",
+      "live_query_id": "<redacted-query-id>",
       "message": "Forward repository query was found, but the API response did not include source text for comparison.",
       "query_name": "Forward ACI Contracts",
       "remediation": "Republish the bundled query set or fix the repository API response so query source can be verified."
@@ -1149,7 +1149,7 @@
       "expected_path": "/forward_netbox_validation/forward_aci_filters",
       "filename": "forward_aci_filters.nqe",
       "live_commit_id": "",
-      "live_query_id": "Q_0850326144e513c4383885fac8d39425de35a768",
+      "live_query_id": "<redacted-query-id>",
       "message": "Forward repository query was found, but the API response did not include source text for comparison.",
       "query_name": "Forward ACI Filters",
       "remediation": "Republish the bundled query set or fix the repository API response so query source can be verified."
@@ -1159,7 +1159,7 @@
       "expected_path": "/forward_netbox_validation/forward_aci_l3outs",
       "filename": "forward_aci_l3outs.nqe",
       "live_commit_id": "",
-      "live_query_id": "Q_bf8412aca8f09985cd18cc93ead3ea1c87733663",
+      "live_query_id": "<redacted-query-id>",
       "message": "Forward repository query was found, but the API response did not include source text for comparison.",
       "query_name": "Forward ACI L3Outs",
       "remediation": "Republish the bundled query set or fix the repository API response so query source can be verified."
@@ -1169,7 +1169,7 @@
       "expected_path": "/forward_netbox_validation/forward_aci_static_port_bindings",
       "filename": "forward_aci_static_port_bindings.nqe",
       "live_commit_id": "",
-      "live_query_id": "Q_c83bffef606c4127546922b34ea7e9ed12896827",
+      "live_query_id": "<redacted-query-id>",
       "message": "Forward repository query was found, but the API response did not include source text for comparison.",
       "query_name": "Forward ACI Static Port Bindings",
       "remediation": "Republish the bundled query set or fix the repository API response so query source can be verified."

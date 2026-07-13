@@ -62,7 +62,7 @@ custom-command parsing or additional per-device API calls.
   - Parameterized shard-key execution returned exactly 1 matching row for a
     single APIC device shard key.
   - Saved org query execution returned 3 CIMC inventory rows from query ID
-    `Q_86e416941c39ed12a71488d6461fa87c1e94e3b6`.
+    `<redacted-query-id>`.
   - The saved-query proof used one NQE page and reported no HTTP failures,
     retries, or 429 responses.
 
