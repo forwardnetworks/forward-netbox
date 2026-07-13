@@ -1552,3 +1552,86 @@ class DLMDependencyReadinessCheckTest(TestCase):
 
         ingestion = ForwardIngestion.objects.create(sync=self.sync)
         self.assertIsNone(dlm_dependency_readiness_check([], ingestion))
+
+
+class EnabledMapModelNotSelectedTest(TestCase):
+    """Correction (Blake 2.5.8): an optional-model map enabled in the NQE Maps
+    list but whose model is NOT selected in the sync runs silently — surface it."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.source = ForwardSource.objects.create(
+            name="darkmap-src",
+            type="saas",
+            url="https://fwd.app",
+            parameters={
+                "username": "u@example.com",
+                "password": "x",
+                "verify": True,
+                "network_id": "n",
+            },
+        )
+
+    def _sync(self, **model_selection):
+        return ForwardSync.objects.create(
+            name=f"darkmap-{len(model_selection)}-{id(model_selection)}",
+            source=self.source,
+            parameters={"snapshot_id": "latestProcessed", **model_selection},
+        )
+
+    def _map(self, name, model_string):
+        m = Mock(model_string=model_string, enabled=True)
+        m.name = name
+        return m
+
+    def test_optional_map_enabled_without_model_selected_flagged(self):
+        from forward_netbox.utilities.health_apply_fetch import model_summary
+
+        # CVE map enabled globally, but netbox_dlm.cve NOT selected on the sync.
+        sync = self._sync()
+        maps = [self._map("Forward DLM CVEs", "netbox_dlm.cve")]
+        summary = model_summary(sync, maps)
+        self.assertEqual(
+            summary["enabled_optional_maps_without_model"], ["Forward DLM CVEs"]
+        )
+
+    def test_selected_optional_model_not_flagged(self):
+        from forward_netbox.utilities.health_apply_fetch import model_summary
+
+        sync = self._sync(**{"netbox_dlm.cve": True})
+        maps = [self._map("Forward DLM CVEs", "netbox_dlm.cve")]
+        summary = model_summary(sync, maps)
+        self.assertEqual(summary["enabled_optional_maps_without_model"], [])
+
+    def test_health_check_warns(self):
+        from forward_netbox.utilities.health_checks import health_checks
+
+        checks = health_checks(
+            sync=self._sync(),
+            maps=[],
+            model_summary={
+                "enabled_models_without_map": [],
+                "enabled_optional_maps_without_model": ["Forward DLM Vulnerabilities"],
+            },
+            query_drift={},
+            query_drift_summary={},
+            raw_maps=[],
+            data_file_maps=[],
+            validation_run=None,
+            latest_ingestion=None,
+            execution_run=None,
+            capacity_summary=None,
+            query_pushdown=None,
+            large_run_tuning=None,
+            dependency_preflight=None,
+            delete_wave=None,
+            throughput=None,
+            compatibility_cache=None,
+            next_run={"mode": "diff_eligible", "message": ""},
+            branching_available_fn=lambda: True,
+        )
+        entry = next(
+            c for c in checks if c["name"] == "Enabled map, model not selected"
+        )
+        self.assertEqual(entry["status"], "warn")
+        self.assertIn("Forward DLM Vulnerabilities", entry["message"])

@@ -190,6 +190,12 @@ the sync **Health** panel now flags the two common causes:
   mismatch skips every notice ("device type not in NetBox yet"). Switch to
   **"Forward DLM Hardware Notices with NetBox Aliases"** when you run the
   alias-aware device query.
+- **Enabled map, model not selected** — the most common DLM surprise:
+  enabling a map in the **NQE Maps** list is *not* enough. The map only runs
+  if its **model** is also checked in the sync's **Model Selection** (optional
+  models like `netbox_dlm.cve` / `netbox_dlm.vulnerability` default to off).
+  This warns when an optional-model map is enabled but its model is unselected
+  — the map produces nothing, silently.
 - **DLM dependency readiness** — warns when the last run skipped DLM rows
   because their device types / devices aren't synced. DLM notices and
   vulnerabilities hang off synced devices, so fix device (and device-type)

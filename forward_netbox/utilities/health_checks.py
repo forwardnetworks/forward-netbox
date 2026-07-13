@@ -72,6 +72,25 @@ def health_checks(
             ),
         ),
         check(
+            name="Enabled map, model not selected",
+            status=(
+                "warn"
+                if model_summary.get("enabled_optional_maps_without_model")
+                else "pass"
+            ),
+            message=(
+                "Every enabled optional map has its model selected."
+                if not model_summary.get("enabled_optional_maps_without_model")
+                else (
+                    "These maps are enabled but their model is NOT selected in "
+                    "this sync's Model Selection, so they never run and produce "
+                    "nothing: "
+                    + ", ".join(model_summary["enabled_optional_maps_without_model"])
+                    + ". Select the model(s) in Model Selection."
+                )
+            ),
+        ),
+        check(
             name="Diff eligibility",
             status="pass" if next_run["mode"] == "diff_eligible" else "warn",
             message=next_run["message"],
