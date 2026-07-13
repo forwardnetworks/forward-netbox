@@ -55,6 +55,10 @@ BUILTIN_PATTERNS = (
         "Forward snapshot identifier",
         r"\bsnapshot(?:[ _-]?id)?\b[\"']?\s*[:=]?\s*[\"']?\d{5,}\b",
     ),
+    _builtin_pattern(
+        "Forward query identifier",
+        r"\bQ_[0-9a-f]{40}\b",
+    ),
 )
 
 
