@@ -72,6 +72,25 @@ def health_checks(
             ),
         ),
         check(
+            name="Enabled map, model not selected",
+            status=(
+                "warn"
+                if model_summary.get("enabled_optional_maps_without_model")
+                else "pass"
+            ),
+            message=(
+                "Every enabled optional map has its model selected."
+                if not model_summary.get("enabled_optional_maps_without_model")
+                else (
+                    "These maps are enabled but their model is NOT selected in "
+                    "this sync's Model Selection, so they never run and produce "
+                    "nothing: "
+                    + ", ".join(model_summary["enabled_optional_maps_without_model"])
+                    + ". Select the model(s) in Model Selection."
+                )
+            ),
+        ),
+        check(
             name="Diff eligibility",
             status="pass" if next_run["mode"] == "diff_eligible" else "warn",
             message=next_run["message"],
@@ -171,7 +190,128 @@ def health_checks(
     query_fetch = query_fetch_concurrency_check(sync)
     if query_fetch is not None:
         checks.append(query_fetch)
+    dlm_notice = dlm_hardware_notice_alias_check(maps)
+    if dlm_notice is not None:
+        checks.append(dlm_notice)
+    dlm_readiness = dlm_dependency_readiness_check(maps, latest_ingestion)
+    if dlm_readiness is not None:
+        checks.append(dlm_readiness)
     return checks
+
+
+# DLM maps that attach to an already-synced NetBox object: hardware notices need
+# the DeviceType, vulnerabilities/device-software need the Device. If those
+# parents are not synced, the rows skip (ForwardDependencySkipError) and the
+# operator gets silence unless they read the issue list. This surfaces the last
+# run's DLM dependency skips as a readiness signal pointing at the real fix.
+_DLM_DEVICE_DEPENDENT_MODELS = (
+    "netbox_dlm.hardwarenotice",
+    "netbox_dlm.vulnerability",
+    "netbox_dlm.devicesoftware",
+)
+
+
+def dlm_dependency_readiness_check(maps, latest_ingestion):
+    enabled_models = {
+        m.model_string for m in (maps or []) if getattr(m, "enabled", False)
+    }
+    relevant = [
+        model for model in _DLM_DEVICE_DEPENDENT_MODELS if model in enabled_models
+    ]
+    if not relevant or latest_ingestion is None:
+        return None
+    skip_counts = {}
+    for model in relevant:
+        issue_contexts = latest_ingestion.issues.filter(
+            model=model, exception__icontains="ForwardDependencySkipError"
+        ).values_list("coalesce_fields", flat=True)
+        detail_count = 0
+        summary_counts = []
+        for context in issue_contexts:
+            context = context or {}
+            if context.get("dependency_skip_summary"):
+                try:
+                    summary_counts.append(
+                        int(context.get("dependency_skip_count") or 0)
+                    )
+                except (TypeError, ValueError):
+                    pass
+            else:
+                detail_count += 1
+        skip_counts[model] = max([detail_count, *summary_counts])
+    total = sum(skip_counts.values())
+    if total == 0:
+        return check(
+            name="DLM dependency readiness",
+            status="pass",
+            message="Enabled DLM maps found their NetBox parents last run.",
+        )
+    detail = ", ".join(
+        f"{model.split('.')[-1]} ×{count}"
+        for model, count in skip_counts.items()
+        if count
+    )
+    return check(
+        name="DLM dependency readiness",
+        status="warn",
+        message=(
+            f"Last run skipped {total} DLM row(s) ({detail}) because their "
+            "device types / devices are not in NetBox yet. DLM notices and "
+            "vulnerabilities hang off synced devices — fix device (and "
+            "device-type) sync first, then they populate."
+        ),
+    )
+
+
+# The DLM hardware-notice maps look up the NetBox DeviceType by the model name
+# the query emits. The base device query emits the raw Forward PID; the alias
+# variant ("... with NetBox Device Type Aliases") emits the Device-Type-Library
+# name. The base vs alias hardware-notice map must match whichever device query
+# is active, or every notice skips with "device type not in NetBox yet".
+_DLM_NOTICE_BASE = "Forward DLM Hardware Notices"
+_DLM_NOTICE_ALIAS = "Forward DLM Hardware Notices with NetBox Aliases"
+_DEVICE_TYPE_ALIAS_SUFFIX = " with NetBox Device Type Aliases"
+
+
+def dlm_hardware_notice_alias_check(maps):
+    enabled = {m.name for m in (maps or []) if getattr(m, "enabled", False)}
+    if _DLM_NOTICE_BASE not in enabled and _DLM_NOTICE_ALIAS not in enabled:
+        return None  # no hardware-notice map enabled — nothing to check
+    # An alias device-type query is active when any enabled builtin map carries
+    # the device-type alias suffix (it supersedes its base counterpart).
+    alias_device_query = any(
+        name.endswith(_DEVICE_TYPE_ALIAS_SUFFIX) for name in enabled
+    )
+    base_notice = _DLM_NOTICE_BASE in enabled
+    alias_notice = _DLM_NOTICE_ALIAS in enabled
+
+    if alias_device_query and base_notice and not alias_notice:
+        return check(
+            name="DLM hardware-notice alias",
+            status="warn",
+            message=(
+                "You run the alias-aware device query but the base "
+                f"'{_DLM_NOTICE_BASE}' map. Hardware notices look up the raw "
+                "Forward model and will skip ('device type not in NetBox "
+                f"yet'). Enable '{_DLM_NOTICE_ALIAS}' instead."
+            ),
+        )
+    if not alias_device_query and alias_notice and not base_notice:
+        return check(
+            name="DLM hardware-notice alias",
+            status="warn",
+            message=(
+                f"You enabled '{_DLM_NOTICE_ALIAS}' but not the alias-aware "
+                "device query, so notices look up Device-Type-Library names "
+                f"that do not exist. Use '{_DLM_NOTICE_BASE}' instead, or "
+                "enable the alias-aware device query."
+            ),
+        )
+    return check(
+        name="DLM hardware-notice alias",
+        status="pass",
+        message="Hardware-notice map matches the active device query variant.",
+    )
 
 
 def compatibility_cache_check_status(compatibility_cache):
@@ -436,8 +576,9 @@ def query_drift_check_message(query_drift, *, query_drift_summary=None):
     if info_count:
         return (
             f"{info_count} enabled direct-query-ID map(s) require live Forward "
-            f"repository lookup for full drift verification; use Refresh Query "
-            f"IDs after local query edits to keep saved IDs aligned.{remediation_preview}"
+            f"repository lookup for full drift verification; use Publish Bundled "
+            f"Queries to update built-in maps and convert them to live repository "
+            f"paths.{remediation_preview}"
         )
     return f"Enabled maps match local bundled query metadata.{remediation_preview}"
 

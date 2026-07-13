@@ -68,7 +68,9 @@ def _lookup_device_type(runner, row, model_string, object_label):
     if device_type is None:
         raise ForwardDependencySkipError(
             f"Skipping {object_label} because device type `{model or slug}` is "
-            "not in NetBox yet.",
+            "not in NetBox yet. Enable device-type sync; if you run the "
+            "alias-aware device query, use the 'Forward DLM Hardware Notices "
+            "with NetBox Aliases' map so notices look up the same name.",
             model_string=model_string,
             context={"device_type": model or slug},
             data=row,

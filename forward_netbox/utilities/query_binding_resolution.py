@@ -185,12 +185,12 @@ def local_query_binding_drift(query_map: ForwardNQEMap) -> dict:
                 "bundled query source without a live Forward repository lookup."
             ),
             remediation=(
-                "Use Refresh Query IDs on the sync Health page after a local "
-                "query change so the saved direct ID matches the current "
-                "validation-folder query; pin a commit if you need a fixed "
-                "Forward revision."
+                "Use Publish Bundled Queries on the sync Health page to update "
+                "the org query and convert matching built-in maps to live "
+                "repository paths. Keep a direct ID only for an intentional "
+                "custom binding."
             ),
-            remediation_action="refresh_query_ids",
+            remediation_action="publish_bundled_queries",
             expected_filename=expected_filename,
             expected_name=expected_name,
         )
@@ -310,11 +310,11 @@ def _live_drift_for_query_id(
             "live_status": "direct_query_id_not_found",
             "live_message": message,
             "remediation": (
-                "Use Refresh Query IDs on the sync Health page to bind this map "
-                "to the canonical validation-folder query ID; export live query "
-                "drift if the refresh cannot find a match."
+                "Use Publish Bundled Queries on the sync Health page to publish "
+                "the canonical validation-folder query and bind this map to its "
+                "repository path."
             ),
-            "remediation_action": "refresh_query_ids",
+            "remediation_action": "publish_bundled_queries",
         }
     if len(matches) > 1:
         return {
@@ -327,11 +327,11 @@ def _live_drift_for_query_id(
                 "repository path to make drift checks deterministic."
             ),
             "remediation": (
-                "Use Refresh Query IDs on the sync Health page to bind this map "
-                "to the canonical validation-folder query ID, or convert the map "
-                "to a repository path binding if the direct ID remains ambiguous."
+                "Use Publish Bundled Queries on the sync Health page to bind this "
+                "built-in map to its canonical repository path, or edit a custom "
+                "map directly when the ID is intentionally shared."
             ),
-            "remediation_action": "refresh_query_ids",
+            "remediation_action": "publish_bundled_queries",
         }
 
     repository, query = matches[0]
@@ -435,8 +435,8 @@ def _committed_query_source(committed_query: dict) -> str:
 # is expected + non-blocking for org-managed direct query IDs, so it should not
 # read like an error.
 _QUERY_DRIFT_STATUS_LABELS = {
-    "direct_query_id_unverified": "Org-managed (pinned)",
-    "direct_query_id_optin_stale_risk": "Pinned — can't verify locally",
+    "direct_query_id_unverified": "Direct ID (fixed)",
+    "direct_query_id_optin_stale_risk": "Direct ID - can't verify locally",
 }
 
 
@@ -771,25 +771,9 @@ def publish_builtin_nqe_map_queries(
             queryset=ForwardNQEMap.objects.filter(
                 pk__in=map_query_paths.keys()
             ).select_related("netbox_model"),
+            preserve_existing_commit_pin=True,
         ),
     ]
-
-
-def refresh_query_id_bindings_from_repository_folder(
-    *,
-    client,
-    directory: str = "/forward_netbox_validation/",
-    repository: str = "org",
-    queryset=None,
-    pin_commit: bool = False,
-) -> list[NQEMapBinding]:
-    bindings = build_nqe_map_bindings(
-        client=client,
-        repository=repository,
-        directory=directory,
-        pin_commit=pin_commit,
-    )
-    return apply_nqe_map_bindings(bindings, queryset=queryset)
 
 
 def builtin_query_repository_sync_summary(
@@ -1120,30 +1104,19 @@ def apply_nqe_map_bindings(
                 continue
             binding = reference_matches[0]
 
-        query_map.query_id = binding.query_id
-        query_map.query_repository = binding.query_repository
-        query_map.query_path = ""
-        query_map.query = ""
-        query_map.commit_id = binding.commit_id
-        query_map.full_clean()
-        query_map.save(
-            update_fields=[
-                "query_id",
-                "query_repository",
-                "query_path",
-                "query",
-                "commit_id",
-            ]
+        _save_repository_path_binding(
+            query_map,
+            binding,
+            preserve_existing_commit_pin=True,
         )
         applied.append(
             NQEMapBinding(
                 model_string=binding.model_string,
                 query_name=binding.query_name,
                 query_filename=binding.query_filename,
-                query_path="",
+                query_path=binding.query_path,
                 query_repository=binding.query_repository,
-                query_id=binding.query_id,
-                commit_id=binding.commit_id,
+                commit_id=query_map.commit_id,
                 map_id=query_map.pk,
                 matched=True,
             )
@@ -1211,6 +1184,7 @@ def apply_explicit_nqe_map_bindings(
     *,
     query_path_by_map_id: dict[int, str],
     queryset=None,
+    preserve_existing_commit_pin: bool = False,
 ) -> list[NQEMapBinding]:
     queryset = (
         queryset
@@ -1267,32 +1241,47 @@ def apply_explicit_nqe_map_bindings(
             )
             continue
 
-        query_map.query_id = binding.query_id
-        query_map.query_repository = binding.query_repository
-        query_map.query_path = ""
-        query_map.query = ""
-        query_map.commit_id = binding.commit_id
-        query_map.full_clean()
-        query_map.save(
-            update_fields=[
-                "query_id",
-                "query_repository",
-                "query_path",
-                "query",
-                "commit_id",
-            ]
+        _save_repository_path_binding(
+            query_map,
+            binding,
+            preserve_existing_commit_pin=preserve_existing_commit_pin,
         )
         applied.append(
             NQEMapBinding(
                 model_string=binding.model_string,
                 query_name=binding.query_name,
                 query_filename=binding.query_filename,
-                query_path="",
+                query_path=binding.query_path,
                 query_repository=binding.query_repository,
-                query_id=binding.query_id,
-                commit_id=binding.commit_id,
+                commit_id=query_map.commit_id,
                 map_id=query_map.pk,
                 matched=True,
             )
         )
     return applied
+
+
+def _save_repository_path_binding(
+    query_map: ForwardNQEMap,
+    binding: NQEMapBinding,
+    *,
+    preserve_existing_commit_pin: bool,
+) -> None:
+    commit_id = binding.commit_id
+    if preserve_existing_commit_pin and query_map.commit_id:
+        commit_id = query_map.commit_id
+    query_map.query_id = ""
+    query_map.query_repository = binding.query_repository
+    query_map.query_path = binding.query_path
+    query_map.query = ""
+    query_map.commit_id = commit_id
+    query_map.full_clean()
+    query_map.save(
+        update_fields=[
+            "query_id",
+            "query_repository",
+            "query_path",
+            "query",
+            "commit_id",
+        ]
+    )

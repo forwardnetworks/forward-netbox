@@ -25,6 +25,21 @@ ACTIVE_SYNC_STATUSES = ("queued", "syncing", "merging")
 ISOLATED_TEST_PROJECT_NAME = "forward-netbox-test"
 ISOLATED_PLAYWRIGHT_PROJECT_NAME = "forward-netbox-ui-test"
 ISOLATED_PLAYWRIGHT_HOST_PORT = "18080"
+SCENARIO_TEST_LABELS = " ".join(
+    (
+        "forward_netbox.tests.test_bulk_merge.BulkMergeIntegrationTest",
+        "forward_netbox.tests.test_bulk_merge.SingleBranchExecutorTest",
+        "forward_netbox.tests.test_stuck_recovery.StuckRecoveryTest",
+    )
+)
+INGESTION_DELETE_REGRESSION_LABELS = " ".join(
+    (
+        "forward_netbox.tests.test_bulk_merge.SingleBranchExecutorTest."
+        "test_single_branch_repeat_run_applies_delete_phase",
+        "forward_netbox.tests.test_sync.ForwardBranchBudgetPlanTest."
+        "test_branch_plan_splits_mixed_workloads_into_apply_then_delete_phases",
+    )
+)
 
 load_dotenv(os.path.dirname(os.path.abspath(__file__)) + "/development/.env")
 
@@ -356,7 +371,7 @@ def _run_playwright_in_isolated_runtime(context, *, project_name=None, host_port
     try:
         docker_compose(
             isolated,
-            "up -d --wait --wait-timeout 300 netbox",
+            "up -d --build --wait --wait-timeout 300 netbox",
             env=compose_env,
         )
         _run_playwright_ui(
@@ -580,7 +595,7 @@ def scenario_test(context):
     _guard_shared_runtime_tests(context)
     manage_py(
         context,
-        "test --keepdb --noinput forward_netbox.tests.test_synthetic_scenarios",
+        f"test --keepdb --noinput {SCENARIO_TEST_LABELS}",
     )
 
 
@@ -589,18 +604,7 @@ def ingestion_delete_regression(context):
     _guard_shared_runtime_tests(context)
     manage_py(
         context,
-        (
-            "test --keepdb --noinput "
-            "forward_netbox.tests.test_synthetic_scenarios."
-            "SyntheticSyncScenarioHarnessTest."
-            "test_full_site_ingestion_then_diff_delete "
-            "forward_netbox.tests.test_sync."
-            "ForwardBranchBudgetPlanTest."
-            "test_branch_plan_runs_prune_deletes_in_dependency_order "
-            "forward_netbox.tests.test_sync."
-            "ForwardBranchBudgetPlanTest."
-            "test_branch_plan_splits_mixed_workloads_into_apply_then_delete_phases"
-        ),
+        f"test --keepdb --noinput {INGESTION_DELETE_REGRESSION_LABELS}",
     )
 
 
@@ -616,7 +620,7 @@ def test_ci(context):
 def scenario_test_ci(context):
     _run_tests_with_shared_runtime_fallback(
         context,
-        test_label="forward_netbox.tests.test_synthetic_scenarios",
+        test_label=SCENARIO_TEST_LABELS,
     )
 
 
@@ -624,17 +628,7 @@ def scenario_test_ci(context):
 def ingestion_delete_regression_ci(context):
     _run_tests_with_shared_runtime_fallback(
         context,
-        test_label=(
-            "forward_netbox.tests.test_synthetic_scenarios."
-            "SyntheticSyncScenarioHarnessTest."
-            "test_full_site_ingestion_then_diff_delete "
-            "forward_netbox.tests.test_sync."
-            "ForwardBranchBudgetPlanTest."
-            "test_branch_plan_runs_prune_deletes_in_dependency_order "
-            "forward_netbox.tests.test_sync."
-            "ForwardBranchBudgetPlanTest."
-            "test_branch_plan_splits_mixed_workloads_into_apply_then_delete_phases"
-        ),
+        test_label=INGESTION_DELETE_REGRESSION_LABELS,
     )
 
 
@@ -915,9 +909,9 @@ def scale_chaos_test(context):
         context,
         test_label=(
             "forward_netbox.tests.test_jobs "
-            "forward_netbox.tests.test_api_views.ForwardExecutionRunAPIViewTest "
+            "forward_netbox.tests.test_api_views "
             "forward_netbox.tests.test_log_export "
-            "forward_netbox.tests.test_synthetic_scenarios "
+            f"{SCENARIO_TEST_LABELS} "
             "forward_netbox.tests.test_sync_state"
         ),
     )
