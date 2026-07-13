@@ -1753,7 +1753,7 @@ class ForwardQueryFetcher:
         if mode == "query_path" and value:
             return (
                 f"Forward Virtual Chassis is bound to repository query `{value}`; "
-                "refresh or republish that query before retrying."
+                "republish that query before retrying."
             )
         if mode == "query":
             return "Forward Virtual Chassis is using bundled raw query text."
