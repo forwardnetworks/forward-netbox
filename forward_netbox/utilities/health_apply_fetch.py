@@ -14,6 +14,7 @@ def model_summary(sync, maps):
         model for model in enabled_models if model in FORWARD_OPTIONAL_MODELS
     ]
     mapped_models = {query_map.model_string for query_map in maps}
+    enabled_model_set = set(enabled_models)
     return {
         "enabled_count": len(enabled_models),
         "optional_enabled_count": len(optional_enabled),
@@ -22,6 +23,20 @@ def model_summary(sync, maps):
         "enabled_models_without_map": [
             model for model in enabled_models if model not in mapped_models
         ],
+        # The inverse dark-map case: an OPTIONAL-model map (e.g. the netbox-dlm
+        # CVE / Vulnerability maps) is enabled in the NQE Maps list but its
+        # model is not selected in THIS sync's Model Selection, so the map
+        # never runs and produces nothing — silently. Scoped to optional
+        # models because base models are on by default; enabling an opt-in map
+        # without selecting its model is almost always a mistake.
+        "enabled_optional_maps_without_model": sorted(
+            {
+                query_map.name
+                for query_map in maps
+                if query_map.model_string in FORWARD_OPTIONAL_MODELS
+                and query_map.model_string not in enabled_model_set
+            }
+        ),
     }
 
 

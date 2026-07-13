@@ -6,6 +6,7 @@
 import importlib
 
 from django.test import SimpleTestCase
+from django.test import TestCase
 
 from forward_netbox.choices import FORWARD_DLM_MODELS
 from forward_netbox.choices import FORWARD_OPTIONAL_MODELS
@@ -166,3 +167,162 @@ class DlmRunnerDispatchTest(SimpleTestCase):
             self.assertTrue(
                 callable(getattr(ForwardSyncRunner, f"_delete_{slug}", None)), slug
             )
+
+
+class DependencySkipIssueRollupTest(TestCase):
+    """#2: a flood of distinct 'device type not in NetBox yet' skips is capped
+    to N detail rows + one actionable summary issue."""
+
+    def _runner(self, ingestion):
+        from types import SimpleNamespace
+
+        logger = SimpleNamespace(
+            log_info=lambda *a, **k: None,
+            log_warning=lambda *a, **k: None,
+            log_failure=lambda *a, **k: None,
+        )
+        return SimpleNamespace(
+            ingestion=ingestion,
+            logger=logger,
+            _recorded_issue_ids=set(),
+            _dependency_skip_issue_counts={},
+            _dependency_skip_issue_samples={},
+            DEPENDENCY_SKIP_ISSUE_DETAIL_LIMIT=10,
+        )
+
+    def test_caps_rows_and_emits_summary(self):
+        from forward_netbox.exceptions import ForwardDependencySkipError
+        from forward_netbox.models import ForwardIngestion
+        from forward_netbox.models import ForwardIngestionIssue
+        from forward_netbox.models import ForwardSource
+        from forward_netbox.models import ForwardSync
+        from forward_netbox.utilities.sync_reporting import (
+            emit_dependency_skip_issue_summary,
+        )
+        from forward_netbox.utilities.sync_reporting import record_issue
+
+        source = ForwardSource.objects.create(
+            name="rollup-src",
+            type="saas",
+            url="https://fwd.app",
+            parameters={
+                "username": "u@e.c",
+                "password": "x",
+                "verify": True,
+                "network_id": "n",
+            },
+        )
+        sync = ForwardSync.objects.create(
+            name="rollup-sync",
+            source=source,
+            parameters={"snapshot_id": "latestProcessed"},
+        )
+        ingestion = ForwardIngestion.objects.create(sync=sync)
+        runner = self._runner(ingestion)
+        model = "netbox_dlm.hardwarenotice"
+        for i in range(15):
+            record_issue(
+                runner,
+                model,
+                f"Skipping DLM hardware notice because device type `DT-{i}` is not in NetBox yet.",
+                {"device_type": f"DT-{i}"},
+                exception=ForwardDependencySkipError(
+                    "skip", context={"device_type": f"DT-{i}"}
+                ),
+                context={"device_type": f"DT-{i}"},
+                log_level="info",
+            )
+        # Only the first 10 distinct rows persist as detail (5 suppressed).
+        self.assertEqual(
+            ForwardIngestionIssue.objects.filter(
+                ingestion=ingestion, model=model
+            ).count(),
+            10,
+        )
+        # Emit the summary: one rolled-up issue covering all 15.
+        emit_dependency_skip_issue_summary(runner, model)
+        self.assertEqual(
+            ForwardIngestionIssue.objects.filter(
+                ingestion=ingestion, model=model
+            ).count(),
+            11,
+        )
+        summary = ForwardIngestionIssue.objects.filter(
+            ingestion=ingestion,
+            model=model,
+            coalesce_fields__dependency_skip_summary=True,
+        )
+        self.assertEqual(summary.count(), 1)
+        self.assertIn(
+            "15 netbox_dlm.hardwarenotice row(s) skipped", summary.first().message
+        )
+
+        for i in range(15, 20):
+            record_issue(
+                runner,
+                model,
+                f"Skipping DLM hardware notice because device type `DT-{i}` is not in NetBox yet.",
+                {"device_type": f"DT-{i}"},
+                exception=ForwardDependencySkipError(
+                    "skip", context={"device_type": f"DT-{i}"}
+                ),
+                context={"device_type": f"DT-{i}"},
+                log_level="info",
+            )
+        emit_dependency_skip_issue_summary(runner, model)
+
+        summary = ForwardIngestionIssue.objects.filter(
+            ingestion=ingestion,
+            model=model,
+            coalesce_fields__dependency_skip_summary=True,
+        )
+        self.assertEqual(summary.count(), 1)
+        self.assertIn(
+            "20 netbox_dlm.hardwarenotice row(s) skipped", summary.first().message
+        )
+        self.assertEqual(summary.first().coalesce_fields["dependency_skip_count"], 20)
+
+    def test_no_summary_below_cap(self):
+        from forward_netbox.exceptions import ForwardDependencySkipError
+        from forward_netbox.models import ForwardIngestion
+        from forward_netbox.models import ForwardIngestionIssue
+        from forward_netbox.models import ForwardSource
+        from forward_netbox.models import ForwardSync
+        from forward_netbox.utilities.sync_reporting import (
+            emit_dependency_skip_issue_summary,
+        )
+        from forward_netbox.utilities.sync_reporting import record_issue
+
+        source = ForwardSource.objects.create(
+            name="rollup-src2",
+            type="saas",
+            url="https://fwd.app",
+            parameters={
+                "username": "u@e.c",
+                "password": "x",
+                "verify": True,
+                "network_id": "n",
+            },
+        )
+        sync = ForwardSync.objects.create(
+            name="rollup-sync2",
+            source=source,
+            parameters={"snapshot_id": "latestProcessed"},
+        )
+        ingestion = ForwardIngestion.objects.create(sync=sync)
+        runner = self._runner(ingestion)
+        model = "netbox_dlm.hardwarenotice"
+        for i in range(4):
+            record_issue(
+                runner,
+                model,
+                f"skip DT-{i}",
+                {"device_type": f"DT-{i}"},
+                exception=ForwardDependencySkipError("skip"),
+                context={"device_type": f"DT-{i}"},
+                log_level="info",
+            )
+        emit_dependency_skip_issue_summary(runner, model)
+        self.assertEqual(
+            ForwardIngestionIssue.objects.filter(ingestion=ingestion).count(), 4
+        )

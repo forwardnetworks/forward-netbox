@@ -241,7 +241,7 @@ Operational notes:
   shard/merge remains mostly serialized by native NetBox Branching semantics.
 - For trusted very large first baselines, use `Fast bootstrap`, then switch
   back to `Branching` once baseline exists for diff-based steady state.
-- Use `invoke forward_netbox.ingestion-delete-regression` to validate ingest and
+- Use `invoke ingestion-delete-regression` to validate ingest and
   diff-delete behavior in synthetic regression before live reruns.
 
 What to collect when opening a tuning issue:
@@ -310,9 +310,10 @@ Checks:
   `query_id`, upgrading the NetBox plugin does not rewrite the already-published
   Forward query. Use the native NQE map bulk edit workflow and select `Publish
   bundled queries to Org Repository and bind selected maps` with `Overwrite
-  existing repository queries` enabled, or restore the affected map to bundled
-  raw query text.
-- Re-run validation or a sync after the map has been refreshed. Current plugin
+  existing repository queries` enabled, use **Publish Bundled Queries** from the
+  sync Health page for its enabled built-in maps, or restore the affected map to
+  bundled raw query text.
+- Re-run validation or a sync after the map has been republished. Current plugin
   versions fail stale or invalid virtual-chassis query output during preflight
   instead of allowing an invalid VC assignment to surface later as a device save
   failure.

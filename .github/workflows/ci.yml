@@ -122,7 +122,9 @@ jobs:
             exec -T netbox bash -lc \
             "cd /opt/netbox/netbox && \
             python manage.py test --keepdb --noinput \
-            forward_netbox.tests.test_synthetic_scenarios"
+            forward_netbox.tests.test_bulk_merge.BulkMergeIntegrationTest \
+            forward_netbox.tests.test_bulk_merge.SingleBranchExecutorTest \
+            forward_netbox.tests.test_stuck_recovery.StuckRecoveryTest"
       - name: Run plugin tests (with coverage)
         run: |
           docker compose --project-name forward-netbox \
