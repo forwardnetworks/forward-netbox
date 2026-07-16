@@ -143,21 +143,18 @@ Expected result:
 
 ## CLI Smoke Validation
 
-For a repeatable live smoke run outside GitHub Actions, use the bundled management command through the local invoke task.
-
-Set the required environment variables:
-
-```bash
-export FORWARD_SMOKE_USERNAME='your-forward-username'
-export FORWARD_SMOKE_PASSWORD='your-forward-password'
-export FORWARD_SMOKE_NETWORK_ID='your-network-id'
-```
-
-Run the smoke sync:
+For a repeatable live smoke run outside GitHub Actions, configure a Forward
+Source in NetBox and use the bundled management command through the local invoke
+task. It automatically selects a reachable stored source without copying its
+credential or printing private source identifiers:
 
 ```bash
-invoke forward_netbox.smoke-sync
+invoke forward_netbox.smoke-sync --validate-only
 ```
+
+Direct credential environment variables remain available only for bootstrapping
+a source in an approved environment. Prefer the stored-source path for routine
+validation.
 
 Optional knobs:
 
@@ -166,14 +163,16 @@ Optional knobs:
 - `FORWARD_SMOKE_MODELS` accepts a comma-separated list of enabled NetBox models
 - `invoke forward_netbox.smoke-sync --validate-only` resolves the source/network/snapshot and executes the selected queries without creating an ingestion
 - `--query-limit` limits rows fetched per query during `--validate-only`; normal syncs page through the full NQE result set
-- `invoke forward_netbox.smoke-sync --plan-only --max-changes-per-branch 10000` prints the native NetBox Branching shard plan for large baselines
-- `invoke forward_netbox.smoke-sync --max-changes-per-branch 10000` stages and merges large baselines in multiple native branches
-- `max_changes_per_branch` is treated as a guideline during execution: shards up to 5% over the configured value are accepted; larger overruns are auto-split and retried
-- `invoke forward_netbox.smoke-sync --no-auto-merge --max-changes-per-branch 10000` stages one native Branching shard and pauses for review
-- `invoke forward_netbox.smoke-sync --execution-backend fast_bootstrap` runs the trusted direct-write baseline backend after validation
+- `invoke forward_netbox.smoke-sync --plan-only --max-changes-per-branch 10000` builds the single-branch workload plan without creating a branch
+- `invoke forward_netbox.smoke-sync --max-changes-per-branch 10000` sets the workload planning budget
+- `invoke forward_netbox.smoke-sync --no-auto-merge` stages the one native Branching branch and pauses for review
+- `python manage.py forward_smoke_sync --check-source` verifies stored-source selection and connectivity with redacted output
 - `invoke forward_netbox.smoke-sync --enable-bulk-orm` enables the opt-in bulk ORM apply engine for the parity-tested model set: `dcim.site`, `dcim.manufacturer`, `dcim.devicerole`, `dcim.platform`, `dcim.devicetype`, `ipam.vrf`, and `ipam.vlan`. The adapter path remains the default for all models.
 
-The normal UI/API `Run Sync` path uses the same execution backends exposed on the sync form. Use the command-line smoke sync when you need explicit plan-only output, a targeted model subset, or a timed local baseline run.
+The normal UI/API `Run Sync` path uses one native Branching branch per sync. The
+legacy multi-branch and fast-bootstrap backends are not selectable in 2.x. Use
+the command-line smoke sync when you need plan-only output, a targeted model
+subset, or a timed local validation run.
 
 ## Optional Module Import Readiness
 

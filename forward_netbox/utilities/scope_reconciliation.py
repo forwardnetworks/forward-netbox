@@ -13,7 +13,10 @@ from django.utils import timezone
 
 from .branch_budget import DELETE_DEPENDENCY_MODEL_RANK
 from .forward_api import build_device_tag_scope_where
+from .forward_api import build_endpoint_device_eligibility_where
+from .forward_api import build_endpoint_tag_scope_where
 from .sync_facade import device_tag_scope
+from .sync_facade import effective_scope_endpoints_by_include_tags
 
 SAMPLE_LIMIT = 25
 
@@ -128,27 +131,38 @@ def compute_scope_reconciliation(sync) -> dict:
         snapshot_id=snapshot_id,
         fetch_all=True,
     )
+    endpoint_names = _endpoint_scope_names(
+        sync,
+        client=client,
+        network_id=network_id,
+        snapshot_id=snapshot_id,
+        include_tags=include_tags,
+        exclude_tags=exclude_tags,
+        include_match=include_match,
+    )
 
     from django.utils.text import slugify as _slugify
 
     row_by_name = {}
-    tagged_names = set()
-    completed_names = set()
+    device_tagged_names = set()
+    device_completed_names = set()
     forward_site_slugs = set()
     for row in rows:
         name = str(row.get("name") or "").strip()
         if not name:
             continue
-        tagged_names.add(name)
+        device_tagged_names.add(name)
         row_by_name[name] = row
         if row.get("completed"):
-            completed_names.add(name)
+            device_completed_names.add(name)
         loc = str(row.get("location") or "").strip()
         if loc:
             sl = _slugify(loc)
             if sl:
                 forward_site_slugs.add(sl)
-    backfilled_names = tagged_names - completed_names
+    backfilled_names = device_tagged_names - device_completed_names
+    tagged_names = device_tagged_names | endpoint_names
+    completed_names = device_completed_names | endpoint_names
 
     netbox_names = {
         name
@@ -219,7 +233,8 @@ def compute_scope_reconciliation(sync) -> dict:
         "exclude_tags": sorted(exclude_tags),
         "include_match": include_match,
         "netbox_device_count": len(netbox_names),
-        "forward_in_scope_completed": len(completed_names),
+        "forward_in_scope_completed": len(device_completed_names),
+        "forward_in_scope_endpoints": len(endpoint_names),
         "forward_tagged_backfilled": len(backfilled_names),
         "netbox_present_backfilled": len(present_backfilled),
         "netbox_out_of_scope": len(out_of_scope),
@@ -233,10 +248,57 @@ def compute_scope_reconciliation(sync) -> dict:
         "missing_in_netbox_sample": sorted(missing_in_netbox)[:SAMPLE_LIMIT],
         # Internal sets for prune/tag; not meant for JSON serialization.
         "_tagged_names": tagged_names,
+        "_device_tagged_names": device_tagged_names,
         "_forward_site_slugs": forward_site_slugs,
         "_out_of_scope": out_of_scope,
         "_out_of_scope_pks": out_of_scope_pks,
         "_present_backfilled": present_backfilled,
+    }
+
+
+def _endpoint_scope_names(
+    sync,
+    *,
+    client,
+    network_id,
+    snapshot_id,
+    include_tags,
+    exclude_tags,
+    include_match,
+) -> set[str]:
+    """Return endpoint-import names protected by reconciliation and prune."""
+    source_parameters = dict(getattr(sync.source, "parameters", {}) or {})
+    if not source_parameters.get("sync_endpoints"):
+        return set()
+
+    endpoint_include_tags = (
+        list(include_tags)
+        if effective_scope_endpoints_by_include_tags(source_parameters)
+        else []
+    )
+    query = "\n".join(
+        [
+            "foreach endpoint in network.endpoints",
+            "where !isEmpty(endpoint.snmpOutputs)",
+            *build_endpoint_tag_scope_where(
+                endpoint_include_tags,
+                exclude_tags,
+                include_match,
+            ),
+            *build_endpoint_device_eligibility_where(),
+            "select { name: endpoint.name }",
+        ]
+    )
+    rows = client.run_nqe_query(
+        query=query,
+        network_id=network_id,
+        snapshot_id=snapshot_id,
+        fetch_all=True,
+    )
+    return {
+        str(row.get("name") or "").strip()
+        for row in rows
+        if str(row.get("name") or "").strip()
     }
 
 
@@ -257,7 +319,7 @@ def prune_orphan_devices(sync, *, report=None) -> dict:
     out_of_scope = report["_out_of_scope"]
     if not out_of_scope:
         return {"pruned_device_count": 0, "out_of_scope_sample": []}
-    if not report["_tagged_names"]:
+    if not report.get("_device_tagged_names", report["_tagged_names"]):
         raise EmptyForwardScopeError(
             "The Forward scope query returned 0 devices; refusing to prune because "
             "every NetBox device would be treated as an orphan."
@@ -492,7 +554,7 @@ def prune_orphan_sites(sync, *, report=None) -> dict:
 
     if report is None:
         report = compute_scope_reconciliation(sync)
-    if not report["_tagged_names"]:
+    if not report.get("_device_tagged_names", report["_tagged_names"]):
         raise EmptyForwardScopeError(
             "Forward scope returned 0 devices; refusing site prune."
         )

@@ -2,9 +2,10 @@
  * @intent Forward per-device running software version (netbox-dlm)
  * @description The OS version each Forward-collected device is running, for
  * the optional netbox-dlm plugin's DeviceSoftware model (one row per device).
- * The apply adapter ensures the matching SoftwareVersion exists (end-of-life
- * dates come from the Forward DLM Software Versions map when the vendor
- * publishes them).
+ * The apply adapter creates the matching SoftwareVersion and DeviceSoftware
+ * link atomically. Lifecycle dates ride on the device-scoped row so the
+ * standalone Software Versions map never needs to create unassociated catalog
+ * rows.
  */
 
 import "netbox_utilities";
@@ -21,5 +22,7 @@ select {
   name: device.name,
   platform: platform_name,
   platform_slug: slugify(platform_name),
-  version: substring(device.platform.osVersion, 0, 50)
+  version: substring(device.platform.osVersion, 0, 50),
+  end_of_support: device.platform.osSupport?.lastSupportDate,
+  documentation_url: if isPresent(device.platform.osSupport) then substring(device.platform.osSupport.announcementUrl, 0, 200) else ""
 };

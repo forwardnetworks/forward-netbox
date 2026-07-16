@@ -331,6 +331,7 @@ def _dependency_model_result_summary(result):
         # Per-model change estimate: upsert rows + deletes (as_dict has no
         # estimated_changes field). The plan-level total is plan_preview.
         "estimated_changes": row_count + delete_count,
+        "change_estimate_kind": "workload_upper_bound",
         "runtime_ms": float(data.get("runtime_ms") or 0.0),
     }
 
@@ -375,6 +376,7 @@ def _dependency_dry_run_payload(sync):
         "plan_items_count": len(plan_items),
         "plan_items_truncated": len(plan_items) > _EXECUTION_PLAN_ITEM_LIMIT,
         "plan_items": plan_items[:_EXECUTION_PLAN_ITEM_LIMIT],
+        "change_estimate_kind": "workload_upper_bound",
         "model_results": [
             _dependency_model_result_summary(result) for result in fetcher.model_results
         ],

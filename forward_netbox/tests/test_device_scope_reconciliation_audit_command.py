@@ -205,6 +205,145 @@ class ForwardDeviceScopeReconciliationAuditCommandTest(TestCase):
         # Identity-aware: the out-of-scope set is resolved to the exact device PK.
         self.assertEqual(list(report["_out_of_scope_pks"]), [dev_d.pk])
 
+    def test_endpoint_import_protects_endpoint_devices_from_orphan_set(self):
+        from forward_netbox.utilities.scope_reconciliation import (
+            compute_scope_reconciliation,
+        )
+
+        self.source.parameters = {
+            **self.source.parameters,
+            "sync_endpoints": True,
+            "device_tag_exclude_tags": ["Blocked"],
+            "scope_endpoints_by_include_tags": False,
+            "scope_endpoints_by_include_tags_configured": True,
+        }
+        self.source.save(update_fields=["parameters"])
+        self._make_devices("dev-a", "endpoint-a", "dev-stale")
+        client = Mock()
+        client.run_nqe_query.side_effect = [
+            [{"name": "dev-a", "completed": True}],
+            [{"name": "endpoint-a"}],
+        ]
+        with (
+            patch.object(ForwardSource, "get_client", return_value=client),
+            patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
+        ):
+            report = compute_scope_reconciliation(self.sync)
+
+        self.assertEqual(report["forward_in_scope_completed"], 1)
+        self.assertEqual(report["forward_in_scope_endpoints"], 1)
+        self.assertEqual(report["_tagged_names"], {"dev-a", "endpoint-a"})
+        self.assertEqual(report["_device_tagged_names"], {"dev-a"})
+        self.assertEqual(report["_out_of_scope"], {"dev-stale"})
+        endpoint_query = client.run_nqe_query.call_args_list[1].kwargs["query"]
+        self.assertIn("foreach endpoint in network.endpoints", endpoint_query)
+        self.assertIn("where !isEmpty(endpoint.snmpOutputs)", endpoint_query)
+        self.assertIn('where !("Blocked" in endpoint.tagNames)', endpoint_query)
+        self.assertNotIn('"Prod_Core" in endpoint.tagNames', endpoint_query)
+        self.assertIn("endpoint.profileName", endpoint_query)
+        self.assertIn("where !isCimc", endpoint_query)
+
+    def test_endpoint_import_can_require_include_scope_tags(self):
+        from forward_netbox.utilities.scope_reconciliation import (
+            compute_scope_reconciliation,
+        )
+
+        self.source.parameters = {
+            **self.source.parameters,
+            "sync_endpoints": True,
+            "scope_endpoints_by_include_tags": True,
+        }
+        self.source.save(update_fields=["parameters"])
+        client = Mock()
+        client.run_nqe_query.side_effect = [
+            [{"name": "dev-a", "completed": True}],
+            [{"name": "endpoint-a"}],
+        ]
+        with (
+            patch.object(ForwardSource, "get_client", return_value=client),
+            patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
+        ):
+            report = compute_scope_reconciliation(self.sync)
+
+        self.assertEqual(report["forward_in_scope_endpoints"], 1)
+        endpoint_query = client.run_nqe_query.call_args_list[1].kwargs["query"]
+        self.assertIn('where ("Prod_Core" in endpoint.tagNames)', endpoint_query)
+
+    def test_endpoint_scope_probe_failure_aborts_reconciliation(self):
+        from forward_netbox.exceptions import ForwardQueryError
+        from forward_netbox.utilities.scope_reconciliation import (
+            compute_scope_reconciliation,
+        )
+
+        self.source.parameters = {**self.source.parameters, "sync_endpoints": True}
+        self.source.save(update_fields=["parameters"])
+        client = Mock()
+        client.run_nqe_query.side_effect = [
+            [{"name": "dev-a", "completed": True}],
+            ForwardQueryError("endpoint probe failed"),
+        ]
+        with (
+            patch.object(ForwardSource, "get_client", return_value=client),
+            patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
+            self.assertRaisesRegex(ForwardQueryError, "endpoint probe failed"),
+        ):
+            compute_scope_reconciliation(self.sync)
+
+    def test_endpoint_only_scope_does_not_bypass_prune_guard(self):
+        from forward_netbox.utilities.scope_reconciliation import (
+            compute_scope_reconciliation,
+        )
+        from forward_netbox.utilities.scope_reconciliation import EmptyForwardScopeError
+        from forward_netbox.utilities.scope_reconciliation import prune_orphan_devices
+
+        self.source.parameters = {**self.source.parameters, "sync_endpoints": True}
+        self.source.save(update_fields=["parameters"])
+        self._make_devices("endpoint-a", "dev-stale")
+        client = Mock()
+        client.run_nqe_query.side_effect = [[], [{"name": "endpoint-a"}]]
+        with (
+            patch.object(ForwardSource, "get_client", return_value=client),
+            patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
+        ):
+            report = compute_scope_reconciliation(self.sync)
+
+        self.assertEqual(report["_tagged_names"], {"endpoint-a"})
+        self.assertEqual(report["_device_tagged_names"], set())
+        self.assertEqual(report["_out_of_scope"], {"dev-stale"})
+        with self.assertRaises(EmptyForwardScopeError):
+            prune_orphan_devices(self.sync, report=report)
+        self.assertTrue(Device.objects.filter(name="dev-stale").exists())
+
+    def test_endpoint_only_scope_does_not_bypass_command_prune_guard(self):
+        self._make_devices("endpoint-a", "dev-stale")
+        report = {
+            "netbox_out_of_scope": 1,
+            "out_of_scope_sample": ["dev-stale"],
+            "_tagged_names": {"endpoint-a"},
+            "_device_tagged_names": set(),
+            "_out_of_scope": {"dev-stale"},
+        }
+        with (
+            patch(
+                "forward_netbox.management.commands."
+                "forward_device_scope_reconciliation_audit."
+                "compute_scope_reconciliation",
+                return_value=report,
+            ),
+            self.assertRaises(SystemExit),
+        ):
+            call_command(
+                "forward_device_scope_reconciliation_audit",
+                "--sync-name",
+                "recon-sync",
+                "--prune-orphans",
+                "--apply",
+                stdout=StringIO(),
+                stderr=StringIO(),
+            )
+
+        self.assertTrue(Device.objects.filter(name="dev-stale").exists())
+
 
 class PruneProtectorSweepTest(TestCase):
     """Pruning devices must sweep PROTECT-ing optional-plugin rows instead of

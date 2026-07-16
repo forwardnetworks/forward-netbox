@@ -38,6 +38,39 @@ CLI equivalent:
 python manage.py forward_device_scope_reconciliation_audit --sync-name "<sync>"
 ```
 
+### SNMP endpoint import safety
+
+For a tag-scoped source, enable both **Import SNMP Endpoints** and **Scope SNMP
+Endpoints by Include Tags**. New sources default the endpoint include-scope
+option on; existing sources retain their stored setting so an upgrade does not
+silently remove previously imported endpoints. When an existing source has
+include tags but endpoint include-scope is off, preview and sync log a warning
+because untagged endpoints can still import.
+
+**Apply Device Scope Tags** controls whether the matching Forward include tags
+are shown as NetBox device tags. Endpoint tag intersections participate in that
+same path in 2.5.10, so a tagged console server no longer arrives without its
+matching scope tag.
+
+After upgrading to 2.5.10:
+
+1. Run **Publish Bundled Queries** with overwrite enabled for the source. This
+   publishes the corrected device query as well as the DLM query fixes and
+   refreshes path-backed query bindings.
+2. Edit the Forward source and enable **Scope SNMP Endpoints by Include Tags**
+   when include tags are configured.
+3. Run **Preview Dependencies**. Do not apply while the preview warns that SNMP
+   endpoints are not constrained by the configured include tags.
+4. Run the sync, then review **Scope Reconciliation**. Dry-run **Prune orphans**
+   before applying it to remove endpoint devices left by the old broad scope.
+
+Console-server DeviceType identity is hardware-stable in 2.5.10. Opengear
+kernel, firmware, build, and date suffixes are no longer part of the model, and
+Opengear and Avocent endpoints use the **Console Server** role. Existing volatile
+DeviceType rows are not deleted automatically because DeviceType is global
+metadata. After the corrected sync moves all devices to stable types, manually
+delete only unused DeviceType rows whose device count is zero.
+
 ### What scope prune removes
 
 The tag scope is **device-derived**: a Forward row is treated as out-of-scope
@@ -84,8 +117,10 @@ objects by hand in NetBox.
 The **Prune orphans** button queues a job that deletes the out-of-scope devices
 (and their interfaces/IPs). It refuses to run if the Forward scope query returns
 zero devices (which would treat everything as an orphan), and it preserves
-tagged-but-backfilled devices. CLI: add `--prune-orphans` (dry run) then
-`--apply`.
+tagged-but-backfilled devices. When SNMP endpoint import is enabled, the same
+endpoint scope used by sync protects imported endpoint devices from the orphan
+set. A failed endpoint scope probe aborts reconciliation rather than treating
+those devices as removable. CLI: add `--prune-orphans` (dry run) then `--apply`.
 
 ### Backfilled devices
 
@@ -184,6 +219,26 @@ Skips cleanly when netbox-routing is not installed.
 If DLM maps are enabled but hardware notices / vulnerabilities aren't landing,
 the sync **Health** panel now flags the two common causes:
 
+- **2.5.10 CVE query repair** - 2.5.2 through 2.5.9 published the CVE and
+  Vulnerability queries with an `@primaryKey` annotation stacked above their
+  parameterized `@query` declaration. Forward rejects that source before it
+  reads any CVE data. After installing 2.5.10, use **Publish Bundled Queries**
+  with overwrite enabled, then rerun **Preview Dependencies**. Keep the sync's
+  **Diff fallback mode** set to **Allow full fallback**: the Forward runtime
+  cannot combine `@primaryKey` with these parameterized queries, so its diff
+  endpoint rejects them and the plugin must execute the full CVE/Vulnerability
+  query. **Require diff** intentionally blocks that fallback.
+
+- **Software versions with zero devices** - the standalone **Forward DLM
+  Software Versions** map used to import every supported version seen in the
+  Forward network, including versions used only by devices absent from NetBox.
+  In 2.5.10, **Forward DLM Device Software** carries the lifecycle dates and
+  creates the SoftwareVersion plus DeviceSoftware association together; the
+  standalone versions map only enriches an already-associated version. Enable
+  the `netbox_dlm.devicesoftware` model/map and publish bundled queries with
+  overwrite enabled. Vulnerability imports also ensure the same device-software
+  association when enabled independently.
+
 - **DLM hardware-notice alias** — warns when the alias-aware device query is
   active but the *base* hardware-notice map is enabled (or vice versa). The
   notice looks up the DeviceType by the name the device query emits; a
@@ -198,10 +253,10 @@ the sync **Health** panel now flags the two common causes:
   — the map produces nothing, silently.
 - **DLM dependency readiness** — warns when the last run skipped DLM rows
   because their device types / devices aren't synced. DLM notices and
-  vulnerabilities hang off synced devices, so fix device (and device-type)
-  sync first; the CVE *catalog* is device-independent and populates on its
-  own. A flood of "not in NetBox yet" skips is now collapsed into one summary
-  issue instead of one row per device type.
+  vulnerabilities and installed software hang off synced devices, so fix device
+  (and device-type) sync first; the CVE *catalog* is device-independent and
+  populates on its own. A flood of "not in NetBox yet" skips is now collapsed
+  into one summary issue instead of one row per device type.
 
 ## Device CVE tab (netbox-dlm)
 

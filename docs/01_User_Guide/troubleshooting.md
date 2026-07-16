@@ -360,6 +360,8 @@ Symptoms:
 
 - A tag-scoped sync (e.g. scoped to `Prod_Core`) leaves more devices in NetBox
   than the tag should match.
+- Imported console servers have no matching NetBox scope tags.
+- Opengear or Avocent software/build strings appear as DeviceType models.
 
 Cause:
 
@@ -371,12 +373,21 @@ Cause:
   fall outside scope, and orphans are absent from the result. Tagged devices that
   were backfilled (collection canceled) are also excluded from the current
   allowlist, so they linger too (but are real, not orphans).
+- SNMP endpoints use a separate compatibility toggle. On an existing source,
+  **Scope SNMP Endpoints by Include Tags** can remain off after upgrade, allowing
+  untagged endpoints to import even when modeled devices are tag-scoped. Before
+  2.5.10, endpoint tag intersections were not added to the device scope-tag map,
+  and console-server `sysDescr` software/build suffixes could become DeviceType
+  identity.
 
 Checks (UI):
 
 - On the sync detail page, click **Scope Reconciliation**. It runs the same
   check live and shows the counts — in-scope (collected), tagged-but-backfilled,
-  and out-of-scope (orphans) — with a sample of the orphan names. The **Prune
+  imported SNMP endpoints, and out-of-scope (orphans) — with a sample of the
+  orphan names. Endpoint-imported devices are protected using the source's
+  endpoint scope settings; exclude tags always apply, while include tags apply
+  only when **Scope SNMP Endpoints by Include Tags** is enabled. The **Prune
   orphans** button on that page queues a background job to delete them
   (confirmation first); watch the sync's **Jobs** tab for the result. It runs as
   a job because deleting many devices cascades to their interfaces and IPs and
@@ -390,12 +401,18 @@ Checks (CLI):
   python manage.py forward_device_scope_reconciliation_audit --sync-name "<sync_name>"
   ```
 
-  It reports `forward_in_scope_completed` (expected), `netbox_out_of_scope`
-  (stale leftovers), and `netbox_present_backfilled` (tagged but not collected
-  this snapshot), with capped name samples. Add `--fail-on-drift` for monitoring.
+  It reports `forward_in_scope_completed`, `forward_in_scope_endpoints`,
+  `netbox_out_of_scope` (stale leftovers), and `netbox_present_backfilled`
+  (tagged but not collected this snapshot), with capped name samples. Add
+  `--fail-on-drift` for monitoring.
 
 Remediation:
 
+- Upgrade to 2.5.10 and run **Publish Bundled Queries** with overwrite enabled.
+  On the Forward source, enable **Scope SNMP Endpoints by Include Tags** and keep
+  **Apply Device Scope Tags** enabled when matching Forward tags should be
+  visible in NetBox. Run **Preview Dependencies** before the next sync; resolve
+  any endpoint-scope bypass warning before applying.
 - Use the **Prune orphans** button on the Scope Reconciliation page, or the CLI:
 
   ```
@@ -408,6 +425,9 @@ Remediation:
   Only devices not tagged in the Forward result are removed; tagged-but-backfilled
   devices are kept. Deletion cascades to each device's interfaces and IPs, so
   review the dry run first.
+- After the corrected sync, filter Device Types to rows with zero devices and
+  manually remove only the obsolete volatile console-server types. Scope prune
+  deliberately does not delete shared DeviceType metadata.
 
 ## APIC CIMC Inventory Is Empty
 

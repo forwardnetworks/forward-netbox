@@ -31,6 +31,7 @@ class DependencyModelResultSummaryTest(SimpleTestCase):
         self.assertEqual(summary["delete_count"], 3)
         # estimated_changes is derived (as_dict has no such field).
         self.assertEqual(summary["estimated_changes"], 15)
+        self.assertEqual(summary["change_estimate_kind"], "workload_upper_bound")
 
     def test_summary_handles_none_runtime(self):
         # runtime_ms defaults to None on the dataclass; must not blow up.

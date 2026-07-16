@@ -162,8 +162,9 @@ and writes timestamped evidence to JSON. Use it when two lanes are running in
 parallel (for example, an A/B or recovery replay) and you need continuous proof
 that no blocker/warning/error findings appeared during the soak window.
 
-For `1.1.x` release readiness on the release-validation dataset, label and enforce the
-field-scale artifact:
+For release readiness on the release-validation dataset, label and enforce the
+field-scale artifact. The workflow selects an existing configured Forward Source
+without putting credentials or source identifiers in the command or artifact:
 
 ```bash
 export FORWARD_SMOKE_DATASET_LABEL=release-smoke
