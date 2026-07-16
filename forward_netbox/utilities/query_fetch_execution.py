@@ -35,6 +35,7 @@ from .fetch_artifacts import sanitize_fetch_artifact_metadata
 from .fetch_artifacts import save_fetch_artifact
 from .fetch_artifacts import save_runtime_artifact
 from .forward_api import build_device_tag_scope_where
+from .forward_api import build_endpoint_device_eligibility_where
 from .forward_api import build_endpoint_tag_scope_where
 from .forward_api import DEFAULT_QUERY_FETCH_CONCURRENCY
 from .forward_api import LATEST_COLLECTED_SNAPSHOT
@@ -62,6 +63,7 @@ from .query_registry import optional_builtin_query_names_for_model
 from .query_registry import resolve_query_specs_for_client
 from .sync import ForwardSyncRunner
 from .sync_contracts import validate_row_shape_for_model
+from .sync_facade import effective_scope_endpoints_by_include_tags
 
 # Models whose NQE query filters `device.name in forward_netbox_shard_keys`, so a
 # device-tag scope can be pushed to the Forward fetch as device-name shard keys
@@ -393,8 +395,8 @@ class ForwardQueryFetcher:
             {str(tag).strip() for tag in sync_device_tags if str(tag).strip()}
         )
         sync_endpoints = bool(source_parameters.get("sync_endpoints"))
-        scope_endpoints_by_include_tags = bool(
-            source_parameters.get("scope_endpoints_by_include_tags")
+        scope_endpoints_by_include_tags = effective_scope_endpoints_by_include_tags(
+            source_parameters
         )
         context_cache_key = (
             network_id,
@@ -523,7 +525,9 @@ class ForwardQueryFetcher:
             # v4: ... and with scope_endpoints_by_include_tags (a stale cached
             # scoped set from a pre-toggle run must not be reused after the
             # toggle flips — the endpoint half of the set changes).
-            "version": 4,
+            # v5: endpoint tag intersections now join scoped_matched_tags, so a
+            # v4 artifact would leave imported endpoints untagged in NetBox.
+            "version": 5,
             "artifact_scope": "query_context",
             "cache_scope": "shared_sync",
             "sync_id": getattr(self.sync, "pk", None),
@@ -697,7 +701,15 @@ class ForwardQueryFetcher:
         endpoint_scope_failed = False
         if sync_endpoints:
             collected_device_count = len(names)
-            endpoint_names = self._resolve_scoped_endpoint_names(
+            if include_tags and not scope_endpoints_by_include_tags:
+                self.logger.log_warning(
+                    "SNMP endpoint import is not constrained by the configured "
+                    "include tags. Endpoints without those tags can import; "
+                    "enable `Scope SNMP Endpoints by Include Tags` on the "
+                    "Forward source to apply the same include scope.",
+                    obj=self.sync,
+                )
+            endpoint_scope = self._resolve_scoped_endpoint_scope(
                 network_id=network_id,
                 snapshot_id=snapshot_id,
                 exclude_tags=exclude_tags,
@@ -705,10 +717,15 @@ class ForwardQueryFetcher:
                 include_match=include_match,
                 scope_endpoints_by_include_tags=scope_endpoints_by_include_tags,
             )
-            if endpoint_names is None:
+            if endpoint_scope is None:
                 endpoint_scope_failed = True
             else:
+                endpoint_names, endpoint_matched_tags = endpoint_scope
                 names |= endpoint_names
+                for name, endpoint_tags in endpoint_matched_tags.items():
+                    matched_tags_by_device[name] = sorted(
+                        set(matched_tags_by_device.get(name, ())) | set(endpoint_tags)
+                    )
                 if not collected_device_count and endpoint_names:
                     # The endpoint union makes dcim.device non-empty even when
                     # the tag scope matched no collected devices, which used to
@@ -736,7 +753,27 @@ class ForwardQueryFetcher:
         include_match: str = "any",
         scope_endpoints_by_include_tags: bool = False,
     ) -> set[str] | None:
-        """Names of SNMP endpoints that opt-in endpoint import will emit.
+        endpoint_scope = self._resolve_scoped_endpoint_scope(
+            network_id=network_id,
+            snapshot_id=snapshot_id,
+            exclude_tags=exclude_tags,
+            include_tags=include_tags,
+            include_match=include_match,
+            scope_endpoints_by_include_tags=scope_endpoints_by_include_tags,
+        )
+        return None if endpoint_scope is None else endpoint_scope[0]
+
+    def _resolve_scoped_endpoint_scope(
+        self,
+        *,
+        network_id: str,
+        snapshot_id: str,
+        exclude_tags: list[str],
+        include_tags: list[str] | None = None,
+        include_match: str = "any",
+        scope_endpoints_by_include_tags: bool = False,
+    ) -> tuple[set[str], dict[str, list[str]]] | None:
+        """Names and matched include tags for endpoint rows the query emits.
 
         By default the device-tag include scope narrows the modeled-device
         universe only: on networks whose SNMP endpoints (e.g. Avocent console
@@ -763,12 +800,16 @@ class ForwardQueryFetcher:
             *build_endpoint_tag_scope_where(
                 scoped_include_tags, exclude_tags, include_match
             ),
+            *build_endpoint_device_eligibility_where(),
         ]
         query = "\n".join(
             [
                 "foreach endpoint in network.endpoints",
                 *where,
-                "select { name: endpoint.name }",
+                "select {",
+                "  name: endpoint.name,",
+                "  tagNames: endpoint.tagNames",
+                "}",
             ]
         )
         try:
@@ -790,13 +831,26 @@ class ForwardQueryFetcher:
             for row in rows
             if str(row.get("name") or "").strip()
         }
+        include_tag_set = set(include_tags or [])
+        matched_tags_by_endpoint = {}
+        for row in rows:
+            name = str(row.get("name") or "").strip()
+            if not name:
+                continue
+            matched = sorted(
+                include_tag_set.intersection(
+                    str(tag) for tag in (row.get("tagNames") or [])
+                )
+            )
+            if matched:
+                matched_tags_by_endpoint[name] = matched
         if endpoint_names:
             self.logger.log_info(
                 f"Added {len(endpoint_names)} SNMP endpoint(s) to the device tag "
                 "scope for opt-in endpoint import.",
                 obj=self.sync,
             )
-        return endpoint_names
+        return endpoint_names, matched_tags_by_endpoint
 
     def _warn_if_scope_all_backfilled(
         self,

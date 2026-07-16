@@ -99,7 +99,7 @@ def _lookup_device(runner, row, model_string, object_label):
         ) from exc
 
 
-def ensure_dlm_software_version(runner, row, *, with_dates=True):
+def ensure_dlm_software_version(runner, row, *, with_dates=True, create=True):
     SoftwareVersion = _dlm_model(
         runner, "SoftwareVersion", "netbox_dlm.softwareversion"
     )
@@ -118,6 +118,13 @@ def ensure_dlm_software_version(runner, row, *, with_dates=True):
             values["documentation_url"] = row["documentation_url"]
     values = runner._model_field_values(SoftwareVersion, values)
     if with_dates:
+        if not create:
+            existing = runner._get_unique_or_raise(
+                SoftwareVersion,
+                {"platform": platform, "version": values.get("version")},
+            )
+            if existing is None:
+                return None
         software_version, _ = runner._upsert_values_from_defaults(
             "netbox_dlm.softwareversion",
             SoftwareVersion,
@@ -137,7 +144,13 @@ def ensure_dlm_software_version(runner, row, *, with_dates=True):
 
 
 def apply_netbox_dlm_softwareversion(runner, row):
-    return ensure_dlm_software_version(runner, row, with_dates=True)
+    # DeviceSoftware is authoritative for which versions belong in NetBox. The
+    # catalog map only enriches versions that already have a device-scoped
+    # basis, preventing versions from out-of-scope Forward devices appearing as
+    # zero-device DLM rows.
+    return (
+        ensure_dlm_software_version(runner, row, with_dates=True, create=False) or False
+    )
 
 
 def apply_netbox_dlm_hardwarenotice(runner, row):
@@ -162,15 +175,26 @@ def apply_netbox_dlm_hardwarenotice(runner, row):
     return notice
 
 
-def apply_netbox_dlm_devicesoftware(runner, row):
+def ensure_dlm_device_software(runner, row):
+    cache_key = (
+        str(row.get("name") or "").strip(),
+        str(row.get("platform_slug") or "").strip(),
+        str(row.get("version") or "").strip(),
+    )
+    cache = getattr(runner, "_dlm_device_software_cache", None)
+    if not isinstance(cache, dict):
+        cache = runner._dlm_device_software_cache = {}
+    if cache_key in cache:
+        return cache[cache_key]
+
     DeviceSoftware = _dlm_model(runner, "DeviceSoftware", "netbox_dlm.devicesoftware")
     device = _lookup_device(
         runner, row, "netbox_dlm.devicesoftware", "DLM device software"
     )
-    # Ensure the (platform, version) row exists even when the vendor publishes
-    # no end-of-life announcement (the versions map only emits announced ones);
-    # never overwrite dates the versions map already applied.
-    software_version = ensure_dlm_software_version(runner, row, with_dates=False)
+    # The device-scoped map is authoritative for SoftwareVersion existence and
+    # carries lifecycle dates when Forward has them. This keeps creation and the
+    # DeviceSoftware association in the same transaction/branch.
+    software_version = ensure_dlm_software_version(runner, row, with_dates=True)
     values = runner._model_field_values(
         DeviceSoftware,
         {"device": device, "software_version": software_version},
@@ -181,6 +205,12 @@ def apply_netbox_dlm_devicesoftware(runner, row):
         values=values,
         coalesce_sets=[("device",)],
     )
+    cache[cache_key] = (device, software_version, device_software)
+    return cache[cache_key]
+
+
+def apply_netbox_dlm_devicesoftware(runner, row):
+    _, _, device_software = ensure_dlm_device_software(runner, row)
     return device_software
 
 
@@ -221,13 +251,10 @@ def apply_netbox_dlm_cve(runner, row):
 
 def apply_netbox_dlm_vulnerability(runner, row):
     Vulnerability = _dlm_model(runner, "Vulnerability", "netbox_dlm.vulnerability")
-    device = _lookup_device(
-        runner, row, "netbox_dlm.vulnerability", "DLM vulnerability"
-    )
     # Ensure both required FK targets exist even when the cve / software-version
-    # maps are not enabled for this sync (create-if-missing, never overwriting a
-    # richer catalog / versions row).
-    software_version = ensure_dlm_software_version(runner, row, with_dates=False)
+    # maps are not enabled for this sync. DeviceSoftware is ensured as well, so
+    # a vulnerability-only import cannot leave a zero-device SoftwareVersion.
+    device, software_version, _ = ensure_dlm_device_software(runner, row)
     cve = ensure_dlm_cve(runner, row)
     values = runner._model_field_values(
         Vulnerability,

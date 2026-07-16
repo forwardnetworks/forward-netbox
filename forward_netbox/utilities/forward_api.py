@@ -1,5 +1,6 @@
 from . import forward_api_impl as _forward_api_impl
 from .forward_api_impl import build_device_tag_scope_where  # noqa: F401
+from .forward_api_impl import build_endpoint_device_eligibility_where  # noqa: F401
 from .forward_api_impl import build_endpoint_tag_scope_where  # noqa: F401
 from .forward_api_impl import DEFAULT_FORWARD_API_REQUESTS_PER_MINUTE  # noqa: F401
 from .forward_api_impl import DEFAULT_FORWARD_API_RETRIES  # noqa: F401

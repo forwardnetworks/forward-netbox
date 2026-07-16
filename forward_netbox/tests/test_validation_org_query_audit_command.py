@@ -6,6 +6,7 @@ from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import TestCase
 
+from forward_netbox.models import ForwardSource
 from forward_netbox.utilities.query_binding_resolution import (
     builtin_query_repository_sync_summary,
 )
@@ -146,12 +147,15 @@ class ValidationOrgQueryAuditTest(TestCase):
             "path": "/forward_netbox_validation/forward_devices",
         }
 
-        with patch(
-            "forward_netbox.utilities.query_binding_resolution.apps.is_installed",
-            side_effect=lambda app_label: app_label != "netbox_cisco_aci",
-        ), patch(
-            "forward_netbox.utilities.query_binding_resolution.query_contract_summary_for_maps"
-        ) as query_contract_summary_for_maps:
+        with (
+            patch(
+                "forward_netbox.utilities.query_binding_resolution.apps.is_installed",
+                side_effect=lambda app_label: app_label != "netbox_cisco_aci",
+            ),
+            patch(
+                "forward_netbox.utilities.query_binding_resolution.query_contract_summary_for_maps"
+            ) as query_contract_summary_for_maps,
+        ):
             query_contract_summary_for_maps.return_value = {
                 "status": "pass",
                 "model_count": 1,
@@ -358,16 +362,21 @@ class ValidationOrgQueryAuditTest(TestCase):
             "path": "/forward_netbox_validation/forward_devices",
         }
 
-        with patch(
-            "forward_netbox.management.commands.forward_validation_org_query_audit.ForwardSource.validate_connection"
-        ) as validate_connection, patch(
-            "forward_netbox.management.commands.forward_validation_org_query_audit.ForwardSource.get_client",
-            return_value=source_client,
-        ), patch(
-            "forward_netbox.management.commands.forward_validation_org_query_audit.publish_builtin_nqe_map_queries"
-        ) as publish_builtin_nqe_map_queries, patch(
-            "forward_netbox.management.commands.forward_validation_org_query_audit.builtin_query_repository_sync_summary"
-        ) as builtin_query_repository_sync_summary:
+        with (
+            patch(
+                "forward_netbox.management.commands.forward_validation_org_query_audit.ForwardSource.validate_connection"
+            ) as validate_connection,
+            patch(
+                "forward_netbox.management.commands.forward_validation_org_query_audit.ForwardSource.get_client",
+                return_value=source_client,
+            ),
+            patch(
+                "forward_netbox.management.commands.forward_validation_org_query_audit.publish_builtin_nqe_map_queries"
+            ) as publish_builtin_nqe_map_queries,
+            patch(
+                "forward_netbox.management.commands.forward_validation_org_query_audit.builtin_query_repository_sync_summary"
+            ) as builtin_query_repository_sync_summary,
+        ):
             validate_connection.return_value = None
             publish_builtin_nqe_map_queries.return_value = []
             builtin_query_repository_sync_summary.return_value = {
@@ -417,16 +426,21 @@ class ValidationOrgQueryAuditTest(TestCase):
             "by_path": {},
         }
 
-        with patch(
-            "forward_netbox.management.commands.forward_validation_org_query_audit.ForwardSource.validate_connection"
-        ), patch(
-            "forward_netbox.management.commands.forward_validation_org_query_audit.ForwardSource.get_client",
-            return_value=source_client,
-        ), patch(
-            "forward_netbox.management.commands.forward_validation_org_query_audit.publish_builtin_nqe_map_queries"
-        ) as publish_builtin_nqe_map_queries, patch(
-            "forward_netbox.management.commands.forward_validation_org_query_audit.builtin_query_repository_sync_summary"
-        ) as builtin_query_repository_sync_summary:
+        with (
+            patch(
+                "forward_netbox.management.commands.forward_validation_org_query_audit.ForwardSource.validate_connection"
+            ),
+            patch(
+                "forward_netbox.management.commands.forward_validation_org_query_audit.ForwardSource.get_client",
+                return_value=source_client,
+            ),
+            patch(
+                "forward_netbox.management.commands.forward_validation_org_query_audit.publish_builtin_nqe_map_queries"
+            ) as publish_builtin_nqe_map_queries,
+            patch(
+                "forward_netbox.management.commands.forward_validation_org_query_audit.builtin_query_repository_sync_summary"
+            ) as builtin_query_repository_sync_summary,
+        ):
             publish_builtin_nqe_map_queries.return_value = []
             builtin_query_repository_sync_summary.return_value = {
                 "status": "pass",
@@ -451,6 +465,84 @@ class ValidationOrgQueryAuditTest(TestCase):
         publish_builtin_nqe_map_queries.assert_called_once()
         self.assertTrue(publish_builtin_nqe_map_queries.call_args.kwargs["overwrite"])
 
+    def test_command_uses_existing_source_without_copying_or_printing_it(self):
+        source = ForwardSource.objects.create(
+            name="private-validation-source",
+            type="saas",
+            url="https://fwd.app",
+            status="ready",
+            parameters={
+                "username": "local-user",
+                "password": "local-secret",
+                "verify": True,
+                "network_id": "private-network-id",
+            },
+        )
+        source_client = Mock()
+        stdout = StringIO()
+
+        with (
+            patch.object(ForwardSource, "validate_connection"),
+            patch.object(ForwardSource, "get_client", return_value=source_client),
+            patch(
+                "forward_netbox.management.commands.forward_validation_org_query_audit.build_validation_org_query_source"
+            ) as build_source,
+            patch(
+                "forward_netbox.management.commands.forward_validation_org_query_audit.builtin_query_repository_sync_summary",
+                return_value={"status": "pass", "gaps": []},
+            ),
+        ):
+            call_command("forward_validation_org_query_audit", stdout=stdout)
+
+        build_source.assert_not_called()
+        output = stdout.getvalue()
+        self.assertNotIn(source.name, output)
+        self.assertNotIn("private-network-id", output)
+        self.assertNotIn("local-secret", output)
+
+    def test_command_summary_only_omits_query_identifiers_and_paths(self):
+        source_client = Mock()
+        stdout = StringIO()
+        report = {
+            "status": "pass",
+            "gate_status": "proved",
+            "query_count": 1,
+            "published_count": 1,
+            "matched_count": 1,
+            "missing_count": 0,
+            "stale_count": 0,
+            "lookup_error_count": 0,
+            "query_contract_summary": {"status": "pass", "gaps": []},
+            "matched": [
+                {
+                    "query_id": "private-query-id",
+                    "path": "/private/customer/path",
+                }
+            ],
+        }
+
+        with (
+            patch(
+                "forward_netbox.management.commands.forward_validation_org_query_audit.Command._build_source"
+            ) as build_source,
+            patch(
+                "forward_netbox.management.commands.forward_validation_org_query_audit.builtin_query_repository_sync_summary",
+                return_value=report,
+            ),
+        ):
+            source = build_source.return_value
+            source.get_client.return_value = source_client
+            call_command(
+                "forward_validation_org_query_audit",
+                "--summary-only",
+                stdout=stdout,
+            )
+
+        output = stdout.getvalue()
+        self.assertIn('"matched_count": 1', output)
+        self.assertNotIn("private-query-id", output)
+        self.assertNotIn("/private/customer/path", output)
+
     def test_command_fail_on_gap_raises(self):
         source_client = Mock()
         source_client.get_nqe_repository_query_index.return_value = {
@@ -458,14 +550,18 @@ class ValidationOrgQueryAuditTest(TestCase):
             "by_path": {},
         }
 
-        with patch(
-            "forward_netbox.management.commands.forward_validation_org_query_audit.ForwardSource.validate_connection"
-        ) as validate_connection, patch(
-            "forward_netbox.management.commands.forward_validation_org_query_audit.ForwardSource.get_client",
-            return_value=source_client,
-        ), patch(
-            "forward_netbox.management.commands.forward_validation_org_query_audit.builtin_query_repository_sync_summary"
-        ) as builtin_query_repository_sync_summary:
+        with (
+            patch(
+                "forward_netbox.management.commands.forward_validation_org_query_audit.ForwardSource.validate_connection"
+            ) as validate_connection,
+            patch(
+                "forward_netbox.management.commands.forward_validation_org_query_audit.ForwardSource.get_client",
+                return_value=source_client,
+            ),
+            patch(
+                "forward_netbox.management.commands.forward_validation_org_query_audit.builtin_query_repository_sync_summary"
+            ) as builtin_query_repository_sync_summary,
+        ):
             validate_connection.return_value = None
             builtin_query_repository_sync_summary.return_value = {
                 "status": "fail",

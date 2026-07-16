@@ -5,9 +5,12 @@
  * NetBox Device Type Library. If that data file is not uploaded and attached to
  * the network, use the default forward_devices.nqe query instead. When
  * sync_endpoints is true, generic SNMP endpoints that Forward collects but does
- * not model as first-class devices (e.g. Avocent console servers) are also
- * emitted as device rows, identified from standard MIB-2 (sysName/sysDescr/
- * sysObjectId) with per-vendor overlays, and scoped by the same device tags.
+ * not model as first-class devices (e.g. Avocent and Opengear console servers)
+ * are emitted as device rows, identified from standard MIB-2
+ * (sysName/sysDescr/sysObjectId) with stable per-vendor identities. The optional
+ * endpoint include-scope setting applies device tags. Management controllers
+ * such as Cisco CIMC are excluded because their parent-device inventory maps
+ * model them as components.
  */
 
 import "netbox_utilities";
@@ -91,8 +94,8 @@ foreach row in (
   (
     // SNMP endpoints (opt-in): identical branch to forward_devices.nqe. Generic
     // SSH/SNMP devices Forward collects but does not model. Generic identity from
-    // MIB-2; Avocent overlay by enterprise OID 10418. By default the device-tag
-    // INCLUDE scope narrows modeled devices only; when
+    // MIB-2, with stable Avocent/Opengear console-server overlays. By default the
+    // device-tag INCLUDE scope narrows modeled devices only; when
     // scope_endpoints_by_include_tags is on, endpoints must also carry the
     // include tags ("all"/"any" per device_tag_include_match). Exclude tags
     // always apply.
@@ -117,6 +120,10 @@ foreach row in (
     let sysDescrClean = replaceRegexMatches(sysDescr, re`\s+`, " ")
     let sysObjId = if isPresent(sysObjIdOpt) then sysObjIdOpt else ""
     let sdLower = toLowerCase(sysDescrClean)
+    let endpointProfileName = toLowerCase(toString(endpoint.profileName))
+    let isCimc = matches(endpointProfileName, "*cimc*")
+      || matches(sdLower, "*cisco integrated management controller*")
+    where !isCimc
     // Avocent overlay: enterprise OIDs 10418 (Avocent/Vertiv) and 2925 (Cyclades,
     // pre-acquisition), plus product-name signatures for units that report no
     // distinct sysObjectID (Cyclades/AlterPath fold into Avocent).
@@ -125,22 +132,45 @@ foreach row in (
       || matches(sdLower, "*avocent*")
       || matches(sdLower, "*cyclades*")
       || matches(sdLower, "*alterpath*")
-    // NetBox caps DeviceType.model/slug and Manufacturer.name at 100 chars, and
-    // sysDescr is free-form text (observed >250 chars, or symbol-only strings
-    // that slugify to nothing) — clamp identity here so rows arrive valid.
-    let ep_model = substring(sysDescrClean, 0, 100)
-    let ep_model_slug_raw = substring(slugifyNetboxModel(ep_model), 0, 100)
-    let ep_model_slug = if ep_model_slug_raw == "" then "unknown" else ep_model_slug_raw
+    // Opengear console servers use enterprise OID 25049. Their sysDescr embeds
+    // kernel, firmware, build hash, and date data, so treating the full value as
+    // DeviceType.model creates a new type after every software upgrade.
+    let isOpengear = matches(sysObjId, "1.3.6.1.4.1.25049.*")
+      || matches(sdLower, "*opengear*")
+    let isConsoleServer = isAvocent || isOpengear
     // Manufacturer: Avocent when the overlay matches; else the first token of the
     // cleaned sysDescr; "Unknown" when there was no sysDescr at all (so the
     // fabricated "SNMP Endpoint" default never masquerades as a vendor).
     let ep_manuf_raw = if isAvocent then "Avocent"
+      else if isOpengear then "Opengear"
       else if hasDescr then substring(replaceRegexMatches(sysDescrClean, re` .*`, ""), 0, 100)
       else "Unknown"
     let ep_manuf = if ep_manuf_raw == "" then "Unknown" else ep_manuf_raw
     let ep_manuf_slug_raw = slugify(ep_manuf)
     let ep_manuf_slug = if ep_manuf_slug_raw == "" then "unknown" else ep_manuf_slug_raw
-    let ep_role = if isAvocent then "Console Server" else "SNMP Endpoint"
+    // Keep hardware identity stable. Opengear's comma starts kernel/build data;
+    // newer compact descriptions instead append a dotted firmware token. Legacy
+    // AlterPath descriptions append " - version: ...". Generic endpoints get a
+    // manufacturer-scoped type instead of arbitrary free-form sysDescr text.
+    let opengear_model = replaceRegexMatches(
+      replaceRegexMatches(sysDescrClean, re`,.*`, ""),
+      re` [0-9]+\.[0-9]+.*$`,
+      ""
+    )
+    let avocent_model = replaceRegexMatches(sysDescrClean, re` - version:.*`, "")
+    let ep_model_candidate = if isOpengear && hasDescr then opengear_model
+      else if isOpengear then "Opengear Console Server"
+      else if isAvocent && hasDescr then avocent_model
+      else if isAvocent then "Avocent Console Server"
+      else ep_manuf + " SNMP Endpoint"
+    let ep_model_candidate_slug = slugifyNetboxModel(ep_model_candidate)
+    let ep_model_raw = if isPresent(ep_model_candidate_slug) && ep_model_candidate_slug != ""
+      then ep_model_candidate
+      else ep_manuf + " SNMP Endpoint"
+    let ep_model = substring(ep_model_raw, 0, 100)
+    let ep_model_slug_raw = substring(slugifyNetboxModel(ep_model), 0, 100)
+    let ep_model_slug = if ep_model_slug_raw == "" then "unknown" else ep_model_slug_raw
+    let ep_role = if isConsoleServer then "Console Server" else "SNMP Endpoint"
     let ep_site = if isPresent(endpoint.locationName) then toLowerCase(endpoint.locationName) else "unknown"
     select {
       name: endpoint.name,

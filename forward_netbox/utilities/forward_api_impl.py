@@ -228,6 +228,23 @@ def build_endpoint_tag_scope_where(include_tags, exclude_tags, include_match):
     return clauses
 
 
+def build_endpoint_device_eligibility_where():
+    """Return the endpoint-device eligibility predicate shared by live probes.
+
+    Cisco CIMC is a management controller belonging to its physical server. The
+    APIC CIMC inventory map models it as an inventory item, so emitting the same
+    controller as a standalone SNMP endpoint creates a duplicate NetBox device.
+    """
+    return [
+        "let endpointProfileName = toLowerCase(toString(endpoint.profileName))",
+        'let endpointSysDescrOpt = max(foreach o in endpoint.snmpOutputs where o.requestedOid == "1.3.6.1.2.1.1.1" select max(foreach e in o.rawOidEntries select e.rawValue))',
+        'let endpointSysDescr = if isPresent(endpointSysDescrOpt) then toLowerCase(endpointSysDescrOpt) else ""',
+        'let isCimc = matches(endpointProfileName, "*cimc*")',
+        '  || matches(endpointSysDescr, "*cisco integrated management controller*")',
+        "where !isCimc",
+    ]
+
+
 class ForwardClient:
     def __init__(self, source):
         self.source = source

@@ -20,11 +20,7 @@ class ForwardReleaseReadinessAuditTest(TestCase):
         with patch.dict(
             os.environ,
             {
-                "FORWARD_SMOKE_SOURCE_NAME": "smoke-source-release-smoke-20260601",
                 "FORWARD_SMOKE_DATASET_LABEL": "release-smoke",
-                "FORWARD_SMOKE_USERNAME": "",
-                "FORWARD_SMOKE_PASSWORD": "",
-                "FORWARD_SMOKE_NETWORK_ID": "",
             },
             clear=False,
         ), patch(
@@ -39,14 +35,8 @@ class ForwardReleaseReadinessAuditTest(TestCase):
         self.assertEqual(payload["status"], "passed")
         evidence = payload["evidence"]
         self.assertTrue(evidence["source_backed"])
-        self.assertEqual(evidence["source_name"], "smoke-source-release-smoke-20260601")
+        self.assertEqual(evidence["source_selection"], "automatic_existing")
+        self.assertNotIn("source_name", evidence)
+        self.assertNotIn("credential_env_missing", evidence)
         self.assertTrue(evidence["dataset_label_matches"])
         self.assertEqual(evidence["missing_env"], [])
-        self.assertEqual(
-            sorted(evidence["credential_env_missing"]),
-            [
-                "FORWARD_SMOKE_NETWORK_ID",
-                "FORWARD_SMOKE_PASSWORD",
-                "FORWARD_SMOKE_USERNAME",
-            ],
-        )

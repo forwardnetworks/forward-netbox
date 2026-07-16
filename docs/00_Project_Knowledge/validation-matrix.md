@@ -141,20 +141,15 @@ Optional flags:
 - `--sample-shard-keys 500` to widen shard sample size.
 - `--output-json /tmp/pushdown-profile.json` to persist the report artifact.
 
-### Architecture Audit Artifact
+### Architecture Contract Gate
 
-Use this to emit a single JSON artifact that captures the current apply-engine
-model matrix (bulk-ORM safe set + adapter-required blockers), shipped
-query-contract registry, and optional sync/runtime evidence. The query-contract
-registry proves that models marked `nqe_parameters` have shipped NQE maps that
-declare `forward_netbox_shard_keys`, seed an empty default, run unfiltered when
-no parameters are set, and apply a positive shard predicate when parameters are
-provided.
+`architecture-audit-check` runs the focused supported-model classification,
+shard-fetch coverage, and built-in/optional query-contract tests. It uses the
+same isolated-runtime fallback as the CI Django tasks when the shared runtime
+has active work. The retired pre-2.0 JSON architecture-audit management command
+is not part of the current single-branch architecture.
 
 ```bash
-invoke architecture-audit
-invoke architecture-audit --sync-name "ui-harness-sync" --output-json /tmp/architecture-audit.json
-invoke architecture-audit --fail-on-gap
 invoke architecture-audit-check
 invoke architecture-runtime-evidence
 invoke architecture-completion-audit --output-json /tmp/architecture-completion-audit.json
@@ -178,9 +173,9 @@ invoke sync-autorecover-monitor --sync-ids 50,51 --max-polls 6 --interval-second
   Runtime evidence now also records a compatibility-cache retirement dry-run
   report at `docs/03_Plans/evidence/compat-cache-prune-runtime.json`.
 - Use `invoke architecture-runtime-evidence --run-field-scale` to execute the
-  approved field-scale runtime matrix when `FORWARD_SMOKE_USERNAME`,
-  `FORWARD_SMOKE_PASSWORD`, and `FORWARD_SMOKE_NETWORK_ID` are set in the
-  environment.
+  approved field-scale runtime matrix. It automatically selects and validates
+  an existing configured Forward Source; no credential values or source name
+  are placed in the shell command or evidence artifact.
   The same matrix can be run independently with
   `invoke field-scale-runtime-matrix --resume=False` for release proof. Use
   `--step <matrix-step-name>` to run one long step at a time; the artifact is
@@ -200,6 +195,10 @@ invoke sync-autorecover-monitor --sync-ids 50,51 --max-polls 6 --interval-second
   Scope exploratory evidence with `FORWARD_SMOKE_MODELS` only when the reduced
   model set is called out in the evidence notes; do not use a narrow model set
   to claim full field-scale completion.
+  Set `FORWARD_SMOKE_FOCUS_MODELS` to choose the models in the third bounded
+  validation step. It defaults to `dcim.device,dcim.inventoryitem`; a DLM
+  release can add the installed DLM models without narrowing the first two
+  full required-model steps.
 - Add `--scale-sync-name <sync-name>` when the field-scale benchmark should use
   a large sync other than the local chaos probe sync. The default
   `ui-harness-sync` path is useful for wiring checks but is intentionally too
@@ -289,7 +288,7 @@ Operational default:
 For repeated operational soak runs (manual, opt-in):
 
 ```bash
-invoke scale-soak --runs 3 --execution-backend branching --max-changes-per-branch 10000
+invoke scale-soak --runs 3 --execution-backend single_branch --max-changes-per-branch 10000
 ```
 
 ## Sensitive-Content Gate

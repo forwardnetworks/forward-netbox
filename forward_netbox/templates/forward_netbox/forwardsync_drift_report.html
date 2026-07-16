@@ -33,6 +33,14 @@
     </div>
   </div>
 {% endif %}
+{% if not report.comparison_available %}
+  <div class="alert alert-info d-flex align-items-center" role="alert">
+    <i class="mdi mdi-information-outline me-2" aria-hidden="true"></i>
+    <div>
+      {% trans "This dependency preview measures estimated apply workload, not object-level drift. In-sync status is not measured because fetched rows are change candidates, not confirmed mismatches." %}
+    </div>
+  </div>
+{% endif %}
 {% if report.looks_like_full_create %}
   <div class="alert alert-info d-flex align-items-center" role="alert">
     <i class="mdi mdi-information-outline me-2" aria-hidden="true"></i>
@@ -51,7 +59,9 @@
           <tr>
             <th scope="row">{% trans "In sync" %}</th>
             <td>
-              {% if report.in_sync %}
+              {% if not report.comparison_available %}
+                <span class="badge text-bg-secondary">{% trans "Not measured" %}</span>
+              {% elif report.in_sync %}
                 <span class="badge text-bg-success">{% trans "Yes" %}</span>
               {% else %}
                 <span class="badge text-bg-warning">{% trans "No" %}</span>
@@ -60,11 +70,15 @@
           </tr>
           <tr>
             <th scope="row">{% trans "Drifted models" %}</th>
-            <td>{{ report.drifted_model_count }} / {{ report.model_count }}</td>
+            <td>{% if report.comparison_available %}{{ report.drifted_model_count }} / {{ report.model_count }}{% else %}{% trans "Not measured" %}{% endif %}</td>
           </tr>
           <tr>
             <th scope="row">{% trans "Total drift" %}</th>
-            <td>{{ report.total_drift }}</td>
+            <td>{% if report.comparison_available %}{{ report.total_drift }}{% else %}{% trans "Not measured" %}{% endif %}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Estimated apply work" %}</th>
+            <td>{{ report.total_apply_work }}</td>
           </tr>
           <tr>
             <th scope="row">{% trans "From preview" %}</th>
@@ -83,8 +97,9 @@
         <tr>
           <th>{% trans "Model" %}</th>
           <th>{% trans "Forward rows" %}</th>
-          <th>{% trans "Pending changes" %}</th>
+          <th>{% trans "Upsert/change candidates" %}</th>
           <th>{% trans "Pending removals" %}</th>
+          <th>{% trans "Estimated apply work" %}</th>
           <th>{% trans "Drift" %}</th>
           <th>{% trans "In sync" %}</th>
         </tr>
@@ -96,11 +111,12 @@
             <td>{{ row.forward_rows|placeholder }}</td>
             <td>{{ row.pending_changes }}</td>
             <td>{{ row.pending_removes }}</td>
-            <td>{% if row.drift %}<strong class="text-warning">{{ row.drift }}</strong>{% else %}0{% endif %}</td>
-            <td>{% if row.in_sync %}<span class="badge text-bg-success">{% trans "Yes" %}</span>{% else %}<span class="badge text-bg-warning">{% trans "No" %}</span>{% endif %}</td>
+            <td>{{ row.estimated_apply_work }}</td>
+            <td>{% if row.comparison_available %}{% if row.drift %}<strong class="text-warning">{{ row.drift }}</strong>{% else %}0{% endif %}{% else %}{% trans "Not measured" %}{% endif %}</td>
+            <td>{% if not row.comparison_available %}<span class="badge text-bg-secondary">{% trans "Not measured" %}</span>{% elif row.in_sync %}<span class="badge text-bg-success">{% trans "Yes" %}</span>{% else %}<span class="badge text-bg-warning">{% trans "No" %}</span>{% endif %}</td>
           </tr>
         {% empty %}
-          <tr><td colspan="6" class="text-muted">{% trans "No model results in the preview." %}</td></tr>
+          <tr><td colspan="7" class="text-muted">{% trans "No model results in the preview." %}</td></tr>
         {% endfor %}
       </tbody>
     </table>
