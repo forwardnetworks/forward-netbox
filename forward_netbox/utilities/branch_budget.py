@@ -80,9 +80,9 @@ APPLY_DEPENDENCY_MODEL_ORDER = (
     "netbox_routing.bgpaddressfamily",
     "netbox_routing.bgppeeraddressfamily",
     "netbox_peering_manager.peeringsession",
+    "netbox_dlm.devicesoftware",
     "netbox_dlm.softwareversion",
     "netbox_dlm.hardwarenotice",
-    "netbox_dlm.devicesoftware",
     "netbox_dlm.cve",
     "netbox_dlm.vulnerability",
     "netbox_cisco_aci.acifabric",
@@ -127,7 +127,8 @@ APPLY_PARENT_MODEL_DEPENDENCIES = {
     ),
     "netbox_dlm.softwareversion": ("dcim.platform",),
     "netbox_dlm.hardwarenotice": ("dcim.devicetype",),
-    "netbox_dlm.devicesoftware": ("dcim.device", "netbox_dlm.softwareversion"),
+    # The adapter creates SoftwareVersion and DeviceSoftware atomically.
+    "netbox_dlm.devicesoftware": ("dcim.device", "dcim.platform"),
     "netbox_dlm.vulnerability": (
         "dcim.device",
         "netbox_dlm.cve",

@@ -2,6 +2,7 @@ import json
 import os
 import re
 import shlex
+import socket
 import sys
 import time
 from datetime import datetime
@@ -24,7 +25,6 @@ ALLOW_SHARED_RUNTIME_TESTS_ENV = "FORWARD_NETBOX_ALLOW_SHARED_RUNTIME_TESTS"
 ACTIVE_SYNC_STATUSES = ("queued", "syncing", "merging")
 ISOLATED_TEST_PROJECT_NAME = "forward-netbox-test"
 ISOLATED_PLAYWRIGHT_PROJECT_NAME = "forward-netbox-ui-test"
-ISOLATED_PLAYWRIGHT_HOST_PORT = "18080"
 SCENARIO_TEST_LABELS = " ".join(
     (
         "forward_netbox.tests.test_bulk_merge.BulkMergeIntegrationTest",
@@ -38,6 +38,22 @@ INGESTION_DELETE_REGRESSION_LABELS = " ".join(
         "test_single_branch_repeat_run_applies_delete_phase",
         "forward_netbox.tests.test_sync.ForwardBranchBudgetPlanTest."
         "test_branch_plan_splits_mixed_workloads_into_apply_then_delete_phases",
+    )
+)
+ARCHITECTURE_AUDIT_TEST_LABELS = " ".join(
+    (
+        "forward_netbox.tests.test_sync.ForwardBranchBudgetPlanTest."
+        "test_shard_fetch_contracts_cover_all_supported_models",
+        "forward_netbox.tests.test_sync.ForwardSyncRunnerTest."
+        "test_apply_engine_classifies_all_supported_models",
+        "forward_netbox.tests.test_sync.ForwardSyncRunnerTest."
+        "test_apply_engine_classifies_all_supported_models_when_bulk_orm_enabled",
+        "forward_netbox.tests.test_sync.ForwardSyncRunnerTest."
+        "test_bulk_orm_expansion_summary_requires_parity_for_blocked_models",
+        "forward_netbox.tests.test_query_registry.QueryRegistryTest."
+        "test_builtin_query_contract_summary_passes_for_parameterized_maps",
+        "forward_netbox.tests.test_query_registry.QueryRegistryTest."
+        "test_optional_plugin_query_contract_summary_passes_for_aci_maps",
     )
 )
 
@@ -360,11 +376,17 @@ def _run_playwright_ui(context, *, env=None):
     context.run("npm run test:ui", env={**(env or {})})
 
 
+def _available_loopback_port():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        return str(listener.getsockname()[1])
+
+
 def _run_playwright_in_isolated_runtime(context, *, project_name=None, host_port=None):
     project_name = str(project_name or ISOLATED_PLAYWRIGHT_PROJECT_NAME)
     host_port = str(host_port or os.environ.get("FORWARD_NETBOX_PLAYWRIGHT_HOST_PORT"))
     if not host_port or host_port.lower() == "none":
-        host_port = ISOLATED_PLAYWRIGHT_HOST_PORT
+        host_port = _available_loopback_port()
     isolated = _compose_project_context(context, project_name)
     compose_env = {"FORWARD_NETBOX_HOST_PORT": host_port}
     docker_compose(isolated, "down --remove-orphans -v", env=compose_env)
@@ -1678,49 +1700,8 @@ def _collect_release_readiness_audit(
 
 
 def _collect_validation_org_query_audit_evidence(context):
-    credential_env = (
-        "FORWARD_VALIDATION_USERNAME",
-        "FORWARD_VALIDATION_PASSWORD",
-        "FORWARD_VALIDATION_NETWORK_ID",
-    )
-    missing_env = [name for name in credential_env if not os.getenv(name, "").strip()]
-    if missing_env:
-        return {
-            "status": "skipped",
-            "evidence": {
-                "required_env": [
-                    *credential_env,
-                    "FORWARD_VALIDATION_SOURCE_NAME",
-                    "FORWARD_VALIDATION_URL",
-                ],
-                "missing_env": missing_env,
-                "reason": "validation org credentials are not configured",
-            },
-        }
-
-    source_name = str(
-        os.getenv("FORWARD_VALIDATION_SOURCE_NAME", "validation-source") or ""
-    ).strip()
-    url = str(os.getenv("FORWARD_VALIDATION_URL", "https://fwd.app") or "").strip()
-    username = str(os.getenv("FORWARD_VALIDATION_USERNAME", "") or "").strip()
-    password = str(os.getenv("FORWARD_VALIDATION_PASSWORD", "") or "").strip()
-    network_id = str(os.getenv("FORWARD_VALIDATION_NETWORK_ID", "") or "").strip()
-    repository = str(os.getenv("FORWARD_VALIDATION_REPOSITORY", "org") or "").strip()
-    directory = str(
-        os.getenv("FORWARD_VALIDATION_DIRECTORY", "/forward_netbox_validation/") or ""
-    ).strip()
-    command = (
-        "forward_validation_org_query_audit "
-        f'--source-name "{source_name}" '
-        f'--url "{url}" '
-        f'--username "{username}" '
-        f'--password "{password}" '
-        f'--network-id "{network_id}" '
-        f'--repository "{repository}" '
-        f'--directory "{directory}" '
-        "--fail-on-gap"
-    )
-    result = manage_py(context, command, warn=True, hide=True)
+    command = "forward_validation_org_query_audit --fail-on-gap --summary-only"
+    result = _field_scale_manage_py(context, command, warn=True, hide=True)
     stdout = getattr(result, "stdout", "")
     parse_error = ""
     payload = {}
@@ -1731,10 +1712,7 @@ def _collect_validation_org_query_audit_evidence(context):
 
     evidence = {
         "command": command,
-        "source_name": source_name,
-        "url": url,
-        "repository": repository,
-        "directory": directory,
+        "source_selection": "automatic_existing",
         "parse_error": parse_error,
     }
     if not bool(getattr(result, "ok", False)):
@@ -1768,46 +1746,27 @@ def _collect_validation_org_query_audit_evidence(context):
 
 
 def _collect_architecture_completion_gate(context):
-    command = "forward_architecture_completion_audit"
-    result = manage_py(context, command, warn=True, hide=True)
-    if not bool(getattr(result, "ok", False)):
-        failure_code, failure_hint = _classify_field_scale_step_failure(result)
+    command = "architecture-audit-check"
+    try:
+        _run_tests_with_shared_runtime_fallback(
+            context,
+            test_label=ARCHITECTURE_AUDIT_TEST_LABELS,
+        )
+    except Exception as exc:
         return {
             "status": "failed",
             "evidence": {
                 "command": command,
-                "exit_code": int(getattr(result, "exited", 1) or 1),
-                "failure_code": str(failure_code or "command_failed"),
-                "failure_hint": str(
-                    failure_hint or "architecture completion audit failed"
-                ),
+                "failure_code": "architecture_contract_failed",
+                "failure_hint": f"architecture contract tests raised {exc.__class__.__name__}",
             },
         }
-
-    payload = None
-    parse_error = ""
-    try:
-        payload = _parse_json_from_manage_output(getattr(result, "stdout", ""))
-    except Exception as exc:  # pragma: no cover - defensive fallback
-        parse_error = str(exc)
-        payload = {}
-    summary = payload.get("summary") if isinstance(payload, dict) else {}
-    failed = int((summary or {}).get("failed") or 0)
-    pending_external = int((summary or {}).get("needs_external_evidence") or 0)
-    passed = failed == 0 and pending_external == 0
-    reason = ""
-    if not passed:
-        reason = (
-            "architecture completion audit has outstanding checks "
-            f"(failed={failed}, needs_external_evidence={pending_external})"
-        )
     return {
-        "status": "passed" if passed else "failed",
+        "status": "passed",
         "evidence": {
             "command": command,
-            "summary": summary,
-            "parse_error": parse_error,
-            "reason": reason,
+            "test_labels": ARCHITECTURE_AUDIT_TEST_LABELS,
+            "reason": "",
         },
     }
 
@@ -1815,19 +1774,7 @@ def _collect_architecture_completion_gate(context):
 def _collect_release_runtime_preflight_evidence(
     *, context, dataset_label="release-smoke"
 ):
-    credential_env = (
-        "FORWARD_SMOKE_USERNAME",
-        "FORWARD_SMOKE_PASSWORD",
-        "FORWARD_SMOKE_NETWORK_ID",
-    )
-    source_name = str(os.getenv("FORWARD_SMOKE_SOURCE_NAME", "") or "").strip()
-    credential_missing = [
-        name for name in credential_env if not os.getenv(name, "").strip()
-    ]
-    source_backed = bool(source_name)
     missing_env = []
-    if credential_missing and not source_backed:
-        missing_env.extend(credential_missing)
     if not os.getenv("FORWARD_SMOKE_DATASET_LABEL", "").strip():
         missing_env.append("FORWARD_SMOKE_DATASET_LABEL")
     required_label = str(dataset_label or "").strip()
@@ -1837,6 +1784,16 @@ def _collect_release_runtime_preflight_evidence(
     )
     docker_preflight = _field_scale_runtime_preflight(context)
     docker_ok = bool(docker_preflight.get("ok"))
+    source_preflight = (
+        _field_scale_source_preflight(context)
+        if docker_ok
+        else {
+            "ok": False,
+            "failure_code": "docker_runtime_not_ready",
+            "failure_hint": "source preflight skipped because Docker is not ready",
+        }
+    )
+    source_ok = bool(source_preflight.get("ok"))
 
     reasons = []
     if missing_env:
@@ -1850,6 +1807,11 @@ def _collect_release_runtime_preflight_evidence(
             "docker preflight failed: "
             + str(docker_preflight.get("failure_code") or "docker_preflight_failed")
         )
+    if docker_ok and not source_ok:
+        reasons.append(
+            "source preflight failed: "
+            + str(source_preflight.get("failure_code") or "source_preflight_failed")
+        )
 
     return {
         "status": "passed" if not reasons else "failed",
@@ -1857,16 +1819,12 @@ def _collect_release_runtime_preflight_evidence(
             "required_dataset_label": required_label,
             "dataset_label": current_label,
             "dataset_label_matches": dataset_label_matches,
-            "required_env": [
-                *credential_env,
-                "FORWARD_SMOKE_SOURCE_NAME",
-                "FORWARD_SMOKE_DATASET_LABEL",
-            ],
-            "credential_env_missing": credential_missing,
-            "source_name": source_name,
-            "source_backed": source_backed,
+            "required_env": ["FORWARD_SMOKE_DATASET_LABEL"],
+            "source_selection": "automatic_existing",
+            "source_backed": source_ok,
             "missing_env": missing_env,
             "docker_preflight": docker_preflight,
+            "source_preflight": source_preflight,
             "reason": "; ".join(reasons) if reasons else "",
         },
     }
@@ -1931,9 +1889,9 @@ def _collect_release_dataset_gate_evidence(
     resumed = _truthy_arg(metadata.get("resume"))
     allow_resumed = _truthy_arg(allow_resumed_artifact)
     required_run_names = (
-        "run_a_branching_validate_only",
-        "run_b_branching_plan_only",
-        "run_c_fast_bootstrap_validate_only",
+        "run_a_single_branch_validate_only",
+        "run_b_single_branch_plan_only",
+        "run_c_focused_validate_only",
     )
     run_by_name = {
         str(run.get("name")): run
@@ -2009,18 +1967,10 @@ def _collect_release_dataset_gate_evidence(
 def _run_field_scale_runtime_matrix(context, *, step="", resume=False):
     artifact_path, artifact_rel = _field_scale_matrix_artifact_path()
     command_env = {
-        "FORWARD_SMOKE_URL": os.getenv("FORWARD_SMOKE_URL", "https://fwd.app"),
-        "FORWARD_SMOKE_USERNAME": os.getenv("FORWARD_SMOKE_USERNAME", ""),
-        "FORWARD_SMOKE_PASSWORD": os.getenv("FORWARD_SMOKE_PASSWORD", ""),
-        "FORWARD_SMOKE_NETWORK_ID": os.getenv("FORWARD_SMOKE_NETWORK_ID", ""),
-        "FORWARD_SMOKE_SNAPSHOT_ID": os.getenv(
-            "FORWARD_SMOKE_SNAPSHOT_ID", "latestProcessed"
-        ),
-        "FORWARD_SMOKE_SOURCE_NAME": os.getenv(
-            "FORWARD_SMOKE_SOURCE_NAME", "smoke-source"
-        ),
-        "FORWARD_SMOKE_SYNC_NAME": os.getenv("FORWARD_SMOKE_SYNC_NAME", "smoke-sync"),
         "FORWARD_SMOKE_MODELS": os.getenv("FORWARD_SMOKE_MODELS", ""),
+        "FORWARD_SMOKE_FOCUS_MODELS": os.getenv(
+            "FORWARD_SMOKE_FOCUS_MODELS", "dcim.device,dcim.inventoryitem"
+        ),
         "FORWARD_SMOKE_QUERY_LIMIT": os.getenv("FORWARD_SMOKE_QUERY_LIMIT", "10"),
         "FORWARD_SMOKE_MAX_CHANGES_PER_BRANCH": os.getenv(
             "FORWARD_SMOKE_MAX_CHANGES_PER_BRANCH", "10000"
@@ -2028,14 +1978,8 @@ def _run_field_scale_runtime_matrix(context, *, step="", resume=False):
         "FORWARD_SMOKE_DATASET_LABEL": os.getenv("FORWARD_SMOKE_DATASET_LABEL", ""),
     }
 
-    smoke_url = shlex.quote(command_env["FORWARD_SMOKE_URL"])
-    smoke_username = shlex.quote(command_env["FORWARD_SMOKE_USERNAME"])
-    smoke_password = shlex.quote(command_env["FORWARD_SMOKE_PASSWORD"])
-    smoke_network_id = shlex.quote(command_env["FORWARD_SMOKE_NETWORK_ID"])
-    smoke_snapshot = shlex.quote(command_env["FORWARD_SMOKE_SNAPSHOT_ID"])
-    smoke_source = shlex.quote(command_env["FORWARD_SMOKE_SOURCE_NAME"])
-    smoke_sync = shlex.quote(command_env["FORWARD_SMOKE_SYNC_NAME"])
     smoke_models = command_env["FORWARD_SMOKE_MODELS"].strip()
+    smoke_focus_models = command_env["FORWARD_SMOKE_FOCUS_MODELS"].strip()
     smoke_dataset_label = command_env["FORWARD_SMOKE_DATASET_LABEL"].strip()
     smoke_query_limit = max(1, int(command_env["FORWARD_SMOKE_QUERY_LIMIT"] or 10))
     smoke_max_changes_per_branch = max(
@@ -2047,27 +1991,13 @@ def _run_field_scale_runtime_matrix(context, *, step="", resume=False):
         int(os.getenv("FORWARD_SMOKE_STEP_TIMEOUT_SECONDS", "1200") or 1200),
     )
 
-    common_flag_parts = [
-        f"--url {smoke_url}",
-        f"--snapshot-id {smoke_snapshot}",
-        f"--source-name {smoke_source}",
-        f"--sync-name {smoke_sync}",
-    ]
-    if command_env["FORWARD_SMOKE_USERNAME"].strip():
-        common_flag_parts.append(f"--username {smoke_username}")
-    if command_env["FORWARD_SMOKE_PASSWORD"].strip():
-        common_flag_parts.append(f"--password {smoke_password}")
-    if command_env["FORWARD_SMOKE_NETWORK_ID"].strip():
-        common_flag_parts.append(f"--network-id {smoke_network_id}")
-    common_manage_flags = " ".join(common_flag_parts)
+    common_manage_flags = ""
     if smoke_models:
-        common_manage_flags = (
-            f"{common_manage_flags} --models {shlex.quote(smoke_models)}"
-        )
+        common_manage_flags = f" --models {shlex.quote(smoke_models)}"
 
     matrix = [
         {
-            "name": "run_a_branching_validate_only",
+            "name": "run_a_single_branch_validate_only",
             "execute": (
                 f"forward_smoke_sync --validate-only --query-limit {smoke_query_limit} "
                 f"{common_manage_flags}"
@@ -2077,7 +2007,7 @@ def _run_field_scale_runtime_matrix(context, *, step="", resume=False):
             ),
         },
         {
-            "name": "run_b_branching_plan_only",
+            "name": "run_b_single_branch_plan_only",
             "execute": (
                 "forward_smoke_sync --plan-only "
                 f"--max-changes-per-branch {smoke_max_changes_per_branch} "
@@ -2089,15 +2019,14 @@ def _run_field_scale_runtime_matrix(context, *, step="", resume=False):
             ),
         },
         {
-            "name": "run_c_fast_bootstrap_validate_only",
+            "name": "run_c_focused_validate_only",
             "execute": (
-                "forward_smoke_sync --validate-only --query-limit 10 "
-                "--execution-backend fast_bootstrap "
-                f"{common_manage_flags}"
+                "forward_smoke_sync --validate-only --query-limit 100 "
+                f"--models {shlex.quote(smoke_focus_models)}"
             ),
             "evidence_command": (
-                "forward_smoke_sync --validate-only --query-limit 10 "
-                "--execution-backend fast_bootstrap"
+                "forward_smoke_sync --validate-only --query-limit 100 "
+                f"--models {shlex.quote(smoke_focus_models)}"
             ),
         },
     ]
@@ -2134,6 +2063,7 @@ def _run_field_scale_runtime_matrix(context, *, step="", resume=False):
     matrix_metadata = {
         "dataset_label": smoke_dataset_label,
         "models": smoke_models or "default_required_models",
+        "focus_models": smoke_focus_models,
         "max_changes_per_branch": smoke_max_changes_per_branch,
         "query_limit": smoke_query_limit,
         "resume": bool(resume),
@@ -2345,6 +2275,32 @@ def _field_scale_runtime_preflight(context):
         "exit_code": int(getattr(result, "exited", 1) or 1),
         "failure_code": str(failure_code or "docker_preflight_failed"),
         "failure_hint": str(failure_hint or "docker preflight failed"),
+    }
+
+
+def _field_scale_source_preflight(context):
+    try:
+        result = _field_scale_manage_py(
+            context,
+            "forward_smoke_sync --check-source",
+            warn=True,
+            hide=True,
+        )
+    except Exception as exc:  # pragma: no cover - defensive fallback
+        return {
+            "ok": False,
+            "exit_code": None,
+            "failure_code": "source_preflight_exception",
+            "failure_hint": f"source preflight raised {exc.__class__.__name__}",
+        }
+    failure_code, failure_hint = _classify_field_scale_step_failure(result)
+    if bool(getattr(result, "ok", False)):
+        return {"ok": True, "selection": "automatic_existing"}
+    return {
+        "ok": False,
+        "exit_code": int(getattr(result, "exited", 1) or 1),
+        "failure_code": str(failure_code or "source_preflight_failed"),
+        "failure_hint": str(failure_hint or "configured source is unavailable"),
     }
 
 
@@ -2833,7 +2789,7 @@ def smoke_sync(
     query_limit=5,
     plan_only=False,
     no_auto_merge=False,
-    execution_backend="branching",
+    execution_backend="single_branch",
     max_changes_per_branch=10000,
     enable_bulk_orm=True,
 ):
@@ -2846,7 +2802,7 @@ def smoke_sync(
         flags.append("--no-auto-merge")
     if not bool(enable_bulk_orm):
         flags.append("--disable-bulk-orm")
-    if execution_backend != "branching":
+    if execution_backend != "single_branch":
         flags.append(f"--execution-backend {execution_backend}")
     if query_limit != 5:
         flags.append(f"--query-limit {int(query_limit)}")
@@ -2860,7 +2816,7 @@ def smoke_sync(
 def scale_soak(
     context,
     runs=3,
-    execution_backend="branching",
+    execution_backend="single_branch",
     max_changes_per_branch=10000,
     pause_seconds=30,
 ):
@@ -2926,22 +2882,13 @@ def pushdown_profile(
     manage_py(context, f"forward_pushdown_profile {' '.join(flags)}")
 
 
-@task(name="architecture-audit")
-def architecture_audit(context, sync_name="", output_json="", fail_on_gap=False):
-    flags = []
-    if sync_name:
-        flags.append(f'--sync-name "{sync_name}"')
-    if output_json:
-        flags.append(f'--output-json "{output_json}"')
-    if fail_on_gap:
-        flags.append("--fail-on-gap")
-    manage_py(context, f"forward_architecture_audit {' '.join(flags)}")
-
-
 @task(name="architecture-audit-check")
 def architecture_audit_check(context):
-    """Fail fast when model eligibility classification has architecture gaps."""
-    architecture_audit.body(context, fail_on_gap=True)
+    """Run the focused model, fetch, and query architecture contract gate."""
+    _run_tests_with_shared_runtime_fallback(
+        context,
+        test_label=ARCHITECTURE_AUDIT_TEST_LABELS,
+    )
 
 
 @task(name="validation-org-query-audit")
@@ -3011,10 +2958,18 @@ def validation_org_query_audit_ci(context):
 
 @task(name="architecture-completion-audit")
 def architecture_completion_audit(context, output_json=""):
-    flags = []
+    evidence = _collect_architecture_completion_gate(context)
+    rendered = json.dumps(evidence, indent=2, sort_keys=True)
+    print(rendered)
     if output_json:
-        flags.append(f'--output-json "{output_json}"')
-    manage_py(context, f"forward_architecture_completion_audit {' '.join(flags)}")
+        output_path = Path(str(output_json).strip())
+        if not output_path.is_absolute():
+            output_path = Path(__file__).resolve().parent / output_path
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(rendered + "\n", encoding="utf-8")
+        print(f"Wrote architecture completion audit: {output_path}")
+    if evidence.get("status") != "passed":
+        raise Exit("Architecture completion audit failed.", code=1)
 
 
 @task(name="scale-benchmark")

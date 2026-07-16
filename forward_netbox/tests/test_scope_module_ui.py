@@ -125,6 +125,32 @@ class ScopeModuleUiTest(TestCase):
         self.assertTrue(Device.objects.filter(name="dev-a").exists())
         self.assertFalse(Device.objects.filter(name="dev-stale").exists())
 
+    def test_scope_reconciliation_view_reports_imported_endpoints(self):
+        self.source.parameters = {**self.source.parameters, "sync_endpoints": True}
+        self.source.save(update_fields=["parameters"])
+        self._device("dev-a")
+        self._device("endpoint-a")
+        fwd_client = Mock()
+        fwd_client.run_nqe_query.side_effect = [
+            [{"name": "dev-a", "completed": True}],
+            [{"name": "endpoint-a"}],
+        ]
+        client = self._superuser_client()
+        with (
+            patch.object(ForwardSource, "get_client", return_value=fwd_client),
+            patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
+        ):
+            response = client.get(
+                reverse(
+                    "plugins:forward_netbox:forwardsync_scope_reconciliation",
+                    kwargs={"pk": self.sync.pk},
+                )
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "In scope (SNMP endpoints)")
+        self.assertContains(response, ">1</td>", html=False)
+
     def test_tag_backfilled_devices_adds_and_removes_tag(self):
         from forward_netbox.utilities.scope_reconciliation import (
             tag_backfilled_devices,

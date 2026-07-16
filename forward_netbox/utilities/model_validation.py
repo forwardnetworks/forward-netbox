@@ -63,6 +63,7 @@ def clean_forward_source(source):
             "sync_device_tags",
             "sync_endpoints",
             "scope_endpoints_by_include_tags",
+            "scope_endpoints_by_include_tags_configured",
         }
     )
     if invalid:
@@ -82,6 +83,12 @@ def clean_forward_source(source):
         raise ValidationError(_("`sync_endpoints` must be a boolean."))
     if not isinstance(parameters.get("scope_endpoints_by_include_tags", False), bool):
         raise ValidationError(_("`scope_endpoints_by_include_tags` must be a boolean."))
+    if not isinstance(
+        parameters.get("scope_endpoints_by_include_tags_configured", False), bool
+    ):
+        raise ValidationError(
+            _("`scope_endpoints_by_include_tags_configured` must be a boolean.")
+        )
     if parameters.get("network_id") is not None and not isinstance(
         parameters.get("network_id"), str
     ):

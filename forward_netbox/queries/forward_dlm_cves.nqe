@@ -10,7 +10,6 @@
  * intentionally left blank (minimal parse).
  */
 
-@primaryKey(cve_id)
 @query
 f(forward_netbox_shard_keys: List<String>) =
 foreach cve in network.cveDatabase.cves

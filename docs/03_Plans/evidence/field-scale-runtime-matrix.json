@@ -1,7 +1,8 @@
 {
-  "generated_at": "2026-06-10T13:42:48.137660+00:00",
+  "generated_at": "2026-07-16T08:14:35.505208+00:00",
   "metadata": {
     "dataset_label": "release-smoke",
+    "focus_models": "dcim.device,dcim.inventoryitem",
     "max_changes_per_branch": 10000,
     "models": "default_required_models",
     "query_limit": 10,
@@ -14,33 +15,33 @@
   "runs": [
     {
       "command": "forward_smoke_sync --validate-only --query-limit 10",
-      "elapsed_ms": 9505,
+      "elapsed_ms": 40027,
       "exit_code": 0,
       "failure_code": "",
       "failure_hint": "",
-      "name": "run_a_branching_validate_only",
+      "name": "run_a_single_branch_validate_only",
       "ok": true,
       "timed_out": false,
       "timeout_seconds": 1200
     },
     {
       "command": "forward_smoke_sync --plan-only --max-changes-per-branch 10000",
-      "elapsed_ms": 204280,
+      "elapsed_ms": 193730,
       "exit_code": 0,
       "failure_code": "",
       "failure_hint": "",
-      "name": "run_b_branching_plan_only",
+      "name": "run_b_single_branch_plan_only",
       "ok": true,
       "timed_out": false,
       "timeout_seconds": 1200
     },
     {
-      "command": "forward_smoke_sync --validate-only --query-limit 10 --execution-backend fast_bootstrap",
-      "elapsed_ms": 10225,
+      "command": "forward_smoke_sync --validate-only --query-limit 100 --models dcim.device,dcim.inventoryitem",
+      "elapsed_ms": 7398,
       "exit_code": 0,
       "failure_code": "",
       "failure_hint": "",
-      "name": "run_c_fast_bootstrap_validate_only",
+      "name": "run_c_focused_validate_only",
       "ok": true,
       "timed_out": false,
       "timeout_seconds": 1200

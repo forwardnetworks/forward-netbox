@@ -69,9 +69,11 @@ The regression test `scripts/tests/test_apply_engine_model_matrix.py` validates
 this file against the live constants in `apply_engine.py` so docs and behavior
 cannot silently diverge.
 
-`forward_architecture_audit --fail-on-gap` is the strict runtime gate. It also
-verifies:
+`invoke architecture-audit-check` is the strict contract gate. It runs focused
+tests for:
 
 - no model falls back to `adapter_default_unclassified_model` in either default
   or bulk-enabled eligibility decisions
 - all supported models have a valid shard fetch contract coverage record
+- built-in and optional-plugin parameterized queries satisfy the shipped query
+  contract

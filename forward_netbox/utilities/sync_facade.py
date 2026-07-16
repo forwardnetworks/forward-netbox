@@ -20,6 +20,30 @@ from .sync_state import get_max_changes_per_branch as get_state_max_changes_per_
 
 
 DEFAULT_ENABLE_BULK_ORM_FOR_NEW_SYNCS = True
+SCOPE_ENDPOINTS_BY_INCLUDE_TAGS_CONFIGURED = (
+    "scope_endpoints_by_include_tags_configured"
+)
+
+
+def effective_scope_endpoints_by_include_tags(source_parameters):
+    """Return the endpoint include-scope setting with a safe legacy default.
+
+    Before 2.5.10, existing sources could persist the checkbox as false without
+    recording that an operator had intentionally opted out. When those sources
+    have include tags, treat the missing marker as legacy state and fail closed.
+    A 2.5.10 form save writes the marker, after which false is an explicit opt-out.
+    """
+    parameters = dict(source_parameters or {})
+    include_tags = parameters.get("device_tag_include_tags") or []
+    if not include_tags and parameters.get("device_tag_include"):
+        include_tags = [parameters.get("device_tag_include")]
+    has_include_scope = any(str(tag).strip() for tag in include_tags)
+    if (
+        has_include_scope
+        and parameters.get(SCOPE_ENDPOINTS_BY_INCLUDE_TAGS_CONFIGURED) is not True
+    ):
+        return True
+    return bool(parameters.get("scope_endpoints_by_include_tags"))
 
 
 def normalize_forward_sync(sync):

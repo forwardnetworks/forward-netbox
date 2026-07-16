@@ -1,7 +1,93 @@
 {
-  "checks": {},
-  "failed_checks": [
-    "x"
-  ],
-  "status": "failed"
+  "checks": {
+    "architecture_completion_gate": {
+      "evidence": {
+        "command": "architecture-audit-check",
+        "reason": "",
+        "test_labels": "forward_netbox.tests.test_sync.ForwardBranchBudgetPlanTest.test_shard_fetch_contracts_cover_all_supported_models forward_netbox.tests.test_sync.ForwardSyncRunnerTest.test_apply_engine_classifies_all_supported_models forward_netbox.tests.test_sync.ForwardSyncRunnerTest.test_apply_engine_classifies_all_supported_models_when_bulk_orm_enabled forward_netbox.tests.test_sync.ForwardSyncRunnerTest.test_bulk_orm_expansion_summary_requires_parity_for_blocked_models forward_netbox.tests.test_query_registry.QueryRegistryTest.test_builtin_query_contract_summary_passes_for_parameterized_maps forward_netbox.tests.test_query_registry.QueryRegistryTest.test_optional_plugin_query_contract_summary_passes_for_aci_maps"
+      },
+      "status": "passed"
+    },
+    "release_dataset_gate": {
+      "evidence": {
+        "allow_resumed_artifact": false,
+        "artifact_path": "docs/03_Plans/evidence/field-scale-runtime-matrix.json",
+        "artifact_status": "passed",
+        "dataset_label": "release-smoke",
+        "failed_step_codes": {},
+        "failed_steps": [],
+        "fresh": true,
+        "generated_at": "2026-07-16T08:14:35.505208+00:00",
+        "max_age_days": 7,
+        "metadata": {
+          "dataset_label": "release-smoke",
+          "focus_models": "dcim.device,dcim.inventoryitem",
+          "max_changes_per_branch": 10000,
+          "models": "default_required_models",
+          "query_limit": 10,
+          "resume": false,
+          "selected_step": "",
+          "step_count": 3,
+          "step_timeout_seconds": 1200
+        },
+        "missing_steps": [],
+        "reason": "",
+        "required_dataset_label": "release-smoke",
+        "required_steps": [
+          "run_a_single_branch_validate_only",
+          "run_b_single_branch_plan_only",
+          "run_c_focused_validate_only"
+        ],
+        "resumed": false
+      },
+      "status": "passed"
+    },
+    "release_runtime_preflight": {
+      "evidence": {
+        "dataset_label": "release-smoke",
+        "dataset_label_matches": true,
+        "docker_preflight": {
+          "ok": true
+        },
+        "missing_env": [],
+        "reason": "",
+        "required_dataset_label": "release-smoke",
+        "required_env": [
+          "FORWARD_SMOKE_DATASET_LABEL"
+        ],
+        "source_backed": true,
+        "source_preflight": {
+          "ok": true,
+          "selection": "automatic_existing"
+        },
+        "source_selection": "automatic_existing"
+      },
+      "status": "passed"
+    },
+    "validation_org_query_audit": {
+      "evidence": {
+        "command": "forward_validation_org_query_audit --fail-on-gap --summary-only",
+        "parse_error": "",
+        "reason": "",
+        "report": {
+          "gate_status": "proved",
+          "lookup_error_count": 0,
+          "matched_count": 25,
+          "missing_count": 0,
+          "published_count": 25,
+          "query_contract_gap_count": 0,
+          "query_contract_status": "pass",
+          "query_count": 25,
+          "stale_count": 0,
+          "status": "pass"
+        },
+        "source_selection": "automatic_existing"
+      },
+      "status": "passed"
+    }
+  },
+  "dataset_label": "release-smoke",
+  "failed_checks": [],
+  "generated_at": "2026-07-16T08:55:49.399059+00:00",
+  "status": "passed"
 }

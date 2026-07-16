@@ -29,6 +29,12 @@
             <th scope="row">{% trans "In scope (collected)" %}</th>
             <td>{{ payload.forward_in_scope_completed }}</td>
           </tr>
+          {% if payload.forward_in_scope_endpoints %}
+            <tr>
+              <th scope="row">{% trans "In scope (SNMP endpoints)" %}</th>
+              <td>{{ payload.forward_in_scope_endpoints }}</td>
+            </tr>
+          {% endif %}
           <tr>
             <th scope="row">{% trans "Tagged but backfilled" %}</th>
             <td>

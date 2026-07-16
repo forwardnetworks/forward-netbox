@@ -1672,27 +1672,6 @@ class ChaosProbeHelperTest(unittest.TestCase):
         self.assertTrue(metadata["support_bundle_recovery_verified"])
 
 
-class ArchitectureAuditTaskTest(unittest.TestCase):
-    def _context(self):
-        context = Mock()
-        context.forward_netbox = SimpleNamespace(
-            netbox_ver="v4.5.9",
-            project_name="forward-netbox",
-            compose_dir="/tmp/forward-netbox",
-        )
-        return context
-
-    def test_architecture_audit_passes_fail_on_gap_flag(self):
-        context = self._context()
-        with patch.object(tasks, "manage_py") as manage_py:
-            tasks.architecture_audit.body(context, fail_on_gap=True)
-
-        manage_py.assert_called_once()
-        command = manage_py.call_args.args[1]
-        self.assertIn("forward_architecture_audit", command)
-        self.assertIn("--fail-on-gap", command)
-
-
 class ScaleBenchmarkTaskTest(unittest.TestCase):
     def _context(self):
         context = Mock()
@@ -2363,12 +2342,7 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
         self.assertTrue(
             any("--max-changes-per-branch 42" in command for command in commands)
         )
-        self.assertTrue(
-            all(
-                "--source-name smoke-source-release-smoke-20260601" in command
-                for command in commands
-            )
-        )
+        self.assertTrue(all("--source-name" not in command for command in commands))
         self.assertTrue(all("--username" not in command for command in commands))
         self.assertTrue(all("--password" not in command for command in commands))
         self.assertTrue(all("--network-id" not in command for command in commands))
@@ -2415,7 +2389,10 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
         self.assertEqual(len(payload["runs"]), 3)
         commands = [call.args[1] for call in manage_py.call_args_list]
         self.assertIn("--query-limit 3", commands[0])
-        self.assertTrue(all("--models dcim.site" in command for command in commands))
+        self.assertTrue(
+            all("--models dcim.site" in command for command in commands[:2])
+        )
+        self.assertIn("--models dcim.device,dcim.inventoryitem", commands[2])
         self.assertTrue(
             all(call.kwargs.get("timeout") == 7 for call in manage_py.call_args_list)
         )
@@ -2595,7 +2572,7 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
                         "metadata": {},
                         "runs": [
                             {
-                                "name": "run_a_branching_validate_only",
+                                "name": "run_a_single_branch_validate_only",
                                 "command": "forward_smoke_sync --validate-only --query-limit 3",
                                 "ok": True,
                                 "exit_code": 0,
@@ -2638,9 +2615,9 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
         self.assertEqual(
             [run["name"] for run in payload["runs"]],
             [
-                "run_a_branching_validate_only",
-                "run_b_branching_plan_only",
-                "run_c_fast_bootstrap_validate_only",
+                "run_a_single_branch_validate_only",
+                "run_b_single_branch_plan_only",
+                "run_c_focused_validate_only",
             ],
         )
 
@@ -2667,7 +2644,7 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
             ):
                 evidence, status = tasks._run_field_scale_runtime_matrix(
                     context,
-                    step="run_a_branching_validate_only",
+                    step="run_a_single_branch_validate_only",
                 )
             payload = json.loads(artifact_path.read_text(encoding="utf-8"))
 
@@ -2676,7 +2653,7 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
         self.assertEqual(manage_py.call_count, 1)
         self.assertEqual(payload["status"], "partial")
         self.assertEqual(
-            payload["metadata"]["selected_step"], "run_a_branching_validate_only"
+            payload["metadata"]["selected_step"], "run_a_single_branch_validate_only"
         )
 
     def test_field_scale_evidence_from_artifact_reuses_fresh_passed_artifact(self):
@@ -2690,7 +2667,7 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
                         "metadata": {"models": "default_required_models"},
                         "runs": [
                             {
-                                "name": "run_a_branching_validate_only",
+                                "name": "run_a_single_branch_validate_only",
                                 "ok": True,
                                 "timed_out": False,
                             }
@@ -2712,7 +2689,7 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
         self.assertTrue(evidence["evidence"]["fresh"])
         self.assertEqual(
             evidence["evidence"]["runs"][0]["name"],
-            "run_a_branching_validate_only",
+            "run_a_single_branch_validate_only",
         )
 
     def test_field_scale_evidence_from_artifact_rejects_stale_passed_artifact(self):
@@ -2753,17 +2730,17 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
                         "metadata": {"dataset_label": "release-smoke", "resume": False},
                         "runs": [
                             {
-                                "name": "run_a_branching_validate_only",
+                                "name": "run_a_single_branch_validate_only",
                                 "ok": True,
                                 "timed_out": False,
                             },
                             {
-                                "name": "run_b_branching_plan_only",
+                                "name": "run_b_single_branch_plan_only",
                                 "ok": True,
                                 "timed_out": False,
                             },
                             {
-                                "name": "run_c_fast_bootstrap_validate_only",
+                                "name": "run_c_focused_validate_only",
                                 "ok": True,
                                 "timed_out": False,
                             },
@@ -2794,17 +2771,17 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
                         },
                         "runs": [
                             {
-                                "name": "run_a_branching_validate_only",
+                                "name": "run_a_single_branch_validate_only",
                                 "ok": True,
                                 "timed_out": False,
                             },
                             {
-                                "name": "run_b_branching_plan_only",
+                                "name": "run_b_single_branch_plan_only",
                                 "ok": True,
                                 "timed_out": False,
                             },
                             {
-                                "name": "run_c_fast_bootstrap_validate_only",
+                                "name": "run_c_focused_validate_only",
                                 "ok": True,
                                 "timed_out": False,
                             },
@@ -2838,17 +2815,17 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
                         "metadata": {"dataset_label": "release-smoke", "resume": True},
                         "runs": [
                             {
-                                "name": "run_a_branching_validate_only",
+                                "name": "run_a_single_branch_validate_only",
                                 "ok": True,
                                 "timed_out": False,
                             },
                             {
-                                "name": "run_b_branching_plan_only",
+                                "name": "run_b_single_branch_plan_only",
                                 "ok": True,
                                 "timed_out": False,
                             },
                             {
-                                "name": "run_c_fast_bootstrap_validate_only",
+                                "name": "run_c_focused_validate_only",
                                 "ok": True,
                                 "timed_out": False,
                             },
@@ -2882,17 +2859,17 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
                         "metadata": {"dataset_label": "release-smoke", "resume": True},
                         "runs": [
                             {
-                                "name": "run_a_branching_validate_only",
+                                "name": "run_a_single_branch_validate_only",
                                 "ok": True,
                                 "timed_out": False,
                             },
                             {
-                                "name": "run_b_branching_plan_only",
+                                "name": "run_b_single_branch_plan_only",
                                 "ok": True,
                                 "timed_out": False,
                             },
                             {
-                                "name": "run_c_fast_bootstrap_validate_only",
+                                "name": "run_c_focused_validate_only",
                                 "ok": True,
                                 "timed_out": False,
                             },
@@ -2924,12 +2901,12 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
                         "metadata": {"dataset_label": "release-smoke", "resume": False},
                         "runs": [
                             {
-                                "name": "run_a_branching_validate_only",
+                                "name": "run_a_single_branch_validate_only",
                                 "ok": True,
                                 "timed_out": False,
                             },
                             {
-                                "name": "run_b_branching_plan_only",
+                                "name": "run_b_single_branch_plan_only",
                                 "ok": True,
                                 "timed_out": False,
                             },
@@ -2962,19 +2939,19 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
                         "metadata": {"dataset_label": "release-smoke", "resume": False},
                         "runs": [
                             {
-                                "name": "run_a_branching_validate_only",
+                                "name": "run_a_single_branch_validate_only",
                                 "ok": False,
                                 "timed_out": False,
                                 "failure_code": "docker_api_unreachable",
                             },
                             {
-                                "name": "run_b_branching_plan_only",
+                                "name": "run_b_single_branch_plan_only",
                                 "ok": True,
                                 "timed_out": False,
                                 "failure_code": "",
                             },
                             {
-                                "name": "run_c_fast_bootstrap_validate_only",
+                                "name": "run_c_focused_validate_only",
                                 "ok": False,
                                 "timed_out": False,
                                 "failure_code": "docker_api_unreachable",
@@ -2993,24 +2970,31 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
 
         self.assertEqual(evidence["status"], "failed")
         self.assertEqual(
-            evidence["evidence"]["failed_step_codes"]["run_a_branching_validate_only"],
+            evidence["evidence"]["failed_step_codes"][
+                "run_a_single_branch_validate_only"
+            ],
             "docker_api_unreachable",
         )
         self.assertIn(
             "failure codes: docker_api_unreachable", evidence["evidence"]["reason"]
         )
 
-    def test_release_runtime_preflight_passes_when_env_and_docker_ready(self):
+    def test_release_runtime_preflight_passes_with_automatic_existing_source(self):
         context = self._context()
-        with patch.dict(
-            os.environ,
-            {
-                "FORWARD_SMOKE_USERNAME": "user",
-                "FORWARD_SMOKE_PASSWORD": "secret",
-                "FORWARD_SMOKE_NETWORK_ID": "123",
-                "FORWARD_SMOKE_DATASET_LABEL": "release-smoke",
-            },
-            clear=True,
+        with (
+            patch.dict(
+                os.environ,
+                {"FORWARD_SMOKE_DATASET_LABEL": "release-smoke"},
+                clear=True,
+            ),
+            patch.object(
+                tasks, "_field_scale_runtime_preflight", return_value={"ok": True}
+            ),
+            patch.object(
+                tasks,
+                "_field_scale_source_preflight",
+                return_value={"ok": True, "selection": "automatic_existing"},
+            ),
         ):
             evidence = tasks._collect_release_runtime_preflight_evidence(
                 context=context,
@@ -3019,16 +3003,28 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
         self.assertEqual(evidence["status"], "passed")
         self.assertEqual(evidence["evidence"]["missing_env"], [])
         self.assertTrue(evidence["evidence"]["dataset_label_matches"])
+        self.assertEqual(evidence["evidence"]["source_selection"], "automatic_existing")
 
-    def test_release_runtime_preflight_passes_with_existing_source_name(self):
+    def test_release_runtime_preflight_does_not_emit_source_name(self):
         context = self._context()
-        with patch.dict(
-            os.environ,
-            {
-                "FORWARD_SMOKE_SOURCE_NAME": "smoke-source-release-smoke-20260601",
-                "FORWARD_SMOKE_DATASET_LABEL": "release-smoke",
-            },
-            clear=True,
+        private_name = "private-release-source"
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "FORWARD_SMOKE_SOURCE_NAME": private_name,
+                    "FORWARD_SMOKE_DATASET_LABEL": "release-smoke",
+                },
+                clear=True,
+            ),
+            patch.object(
+                tasks, "_field_scale_runtime_preflight", return_value={"ok": True}
+            ),
+            patch.object(
+                tasks,
+                "_field_scale_source_preflight",
+                return_value={"ok": True, "selection": "automatic_existing"},
+            ),
         ):
             evidence = tasks._collect_release_runtime_preflight_evidence(
                 context=context,
@@ -3037,8 +3033,9 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
         self.assertEqual(evidence["status"], "passed")
         self.assertEqual(evidence["evidence"]["missing_env"], [])
         self.assertTrue(evidence["evidence"]["source_backed"])
+        self.assertNotIn(private_name, str(evidence))
 
-    def test_release_runtime_preflight_fails_when_env_or_docker_missing(self):
+    def test_release_runtime_preflight_fails_when_label_or_docker_invalid(self):
         context = self._context()
         with (
             patch.dict(
@@ -3065,9 +3062,37 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
                 dataset_label="release-smoke",
             )
         self.assertEqual(evidence["status"], "failed")
-        self.assertIn("FORWARD_SMOKE_PASSWORD", evidence["evidence"]["missing_env"])
+        self.assertEqual(evidence["evidence"]["missing_env"], [])
         self.assertFalse(evidence["evidence"]["dataset_label_matches"])
         self.assertIn("docker preflight failed", evidence["evidence"]["reason"])
+
+    def test_release_runtime_preflight_fails_when_source_is_unavailable(self):
+        context = self._context()
+        with (
+            patch.dict(
+                os.environ,
+                {"FORWARD_SMOKE_DATASET_LABEL": "release-smoke"},
+                clear=True,
+            ),
+            patch.object(
+                tasks, "_field_scale_runtime_preflight", return_value={"ok": True}
+            ),
+            patch.object(
+                tasks,
+                "_field_scale_source_preflight",
+                return_value={
+                    "ok": False,
+                    "failure_code": "command_failed",
+                    "failure_hint": "configured source is unavailable",
+                },
+            ),
+        ):
+            evidence = tasks._collect_release_runtime_preflight_evidence(
+                context=context,
+                dataset_label="release-smoke",
+            )
+        self.assertEqual(evidence["status"], "failed")
+        self.assertIn("source preflight failed", evidence["evidence"]["reason"])
 
     def test_release_runtime_preflight_task_raises_on_failure(self):
         context = self._context()
@@ -3092,7 +3117,6 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
 
     def test_release_readiness_audit_passes_when_all_checks_pass(self):
         context = self._context()
-        completion_payload = {"summary": {"failed": 0, "needs_external_evidence": 0}}
         with (
             patch.object(
                 tasks,
@@ -3111,13 +3135,7 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
             ),
             patch.object(
                 tasks,
-                "manage_py",
-                return_value=SimpleNamespace(
-                    ok=True,
-                    exited=0,
-                    stdout=json.dumps(completion_payload),
-                    stderr="",
-                ),
+                "_run_tests_with_shared_runtime_fallback",
             ),
         ):
             audit = tasks._collect_release_readiness_audit(
@@ -3156,16 +3174,8 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
             ),
             patch.object(
                 tasks,
-                "manage_py",
-                return_value=SimpleNamespace(
-                    ok=False,
-                    exited=1,
-                    stdout="",
-                    stderr=(
-                        "permission denied while trying to connect to the docker API "
-                        "at unix:///var/run/docker.sock"
-                    ),
-                ),
+                "_run_tests_with_shared_runtime_fallback",
+                side_effect=Exit("architecture tests failed", code=1),
             ),
         ):
             audit = tasks._collect_release_readiness_audit(
@@ -3179,8 +3189,36 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
         self.assertIn("architecture_completion_gate", audit["failed_checks"])
         self.assertEqual(
             audit["checks"]["architecture_completion_gate"]["evidence"]["failure_code"],
-            "docker_api_unreachable",
+            "architecture_contract_failed",
         )
+
+    def test_validation_org_gate_uses_redacted_existing_source_command(self):
+        context = self._context()
+        result = SimpleNamespace(
+            ok=True,
+            exited=0,
+            stdout=json.dumps(
+                {
+                    "status": "pass",
+                    "matched_count": 25,
+                    "missing_count": 0,
+                    "stale_count": 0,
+                }
+            ),
+            stderr="",
+        )
+        with patch.object(
+            tasks, "_field_scale_manage_py", return_value=result
+        ) as manage_py:
+            evidence = tasks._collect_validation_org_query_audit_evidence(context)
+
+        self.assertEqual(evidence["status"], "passed")
+        command = manage_py.call_args.args[1]
+        self.assertIn("--summary-only", command)
+        self.assertNotIn("--username", command)
+        self.assertNotIn("--password", command)
+        self.assertNotIn("--network-id", command)
+        self.assertNotIn("--source-name", command)
 
     def test_release_readiness_audit_task_raises_on_failure(self):
         context = self._context()
@@ -3244,13 +3282,23 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
 
     def test_architecture_audit_check_uses_strict_mode(self):
         context = self._context()
-        with patch.object(tasks, "manage_py") as manage_py:
+        with patch.object(
+            tasks, "_run_tests_with_shared_runtime_fallback"
+        ) as run_tests:
             tasks.architecture_audit_check.body(context)
 
-        manage_py.assert_called_once()
-        command = manage_py.call_args.args[1]
-        self.assertIn("forward_architecture_audit", command)
-        self.assertIn("--fail-on-gap", command)
+        run_tests.assert_called_once_with(
+            context,
+            test_label=tasks.ARCHITECTURE_AUDIT_TEST_LABELS,
+        )
+        self.assertIn(
+            "test_apply_engine_classifies_all_supported_models",
+            tasks.ARCHITECTURE_AUDIT_TEST_LABELS,
+        )
+        self.assertIn(
+            "test_builtin_query_contract_summary_passes_for_parameterized_maps",
+            tasks.ARCHITECTURE_AUDIT_TEST_LABELS,
+        )
 
 
 class RuntimeOptimizationTaskTest(unittest.TestCase):

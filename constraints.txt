@@ -7,4 +7,4 @@
 cryptography==49.0.0
 httpx==0.28.1
 netboxlabs-netbox-branching==1.1.0
-pyzipper==0.3.6
+pyzipper==0.4.0

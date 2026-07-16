@@ -113,6 +113,7 @@ class OptInPinnedDriftElevationTest(SimpleTestCase):
 from django.test import TestCase  # noqa: E402
 
 from forward_netbox.forms import ForwardSourceForm  # noqa: E402
+from forward_netbox.models import ForwardSource  # noqa: E402
 
 
 class EndpointFormRenderTest(TestCase):
@@ -135,6 +136,42 @@ class EndpointFormRenderTest(TestCase):
             "sync_endpoints field exists but is not in any FieldSet, so the "
             "form never renders the toggle.",
         )
+
+    def test_new_sources_default_endpoint_include_scope_on(self):
+        form = ForwardSourceForm()
+        self.assertIs(form.fields["scope_endpoints_by_include_tags"].initial, True)
+
+    def test_existing_sources_preserve_endpoint_include_scope_off(self):
+        source = ForwardSource.objects.create(
+            name="existing-source",
+            url="https://forward.example.invalid",
+            parameters={
+                "device_tag_include_tags": ["Prod"],
+                "scope_endpoints_by_include_tags": False,
+                "scope_endpoints_by_include_tags_configured": True,
+            },
+        )
+
+        form = ForwardSourceForm(instance=source)
+
+        self.assertIs(
+            form.fields["scope_endpoints_by_include_tags"].initial,
+            False,
+        )
+
+    def test_legacy_sources_with_include_tags_fail_closed(self):
+        source = ForwardSource.objects.create(
+            name="legacy-source",
+            url="https://forward.example.invalid",
+            parameters={
+                "device_tag_include_tags": ["Prod"],
+                "scope_endpoints_by_include_tags": False,
+            },
+        )
+
+        form = ForwardSourceForm(instance=source)
+
+        self.assertIs(form.fields["scope_endpoints_by_include_tags"].initial, True)
 
 
 from forward_netbox.utilities.query_fetch_execution import (  # noqa: E402
@@ -175,6 +212,34 @@ class EndpointScopeUnionTest(TestCase):
         )
         self.assertEqual(names, {"dev-1", "avocent-1", "avocent-2"})
         self.assertFalse(failed)
+
+    def test_scope_union_carries_endpoint_include_tags_for_netbox_tagging(self):
+        from unittest.mock import Mock
+
+        client = Mock()
+        client.run_nqe_query.side_effect = [
+            [{"name": "dev-1", "site": "dc1", "tagNames": ["ACI"]}],
+            [
+                {"name": "opengear-1", "tagNames": ["ACI", "Console"]},
+                {"name": "opengear-2", "tagNames": ["Console"]},
+            ],
+        ]
+        fetcher = self._fetcher(client)
+
+        names, _sites, matched, failed = fetcher._resolve_scoped_tag_scope(
+            network_id="n",
+            snapshot_id="s",
+            include_tags=["ACI"],
+            exclude_tags=[],
+            include_match="any",
+            sync_endpoints=True,
+        )
+
+        self.assertEqual(names, {"dev-1", "opengear-1", "opengear-2"})
+        self.assertEqual(matched, {"dev-1": ["ACI"], "opengear-1": ["ACI"]})
+        self.assertFalse(failed)
+        endpoint_query = client.run_nqe_query.call_args_list[1].kwargs["query"]
+        self.assertIn("tagNames: endpoint.tagNames", endpoint_query)
 
     def test_scope_without_endpoints_flag_is_unchanged(self):
         from unittest.mock import Mock
@@ -282,6 +347,20 @@ class EndpointBranchIncludeScopeTest(SimpleTestCase):
                 'device_tag_include_match != "all"', endpoint_branch, filename
             )
 
+    def test_endpoint_branches_exclude_cimc_management_controllers(self):
+        for filename in (
+            "forward_devices.nqe",
+            "forward_devices_with_netbox_aliases.nqe",
+        ):
+            endpoint_branch = _read_query(filename).split("network.endpoints", 1)[1]
+            self.assertIn("endpoint.profileName", endpoint_branch, filename)
+            self.assertIn('matches(endpointProfileName, "*cimc*")', endpoint_branch)
+            self.assertIn(
+                'matches(sdLower, "*cisco integrated management controller*")',
+                endpoint_branch,
+            )
+            self.assertIn("where !isCimc", endpoint_branch, filename)
+
     def test_device_query_declares_toggle_default_off(self):
         for filename in (
             "forward_devices.nqe",
@@ -293,23 +372,31 @@ class EndpointBranchIncludeScopeTest(SimpleTestCase):
 
 
 class EndpointIdentityClampTest(SimpleTestCase):
-    """Endpoint identity must be clamped in the QUERY, not mutated in Python.
+    """Endpoint identity must be stable and clamped in NQE, not Python.
 
-    NQE is the source of truth: sysDescr is free-form (observed >250 chars, or
-    symbol-only strings that slugify to nothing), so the endpoint branches clamp
-    device_type to 100 chars via substring() and guard empty slugs — NetBox
-    receives exactly what the query emitted.
+    sysDescr includes firmware and build metadata on common console servers.
+    Hardware identity strips those volatile suffixes; non-console endpoints use
+    one manufacturer-scoped generic model rather than arbitrary sysDescr text.
     """
 
-    def test_endpoint_branches_clamp_model_and_guard_slugs(self):
+    def test_endpoint_branches_normalize_model_and_guard_slugs(self):
         for filename in (
             "forward_devices.nqe",
             "forward_devices_with_netbox_aliases.nqe",
         ):
             src = _read_query(filename)
             endpoint_branch = src.split("network.endpoints", 1)[1]
-            # Model is clamped off the whitespace-collapsed sysDescr.
-            self.assertIn("substring(sysDescrClean, 0, 100)", endpoint_branch, filename)
+            self.assertIn("let opengear_model", endpoint_branch, filename)
+            self.assertIn("re`,.*`", endpoint_branch, filename)
+            self.assertIn("re` [0-9]+\\.[0-9]+.*$`", endpoint_branch, filename)
+            self.assertIn("let avocent_model", endpoint_branch, filename)
+            self.assertIn("re` - version:.*`", endpoint_branch, filename)
+            self.assertIn('ep_manuf + " SNMP Endpoint"', endpoint_branch, filename)
+            self.assertIn(
+                "let ep_model = substring(ep_model_raw, 0, 100)",
+                endpoint_branch,
+                filename,
+            )
             self.assertIn(
                 'if ep_model_slug_raw == "" then "unknown"', endpoint_branch, filename
             )
@@ -319,6 +406,26 @@ class EndpointIdentityClampTest(SimpleTestCase):
             # The select must emit the clamped values, never raw sysDescr.
             self.assertIn("device_type: ep_model,", endpoint_branch, filename)
             self.assertNotIn("device_type: sysDescr", endpoint_branch, filename)
+
+    def test_opengear_is_a_console_server_with_stable_manufacturer(self):
+        for filename in (
+            "forward_devices.nqe",
+            "forward_devices_with_netbox_aliases.nqe",
+        ):
+            endpoint_branch = _read_query(filename).split("network.endpoints", 1)[1]
+            self.assertIn("1.3.6.1.4.1.25049.*", endpoint_branch, filename)
+            self.assertIn('matches(sdLower, "*opengear*")', endpoint_branch, filename)
+            self.assertIn('if isOpengear then "Opengear"', endpoint_branch, filename)
+            self.assertIn(
+                "let isConsoleServer = isAvocent || isOpengear",
+                endpoint_branch,
+                filename,
+            )
+            self.assertIn(
+                'let ep_role = if isConsoleServer then "Console Server"',
+                endpoint_branch,
+                filename,
+            )
 
 
 class BlankDeviceTypeGuardTest(SimpleTestCase):
@@ -479,6 +586,24 @@ class EndpointIncludeScopeProbeTest(TestCase):
         self.assertIn('where "scope-a" in endpoint.tagNames', query)
         self.assertIn('where "scope-b" in endpoint.tagNames', query)
 
+    def test_probe_excludes_cimc_by_profile_and_sysdescr(self):
+        from unittest.mock import Mock
+
+        client = Mock()
+        client.run_nqe_query.return_value = []
+        fetcher = self._fetcher(client)
+        fetcher._resolve_scoped_endpoint_names(
+            network_id="n",
+            snapshot_id="s",
+            exclude_tags=[],
+        )
+
+        query = client.run_nqe_query.call_args.kwargs["query"]
+        self.assertIn("endpoint.profileName", query)
+        self.assertIn('matches(endpointProfileName, "*cimc*")', query)
+        self.assertIn("*cisco integrated management controller*", query)
+        self.assertIn("where !isCimc", query)
+
     def test_builder_mirrors_device_scope_semantics(self):
         # Golden parity with build_device_tag_scope_where, targeting
         # endpoint.tagNames.
@@ -593,6 +718,38 @@ class ScopeMaskingWarningTest(TestCase):
             warnings,
         )
 
+    def test_include_scope_bypass_warns_before_untagged_endpoints_import(self):
+        from unittest.mock import Mock
+
+        client = Mock()
+        client.run_nqe_query.side_effect = [
+            [{"name": "dev-1", "site": "dc1", "tagNames": ["ACI"]}],
+            [{"name": "opengear-1", "tagNames": []}],
+        ]
+        fetcher = self._fetcher(client)
+
+        fetcher._resolve_scoped_tag_scope(
+            network_id="n",
+            snapshot_id="s",
+            include_tags=["ACI"],
+            exclude_tags=[],
+            include_match="any",
+            sync_endpoints=True,
+            scope_endpoints_by_include_tags=False,
+        )
+
+        warnings = [
+            str(call.args[0]) for call in fetcher.logger.log_warning.call_args_list
+        ]
+        self.assertTrue(
+            any(
+                "not constrained by the configured include tags" in message
+                and "Scope SNMP Endpoints by Include Tags" in message
+                for message in warnings
+            ),
+            warnings,
+        )
+
 
 class EndpointScopeToggleFormTest(TestCase):
     """The opt-in include-scope toggle must render and round-trip."""
@@ -634,6 +791,13 @@ class ScopeEndpointsAllowlistTest(TestCase):
 
         clean_forward_source(self._source(scope_endpoints_by_include_tags=True))
 
+    def test_configured_marker_bool_is_accepted(self):
+        from forward_netbox.utilities.model_validation import clean_forward_source
+
+        clean_forward_source(
+            self._source(scope_endpoints_by_include_tags_configured=True)
+        )
+
     def test_non_bool_value_is_rejected(self):
         from django.core.exceptions import ValidationError
 
@@ -641,6 +805,16 @@ class ScopeEndpointsAllowlistTest(TestCase):
 
         with self.assertRaises(ValidationError):
             clean_forward_source(self._source(scope_endpoints_by_include_tags="yes"))
+
+    def test_non_bool_configured_marker_is_rejected(self):
+        from django.core.exceptions import ValidationError
+
+        from forward_netbox.utilities.model_validation import clean_forward_source
+
+        with self.assertRaises(ValidationError):
+            clean_forward_source(
+                self._source(scope_endpoints_by_include_tags_configured="yes")
+            )
 
 
 class DuplicateDeviceNameLookupTest(TestCase):

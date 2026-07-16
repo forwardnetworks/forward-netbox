@@ -1123,6 +1123,46 @@ class ForwardSyncHealthTest(TestCase):
         self.assertEqual(report["models"][0]["model"], "dcim.device")
         self.assertTrue(report["models"][1]["in_sync"])
 
+    def test_compute_drift_report_does_not_label_workload_as_drift(self):
+        from forward_netbox.utilities.drift_report import compute_drift_report
+
+        report = compute_drift_report(
+            {
+                "model_results": [
+                    {
+                        "model": "netbox_dlm.devicesoftware",
+                        "row_count": 3343,
+                        "estimated_changes": 4963,
+                        "delete_count": 1620,
+                        "change_estimate_kind": "workload_upper_bound",
+                    },
+                    {
+                        "model": "dcim.device",
+                        "row_count": 4029,
+                        "estimated_changes": 4029,
+                        "delete_count": 0,
+                        "change_estimate_kind": "workload_upper_bound",
+                    },
+                ]
+            }
+        )
+
+        self.assertFalse(report["comparison_available"])
+        self.assertIsNone(report["in_sync"])
+        self.assertIsNone(report["total_drift"])
+        self.assertIsNone(report["drifted_model_count"])
+        self.assertEqual(report["total_upsert_candidates"], 7372)
+        self.assertEqual(report["total_removes"], 1620)
+        self.assertEqual(report["total_apply_work"], 8992)
+        dlm = next(
+            row
+            for row in report["models"]
+            if row["model"] == "netbox_dlm.devicesoftware"
+        )
+        self.assertEqual(dlm["pending_changes"], 3343)
+        self.assertEqual(dlm["estimated_apply_work"], 4963)
+        self.assertIsNone(dlm["drift"])
+
     def _create_dependency_preview_job(self, created_at):
         return Job.objects.create(
             object_type=ContentType.objects.get_for_model(ForwardSync),
@@ -1199,18 +1239,21 @@ class ForwardSyncHealthTest(TestCase):
                         "row_count": 10,
                         "estimated_changes": 10,
                         "delete_count": 0,
+                        "change_estimate_kind": "exact_comparison",
                     },
                     {
                         "model": "dcim.interface",
                         "row_count": 50,
                         "estimated_changes": 50,
                         "delete_count": 0,
+                        "change_estimate_kind": "exact_comparison",
                     },
                     {
                         "model": "ipam.prefix",
                         "row_count": 5,
                         "estimated_changes": 5,
                         "delete_count": 0,
+                        "change_estimate_kind": "exact_comparison",
                     },
                 ]
             }
@@ -1308,18 +1351,21 @@ class ForwardSyncHealthTest(TestCase):
                         "row_count": 10,
                         "estimated_changes": 10,
                         "delete_count": 0,
+                        "change_estimate_kind": "exact_comparison",
                     },
                     {
                         "model": "dcim.interface",
                         "row_count": 50,
                         "estimated_changes": 50,
                         "delete_count": 0,
+                        "change_estimate_kind": "exact_comparison",
                     },
                     {
                         "model": "ipam.prefix",
                         "row_count": 5,
                         "estimated_changes": 5,
                         "delete_count": 0,
+                        "change_estimate_kind": "exact_comparison",
                     },
                 ]
             },
@@ -1334,6 +1380,40 @@ class ForwardSyncHealthTest(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.context["report"]["looks_like_full_create"])
         self.assertContains(response, "everything Forward has")
+
+    def test_drift_report_surfaces_workload_as_not_measured(self):
+        Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=self.sync.pk,
+            name="dependency preview",
+            status=JobStatusChoices.STATUS_COMPLETED,
+            job_id="123e4567-e89b-12d3-a456-426614174052",
+            created=timezone.now(),
+            data={
+                "model_results": [
+                    {
+                        "model": "netbox_dlm.devicesoftware",
+                        "row_count": 3343,
+                        "estimated_changes": 4963,
+                        "delete_count": 1620,
+                        "change_estimate_kind": "workload_upper_bound",
+                    }
+                ]
+            },
+        )
+        self.client.force_login(self.user)
+
+        response = self.client.get(
+            reverse(
+                "plugins:forward_netbox:forwardsync_drift_report",
+                kwargs={"pk": self.sync.pk},
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.context["report"]["comparison_available"])
+        self.assertContains(response, "Not measured")
+        self.assertContains(response, "estimated apply workload")
 
     def test_ingestion_health_check_marks_non_blocking_issue_baseline_as_pass(self):
         ingestion = ForwardIngestion.objects.create(

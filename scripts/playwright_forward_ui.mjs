@@ -133,9 +133,26 @@ async function main() {
   };
 
   try {
-    await page.goto(`${baseURL}/plugins/forward/sync/`);
-    await page.waitForURL(/\/login\/\?next=/);
-    evidence.checks.push("unauthenticated sync list redirects to login");
+    const unauthenticatedResponse = await page.goto(
+      `${baseURL}/plugins/forward/sync/`,
+      { waitUntil: "domcontentloaded" },
+    );
+    const unauthenticatedURL = new URL(page.url());
+    const redirectedToLogin =
+      unauthenticatedResponse?.ok() &&
+      unauthenticatedURL.pathname === "/login/" &&
+      unauthenticatedURL.searchParams.get("next") ===
+        "/plugins/forward/sync/";
+    const rejectedUnauthenticated =
+      unauthenticatedResponse?.status() === 401 &&
+      unauthenticatedURL.pathname === "/plugins/forward/sync/";
+    assert(
+      redirectedToLogin || rejectedUnauthenticated,
+      `unauthenticated sync list did not require authentication ` +
+        `(status=${unauthenticatedResponse?.status() ?? "none"}, ` +
+        `url=${page.url()})`,
+    );
+    evidence.checks.push("unauthenticated sync list requires authentication");
 
     await login(page);
     await expectVisible(page, "Forward Syncs");

@@ -57,6 +57,8 @@ from .utilities.runtime_guidance import (
     DEFAULT_PUSHDOWN_RUNTIME_FALLBACK_WARN_SHARE,
 )
 from .utilities.sync_facade import DEFAULT_ENABLE_BULK_ORM_FOR_NEW_SYNCS
+from .utilities.sync_facade import effective_scope_endpoints_by_include_tags
+from .utilities.sync_facade import SCOPE_ENDPOINTS_BY_INCLUDE_TAGS_CONFIGURED
 
 
 def _configure_api_select(widget, query_params=None):
@@ -442,8 +444,9 @@ class ForwardSourceForm(NetBoxModelForm):
             help_text=(
                 "Also import Forward SNMP endpoints (generic SSH/SNMP devices "
                 "Forward collects but does not model as first-class devices, "
-                "e.g. Avocent console servers) as NetBox devices, scoped by the "
-                "same device tags."
+                "e.g. Avocent and Opengear console servers) as NetBox devices. "
+                "Use the endpoint include-scope option below when this source "
+                "has device include tags."
             ),
         )
         self.fields["scope_endpoints_by_include_tags"] = forms.BooleanField(
@@ -629,8 +632,10 @@ class ForwardSourceForm(NetBoxModelForm):
         self.fields["device_tag_exclude_tags"].initial = exclude_initial
         self.fields["sync_device_tags"].initial = sync_tags_initial
         self.fields["sync_endpoints"].initial = bool(parameters.get("sync_endpoints"))
-        self.fields["scope_endpoints_by_include_tags"].initial = bool(
-            parameters.get("scope_endpoints_by_include_tags")
+        self.fields["scope_endpoints_by_include_tags"].initial = (
+            effective_scope_endpoints_by_include_tags(parameters)
+            if self.instance.pk
+            else True
         )
         self.fields["device_tag_include_tags"].choices = [
             (tag, tag) for tag in include_initial
@@ -875,6 +880,7 @@ class ForwardSourceForm(NetBoxModelForm):
             "scope_endpoints_by_include_tags": bool(
                 cleaned.get("scope_endpoints_by_include_tags")
             ),
+            SCOPE_ENDPOINTS_BY_INCLUDE_TAGS_CONFIGURED: True,
         }
         self.instance.type = source_type
         self.instance.url = (
@@ -1072,6 +1078,7 @@ class ForwardSourceForm(NetBoxModelForm):
             "scope_endpoints_by_include_tags": bool(
                 self.cleaned_data.get("scope_endpoints_by_include_tags")
             ),
+            SCOPE_ENDPOINTS_BY_INCLUDE_TAGS_CONFIGURED: True,
         }
         self.instance.status = ForwardSourceStatusChoices.NEW
         return super().save(*args, **kwargs)

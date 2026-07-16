@@ -71,11 +71,13 @@ high-concurrency contention risk.
 For repeated soak execution rehearsal, run:
 
 ```bash
-invoke scale-soak --runs 3 --execution-backend branching --max-changes-per-branch 10000
+invoke scale-soak --runs 3 --execution-backend single_branch --max-changes-per-branch 10000
 ```
 
-Before any `1.1.x` release, refresh field-scale evidence against the release-validation
-dataset and enforce the gate:
+Before a production release, refresh field-scale evidence against the
+release-validation dataset and enforce the gate. The preflight and matrix use
+an existing configured Forward Source automatically and persist only redacted
+source-selection status:
 
 ```bash
 export FORWARD_SMOKE_DATASET_LABEL=release-smoke

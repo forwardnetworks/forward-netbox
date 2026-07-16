@@ -16,6 +16,13 @@ All built-in maps are executed against the sync-selected Forward snapshot. The s
 
 When a sync uses the local device tag filter mode, the plugin now passes the selected include/exclude tags into tag-aware built-in queries for sites and prefixes. This keeps site and prefix collection aligned with the selected device scope at the Forward NQE source instead of fetching broad rows and pruning only after the API call. Custom org queries that do not declare these parameters continue to use the existing local row filter behavior.
 
+The two device maps also contain an opt-in `network.endpoints` branch. In 2.5.10
+that branch recognizes Avocent and Opengear enterprise identities, emits the
+**Console Server** role, and strips volatile firmware, kernel, build, and date
+suffixes from DeviceType identity. Generic endpoint types are manufacturer
+scoped. `scope_endpoints_by_include_tags` applies the source include tags to
+these rows; exclude tags always apply.
+
 ## Summary
 
 | Map | NetBox Model | Query File |
@@ -414,38 +421,7 @@ select distinct {
 - Default behavior: does not require a Forward data file.
 
 ```nqe
-import "netbox_utilities";
-
-foreach device in network.devices
-where device.snapshotInfo.result == DeviceSnapshotResult.completed
-where device.platform.vendor != Vendor.FORWARD_CUSTOM
-let location = device.locationName
-let model = device.platform.model
-let device_type = device.platform.deviceType
-let site_name = if isPresent(location) then toLowerCase(location) else "unknown"
-let site_slug = slugify(site_name)
-let role_name = replace(toString(device_type), "DeviceType.", "")
-let role_slug = slugify(role_name)
-let platform_name = normalizePlatformName(toString(device.platform.os), device.platform.osVersion)
-let platform_slug = slugify(platform_name)
-let device_type_slug = slugifyNetboxModel(toString(model))
-let manufacturer_name = canonicalManufacturerName(device.platform.vendor)
-let manufacturer_slug = slugify(manufacturer_name)
-select {
-  name: device.name,
-  manufacturer: manufacturer_name,
-  device_type: model,
-  device_type_slug: device_type_slug,
-  site: site_name,
-  site_slug: site_slug,
-  role: device_type,
-  role_slug: role_slug,
-  role_color: "9e9e9e",
-  platform: platform_name,
-  platform_slug: platform_slug,
-  status: "active",
-  manufacturer_slug: manufacturer_slug
-};
+--8<-- "forward_netbox/queries/forward_devices.nqe"
 ```
 
 ## Forward Devices with NetBox Device Type Aliases
@@ -460,72 +436,7 @@ Use this map only with `Forward Device Models with NetBox Device Type Aliases`.
 The query intentionally starts with `foreach device in network.devices` so Forward can use its automatic per-device execution path where available.
 
 ```nqe
-import "netbox_utilities";
-
-foreach device in network.devices
-let aliases = network.extensions.netbox_device_type_aliases
-where device.snapshotInfo.result == DeviceSnapshotResult.completed
-where device.platform.vendor != Vendor.FORWARD_CUSTOM
-let location = device.locationName
-let raw_model = toString(device.platform.model)
-let raw_model_slug = slugifyNetboxModel(raw_model)
-let device_type = device.platform.deviceType
-let site_name = if isPresent(location) then toLowerCase(location) else "unknown"
-let site_slug = slugify(site_name)
-let role_name = replace(toString(device_type), "DeviceType.", "")
-let role_slug = slugify(role_name)
-let platform_name = normalizePlatformName(toString(device.platform.os), device.platform.osVersion)
-let platform_slug = slugify(platform_name)
-let vendor = device.platform.vendor
-let data_manufacturer_name = if isPresent(aliases.value) then max(
-    foreach alias in aliases.value
-    where alias.record_type == "manufacturer_override"
-    where alias.forward_vendor == toString(vendor)
-    select alias.manufacturer
-  )
-  else null : String
-let data_manufacturer_slug = if isPresent(aliases.value) then max(
-    foreach alias in aliases.value
-    where alias.record_type == "manufacturer_override"
-    where alias.forward_vendor == toString(vendor)
-    select alias.manufacturer_slug
-  )
-  else null : String
-let manufacturer_name = if isPresent(data_manufacturer_name) then data_manufacturer_name else canonicalManufacturerName(vendor)
-let manufacturer_slug = if isPresent(data_manufacturer_slug) then data_manufacturer_slug else slugify(manufacturer_name)
-let mapped_model = if isPresent(aliases.value) then max(
-    foreach alias in aliases.value
-    where alias.record_type == "device_type_alias"
-    where alias.forward_manufacturer_slug == manufacturer_slug
-    where alias.forward_model_slug == raw_model_slug
-    select alias.netbox_model
-  )
-  else null : String
-let mapped_slug = if isPresent(aliases.value) then max(
-    foreach alias in aliases.value
-    where alias.record_type == "device_type_alias"
-    where alias.forward_manufacturer_slug == manufacturer_slug
-    where alias.forward_model_slug == raw_model_slug
-    select alias.netbox_slug
-  )
-  else null : String
-let device_type_model = if isPresent(mapped_model) then mapped_model else raw_model
-let device_type_slug = if isPresent(mapped_slug) then mapped_slug else raw_model_slug
-select {
-  name: device.name,
-  manufacturer: manufacturer_name,
-  device_type: device_type_model,
-  device_type_slug: device_type_slug,
-  site: site_name,
-  site_slug: site_slug,
-  role: device_type,
-  role_slug: role_slug,
-  role_color: "9e9e9e",
-  platform: platform_name,
-  platform_slug: platform_slug,
-  status: "active",
-  manufacturer_slug: manufacturer_slug
-};
+--8<-- "forward_netbox/queries/forward_devices_with_netbox_aliases.nqe"
 ```
 
 ## Forward Virtual Chassis

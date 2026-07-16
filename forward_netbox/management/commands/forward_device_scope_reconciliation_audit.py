@@ -51,7 +51,9 @@ class Command(BaseCommand):
 
         report = compute_scope_reconciliation(sync)
         out_of_scope = report["_out_of_scope"]
-        tagged_names = report["_tagged_names"]
+        device_tagged_names = report.get(
+            "_device_tagged_names", report["_tagged_names"]
+        )
         payload = {
             key: value for key, value in report.items() if not key.startswith("_")
         }
@@ -73,7 +75,7 @@ class Command(BaseCommand):
             payload["prune_requested"] = True
             payload["prune_applied"] = False
             payload["prune_candidate_count"] = len(out_of_scope)
-            if not tagged_names:
+            if not device_tagged_names:
                 payload["prune_aborted"] = "forward-scope-empty"
                 payload["prune_abort_reason"] = (
                     "The Forward scope query returned 0 devices; refusing to prune "
