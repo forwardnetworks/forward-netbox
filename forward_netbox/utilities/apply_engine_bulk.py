@@ -1,8 +1,8 @@
 from typing import Any
 
 # Fields the bulk engines must set on CREATE but preserve on UPDATE, matching the
-# adapter's intent. (2.0: platforms are global/manufacturer-less — see
-# forward_platforms.nqe — so there are no create-only platform fields anymore.)
+# adapter's intent. Platform-map manufacturer values are authoritative in this
+# engine, so there are no create-only Platform fields.
 CREATE_ONLY_UPDATE_FIELDS_BY_MODEL: dict[str, frozenset] = {}
 
 # Chunk size for synthesizing branch ObjectChanges after a bulk write: bounds the
@@ -317,7 +317,7 @@ def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str,
             sites.extend(Site.objects.filter(Q(slug__in=batch) | Q(name__in=batch)))
         site_by_slug = {site.slug: site for site in sites if site.slug}
         site_by_name = {site.name: site for site in sites if site.name}
-    if model_string == "dcim.devicetype":
+    if model_string in {"dcim.devicetype", "dcim.platform"}:
         manufacturer_rows = [
             {
                 "name": row.get("manufacturer"),
@@ -388,10 +388,15 @@ def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str,
         if model_string == "dcim.devicerole" and not normalized.get("color"):
             normalized["color"] = "9e9e9e"
         if model_string == "dcim.platform":
-            # 2.0: platforms are global. Force manufacturer=None on create AND
-            # update so a manufacturer-scoped platform (e.g. a legacy UNKNOWN tied
-            # to one vendor) is cleared and any vendor's device can attach.
-            normalized["manufacturer"] = None
+            manufacturer = None
+            if row.get("manufacturer"):
+                manufacturer = manufacturer_by_slug.get(
+                    row.get("manufacturer_slug")
+                ) or manufacturer_by_name.get(row.get("manufacturer"))
+            # The grouped Platform query emits a blank manufacturer for a
+            # cross-vendor platform. None is authoritative and clears a legacy
+            # owner; a unique manufacturer resolves to the canonical FK.
+            normalized["manufacturer"] = manufacturer
         if model_string == "dcim.devicetype":
             manufacturer = None
             if row.get("manufacturer"):
@@ -1115,8 +1120,9 @@ def bulk_orm_apply_device(runner, rows: list[dict[str, Any]]):
     lookup and written with bulk_create/bulk_update + branch ObjectChange
     synthesis. Rows that need adapter sequencing (a missing parent the adapter
     would create on demand, virtual-chassis membership, or the opt-in
-    ``apply_device_scope_tags`` per-device tagging) delegate row-by-row to
-    ``apply_dcim_device`` so their behavior stays byte-for-byte identical.
+    ``apply_device_scope_tags`` per-device tagging, or stale maintained scope
+    tags) delegate row-by-row to ``apply_dcim_device`` so their behavior stays
+    byte-for-byte identical.
     Existing devices are written only when a field actually changes.
     """
     from dcim.models import Device
@@ -1167,6 +1173,47 @@ def bulk_orm_apply_device(runner, rows: list[dict[str, Any]]):
             _delegate(row)
         runner.events_clearer.clear()
         return True
+
+    # A successfully applied device must not retain the plugin-maintained
+    # out-of-scope tag. Delegate only those existing rows to the adapter so the
+    # tag mutation gets normal NetBox/branch change tracking; keep the common
+    # tag-free path batched.
+    from .scope_reconciliation import OUT_OF_SCOPE_TAG_SLUG
+
+    row_names = {str(row.get("name") or "").strip() for row in rows}
+    tagged_out_of_scope_names = set(
+        Device.objects.filter(
+            name__in=row_names,
+            tags__slug=OUT_OF_SCOPE_TAG_SLUG,
+        ).values_list("name", flat=True)
+    )
+    if tagged_out_of_scope_names:
+        bulk_rows = []
+        for row in rows:
+            if row.get("name") in tagged_out_of_scope_names:
+                _delegate(row)
+            else:
+                bulk_rows.append(row)
+        rows = bulk_rows
+        if not rows:
+            runner.events_clearer.clear()
+            return True
+
+    # Endpoint-only platforms are absent from the network.devices-backed
+    # Platform map. Their NQE rows explicitly mark manufacturer ownership as
+    # authoritative (the Platform identity is the canonical manufacturer), so
+    # repair/create those few dependencies before the bulk lookup indexes them.
+    for row in rows:
+        if row.get("platform") and row.get("platform_manufacturer_authoritative"):
+            runner._ensure_platform(
+                {
+                    "name": row["platform"],
+                    "slug": row.get("platform_slug"),
+                    "manufacturer": row.get("manufacturer"),
+                    "manufacturer_slug": row.get("manufacturer_slug"),
+                },
+                manufacturer_authoritative=True,
+            )
 
     def _index(model, slug_values, name_values):
         objs = []

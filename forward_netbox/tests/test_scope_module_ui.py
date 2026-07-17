@@ -91,6 +91,12 @@ class ScopeModuleUiTest(TestCase):
     def test_scope_reconciliation_view_and_prune(self):
         self._device("dev-a")
         self._device("dev-stale")
+        opengear = Manufacturer.objects.create(name="Opengear", slug="opengear")
+        DeviceType.objects.create(
+            manufacturer=opengear,
+            model="Opengear ACM7008-2-M, Linux 5.17 OpenGear Version 5.3",
+            slug="opengear-acm7008-legacy",
+        )
         fwd_client = Mock()
         fwd_client.run_nqe_query = Mock(
             return_value=[{"name": "dev-a", "completed": True}]
@@ -108,6 +114,14 @@ class ScopeModuleUiTest(TestCase):
                 )
             )
             self.assertEqual(resp.status_code, 200)
+            self.assertContains(resp, "Post-Upgrade Catalog Reconciliation")
+            self.assertContains(resp, "Legacy endpoint DeviceTypes")
+            self.assertEqual(
+                resp.context["upgrade_reconciliation"]["legacy_endpoint_device_types"][
+                    "candidate_count"
+                ],
+                1,
+            )
             # POST enqueues a background prune job (no synchronous delete).
             resp = client.post(
                 reverse(

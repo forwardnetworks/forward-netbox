@@ -538,3 +538,14 @@ class ForwardIngestionLogExportViewTest(TestCase):
         advisory = data["sync"]["advisory_summary"]
         self.assertNotIn("plan_items", advisory["branch_run"])
         self.assertEqual(advisory["branch_run"]["plan_items_count"], 150)
+        reconciliation = data["upgrade_reconciliation"]
+        self.assertTrue(reconciliation["read_only"])
+        self.assertNotIn("sample", reconciliation["legacy_endpoint_device_types"])
+        self.assertNotIn(
+            "catalog_retained_sample",
+            reconciliation["dlm"]["software_versions"],
+        )
+        self.assertNotIn(
+            "unreferenced_sample",
+            reconciliation["dlm"]["software_versions"],
+        )

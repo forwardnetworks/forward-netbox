@@ -74,6 +74,10 @@ from .sync_facade import effective_scope_endpoints_by_include_tags
 DEVICE_NAME_SCOPED_MODELS = DEVICE_SHARD_MODELS | {
     "dcim.device",
     "dcim.virtualchassis",
+    "netbox_dlm.softwareversion",
+    "netbox_dlm.hardwarenotice",
+    "netbox_dlm.devicesoftware",
+    "netbox_dlm.vulnerability",
 }
 
 # Bounded retry for a single workload (shard) fetch when the Forward NQE call
@@ -190,6 +194,9 @@ class ForwardQueryContext:
     sync_device_tags: list[str] = field(default_factory=list)
     # Opt-in: import Forward SNMP endpoints (e.g. Avocent) as NetBox devices.
     sync_endpoints: bool = False
+    # Broad MIB-2-only endpoint import. False keeps endpoint import limited to
+    # recognized Avocent/Opengear console servers.
+    sync_generic_endpoints: bool = False
     # Opt-in: endpoints must also carry the device include tags (default: the
     # include scope narrows modeled devices only; exclude tags always apply).
     scope_endpoints_by_include_tags: bool = False
@@ -212,6 +219,9 @@ class ForwardQueryContext:
             "device_tag_include_match": self.device_tag_include_match,
             "device_tag_prune_out_of_scope": self.device_tag_prune_out_of_scope,
             "sync_device_tags": self.sync_device_tags,
+            "sync_endpoints": self.sync_endpoints,
+            "sync_generic_endpoints": self.sync_generic_endpoints,
+            "scope_endpoints_by_include_tags": self.scope_endpoints_by_include_tags,
             "scoped_device_count": len(self.scoped_device_names),
             "scoped_site_count": len(self.scoped_site_names),
             # Full per-device matched-tag map (not a count): the branch apply path
@@ -261,6 +271,7 @@ _PRIMARY_SCOPE_DEVICE_FIELD_BY_MODEL = {
     "netbox_routing.ospfinterface": "device",
     "netbox_peering_manager.peeringsession": "device",
     "netbox_dlm.devicesoftware": "name",
+    "netbox_dlm.vulnerability": "name",
 }
 
 
@@ -395,6 +406,7 @@ class ForwardQueryFetcher:
             {str(tag).strip() for tag in sync_device_tags if str(tag).strip()}
         )
         sync_endpoints = bool(source_parameters.get("sync_endpoints"))
+        sync_generic_endpoints = bool(source_parameters.get("sync_generic_endpoints"))
         scope_endpoints_by_include_tags = effective_scope_endpoints_by_include_tags(
             source_parameters
         )
@@ -407,6 +419,7 @@ class ForwardQueryFetcher:
             include_match,
             prune_out_of_scope,
             sync_endpoints,
+            sync_generic_endpoints,
             scope_endpoints_by_include_tags,
             branch_run_state.get("ingestion_id"),
             branch_run_state.get("pending_ingestion_id"),
@@ -423,6 +436,7 @@ class ForwardQueryFetcher:
             exclude_tags=exclude_tags,
             include_match=include_match,
             sync_endpoints=sync_endpoints,
+            sync_generic_endpoints=sync_generic_endpoints,
             scope_endpoints_by_include_tags=scope_endpoints_by_include_tags,
         )
         cached_context = self._load_context_artifact(context_artifact)
@@ -454,6 +468,7 @@ class ForwardQueryFetcher:
                 exclude_tags=exclude_tags,
                 include_match=include_match,
                 sync_endpoints=sync_endpoints,
+                sync_generic_endpoints=sync_generic_endpoints,
                 scope_endpoints_by_include_tags=scope_endpoints_by_include_tags,
             )
             if endpoint_scope_failed:
@@ -495,6 +510,7 @@ class ForwardQueryFetcher:
             device_tag_prune_out_of_scope=prune_out_of_scope,
             sync_device_tags=sync_device_tags,
             sync_endpoints=sync_endpoints,
+            sync_generic_endpoints=sync_generic_endpoints,
             scope_endpoints_by_include_tags=scope_endpoints_by_include_tags,
             scoped_device_names=scoped_device_names,
             scoped_site_names=scoped_site_names,
@@ -513,6 +529,7 @@ class ForwardQueryFetcher:
         exclude_tags: list[str],
         include_match: str,
         sync_endpoints: bool = False,
+        sync_generic_endpoints: bool = False,
         scope_endpoints_by_include_tags: bool = False,
     ) -> dict[str, Any] | None:
         run = active_execution_run(self.sync)
@@ -527,7 +544,8 @@ class ForwardQueryFetcher:
             # toggle flips — the endpoint half of the set changes).
             # v5: endpoint tag intersections now join scoped_matched_tags, so a
             # v4 artifact would leave imported endpoints untagged in NetBox.
-            "version": 5,
+            # v6: the endpoint universe changes with generic endpoint import.
+            "version": 6,
             "artifact_scope": "query_context",
             "cache_scope": "shared_sync",
             "sync_id": getattr(self.sync, "pk", None),
@@ -538,6 +556,7 @@ class ForwardQueryFetcher:
             "device_tag_exclude": sorted(exclude_tags or []),
             "device_tag_include_match": include_match or "any",
             "sync_endpoints": bool(sync_endpoints),
+            "sync_generic_endpoints": bool(sync_generic_endpoints),
             "scope_endpoints_by_include_tags": bool(scope_endpoints_by_include_tags),
         }
         return {
@@ -616,6 +635,7 @@ class ForwardQueryFetcher:
         exclude_tags: list[str],
         include_match: str,
         sync_endpoints: bool = False,
+        sync_generic_endpoints: bool = False,
         scope_endpoints_by_include_tags: bool = False,
     ) -> tuple[set[str], set[str], dict[str, list[str]], bool]:
         if not include_tags and not exclude_tags:
@@ -715,6 +735,7 @@ class ForwardQueryFetcher:
                 exclude_tags=exclude_tags,
                 include_tags=include_tags,
                 include_match=include_match,
+                sync_generic_endpoints=sync_generic_endpoints,
                 scope_endpoints_by_include_tags=scope_endpoints_by_include_tags,
             )
             if endpoint_scope is None:
@@ -751,6 +772,7 @@ class ForwardQueryFetcher:
         exclude_tags: list[str],
         include_tags: list[str] | None = None,
         include_match: str = "any",
+        sync_generic_endpoints: bool = False,
         scope_endpoints_by_include_tags: bool = False,
     ) -> set[str] | None:
         endpoint_scope = self._resolve_scoped_endpoint_scope(
@@ -759,6 +781,7 @@ class ForwardQueryFetcher:
             exclude_tags=exclude_tags,
             include_tags=include_tags,
             include_match=include_match,
+            sync_generic_endpoints=sync_generic_endpoints,
             scope_endpoints_by_include_tags=scope_endpoints_by_include_tags,
         )
         return None if endpoint_scope is None else endpoint_scope[0]
@@ -771,6 +794,7 @@ class ForwardQueryFetcher:
         exclude_tags: list[str],
         include_tags: list[str] | None = None,
         include_match: str = "any",
+        sync_generic_endpoints: bool = False,
         scope_endpoints_by_include_tags: bool = False,
     ) -> tuple[set[str], dict[str, list[str]]] | None:
         """Names and matched include tags for endpoint rows the query emits.
@@ -800,7 +824,9 @@ class ForwardQueryFetcher:
             *build_endpoint_tag_scope_where(
                 scoped_include_tags, exclude_tags, include_match
             ),
-            *build_endpoint_device_eligibility_where(),
+            *build_endpoint_device_eligibility_where(
+                sync_generic_endpoints=sync_generic_endpoints
+            ),
         ]
         query = "\n".join(
             [
@@ -808,7 +834,8 @@ class ForwardQueryFetcher:
                 *where,
                 "select {",
                 "  name: endpoint.name,",
-                "  tagNames: endpoint.tagNames",
+                "  tagNames: endpoint.tagNames,",
+                '  endpointKind: if isAvocent then "avocent" else if isOpengear then "opengear" else "generic"',
                 "}",
             ]
         )
@@ -845,9 +872,20 @@ class ForwardQueryFetcher:
             if matched:
                 matched_tags_by_endpoint[name] = matched
         if endpoint_names:
+            kind_counts = {
+                kind: sum(
+                    1
+                    for row in rows
+                    if str(row.get("endpointKind") or "generic") == kind
+                )
+                for kind in ("avocent", "opengear", "generic")
+            }
             self.logger.log_info(
                 f"Added {len(endpoint_names)} SNMP endpoint(s) to the device tag "
-                "scope for opt-in endpoint import.",
+                "scope for opt-in endpoint import "
+                f"(Avocent={kind_counts['avocent']}, "
+                f"Opengear={kind_counts['opengear']}, "
+                f"generic={kind_counts['generic']}).",
                 obj=self.sync,
             )
         return endpoint_names, matched_tags_by_endpoint
@@ -954,7 +992,7 @@ class ForwardQueryFetcher:
             preflight_rows = self._run_nqe_query(
                 spec=spec,
                 context=context,
-                parameters=spec.merged_parameters(context.query_parameters),
+                parameters=self._query_parameters_for_scope(spec, context, None),
                 limit=row_limit,
                 fetch_all=False,
             )
@@ -1872,7 +1910,7 @@ class ForwardQueryFetcher:
         rows = self._run_nqe_query(
             spec=spec,
             context=context,
-            parameters=spec.merged_parameters(context.query_parameters),
+            parameters=self._query_parameters_for_scope(spec, context, None),
             limit=row_limit,
             fetch_all=False,
         )
@@ -2361,6 +2399,10 @@ class ForwardQueryFetcher:
         if "sync_endpoints" in spec_parameters:
             sanitized_parameters["sync_endpoints"] = bool(
                 getattr(context, "sync_endpoints", False)
+            )
+        if "sync_generic_endpoints" in spec_parameters:
+            sanitized_parameters["sync_generic_endpoints"] = bool(
+                getattr(context, "sync_generic_endpoints", False)
             )
         if "scope_endpoints_by_include_tags" in spec_parameters:
             sanitized_parameters["scope_endpoints_by_include_tags"] = bool(

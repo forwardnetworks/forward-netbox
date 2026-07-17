@@ -285,6 +285,16 @@ def dlm_hardware_notice_alias_check(maps):
     base_notice = _DLM_NOTICE_BASE in enabled
     alias_notice = _DLM_NOTICE_ALIAS in enabled
 
+    if base_notice and alias_notice:
+        return check(
+            name="DLM hardware-notice alias",
+            status="warn",
+            message=(
+                f"Both '{_DLM_NOTICE_BASE}' and '{_DLM_NOTICE_ALIAS}' are "
+                "enabled. The alias map supersedes the base map; disable the "
+                "base map to avoid duplicate and skipped hardware notices."
+            ),
+        )
     if alias_device_query and base_notice and not alias_notice:
         return check(
             name="DLM hardware-notice alias",

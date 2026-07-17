@@ -225,6 +225,7 @@ class Command(BaseCommand):
     def _automatic_source(self):
         order = (F("last_synced").desc(nulls_last=True), "-pk")
         seen = set()
+        configured_sources = []
         querysets = (
             ForwardSource.objects.filter(status=ForwardSourceStatusChoices.READY),
             ForwardSource.objects.all(),
@@ -235,7 +236,14 @@ class Command(BaseCommand):
                     continue
                 seen.add(source.pk)
                 if self._source_is_configured(source):
-                    return source
+                    configured_sources.append(source)
+        if len(configured_sources) == 1:
+            return configured_sources[0]
+        if len(configured_sources) > 1:
+            raise CommandError(
+                "Multiple configured Forward sources are available. Select the "
+                "validation source explicitly with --source-name."
+            )
         return None
 
     def _source_is_configured(self, source):

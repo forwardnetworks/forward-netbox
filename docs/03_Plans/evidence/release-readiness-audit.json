@@ -17,7 +17,7 @@
         "failed_step_codes": {},
         "failed_steps": [],
         "fresh": true,
-        "generated_at": "2026-07-16T08:14:35.505208+00:00",
+        "generated_at": "2026-07-17T11:21:44.899865+00:00",
         "max_age_days": 7,
         "metadata": {
           "dataset_label": "release-smoke",
@@ -66,28 +66,28 @@
     },
     "validation_org_query_audit": {
       "evidence": {
-        "command": "forward_validation_org_query_audit --fail-on-gap --summary-only",
+        "command": "forward_validation_org_query_audit --fail-on-gap --summary-only --source-name <redacted>",
         "parse_error": "",
         "reason": "",
         "report": {
           "gate_status": "proved",
           "lookup_error_count": 0,
-          "matched_count": 25,
+          "matched_count": 26,
           "missing_count": 0,
-          "published_count": 25,
+          "published_count": 26,
           "query_contract_gap_count": 0,
           "query_contract_status": "pass",
-          "query_count": 25,
+          "query_count": 26,
           "stale_count": 0,
           "status": "pass"
         },
-        "source_selection": "automatic_existing"
+        "source_selection": "explicit_existing"
       },
       "status": "passed"
     }
   },
   "dataset_label": "release-smoke",
   "failed_checks": [],
-  "generated_at": "2026-07-16T08:55:49.399059+00:00",
+  "generated_at": "2026-07-17T11:51:39.254021+00:00",
   "status": "passed"
 }

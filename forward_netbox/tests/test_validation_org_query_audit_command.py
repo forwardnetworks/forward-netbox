@@ -500,6 +500,33 @@ class ValidationOrgQueryAuditTest(TestCase):
         self.assertNotIn("private-network-id", output)
         self.assertNotIn("local-secret", output)
 
+    def test_command_requires_explicit_selection_for_multiple_sources(self):
+        for index in range(2):
+            ForwardSource.objects.create(
+                name=f"private-validation-source-{index}",
+                type="saas",
+                url="https://fwd.app",
+                status="ready",
+                parameters={
+                    "username": f"local-user-{index}",
+                    "password": f"local-secret-{index}",
+                    "verify": True,
+                    "network_id": f"private-network-id-{index}",
+                },
+            )
+
+        stdout = StringIO()
+        with self.assertRaisesMessage(
+            CommandError,
+            "Multiple configured Forward sources are available",
+        ):
+            call_command("forward_validation_org_query_audit", stdout=stdout)
+
+        output = stdout.getvalue()
+        self.assertNotIn("private-validation-source", output)
+        self.assertNotIn("private-network-id", output)
+        self.assertNotIn("local-secret", output)
+
     def test_command_summary_only_omits_query_identifiers_and_paths(self):
         source_client = Mock()
         stdout = StringIO()

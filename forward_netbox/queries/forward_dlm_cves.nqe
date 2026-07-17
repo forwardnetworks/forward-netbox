@@ -6,8 +6,10 @@
  * infos, mapped to netbox-dlm CVESeverityChoices; description is one vendor's
  * text. The Forward->NetBox mapping and all length clamps live in this query
  * (NQE is the source of truth); the apply adapter only upserts by the unique
- * cve_id. cvss scores, published date, link and the affected_software M2M are
- * intentionally left blank (minimal parse).
+ * cve_id. Published date is the earliest vendor advisory date; CVSS values are
+ * the maximum reported across vendor advisories; link is one deterministic
+ * vendor advisory URL. The affected_software M2M is derived by the
+ * vulnerability adapter from observed device/software findings.
  */
 
 @query
@@ -26,9 +28,29 @@ let severity =
   else ""
 let desc_opt = max(foreach vi in cve.vendorInfos select vi.description)
 let description = if isPresent(desc_opt) then desc_opt else ""
+let published_date = min(
+  foreach vi in cve.vendorInfos
+  where isPresent(vi.publicationDate)
+  select vi.publicationDate
+)
+let link_opt = max(
+  foreach vi in cve.vendorInfos
+  where isPresent(vi.url)
+    && (matches(vi.url, "https://*") || matches(vi.url, "http://*"))
+  select vi.url
+)
+let link = if isPresent(link_opt) then substring(link_opt, 0, 200) else ""
+let cvss_score = max(foreach vi in cve.vendorInfos select vi.baseScore)
+let cvss_v2_score = max(foreach vi in cve.vendorInfos select vi.baseScoreV2)
+let cvss_v3_score = max(foreach vi in cve.vendorInfos select vi.baseScoreV3)
 select {
   cve_id: substring(cve.cveId, 0, 20),
   name: substring(cve.cveId, 0, 200),
   description: description,
-  severity: severity
+  severity: severity,
+  published_date: published_date,
+  link: link,
+  cvss_score: cvss_score,
+  cvss_v2_score: cvss_v2_score,
+  cvss_v3_score: cvss_v3_score
 };

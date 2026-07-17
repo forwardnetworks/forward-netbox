@@ -18,6 +18,7 @@ def seed_builtin_nqe_maps(sender, **kwargs):
         "netbox_routing",
         "netbox_peering_manager",
         "netbox_cisco_aci",
+        "netbox_dlm",
     }:
         return
     if ForwardNQEMap._meta.db_table not in connection.introspection.table_names():

@@ -1,0 +1,49 @@
+/**
+ * @intent Forward CIMC Endpoint Inventory
+ * @description Models a Cisco CIMC SNMP endpoint as a native NetBox inventory
+ * item on its parent device. The relationship is accepted only when the
+ * endpoint is named exactly <parent-device>-cimc and that completed parent
+ * device exists in Forward.
+ */
+
+truncate(value: String, max_len: Integer) =
+  if length(value) <= max_len then value else substring(value, 0, max_len);
+
+@query
+f(forward_netbox_shard_keys: List<String>) =
+foreach endpoint in network.endpoints
+where !isEmpty(endpoint.snmpOutputs)
+let endpointName = toString(endpoint.name)
+let endpointNameLower = toLowerCase(endpointName)
+where matches(endpointNameLower, "*-cimc")
+let parentName = substring(endpointName, 0, length(endpointName) - 5)
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+where device.name == parentName
+where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
+let sysDescrOpt = max(
+  foreach output in endpoint.snmpOutputs
+  where output.requestedOid == "1.3.6.1.2.1.1.1"
+  select max(foreach entry in output.rawOidEntries select entry.rawValue)
+)
+let hasDescr = isPresent(sysDescrOpt) && sysDescrOpt != ""
+let sysDescr = if hasDescr then replaceRegexMatches(sysDescrOpt, re`\s+`, " ") else "Cisco CIMC"
+select distinct {
+  device: device.name,
+  manufacturer: "Cisco",
+  manufacturer_slug: "cisco",
+  name: "CIMC",
+  label: truncate(sysDescr, 64),
+  part_id: null : String,
+  serial: null : String,
+  asset_tag: null : String,
+  role: "MANAGEMENT CONTROLLER",
+  role_slug: "management-controller",
+  role_color: "607d8b",
+  part_type: "MANAGEMENT CONTROLLER",
+  module_component: false,
+  status: "active",
+  discovered: true,
+  description: "Forward observed a CIMC SNMP endpoint with an exact parent-device name match"
+};

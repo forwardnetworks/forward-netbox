@@ -16,12 +16,14 @@ All built-in maps are executed against the sync-selected Forward snapshot. The s
 
 When a sync uses the local device tag filter mode, the plugin now passes the selected include/exclude tags into tag-aware built-in queries for sites and prefixes. This keeps site and prefix collection aligned with the selected device scope at the Forward NQE source instead of fetching broad rows and pruning only after the API call. Custom org queries that do not declare these parameters continue to use the existing local row filter behavior.
 
-The two device maps also contain an opt-in `network.endpoints` branch. In 2.5.10
-that branch recognizes Avocent and Opengear enterprise identities, emits the
+The two device maps also contain an opt-in `network.endpoints` branch. That
+branch recognizes Avocent and Opengear enterprise identities, emits the
 **Console Server** role, and strips volatile firmware, kernel, build, and date
-suffixes from DeviceType identity. Generic endpoint types are manufacturer
-scoped. `scope_endpoints_by_include_tags` applies the source include tags to
-these rows; exclude tags always apply.
+suffixes from DeviceType identity. `sync_endpoints` enables recognized console
+servers; `sync_generic_endpoints` separately enables manufacturer-scoped generic
+endpoint types and defaults to false. CIMC is excluded by endpoint name,
+profile, or controller description. `scope_endpoints_by_include_tags` applies
+the source include tags to these rows; exclude tags always apply.
 
 ## Summary
 
@@ -303,22 +305,40 @@ select distinct {
 - `NetBox Model`: `dcim.platform`
 - Expected fields: `name`, `manufacturer`, `manufacturer_slug`, `slug`
 - Query file: [`forward_platforms.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_platforms.nqe)
+- Manufacturer behavior: a Platform is assigned to a manufacturer only when all
+  completed devices with that normalized Platform have the same canonical
+  manufacturer. Cross-vendor Platforms retain their global name/slug and leave
+  manufacturer blank.
 
 ```nqe
 import "netbox_utilities";
 
+@query
+f(forward_netbox_shard_keys: List<String>) =
 foreach device in network.devices
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
 let platform_name = normalizePlatformName(toString(device.platform.os), device.platform.osVersion)
 let platform_slug = slugify(platform_name)
 let manufacturer_name = canonicalManufacturerName(device.platform.vendor)
-let manufacturer_slug = slugify(manufacturer_name)
-select distinct {
+group manufacturer_name as manufacturers by {
   name: platform_name,
-  manufacturer: manufacturer_name,
-  manufacturer_slug: manufacturer_slug,
   slug: platform_slug
+} as platform
+let distinct_manufacturers = distinct(manufacturers)
+let manufacturer_name =
+  if length(distinct_manufacturers) == 1
+  then max(distinct_manufacturers)
+  else ""
+let manufacturer_slug = slugify(manufacturer_name)
+where isEmpty(forward_netbox_shard_keys)
+  || platform.slug in forward_netbox_shard_keys
+  || platform.name in forward_netbox_shard_keys
+select {
+  name: platform.name,
+  slug: platform.slug,
+  manufacturer: manufacturer_name,
+  manufacturer_slug: manufacturer_slug
 };
 ```
 

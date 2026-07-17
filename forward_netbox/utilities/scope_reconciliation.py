@@ -285,7 +285,11 @@ def _endpoint_scope_names(
                 exclude_tags,
                 include_match,
             ),
-            *build_endpoint_device_eligibility_where(),
+            *build_endpoint_device_eligibility_where(
+                sync_generic_endpoints=bool(
+                    source_parameters.get("sync_generic_endpoints")
+                )
+            ),
             "select { name: endpoint.name }",
         ]
     )

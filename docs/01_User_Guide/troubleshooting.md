@@ -379,6 +379,9 @@ Cause:
   2.5.10, endpoint tag intersections were not added to the device scope-tag map,
   and console-server `sysDescr` software/build suffixes could become DeviceType
   identity.
+- Endpoint import now defaults to recognized Avocent/Opengear console servers.
+  **Import Generic SNMP Endpoints as Devices** is a separate broad opt-in. CIMC
+  endpoints are excluded by endpoint name, profile, or controller `sysDescr`.
 
 Checks (UI):
 
@@ -413,6 +416,10 @@ Remediation:
   **Apply Device Scope Tags** enabled when matching Forward tags should be
   visible in NetBox. Run **Preview Dependencies** before the next sync; resolve
   any endpoint-scope bypass warning before applying.
+- Leave **Import Generic SNMP Endpoints as Devices** off unless generic MIB-2
+  endpoints are a required inventory source. Re-run Scope Reconciliation after
+  the corrected sync; old generic endpoints and CIMCs are existing NetBox rows
+  and require reviewed orphan pruning.
 - Use the **Prune orphans** button on the Scope Reconciliation page, or the CLI:
 
   ```
@@ -428,6 +435,27 @@ Remediation:
 - After the corrected sync, filter Device Types to rows with zero devices and
   manually remove only the obsolete volatile console-server types. Scope prune
   deliberately does not delete shared DeviceType metadata.
+
+## Large DLM Vulnerability Ingestion-Issue Count
+
+Symptoms:
+
+- Most ingestion issues say a device could not be found for DLM device
+  software or vulnerability association.
+- Vulnerability query row counts are much larger than the scoped device count.
+- Hardware notices show duplicate apply attempts or raw-model lookup skips.
+
+Cause and remediation:
+
+- Publish the bundled DLM queries with overwrite enabled. Device-derived DLM
+  maps now receive the resolved device-name scope, and Vulnerability has a
+  second local device-name filter.
+- Enable only the alias hardware-notice map when alias-aware DeviceType maps are
+  active. Health warns when both base and alias notice maps are enabled, and the
+  registry now collapses the base map when the alias map is present.
+- Missing DLM parent devices are dependency skips. Detail is capped and followed
+  by one summary issue, so one parent mismatch cannot create thousands of issue
+  records.
 
 ## APIC CIMC Inventory Is Empty
 

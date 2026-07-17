@@ -74,7 +74,7 @@ surface, an 18th optional-plugin touchpoint) and reusing sync delete adapters
   succeeds, tally correct), cap re-raise with "sweep passes" message. Existing
   prune tests (dry-run, empty-scope refusal, apply, identity PKs) green.
 - 12/12 module tests pass; full suite + lint + harness gates.
-- Live (Blake): run the prune once on 2.5.5 — expect SUCCESS with a nonzero
+- Live validation: run the prune once on 2.5.5 — expect SUCCESS with a nonzero
   `netbox_dependent_rows` netbox_routing.bgppeer count; second run prunes 0.
 
 ## Rollback

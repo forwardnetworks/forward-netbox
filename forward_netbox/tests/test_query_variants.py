@@ -17,6 +17,7 @@ class VariantQueryFeatureParityTest(SimpleTestCase):
     def test_aliases_device_query_has_endpoint_branch(self):
         src = _read_query("forward_devices_with_netbox_aliases.nqe")
         self.assertIn("sync_endpoints: Bool", src)
+        self.assertIn("sync_generic_endpoints: Bool", src)
         self.assertIn("network.endpoints", src)
         self.assertIn("1.3.6.1.2.1.1.2", src)  # sysObjectId
         self.assertIn("10418", src)  # Avocent overlay
@@ -25,6 +26,7 @@ class VariantQueryFeatureParityTest(SimpleTestCase):
     def test_aliases_device_query_declares_endpoint_and_tag_params(self):
         params = _default_query_parameters("forward_devices_with_netbox_aliases.nqe")
         self.assertIs(params.get("sync_endpoints"), False)
+        self.assertIs(params.get("sync_generic_endpoints"), False)
         for key in (
             "device_tag_include_tags",
             "device_tag_include_match",
@@ -136,6 +138,16 @@ class BaseVariantConflictCheckTest(SimpleTestCase):
 
     def test_only_variant_enabled_returns_none(self):
         self.assertIsNone(self._check(["forward_devices_with_netbox_aliases.nqe"]))
+
+    def test_dlm_hardware_base_and_alias_variant_both_enabled_warns(self):
+        result = self._check(
+            [
+                "forward_dlm_hardware_notices.nqe",
+                "forward_dlm_hardware_notices_with_netbox_aliases.nqe",
+            ]
+        )
+        self.assertEqual(result["status"], "warn")
+        self.assertIn("Forward DLM hardware-notice", result["message"])
 
     def test_ipv4_ipv6_split_does_not_warn(self):
         # Same model, different queries by design — not a base/variant pair.

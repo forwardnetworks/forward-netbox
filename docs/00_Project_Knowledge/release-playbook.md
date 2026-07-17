@@ -81,8 +81,9 @@ source-selection status:
 
 ```bash
 export FORWARD_SMOKE_DATASET_LABEL=release-smoke
+export FORWARD_VALIDATION_SOURCE_NAME='<local validation source name>'
 invoke release-runtime-preflight --dataset-label=release-smoke
-invoke field-scale-runtime-matrix --resume=False
+invoke field-scale-runtime-matrix --no-resume
 invoke release-dataset-gate --dataset-label=release-smoke
 invoke release-readiness-audit --dataset-label=release-smoke
 ```
@@ -90,9 +91,10 @@ invoke release-readiness-audit --dataset-label=release-smoke
 `release-dataset-gate` fails when the field-scale artifact is stale, not
 `passed`, not labeled as the release-validation dataset, missing required matrix steps, or
 produced with `resume=True`.
-When validation credentials are available, `release-readiness-audit` also runs
-the validation-org query audit so the shipped query set is compared against the
-live validation folder before publish.
+`release-readiness-audit` also runs the validation-org query audit so the
+shipped query set is compared against the live validation folder before
+publish. Set `FORWARD_VALIDATION_SOURCE_NAME` when the runtime contains more
+than one configured Forward source; ambiguous automatic selection fails closed.
 When local runtime dependencies are unavailable, matrix evidence now records
 `preflight_failure_code` (for example `docker_api_unreachable`) before running
 the three smoke steps.

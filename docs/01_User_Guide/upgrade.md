@@ -40,8 +40,21 @@ After restart:
 - Confirm the plugin version: `pip show forward-netbox`.
 - Confirm NetBox starts cleanly (`python manage.py check`) with no
   `netbox_branching` dependency warnings in the log.
-- Run one sync against a known source and confirm it completes and the Sync
-  health panel is green.
+- When release notes require bundled NQE changes, publish the bundled queries
+  with overwrite enabled before validation.
+- Re-open each source after an endpoint-query upgrade. Keep **Import Generic
+  SNMP Endpoints as Devices** off unless broad, sparse endpoint inventory is
+  intentional; the normal endpoint toggle imports recognized console servers.
+- Run **Preview Dependencies**, then one sync against a known source and confirm
+  it completes and the Sync health panel is green.
+- Run **Preview Dependencies** a second time. Treat unexpected repeated apply
+  work as a convergence failure; do not accept the new baseline until it is
+  explained.
+- Review **Scope Reconciliation**, including the read-only post-upgrade catalog
+  counts. Prune source-scoped device orphans only after review. Global DLM and
+  DeviceType candidates remain manual-review items.
+- Export a support bundle. It carries aggregate post-upgrade DLM, CVE, Platform,
+  and legacy endpoint DeviceType counts without sampled inventory values.
 
 ## Rollback
 
