@@ -13,9 +13,7 @@ DEFAULT_SAMPLE_LIMIT = 25
 def _legacy_endpoint_device_types(*, include_samples, sample_limit):
     candidates = (
         DeviceType.objects.annotate(
-            _has_devices=Exists(
-                Device.objects.filter(device_type_id=OuterRef("pk"))
-            )
+            _has_devices=Exists(Device.objects.filter(device_type_id=OuterRef("pk")))
         )
         .filter(_has_devices=False)
         .filter(
@@ -118,9 +116,7 @@ def _dlm_summary(*, include_samples, sample_limit):
             },
             "cves": {
                 "total": cves.count(),
-                "with_vulnerabilities": cves.filter(
-                    _has_vulnerabilities=True
-                ).count(),
+                "with_vulnerabilities": cves.filter(_has_vulnerabilities=True).count(),
                 "with_affected_software": cves.filter(
                     _has_affected_software=True
                 ).count(),
