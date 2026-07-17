@@ -98,10 +98,32 @@ live evidence and full release gate are clean.
   12-check Playwright harness with six screenshots, docs, image build/start,
   and package build passed. Both 2.5.11 wheel and sdist passed `twine check`.
 
+### Release Results
+
+- Release commit `7fcb5c6` is on GitHub `main`; annotated tag `v2.5.11`
+  resolves to that commit.
+- GitHub `main` CI run `29579223434` and tag CI run `29579938852` passed. An
+  earlier `main` run caught Black formatting in two newly added modules before
+  tagging; the formatting-only follow-up was committed and both required runs
+  then passed on the final tree.
+- Trusted Publishing run `29579938809` built the wheel and source archive,
+  generated provenance attestations, and published both files to PyPI.
+- PyPI reports `2.5.11` as latest, and a clean
+  `pip download --no-deps forward-netbox==2.5.11` selected the published wheel.
+- The non-draft GitHub release mirrors the exact PyPI bytes. SHA-256: wheel
+  `7b580f3ba10c209913802323c8f2e2f654c540aa582269ecba9020a82af612a8`;
+  source archive
+  `6e20a0f4aae5857e19a819411be87c55c107da8d9ae4cd662c88d8e63f2f22bd`.
+- Both published archives passed `twine check` and the local customer-data
+  denylist scan before GitHub attachment.
+
 ## Rollback
 
-Revert the follow-up code and restore the validation database's built-in map
-enable states. No migration, prune, or release is involved.
+The release artifacts are immutable. If a release-blocking defect is found,
+yank `2.5.11` from PyPI if installation must be stopped and publish a newer
+patch; do not replace the GitHub or PyPI files in place. No schema migration or
+automatic inventory prune was introduced. The validation database's temporary
+map enable states were already restored.
 
 ## Decision Log
 
