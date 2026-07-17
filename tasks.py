@@ -1636,6 +1636,7 @@ def release_readiness_audit(
     max_age_days=7,
     artifact_path="",
     output_json="docs/03_Plans/evidence/release-readiness-audit.json",
+    validation_source_name="",
     fail_on_error=True,
 ):
     """Aggregate 1.1 release readiness checks into one JSON report."""
@@ -1644,6 +1645,7 @@ def release_readiness_audit(
         dataset_label=dataset_label,
         max_age_days=max_age_days,
         artifact_path=artifact_path,
+        validation_source_name=validation_source_name,
     )
     rendered = json.dumps(evidence, indent=2, sort_keys=True)
     print(rendered)
@@ -1667,6 +1669,7 @@ def _collect_release_readiness_audit(
     dataset_label="release-smoke",
     max_age_days=7,
     artifact_path="",
+    validation_source_name="",
 ):
     preflight = _collect_release_runtime_preflight_evidence(
         context=context,
@@ -1677,7 +1680,10 @@ def _collect_release_readiness_audit(
         max_age_days=max_age_days,
         artifact_path=artifact_path,
     )
-    validation_org_gate = _collect_validation_org_query_audit_evidence(context)
+    validation_org_gate = _collect_validation_org_query_audit_evidence(
+        context,
+        source_name=validation_source_name,
+    )
     architecture_gate = _collect_architecture_completion_gate(context)
     checks = {
         "release_runtime_preflight": preflight,
@@ -1699,8 +1705,13 @@ def _collect_release_readiness_audit(
     }
 
 
-def _collect_validation_org_query_audit_evidence(context):
+def _collect_validation_org_query_audit_evidence(context, source_name=""):
+    source_name = str(
+        source_name or os.getenv("FORWARD_VALIDATION_SOURCE_NAME", "")
+    ).strip()
     command = "forward_validation_org_query_audit --fail-on-gap --summary-only"
+    if source_name:
+        command = f"{command} --source-name {shlex.quote(source_name)}"
     result = _field_scale_manage_py(context, command, warn=True, hide=True)
     stdout = getattr(result, "stdout", "")
     parse_error = ""
@@ -1711,8 +1722,15 @@ def _collect_validation_org_query_audit_evidence(context):
         parse_error = str(exc)
 
     evidence = {
-        "command": command,
-        "source_selection": "automatic_existing",
+        "command": (
+            "forward_validation_org_query_audit --fail-on-gap --summary-only "
+            "--source-name <redacted>"
+            if source_name
+            else command
+        ),
+        "source_selection": (
+            "explicit_existing" if source_name else "automatic_existing"
+        ),
         "parse_error": parse_error,
     }
     if not bool(getattr(result, "ok", False)):

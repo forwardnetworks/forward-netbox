@@ -963,7 +963,7 @@ class ForwardSyncRunnerTest(TestCase):
         site = Site.objects.create(name="site-1", slug="site-1")
         manufacturer = Manufacturer.objects.create(name="Acme", slug="acme")
         role = DeviceRole.objects.create(name="Core", slug="core", color="ff9800")
-        # 2.0: platforms are global (no manufacturer).
+        # Platform identity remains global even when ownership is unambiguous.
         platform = Platform.objects.create(name="ios-xe", slug="ios-xe")
         runner = ForwardSyncRunner(
             sync=self.sync, ingestion=None, client=None, logger_=Mock()
@@ -1095,8 +1095,7 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertEqual(ObjectChange.objects.count(), before_count)
 
     def test_apply_dcim_platform_repeat_sync_is_noop(self):
-        # 2.0: platforms are global (no manufacturer); a re-applied identical row
-        # makes no UPDATE.
+        # An ambiguous platform row has no manufacturer; re-applying it is a no-op.
         Platform.objects.create(name="platform-1", slug="platform-1")
         runner = ForwardSyncRunner(
             sync=self.sync, ingestion=None, client=None, logger_=Mock()
@@ -1113,7 +1112,7 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertEqual(ObjectChange.objects.count(), before_count)
 
     def test_apply_dcim_platform_repeat_sync_is_noop_for_aci_platform(self):
-        # 2.0: global platforms; a re-applied identical ACI row makes no UPDATE.
+        # Re-applying an identical Platform map row makes no UPDATE.
         Platform.objects.create(name="ACI", slug="aci")
         runner = ForwardSyncRunner(
             sync=self.sync, ingestion=None, client=None, logger_=Mock()
@@ -1129,24 +1128,108 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertEqual(self._update_statements(queries), [])
         self.assertEqual(ObjectChange.objects.count(), before_count)
 
-    def test_ensure_platform_clears_manufacturer_for_global_platforms(self):
-        # 2.0: platforms are global. _ensure_platform clears any manufacturer on an
-        # existing manufacturer-scoped platform so any vendor's device can attach.
+    def test_apply_platform_assigns_unambiguous_manufacturer(self):
         cisco = Manufacturer.objects.create(name="Cisco", slug="cisco")
         platform = Platform.objects.create(
             name="ACI",
             slug="aci",
+        )
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        row = {
+            "name": "ACI",
+            "slug": "aci",
+            "manufacturer": "Cisco",
+            "manufacturer_slug": "cisco",
+        }
+
+        runner._apply_dcim_platform(row)
+
+        platform.refresh_from_db()
+        self.assertEqual(platform.manufacturer_id, cisco.pk)
+
+    def test_apply_platform_clears_manufacturer_when_platform_is_ambiguous(self):
+        cisco = Manufacturer.objects.create(name="Cisco", slug="cisco")
+        platform = Platform.objects.create(
+            name="Linux",
+            slug="linux",
             manufacturer=cisco,
         )
         runner = ForwardSyncRunner(
             sync=self.sync, ingestion=None, client=None, logger_=Mock()
         )
-        row = {"name": "ACI", "slug": "aci"}
 
-        result = runner._ensure_platform(row)
+        runner._apply_dcim_platform(
+            {
+                "name": "Linux",
+                "slug": "linux",
+                "manufacturer": None,
+                "manufacturer_slug": None,
+            }
+        )
+
+        platform.refresh_from_db()
+        self.assertIsNone(platform.manufacturer_id)
+
+    def test_device_platform_ensure_preserves_platform_map_manufacturer(self):
+        cisco = Manufacturer.objects.create(name="Cisco", slug="cisco")
+        Manufacturer.objects.create(name="Unknown", slug="unknown")
+        platform = Platform.objects.create(
+            name="IOS_XE",
+            slug="ios-xe",
+            manufacturer=cisco,
+        )
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        result = runner._ensure_platform(
+            {
+                "name": "IOS_XE",
+                "slug": "ios-xe",
+                "manufacturer": "Unknown",
+                "manufacturer_slug": "unknown",
+            }
+        )
 
         platform.refresh_from_db()
         self.assertEqual(result.pk, platform.pk)
+        self.assertEqual(platform.manufacturer_id, cisco.pk)
+
+    def test_device_platform_ensure_sets_manufacturer_on_endpoint_only_create(self):
+        opengear = Manufacturer.objects.create(name="Opengear", slug="opengear")
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        platform = runner._ensure_platform(
+            {
+                "name": "Opengear",
+                "slug": "opengear",
+                "manufacturer": "Opengear",
+                "manufacturer_slug": "opengear",
+            },
+            manufacturer_authoritative=True,
+        )
+
+        self.assertEqual(platform.manufacturer_id, opengear.pk)
+
+    def test_device_platform_ensure_does_not_infer_manufacturer_on_create(self):
+        Manufacturer.objects.create(name="Cisco", slug="cisco")
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        platform = runner._ensure_platform(
+            {
+                "name": "IOS_XE",
+                "slug": "ios-xe",
+                "manufacturer": "Cisco",
+                "manufacturer_slug": "cisco",
+            }
+        )
+
         self.assertIsNone(platform.manufacturer_id)
 
     def test_apply_dcim_manufacturer_repeat_sync_is_noop(self):
@@ -3339,6 +3422,45 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertEqual(device.serial, "SERIAL-1")
         self.assertEqual(self._update_statements(queries), [])
         self.assertEqual(ObjectChange.objects.count(), before_count)
+
+    def test_apply_dcim_device_clears_stale_out_of_scope_tag_only(self):
+        from extras.models import Tag
+
+        device = self._create_device("device-now-in-scope")
+        out_of_scope = Tag.objects.create(
+            name="Forward Out Of Scope",
+            slug="forward-out-of-scope",
+            color="f44336",
+        )
+        customer_tag = Tag.objects.create(
+            name="Customer Managed",
+            slug="customer-managed",
+            color="9e9e9e",
+        )
+        device.tags.add(out_of_scope, customer_tag)
+        row = {
+            "name": device.name,
+            "site": device.site.name,
+            "site_slug": device.site.slug,
+            "role": device.role.name,
+            "role_slug": device.role.slug,
+            "role_color": device.role.color,
+            "manufacturer": device.device_type.manufacturer.name,
+            "manufacturer_slug": device.device_type.manufacturer.slug,
+            "device_type": device.device_type.model,
+            "device_type_slug": device.device_type.slug,
+            "platform": None,
+            "status": device.status,
+            "serial": "",
+        }
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        runner._apply_dcim_device(row)
+
+        self.assertFalse(device.tags.filter(pk=out_of_scope.pk).exists())
+        self.assertTrue(device.tags.filter(pk=customer_tag.pk).exists())
 
     def test_apply_dcim_interface_keeps_import_when_untagged_vlan_missing(self):
         device = self._create_device("device-1")
@@ -6756,6 +6878,61 @@ class ForwardSyncRunnerTest(TestCase):
 
         self.assertEqual(resolved["sync_device_tags"], ["Mgmt_Vl211", "Prod_Core"])
 
+    def test_apply_context_tag_parameters_scopes_dlm_vulnerabilities(self):
+        fetcher = ForwardQueryFetcher(
+            sync=self.sync,
+            client=Mock(),
+            logger_=Mock(),
+        )
+        context = ForwardQueryContext(
+            network_id="test-network",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-before",
+            scoped_device_names={"core-2", "core-1"},
+        )
+        spec = QuerySpec(
+            model_string="netbox_dlm.vulnerability",
+            query_name="Forward DLM Vulnerabilities",
+            query="@query f(forward_netbox_shard_keys: List<String>) = []",
+            parameters={"forward_netbox_shard_keys": []},
+        )
+
+        resolved = fetcher._apply_context_tag_parameters(
+            spec, {"forward_netbox_shard_keys": []}, context
+        )
+
+        self.assertEqual(resolved["forward_netbox_shard_keys"], ["core-1", "core-2"])
+
+    def test_apply_context_tag_parameters_injects_generic_endpoint_policy(self):
+        fetcher = ForwardQueryFetcher(
+            sync=self.sync,
+            client=Mock(),
+            logger_=Mock(),
+        )
+        context = ForwardQueryContext(
+            network_id="test-network",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-before",
+            sync_endpoints=True,
+            sync_generic_endpoints=True,
+        )
+        spec = QuerySpec(
+            model_string="dcim.device",
+            query_name="Forward Devices",
+            query=(
+                "@query f(sync_endpoints: Bool, " "sync_generic_endpoints: Bool) = []"
+            ),
+            parameters={
+                "sync_endpoints": False,
+                "sync_generic_endpoints": False,
+            },
+        )
+
+        resolved = fetcher._apply_context_tag_parameters(spec, {}, context)
+
+        self.assertIs(resolved["sync_endpoints"], True)
+        self.assertIs(resolved["sync_generic_endpoints"], True)
+
     def test_apply_context_tag_parameters_skips_sync_device_tags_when_undeclared(self):
         # A query that does not declare sync_device_tags must not receive it, or the
         # Forward engine rejects the fetch with an unexpected-parameter error.
@@ -7219,6 +7396,30 @@ class ForwardSyncRunnerTest(TestCase):
                 }
             ],
         )
+
+    def test_apply_device_tag_scope_filters_dlm_vulnerabilities_by_name(self):
+        fetcher = ForwardQueryFetcher(
+            sync=self.sync,
+            client=Mock(),
+            logger_=Mock(),
+        )
+        context = ForwardQueryContext(
+            network_id="test-network",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-after",
+            scoped_device_names={"core-1"},
+        )
+        rows = [
+            {"name": "core-1", "cve_id": "CVE-2026-0001"},
+            {"name": "branch-1", "cve_id": "CVE-2026-0002"},
+        ]
+
+        filtered, removed = fetcher._apply_device_tag_scope(
+            "netbox_dlm.vulnerability", rows, context
+        )
+
+        self.assertEqual(filtered, [rows[0]])
+        self.assertEqual(removed, [rows[1]])
 
     def test_fetch_spec_rows_prunes_out_of_scope_rows_into_deletes(self):
         fetcher = ForwardQueryFetcher(
@@ -8473,6 +8674,22 @@ class ForwardApplyEngineParityTest(TestCase):
         self.assertEqual(device.role.slug, "dev-c-role")
         self.assertEqual(device.device_type.slug, "dev-c-model")
 
+    def test_dcim_device_bulk_repairs_endpoint_platform_manufacturer(self):
+        self._stage_device_parents("endpoint-c")
+        platform = Platform.objects.create(
+            name="endpoint-c-vendor",
+            slug="endpoint-c-vendor",
+        )
+        row = self._device_row("endpoint-c", platform="endpoint-c-vendor")
+        row["platform_manufacturer_authoritative"] = True
+        runner = self._runner()
+
+        self._device_engine().apply_upserts(runner, "dcim.device", [row])
+
+        platform.refresh_from_db()
+        self.assertEqual(platform.manufacturer.slug, "endpoint-c-vendor")
+        self.assertEqual(Device.objects.get(name="endpoint-c").platform_id, platform.pk)
+
     def test_dcim_device_update_parity(self):
         device = self._device("device-1")
         runner = self._runner()
@@ -8499,6 +8716,28 @@ class ForwardApplyEngineParityTest(TestCase):
         ]
         self.assertEqual(updates, [])
         self.assertEqual(Device.objects.filter(name="device-1").count(), 1)
+
+    def test_dcim_device_bulk_clears_stale_out_of_scope_tag_only(self):
+        device = self._device("device-1")
+        out_of_scope = Tag.objects.create(
+            name="Forward Out Of Scope",
+            slug="forward-out-of-scope",
+            color="f44336",
+        )
+        customer_tag = Tag.objects.create(
+            name="Customer Managed",
+            slug="customer-managed",
+            color="9e9e9e",
+        )
+        device.tags.add(out_of_scope, customer_tag)
+        runner = self._runner()
+
+        self._device_engine().apply_upserts(
+            runner, "dcim.device", [self._device_row("device-1")]
+        )
+
+        self.assertFalse(device.tags.filter(pk=out_of_scope.pk).exists())
+        self.assertTrue(device.tags.filter(pk=customer_tag.pk).exists())
 
     def test_dcim_device_delegates_when_parent_missing(self):
         # No pre-staged parents -> the bulk path delegates to the adapter, which
@@ -8730,6 +8969,57 @@ class QueryParameterCompatibilityTest(TestCase):
                 "device_tag_include_tags": ["Core"],
                 "device_tag_include_match": "all",
                 "device_tag_exclude_tags": ["Branch"],
+            },
+        )
+
+    def test_preflight_uses_declared_scope_and_endpoint_parameters(self):
+        sync = Mock()
+        fetcher = ForwardQueryFetcher(sync=sync, client=Mock(), logger_=Mock())
+        spec = Mock(
+            model_string="dcim.device",
+            query_name="Forward Devices",
+            parameters={
+                "forward_netbox_shard_keys": [],
+                "sync_endpoints": False,
+                "sync_generic_endpoints": False,
+                "scope_endpoints_by_include_tags": False,
+            },
+            merged_parameters=Mock(
+                return_value={
+                    "forward_netbox_shard_keys": [],
+                    "sync_endpoints": False,
+                    "sync_generic_endpoints": False,
+                    "scope_endpoints_by_include_tags": False,
+                    "device_tag_include": "Core",
+                    "device_tag_exclude_tags": ["Branch"],
+                }
+            ),
+        )
+        context = ForwardQueryContext(
+            network_id="n1",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="s1",
+            device_tag_include_tags=["Core"],
+            device_tag_exclude_tags=["Branch"],
+            sync_endpoints=True,
+            sync_generic_endpoints=False,
+            scope_endpoints_by_include_tags=True,
+        )
+        fetcher._run_nqe_query = Mock(return_value=[])
+
+        _, _, rows, error = fetcher._run_preflight_job(
+            (context, 25, ("dcim.device", spec, [["name"]]))
+        )
+
+        self.assertEqual(rows, [])
+        self.assertIsNone(error)
+        self.assertEqual(
+            fetcher._run_nqe_query.call_args.kwargs["parameters"],
+            {
+                "forward_netbox_shard_keys": [],
+                "sync_endpoints": True,
+                "sync_generic_endpoints": False,
+                "scope_endpoints_by_include_tags": True,
             },
         )
 

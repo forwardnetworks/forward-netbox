@@ -3207,9 +3207,15 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
             ),
             stderr="",
         )
-        with patch.object(
-            tasks, "_field_scale_manage_py", return_value=result
-        ) as manage_py:
+        with (
+            patch.dict(
+                os.environ,
+                {"FORWARD_VALIDATION_SOURCE_NAME": ""},
+            ),
+            patch.object(
+                tasks, "_field_scale_manage_py", return_value=result
+            ) as manage_py,
+        ):
             evidence = tasks._collect_validation_org_query_audit_evidence(context)
 
         self.assertEqual(evidence["status"], "passed")
@@ -3219,6 +3225,34 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
         self.assertNotIn("--password", command)
         self.assertNotIn("--network-id", command)
         self.assertNotIn("--source-name", command)
+
+    def test_validation_org_gate_redacts_explicit_source_name(self):
+        context = self._context()
+        result = SimpleNamespace(
+            ok=True,
+            exited=0,
+            stdout=json.dumps({"status": "pass"}),
+            stderr="",
+        )
+        with patch.object(
+            tasks, "_field_scale_manage_py", return_value=result
+        ) as manage_py:
+            evidence = tasks._collect_validation_org_query_audit_evidence(
+                context,
+                source_name="private-validation-source",
+            )
+
+        self.assertEqual(evidence["status"], "passed")
+        self.assertEqual(evidence["evidence"]["source_selection"], "explicit_existing")
+        self.assertNotIn(
+            "private-validation-source",
+            evidence["evidence"]["command"],
+        )
+        self.assertIn("--source-name <redacted>", evidence["evidence"]["command"])
+        self.assertIn(
+            "--source-name private-validation-source",
+            manage_py.call_args.args[1],
+        )
 
     def test_release_readiness_audit_task_raises_on_failure(self):
         context = self._context()

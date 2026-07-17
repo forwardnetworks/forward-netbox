@@ -152,6 +152,18 @@ def _scope_managed_tags(runner):
     return managed
 
 
+def _clear_stale_out_of_scope_tag(runner, device):
+    """Clear the reconciliation tag after a successful in-scope upsert."""
+    from extras.models import Tag
+
+    from .scope_reconciliation import OUT_OF_SCOPE_TAG_SLUG
+    from .sync_interface import _device_remove_tag
+
+    tag = Tag.objects.filter(slug=OUT_OF_SCOPE_TAG_SLUG).first()
+    if tag is not None:
+        _device_remove_tag(runner, device, tag)
+
+
 def apply_dcim_device(runner, row):
     from dcim.models import Device
 
@@ -176,7 +188,10 @@ def apply_dcim_device(runner, row):
                 "manufacturer": row["manufacturer"],
                 "manufacturer_slug": row["manufacturer_slug"],
                 "slug": row["platform_slug"],
-            }
+            },
+            manufacturer_authoritative=bool(
+                row.get("platform_manufacturer_authoritative")
+            ),
         )
 
     defaults = {
@@ -214,6 +229,8 @@ def apply_dcim_device(runner, row):
             [("name",)],
         ),
     )
+
+    _clear_stale_out_of_scope_tag(runner, device)
 
     if _scope_tags_enabled(runner):
         from .sync_interface import _device_add_tag

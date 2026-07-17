@@ -118,9 +118,12 @@ async function main() {
   runDockerManage("forward_seed_ui_harness");
   await waitForWebReady(`${baseURL}/login/`);
 
-  const browser = await chromium.launch({
+  const browserLaunchOptions = {
     headless: process.env.PLAYWRIGHT_HEADLESS !== "false",
-  });
+  };
+  const executablePath = process.env.PLAYWRIGHT_EXECUTABLE_PATH?.trim();
+  if (executablePath) browserLaunchOptions.executablePath = executablePath;
+  const browser = await chromium.launch(browserLaunchOptions);
   const context = await browser.newContext({
     baseURL,
     viewport: { width: 1440, height: 1000 },
@@ -266,6 +269,37 @@ async function main() {
     await assertNoHorizontalOverflow(page, "desktop sync form");
     evidence.checks.push(
       "sync creation form exposes single-branch merge, apply-engine, and diff fallback controls",
+    );
+
+    const sourceEditResponse = await page.goto(
+      `${baseURL}/plugins/forward/source/1/edit/`,
+      {
+        waitUntil: "domcontentloaded",
+      },
+    );
+    assert(
+      sourceEditResponse?.ok(),
+      "source edit form did not return a success response",
+    );
+    assert(
+      new URL(page.url()).pathname === "/plugins/forward/source/1/edit/",
+      `source edit form redirected to ${page.url()}`,
+    );
+    await expectVisible(page, "Forward Source");
+    for (const fieldLabel of [
+      "Apply Device Scope Tags",
+      "Import SNMP Endpoints as Devices",
+      "Import Generic SNMP Endpoints as Devices",
+      "Scope SNMP Endpoints by Include Tags",
+    ]) {
+      const field = page.getByLabel(fieldLabel, { exact: true });
+      assert((await field.count()) === 1, `source form is missing ${fieldLabel}`);
+      assert(await field.isVisible(), `source form hides ${fieldLabel}`);
+    }
+    await assertNoHorizontalOverflow(page, "desktop source form");
+    evidence.screenshots.push(await screenshot(page, "desktop-source-form.jpg"));
+    evidence.checks.push(
+      "source form exposes scope tags, console-server import, generic endpoint opt-in, and endpoint include scope",
     );
 
     await page.goto(`${baseURL}/plugins/forward/nqe-map/add/`, {

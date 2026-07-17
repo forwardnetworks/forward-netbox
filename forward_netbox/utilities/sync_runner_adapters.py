@@ -361,35 +361,48 @@ class ForwardSyncRunnerAdapterMixin:
         )
         return role
 
-    def _ensure_platform(self, row):
+    def _ensure_platform(self, row, *, manufacturer_authoritative=False):
         from dcim.models import Platform
 
         coalesce_sets = self._coalesce_sets_for(
             "dcim.platform",
             [("slug",), ("name",)],
         )
-        # 2.0: platforms are global (no manufacturer) so any vendor's device can
-        # attach. `normalizePlatformName` is OS-only and some names (e.g. UNKNOWN)
-        # span vendors, which a manufacturer-scoped platform would reject. Set
-        # manufacturer=None on CREATE and UPDATE so an existing manufacturer-scoped
-        # platform is cleared on the next sync.
-        values = {
+        manufacturer = None
+        manufacturer_name = str(row.get("manufacturer") or "").strip()
+        manufacturer_slug = str(row.get("manufacturer_slug") or "").strip()
+        if manufacturer_name and manufacturer_slug:
+            manufacturer = self._ensure_manufacturer(
+                {"name": manufacturer_name, "slug": manufacturer_slug}
+            )
+        identity_values = {
             "name": row["name"],
             "slug": row["slug"],
-            "manufacturer": None,
         }
         lookups = [
-            sync_coalesce_lookup(values, *coalesce_set)
+            sync_coalesce_lookup(identity_values, *coalesce_set)
             for coalesce_set in coalesce_sets
         ]
         lookups = [lk for lk in lookups if lk]
+        create_values = {
+            **identity_values,
+            "manufacturer": manufacturer if manufacturer_authoritative else None,
+        }
+        update_values = dict(identity_values)
+        if manufacturer_authoritative:
+            # The Platform query emits one grouped row and leaves manufacturer
+            # blank when the normalized platform spans vendors. That decision is
+            # authoritative, including clearing a legacy manufacturer. Device
+            # rows preserve it; they only supply manufacturer on fallback create
+            # for endpoint-only platforms absent from the Platform map.
+            update_values["manufacturer"] = manufacturer
         platform, _ = sync_coalesce_upsert(
             self,
             "dcim.platform",
             Platform,
             coalesce_lookups=lookups,
-            create_values=values,
-            update_values=values,
+            create_values=create_values,
+            update_values=update_values,
         )
         return platform
 

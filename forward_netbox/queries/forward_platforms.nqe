@@ -12,10 +12,23 @@ where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
 let platform_name = normalizePlatformName(toString(device.platform.os), device.platform.osVersion)
 let platform_slug = slugify(platform_name)
-where isEmpty(forward_netbox_shard_keys)
-  || platform_slug in forward_netbox_shard_keys
-  || platform_name in forward_netbox_shard_keys
-select distinct {
+let manufacturer_name = canonicalManufacturerName(device.platform.vendor)
+group manufacturer_name as manufacturers by {
   name: platform_name,
   slug: platform_slug
+} as platform
+let distinct_manufacturers = distinct(manufacturers)
+let manufacturer_name =
+  if length(distinct_manufacturers) == 1
+  then max(distinct_manufacturers)
+  else ""
+let manufacturer_slug = slugify(manufacturer_name)
+where isEmpty(forward_netbox_shard_keys)
+  || platform.slug in forward_netbox_shard_keys
+  || platform.name in forward_netbox_shard_keys
+select {
+  name: platform.name,
+  slug: platform.slug,
+  manufacturer: manufacturer_name,
+  manufacturer_slug: manufacturer_slug
 };

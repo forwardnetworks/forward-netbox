@@ -11,6 +11,8 @@ class EndpointImportWiringTest(SimpleTestCase):
         params = _default_query_parameters("forward_devices.nqe")
         self.assertIn("sync_endpoints", params)
         self.assertIs(params["sync_endpoints"], False)
+        self.assertIn("sync_generic_endpoints", params)
+        self.assertIs(params["sync_generic_endpoints"], False)
 
     def test_device_query_declares_device_tag_scope_params(self):
         params = _default_query_parameters("forward_devices.nqe")
@@ -26,6 +28,7 @@ class EndpointImportWiringTest(SimpleTestCase):
         src = _read_query("forward_devices.nqe")
         # Opt-in gate + endpoint source + MIB-2 identity + Avocent overlay.
         self.assertIn("sync_endpoints: Bool", src)
+        self.assertIn("sync_generic_endpoints: Bool", src)
         self.assertIn("network.endpoints", src)
         self.assertIn("where sync_endpoints", src)
         self.assertIn("1.3.6.1.2.1.1.1", src)  # sysDescr
@@ -45,6 +48,7 @@ class EndpointImportWiringTest(SimpleTestCase):
             "role:",
             "role_slug:",
             "role_color:",
+            "platform_manufacturer_authoritative:",
             "status:",
             "manufacturer_slug:",
         ):
@@ -140,6 +144,22 @@ class EndpointFormRenderTest(TestCase):
     def test_new_sources_default_endpoint_include_scope_on(self):
         form = ForwardSourceForm()
         self.assertIs(form.fields["scope_endpoints_by_include_tags"].initial, True)
+
+    def test_generic_endpoint_import_defaults_off_and_renders(self):
+        form = ForwardSourceForm()
+        self.assertIn("sync_generic_endpoints", form.fields)
+        self.assertIs(form.fields["sync_generic_endpoints"].initial, False)
+        rendered = []
+        for fieldset in form.fieldsets:
+            rendered.extend(
+                str(name)
+                for name in (
+                    getattr(fieldset, "items", None)
+                    or getattr(fieldset, "fields", None)
+                    or []
+                )
+            )
+        self.assertIn("sync_generic_endpoints", rendered)
 
     def test_existing_sources_preserve_endpoint_include_scope_off(self):
         source = ForwardSource.objects.create(
@@ -353,6 +373,8 @@ class EndpointBranchIncludeScopeTest(SimpleTestCase):
             "forward_devices_with_netbox_aliases.nqe",
         ):
             endpoint_branch = _read_query(filename).split("network.endpoints", 1)[1]
+            self.assertIn("endpoint.name", endpoint_branch, filename)
+            self.assertIn('matches(endpointNameLower, "*cimc*")', endpoint_branch)
             self.assertIn("endpoint.profileName", endpoint_branch, filename)
             self.assertIn('matches(endpointProfileName, "*cimc*")', endpoint_branch)
             self.assertIn(
@@ -360,6 +382,21 @@ class EndpointBranchIncludeScopeTest(SimpleTestCase):
                 endpoint_branch,
             )
             self.assertIn("where !isCimc", endpoint_branch, filename)
+
+    def test_endpoint_branches_default_to_recognized_console_servers(self):
+        for filename in (
+            "forward_devices.nqe",
+            "forward_devices_with_netbox_aliases.nqe",
+        ):
+            endpoint_branch = _read_query(filename).split("network.endpoints", 1)[1]
+            self.assertIn("sync_generic_endpoints: Bool", _read_query(filename))
+            self.assertIn(
+                "where sync_generic_endpoints || isConsoleServer",
+                endpoint_branch,
+                filename,
+            )
+            params = _default_query_parameters(filename)
+            self.assertIs(params["sync_generic_endpoints"], False, filename)
 
     def test_device_query_declares_toggle_default_off(self):
         for filename in (
@@ -423,6 +460,11 @@ class EndpointIdentityClampTest(SimpleTestCase):
             )
             self.assertIn(
                 'let ep_role = if isConsoleServer then "Console Server"',
+                endpoint_branch,
+                filename,
+            )
+            self.assertIn(
+                "platform_manufacturer_authoritative: true",
                 endpoint_branch,
                 filename,
             )
@@ -599,10 +641,30 @@ class EndpointIncludeScopeProbeTest(TestCase):
         )
 
         query = client.run_nqe_query.call_args.kwargs["query"]
+        self.assertIn("endpoint.name", query)
+        self.assertIn('matches(endpointNameLower, "*cimc*")', query)
         self.assertIn("endpoint.profileName", query)
         self.assertIn('matches(endpointProfileName, "*cimc*")', query)
         self.assertIn("*cisco integrated management controller*", query)
         self.assertIn("where !isCimc", query)
+        self.assertIn("where isConsoleServer", query)
+
+    def test_probe_generic_opt_in_removes_console_only_gate(self):
+        from unittest.mock import Mock
+
+        client = Mock()
+        client.run_nqe_query.return_value = []
+        fetcher = self._fetcher(client)
+        fetcher._resolve_scoped_endpoint_names(
+            network_id="n",
+            snapshot_id="s",
+            exclude_tags=[],
+            sync_generic_endpoints=True,
+        )
+
+        query = client.run_nqe_query.call_args.kwargs["query"]
+        self.assertIn("let isConsoleServer", query)
+        self.assertNotIn("where isConsoleServer", query)
 
     def test_builder_mirrors_device_scope_semantics(self):
         # Golden parity with build_device_tag_scope_where, targeting
@@ -791,6 +853,11 @@ class ScopeEndpointsAllowlistTest(TestCase):
 
         clean_forward_source(self._source(scope_endpoints_by_include_tags=True))
 
+    def test_generic_endpoint_bool_value_is_accepted(self):
+        from forward_netbox.utilities.model_validation import clean_forward_source
+
+        clean_forward_source(self._source(sync_generic_endpoints=True))
+
     def test_configured_marker_bool_is_accepted(self):
         from forward_netbox.utilities.model_validation import clean_forward_source
 
@@ -805,6 +872,14 @@ class ScopeEndpointsAllowlistTest(TestCase):
 
         with self.assertRaises(ValidationError):
             clean_forward_source(self._source(scope_endpoints_by_include_tags="yes"))
+
+    def test_non_bool_generic_endpoint_value_is_rejected(self):
+        from django.core.exceptions import ValidationError
+
+        from forward_netbox.utilities.model_validation import clean_forward_source
+
+        with self.assertRaises(ValidationError):
+            clean_forward_source(self._source(sync_generic_endpoints="yes"))
 
     def test_non_bool_configured_marker_is_rejected(self):
         from django.core.exceptions import ValidationError

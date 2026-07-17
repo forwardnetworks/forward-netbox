@@ -1534,6 +1534,23 @@ class DLMHardwareNoticeAliasCheckTest(TestCase):
         ]
         self.assertEqual(dlm_hardware_notice_alias_check(maps)["status"], "pass")
 
+    def test_both_notice_variants_warn(self):
+        from forward_netbox.utilities.health_checks import (
+            dlm_hardware_notice_alias_check,
+        )
+
+        maps = [
+            self._named(
+                "Forward Devices with NetBox Device Type Aliases",
+                model_string="dcim.devicetype",
+            ),
+            self._named("Forward DLM Hardware Notices"),
+            self._named("Forward DLM Hardware Notices with NetBox Aliases"),
+        ]
+        result = dlm_hardware_notice_alias_check(maps)
+        self.assertEqual(result["status"], "warn")
+        self.assertIn("Both", result["message"])
+
     def test_base_query_with_alias_notice_warns(self):
         from forward_netbox.utilities.health_checks import (
             dlm_hardware_notice_alias_check,
@@ -1655,8 +1672,8 @@ class DLMDependencyReadinessCheckTest(TestCase):
 
 
 class EnabledMapModelNotSelectedTest(TestCase):
-    """Correction (Blake 2.5.8): an optional-model map enabled in the NQE Maps
-    list but whose model is NOT selected in the sync runs silently — surface it."""
+    """An optional-model map enabled in the NQE Maps list but whose model is
+    not selected in the sync must be surfaced instead of silently skipped."""
 
     @classmethod
     def setUpTestData(cls):

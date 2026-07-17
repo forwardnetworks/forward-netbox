@@ -106,6 +106,6 @@ duplicate-name guard and masking warning are strictly additive.
   2.4.4 comment documents; keeping both sides identical avoids it.
 - **Artifact descriptor bumped to v4**: the scoped set now varies with the
   toggle; a stale pre-toggle cache entry must not be reused.
-- **Earliest-pk resolution for duplicate names** (not a hard error): Blake must
-  not hit a new sync failure; the warning surfaces the ambiguity without
+- **Earliest-pk resolution for duplicate names** (not a hard error): the
+  affected deployment must not hit a new sync failure; the warning surfaces the ambiguity without
   failing the workload.

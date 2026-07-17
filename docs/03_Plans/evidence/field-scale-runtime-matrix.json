@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-07-16T08:14:35.505208+00:00",
+  "generated_at": "2026-07-17T11:21:44.899865+00:00",
   "metadata": {
     "dataset_label": "release-smoke",
     "focus_models": "dcim.device,dcim.inventoryitem",
@@ -15,7 +15,7 @@
   "runs": [
     {
       "command": "forward_smoke_sync --validate-only --query-limit 10",
-      "elapsed_ms": 40027,
+      "elapsed_ms": 7202,
       "exit_code": 0,
       "failure_code": "",
       "failure_hint": "",
@@ -26,7 +26,7 @@
     },
     {
       "command": "forward_smoke_sync --plan-only --max-changes-per-branch 10000",
-      "elapsed_ms": 193730,
+      "elapsed_ms": 7111,
       "exit_code": 0,
       "failure_code": "",
       "failure_hint": "",
@@ -37,7 +37,7 @@
     },
     {
       "command": "forward_smoke_sync --validate-only --query-limit 100 --models dcim.device,dcim.inventoryitem",
-      "elapsed_ms": 7398,
+      "elapsed_ms": 5924,
       "exit_code": 0,
       "failure_code": "",
       "failure_hint": "",

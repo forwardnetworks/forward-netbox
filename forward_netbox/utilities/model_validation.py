@@ -62,6 +62,7 @@ def clean_forward_source(source):
             "apply_device_scope_tags",
             "sync_device_tags",
             "sync_endpoints",
+            "sync_generic_endpoints",
             "scope_endpoints_by_include_tags",
             "scope_endpoints_by_include_tags_configured",
         }
@@ -81,6 +82,8 @@ def clean_forward_source(source):
         raise ValidationError(_("`verify` must be a boolean."))
     if not isinstance(parameters.get("sync_endpoints", False), bool):
         raise ValidationError(_("`sync_endpoints` must be a boolean."))
+    if not isinstance(parameters.get("sync_generic_endpoints", False), bool):
+        raise ValidationError(_("`sync_generic_endpoints` must be a boolean."))
     if not isinstance(parameters.get("scope_endpoints_by_include_tags", False), bool):
         raise ValidationError(_("`scope_endpoints_by_include_tags` must be a boolean."))
     if not isinstance(
