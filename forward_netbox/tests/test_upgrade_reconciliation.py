@@ -14,9 +14,7 @@ from forward_netbox.utilities.upgrade_reconciliation import (
 
 class UpgradeReconciliationCoreTest(TestCase):
     def setUp(self):
-        self.opengear = Manufacturer.objects.create(
-            name="Opengear", slug="opengear"
-        )
+        self.opengear = Manufacturer.objects.create(name="Opengear", slug="opengear")
         self.avocent = Manufacturer.objects.create(name="Avocent", slug="avocent")
         self.cisco = Manufacturer.objects.create(name="Cisco", slug="cisco")
 
@@ -50,9 +48,7 @@ class UpgradeReconciliationCoreTest(TestCase):
             device_type=attached_legacy,
             status="active",
         )
-        Platform.objects.create(
-            name="IOS_XE", slug="ios-xe", manufacturer=self.cisco
-        )
+        Platform.objects.create(name="IOS_XE", slug="ios-xe", manufacturer=self.cisco)
         Platform.objects.create(name="Linux", slug="linux")
 
         report = compute_upgrade_reconciliation(include_samples=True)
@@ -78,9 +74,7 @@ class UpgradeReconciliationCoreTest(TestCase):
         report = compute_upgrade_reconciliation(include_samples=False)
 
         self.assertNotIn("sample", report["legacy_endpoint_device_types"])
-        self.assertEqual(
-            report["dlm"]["available"], apps.is_installed("netbox_dlm")
-        )
+        self.assertEqual(report["dlm"]["available"], apps.is_installed("netbox_dlm"))
         software = report["dlm"]["software_versions"]
         self.assertNotIn("catalog_retained_sample", software)
         self.assertNotIn("unreferenced_sample", software)
