@@ -133,7 +133,17 @@ class DlmQueryStructureTest(SimpleTestCase):
         # @query before query execution. NetBox coalesce_fields enforce identity.
         self.assertNotIn("@primaryKey", src)
         self.assertIn("@query\nf(forward_netbox_shard_keys", src)
-        for field in ("cve_id:", "name:", "description:", "severity:"):
+        for field in (
+            "cve_id:",
+            "name:",
+            "description:",
+            "severity:",
+            "published_date:",
+            "link:",
+            "cvss_score:",
+            "cvss_v2_score:",
+            "cvss_v3_score:",
+        ):
             self.assertIn(field, src)
         # Severity maps to the 5 netbox-dlm CVESeverityChoices via enum-direct
         # comparison (the deprecated Cve.severity/description fields are avoided
@@ -151,6 +161,15 @@ class DlmQueryStructureTest(SimpleTestCase):
             self.assertIn(sev, src)
         # cve_id clamped to the 20-char column.
         self.assertIn("substring(cve.cveId, 0, 20)", src)
+        self.assertIn("let published_date = min(", src)
+        self.assertIn("select vi.publicationDate", src)
+        self.assertIn('matches(vi.url, "https://*")', src)
+        self.assertIn('matches(vi.url, "http://*")', src)
+        for score_field in ("baseScore", "baseScoreV2", "baseScoreV3"):
+            self.assertIn(
+                f"max(foreach vi in cve.vendorInfos select vi.{score_field})",
+                src,
+            )
 
     def test_vulnerability_query_shape(self):
         src = _read_query("forward_dlm_vulnerabilities.nqe")
@@ -200,6 +219,26 @@ class DlmAssociationContractTest(SimpleTestCase):
         runner = Mock()
         runner._model_field_values.side_effect = lambda model, values: values
         return runner
+
+    def test_missing_device_is_a_bounded_dependency_skip(self):
+        from django.core.exceptions import ObjectDoesNotExist
+
+        from forward_netbox.exceptions import ForwardDependencySkipError
+        from forward_netbox.utilities.sync_dlm import _lookup_device
+
+        runner = self._runner()
+        runner._get_device_by_name.side_effect = ObjectDoesNotExist
+        runner._dependency_failed.return_value = False
+
+        with self.assertRaises(ForwardDependencySkipError) as raised:
+            _lookup_device(
+                runner,
+                {"name": "outside-scope"},
+                "netbox_dlm.vulnerability",
+                "DLM vulnerability",
+            )
+
+        self.assertIn("not in the current NetBox branch", str(raised.exception))
 
     @patch("forward_netbox.utilities.sync_dlm._lookup_platform")
     @patch("forward_netbox.utilities.sync_dlm._dlm_model")
@@ -278,6 +317,66 @@ class DlmAssociationContractTest(SimpleTestCase):
         self.assertIs(link_values["device"], device)
         self.assertIs(link_values["software_version"], software_version)
 
+    @patch("forward_netbox.utilities.sync_dlm._dlm_model")
+    def test_cve_applies_available_forward_metadata(self, dlm_model):
+        from forward_netbox.utilities.sync_dlm import apply_netbox_dlm_cve
+
+        runner = self._runner()
+        dlm_model.return_value = object()
+        cve = object()
+        runner._upsert_values_from_defaults.return_value = (cve, True)
+
+        result = apply_netbox_dlm_cve(
+            runner,
+            {
+                "cve_id": "CVE-2026-12345",
+                "name": "CVE-2026-12345",
+                "description": "Vendor advisory",
+                "severity": "high",
+                "published_date": "2026-07-01",
+                "link": "https://example.test/CVE-2026-12345",
+                "cvss_score": 9.1,
+                "cvss_v2_score": 7.5,
+                "cvss_v3_score": 9.1,
+            },
+        )
+
+        self.assertIs(result, cve)
+        values = runner._upsert_values_from_defaults.call_args.kwargs["values"]
+        self.assertEqual(values["published_date"], date(2026, 7, 1))
+        self.assertEqual(values["link"], "https://example.test/CVE-2026-12345")
+        self.assertEqual(values["cvss_score"], 9.1)
+        self.assertEqual(values["cvss_v2_score"], 7.5)
+        self.assertEqual(values["cvss_v3_score"], 9.1)
+
+    @patch("forward_netbox.utilities.sync_dlm._dlm_model")
+    def test_cve_omits_unavailable_optional_metadata(self, dlm_model):
+        from forward_netbox.utilities.sync_dlm import apply_netbox_dlm_cve
+
+        runner = self._runner()
+        dlm_model.return_value = object()
+        runner._upsert_values_from_defaults.return_value = (object(), False)
+
+        apply_netbox_dlm_cve(
+            runner,
+            {
+                "cve_id": "CVE-2026-12345",
+                "name": "CVE-2026-12345",
+                "description": "",
+                "severity": "",
+            },
+        )
+
+        values = runner._upsert_values_from_defaults.call_args.kwargs["values"]
+        for field in (
+            "published_date",
+            "link",
+            "cvss_score",
+            "cvss_v2_score",
+            "cvss_v3_score",
+        ):
+            self.assertNotIn(field, values)
+
     @patch("forward_netbox.utilities.sync_dlm.ensure_dlm_cve")
     @patch("forward_netbox.utilities.sync_dlm.ensure_dlm_device_software")
     @patch("forward_netbox.utilities.sync_dlm._dlm_model")
@@ -291,7 +390,7 @@ class DlmAssociationContractTest(SimpleTestCase):
         device = object()
         software_version = object()
         ensure_device_software.return_value = (device, software_version, object())
-        cve = object()
+        cve = Mock()
         ensure_cve.return_value = cve
         vulnerability = object()
         runner._upsert_values_from_defaults.return_value = (vulnerability, True)
@@ -305,6 +404,7 @@ class DlmAssociationContractTest(SimpleTestCase):
             values,
             {"cve": cve, "software_version": software_version, "device": device},
         )
+        cve.affected_software.add.assert_called_once_with(software_version)
 
 
 @skipUnless(apps.is_installed("netbox_dlm"), "netbox-dlm is not installed")
@@ -407,6 +507,8 @@ class DlmInstalledPluginAssociationTest(TestCase):
             ).exists()
         )
         self.assertTrue(CVE.objects.filter(cve_id="CVE-2026-12345").exists())
+        cve = CVE.objects.get(cve_id="CVE-2026-12345")
+        self.assertTrue(cve.affected_software.filter(pk=software_version.pk).exists())
         self.assertTrue(
             Vulnerability.objects.filter(
                 device=self.vulnerability_device,
@@ -416,6 +518,145 @@ class DlmInstalledPluginAssociationTest(TestCase):
         self.assertEqual(
             SoftwareVersion.objects.exclude(devices_running__isnull=False).count(),
             0,
+        )
+
+    def test_upgrade_reconciliation_classifies_dlm_catalog_relations(self):
+        CVE = apps.get_model("netbox_dlm", "CVE")
+        DeviceSoftware = apps.get_model("netbox_dlm", "DeviceSoftware")
+        SoftwareVersion = apps.get_model("netbox_dlm", "SoftwareVersion")
+        Vulnerability = apps.get_model("netbox_dlm", "Vulnerability")
+        from forward_netbox.utilities.upgrade_reconciliation import (
+            compute_upgrade_reconciliation,
+        )
+
+        unreferenced = SoftwareVersion.objects.create(
+            platform=self.platform, version="16.06.08"
+        )
+        retained = SoftwareVersion.objects.create(
+            platform=self.platform, version="17.03.04"
+        )
+        running = SoftwareVersion.objects.create(
+            platform=self.platform, version="17.12.07b"
+        )
+        DeviceSoftware.objects.create(device=self.device, software_version=running)
+
+        affected_cve = CVE.objects.create(cve_id="CVE-2026-10001")
+        affected_cve.affected_software.add(retained)
+        vulnerable_cve = CVE.objects.create(cve_id="CVE-2026-10002")
+        Vulnerability.objects.create(
+            cve=vulnerable_cve,
+            software_version=running,
+            device=self.vulnerability_device,
+        )
+        CVE.objects.create(cve_id="CVE-2026-10003")
+
+        report = compute_upgrade_reconciliation(include_samples=True)
+
+        software = report["dlm"]["software_versions"]
+        self.assertEqual(software["total"], 3)
+        self.assertEqual(software["without_devices"], 2)
+        self.assertEqual(software["catalog_retained_without_devices"], 1)
+        self.assertEqual(software["unreferenced_without_devices"], 1)
+        self.assertEqual(
+            software["unreferenced_sample"],
+            [{"platform__name": "IOS_XE", "version": unreferenced.version}],
+        )
+        self.assertEqual(
+            software["catalog_retained_sample"][0]["version"], retained.version
+        )
+        self.assertEqual(software["catalog_retained_sample"][0]["retained_by"], "CVE")
+
+        cves = report["dlm"]["cves"]
+        self.assertEqual(cves["total"], 3)
+        self.assertEqual(cves["with_vulnerabilities"], 1)
+        self.assertEqual(cves["with_affected_software"], 1)
+        self.assertEqual(cves["unlinked"], 1)
+
+    def test_seeded_259_state_converges_after_two_corrected_adapter_passes(self):
+        from forward_netbox.utilities.sync_dlm import apply_netbox_dlm_cve
+        from forward_netbox.utilities.sync_dlm import apply_netbox_dlm_devicesoftware
+        from forward_netbox.utilities.sync_dlm import apply_netbox_dlm_softwareversion
+        from forward_netbox.utilities.sync_dlm import apply_netbox_dlm_vulnerability
+        from forward_netbox.utilities.upgrade_reconciliation import (
+            compute_upgrade_reconciliation,
+        )
+
+        CVE = apps.get_model("netbox_dlm", "CVE")
+        DeviceSoftware = apps.get_model("netbox_dlm", "DeviceSoftware")
+        SoftwareVersion = apps.get_model("netbox_dlm", "SoftwareVersion")
+        Vulnerability = apps.get_model("netbox_dlm", "Vulnerability")
+        SoftwareVersion.objects.create(
+            platform=self.platform,
+            version="16.06.08",
+            end_of_support=date(2024, 7, 31),
+        )
+        stale_row = {
+            "platform": "IOS_XE",
+            "platform_slug": "ios-xe",
+            "version": "16.06.08",
+            "end_of_support": "2024-07-31",
+        }
+        current_row = {
+            "name": self.device.name,
+            "platform": "IOS_XE",
+            "platform_slug": "ios-xe",
+            "version": "17.12.07b",
+            "end_of_support": "2028-03-31",
+        }
+        cve_row = {
+            "cve_id": "CVE-2026-20001",
+            "name": "CVE-2026-20001",
+            "description": "Forward advisory",
+            "severity": "high",
+            "published_date": "2026-07-01",
+            "cvss_score": 9.1,
+        }
+
+        cardinalities = []
+        for _ in range(2):
+            runner = self._runner()
+            apply_netbox_dlm_devicesoftware(runner, current_row)
+            apply_netbox_dlm_softwareversion(runner, current_row)
+            apply_netbox_dlm_softwareversion(runner, stale_row)
+            apply_netbox_dlm_cve(runner, cve_row)
+            apply_netbox_dlm_vulnerability(
+                runner,
+                {
+                    **current_row,
+                    "cve_id": cve_row["cve_id"],
+                },
+            )
+            cardinalities.append(
+                {
+                    "software_versions": SoftwareVersion.objects.count(),
+                    "device_software": DeviceSoftware.objects.count(),
+                    "cves": CVE.objects.count(),
+                    "vulnerabilities": Vulnerability.objects.count(),
+                    "affected_software": CVE.objects.get(
+                        cve_id=cve_row["cve_id"]
+                    ).affected_software.count(),
+                }
+            )
+
+        self.assertEqual(cardinalities[0], cardinalities[1])
+        self.assertEqual(
+            cardinalities[1],
+            {
+                "software_versions": 2,
+                "device_software": 1,
+                "cves": 1,
+                "vulnerabilities": 1,
+                "affected_software": 1,
+            },
+        )
+        report = compute_upgrade_reconciliation(include_samples=True)
+        self.assertEqual(
+            report["dlm"]["software_versions"]["unreferenced_without_devices"],
+            1,
+        )
+        self.assertEqual(
+            report["dlm"]["software_versions"]["unreferenced_sample"][0]["version"],
+            "16.06.08",
         )
 
 

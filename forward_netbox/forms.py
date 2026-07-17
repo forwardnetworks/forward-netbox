@@ -442,11 +442,19 @@ class ForwardSourceForm(NetBoxModelForm):
             required=False,
             label="Import SNMP Endpoints as Devices",
             help_text=(
-                "Also import Forward SNMP endpoints (generic SSH/SNMP devices "
-                "Forward collects but does not model as first-class devices, "
-                "e.g. Avocent and Opengear console servers) as NetBox devices. "
+                "Import recognized Avocent and Opengear console-server SNMP "
+                "endpoints as NetBox devices. "
                 "Use the endpoint include-scope option below when this source "
                 "has device include tags."
+            ),
+        )
+        self.fields["sync_generic_endpoints"] = forms.BooleanField(
+            required=False,
+            label="Import Generic SNMP Endpoints as Devices",
+            help_text=(
+                "Also import every other eligible SNMP endpoint using its "
+                "limited MIB-2 identity. These rows are often sparse; leave "
+                "off unless generic endpoint inventory is intentional."
             ),
         )
         self.fields["scope_endpoints_by_include_tags"] = forms.BooleanField(
@@ -632,6 +640,9 @@ class ForwardSourceForm(NetBoxModelForm):
         self.fields["device_tag_exclude_tags"].initial = exclude_initial
         self.fields["sync_device_tags"].initial = sync_tags_initial
         self.fields["sync_endpoints"].initial = bool(parameters.get("sync_endpoints"))
+        self.fields["sync_generic_endpoints"].initial = bool(
+            parameters.get("sync_generic_endpoints")
+        )
         self.fields["scope_endpoints_by_include_tags"].initial = (
             effective_scope_endpoints_by_include_tags(parameters)
             if self.instance.pk
@@ -691,6 +702,7 @@ class ForwardSourceForm(NetBoxModelForm):
                     "apply_device_scope_tags",
                     "sync_device_tags",
                     "sync_endpoints",
+                    "sync_generic_endpoints",
                     "scope_endpoints_by_include_tags",
                     name="Parameters",
                 )
@@ -724,6 +736,7 @@ class ForwardSourceForm(NetBoxModelForm):
                     "apply_device_scope_tags",
                     "sync_device_tags",
                     "sync_endpoints",
+                    "sync_generic_endpoints",
                     "scope_endpoints_by_include_tags",
                     name="Parameters",
                 )
@@ -877,6 +890,7 @@ class ForwardSourceForm(NetBoxModelForm):
             "apply_device_scope_tags": bool(cleaned.get("apply_device_scope_tags")),
             "sync_device_tags": sync_device_tags,
             "sync_endpoints": bool(cleaned.get("sync_endpoints")),
+            "sync_generic_endpoints": bool(cleaned.get("sync_generic_endpoints")),
             "scope_endpoints_by_include_tags": bool(
                 cleaned.get("scope_endpoints_by_include_tags")
             ),
@@ -1075,6 +1089,9 @@ class ForwardSourceForm(NetBoxModelForm):
             ),
             "sync_device_tags": sync_device_tags,
             "sync_endpoints": bool(self.cleaned_data.get("sync_endpoints")),
+            "sync_generic_endpoints": bool(
+                self.cleaned_data.get("sync_generic_endpoints")
+            ),
             "scope_endpoints_by_include_tags": bool(
                 self.cleaned_data.get("scope_endpoints_by_include_tags")
             ),

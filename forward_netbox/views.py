@@ -236,6 +236,8 @@ def _ingestion_log_export_payload(ingestion, *, active_stage):
 
 
 def _sync_support_bundle_payload(sync):
+    from .utilities.upgrade_reconciliation import compute_upgrade_reconciliation
+
     latest_ingestion = sync.last_ingestion
     execution_state = _compact_execution_state_payload(
         json_safe_value(get_execution_display_state(sync))
@@ -261,6 +263,9 @@ def _sync_support_bundle_payload(sync):
         },
         "query_drift_summary": health.get("query_drift_summary", {}),
         "query_drift_results": health.get("query_modes", {}).get("local_drift", []),
+        "upgrade_reconciliation": json_safe_value(
+            compute_upgrade_reconciliation(include_samples=False)
+        ),
         "live_diagnostics": json_safe_value(live_diagnostics),
         "latest_ingestion": (
             {
@@ -939,6 +944,7 @@ class ForwardSyncScopeReconciliationView(BaseObjectView):
 
     def get(self, request, pk):
         from .utilities.scope_reconciliation import compute_scope_reconciliation
+        from .utilities.upgrade_reconciliation import compute_upgrade_reconciliation
 
         sync = get_object_or_404(self.queryset, pk=pk)
         try:
@@ -961,6 +967,9 @@ class ForwardSyncScopeReconciliationView(BaseObjectView):
             {
                 "object": sync,
                 "payload": payload,
+                "upgrade_reconciliation": compute_upgrade_reconciliation(
+                    include_samples=True
+                ),
                 "backfilled_tag_url": backfilled_tag_url,
                 "tag_backfilled_url": reverse(
                     "plugins:forward_netbox:forwardsync_tag_backfilled",

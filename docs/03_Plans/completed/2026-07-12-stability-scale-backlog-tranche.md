@@ -86,10 +86,10 @@ parameter is inert when unset; reverting leaves stored params ignored.
 - **sync-loop -> core JobRunner convergence: KEEP-AS-IS**, locked by the
   item-3 pinning suite (deletes ~65 lines but would require rebuilding the
   intent/guard/reconcile apparatus and loses the completion-time cadence).
-- **ACI "1 created + 1 deleted every sync" churn: BLOCKED on Blake data.**
+- **ACI "1 created + 1 deleted every sync" churn: BLOCKED on field data.**
   Needs the created/deleted object from a sync's ChangeDiff BEFORE merge;
   `forward_apply_identity_audit` (read-only, shipped 2.2.1) is the tool for
-  Blake to name it. Not reproducible without his network.
+  the affected operator to name it. Not reproducible without that network.
 
 ## Bundled changes
 

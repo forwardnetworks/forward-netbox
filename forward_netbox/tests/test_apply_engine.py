@@ -853,24 +853,35 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
             runner,
             "dcim.platform",
             [
-                {"name": "NX-OS", "slug": "nxos"},
-                {"name": "IOS-XR", "slug": "iosxr"},
+                {
+                    "name": "NX-OS",
+                    "slug": "nxos",
+                    "manufacturer": None,
+                    "manufacturer_slug": None,
+                },
+                {
+                    "name": "IOS-XR",
+                    "slug": "iosxr",
+                    "manufacturer": "Cisco",
+                    "manufacturer_slug": "cisco",
+                },
             ],
         )
 
         self.assertFalse(runner._apply_model_rows.called)
-        # 2.0: platforms are global. The newly created platform has no
-        # manufacturer, and an existing manufacturer-scoped platform is cleared on
-        # update so any vendor's device can attach.
+        # An ambiguous Platform clears a legacy owner; an unambiguous Platform
+        # resolves the same canonical Manufacturer used by DeviceType.
         self.assertIsNone(Platform.objects.get(slug="nxos").manufacturer)
-        self.assertIsNone(Platform.objects.get(slug="iosxr").manufacturer)
+        self.assertEqual(
+            Platform.objects.get(slug="iosxr").manufacturer_id,
+            manufacturer.pk,
+        )
 
     def test_bulk_orm_counts_unchanged_platform_rows_as_unchanged(self):
         self.sync.parameters["enable_bulk_orm"] = True
         self.sync.save(update_fields=["parameters"])
-        # 2.0: platforms are global (no manufacturer); a re-applied identical row
-        # must count as unchanged.
-        Platform.objects.create(name="ACI", slug="aci")
+        manufacturer = Manufacturer.objects.create(name="Cisco", slug="cisco")
+        Platform.objects.create(name="ACI", slug="aci", manufacturer=manufacturer)
         runner = self._runner()
         engine = select_apply_engine(
             sync=self.sync,
@@ -881,7 +892,14 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
         engine.apply_upserts(
             runner,
             "dcim.platform",
-            [{"name": "ACI", "slug": "aci"}],
+            [
+                {
+                    "name": "ACI",
+                    "slug": "aci",
+                    "manufacturer": "Cisco",
+                    "manufacturer_slug": "cisco",
+                }
+            ],
         )
 
         self.assertEqual(Platform.objects.filter(slug="aci").count(), 1)

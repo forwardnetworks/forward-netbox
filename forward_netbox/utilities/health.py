@@ -233,6 +233,11 @@ _BASE_VARIANT_QUERY_PAIRS = (
         "forward_device_feature_tags_with_rules.nqe",
         "Forward device-tag",
     ),
+    (
+        "forward_dlm_hardware_notices.nqe",
+        "forward_dlm_hardware_notices_with_netbox_aliases.nqe",
+        "Forward DLM hardware-notice",
+    ),
 )
 
 

@@ -85,7 +85,13 @@ class QuerySpec:
     ) -> dict[str, Any]:
         parameters = dict(self.parameters)
         if extra_parameters and parameters:
-            parameters.update(extra_parameters)
+            parameters.update(
+                {
+                    key: value
+                    for key, value in extra_parameters.items()
+                    if key in parameters
+                }
+            )
         return parameters
 
 
@@ -111,6 +117,14 @@ SYNC_DEVICE_TAGS_PARAMETER_DEFAULT = {SYNC_DEVICE_TAGS_PARAMETER_NAME: []}
 # servers) as NetBox devices. Declared by the device query; default off.
 SYNC_ENDPOINTS_PARAMETER_NAME = "sync_endpoints"
 SYNC_ENDPOINTS_PARAMETER_DEFAULT = {SYNC_ENDPOINTS_PARAMETER_NAME: False}
+# Generic endpoint import is deliberately separate from console-server import.
+# Most SNMP endpoints expose only MIB-2 identity and otherwise create sparse,
+# low-confidence NetBox devices. Keep the broad behavior behind an explicit
+# opt-in while sync_endpoints continues to enable recognized console servers.
+SYNC_GENERIC_ENDPOINTS_PARAMETER_NAME = "sync_generic_endpoints"
+SYNC_GENERIC_ENDPOINTS_PARAMETER_DEFAULT = {
+    SYNC_GENERIC_ENDPOINTS_PARAMETER_NAME: False
+}
 # Opt-in: endpoints must also carry the device include tags (by default the
 # include scope narrows modeled devices only). Declared by the device query;
 # default off (preserves the 2.4.4 endpoints-ignore-include-scope behavior).
@@ -154,6 +168,8 @@ def _default_query_parameters(filename: str) -> dict[str, Any]:
         parameters.update(SYNC_DEVICE_TAGS_PARAMETER_DEFAULT)
     if SYNC_ENDPOINTS_PARAMETER_NAME in source:
         parameters.update(SYNC_ENDPOINTS_PARAMETER_DEFAULT)
+    if SYNC_GENERIC_ENDPOINTS_PARAMETER_NAME in source:
+        parameters.update(SYNC_GENERIC_ENDPOINTS_PARAMETER_DEFAULT)
     if SCOPE_ENDPOINTS_BY_INCLUDE_TAGS_PARAMETER_NAME in source:
         parameters.update(SCOPE_ENDPOINTS_BY_INCLUDE_TAGS_PARAMETER_DEFAULT)
     return parameters
@@ -433,6 +449,12 @@ BUILTIN_OPTIONAL_QUERY_MAPS = [
         "model_string": "netbox_dlm.vulnerability",
         "name": "Forward DLM Vulnerabilities",
         "filename": "forward_dlm_vulnerabilities.nqe",
+        "enabled": False,
+    },
+    {
+        "model_string": "dcim.inventoryitem",
+        "name": "Forward CIMC Endpoint Inventory",
+        "filename": "forward_cimc_endpoint_inventory.nqe",
         "enabled": False,
     },
     {
@@ -967,6 +989,11 @@ def resolve_query_specs_for_client(specs: list[QuerySpec], client) -> list[Query
 # Aliases"). The alias variant maps device models through the NetBox Device Type
 # Library; it is a drop-in replacement for the base query, not an addition.
 _ALIAS_VARIANT_NAME_SUFFIX = " with NetBox Device Type Aliases"
+_EXPLICIT_ALIAS_VARIANT_BASE_NAMES = {
+    "Forward DLM Hardware Notices with NetBox Aliases": (
+        "Forward DLM Hardware Notices"
+    ),
+}
 
 
 def _collapse_alias_variant_duplicates(builtin_maps):
@@ -984,6 +1011,11 @@ def _collapse_alias_variant_duplicates(builtin_maps):
         for query_map in builtin_maps
         if query_map.name.endswith(_ALIAS_VARIANT_NAME_SUFFIX)
     }
+    superseded_base_names.update(
+        _EXPLICIT_ALIAS_VARIANT_BASE_NAMES[query_map.name]
+        for query_map in builtin_maps
+        if query_map.name in _EXPLICIT_ALIAS_VARIANT_BASE_NAMES
+    )
     return [
         query_map
         for query_map in builtin_maps

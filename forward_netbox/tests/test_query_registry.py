@@ -8,6 +8,7 @@ from django.test import TestCase
 
 from forward_netbox.models import ForwardNQEMap
 from forward_netbox.signals import seed_builtin_nqe_maps
+from forward_netbox.utilities.query_registry import _collapse_alias_variant_duplicates
 from forward_netbox.utilities.query_registry import _query_contract_gap_remediation
 from forward_netbox.utilities.query_registry import builtin_nqe_map_rows
 from forward_netbox.utilities.query_registry import BUILTIN_OPTIONAL_QUERY_MAPS
@@ -180,6 +181,7 @@ SLUG_QUERY_NAMES = {
 
 MANUFACTURER_QUERY_NAMES = {
     "Forward Device Vendors",
+    "Forward Platforms",
     "Forward Device Models",
     "Forward Devices",
     "Forward Inventory Items",
@@ -474,7 +476,7 @@ class QueryRegistryTest(TestCase):
                 query_id="Q_devices",
             )
 
-    def test_query_spec_only_merges_extra_parameters_for_parameterized_queries(self):
+    def test_query_spec_only_merges_declared_extra_parameters(self):
         plain_spec = QuerySpec(
             model_string="dcim.device",
             query_name="Forward Devices",
@@ -493,11 +495,13 @@ class QueryRegistryTest(TestCase):
         )
         self.assertEqual(
             parameterized_spec.merged_parameters(
-                {"device_tag_include_tags": ["Prod_Core"]}
+                {
+                    "forward_netbox_shard_keys": ["core-1"],
+                    "device_tag_include_tags": ["Prod_Core"],
+                }
             ),
             {
-                "forward_netbox_shard_keys": [],
-                "device_tag_include_tags": ["Prod_Core"],
+                "forward_netbox_shard_keys": ["core-1"],
             },
         )
 
@@ -585,9 +589,13 @@ class QueryRegistryTest(TestCase):
         self.assertIn("name: manufacturer_name", manufacturer_spec.query)
         self.assertNotIn("name: vendor", manufacturer_spec.query)
 
-        # NB: dcim.platform is intentionally excluded — 2.0 platforms are global
-        # (no manufacturer), so the platform query no longer carries one.
+        platform_spec = next(spec for spec in BUILTIN_QUERY_SPECS["dcim.platform"])
+        self.assertIn("group manufacturer_name as manufacturers", platform_spec.query)
+        self.assertIn("distinct(manufacturers)", platform_spec.query)
+        self.assertIn("length(distinct_manufacturers) == 1", platform_spec.query)
+
         for model_string in [
+            "dcim.platform",
             "dcim.devicetype",
             "dcim.device",
             "dcim.inventoryitem",
@@ -599,10 +607,8 @@ class QueryRegistryTest(TestCase):
 
     def test_builtin_query_outputs_satisfy_contract_required_fields(self):
         # Regression: a ModelSyncContract must never require an output field the
-        # builtin query does not emit. 2.0 shipped dcim.platform requiring
-        # manufacturer/manufacturer_slug after the query had (correctly, for
-        # global platforms) dropped them — which blocked every sync the moment
-        # the query was published to the org. This guards the whole class.
+        # builtin query does not emit. Platform manufacturer remains optional
+        # because cross-vendor platform groups intentionally emit it blank.
         from forward_netbox.utilities.sync_contracts import MODEL_SYNC_CONTRACTS
         from forward_netbox.utilities.sync_contracts import (
             extract_declared_query_fields,
@@ -1172,6 +1178,16 @@ class QueryRegistryTest(TestCase):
         self.assertEqual(len(specs), 1)
         self.assertEqual(specs[0].query_id, "FQ_devices_alias")
 
+    def test_resolve_map_specs_collapses_dlm_hardware_alias_duplicate(self):
+        base = Mock(name="base")
+        base.name = "Forward DLM Hardware Notices"
+        alias = Mock(name="alias")
+        alias.name = "Forward DLM Hardware Notices with NetBox Aliases"
+
+        collapsed = _collapse_alias_variant_duplicates([base, alias])
+
+        self.assertEqual(collapsed, [alias])
+
     def test_resolve_map_specs_keeps_base_when_alias_disabled(self):
         # Only the base enabled -> keep the base (no alias to supersede it).
         netbox_model = ContentType.objects.get(app_label="dcim", model="device")
@@ -1298,6 +1314,20 @@ class QueryRegistryTest(TestCase):
             "Forward Modules",
             {query_default["name"] for query_default in BUILTIN_OPTIONAL_QUERY_MAPS},
         )
+
+    def test_optional_cimc_endpoint_inventory_map_is_seeded_disabled(self):
+        rows = {
+            (row["model_string"], row["name"]): row for row in builtin_nqe_map_rows()
+        }
+
+        row = rows[("dcim.inventoryitem", "Forward CIMC Endpoint Inventory")]
+
+        self.assertFalse(row["enabled"])
+        self.assertEqual(row["parameters"], {"forward_netbox_shard_keys": []})
+        self.assertIn('matches(endpointNameLower, "*-cimc")', row["query"])
+        self.assertIn("where device.name == parentName", row["query"])
+        self.assertIn("device: device.name", row["query"])
+        self.assertIn('name: "CIMC"', row["query"])
 
     def test_optional_aci_maps_are_seeded_disabled(self):
         rows = {
@@ -1559,6 +1589,36 @@ class QueryRegistryTest(TestCase):
 
         query_map.refresh_from_db()
         self.assertTrue(query_map.enabled)
+
+    def test_dlm_post_migrate_seeds_optional_maps_after_late_install(self):
+        for model in (
+            "softwareversion",
+            "hardwarenotice",
+            "devicesoftware",
+            "cve",
+            "vulnerability",
+        ):
+            ContentType.objects.get_or_create(app_label="netbox_dlm", model=model)
+        ForwardNQEMap.objects.filter(netbox_model__app_label="netbox_dlm").delete()
+
+        seed_builtin_nqe_maps(type("Sender", (), {"label": "netbox_dlm"}))
+
+        dlm_maps = ForwardNQEMap.objects.filter(
+            netbox_model__app_label="netbox_dlm",
+            built_in=True,
+        )
+        self.assertSetEqual(
+            set(dlm_maps.values_list("name", flat=True)),
+            {
+                "Forward DLM Software Versions",
+                "Forward DLM Hardware Notices",
+                "Forward DLM Hardware Notices with NetBox Aliases",
+                "Forward DLM Device Software",
+                "Forward DLM CVEs",
+                "Forward DLM Vulnerabilities",
+            },
+        )
+        self.assertFalse(dlm_maps.filter(enabled=True).exists())
 
     def test_seed_builtin_maps_skips_aci_maps_when_plugin_contenttypes_are_absent(self):
         self.assertFalse(

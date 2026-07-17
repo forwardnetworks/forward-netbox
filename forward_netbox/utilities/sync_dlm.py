@@ -16,7 +16,6 @@ from datetime import date
 from django.core.exceptions import ObjectDoesNotExist
 
 from ..exceptions import ForwardDependencySkipError
-from ..exceptions import ForwardSearchError
 
 
 def _parse_date(value):
@@ -27,6 +26,15 @@ def _parse_date(value):
     try:
         return date.fromisoformat(str(value))
     except ValueError:
+        return None
+
+
+def _parse_float(value):
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
         return None
 
 
@@ -91,8 +99,9 @@ def _lookup_device(runner, row, model_string, object_label):
                 context={"device": row["name"]},
                 data=row,
             ) from exc
-        raise ForwardSearchError(
-            f"Unable to find device `{row['name']}` for {object_label}.",
+        raise ForwardDependencySkipError(
+            f"Skipping {object_label} because device `{row['name']}` is not "
+            "in the current NetBox branch.",
             model_string=model_string,
             context={"device": row["name"]},
             data=row,
@@ -231,15 +240,23 @@ def ensure_dlm_cve(runner, row):
 
 def apply_netbox_dlm_cve(runner, row):
     CVE = _dlm_model(runner, "CVE", "netbox_dlm.cve")
-    values = runner._model_field_values(
-        CVE,
-        {
-            "cve_id": str(row.get("cve_id") or "").strip(),
-            "name": str(row.get("name") or "").strip(),
-            "description": str(row.get("description") or ""),
-            "severity": str(row.get("severity") or "").strip(),
-        },
-    )
+    values = {
+        "cve_id": str(row.get("cve_id") or "").strip(),
+        "name": str(row.get("name") or "").strip(),
+        "description": str(row.get("description") or ""),
+        "severity": str(row.get("severity") or "").strip(),
+    }
+    published_date = _parse_date(row.get("published_date"))
+    if published_date is not None:
+        values["published_date"] = published_date
+    link = str(row.get("link") or "").strip()
+    if link:
+        values["link"] = link
+    for field_name in ("cvss_score", "cvss_v2_score", "cvss_v3_score"):
+        score = _parse_float(row.get(field_name))
+        if score is not None:
+            values[field_name] = score
+    values = runner._model_field_values(CVE, values)
     cve, _ = runner._upsert_values_from_defaults(
         "netbox_dlm.cve",
         CVE,
@@ -266,6 +283,11 @@ def apply_netbox_dlm_vulnerability(runner, row):
         values=values,
         coalesce_sets=[("cve", "software_version", "device")],
     )
+    # netbox-dlm exposes the catalog-level CVE <-> SoftwareVersion relation
+    # separately from device-scoped Vulnerability instances. Forward's finding
+    # supplies direct evidence for both. Keep the catalog relation additive: a
+    # version remains affected after the last currently observed device upgrades.
+    cve.affected_software.add(software_version)
     return vulnerability
 
 

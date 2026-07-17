@@ -84,7 +84,7 @@ def apply_dcim_manufacturer(runner, row):
 
 
 def apply_dcim_platform(runner, row):
-    runner._ensure_platform(row)
+    return runner._ensure_platform(row, manufacturer_authoritative=True)
 
 
 def apply_dcim_devicerole(runner, row):

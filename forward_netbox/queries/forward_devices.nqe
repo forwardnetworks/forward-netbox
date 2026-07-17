@@ -1,11 +1,11 @@
 /**
  * @intent Devices collected by Forward (plus optional SNMP endpoints)
  * @description Devices to add or update in NetBox via POST/PATCH to
- * /api/dcim/devices/. When sync_endpoints is true, generic SNMP endpoints that
- * Forward collects but does not model as first-class devices (e.g. Avocent and
- * Opengear console servers) are also emitted as device rows, identified from
+ * /api/dcim/devices/. When sync_endpoints is true, recognized Avocent and
+ * Opengear console servers are also emitted as device rows, identified from
  * standard MIB-2 (sysName/sysDescr/sysObjectId) with stable per-vendor
- * identities. Management controllers such as Cisco CIMC are excluded because
+ * identities. Other SNMP endpoints require sync_generic_endpoints. Management
+ * controllers such as Cisco CIMC are excluded because
  * their parent-device inventory maps model them as components. The optional
  * endpoint include-scope setting applies device tags.
  */
@@ -13,7 +13,7 @@
 import "netbox_utilities";
 
 @query
-f(forward_netbox_shard_keys: List<String>, sync_endpoints: Bool, scope_endpoints_by_include_tags: Bool, device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>) =
+f(forward_netbox_shard_keys: List<String>, sync_endpoints: Bool, sync_generic_endpoints: Bool, scope_endpoints_by_include_tags: Bool, device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>) =
 foreach row in (
   (
     foreach device in network.devices
@@ -44,6 +44,7 @@ foreach row in (
       role_color: "9e9e9e",
       platform: platform_name,
       platform_slug: slugify(platform_name),
+      platform_manufacturer_authoritative: false,
       status: "active",
       manufacturer_slug: manufacturer_slug
     }
@@ -79,8 +80,10 @@ foreach row in (
     let sysDescrClean = replaceRegexMatches(sysDescr, re`\s+`, " ")
     let sysObjId = if isPresent(sysObjIdOpt) then sysObjIdOpt else ""
     let sdLower = toLowerCase(sysDescrClean)
+    let endpointNameLower = toLowerCase(toString(endpoint.name))
     let endpointProfileName = toLowerCase(toString(endpoint.profileName))
-    let isCimc = matches(endpointProfileName, "*cimc*")
+    let isCimc = matches(endpointNameLower, "*cimc*")
+      || matches(endpointProfileName, "*cimc*")
       || matches(sdLower, "*cisco integrated management controller*")
     where !isCimc
     // Avocent overlay: enterprise OIDs 10418 (Avocent/Vertiv) and 2925 (Cyclades,
@@ -97,6 +100,7 @@ foreach row in (
     let isOpengear = matches(sysObjId, "1.3.6.1.4.1.25049.*")
       || matches(sdLower, "*opengear*")
     let isConsoleServer = isAvocent || isOpengear
+    where sync_generic_endpoints || isConsoleServer
     // Manufacturer: Avocent when the overlay matches; else the first token of the
     // cleaned sysDescr; "Unknown" when there was no sysDescr at all (so the
     // fabricated "SNMP Endpoint" default never masquerades as a vendor).
@@ -143,6 +147,7 @@ foreach row in (
       role_color: "9e9e9e",
       platform: ep_manuf,
       platform_slug: ep_manuf_slug,
+      platform_manufacturer_authoritative: true,
       status: "active",
       manufacturer_slug: ep_manuf_slug
     }

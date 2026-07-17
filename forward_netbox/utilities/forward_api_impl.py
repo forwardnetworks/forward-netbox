@@ -228,7 +228,7 @@ def build_endpoint_tag_scope_where(include_tags, exclude_tags, include_match):
     return clauses
 
 
-def build_endpoint_device_eligibility_where():
+def build_endpoint_device_eligibility_where(*, sync_generic_endpoints=False):
     """Return the endpoint-device eligibility predicate shared by live probes.
 
     Cisco CIMC is a management controller belonging to its physical server. The
@@ -236,12 +236,25 @@ def build_endpoint_device_eligibility_where():
     controller as a standalone SNMP endpoint creates a duplicate NetBox device.
     """
     return [
+        "let endpointNameLower = toLowerCase(toString(endpoint.name))",
         "let endpointProfileName = toLowerCase(toString(endpoint.profileName))",
         'let endpointSysDescrOpt = max(foreach o in endpoint.snmpOutputs where o.requestedOid == "1.3.6.1.2.1.1.1" select max(foreach e in o.rawOidEntries select e.rawValue))',
+        'let endpointSysObjIdOpt = max(foreach o in endpoint.snmpOutputs where o.requestedOid == "1.3.6.1.2.1.1.2" select max(foreach e in o.rawOidEntries select e.rawValue))',
         'let endpointSysDescr = if isPresent(endpointSysDescrOpt) then toLowerCase(endpointSysDescrOpt) else ""',
-        'let isCimc = matches(endpointProfileName, "*cimc*")',
+        'let endpointSysObjId = if isPresent(endpointSysObjIdOpt) then endpointSysObjIdOpt else ""',
+        'let isCimc = matches(endpointNameLower, "*cimc*")',
+        '  || matches(endpointProfileName, "*cimc*")',
         '  || matches(endpointSysDescr, "*cisco integrated management controller*")',
         "where !isCimc",
+        'let isAvocent = matches(endpointSysObjId, "1.3.6.1.4.1.10418.*")',
+        '  || matches(endpointSysObjId, "1.3.6.1.4.1.2925.*")',
+        '  || matches(endpointSysDescr, "*avocent*")',
+        '  || matches(endpointSysDescr, "*cyclades*")',
+        '  || matches(endpointSysDescr, "*alterpath*")',
+        'let isOpengear = matches(endpointSysObjId, "1.3.6.1.4.1.25049.*")',
+        '  || matches(endpointSysDescr, "*opengear*")',
+        "let isConsoleServer = isAvocent || isOpengear",
+        *([] if sync_generic_endpoints else ["where isConsoleServer"]),
     ]
 
 

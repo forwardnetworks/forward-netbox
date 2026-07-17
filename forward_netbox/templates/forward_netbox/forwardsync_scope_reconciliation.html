@@ -116,6 +116,117 @@
 <div class="row mt-3">
   <div class="col col-md-6">
     <div class="card">
+      <h5 class="card-header">{% trans "Post-Upgrade Catalog Reconciliation" %}</h5>
+      <div class="card-body">
+        <table class="table table-hover attr-table mb-0">
+          <tr>
+            <th scope="row">{% trans "Mode" %}</th>
+            <td><span class="badge text-bg-info">{% trans "Read only" %}</span></td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Platforms with manufacturer" %}</th>
+            <td>{{ upgrade_reconciliation.platforms.with_manufacturer }} / {{ upgrade_reconciliation.platforms.total }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Platforms without manufacturer" %}</th>
+            <td>{{ upgrade_reconciliation.platforms.without_manufacturer }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Legacy endpoint DeviceTypes" %}</th>
+            <td>
+              {% if upgrade_reconciliation.legacy_endpoint_device_types.candidate_count %}
+                <span class="badge text-bg-warning">{{ upgrade_reconciliation.legacy_endpoint_device_types.candidate_count }}</span>
+              {% else %}
+                <span class="badge text-bg-success">0</span>
+              {% endif %}
+            </td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "DLM status" %}</th>
+            <td><code>{{ upgrade_reconciliation.dlm.status }}</code></td>
+          </tr>
+          {% if upgrade_reconciliation.dlm.available %}
+            <tr>
+              <th scope="row">{% trans "Software versions" %}</th>
+              <td>{{ upgrade_reconciliation.dlm.software_versions.total }}</td>
+            </tr>
+            <tr>
+              <th scope="row">{% trans "Versions without devices" %}</th>
+              <td>{{ upgrade_reconciliation.dlm.software_versions.without_devices }}</td>
+            </tr>
+            <tr>
+              <th scope="row">{% trans "Catalog-retained versions" %}</th>
+              <td>{{ upgrade_reconciliation.dlm.software_versions.catalog_retained_without_devices }}</td>
+            </tr>
+            <tr>
+              <th scope="row">{% trans "Unreferenced version candidates" %}</th>
+              <td>
+                {% if upgrade_reconciliation.dlm.software_versions.unreferenced_without_devices %}
+                  <span class="badge text-bg-warning">{{ upgrade_reconciliation.dlm.software_versions.unreferenced_without_devices }}</span>
+                {% else %}
+                  <span class="badge text-bg-success">0</span>
+                {% endif %}
+              </td>
+            </tr>
+            <tr>
+              <th scope="row">{% trans "CVEs" %}</th>
+              <td>{{ upgrade_reconciliation.dlm.cves.total }}</td>
+            </tr>
+            <tr>
+              <th scope="row">{% trans "CVEs with vulnerabilities" %}</th>
+              <td>{{ upgrade_reconciliation.dlm.cves.with_vulnerabilities }}</td>
+            </tr>
+            <tr>
+              <th scope="row">{% trans "CVEs with affected software" %}</th>
+              <td>{{ upgrade_reconciliation.dlm.cves.with_affected_software }}</td>
+            </tr>
+            <tr>
+              <th scope="row">{% trans "Unlinked CVEs" %}</th>
+              <td>{{ upgrade_reconciliation.dlm.cves.unlinked }}</td>
+            </tr>
+          {% endif %}
+        </table>
+      </div>
+    </div>
+  </div>
+  <div class="col col-md-6">
+    <div class="card">
+      <h5 class="card-header">{% trans "Review Candidates" %}</h5>
+      <div class="card-body">
+        {% if upgrade_reconciliation.legacy_endpoint_device_types.sample %}
+          <h6>{% trans "Legacy endpoint DeviceTypes" %}</h6>
+          <ul>
+            {% for item in upgrade_reconciliation.legacy_endpoint_device_types.sample %}
+              <li><code>{{ item.manufacturer__name }} / {{ item.model }}</code></li>
+            {% endfor %}
+          </ul>
+        {% endif %}
+        {% if upgrade_reconciliation.dlm.software_versions.unreferenced_sample %}
+          <h6>{% trans "Unreferenced software versions" %}</h6>
+          <ul>
+            {% for item in upgrade_reconciliation.dlm.software_versions.unreferenced_sample %}
+              <li><code>{{ item.platform__name }} / {{ item.version }}</code></li>
+            {% endfor %}
+          </ul>
+        {% endif %}
+        {% if upgrade_reconciliation.dlm.software_versions.catalog_retained_sample %}
+          <h6>{% trans "Catalog-retained software versions" %}</h6>
+          <ul>
+            {% for item in upgrade_reconciliation.dlm.software_versions.catalog_retained_sample %}
+              <li><code>{{ item.platform__name }} / {{ item.version }}</code> <span class="text-muted">({{ item.retained_by }})</span></li>
+            {% endfor %}
+          </ul>
+        {% endif %}
+        {% if not upgrade_reconciliation.legacy_endpoint_device_types.sample and not upgrade_reconciliation.dlm.software_versions.unreferenced_sample and not upgrade_reconciliation.dlm.software_versions.catalog_retained_sample %}
+          <p class="text-muted mb-0">{% trans "No post-upgrade review candidates." %}</p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+<div class="row mt-3">
+  <div class="col col-md-6">
+    <div class="card">
       <h5 class="card-header">{% trans "Backfill Reason Breakdown" %}</h5>
       <div class="card-body">
         {% if payload.backfilled_reason_breakdown %}
