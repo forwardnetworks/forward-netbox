@@ -23,6 +23,64 @@ def _estimate_kind(result, *, row_count, estimated_changes, delete_count):
     return EXACT_COMPARISON
 
 
+def build_latest_sync_evidence(ingestion, preview_payload=None):
+    """Summarize persisted sync counters without treating preview rows as drift."""
+    if ingestion is None:
+        return None
+
+    payload = preview_payload if isinstance(preview_payload, dict) else {}
+    context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+    preview_snapshot_id = str(
+        context.get("snapshot_id") or payload.get("snapshot_id") or ""
+    )
+    sync_snapshot_id = str(getattr(ingestion, "snapshot_id", "") or "")
+    same_snapshot = (
+        sync_snapshot_id == preview_snapshot_id
+        if sync_snapshot_id and preview_snapshot_id
+        else None
+    )
+    counters = {
+        "applied": _count(getattr(ingestion, "applied_change_count", 0)),
+        "failed": _count(getattr(ingestion, "failed_change_count", 0)),
+        "created": _count(getattr(ingestion, "created_change_count", 0)),
+        "updated": _count(getattr(ingestion, "updated_change_count", 0)),
+        "deleted": _count(getattr(ingestion, "deleted_change_count", 0)),
+    }
+    has_changes = any(
+        counters[key] > 0 for key in ("applied", "created", "updated", "deleted")
+    )
+    baseline_ready = bool(getattr(ingestion, "baseline_ready", False))
+    if counters["failed"]:
+        status = "failed"
+    elif not baseline_ready:
+        status = "incomplete"
+    elif has_changes:
+        status = "confirmation_required"
+    elif same_snapshot is False:
+        status = "snapshot_mismatch"
+    elif same_snapshot is None:
+        status = "snapshot_unknown"
+    else:
+        status = "converged"
+
+    return {
+        "ingestion_id": getattr(ingestion, "pk", None),
+        "ingestion_created_at": getattr(ingestion, "created", None),
+        "completed_at": (
+            getattr(getattr(ingestion, "merge_job", None), "completed", None)
+            or getattr(getattr(ingestion, "job", None), "completed", None)
+        ),
+        "snapshot_id": sync_snapshot_id,
+        "preview_snapshot_id": preview_snapshot_id,
+        "same_snapshot": same_snapshot,
+        "snapshot_comparison_available": same_snapshot is not None,
+        "baseline_ready": baseline_ready,
+        "status": status,
+        "convergence_confirmed": status == "converged",
+        **counters,
+    }
+
+
 def compute_drift_report(payload):
     """Build a per-model drift summary from a dependency dry-run payload.
 

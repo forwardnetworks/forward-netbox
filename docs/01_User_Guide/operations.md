@@ -162,10 +162,16 @@ them in this snapshot and carried over older data. A persistent backfilled set
 usually means a **collection gap in Forward** (unreachable device, canceled
 collection), not a plugin problem.
 
-The **Tag backfilled devices** button queues a job that applies a maintained
-`forward-backfilled` tag to them. Filter `/dcim/devices/?tag=forward-backfilled`
-to see the list. The tag self-heals: a device that collects fresh again loses the
-tag on the next run.
+The **Reconcile device scope tags** button queues a job that maintains the
+`forward-backfilled` and `forward-out-of-scope` tags. Filter
+`/dcim/devices/?tag=forward-backfilled` to see the backfilled list. The tags
+self-heal on the next run. When **Apply Device Scope Tags** is enabled, the same
+job also removes only the source's configured include-tag assignments from
+devices that are now out of scope; unrelated operator tags remain untouched.
+After each successful sync, an automatic bounded cleanup performs only this
+stale-assignment removal. It does not apply global status tags to unrelated
+NetBox devices; full classification remains a reviewed action unless the legacy
+`auto_tag_backfilled` option is explicitly enabled.
 
 The **Collection gap** health signal (sync health summary) flags when the
 backfilled count is non-trivial so you can investigate collection in Forward.
@@ -216,6 +222,14 @@ The **Preview Dependencies** button queues a job that builds the multi-branch
 dependency plan (a heavy live dry-run). When it finishes, **View Last Preview**
 renders the cached result and `?format=json` downloads it. The preview never runs
 the dry-run in the web request, so it does not time out on large fabrics.
+
+Dependency preview reports fetched apply candidates and planned deletes as a
+workload upper bound. It does not compare every candidate with persisted NetBox
+objects, so the Drift Report labels object drift as **Not measured**. The report
+also shows the latest ingestion's persisted created, updated, deleted, applied,
+and failed counters. A merged sync with zero changes and zero failures confirms
+convergence only when its snapshot ID matches the preview snapshot. If a sync
+applied changes, run it once more against the same resolved snapshot.
 
 ### Recovering a sync wedged by a dead worker
 

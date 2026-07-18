@@ -1,5 +1,7 @@
 # Quality Score
 
+Last reviewed: 2026-07-18
+
 Current score: **B**
 
 ## Strengths
@@ -31,8 +33,20 @@ Current score: **B**
   ID source checks. It also shows raw/latest/pinned query commit behavior and
   exposes explicit live source reachability and data-file freshness exports.
 - Documentation and tests must keep avoiding customer-derived identifiers.
+- Plan lifecycle hygiene needs repair: the 2026-07-18 harness audit counted 102
+  files under `docs/03_Plans/active/`, including long-running plans over 1,000
+  lines. Active does not currently mean actionable with enough precision.
+- Repository knowledge has structural and freshness gates, but recurring
+  gardening currently detects drift rather than automatically preparing a
+  cleanup pull request.
 
 ## Near-Term Improvements
+
+- Triage active plans into current, blocked, completed, or superseded states;
+  keep a small active index that points to detailed history rather than using
+  the active directory as an archive.
+- Extend the weekly harness-gardening signal into a reviewed cleanup pull
+  request workflow once repository automation has an approved write identity.
 
 - Add boundary tests before extracting sync adapters from `sync.py`.
 - Continue moving UI summary and recovery decisions from compatibility branch-state JSON to the execution ledger.

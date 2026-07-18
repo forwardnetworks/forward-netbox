@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 from unittest.mock import Mock
 from unittest.mock import patch
 
@@ -1163,6 +1164,93 @@ class ForwardSyncHealthTest(TestCase):
         self.assertEqual(dlm["estimated_apply_work"], 4963)
         self.assertIsNone(dlm["drift"])
 
+    def test_latest_sync_evidence_requires_zero_changes_on_same_snapshot(self):
+        from forward_netbox.utilities.drift_report import build_latest_sync_evidence
+
+        ingestion = SimpleNamespace(
+            pk=23,
+            baseline_ready=True,
+            snapshot_id="snapshot-1",
+            created=timezone.now(),
+            applied_change_count=7,
+            failed_change_count=0,
+            created_change_count=2,
+            updated_change_count=4,
+            deleted_change_count=1,
+        )
+
+        evidence = build_latest_sync_evidence(
+            ingestion,
+            {"context": {"snapshot_id": "snapshot-1"}},
+        )
+
+        self.assertEqual(evidence["status"], "confirmation_required")
+        self.assertTrue(evidence["same_snapshot"])
+        self.assertFalse(evidence["convergence_confirmed"])
+
+    def test_latest_sync_evidence_confirms_zero_change_same_snapshot(self):
+        from forward_netbox.utilities.drift_report import build_latest_sync_evidence
+
+        ingestion = SimpleNamespace(
+            pk=24,
+            baseline_ready=True,
+            snapshot_id="snapshot-2",
+            created=timezone.now(),
+            applied_change_count=0,
+            failed_change_count=0,
+            created_change_count=0,
+            updated_change_count=0,
+            deleted_change_count=0,
+        )
+
+        evidence = build_latest_sync_evidence(
+            ingestion,
+            {"context": {"snapshot_id": "snapshot-2"}},
+        )
+
+        self.assertEqual(evidence["status"], "converged")
+        self.assertTrue(evidence["convergence_confirmed"])
+
+    def test_latest_sync_evidence_rejects_failure_or_snapshot_mismatch(self):
+        from forward_netbox.utilities.drift_report import build_latest_sync_evidence
+
+        failed = SimpleNamespace(
+            pk=25,
+            baseline_ready=False,
+            snapshot_id="snapshot-2",
+            created=timezone.now(),
+            applied_change_count=0,
+            failed_change_count=3,
+            created_change_count=0,
+            updated_change_count=0,
+            deleted_change_count=0,
+        )
+        zero_change = SimpleNamespace(
+            pk=26,
+            baseline_ready=True,
+            snapshot_id="snapshot-2",
+            created=timezone.now(),
+            applied_change_count=0,
+            failed_change_count=0,
+            created_change_count=0,
+            updated_change_count=0,
+            deleted_change_count=0,
+        )
+
+        self.assertEqual(
+            build_latest_sync_evidence(
+                failed,
+                {"context": {"snapshot_id": "snapshot-2"}},
+            )["status"],
+            "failed",
+        )
+        mismatch = build_latest_sync_evidence(
+            zero_change,
+            {"context": {"snapshot_id": "snapshot-3"}},
+        )
+        self.assertEqual(mismatch["status"], "snapshot_mismatch")
+        self.assertFalse(mismatch["convergence_confirmed"])
+
     def _create_dependency_preview_job(self, created_at):
         return Job.objects.create(
             object_type=ContentType.objects.get_for_model(ForwardSync),
@@ -1414,6 +1502,57 @@ class ForwardSyncHealthTest(TestCase):
         self.assertFalse(response.context["report"]["comparison_available"])
         self.assertContains(response, "Not measured")
         self.assertContains(response, "estimated apply workload")
+
+    def test_drift_report_surfaces_latest_sync_convergence_evidence(self):
+        Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=self.sync.pk,
+            name="dependency preview",
+            status=JobStatusChoices.STATUS_COMPLETED,
+            job_id="123e4567-e89b-12d3-a456-426614174053",
+            created=timezone.now(),
+            data={
+                "context": {"snapshot_id": "snapshot-1"},
+                "model_results": [
+                    {
+                        "model": "dcim.device",
+                        "row_count": 3,
+                        "estimated_changes": 3,
+                        "delete_count": 0,
+                        "change_estimate_kind": "workload_upper_bound",
+                    }
+                ],
+            },
+        )
+        ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector="latestProcessed",
+            snapshot_id="snapshot-1",
+            baseline_ready=True,
+            applied_change_count=7,
+            failed_change_count=0,
+            created_change_count=2,
+            updated_change_count=4,
+            deleted_change_count=1,
+            created=timezone.now() - timezone.timedelta(minutes=1),
+        )
+        self.client.force_login(self.user)
+
+        response = self.client.get(
+            reverse(
+                "plugins:forward_netbox:forwardsync_drift_report",
+                kwargs={"pk": self.sync.pk},
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.context["latest_sync_evidence"]["status"],
+            "confirmation_required",
+        )
+        self.assertContains(response, "Latest Sync Evidence")
+        self.assertContains(response, "Run this sync again against the same snapshot")
+        self.assertContains(response, ">7</td>", html=False)
 
     def test_ingestion_health_check_marks_non_blocking_issue_baseline_as_pass(self):
         ingestion = ForwardIngestion.objects.create(

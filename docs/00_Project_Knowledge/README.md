@@ -19,6 +19,7 @@ This section is the operator and agent harness for `forward-netbox`. It exists t
 - [Release Playbook](release-playbook.md)
 - [Runtime Tuning Runbook (Generic)](runtime-tuning-runbook.md)
 - [Local Docker Workflow](local-docker-workflow.md)
+- [Harness Engineering Alignment](harness-engineering-alignment.md)
 - [Quality Score](quality-score.md)
 - [Active Implementation Plans](../03_Plans/active/README.md)
 - [Technical Debt Tracker](../03_Plans/technical-debt.md)

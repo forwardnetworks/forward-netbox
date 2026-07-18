@@ -177,6 +177,56 @@ def _compact_execution_state_payload(execution_state):
     return state
 
 
+def _latest_dependency_preview_bundle_payload(sync, latest_ingestion):
+    """Return aggregate preview evidence without customer inventory rows."""
+    from core.choices import JobStatusChoices
+    from core.models import Job
+    from django.contrib.contenttypes.models import ContentType
+
+    from .utilities.drift_report import build_latest_sync_evidence
+    from .utilities.drift_report import compute_drift_report
+
+    job = (
+        Job.objects.filter(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=sync.pk,
+            name__icontains="dependency preview",
+            status=JobStatusChoices.STATUS_COMPLETED,
+        )
+        .order_by("-created")
+        .first()
+    )
+    if job is None or not isinstance(job.data, dict):
+        return None
+
+    data = job.data
+    context = data.get("context") if isinstance(data.get("context"), dict) else {}
+    return json_safe_value(
+        {
+            "job": {
+                "pk": job.pk,
+                "status": getattr(job, "status", ""),
+                "created": getattr(job, "created", None),
+                "completed": getattr(job, "completed", None),
+                "duration": getattr(job, "duration", None),
+            },
+            "generated_at": data.get("generated_at"),
+            "context": {
+                "snapshot_id": context.get("snapshot_id") or "",
+                "snapshot_selector": context.get("snapshot_selector") or "",
+            },
+            "change_estimate_kind": data.get("change_estimate_kind") or "",
+            "plan_preview": data.get("plan_preview") or {},
+            "model_results": data.get("model_results") or [],
+            "drift_report": compute_drift_report(data),
+            "latest_sync_evidence": build_latest_sync_evidence(
+                latest_ingestion,
+                data,
+            ),
+        }
+    )
+
+
 def _ingestion_log_export_payload(ingestion, *, active_stage):
     execution_state = _compact_execution_state_payload(
         json_safe_value(get_execution_display_state(ingestion.sync))
@@ -266,6 +316,10 @@ def _sync_support_bundle_payload(sync):
         "upgrade_reconciliation": json_safe_value(
             compute_upgrade_reconciliation(include_samples=False)
         ),
+        "latest_dependency_preview": _latest_dependency_preview_bundle_payload(
+            sync,
+            latest_ingestion,
+        ),
         "live_diagnostics": json_safe_value(live_diagnostics),
         "latest_ingestion": (
             {
@@ -275,6 +329,13 @@ def _sync_support_bundle_payload(sync):
                 "baseline_ready": bool(latest_ingestion.baseline_ready),
                 "snapshot_id": latest_ingestion.snapshot_id or "",
                 "snapshot_selector": latest_ingestion.snapshot_selector or "",
+                "change_counts": {
+                    "applied": int(latest_ingestion.applied_change_count or 0),
+                    "failed": int(latest_ingestion.failed_change_count or 0),
+                    "created": int(latest_ingestion.created_change_count or 0),
+                    "updated": int(latest_ingestion.updated_change_count or 0),
+                    "deleted": int(latest_ingestion.deleted_change_count or 0),
+                },
                 "branch": (
                     latest_ingestion.branch.name if latest_ingestion.branch else ""
                 ),
@@ -761,6 +822,7 @@ class ForwardSyncDriftReportView(BaseObjectView):
         from core.models import Job
         from django.contrib.contenttypes.models import ContentType
 
+        from .utilities.drift_report import build_latest_sync_evidence
         from .utilities.drift_report import compute_drift_report
 
         sync = get_object_or_404(self.queryset, pk=pk)
@@ -797,6 +859,7 @@ class ForwardSyncDriftReportView(BaseObjectView):
         preview_age = timezone.now() - job.created if job.created else None
         preview_is_old = bool(preview_age and preview_age > self.STALE_PREVIEW_AGE)
         drift_stale = newer_sync_ran or preview_is_old
+        latest_sync_evidence = build_latest_sync_evidence(last_ingestion, job.data)
         return render(
             request,
             self.template_name,
@@ -808,6 +871,7 @@ class ForwardSyncDriftReportView(BaseObjectView):
                 "drift_stale_old_preview": preview_is_old,
                 "last_sync_at": last_ingestion.created if last_ingestion else None,
                 "preview_at": job.created,
+                "latest_sync_evidence": latest_sync_evidence,
             },
         )
 
@@ -1000,8 +1064,8 @@ class ForwardSyncTagBackfilledView(BaseObjectView):
         )
 
     def post(self, request, pk):
-        # Tags the backfilled devices so they are filterable in the standard
-        # device list. Runs as a background job (live Forward query + tag writes).
+        # Reconciles plugin-maintained scope tags in the standard device list.
+        # Runs as a background job (live Forward query + tag writes).
         from core.models import Job
         from django.utils.module_loading import import_string
 
@@ -1010,13 +1074,14 @@ class ForwardSyncTagBackfilledView(BaseObjectView):
             import_string("forward_netbox.jobs.tag_forward_backfilled_devices"),
             instance=sync,
             user=request.user,
-            name=f"{sync.name} - tag backfilled devices",
+            name=f"{sync.name} - reconcile device scope tags",
         )
         messages.success(
             request,
             _(
-                "Queued job #%(pk)d to tag backfilled devices. When it finishes, "
-                "filter the device list by the forward-backfilled tag."
+                "Queued job #%(pk)d to reconcile device scope tags. It maintains "
+                "backfilled and out-of-scope labels and clears stale managed "
+                "include tags from out-of-scope devices."
             )
             % {"pk": job.pk},
         )

@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v2.6.0
+
+Feature: **scope and convergence safety** - successful syncs automatically clear stale plugin-managed include-tag assignments without globally classifying unrelated NetBox devices; reviewed reconciliation keeps backfilled/out-of-scope status tagging manual by default. The Drift Report uses persisted same-snapshot ingestion counters to prove convergence instead of treating dependency workload as exact drift, and support bundles carry redacted dependency-preview and change-count evidence. Compatibility: requires NetBox `4.6.5` and pins `netbox-branching` `1.1.1`. Python/UI only; no NQE change, migration, or query republish.
+
 ## v2.5.11
 
 Fix: **post-2.5.10 DLM and scope convergence** - optional DLM maps seed when `netbox-dlm` migrates after Forward NetBox; runtime arguments are projected onto each NQE signature, including preflight; CVEs retain valid metadata when an optional advisory URL is malformed; observed vulnerabilities populate affected software; and platforms receive a manufacturer only when ownership is unambiguous. Fix: **endpoint and CIMC identity** - generic SNMP endpoints remain off unless explicitly enabled, imported console endpoints inherit their matched include tags, CIMCs are excluded from standalone devices and can map to exact-parent inventory through a disabled opt-in map, and legacy Opengear/Avocent software-bearing DeviceTypes are reported for reviewed cleanup. Fix: **upgrade and drift evidence** - Scope Reconciliation and support evidence classify stale catalog records, while dependency previews report workload upper bounds as not-measured drift. After upgrading, run **Publish Bundled Queries** once with overwrite enabled. Python and NQE; no migration.

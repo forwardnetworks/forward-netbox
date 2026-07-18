@@ -6,5 +6,5 @@
 # but is pinned here for audit/reproducibility.
 cryptography==49.0.0
 httpx==0.28.1
-netboxlabs-netbox-branching==1.1.0
+netboxlabs-netbox-branching==1.1.1
 pyzipper==0.4.0

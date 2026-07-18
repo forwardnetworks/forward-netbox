@@ -116,6 +116,12 @@ class ScopeModuleUiTest(TestCase):
             self.assertEqual(resp.status_code, 200)
             self.assertContains(resp, "Post-Upgrade Catalog Reconciliation")
             self.assertContains(resp, "Legacy endpoint DeviceTypes")
+            self.assertContains(resp, "Reconcile device scope tags")
+            self.assertNotContains(
+                resp,
+                'class="btn btn-outline-warning" disabled',
+                html=False,
+            )
             self.assertEqual(
                 resp.context["upgrade_reconciliation"]["legacy_endpoint_device_types"][
                     "candidate_count"
@@ -229,6 +235,85 @@ class ScopeModuleUiTest(TestCase):
             ),
             {"dev-orphan"},
         )
+
+    def test_out_of_scope_cleanup_removes_only_managed_include_tags(self):
+        from django.utils.text import slugify
+        from extras.models import Tag
+
+        from forward_netbox.utilities.scope_reconciliation import (
+            tag_backfilled_devices,
+        )
+
+        self.source.parameters["apply_device_scope_tags"] = True
+        self.source.save(update_fields=["parameters"])
+        orphan = self._device("dev-orphan")
+        managed = Tag.objects.create(name="Prod_Core", slug=slugify("Prod_Core"))
+        operator = Tag.objects.create(name="operator-owned", slug="operator-owned")
+        orphan.tags.add(managed, operator)
+        fwd_client = Mock()
+        fwd_client.run_nqe_query = Mock(
+            return_value=[{"name": "dev-collected", "completed": True}]
+        )
+
+        with (
+            patch.object(ForwardSource, "get_client", return_value=fwd_client),
+            patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
+        ):
+            result = tag_backfilled_devices(self.sync)
+
+        self.assertEqual(result["out_of_scope_scope_tags_removed"], 1)
+        self.assertEqual(
+            set(orphan.tags.values_list("slug", flat=True)),
+            {"forward-out-of-scope", "operator-owned"},
+        )
+
+    def test_out_of_scope_cleanup_preserves_include_tags_when_disabled(self):
+        from django.utils.text import slugify
+        from extras.models import Tag
+
+        from forward_netbox.utilities.scope_reconciliation import (
+            tag_backfilled_devices,
+        )
+
+        orphan = self._device("dev-orphan")
+        managed = Tag.objects.create(name="Prod_Core", slug=slugify("Prod_Core"))
+        orphan.tags.add(managed)
+        fwd_client = Mock()
+        fwd_client.run_nqe_query = Mock(
+            return_value=[{"name": "dev-collected", "completed": True}]
+        )
+
+        with (
+            patch.object(ForwardSource, "get_client", return_value=fwd_client),
+            patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
+        ):
+            result = tag_backfilled_devices(self.sync)
+
+        self.assertEqual(result["out_of_scope_scope_tags_removed"], 0)
+        self.assertEqual(
+            set(orphan.tags.values_list("slug", flat=True)),
+            {"forward-out-of-scope", slugify("Prod_Core")},
+        )
+
+    def test_automatic_scope_cleanup_does_not_apply_global_status_tags(self):
+        from django.utils.text import slugify
+        from extras.models import Tag
+
+        from forward_netbox.utilities.scope_reconciliation import (
+            clear_out_of_scope_managed_scope_tags,
+        )
+
+        self.source.parameters["apply_device_scope_tags"] = True
+        self.source.save(update_fields=["parameters"])
+        orphan = self._device("dev-orphan")
+        managed = Tag.objects.create(name="Prod_Core", slug=slugify("Prod_Core"))
+        orphan.tags.add(managed)
+        report = {"_out_of_scope": {orphan.name}}
+
+        result = clear_out_of_scope_managed_scope_tags(self.sync, report=report)
+
+        self.assertEqual(result["out_of_scope_scope_tags_removed"], 1)
+        self.assertFalse(orphan.tags.filter(slug="forward-out-of-scope").exists())
 
     def test_prune_also_removes_empty_orphan_sites(self):
         # site-u (self.site) has a rack — non-empty, must be kept even though
@@ -366,7 +451,9 @@ class ScopeModuleUiTest(TestCase):
                 )
             )
             self.assertEqual(resp.status_code, 302)
-            job = Job.objects.filter(name__icontains="tag backfilled").latest("pk")
+            job = Job.objects.filter(name__icontains="reconcile device scope").latest(
+                "pk"
+            )
             tag_forward_backfilled_devices(job)
         self.assertTrue(
             Device.objects.filter(

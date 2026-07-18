@@ -8,9 +8,9 @@ class NetboxForwardConfig(PluginConfig):
     name = "forward_netbox"
     verbose_name = "Forward"
     description = "Sync Forward data into NetBox using built-in NQE queries."
-    version = "2.5.11"
+    version = "2.6.0"
     base_url = "forward"
-    min_version = "4.6.4"
+    min_version = "4.6.5"
 
     def ready(self):
         super().ready()
@@ -20,12 +20,12 @@ class NetboxForwardConfig(PluginConfig):
 
 
 def _check_runtime_dependencies():
-    """Warn at startup about a missing/old ``netbox_branching`` dependency.
+    """Warn at startup about a missing/mismatched ``netbox_branching`` dependency.
 
-    The single-branch ingest path hard-depends on netbox-branching 1.1.0
+    The single-branch ingest path hard-depends on netbox-branching 1.1.1
     internals (SquashMergeStrategy collapse/cycle-split/FK-graph, the
     squash_dependency_graph_built signal, branch.connection_name, the
-    ObjectChange read router). A missing or pre-1.1.0 install otherwise only
+    ObjectChange read router). A missing or mismatched install otherwise only
     surfaces mid-sync as an opaque failure. This logs (never raises) so NetBox
     startup is unaffected.
 
@@ -38,7 +38,7 @@ def _check_runtime_dependencies():
     import logging
 
     log = logging.getLogger("forward_netbox")
-    floor = (1, 1, 0)
+    required = (1, 1, 1)
     label = "netbox_branching"
 
     try:
@@ -47,7 +47,7 @@ def _check_runtime_dependencies():
         log.warning(
             "forward_netbox requires the %s plugin for branch-staged syncs, but "
             "it is not installed/enabled; syncs will fail. Install "
-            "netboxlabs-netbox-branching (>=1.1.0), add 'netbox_branching' to "
+            "netboxlabs-netbox-branching (==1.1.1), add 'netbox_branching' to "
             "PLUGINS in configuration.py, and run migrations.",
             label,
         )
@@ -61,13 +61,13 @@ def _check_runtime_dependencies():
         return
 
     log.info("forward_netbox runtime dependency %s==%s", label, resolved)
-    if _version_tuple(resolved) < floor:
+    if _version_tuple(resolved) != required:
         log.warning(
-            "forward_netbox requires %s>=%s but found %s; syncs will fail (the "
-            "plugin reuses netbox-branching 1.1.0 internals). Upgrade "
-            "netboxlabs-netbox-branching.",
+            "forward_netbox requires %s==%s but found %s; syncs will fail (the "
+            "plugin is validated against exact netbox-branching internals). "
+            "Install the required netboxlabs-netbox-branching version.",
             label,
-            ".".join(str(part) for part in floor),
+            ".".join(str(part) for part in required),
             resolved,
         )
 

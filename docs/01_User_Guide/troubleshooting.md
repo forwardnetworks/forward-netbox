@@ -360,6 +360,8 @@ Symptoms:
 
 - A tag-scoped sync (e.g. scoped to `Prod_Core`) leaves more devices in NetBox
   than the tag should match.
+- A device carries both `forward-out-of-scope` and one of the source's Forward
+  include tags.
 - Imported console servers have no matching NetBox scope tags.
 - Opengear or Avocent software/build strings appear as DeviceType models.
 
@@ -382,6 +384,9 @@ Cause:
 - Endpoint import now defaults to recognized Avocent/Opengear console servers.
   **Import Generic SNMP Endpoints as Devices** is a separate broad opt-in. CIMC
   endpoints are excluded by endpoint name, profile, or controller `sysDescr`.
+- A device that leaves Forward scope is absent from the in-scope upsert rows.
+  Older releases therefore could add `forward-out-of-scope` without revisiting
+  and removing the device's previous managed include-tag assignment.
 
 Checks (UI):
 
@@ -420,6 +425,9 @@ Remediation:
   endpoints are a required inventory source. Re-run Scope Reconciliation after
   the corrected sync; old generic endpoints and CIMCs are existing NetBox rows
   and require reviewed orphan pruning.
+- Run **Reconcile device scope tags**. With **Apply Device Scope Tags** enabled,
+  it removes stale configured include-tag assignments from the current
+  out-of-scope set while preserving unrelated tags; it does not delete devices.
 - Use the **Prune orphans** button on the Scope Reconciliation page, or the CLI:
 
   ```

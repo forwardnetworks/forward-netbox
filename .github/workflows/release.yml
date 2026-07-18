@@ -44,7 +44,7 @@ jobs:
           python -m pip install cyclonedx-bom
           mkdir -p sbom
           echo httpx > sbom-reqs.txt
-          echo 'netboxlabs-netbox-branching>=1.1.0' >> sbom-reqs.txt
+          echo 'netboxlabs-netbox-branching==1.1.1' >> sbom-reqs.txt
           echo pyzipper >> sbom-reqs.txt
           cyclonedx-py requirements sbom-reqs.txt \
             --output-format JSON --output-file sbom/forward-netbox-sbom.json

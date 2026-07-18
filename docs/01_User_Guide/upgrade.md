@@ -47,12 +47,15 @@ After restart:
   intentional; the normal endpoint toggle imports recognized console servers.
 - Run **Preview Dependencies**, then one sync against a known source and confirm
   it completes and the Sync health panel is green.
-- Run **Preview Dependencies** a second time. Treat unexpected repeated apply
-  work as a convergence failure; do not accept the new baseline until it is
-  explained.
+- Open the **Drift Report**. Dependency preview is a workload estimate and does
+  not perform an object-level comparison. If the completed sync applied any
+  changes, run the sync again against the same resolved snapshot. Accept
+  convergence only when the report shows a merged, zero-change, zero-failure
+  ingestion for that same snapshot.
 - Review **Scope Reconciliation**, including the read-only post-upgrade catalog
-  counts. Prune source-scoped device orphans only after review. Global DLM and
-  DeviceType candidates remain manual-review items.
+  counts. Run **Reconcile device scope tags** before reviewing contradictory
+  include/out-of-scope labels. Prune source-scoped device orphans only after
+  review. Global DLM and DeviceType candidates remain manual-review items.
 - Export a support bundle. It carries aggregate post-upgrade DLM, CVE, Platform,
   and legacy endpoint DeviceType counts without sampled inventory values.
 

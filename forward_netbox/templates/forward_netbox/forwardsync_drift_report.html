@@ -41,6 +41,42 @@
     </div>
   </div>
 {% endif %}
+{% if latest_sync_evidence %}
+  {% if latest_sync_evidence.status == "confirmation_required" %}
+    <div class="alert alert-warning d-flex align-items-center" role="alert">
+      <i class="mdi mdi-alert me-2" aria-hidden="true"></i>
+      <div>
+        {% trans "The latest completed sync applied changes, so convergence is not confirmed yet." %}
+        {% trans "Run this sync again against the same snapshot; a completed run with zero changes and zero failures confirms convergence." %}
+      </div>
+    </div>
+  {% elif latest_sync_evidence.status == "converged" %}
+    <div class="alert alert-success d-flex align-items-center" role="alert">
+      <i class="mdi mdi-check-circle me-2" aria-hidden="true"></i>
+      <div>{% trans "Convergence confirmed: the latest completed sync applied zero changes with zero failures against the preview snapshot." %}</div>
+    </div>
+  {% elif latest_sync_evidence.status == "failed" %}
+    <div class="alert alert-danger d-flex align-items-center" role="alert">
+      <i class="mdi mdi-alert-circle me-2" aria-hidden="true"></i>
+      <div>{% trans "The latest sync recorded failures and cannot confirm convergence. Resolve the failures, then rerun the same snapshot." %}</div>
+    </div>
+  {% elif latest_sync_evidence.status == "incomplete" %}
+    <div class="alert alert-warning d-flex align-items-center" role="alert">
+      <i class="mdi mdi-progress-clock me-2" aria-hidden="true"></i>
+      <div>{% trans "The latest ingestion is not merged and baseline-ready, so its counters cannot confirm convergence." %}</div>
+    </div>
+  {% elif latest_sync_evidence.status == "snapshot_mismatch" %}
+    <div class="alert alert-warning d-flex align-items-center" role="alert">
+      <i class="mdi mdi-alert me-2" aria-hidden="true"></i>
+      <div>{% trans "The latest completed sync had zero changes, but it used a different snapshot than this preview. Rerun the sync and preview against one snapshot before accepting convergence." %}</div>
+    </div>
+  {% elif latest_sync_evidence.status == "snapshot_unknown" %}
+    <div class="alert alert-warning d-flex align-items-center" role="alert">
+      <i class="mdi mdi-help-circle me-2" aria-hidden="true"></i>
+      <div>{% trans "The latest completed sync had zero changes, but the snapshot match is unavailable. Rerun Preview Dependencies and the sync against one explicit snapshot." %}</div>
+    </div>
+  {% endif %}
+{% endif %}
 {% if report.looks_like_full_create %}
   <div class="alert alert-info d-flex align-items-center" role="alert">
     <i class="mdi mdi-information-outline me-2" aria-hidden="true"></i>
@@ -50,8 +86,8 @@
     </div>
   </div>
 {% endif %}
-<div class="row mb-3">
-  <div class="col col-md-4">
+<div class="row g-3 mb-3">
+  <div class="col-12 col-lg-4">
     <div class="card">
       <h5 class="card-header">{% trans "Drift Summary" %}</h5>
       <div class="card-body">
@@ -88,6 +124,51 @@
       </div>
     </div>
   </div>
+  {% if latest_sync_evidence %}
+    <div class="col-12 col-lg-8">
+      <div class="card">
+        <h5 class="card-header">{% trans "Latest Sync Evidence" %}</h5>
+        <div class="card-body">
+          <table class="table table-hover attr-table">
+            <tr>
+              <th scope="row">{% trans "Convergence" %}</th>
+              <td>
+                {% if latest_sync_evidence.convergence_confirmed %}
+                  <span class="badge text-bg-success">{% trans "Confirmed" %}</span>
+                {% elif latest_sync_evidence.status == "failed" %}
+                  <span class="badge text-bg-danger">{% trans "Failed" %}</span>
+                {% else %}
+                  <span class="badge text-bg-warning">{% trans "Not confirmed" %}</span>
+                {% endif %}
+              </td>
+            </tr>
+            <tr>
+              <th scope="row">{% trans "Sync snapshot" %}</th>
+              <td><code>{{ latest_sync_evidence.snapshot_id|placeholder }}</code></td>
+            </tr>
+            <tr>
+              <th scope="row">{% trans "Same as preview" %}</th>
+              <td>
+                {% if not latest_sync_evidence.snapshot_comparison_available %}
+                  {% trans "Unknown" %}
+                {% elif latest_sync_evidence.same_snapshot %}
+                  {% trans "Yes" %}
+                {% else %}
+                  {% trans "No" %}
+                {% endif %}
+              </td>
+            </tr>
+            <tr><th scope="row">{% trans "Applied" %}</th><td>{{ latest_sync_evidence.applied }}</td></tr>
+            <tr><th scope="row">{% trans "Created" %}</th><td>{{ latest_sync_evidence.created }}</td></tr>
+            <tr><th scope="row">{% trans "Updated" %}</th><td>{{ latest_sync_evidence.updated }}</td></tr>
+            <tr><th scope="row">{% trans "Deleted" %}</th><td>{{ latest_sync_evidence.deleted }}</td></tr>
+            <tr><th scope="row">{% trans "Failed" %}</th><td>{{ latest_sync_evidence.failed }}</td></tr>
+            <tr><th scope="row">{% trans "Completed" %}</th><td>{{ latest_sync_evidence.completed_at|placeholder }}</td></tr>
+          </table>
+        </div>
+      </div>
+    </div>
+  {% endif %}
 </div>
 <div class="card">
   <h5 class="card-header">{% trans "Per-Model Drift (NetBox vs Forward)" %}</h5>

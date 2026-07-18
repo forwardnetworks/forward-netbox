@@ -32,10 +32,15 @@ class RuntimeDependencyCheckTest(SimpleTestCase):
         self.assertNotIn("not installed", out)
         self.assertNotIn("syncs will fail", out)
 
-    def test_warns_when_below_floor(self):
+    def test_warns_when_version_is_not_exact(self):
         with patch("forward_netbox._resolved_branching_version", return_value="1.0.4"):
             out = self._capture()
-        self.assertIn("netbox_branching>=1.1.0", out)
+        self.assertIn("netbox_branching==1.1.1", out)
+        self.assertIn("syncs will fail", out)
+
+        with patch("forward_netbox._resolved_branching_version", return_value="1.2.0"):
+            out = self._capture()
+        self.assertIn("netbox_branching==1.1.1", out)
         self.assertIn("syncs will fail", out)
 
     def test_warns_when_not_importable(self):

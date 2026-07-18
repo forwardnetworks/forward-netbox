@@ -3,8 +3,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
+from datetime import date
+from datetime import datetime
 from pathlib import Path
 
 
@@ -20,13 +23,21 @@ REQUIRED_PATHS = [
     "docs/00_Project_Knowledge/validation-matrix.md",
     "docs/00_Project_Knowledge/release-playbook.md",
     "docs/00_Project_Knowledge/local-docker-workflow.md",
+    "docs/00_Project_Knowledge/harness-engineering-alignment.md",
     "docs/00_Project_Knowledge/quality-score.md",
     "docs/03_Plans/active/README.md",
     "docs/03_Plans/completed/README.md",
     "docs/03_Plans/plan-template.md",
     "docs/03_Plans/technical-debt.md",
     "scripts/tests/test_check_harness.py",
+    ".github/workflows/harness-gardening.yml",
 ]
+
+AGENTS_ENTRYPOINT_MAX_LINES = 120
+KNOWLEDGE_FRESHNESS_DAYS = {
+    "docs/00_Project_Knowledge/harness-engineering-alignment.md": 90,
+    "docs/00_Project_Knowledge/quality-score.md": 90,
+}
 
 PLAN_REQUIRED_HEADINGS = [
     "## Goal",
@@ -94,6 +105,13 @@ REQUIRED_TEXT = {
         "Branch Execution Boundary",
         "NetBox Adapter Boundary",
     ],
+    "docs/00_Project_Knowledge/harness-engineering-alignment.md": [
+        "Repository knowledge",
+        "Application legibility",
+        "Architecture enforcement",
+        "Entropy control",
+        "Known Gaps",
+    ],
     "docs/00_Project_Knowledge/release-playbook.md": [
         "GitHub CI",
         "PyPI",
@@ -118,7 +136,58 @@ REQUIRED_TEXT = {
         "Run NetBox database migrations",
         "Run synthetic scenario tests",
     ],
+    ".github/workflows/harness-gardening.yml": [
+        "schedule:",
+        "scripts/check_harness.py",
+        "test_check_harness.py",
+    ],
 }
+
+
+def _check_agents_entrypoint(failures: list[str]) -> None:
+    path = REPO_ROOT / "AGENTS.md"
+    if not path.exists():
+        return
+    line_count = len(path.read_text(encoding="utf-8").splitlines())
+    if line_count > AGENTS_ENTRYPOINT_MAX_LINES:
+        failures.append(
+            "AGENTS.md must remain a concise repository map: "
+            f"{line_count} lines exceeds {AGENTS_ENTRYPOINT_MAX_LINES}"
+        )
+
+
+def _check_knowledge_freshness(
+    failures: list[str],
+    *,
+    today: date | None = None,
+) -> None:
+    today = today or date.today()
+    for relative_path, max_age_days in KNOWLEDGE_FRESHNESS_DAYS.items():
+        path = REPO_ROOT / relative_path
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8")
+        match = re.search(r"^Last reviewed:\s*(\d{4}-\d{2}-\d{2})\s*$", text, re.M)
+        if match is None:
+            failures.append(f"{relative_path} must include 'Last reviewed: YYYY-MM-DD'")
+            continue
+        try:
+            reviewed = datetime.strptime(match.group(1), "%Y-%m-%d").date()
+        except ValueError:
+            failures.append(
+                f"{relative_path} has an invalid review date: {match.group(1)}"
+            )
+            continue
+        age_days = (today - reviewed).days
+        if age_days < 0:
+            failures.append(
+                f"{relative_path} has a future review date: {reviewed.isoformat()}"
+            )
+        elif age_days > max_age_days:
+            failures.append(
+                f"{relative_path} review is stale: {age_days} days old "
+                f"(maximum {max_age_days})"
+            )
 
 
 def _git_names(*args: str) -> list[str]:
@@ -301,6 +370,8 @@ def main() -> int:
     _check_plan_directory(failures, "docs/03_Plans/active")
     _check_plan_directory(failures, "docs/03_Plans/completed")
     _check_plan_lifecycle(failures)
+    _check_agents_entrypoint(failures)
+    _check_knowledge_freshness(failures)
     if args.base:
         _check_per_commit_plan_lifecycle(failures, args.base)
 

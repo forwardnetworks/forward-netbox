@@ -185,6 +185,24 @@ async function main() {
       "sync detail exposes validation, single-branch run controls, support export, and current activity",
     );
 
+    await page.getByRole("link", { name: "Drift Report", exact: true }).click();
+    await expectVisible(page, "Drift Report");
+    await expectVisible(page, "Latest Sync Evidence");
+    await expectVisible(page, "Not confirmed");
+    await expectVisible(page, "Same as preview");
+    await expectVisible(page, "Run this sync again against the same snapshot");
+    await expectVisible(page, "Not measured");
+    await assertNoHorizontalOverflow(page, "desktop drift report");
+    evidence.screenshots.push(await screenshot(page, "desktop-drift-report.jpg"));
+    evidence.checks.push(
+      "drift report distinguishes workload estimates from same-snapshot convergence evidence",
+    );
+
+    await page.goto(`${baseURL}/plugins/forward/sync/`, {
+      waitUntil: "domcontentloaded",
+    });
+    await page.getByRole("link", { name: "ui-harness-sync" }).first().click();
+
     await page.locator('a[href*="/sync/"][href$="/health/"]').first().click();
     await expectVisible(page, "Health Summary");
     await expectVisible(page, "Export Live Source Check");
@@ -372,6 +390,14 @@ async function main() {
     await assertNoHorizontalOverflow(page, "mobile sync list");
     evidence.screenshots.push(await screenshot(page, "mobile-sync-list.jpg"));
     evidence.checks.push("mobile sync list fits without horizontal overflow");
+
+    await page.getByRole("link", { name: "ui-harness-sync" }).first().click();
+    await page.getByRole("link", { name: "Drift Report", exact: true }).click();
+    await expectVisible(page, "Latest Sync Evidence");
+    await expectVisible(page, "Not measured");
+    await assertNoHorizontalOverflow(page, "mobile drift report");
+    evidence.screenshots.push(await screenshot(page, "mobile-drift-report.jpg"));
+    evidence.checks.push("mobile drift report fits without horizontal overflow");
 
     writeFileSync(
       path.join(artifactDir, "forward-ui-summary.json"),

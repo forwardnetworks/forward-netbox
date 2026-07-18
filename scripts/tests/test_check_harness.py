@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 
@@ -89,6 +90,101 @@ class CheckHarnessPlanDirectoryTest(unittest.TestCase):
                 )
 
         self.assertEqual(failures, [])
+
+
+class CheckHarnessKnowledgeTest(unittest.TestCase):
+    def test_agents_entrypoint_rejects_monolithic_manual(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_root = Path(temp_dir)
+            (repo_root / "AGENTS.md").write_text(
+                "\n".join(["instruction"] * 121),
+                encoding="utf-8",
+            )
+            failures = []
+
+            with patch.object(check_harness, "REPO_ROOT", repo_root):
+                check_harness._check_agents_entrypoint(failures)
+
+        self.assertEqual(len(failures), 1)
+        self.assertIn("concise repository map", failures[0])
+
+    def test_knowledge_freshness_accepts_recent_review(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_root = Path(temp_dir)
+            relative_path = "docs/alignment.md"
+            path = repo_root / relative_path
+            path.parent.mkdir(parents=True)
+            path.write_text("Last reviewed: 2026-07-18\n", encoding="utf-8")
+            failures = []
+
+            with (
+                patch.object(check_harness, "REPO_ROOT", repo_root),
+                patch.object(
+                    check_harness,
+                    "KNOWLEDGE_FRESHNESS_DAYS",
+                    {relative_path: 90},
+                ),
+            ):
+                check_harness._check_knowledge_freshness(
+                    failures,
+                    today=date(2026, 7, 18),
+                )
+
+        self.assertEqual(failures, [])
+
+    def test_knowledge_freshness_rejects_missing_or_stale_review(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_root = Path(temp_dir)
+            docs_dir = repo_root / "docs"
+            docs_dir.mkdir()
+            (docs_dir / "missing.md").write_text("# Missing\n", encoding="utf-8")
+            (docs_dir / "stale.md").write_text(
+                "Last reviewed: 2026-01-01\n",
+                encoding="utf-8",
+            )
+            failures = []
+
+            with (
+                patch.object(check_harness, "REPO_ROOT", repo_root),
+                patch.object(
+                    check_harness,
+                    "KNOWLEDGE_FRESHNESS_DAYS",
+                    {"docs/missing.md": 90, "docs/stale.md": 90},
+                ),
+            ):
+                check_harness._check_knowledge_freshness(
+                    failures,
+                    today=date(2026, 7, 18),
+                )
+
+        self.assertEqual(len(failures), 2)
+        self.assertIn("Last reviewed", failures[0])
+        self.assertIn("review is stale", failures[1])
+
+    def test_knowledge_freshness_rejects_invalid_calendar_date(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_root = Path(temp_dir)
+            relative_path = "docs/alignment.md"
+            path = repo_root / relative_path
+            path.parent.mkdir(parents=True)
+            path.write_text("Last reviewed: 2026-99-99\n", encoding="utf-8")
+            failures = []
+
+            with (
+                patch.object(check_harness, "REPO_ROOT", repo_root),
+                patch.object(
+                    check_harness,
+                    "KNOWLEDGE_FRESHNESS_DAYS",
+                    {relative_path: 90},
+                ),
+            ):
+                check_harness._check_knowledge_freshness(
+                    failures,
+                    today=date(2026, 7, 18),
+                )
+
+        self.assertEqual(len(failures), 1)
+        self.assertIn("invalid review date", failures[0])
 
 
 class CheckHarnessGitHubDiffTest(unittest.TestCase):

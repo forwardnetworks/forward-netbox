@@ -179,24 +179,35 @@ def _maybe_enqueue_device_analysis_refresh(sync):
 
 
 def _maybe_enqueue_backfilled_tag_refresh(sync):
-    """Opt-in: after a successful sync, refresh the ``forward-backfilled`` tag.
+    """After a successful sync, reconcile plugin-managed device scope tags.
 
-    Enabled per sync via the ``auto_tag_backfilled`` parameter. Without it the
-    tag (and the Collection Gap health signal that counts it) only updates when
-    an operator clicks Tag backfilled devices, so the count drifts from reality
-    between manual refreshes. Never lets a tag-refresh problem affect the sync
+    The legacy ``auto_tag_backfilled`` sync option remains opt-in. Reconciliation
+    still runs the full backfilled/out-of-scope classification. When the source
+    applies Forward scope tags, automatic cleanup is intentionally narrower: it
+    only clears stale configured include-tag assignments and does not classify
+    unrelated NetBox devices. Never lets a tag-refresh problem affect the sync
     result.
     """
-    if not (sync.parameters or {}).get("auto_tag_backfilled"):
+    auto_backfilled = bool((sync.parameters or {}).get("auto_tag_backfilled"))
+    source_parameters = getattr(sync.source, "parameters", None) or {}
+    manages_scope_tags = bool(source_parameters.get("apply_device_scope_tags"))
+    if not auto_backfilled and not manages_scope_tags:
         return
     try:
         from django.utils.module_loading import import_string
 
-        name = f"{sync.name} - tag backfilled devices (auto)"
+        if auto_backfilled:
+            callable_path = "forward_netbox.jobs.tag_forward_backfilled_devices"
+            name = f"{sync.name} - reconcile device scope tags (auto)"
+        else:
+            callable_path = (
+                "forward_netbox.jobs.clear_forward_out_of_scope_managed_scope_tags"
+            )
+            name = f"{sync.name} - clear stale managed scope tags (auto)"
         if _sync_has_active_job(sync, name):
             return
         Job.enqueue(
-            import_string("forward_netbox.jobs.tag_forward_backfilled_devices"),
+            import_string(callable_path),
             instance=sync,
             user=sync.user,
             name=name,
@@ -564,6 +575,31 @@ def tag_forward_backfilled_devices(job, *args, **kwargs):
     except Exception as exc:
         # Record the failure on the job so it is visible in the UI (the Data
         # panel) instead of an empty Error field with null data.
+        job.data = {
+            "error": str(exc) or exc.__class__.__name__,
+            "error_type": exc.__class__.__name__,
+        }
+        job.save(update_fields=["data"])
+        job.terminate(status=JobStatusChoices.STATUS_ERRORED)
+        if type(exc) in (SyncError, JobTimeoutException):
+            logger.error(exc)
+        else:
+            raise
+
+
+def clear_forward_out_of_scope_managed_scope_tags(job, *args, **kwargs):
+    """Clear stale owned include tags without applying global status tags."""
+    from .utilities.scope_reconciliation import (
+        clear_out_of_scope_managed_scope_tags,
+    )
+
+    sync = ForwardSync.objects.get(pk=job.object_id)
+    try:
+        job.start()
+        job.data = clear_out_of_scope_managed_scope_tags(sync)
+        job.save(update_fields=["data"])
+        job.terminate()
+    except Exception as exc:
         job.data = {
             "error": str(exc) or exc.__class__.__name__,
             "error_type": exc.__class__.__name__,

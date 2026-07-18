@@ -549,3 +549,65 @@ class ForwardIngestionLogExportViewTest(TestCase):
             "unreferenced_sample",
             reconciliation["dlm"]["software_versions"],
         )
+
+    def test_sync_support_bundle_includes_dependency_preview_convergence_evidence(self):
+        standalone_sync = ForwardSync.objects.create(
+            name="sync-support-bundle-preview",
+            source=self.source,
+            parameters={"snapshot_id": "latestProcessed"},
+        )
+        ForwardIngestion.objects.create(
+            sync=standalone_sync,
+            snapshot_selector="latestProcessed",
+            snapshot_id="snapshot-1",
+            baseline_ready=True,
+            applied_change_count=7,
+            failed_change_count=0,
+            created_change_count=2,
+            updated_change_count=4,
+            deleted_change_count=1,
+        )
+        Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=standalone_sync.pk,
+            name="dependency preview",
+            status=JobStatusChoices.STATUS_COMPLETED,
+            job_id="123e4567-e89b-12d3-a456-426614174060",
+            data={
+                "generated_at": "2026-07-18T12:00:00+00:00",
+                "context": {
+                    "network_id": "must-not-export",
+                    "snapshot_id": "snapshot-1",
+                    "snapshot_selector": "latestProcessed",
+                },
+                "change_estimate_kind": "workload_upper_bound",
+                "model_results": [
+                    {
+                        "model": "dcim.device",
+                        "row_count": 3,
+                        "estimated_changes": 3,
+                        "delete_count": 0,
+                        "change_estimate_kind": "workload_upper_bound",
+                    }
+                ],
+            },
+        )
+        self.client.force_login(self.user)
+
+        response = self.client.get(
+            reverse(
+                "plugins:forward_netbox:forwardsync_support_bundle",
+                kwargs={"pk": standalone_sync.pk},
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = json.loads(response.content)
+        preview = data["latest_dependency_preview"]
+        self.assertEqual(preview["context"]["snapshot_id"], "snapshot-1")
+        self.assertNotIn("network_id", preview["context"])
+        self.assertEqual(
+            preview["latest_sync_evidence"]["status"],
+            "confirmation_required",
+        )
+        self.assertEqual(preview["latest_sync_evidence"]["applied"], 7)

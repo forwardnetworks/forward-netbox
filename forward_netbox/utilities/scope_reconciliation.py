@@ -625,6 +625,52 @@ def _apply_maintained_device_tag(device_names, *, slug, name, color, description
     return {"added": added, "removed": removed, "total": len(want_ids)}
 
 
+def _remove_out_of_scope_managed_tags(sync, device_names):
+    """Remove stale plugin-managed include tags from out-of-scope devices."""
+    source_parameters = getattr(sync.source, "parameters", None) or {}
+    if not source_parameters.get("apply_device_scope_tags") or not device_names:
+        return 0
+
+    from django.utils.text import slugify
+    from extras.models import Tag
+
+    include_tags, _exclude_tags, _include_match = device_tag_scope(sync)
+    managed_tags = {}
+    for name in include_tags:
+        slug = slugify(name) or slugify(name.replace(".", "-"))
+        tag = Tag.objects.filter(slug=slug).first() if slug else None
+        if tag is None:
+            tag = Tag.objects.filter(name=name).first()
+        if tag is not None:
+            managed_tags[tag.pk] = tag
+    if not managed_tags:
+        return 0
+
+    removed = 0
+    with transaction.atomic():
+        devices = Device.objects.filter(name__in=device_names).prefetch_related("tags")
+        for device in devices:
+            assigned = [tag for tag in device.tags.all() if tag.pk in managed_tags]
+            if assigned:
+                device.tags.remove(*assigned)
+                removed += len(assigned)
+    return removed
+
+
+def clear_out_of_scope_managed_scope_tags(sync, *, report=None) -> dict:
+    """Clear stale owned include tags without globally classifying devices."""
+    if report is None:
+        report = compute_scope_reconciliation(sync)
+    device_names = report["_out_of_scope"]
+    return {
+        "out_of_scope_examined": len(device_names),
+        "out_of_scope_scope_tags_removed": _remove_out_of_scope_managed_tags(
+            sync,
+            device_names,
+        ),
+    }
+
+
 def tag_backfilled_devices(sync, *, report=None) -> dict:
     """Maintain the ``forward-backfilled`` and ``forward-out-of-scope`` device tags.
 
@@ -653,6 +699,10 @@ def tag_backfilled_devices(sync, *, report=None) -> dict:
         color=OUT_OF_SCOPE_TAG_COLOR,
         description=OUT_OF_SCOPE_TAG_DESCRIPTION,
     )
+    managed_scope_cleanup = clear_out_of_scope_managed_scope_tags(
+        sync,
+        report=report,
+    )
     return {
         "tag_slug": BACKFILLED_TAG_SLUG,
         "tagged": backfilled["added"],
@@ -662,4 +712,7 @@ def tag_backfilled_devices(sync, *, report=None) -> dict:
         "out_of_scope_tagged": out_of_scope["added"],
         "out_of_scope_untagged": out_of_scope["removed"],
         "total_out_of_scope": out_of_scope["total"],
+        "out_of_scope_scope_tags_removed": managed_scope_cleanup[
+            "out_of_scope_scope_tags_removed"
+        ],
     }

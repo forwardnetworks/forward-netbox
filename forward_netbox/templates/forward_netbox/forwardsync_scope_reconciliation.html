@@ -73,8 +73,8 @@
       <div class="card-footer text-end">
         <form method="post" action="{{ tag_backfilled_url }}" class="d-inline">
           {% csrf_token %}
-          <button type="submit" class="btn btn-outline-warning"{% if not payload.netbox_present_backfilled %} disabled{% endif %}>
-            <i class="mdi mdi-tag-outline" aria-hidden="true"></i>&nbsp;{% trans "Tag backfilled devices" %}
+          <button type="submit" class="btn btn-outline-warning"{% if not payload.netbox_present_backfilled and not payload.netbox_out_of_scope %} disabled{% endif %}>
+            <i class="mdi mdi-tag-outline" aria-hidden="true"></i>&nbsp;{% trans "Reconcile device scope tags" %}
           </button>
         </form>
         <form method="post" action="{{ tag_delete_eligible_ipam_url }}" class="d-inline"

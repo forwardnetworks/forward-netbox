@@ -3263,7 +3263,9 @@ class ArchitectureRuntimeEvidenceTaskTest(unittest.TestCase):
         ):
             with self.assertRaises(Exit) as raised:
                 tasks.release_readiness_audit.body(
-                    context, dataset_label="release-smoke"
+                    context,
+                    dataset_label="release-smoke",
+                    output_json="",
                 )
         self.assertEqual(raised.exception.code, 1)
 

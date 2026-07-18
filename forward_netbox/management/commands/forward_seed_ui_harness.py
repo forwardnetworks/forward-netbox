@@ -81,6 +81,11 @@ class Command(BaseCommand):
             snapshot_id=options["snapshot_id"],
             validation_run=validation_run,
         )
+        self._ensure_dependency_preview(
+            sync=sync,
+            user=user,
+            snapshot_id=options["snapshot_id"],
+        )
 
         self.stdout.write(self.style.SUCCESS("Seeded Forward UI harness fixture."))
         self.stdout.write(f"username={user.username}")
@@ -262,6 +267,11 @@ class Command(BaseCommand):
             snapshot_id=snapshot_id,
             sync_mode="full",
             baseline_ready=True,
+            applied_change_count=7,
+            failed_change_count=0,
+            created_change_count=2,
+            updated_change_count=4,
+            deleted_change_count=1,
             validation_run=validation_run,
             snapshot_info={
                 "state": "PROCESSED",
@@ -293,6 +303,55 @@ class Command(BaseCommand):
             raw_data={"fixture": True},
         )
         return ingestion
+
+    def _ensure_dependency_preview(self, *, sync, user, snapshot_id):
+        content_type = ContentType.objects.get_for_model(ForwardSync)
+        Job.objects.filter(
+            object_type=content_type,
+            object_id=sync.pk,
+            name__icontains="dependency preview",
+        ).delete()
+        now = timezone.now()
+        values = {
+            "object_type": content_type,
+            "object_id": sync.pk,
+            "name": f"{sync.name} - dependency preview",
+            "user": user,
+            "status": JobStatusChoices.STATUS_COMPLETED,
+            "job_id": uuid.uuid4(),
+            "created": now,
+            "started": now,
+            "completed": now,
+            "data": {
+                "generated_at": now.isoformat(),
+                "context": {
+                    "snapshot_id": snapshot_id,
+                    "snapshot_selector": LATEST_PROCESSED_SNAPSHOT,
+                },
+                "change_estimate_kind": "workload_upper_bound",
+                "model_results": [
+                    {
+                        "model": "dcim.device",
+                        "row_count": 2,
+                        "estimated_changes": 2,
+                        "delete_count": 0,
+                        "failure_count": 0,
+                        "change_estimate_kind": "workload_upper_bound",
+                    },
+                    {
+                        "model": "dcim.interface",
+                        "row_count": 4,
+                        "estimated_changes": 4,
+                        "delete_count": 0,
+                        "failure_count": 0,
+                        "change_estimate_kind": "workload_upper_bound",
+                    },
+                ],
+            },
+        }
+        if any(field.name == "notifications" for field in Job._meta.fields):
+            values["notifications"] = []
+        return Job.objects.create(**values)
 
     def _ensure_job(self, *, ingestion, user):
         ensure_core_job_compat_defaults()

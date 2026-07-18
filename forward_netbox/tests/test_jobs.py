@@ -49,7 +49,7 @@ class ForwardJobsTest(TestCase):
         )
         self.ingestion = ForwardIngestion.objects.create(sync=self.sync)
 
-    def test_auto_tag_backfilled_enqueues_only_when_enabled(self):
+    def test_scope_tag_reconciliation_enqueues_for_either_ownership_mode(self):
         from forward_netbox.jobs import _maybe_enqueue_backfilled_tag_refresh
 
         # Disabled by default: no enqueue.
@@ -57,12 +57,36 @@ class ForwardJobsTest(TestCase):
             _maybe_enqueue_backfilled_tag_refresh(self.sync)
             enqueue.assert_not_called()
 
-        # Opt-in via the auto_tag_backfilled parameter: enqueues the tag job.
+        # The legacy backfilled-tag opt-in still enqueues reconciliation.
         self.sync.parameters = {**self.sync.parameters, "auto_tag_backfilled": True}
         with patch("forward_netbox.jobs.Job.enqueue") as enqueue:
             _maybe_enqueue_backfilled_tag_refresh(self.sync)
             enqueue.assert_called_once()
             self.assertEqual(enqueue.call_args.kwargs["instance"], self.sync)
+            self.assertEqual(
+                enqueue.call_args.args[0].__name__,
+                "tag_forward_backfilled_devices",
+            )
+
+        # Applying Forward scope tags establishes plugin ownership, so the
+        # cleanup must self-heal after every successful sync without requiring
+        # the separate backfilled-tag option.
+        self.sync.parameters = {**self.sync.parameters, "auto_tag_backfilled": False}
+        self.source.parameters = {
+            **self.source.parameters,
+            "apply_device_scope_tags": True,
+        }
+        self.source.save(update_fields=["parameters"])
+        with patch("forward_netbox.jobs.Job.enqueue") as enqueue:
+            _maybe_enqueue_backfilled_tag_refresh(self.sync)
+            enqueue.assert_called_once()
+            self.assertEqual(
+                enqueue.call_args.args[0].__name__,
+                "clear_forward_out_of_scope_managed_scope_tags",
+            )
+            self.assertIn(
+                "clear stale managed scope tags", enqueue.call_args.kwargs["name"]
+            )
 
     def test_vsys_parent_link_enqueues_by_default_and_respects_opt_out(self):
         from forward_netbox.jobs import _maybe_enqueue_vsys_parent_link

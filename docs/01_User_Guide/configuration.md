@@ -545,7 +545,14 @@ scope and visually identify out-of-scope leftovers (which only the
 is added only when missing, so steady-state re-syncs do not churn. With multiple
 include tags in `any` mode, each device receives only the include tags it
 actually carries. A successfully applied device also loses a stale
-`forward-out-of-scope` tag while all other tags remain untouched.
+`forward-out-of-scope` tag. Running **Reconcile device scope tags** removes the
+configured include-tag assignments from devices currently classified out of
+scope, which prevents contradictory include/out-of-scope labels. This cleanup
+runs only when `apply_device_scope_tags` is enabled and preserves every tag
+outside that source's configured include-tag set. After a successful sync, the
+plugin automatically runs only this bounded stale-assignment cleanup. It does
+not globally classify unrelated NetBox devices; full backfilled/out-of-scope
+status tagging remains manual unless `auto_tag_backfilled` is explicitly enabled.
 
 `Import SNMP Endpoints as Devices` (`sync_endpoints`) imports recognized
 Avocent/Opengear console servers. `Import Generic SNMP Endpoints as Devices`
