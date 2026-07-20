@@ -347,7 +347,7 @@ def wait_for_required_workflows(
     expected_branch: str,
     expected_event: str = "push",
     poll_seconds: int = 30,
-    max_polls: int = 80,
+    max_polls: int = 160,
 ) -> bool:
     """Require successful runs from exact workflow identities on one commit."""
     import time
@@ -547,7 +547,7 @@ def _open_release_pull_request(version: str, branch: str, *, evidence: bool) -> 
 
 
 def wait_for_release_workflow(
-    version: str, *, poll_seconds: int = 30, max_polls: int = 80
+    version: str, *, poll_seconds: int = 30, max_polls: int = 240
 ) -> str:
     import time
 

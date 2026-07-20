@@ -396,6 +396,16 @@ class RequiredReleaseWorkflowTest(unittest.TestCase):
     def _payload(self, *runs):
         return json.dumps({"workflow_runs": list(runs)})
 
+    def test_wait_bounds_cover_full_ci_and_publication(self):
+        self.assertEqual(
+            release.wait_for_required_workflows.__kwdefaults__["max_polls"],
+            160,
+        )
+        self.assertEqual(
+            release.wait_for_release_workflow.__kwdefaults__["max_polls"],
+            240,
+        )
+
     @patch("time.sleep")
     def test_required_workflows_pass_only_for_exact_runs(self, sleep):
         commit = "a" * 40
