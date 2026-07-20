@@ -296,8 +296,13 @@ invoke scale-soak --runs 3 --execution-backend single_branch --max-changes-per-b
 The sensitive-content guard must stay in local and CI validation:
 
 ```bash
+python scripts/generate_development_secrets.py
 python scripts/check_sensitive_content.py
 python scripts/check_sensitive_content.py --all-history
 ```
+
+`invoke harness-check` additionally rejects tracked development credential
+files or secret assignments and requires CI/Compose to use the generated
+file-backed secret contract.
 
 Use `.sensitive-patterns.local.txt` for local-only customer names, tenant labels, network IDs, or other identifiers that should never be committed.
