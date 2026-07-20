@@ -581,6 +581,67 @@ pip==26.1.2 \\
         self.assertTrue(any("mutable latest" in failure for failure in failures))
 
 
+class CheckHarnessTrustedTagControllerTest(unittest.TestCase):
+    WORKFLOW = """\
+workflow_dispatch:
+if: github.ref == 'refs/heads/main'
+environment: release-tag
+secret: secrets.RELEASE_TAG_DEPLOY_KEY
+run: python -m scripts.authorize_trusted_tag
+push: git push --atomic --force-with-lease="refs/heads/main:${EXPECTED_SHA}"
+"""
+    AUTHORIZER = """\
+os.environ.get("GITHUB_REF") != "refs/heads/main"
+verify_trusted_anchor_candidate
+verify_release_commit_provenance
+"""
+    RELEASE = "ensure_trusted_tag(tag, head_commit)\n"
+    PROVENANCE = """\
+TRUSTED_TAG_WORKFLOW = ".github/workflows/trusted-tag.yml"
+TRUSTED_RELEASE_FILES = ("scripts/authorize_trusted_tag.py", "scripts/release.py")
+"""
+
+    def _check(self, *, workflow=None, release=None):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_root = Path(temp_dir)
+            files = {
+                ".github/workflows/trusted-tag.yml": workflow or self.WORKFLOW,
+                "scripts/authorize_trusted_tag.py": self.AUTHORIZER,
+                "scripts/release.py": release or self.RELEASE,
+                "scripts/verify_release_provenance.py": self.PROVENANCE,
+            }
+            for relative_path, content in files.items():
+                path = repo_root / relative_path
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding="utf-8")
+            failures = []
+            with patch.object(check_harness, "REPO_ROOT", repo_root):
+                check_harness._check_trusted_tag_controller(failures)
+        return failures
+
+    def test_protected_main_tag_controller_passes(self):
+        self.assertEqual(self._check(), [])
+
+    def test_direct_human_tag_push_fails(self):
+        release = self.RELEASE + 'run(["git", "tag", "-a", tag])\n'
+
+        self.assertTrue(
+            any(
+                "must not create" in failure for failure in self._check(release=release)
+            )
+        )
+
+    def test_repository_wide_secret_path_fails(self):
+        workflow = self.WORKFLOW.replace("environment: release-tag\n", "")
+
+        self.assertTrue(
+            any(
+                "environment: release-tag" in failure
+                for failure in self._check(workflow=workflow)
+            )
+        )
+
+
 class CheckHarnessGitHubDiffTest(unittest.TestCase):
     def test_github_changed_files_uses_commit_file_lists(self):
         event = {

@@ -1,0 +1,80 @@
+name: Create trusted release tag
+
+"on":
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: Exact protected tag to create
+        required: true
+        type: string
+      expected_sha:
+        description: Exact current protected-main commit
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+  statuses: read
+
+jobs:
+  create-tag:
+    name: Verify and create protected tag
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: release-tag
+    env:
+      TAG_NAME: ${{ inputs.tag_name }}
+      EXPECTED_SHA: ${{ inputs.expected_sha }}
+    steps:
+      - name: Check out exact protected-main commit
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Fetch immutable provenance inputs
+        run: |
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          git fetch --force origin refs/tags/v2.5.11:refs/tags/v2.5.11
+          if [ "${TAG_NAME}" != "security-bootstrap-2.6" ]; then
+            git fetch --force origin \
+              refs/tags/security-bootstrap-2.6:refs/tags/security-bootstrap-2.6
+          fi
+      - name: Authorize exact tag target
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python -m scripts.authorize_trusted_tag \
+            --tag "${TAG_NAME}" \
+            --expected-sha "${EXPECTED_SHA}" \
+            --reviewer brandonheller
+      - name: Install environment-scoped tag identity
+        env:
+          RELEASE_TAG_DEPLOY_KEY: ${{ secrets.RELEASE_TAG_DEPLOY_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          test -n "${RELEASE_TAG_DEPLOY_KEY}"
+          install -d -m 0700 "${HOME}/.ssh"
+          install -m 0600 /dev/null "${HOME}/.ssh/release_tag"
+          printf '%s\n' "${RELEASE_TAG_DEPLOY_KEY}" > "${HOME}/.ssh/release_tag"
+          gh api meta --jq '.ssh_keys[] | "github.com " + .' \
+            > "${HOME}/.ssh/known_hosts"
+      - name: Create immutable annotated tag
+        env:
+          GIT_SSH_COMMAND: >-
+            ssh -i ${HOME}/.ssh/release_tag -o IdentitiesOnly=yes
+            -o UserKnownHostsFile=${HOME}/.ssh/known_hosts
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${TAG_NAME}" "${EXPECTED_SHA}" \
+            -m "Trusted Forward NetBox ${TAG_NAME}"
+          git push --atomic \
+            --force-with-lease="refs/heads/main:${EXPECTED_SHA}" \
+            "git@github.com:${GITHUB_REPOSITORY}.git" \
+            "${EXPECTED_SHA}:refs/heads/main" \
+            "refs/tags/${TAG_NAME}"

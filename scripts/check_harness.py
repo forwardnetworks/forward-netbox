@@ -34,17 +34,20 @@ REQUIRED_PATHS = [
     "docs/03_Plans/plan-template.md",
     "scripts/tests/test_check_harness.py",
     "scripts/check_release_authorization.py",
+    "scripts/authorize_trusted_tag.py",
     "scripts/build_reproducible_distribution.py",
     "scripts/verify_release_provenance.py",
     "scripts/check_sensitive_content.py",
     "scripts/sensitive_content.py",
     "scripts/tests/test_release_authorization.py",
+    "scripts/tests/test_authorize_trusted_tag.py",
     "scripts/tests/test_build_reproducible_distribution.py",
     "scripts/tests/test_verify_release_provenance.py",
     "scripts/tests/test_sensitive_content.py",
     ".github/workflows/harness-gardening.yml",
     ".github/workflows/codeql.yml",
     ".github/workflows/trusted-sensitive-pr.yml",
+    ".github/workflows/trusted-tag.yml",
     "requirements-release.in",
     "requirements-release.txt",
 ]
@@ -765,6 +768,53 @@ def _check_release_toolchain_lock(failures: list[str]) -> None:
         failures.append("CI workflow must install the reviewed hash-locked toolchain")
 
 
+def _check_trusted_tag_controller(failures: list[str]) -> None:
+    paths = {
+        "workflow": REPO_ROOT / ".github/workflows/trusted-tag.yml",
+        "authorizer": REPO_ROOT / "scripts/authorize_trusted_tag.py",
+        "release": REPO_ROOT / "scripts/release.py",
+        "provenance": REPO_ROOT / "scripts/verify_release_provenance.py",
+    }
+    if any(not path.exists() for path in paths.values()):
+        return
+    texts = {name: path.read_text(encoding="utf-8") for name, path in paths.items()}
+    for fragment in (
+        "workflow_dispatch:",
+        "github.ref == 'refs/heads/main'",
+        "environment: release-tag",
+        "secrets.RELEASE_TAG_DEPLOY_KEY",
+        "python -m scripts.authorize_trusted_tag",
+        "git push --atomic",
+        '--force-with-lease="refs/heads/main:${EXPECTED_SHA}"',
+    ):
+        if fragment not in texts["workflow"]:
+            failures.append(f"trusted tag workflow must contain: {fragment}")
+    for fragment in (
+        'os.environ.get("GITHUB_REF") != "refs/heads/main"',
+        "verify_trusted_anchor_candidate",
+        "verify_release_commit_provenance",
+    ):
+        if fragment not in texts["authorizer"]:
+            failures.append(f"trusted tag authorizer must contain: {fragment}")
+    if "ensure_trusted_tag(tag, head_commit)" not in texts["release"]:
+        failures.append("release tool must dispatch protected-main tag creation")
+    for pattern in (
+        r'run\(\["git", "tag"',
+        r'run\(\["git", "push", "--no-verify", "origin", tag',
+    ):
+        if re.search(pattern, texts["release"]):
+            failures.append(
+                "release tool must not create or push version tags directly"
+            )
+    for fragment in (
+        'TRUSTED_TAG_WORKFLOW = ".github/workflows/trusted-tag.yml"',
+        '"scripts/authorize_trusted_tag.py"',
+        '"scripts/release.py"',
+    ):
+        if fragment not in texts["provenance"]:
+            failures.append(f"release provenance must freeze: {fragment}")
+
+
 def main() -> int:
     import argparse
 
@@ -806,6 +856,7 @@ def main() -> int:
     _check_harness_gardening_dependency(failures)
     _check_sensitive_guard_wiring(failures)
     _check_release_toolchain_lock(failures)
+    _check_trusted_tag_controller(failures)
     if args.base:
         _check_per_commit_plan_lifecycle(failures, args.base)
 

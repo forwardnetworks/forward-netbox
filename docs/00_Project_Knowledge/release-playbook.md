@@ -12,12 +12,18 @@ Use this playbook for reviewed production releases.
   version-tag creation restriction are active. Main has no bypass actors and
   requires a current CODEOWNERS approval, resolved conversations, the trusted
   candidate scan, exact NetBox 4.6.5 CI, and both CodeQL analyses. Version tags
-  reject deletion and movement; only the accountable release operator can
-  create one.
+  reject deletion and movement. Human credentials cannot create them; only the
+  environment-scoped deploy key used by the frozen protected-main tag workflow
+  can create a matching tag.
 - Annotated tag `security-bootstrap-2.6` resolves to the reviewed bootstrap
   commit and is protected against deletion or movement. The release workflow,
-  trusted PR scanner, provenance verifier, reproducible builder, and hashed
-  release-tool lock must be byte-identical to that anchor.
+  trusted PR scanner, protected-main tag workflow and authorizer, provenance
+  verifier, reproducible builder, and hashed release-tool lock must be
+  byte-identical to that anchor.
+- Environment `release-tag` is restricted to protected `main`, requires the
+  independent reviewer with self-review disabled, and is the only location of
+  `RELEASE_TAG_DEPLOY_KEY`. Environment `pypi` accepts only `v*` tags and has
+  the same independent approval requirement.
 - `.github/CODEOWNERS` names a valid accountable owner, the repository-level
   `FORWARD_SENSITIVE_PATTERNS` Actions secret contains at least one private
   pattern, and the `FORWARD_SENSITIVE_HISTORY_BASELINE` repository variable
@@ -106,10 +112,14 @@ invoke scale-soak --runs 3 --max-changes-per-staging-item 10000
    plan. Run `--finish` on that branch to open the separately reviewed evidence
    PR. Its squash merge preserves the evidence-only parent relationship.
 6. Update local `main` to that reviewed evidence commit and run `--finish` once
-   more. It checks the authorization binding and exact main-push workflows, then
-   creates the annotated tag. The tag workflow independently proves that both
-   the production and evidence commits came from approved main PRs. It executes
-   the provenance verifier from `security-bootstrap-2.6`, walks every
+   more. It checks the authorization binding and exact main-push workflows,
+   then dispatches `.github/workflows/trusted-tag.yml` from the exact protected
+   `main` commit. After independent environment approval, that frozen workflow
+   re-proves the bootstrap or release lineage and uses the environment-only
+   deploy key to create the immutable annotated tag. Human credentials cannot
+   push it. The tag workflow independently proves that both the production and
+   evidence commits came from approved main PRs. It executes the provenance
+   verifier from `security-bootstrap-2.6`, walks every
    first-parent main commit after that anchor, pages every review and status,
    binds each trusted status to the exact successful `pull_request_target` run,
    PR number, and candidate SHA, and requires exact CI/CodeQL workflows on every

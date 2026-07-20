@@ -277,6 +277,25 @@ class ReleaseProvenanceTest(unittest.TestCase):
             [self.anchor_commit, self.production_commit, self.release_commit],
         )
 
+    def test_accepts_reviewed_anchor_candidate_before_tag_creation(self):
+        with patch.object(
+            provenance,
+            "_git_capture",
+            side_effect=self._git,
+        ), patch.object(
+            provenance,
+            "_github_json",
+            side_effect=self._github,
+        ):
+            result = provenance.verify_trusted_anchor_candidate(
+                self.anchor_commit,
+                "brandonheller",
+                "token",
+            )
+
+        self.assertEqual(result["trusted_anchor"], self.anchor_commit)
+        self.assertEqual(result["pull_request"], 9)
+
     def test_rejects_stale_review(self):
         def github(path, token):
             payload = self._github(path, token)

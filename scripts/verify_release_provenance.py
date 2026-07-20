@@ -17,15 +17,19 @@ GITHUB_API_URL = "https://api.github.com"
 TRUSTED_STATUS_CONTEXT = "Trusted sensitive-content scan"
 TRUSTED_STATUS_CREATOR = "github-actions[bot]"
 TRUSTED_SCANNER_WORKFLOW = ".github/workflows/trusted-sensitive-pr.yml"
+TRUSTED_TAG_WORKFLOW = ".github/workflows/trusted-tag.yml"
 TRUSTED_ANCHOR_TAG = "security-bootstrap-2.6"
 PRIOR_RELEASE_TAG = "v2.5.11"
 PRIOR_POST_RELEASE_DOC_COMMIT = "df85f2e94b91f5afe3a419c3121aeb189f2b2737"
 TRUSTED_RELEASE_FILES = (
     ".github/workflows/release.yml",
     TRUSTED_SCANNER_WORKFLOW,
+    TRUSTED_TAG_WORKFLOW,
     "requirements-release.in",
     "requirements-release.txt",
+    "scripts/authorize_trusted_tag.py",
     "scripts/build_reproducible_distribution.py",
+    "scripts/release.py",
     "scripts/verify_release_provenance.py",
 )
 REQUIRED_WORKFLOWS = (
@@ -362,13 +366,39 @@ def _require_trust_files_unchanged(anchor: str, release_commit: str) -> None:
         )
 
 
-def verify_release_provenance(tag: str, reviewer: str, token: str) -> dict:
-    if not tag.startswith("v"):
-        raise ProvenanceError(f"release tag must start with v: {tag!r}")
-    version = tag[1:]
-    release_commit = _require_annotated_tag(tag)
+def verify_trusted_anchor_candidate(
+    anchor_commit: str,
+    reviewer: str,
+    token: str,
+) -> dict:
+    _require_prior_release_bridge(anchor_commit)
+    _require_verified_commit(anchor_commit, token)
+    pull = _require_reviewed_main_pr(
+        anchor_commit,
+        reviewer,
+        token,
+        require_trusted_status=False,
+    )
+    for workflow_path in REQUIRED_WORKFLOWS:
+        _require_successful_workflow(anchor_commit, workflow_path, token)
+    return {
+        "trusted_anchor": anchor_commit,
+        "pull_request": pull["number"],
+        "reviewer": reviewer,
+        "workflows": list(REQUIRED_WORKFLOWS),
+    }
+
+
+def verify_release_commit_provenance(
+    release_commit: str,
+    version: str,
+    reviewer: str,
+    token: str,
+) -> dict:
     if _git_capture("rev-parse", "refs/remotes/origin/main") != release_commit:
-        raise ProvenanceError(f"{tag} must point to the current origin/main commit")
+        raise ProvenanceError(
+            "release commit must equal the current origin/main commit"
+        )
     production_commit = _commit_parent(release_commit)
     plan = _require_release_plan_only(production_commit, release_commit, version)
 
@@ -393,7 +423,6 @@ def verify_release_provenance(tag: str, reviewer: str, token: str) -> dict:
             _require_successful_workflow(commit, workflow_path, token)
 
     return {
-        "tag": tag,
         "release_commit": release_commit,
         "production_commit": production_commit,
         "trusted_anchor": anchor,
@@ -402,6 +431,18 @@ def verify_release_provenance(tag: str, reviewer: str, token: str) -> dict:
         "reviewer": reviewer,
         "workflows": list(REQUIRED_WORKFLOWS),
     }
+
+
+def verify_release_provenance(tag: str, reviewer: str, token: str) -> dict:
+    if not tag.startswith("v"):
+        raise ProvenanceError(f"release tag must start with v: {tag!r}")
+    result = verify_release_commit_provenance(
+        _require_annotated_tag(tag),
+        tag[1:],
+        reviewer,
+        token,
+    )
+    return {"tag": tag, **result}
 
 
 def main() -> int:

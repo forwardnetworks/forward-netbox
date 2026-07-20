@@ -151,6 +151,43 @@ class FinishReleaseTest(unittest.TestCase):
         with patch.object(release, "_capture", side_effect=capture):
             release._assert_release_head("2.6.0", expected)
 
+    @patch.object(release, "wait_for_trusted_tag_workflow", return_value="success")
+    @patch.object(release, "_trusted_tag_workflow_runs", return_value=[])
+    @patch.object(release, "run")
+    def test_tag_creation_uses_only_protected_main_workflow(
+        self,
+        run,
+        workflow_runs,
+        wait,
+    ):
+        expected = "a" * 40
+        with patch.object(
+            release,
+            "_capture",
+            side_effect=["", expected, "tag"],
+        ):
+            release.ensure_trusted_tag("v2.6.0", expected)
+
+        workflow_runs.assert_called_once_with(expected)
+        wait.assert_called_once_with(expected, set())
+        commands = [call.args[0] for call in run.call_args_list]
+        self.assertTrue(
+            any(command[:3] == ["gh", "workflow", "run"] for command in commands)
+        )
+        self.assertFalse(any(command[:2] == ["git", "tag"] for command in commands))
+        self.assertFalse(any(command[:2] == ["git", "push"] for command in commands))
+
+    @patch.object(release, "run")
+    def test_existing_release_tag_must_be_annotated(self, run):
+        expected = "a" * 40
+        with patch.object(
+            release,
+            "_capture",
+            side_effect=[expected, "commit"],
+        ):
+            with self.assertRaisesRegex(release.ReleaseError, "annotated"):
+                release.ensure_trusted_tag("v2.6.0", expected)
+
 
 class RequiredReleaseWorkflowTest(unittest.TestCase):
     @staticmethod
