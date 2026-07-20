@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import runpy
 import shlex
 import socket
 import sys
@@ -16,6 +17,13 @@ from invoke.collection import Collection
 from invoke.exceptions import CommandTimedOut
 from invoke.exceptions import Exit
 from invoke.tasks import task as invoke_task
+
+
+REPO_ROOT = Path(__file__).resolve().parent
+_DEVELOPMENT_SECRETS = runpy.run_path(
+    str(REPO_ROOT / "scripts" / "development_secrets.py")
+)
+ensure_development_secrets = _DEVELOPMENT_SECRETS["ensure_development_secrets"]
 
 
 INIT_FILE = "forward_netbox/__init__.py"
@@ -63,7 +71,7 @@ namespace = Collection("forward_netbox")
 namespace.configure(
     {
         "forward_netbox": {
-            "netbox_ver": os.environ.get("NETBOX_VER", ""),
+            "netbox_ver": os.environ.get("NETBOX_VER", "v4.6.5"),
             "project_name": "forward-netbox",
             "compose_dir": os.path.join(os.path.dirname(__file__), "development"),
         }
@@ -86,6 +94,7 @@ def task(function=None, *args, **kwargs):
 
 
 def docker_compose(context, command, **kwargs):
+    ensure_development_secrets()
     build_env = {
         "NETBOX_VER": context.forward_netbox.netbox_ver,
         "ACI_PLUGIN_PACKAGE": os.environ.get("ACI_PLUGIN_PACKAGE", ""),

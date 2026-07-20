@@ -83,6 +83,8 @@ jobs:
         run: python -m py_compile $(find forward_netbox -name '*.py' -print)
       - name: Build docs
         run: mkdocs build --strict
+      - name: Generate isolated development secrets
+        run: python scripts/generate_development_secrets.py
       - name: Build NetBox development image
         run: |
           docker compose --project-name forward-netbox \

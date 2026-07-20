@@ -26,6 +26,9 @@ class ForwardReleaseReadinessAuditTest(TestCase):
         ), patch(
             "tasks._field_scale_runtime_preflight",
             return_value={"ok": True},
+        ), patch(
+            "tasks._field_scale_source_preflight",
+            return_value={"ok": True, "selection": "automatic_existing"},
         ):
             payload = tasks._collect_release_runtime_preflight_evidence(
                 context=context,
