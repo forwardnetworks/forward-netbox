@@ -59,6 +59,15 @@ EXPECTED_HARNESS_DEPENDENCY_COMMAND = (
     "python -m pip install --disable-pip-version-check PyYAML==6.0.3"
 )
 EXPECTED_HARNESS_CHECK_COMMAND = "python scripts/check_harness.py"
+FORBIDDEN_TRACKED_DEVELOPMENT_ENV_FILES = {
+    "development/.env",
+    "development/env/redis.env",
+}
+FORBIDDEN_DEVELOPMENT_SECRET_ASSIGNMENT = re.compile(
+    r"^(?:API_TOKEN_PEPPER_\d+|DB_PASSWORD|POSTGRES_PASSWORD|"
+    r"REDIS(?:_CACHE)?_PASSWORD|SECRET_KEY)\s*=",
+    re.MULTILINE,
+)
 
 RUNTIME_SOURCE_SUFFIXES = {".html", ".js", ".nqe", ".py"}
 RUNTIME_SOURCE_EXCLUDED_DIRECTORIES = {"migrations", "tests"}
@@ -490,6 +499,112 @@ def _check_compose_health_probe(failures: list[str]) -> None:
         )
 
 
+def _check_development_secret_boundary(failures: list[str]) -> None:
+    tracked = set(_git_names("ls-files", "--cached")) - set(
+        _git_names("ls-files", "--deleted")
+    )
+    for relative_path in sorted(FORBIDDEN_TRACKED_DEVELOPMENT_ENV_FILES & tracked):
+        failures.append(
+            f"development credential file must not be tracked: {relative_path}"
+        )
+
+    for relative_path in sorted(tracked):
+        if not (
+            relative_path.startswith("development/env/")
+            or relative_path == "development/.env.example"
+        ):
+            continue
+        path = REPO_ROOT / relative_path
+        if not path.is_file():
+            continue
+        match = FORBIDDEN_DEVELOPMENT_SECRET_ASSIGNMENT.search(
+            path.read_text(encoding="utf-8")
+        )
+        if match:
+            line = path.read_text(encoding="utf-8").count("\n", 0, match.start()) + 1
+            failures.append(
+                f"{relative_path}:{line} must not contain a tracked secret assignment"
+            )
+
+    compose_path = REPO_ROOT / "development/docker-compose.yml"
+    if compose_path.is_file():
+        try:
+            compose = yaml.safe_load(compose_path.read_text(encoding="utf-8")) or {}
+            declared = set(compose["secrets"])
+            netbox_secrets = compose["services"]["netbox"]["secrets"]
+            postgres = compose["services"]["postgres"]
+            redis = compose["services"]["redis"]
+        except (KeyError, TypeError, yaml.YAMLError) as exc:
+            failures.append(
+                "development/docker-compose.yml must define parseable development "
+                f"secrets: {exc}"
+            )
+        else:
+            required = {
+                "api_token_pepper_1",
+                "db_password",
+                "redis_password",
+                "secret_key",
+            }
+            if declared != required:
+                failures.append(
+                    "development/docker-compose.yml must declare exactly the four "
+                    "generated development secrets"
+                )
+            if (
+                "db_password" not in netbox_secrets
+                or "secret_key" not in netbox_secrets
+            ):
+                failures.append(
+                    "netbox must mount generated database and application secrets"
+                )
+            if postgres.get("environment", {}).get("POSTGRES_PASSWORD_FILE") != (
+                "/run/secrets/db_password"
+            ):
+                failures.append("postgres must read its password from db_password")
+            redis_command = "\n".join(str(part) for part in redis.get("command", []))
+            if "/run/secrets/redis_password" not in redis_command:
+                failures.append("redis must read its password from redis_password")
+
+    workflow_path = REPO_ROOT / ".github/workflows/ci.yml"
+    if workflow_path.is_file():
+        workflow_text = workflow_path.read_text(encoding="utf-8")
+        generator = "python scripts/generate_development_secrets.py"
+        compose_build = "docker compose --project-name forward-netbox"
+        if generator not in workflow_text or workflow_text.index(
+            generator
+        ) > workflow_text.index(compose_build):
+            failures.append(
+                "CI must generate development secrets before Docker Compose"
+            )
+
+    dockerignore_path = REPO_ROOT / ".dockerignore"
+    if dockerignore_path.is_file() and "development/secrets" not in {
+        line.strip()
+        for line in dockerignore_path.read_text(encoding="utf-8").splitlines()
+    }:
+        failures.append(".dockerignore must exclude development/secrets")
+
+
+def _check_trusted_private_fetch(failures: list[str]) -> None:
+    path = REPO_ROOT / ".github/workflows/trusted-sensitive-pr.yml"
+    if not path.is_file():
+        return
+    text = path.read_text(encoding="utf-8")
+    required = (
+        "GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}",
+        'extraheader="http.https://github.com/.extraheader"',
+        '"${extraheader}=AUTHORIZATION: basic ${auth_header}"',
+        'test "$(git rev-parse FETCH_HEAD)" = "${PR_HEAD_SHA}"',
+    )
+    for fragment in required:
+        if fragment not in text:
+            failures.append(
+                ".github/workflows/trusted-sensitive-pr.yml must authenticate "
+                f"private candidate fetches and bind FETCH_HEAD: missing {fragment}"
+            )
+
+
 def _check_harness_gardening_dependency(failures: list[str]) -> None:
     relative_path = ".github/workflows/harness-gardening.yml"
     path = REPO_ROOT / relative_path
@@ -842,6 +957,8 @@ def main() -> int:
     _check_knowledge_freshness(failures)
     _check_retired_runtime_paths(failures)
     _check_compose_health_probe(failures)
+    _check_development_secret_boundary(failures)
+    _check_trusted_private_fetch(failures)
     _check_harness_gardening_dependency(failures)
     _check_sensitive_guard_wiring(failures)
     _check_release_toolchain_lock(failures)

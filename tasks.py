@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import runpy
 import shlex
 import socket
 import sys
@@ -16,7 +17,6 @@ from invoke.collection import Collection
 from invoke.exceptions import Exit
 from invoke.tasks import task as invoke_task
 
-
 INIT_FILE = "forward_netbox/__init__.py"
 ALLOW_SHARED_RUNTIME_TESTS_ENV = "FORWARD_NETBOX_ALLOW_SHARED_RUNTIME_TESTS"
 ACTIVE_SYNC_STATUSES = ("queued", "syncing", "merging")
@@ -25,6 +25,10 @@ ISOLATED_PLAYWRIGHT_PROJECT_NAME = "forward-netbox-ui-test"
 RELEASE_ARTIFACT_PROJECT_NAME = "forward-netbox-artifact-test"
 CYCLONEDX_BOM_VERSION = "7.3.0"
 REPO_ROOT = Path(__file__).resolve().parent
+_DEVELOPMENT_SECRETS = runpy.run_path(
+    str(REPO_ROOT / "scripts" / "development_secrets.py")
+)
+ensure_development_secrets = _DEVELOPMENT_SECRETS["ensure_development_secrets"]
 SCENARIO_TEST_LABELS = " ".join(
     (
         "forward_netbox.tests.test_bulk_merge.BulkMergeIntegrationTest",
@@ -61,7 +65,7 @@ namespace = Collection("forward_netbox")
 namespace.configure(
     {
         "forward_netbox": {
-            "netbox_ver": os.environ.get("NETBOX_VER", ""),
+            "netbox_ver": os.environ.get("NETBOX_VER", "v4.6.5"),
             "project_name": os.environ.get(
                 "FORWARD_NETBOX_DOCKER_PROJECT",
                 "forward-netbox",
@@ -87,6 +91,7 @@ def task(function=None, *args, **kwargs):
 
 
 def docker_compose(context, command, **kwargs):
+    ensure_development_secrets()
     build_env = {
         "NETBOX_VER": context.forward_netbox.netbox_ver,
         **kwargs.pop("env", {}),
@@ -1027,6 +1032,31 @@ def artifact_test(context):
             "docker run --rm",
             f"--network {shlex.quote(RELEASE_ARTIFACT_PROJECT_NAME + '_default')}",
             f"--env-file {shlex.quote(str(REPO_ROOT / 'development/env/netbox.env'))}",
+            "--volume "
+            + shlex.quote(
+                f"{REPO_ROOT / 'development/secrets/api_token_pepper_1'}:"
+                "/run/secrets/api_token_pepper_1:ro"
+            ),
+            "--volume "
+            + shlex.quote(
+                f"{REPO_ROOT / 'development/secrets/db_password'}:"
+                "/run/secrets/db_password:ro"
+            ),
+            "--volume "
+            + shlex.quote(
+                f"{REPO_ROOT / 'development/secrets/redis_password'}:"
+                "/run/secrets/redis_password:ro"
+            ),
+            "--volume "
+            + shlex.quote(
+                f"{REPO_ROOT / 'development/secrets/redis_password'}:"
+                "/run/secrets/redis_cache_password:ro"
+            ),
+            "--volume "
+            + shlex.quote(
+                f"{REPO_ROOT / 'development/secrets/secret_key'}:"
+                "/run/secrets/secret_key:ro"
+            ),
             "--env LOGLEVEL=WARNING",
             "--volume "
             + shlex.quote(

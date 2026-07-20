@@ -104,6 +104,7 @@ celerybeat.pid
 # Environments
 .env
 .env.*
+!development/.env.example
 .venv
 .venv-*/
 .build-venv/
@@ -147,6 +148,7 @@ test-results/
 # Local generated operator reports
 .forward-netbox-reports/
 development/fetch-artifacts/
+development/secrets/
 
 # Transient run telemetry captured during scale/chaos validation — regenerable,
 # not source. Keep named summary fixtures (audit/benchmark/matrix JSON) tracked.

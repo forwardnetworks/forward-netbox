@@ -28,4 +28,5 @@ build
 output
 
 development/logs
+development/secrets
 *.log

@@ -295,6 +295,75 @@ class CheckHarnessComposeHealthProbeTest(unittest.TestCase):
         self.assertIn("no parseable netbox health probe", failures[0])
 
 
+class CheckHarnessDevelopmentSecretBoundaryTest(unittest.TestCase):
+    def _check(self, files, tracked):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_root = Path(temp_dir)
+            for relative_path, content in files.items():
+                path = repo_root / relative_path
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding="utf-8")
+            failures = []
+
+            def git_names(*args):
+                if args == ("ls-files", "--cached"):
+                    return list(tracked)
+                if args == ("ls-files", "--deleted"):
+                    return []
+                return []
+
+            with (
+                patch.object(check_harness, "REPO_ROOT", repo_root),
+                patch.object(check_harness, "_git_names", side_effect=git_names),
+            ):
+                check_harness._check_development_secret_boundary(failures)
+        return failures
+
+    def test_rejects_tracked_secret_file_and_assignment(self):
+        failures = self._check(
+            {
+                "development/.env": "NETBOX_VER=v4.6.5\n",
+                "development/env/netbox.env": "DB_PASSWORD=example\n",
+            },
+            ["development/.env", "development/env/netbox.env"],
+        )
+
+        self.assertEqual(len(failures), 2)
+        self.assertTrue(any("must not be tracked" in failure for failure in failures))
+        self.assertTrue(any("secret assignment" in failure for failure in failures))
+
+    def test_generated_secret_compose_contract_passes(self):
+        files = {
+            "development/env/netbox.env": "DB_HOST=postgres\n",
+            "development/env/postgres.env": "POSTGRES_DB=netbox\n",
+            "development/docker-compose.yml": (
+                "services:\n"
+                "  netbox:\n"
+                "    secrets: [api_token_pepper_1, db_password, redis_password, "
+                "secret_key]\n"
+                "  postgres:\n"
+                "    environment:\n"
+                "      POSTGRES_PASSWORD_FILE: /run/secrets/db_password\n"
+                "  redis:\n"
+                "    command: [sh, -ec, 'cat /run/secrets/redis_password']\n"
+                "secrets:\n"
+                "  api_token_pepper_1: {}\n"
+                "  db_password: {}\n"
+                "  redis_password: {}\n"
+                "  secret_key: {}\n"
+            ),
+            ".github/workflows/ci.yml": (
+                "steps:\n"
+                "  - run: python scripts/generate_development_secrets.py\n"
+                "  - run: docker compose --project-name forward-netbox build\n"
+            ),
+            ".dockerignore": "development/secrets\n",
+        }
+        failures = self._check(files, files)
+
+        self.assertEqual(failures, [])
+
+
 class CheckHarnessGardeningDependencyTest(unittest.TestCase):
     def _check(self, workflow_text):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -718,6 +787,37 @@ class CheckHarnessGitHubDiffTest(unittest.TestCase):
 
         self.assertEqual(changed_files, ["scripts/check_harness.py"])
         git_names.assert_not_called()
+
+
+class CheckHarnessTrustedPrivateFetchTest(unittest.TestCase):
+    def _check(self, workflow_text):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_root = Path(temp_dir)
+            path = repo_root / ".github/workflows/trusted-sensitive-pr.yml"
+            path.parent.mkdir(parents=True)
+            path.write_text(workflow_text, encoding="utf-8")
+            failures = []
+            with patch.object(check_harness, "REPO_ROOT", repo_root):
+                check_harness._check_trusted_private_fetch(failures)
+        return failures
+
+    def test_authenticated_exact_head_fetch_passes(self):
+        failures = self._check(
+            "GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n"
+            'extraheader="http.https://github.com/.extraheader"\n'
+            'git -c "${extraheader}=AUTHORIZATION: basic ${auth_header}" fetch\n'
+            'test "$(git rev-parse FETCH_HEAD)" = "${PR_HEAD_SHA}"\n'
+        )
+
+        self.assertEqual(failures, [])
+
+    def test_unauthenticated_fetch_fails(self):
+        failures = self._check(
+            "git fetch https://github.com/example/repo.git\n"
+            'test "$(git rev-parse FETCH_HEAD)" = "${PR_HEAD_SHA}"\n'
+        )
+
+        self.assertEqual(len(failures), 3)
 
 
 if __name__ == "__main__":

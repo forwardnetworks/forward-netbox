@@ -97,11 +97,16 @@ inferring readiness from fetched row counts.
 ## Sensitive Content
 
 ```bash
+python scripts/generate_development_secrets.py
 python scripts/check_sensitive_content.py
 python scripts/check_sensitive_content.py --protected-history
 python scripts/check_sensitive_content.py --git-files --protected-history \
   --require-env-patterns --require-baseline-env
 ```
+
+`invoke harness-check` additionally rejects tracked development credential
+files or secret assignments and requires CI/Compose to use the generated
+file-backed secret contract.
 
 Use `.sensitive-patterns.local.txt` for customer-local identifiers that must not
 enter tracked files. Release CI additionally requires a nonempty secret-backed

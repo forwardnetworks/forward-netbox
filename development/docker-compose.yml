@@ -7,7 +7,14 @@ services:
       - "${FORWARD_NETBOX_HOST_PORT:-8000}:8000"
     env_file: env/netbox.env
     environment:
-      NETBOX_VER: "${NETBOX_VER}"
+      NETBOX_VER: "${NETBOX_VER:-v4.6.5}"
+    secrets:
+      - api_token_pepper_1
+      - db_password
+      - redis_password
+      - source: redis_password
+        target: redis_cache_password
+      - secret_key
     healthcheck:
       start_period: 5s
       timeout: 3s
@@ -24,7 +31,7 @@ services:
       context: ../
       dockerfile: development/Dockerfile
       args:
-        NETBOX_VER: "${NETBOX_VER}"
+        NETBOX_VER: "${NETBOX_VER:-v4.6.5}"
   netbox-worker:
     !!merge <<: *netbox
     depends_on:
@@ -55,15 +62,34 @@ services:
     image: postgres:16-alpine
     shm_size: ${FORWARD_NETBOX_POSTGRES_SHM_SIZE:-1gb}
     env_file: env/postgres.env
+    environment:
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+    secrets:
+      - db_password
     volumes:
       - ${FORWARD_NETBOX_POSTGRES_DATA_PATH:-netbox-postgres-data}:/var/lib/postgresql/data
   redis:
     image: redis:7-alpine
     command:
       - sh
-      - -c # this is to evaluate the $REDIS_PASSWORD from the env
-      - redis-server --appendonly yes --requirepass $$REDIS_PASSWORD # yamllint disable-line rule:line-length
-    env_file: env/redis.env
+      - -ec
+      - |
+        umask 077
+        password="$$(cat /run/secrets/redis_password)"
+        printf 'appendonly yes\nrequirepass %s\n' "$$password" > /tmp/redis.conf
+        unset password
+        exec redis-server /tmp/redis.conf
+    secrets:
+      - redis_password
+secrets:
+  api_token_pepper_1:
+    file: ./secrets/api_token_pepper_1
+  db_password:
+    file: ./secrets/db_password
+  redis_password:
+    file: ./secrets/redis_password
+  secret_key:
+    file: ./secrets/secret_key
 volumes:
   netbox-postgres-data:
     driver: local
