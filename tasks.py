@@ -940,7 +940,9 @@ def playwright_test(context):
 
 @task
 def package(context):
-    context.run(f"{shlex.quote(sys.executable)} -m build --no-isolation")
+    context.run(
+        f"{shlex.quote(sys.executable)} scripts/build_reproducible_distribution.py"
+    )
 
 
 def _release_artifact_inputs():

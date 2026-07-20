@@ -38,7 +38,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git fetch --no-tags origin main:refs/remotes/origin/main
-          python scripts/verify_release_provenance.py \
+          git fetch --force origin \
+            refs/tags/security-bootstrap-2.6:refs/tags/security-bootstrap-2.6
+          anchor="$(git rev-parse refs/tags/security-bootstrap-2.6^{commit})"
+          trust_dir=/tmp/forward-netbox-release-trust
+          git worktree add --detach "${trust_dir}" "${anchor}"
+          python "${trust_dir}/scripts/verify_release_provenance.py" \
             --tag "${GITHUB_REF_NAME}" --reviewer brandonheller
       - name: Set up Node
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
@@ -51,19 +56,8 @@ jobs:
           npx playwright install --with-deps chromium
       - name: Install release validation dependencies
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install \
-            build \
-            invoke \
-            python-dotenv \
-            pre-commit \
-            mkdocs \
-            mkdocs-material \
-            mkdocs-awesome-pages-plugin \
-            mdx-truly-sane-lists \
-            pymdown-extensions \
-            pip-audit \
-            poetry-core==2.4.1
+          python -m pip install --require-hashes \
+            --requirement requirements-release.txt
       - name: Verify tag equals package version
         run: |
           package_version="$(
@@ -106,9 +100,9 @@ jobs:
           python-version: "3.14"
       - name: Build sdist and wheel
         run: |
-          python -m pip install --upgrade pip build invoke python-dotenv \
-            poetry-core==2.4.1 twine
-          python -m invoke package
+          python -m pip install --require-hashes \
+            --requirement requirements-release.txt
+          python scripts/build_reproducible_distribution.py
           python -m twine check dist/*
       - name: Validate installed wheel on exact runtime
         run: python -m invoke artifact-test

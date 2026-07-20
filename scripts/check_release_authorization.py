@@ -315,10 +315,14 @@ def _is_ownership_audit_command(command: list[str]) -> bool:
     index += 1
     if arguments[index : index + 1] != ["forward_ownership_audit"]:
         return False
-    return set(arguments[index + 1 :]) == {
-        "--fail-on-inconsistent",
-        "--require-no-open-branches",
-    } and len(arguments[index + 1 :]) == 2
+    return (
+        set(arguments[index + 1 :])
+        == {
+            "--fail-on-inconsistent",
+            "--require-no-open-branches",
+        }
+        and len(arguments[index + 1 :]) == 2
+    )
 
 
 def _commands_satisfy(evidence_id: str, commands: list[list[str]]) -> bool:

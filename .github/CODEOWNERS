@@ -11,3 +11,4 @@
 /.sensitive-binary-allowlist     @captainpacket @brandonheller
 /.sensitive-history-baseline     @captainpacket @brandonheller
 /pyproject.toml                  @captainpacket @brandonheller
+/requirements-release.*         @captainpacket @brandonheller

@@ -161,7 +161,10 @@ class ReleaseArtifactTaskTest(unittest.TestCase):
     def test_release_workflow_blocks_publish_on_artifact_and_pinned_sbom(self):
         workflow = (tasks.REPO_ROOT / ".github/workflows/release.yml").read_text()
 
-        self.assertIn("poetry-core==2.4.1", workflow)
+        self.assertIn("--require-hashes", workflow)
+        self.assertIn("requirements-release.txt", workflow)
+        self.assertIn("security-bootstrap-2.6", workflow)
+        self.assertIn("scripts/build_reproducible_distribution.py", workflow)
         self.assertIn("python -m invoke artifact-test", workflow)
         self.assertIn("sbom/", workflow)
         self.assertIn("gh release create", workflow)
@@ -172,14 +175,15 @@ class ReleaseArtifactTaskTest(unittest.TestCase):
 
         self.assertIn("npm ci", workflow)
         self.assertIn("playwright install --with-deps chromium", workflow)
+        self.assertNotIn("pip install --upgrade", workflow)
 
-    def test_package_uses_the_pinned_preinstalled_build_backend(self):
+    def test_package_requires_reproducible_distribution_builder(self):
         context = Mock()
 
         tasks.package.body(context)
 
         command = context.run.call_args.args[0]
-        self.assertIn("-m build --no-isolation", command)
+        self.assertIn("scripts/build_reproducible_distribution.py", command)
 
     def test_artifact_wheel_is_present_in_the_docker_build_context(self):
         dockerignore = (tasks.REPO_ROOT / ".dockerignore").read_text().splitlines()

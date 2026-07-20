@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import urllib.parse
 import urllib.request
@@ -15,6 +16,18 @@ GITHUB_REPOSITORY = "forwardnetworks/forward-netbox"
 GITHUB_API_URL = "https://api.github.com"
 TRUSTED_STATUS_CONTEXT = "Trusted sensitive-content scan"
 TRUSTED_STATUS_CREATOR = "github-actions[bot]"
+TRUSTED_SCANNER_WORKFLOW = ".github/workflows/trusted-sensitive-pr.yml"
+TRUSTED_ANCHOR_TAG = "security-bootstrap-2.6"
+PRIOR_RELEASE_TAG = "v2.5.11"
+PRIOR_POST_RELEASE_DOC_COMMIT = "df85f2e94b91f5afe3a419c3121aeb189f2b2737"
+TRUSTED_RELEASE_FILES = (
+    ".github/workflows/release.yml",
+    TRUSTED_SCANNER_WORKFLOW,
+    "requirements-release.in",
+    "requirements-release.txt",
+    "scripts/build_reproducible_distribution.py",
+    "scripts/verify_release_provenance.py",
+)
 REQUIRED_WORKFLOWS = (
     ".github/workflows/ci.yml",
     ".github/workflows/codeql.yml",
@@ -49,6 +62,22 @@ def _github_json(path: str, token: str) -> object:
         return json.load(response)
 
 
+def _github_pages(path: str, token: str) -> list[dict]:
+    items: list[dict] = []
+    separator = "&" if "?" in path else "?"
+    for page in range(1, 1001):
+        payload = _github_json(
+            f"{path}{separator}per_page=100&page={page}",
+            token,
+        )
+        if not isinstance(payload, list):
+            raise ProvenanceError(f"GitHub returned invalid paginated data for {path}")
+        items.extend(payload)
+        if len(payload) < 100:
+            return items
+    raise ProvenanceError(f"GitHub pagination exceeded the safety bound for {path}")
+
+
 def _require_verified_commit(commit: str, token: str) -> dict:
     payload = _github_json(f"commits/{commit}", token)
     if not isinstance(payload, dict):
@@ -66,19 +95,51 @@ def _latest_review_by_user(reviews: list[dict], login: str) -> dict | None:
     matching = [
         review
         for review in reviews
-        if str((review.get("user") or {}).get("login") or "").lower()
-        == login.lower()
+        if str((review.get("user") or {}).get("login") or "").lower() == login.lower()
     ]
     if not matching:
         return None
     return max(matching, key=lambda review: int(review.get("id") or 0))
 
 
-def _require_trusted_candidate_status(candidate: str, token: str) -> None:
-    payload = _github_json(f"commits/{candidate}/status?per_page=100", token)
-    if not isinstance(payload, dict):
-        raise ProvenanceError(f"GitHub returned invalid status data for {candidate}")
-    statuses = payload.get("statuses") or []
+def _trusted_scanner_workflow_id(token: str) -> int:
+    encoded_path = urllib.parse.quote(TRUSTED_SCANNER_WORKFLOW, safe="")
+    workflow = _github_json(f"actions/workflows/{encoded_path}", token)
+    if not isinstance(workflow, dict):
+        raise ProvenanceError("GitHub returned invalid trusted scanner workflow data")
+    if (
+        workflow.get("path") != TRUSTED_SCANNER_WORKFLOW
+        or workflow.get("state") != "active"
+    ):
+        raise ProvenanceError("trusted scanner workflow is not active")
+    try:
+        return int(workflow["id"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ProvenanceError("trusted scanner workflow has no stable ID") from exc
+
+
+def _trusted_status_run_id(target_url: object) -> int:
+    parsed = urllib.parse.urlparse(str(target_url or ""))
+    expected_path = rf"/{re.escape(GITHUB_REPOSITORY)}/actions/runs/([0-9]+)"
+    match = re.fullmatch(expected_path, parsed.path)
+    if (
+        parsed.scheme != "https"
+        or parsed.netloc != "github.com"
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+        or match is None
+    ):
+        raise ProvenanceError("trusted scanner status has an invalid run URL")
+    return int(match.group(1))
+
+
+def _require_trusted_candidate_status(
+    candidate: str,
+    pull_number: int,
+    token: str,
+) -> None:
+    statuses = _github_pages(f"commits/{candidate}/statuses", token)
     matching = [
         status
         for status in statuses
@@ -95,11 +156,41 @@ def _require_trusted_candidate_status(candidate: str, token: str) -> None:
         raise ProvenanceError(
             f"candidate {candidate} trusted scanner state is {latest.get('state')!r}"
         )
+    run_id = _trusted_status_run_id(latest.get("target_url"))
+    run = _github_json(f"actions/runs/{run_id}", token)
+    if not isinstance(run, dict):
+        raise ProvenanceError("GitHub returned invalid trusted scanner run data")
+    workflow_id = _trusted_scanner_workflow_id(token)
+    if (
+        run.get("id") != run_id
+        or run.get("workflow_id") != workflow_id
+        or run.get("path") != TRUSTED_SCANNER_WORKFLOW
+        or run.get("event") != "pull_request_target"
+        or run.get("status") != "completed"
+        or run.get("conclusion") != "success"
+    ):
+        raise ProvenanceError("trusted scanner status is not backed by the trusted run")
+    pull_matches = [
+        pull
+        for pull in run.get("pull_requests") or []
+        if pull.get("number") == pull_number
+        and (pull.get("head") or {}).get("sha") == candidate
+        and (pull.get("base") or {}).get("ref") == "main"
+    ]
+    if len(pull_matches) != 1:
+        raise ProvenanceError(
+            "trusted scanner run does not cover the exact pull request candidate"
+        )
 
 
-def _require_reviewed_main_pr(commit: str, reviewer: str, token: str) -> dict:
-    payload = _github_json(f"commits/{commit}/pulls?per_page=100", token)
-    pulls = payload if isinstance(payload, list) else []
+def _require_reviewed_main_pr(
+    commit: str,
+    reviewer: str,
+    token: str,
+    *,
+    require_trusted_status: bool = True,
+) -> dict:
+    pulls = _github_pages(f"commits/{commit}/pulls", token)
     matches = [
         pull
         for pull in pulls
@@ -117,10 +208,7 @@ def _require_reviewed_main_pr(commit: str, reviewer: str, token: str) -> dict:
     candidate = str((pull.get("head") or {}).get("sha") or "")
     if not candidate:
         raise ProvenanceError(f"pull request for {commit} has no candidate SHA")
-    reviews_payload = _github_json(
-        f"pulls/{pull['number']}/reviews?per_page=100", token
-    )
-    reviews = reviews_payload if isinstance(reviews_payload, list) else []
+    reviews = _github_pages(f"pulls/{pull['number']}/reviews", token)
     approval = _latest_review_by_user(reviews, reviewer)
     if approval is None or approval.get("state") != "APPROVED":
         raise ProvenanceError(
@@ -134,7 +222,8 @@ def _require_reviewed_main_pr(commit: str, reviewer: str, token: str) -> dict:
         raise ProvenanceError(
             f"pull request #{pull['number']} approval timestamp is invalid"
         )
-    _require_trusted_candidate_status(candidate, token)
+    if require_trusted_status:
+        _require_trusted_candidate_status(candidate, int(pull["number"]), token)
     return pull
 
 
@@ -142,7 +231,9 @@ def _require_successful_workflow(commit: str, workflow_path: str, token: str) ->
     encoded_path = urllib.parse.quote(workflow_path, safe="")
     workflow = _github_json(f"actions/workflows/{encoded_path}", token)
     if not isinstance(workflow, dict):
-        raise ProvenanceError(f"GitHub returned invalid workflow data for {workflow_path}")
+        raise ProvenanceError(
+            f"GitHub returned invalid workflow data for {workflow_path}"
+        )
     if workflow.get("path") != workflow_path or workflow.get("state") != "active":
         raise ProvenanceError(f"required workflow {workflow_path} is not active")
     workflow_id = workflow.get("id")
@@ -191,28 +282,113 @@ def _require_release_plan_only(parent: str, commit: str, version: str) -> str:
     return path
 
 
+def _commit_parent(commit: str) -> str:
+    parts = _git_capture("rev-list", "--parents", "-n", "1", commit).split()
+    if len(parts) != 2:
+        raise ProvenanceError(f"commit {commit} must have exactly one parent")
+    return parts[1]
+
+
+def _require_annotated_tag(tag: str) -> str:
+    if _git_capture("cat-file", "-t", f"refs/tags/{tag}") != "tag":
+        raise ProvenanceError(f"{tag} must be an annotated tag")
+    return _git_capture("rev-parse", f"refs/tags/{tag}^{{commit}}")
+
+
+def _first_parent_commits(start: str, end: str) -> list[str]:
+    try:
+        _git_capture("merge-base", "--is-ancestor", start, end)
+    except subprocess.CalledProcessError as exc:
+        raise ProvenanceError(f"{start} is not an ancestor of {end}") from exc
+    return [
+        line
+        for line in _git_capture(
+            "rev-list",
+            "--first-parent",
+            "--reverse",
+            f"{start}..{end}",
+        ).splitlines()
+        if line
+    ]
+
+
+def _require_prior_release_bridge(anchor: str) -> None:
+    prior_release = _require_annotated_tag(PRIOR_RELEASE_TAG)
+    bridge = _first_parent_commits(prior_release, anchor)
+    if bridge != [PRIOR_POST_RELEASE_DOC_COMMIT, anchor]:
+        raise ProvenanceError(
+            "trusted bootstrap must directly follow the reviewed post-release bridge"
+        )
+    if _commit_parent(PRIOR_POST_RELEASE_DOC_COMMIT) != prior_release:
+        raise ProvenanceError("post-release documentation commit has the wrong parent")
+    changed = [
+        line
+        for line in _git_capture(
+            "diff",
+            "--name-only",
+            prior_release,
+            PRIOR_POST_RELEASE_DOC_COMMIT,
+        ).splitlines()
+        if line
+    ]
+    if (
+        len(changed) != 1
+        or not changed[0].startswith("docs/03_Plans/completed/")
+        or not changed[0].endswith(".md")
+    ):
+        raise ProvenanceError(
+            f"post-release bridge must be documentation-only; changed={changed}"
+        )
+    if _commit_parent(anchor) != PRIOR_POST_RELEASE_DOC_COMMIT:
+        raise ProvenanceError("trusted bootstrap has an unexpected parent")
+
+
+def _require_trust_files_unchanged(anchor: str, release_commit: str) -> None:
+    changed = [
+        line
+        for line in _git_capture(
+            "diff",
+            "--name-only",
+            anchor,
+            release_commit,
+            "--",
+            *TRUSTED_RELEASE_FILES,
+        ).splitlines()
+        if line
+    ]
+    if changed:
+        raise ProvenanceError(
+            f"trusted release controller changed after bootstrap: {changed}"
+        )
+
+
 def verify_release_provenance(tag: str, reviewer: str, token: str) -> dict:
     if not tag.startswith("v"):
         raise ProvenanceError(f"release tag must start with v: {tag!r}")
     version = tag[1:]
-    if _git_capture("cat-file", "-t", f"refs/tags/{tag}") != "tag":
-        raise ProvenanceError(f"{tag} must be an annotated tag")
-    release_commit = _git_capture("rev-parse", f"refs/tags/{tag}^{{commit}}")
+    release_commit = _require_annotated_tag(tag)
     if _git_capture("rev-parse", "refs/remotes/origin/main") != release_commit:
         raise ProvenanceError(f"{tag} must point to the current origin/main commit")
-    local_parents = _git_capture(
-        "rev-list", "--parents", "-n", "1", release_commit
-    ).split()
-    if len(local_parents) != 2:
-        raise ProvenanceError("release evidence commit must have exactly one parent")
-    production_commit = local_parents[1]
-    plan = _require_release_plan_only(
-        production_commit, release_commit, version
-    )
+    production_commit = _commit_parent(release_commit)
+    plan = _require_release_plan_only(production_commit, release_commit, version)
 
-    for commit in (production_commit, release_commit):
+    anchor = _require_annotated_tag(TRUSTED_ANCHOR_TAG)
+    _require_prior_release_bridge(anchor)
+    _require_trust_files_unchanged(anchor, release_commit)
+    reviewed_commits = [anchor, *_first_parent_commits(anchor, release_commit)]
+    if reviewed_commits[-2:] != [production_commit, release_commit]:
+        raise ProvenanceError(
+            "release must end with the production and evidence pull requests"
+        )
+
+    for index, commit in enumerate(reviewed_commits):
         _require_verified_commit(commit, token)
-        _require_reviewed_main_pr(commit, reviewer, token)
+        _require_reviewed_main_pr(
+            commit,
+            reviewer,
+            token,
+            require_trusted_status=index != 0,
+        )
         for workflow_path in REQUIRED_WORKFLOWS:
             _require_successful_workflow(commit, workflow_path, token)
 
@@ -220,6 +396,8 @@ def verify_release_provenance(tag: str, reviewer: str, token: str) -> dict:
         "tag": tag,
         "release_commit": release_commit,
         "production_commit": production_commit,
+        "trusted_anchor": anchor,
+        "reviewed_commits": reviewed_commits,
         "release_plan": plan,
         "reviewer": reviewer,
         "workflows": list(REQUIRED_WORKFLOWS),

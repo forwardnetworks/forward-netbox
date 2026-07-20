@@ -160,9 +160,7 @@ def initialize_provenance_and_remove_obsolete_state(apps, schema_editor):
             parameters["device_tag_include_tags"] = include_tags
         exclude_tags = parameters.get("device_tag_exclude_tags") or []
         if not exclude_tags and parameters.get("device_tag_exclude"):
-            parameters["device_tag_exclude_tags"] = [
-                parameters["device_tag_exclude"]
-            ]
+            parameters["device_tag_exclude_tags"] = [parameters["device_tag_exclude"]]
         parameters.pop("device_tag_include", None)
         parameters.pop("device_tag_exclude", None)
         has_include_scope = any(str(tag).strip() for tag in include_tags)

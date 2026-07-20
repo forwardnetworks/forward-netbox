@@ -176,7 +176,9 @@ class ReleaseAuthorizationTest(unittest.TestCase):
 
     def test_rejects_scale_evidence_without_retry_performance_gate(self):
         evidence = self.VALID_EVIDENCE["scale-and-failure"]
-        marker = " and `rtk env FORWARD_NETBOX_DOCKER_PROJECT=forward-netbox-release-gate"
+        marker = (
+            " and `rtk env FORWARD_NETBOX_DOCKER_PROJECT=forward-netbox-release-gate"
+        )
         evidence = evidence[: evidence.rindex(marker)] + "."
 
         with self.assertRaisesRegex(ValueError, "placeholder_evidence"):
@@ -285,9 +287,9 @@ class ReleaseAuthorizationTest(unittest.TestCase):
                     return ""
                 raise AssertionError(args)
 
-            with patch.object(release_authorization, "REPO_ROOT", repo_root), patch.object(
-                release_authorization, "_git_capture", side_effect=capture
-            ):
+            with patch.object(
+                release_authorization, "REPO_ROOT", repo_root
+            ), patch.object(release_authorization, "_git_capture", side_effect=capture):
                 self.assertEqual(
                     release_authorization.release_evidence_commit_binding(plan),
                     (base_commit, head_commit),

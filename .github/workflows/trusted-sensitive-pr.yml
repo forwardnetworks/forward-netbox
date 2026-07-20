@@ -54,6 +54,9 @@ jobs:
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_ID: ${{ github.run_id }}
+          SERVER_URL: ${{ github.server_url }}
           SCAN_OUTCOME: ${{ steps.scan.outcome }}
         run: |
           python - <<'PY'
@@ -62,14 +65,18 @@ jobs:
           import urllib.request
 
           success = os.environ["SCAN_OUTCOME"] == "success"
+          verb = "accepted" if success else "rejected"
           payload = json.dumps(
               {
                   "state": "success" if success else "failure",
                   "context": "Trusted sensitive-content scan",
                   "description": (
-                      "Trusted base scanner accepted the candidate"
-                      if success
-                      else "Trusted base scanner rejected the candidate"
+                      f"Trusted scanner {verb} PR #{os.environ['PR_NUMBER']}"
+                  ),
+                  "target_url": (
+                      f"{os.environ['SERVER_URL']}/"
+                      f"{os.environ['GITHUB_REPOSITORY']}/actions/runs/"
+                      f"{os.environ['RUN_ID']}"
                   ),
               }
           ).encode()

@@ -14,6 +14,10 @@ Use this playbook for reviewed production releases.
   candidate scan, exact NetBox 4.6.5 CI, and both CodeQL analyses. Version tags
   reject deletion and movement; only the accountable release operator can
   create one.
+- Annotated tag `security-bootstrap-2.6` resolves to the reviewed bootstrap
+  commit and is protected against deletion or movement. The release workflow,
+  trusted PR scanner, provenance verifier, reproducible builder, and hashed
+  release-tool lock must be byte-identical to that anchor.
 - `.github/CODEOWNERS` names a valid accountable owner, the repository-level
   `FORWARD_SENSITIVE_PATTERNS` Actions secret contains at least one private
   pattern, and the `FORWARD_SENSITIVE_HISTORY_BASELINE` repository variable
@@ -47,6 +51,11 @@ Run the exact-version migration and installation checks in a fresh NetBox
 orchestration changes, the scenario and full suites must include crash/retry,
 partial-merge, post-merge-resume, stale-generation, and stuck-job recovery
 coverage.
+
+`invoke package` performs two isolated builds with the commit timestamp as
+`SOURCE_DATE_EPOCH` and fails unless both wheel and sdist SHA-256 digests are
+byte-identical. CI and release jobs install Python controller tools only from
+`requirements-release.txt` with `--require-hashes`.
 
 For a configured validation source, verify shipped query publication and run a
 customer-equivalent sync through terminal state:
@@ -99,11 +108,15 @@ invoke scale-soak --runs 3 --max-changes-per-staging-item 10000
 6. Update local `main` to that reviewed evidence commit and run `--finish` once
    more. It checks the authorization binding and exact main-push workflows, then
    creates the annotated tag. The tag workflow independently proves that both
-   the production and evidence commits came from approved main PRs, their final
-   candidate SHAs passed the authenticated trusted scanner, and exact CI/CodeQL
-   workflows passed on each main commit.
-7. The tag workflow builds and installed-runtime-tests one wheel/sdist pair,
-   generates and validates the full runtime SBOM, publishes the pair to PyPI,
-   and creates the GitHub release from the same workflow artifacts.
+   the production and evidence commits came from approved main PRs. It executes
+   the provenance verifier from `security-bootstrap-2.6`, walks every
+   first-parent main commit after that anchor, pages every review and status,
+   binds each trusted status to the exact successful `pull_request_target` run,
+   PR number, and candidate SHA, and requires exact CI/CodeQL workflows on every
+   reviewed main commit.
+7. The tag workflow installs only the hashed release-tool lock, builds the
+   wheel/sdist twice, rejects any byte mismatch, installed-runtime-tests the
+   identical pair, generates and validates the full runtime SBOM, publishes the
+   pair to PyPI, and creates the GitHub release from the same workflow artifacts.
 8. The release command waits for the tag workflow to finish. Independently
    verify the tag, `main`, PyPI hashes, GitHub asset hashes, and attached SBOM.

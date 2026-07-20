@@ -367,7 +367,7 @@ jobs:
       - uses: actions/checkout@example
         with:
           fetch-depth: 0
-      - run: python scripts/verify_release_provenance.py --tag v2.6.0 --reviewer brandonheller
+      - run: git fetch origin refs/tags/security-bootstrap-2.6 && python scripts/verify_release_provenance.py --tag v2.6.0 --reviewer brandonheller
       - env:
           FORWARD_SENSITIVE_PATTERNS: ${{ secrets.FORWARD_SENSITIVE_PATTERNS }}
           FORWARD_SENSITIVE_HISTORY_BASELINE: ${{ vars.FORWARD_SENSITIVE_HISTORY_BASELINE }}
@@ -396,7 +396,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SCAN_OUTCOME: ${{ steps.scan.outcome }}
-        run: echo Trusted sensitive-content scan
+          RUN_ID: ${{ github.run_id }}
+        run: echo Trusted sensitive-content scan target_url actions/runs/${RUN_ID}
 """
     TASKS = """def sensitive_check(context):
     context.run(f\"python scripts/check_sensitive_content.py\")
@@ -515,6 +516,69 @@ jobs:
                 check_harness._check_sensitive_guard_wiring(failures)
 
         self.assertTrue(any("if: always()" in failure for failure in failures))
+
+
+class CheckHarnessReleaseToolchainTest(unittest.TestCase):
+    LOCK = """build==1.5.0 \\
+    --hash=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+pip==26.1.2 \\
+    --hash=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+"""
+    RELEASE = """jobs:
+  validate:
+    steps:
+      - run: python -m pip install --require-hashes --requirement requirements-release.txt
+  build:
+    steps:
+      - run: python -m pip install --require-hashes --requirement requirements-release.txt
+"""
+    CI = """jobs:
+  validate:
+    steps:
+      - run: python -m pip install --require-hashes --requirement requirements-release.txt
+"""
+
+    def _check(self, *, lock=None, release=None, ci=None):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_root = Path(temp_dir)
+            files = {
+                "requirements-release.txt": lock or self.LOCK,
+                ".github/workflows/release.yml": release or self.RELEASE,
+                ".github/workflows/ci.yml": ci or self.CI,
+            }
+            for relative_path, content in files.items():
+                path = repo_root / relative_path
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding="utf-8")
+            failures = []
+            with patch.object(check_harness, "REPO_ROOT", repo_root):
+                check_harness._check_release_toolchain_lock(failures)
+        return failures
+
+    def test_hash_locked_toolchain_passes(self):
+        self.assertEqual(self._check(), [])
+
+    def test_unpinned_entry_fails(self):
+        failures = self._check(lock=self.LOCK.replace("build==1.5.0", "build>=1.5"))
+
+        self.assertTrue(any("exact versions" in failure for failure in failures))
+
+    def test_missing_hash_fails(self):
+        failures = self._check(
+            lock=self.LOCK.replace(
+                "    --hash=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+                "",
+            )
+        )
+
+        self.assertTrue(any("SHA-256 hashes" in failure for failure in failures))
+
+    def test_mutable_release_install_fails(self):
+        failures = self._check(
+            release=self.RELEASE + "\n# pip install --upgrade build\n"
+        )
+
+        self.assertTrue(any("mutable latest" in failure for failure in failures))
 
 
 class CheckHarnessGitHubDiffTest(unittest.TestCase):

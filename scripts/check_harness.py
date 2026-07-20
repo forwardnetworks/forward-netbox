@@ -34,15 +34,19 @@ REQUIRED_PATHS = [
     "docs/03_Plans/plan-template.md",
     "scripts/tests/test_check_harness.py",
     "scripts/check_release_authorization.py",
+    "scripts/build_reproducible_distribution.py",
     "scripts/verify_release_provenance.py",
     "scripts/check_sensitive_content.py",
     "scripts/sensitive_content.py",
     "scripts/tests/test_release_authorization.py",
+    "scripts/tests/test_build_reproducible_distribution.py",
     "scripts/tests/test_verify_release_provenance.py",
     "scripts/tests/test_sensitive_content.py",
     ".github/workflows/harness-gardening.yml",
     ".github/workflows/codeql.yml",
     ".github/workflows/trusted-sensitive-pr.yml",
+    "requirements-release.in",
+    "requirements-release.txt",
 ]
 
 AGENTS_ENTRYPOINT_MAX_LINES = 120
@@ -194,12 +198,16 @@ REQUIRED_TEXT = {
     ],
     ".github/workflows/release.yml": [
         "fetch-depth: 0",
+        "security-bootstrap-2.6",
         "verify_release_provenance.py",
         "--reviewer brandonheller",
         "--git-files",
         "--protected-history",
         "--require-env-patterns --require-baseline-env",
         "FORWARD_SENSITIVE_HISTORY_BASELINE",
+        "--require-hashes",
+        "requirements-release.txt",
+        "scripts/build_reproducible_distribution.py",
     ],
     ".github/workflows/harness-gardening.yml": [
         "schedule:",
@@ -212,6 +220,8 @@ REQUIRED_TEXT = {
         "github.event.pull_request.base.sha",
         "statuses: write",
         "Trusted sensitive-content scan",
+        "target_url",
+        "actions/runs/",
         "--git-tree",
         "--ref-name",
         "--require-env-patterns --require-baseline-env",
@@ -562,7 +572,9 @@ def _check_sensitive_guard_wiring(failures: list[str]) -> None:
         if fragment not in ci_commands:
             failures.append(f".github/workflows/ci.yml must execute {fragment}")
     for fragment in (
-        "verify_release_provenance.py --tag",
+        "security-bootstrap-2.6",
+        "verify_release_provenance.py",
+        "--tag",
         "--reviewer brandonheller",
         "check_sensitive_content.py --git-files --protected-history",
         "--require-env-patterns --require-baseline-env",
@@ -584,6 +596,7 @@ def _check_sensitive_guard_wiring(failures: list[str]) -> None:
         "--git-tree",
         "--ref-name",
         "--require-env-patterns --require-baseline-env",
+        "actions/runs/",
     ):
         if fragment not in trusted_commands:
             failures.append(
@@ -708,6 +721,46 @@ def _check_sensitive_guard_wiring(failures: list[str]) -> None:
                 failures.append(f"tasks.py sensitive-check must execute {fragment}")
 
 
+def _check_release_toolchain_lock(failures: list[str]) -> None:
+    lock_path = REPO_ROOT / "requirements-release.txt"
+    if not lock_path.exists():
+        return
+    lines = lock_path.read_text(encoding="utf-8").splitlines()
+    entries: list[tuple[int, str]] = []
+    for index, line in enumerate(lines):
+        if line and not line[0].isspace() and not line.startswith("#"):
+            entries.append((index, line))
+    if not entries:
+        failures.append("requirements-release.txt must contain pinned packages")
+        return
+    for position, (index, line) in enumerate(entries):
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+==[^\\\s]+ \\", line):
+            failures.append(
+                "requirements-release.txt entries must use exact versions: "
+                f"line {index + 1}"
+            )
+            continue
+        next_index = (
+            entries[position + 1][0] if position + 1 < len(entries) else len(lines)
+        )
+        if not any("--hash=sha256:" in item for item in lines[index + 1 : next_index]):
+            failures.append(
+                "requirements-release.txt entries must carry SHA-256 hashes: "
+                f"line {index + 1}"
+            )
+
+    release_text = (REPO_ROOT / ".github/workflows/release.yml").read_text(
+        encoding="utf-8"
+    )
+    ci_text = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    if "pip install --upgrade" in release_text:
+        failures.append("release workflow must not install mutable latest tooling")
+    if release_text.count("--require-hashes") < 2:
+        failures.append("release workflow must hash-lock validation and build tooling")
+    if "--require-hashes" not in ci_text:
+        failures.append("CI workflow must install the reviewed hash-locked toolchain")
+
+
 def main() -> int:
     import argparse
 
@@ -748,6 +801,7 @@ def main() -> int:
     _check_compose_health_probe(failures)
     _check_harness_gardening_dependency(failures)
     _check_sensitive_guard_wiring(failures)
+    _check_release_toolchain_lock(failures)
     if args.base:
         _check_per_commit_plan_lifecycle(failures, args.base)
 

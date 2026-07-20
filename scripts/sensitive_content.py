@@ -235,9 +235,7 @@ def load_binary_allowlist(repo_root: Path) -> dict[str, str]:
             )
         allowlist[relative_path] = digest
 
-    tracked = {
-        str(path.relative_to(repo_root)) for path in tracked_files(repo_root)
-    }
+    tracked = {str(path.relative_to(repo_root)) for path in tracked_files(repo_root)}
     for relative_path, expected_digest in allowlist.items():
         candidate = repo_root / relative_path
         if relative_path not in tracked or not candidate.is_file():
@@ -245,7 +243,10 @@ def load_binary_allowlist(repo_root: Path) -> dict[str, str]:
                 f"{path.name} contains an entry without a current tracked file."
             )
         data = candidate.read_bytes()
-        if _decode_text(data) is not None or sha256(data).hexdigest() != expected_digest:
+        if (
+            _decode_text(data) is not None
+            or sha256(data).hexdigest() != expected_digest
+        ):
             raise ValueError(
                 f"{path.name} contains a non-binary or digest-mismatched entry."
             )
@@ -273,9 +274,7 @@ def load_history_binary_allowlist() -> set[tuple[str, str, str]]:
             or candidate.is_absolute()
             or ".." in candidate.parts
         ):
-            raise ValueError(
-                f"{HISTORY_BINARY_ENV_VAR} line {line_number} is invalid."
-            )
+            raise ValueError(f"{HISTORY_BINARY_ENV_VAR} line {line_number} is invalid.")
         approved.add((revision, relative_path, digest))
     return approved
 
@@ -374,9 +373,7 @@ def scan_file(
             source=source,
             allowlist_path=relative_path,
             patterns=patterns,
-            binary_allowlist=(
-                binary_allowlist if binary_allowlist is not None else {}
-            ),
+            binary_allowlist=(binary_allowlist if binary_allowlist is not None else {}),
         )
     )
     return findings
@@ -456,11 +453,7 @@ def _changed_paths(repo_root: Path, revision: str) -> list[str]:
         cwd=repo_root,
         capture_output=True,
     )
-    return [
-        item.decode("utf-8")
-        for item in result.stdout.split(b"\x00")
-        if item
-    ]
+    return [item.decode("utf-8") for item in result.stdout.split(b"\x00") if item]
 
 
 def _blob_at_revision(repo_root: Path, revision: str, path: str) -> bytes | None:
@@ -509,10 +502,15 @@ def scan_git_tree(
 
     if require_trusted_controls:
         trusted_baseline = os.environ.get(HISTORY_BASELINE_ENV_VAR, "").strip()
-        candidate_baseline = blobs.get(HISTORY_BASELINE_FILE, b"").decode(
-            "utf-8", errors="replace"
-        ).strip()
-        if not COMMIT_RE.fullmatch(trusted_baseline) or candidate_baseline != trusted_baseline:
+        candidate_baseline = (
+            blobs.get(HISTORY_BASELINE_FILE, b"")
+            .decode("utf-8", errors="replace")
+            .strip()
+        )
+        if (
+            not COMMIT_RE.fullmatch(trusted_baseline)
+            or candidate_baseline != trusted_baseline
+        ):
             raise ValueError(
                 "Candidate history baseline does not match the external trust anchor."
             )

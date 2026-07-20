@@ -10,11 +10,11 @@ from unittest import TestCase
 from scripts.sensitive_content import BINARY_ALLOWLIST_FILE
 from scripts.sensitive_content import ENV_PATTERN_VAR
 from scripts.sensitive_content import format_finding
-from scripts.sensitive_content import HISTORY_BASELINE_FILE
 from scripts.sensitive_content import HISTORY_BASELINE_ENV_VAR
+from scripts.sensitive_content import HISTORY_BASELINE_FILE
 from scripts.sensitive_content import load_binary_allowlist
-from scripts.sensitive_content import load_sensitive_patterns
 from scripts.sensitive_content import load_protected_history_baseline
+from scripts.sensitive_content import load_sensitive_patterns
 from scripts.sensitive_content import LOCAL_PATTERN_FILE
 from scripts.sensitive_content import protected_history_range
 from scripts.sensitive_content import require_environment_patterns
@@ -333,7 +333,9 @@ class SensitiveContentTest(TestCase):
                 rev_args=[f"{baseline}..HEAD"],
             )
 
-        self.assertTrue(any(finding.source.startswith("tag-object:") for finding in findings))
+        self.assertTrue(
+            any(finding.source.startswith("tag-object:") for finding in findings)
+        )
 
     def test_history_scan_recurses_through_nested_annotated_tags(self):
         with TemporaryDirectory() as temp_dir:
