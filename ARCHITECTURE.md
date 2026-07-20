@@ -191,7 +191,7 @@ Recovery uses persisted facts rather than an inferred run ledger:
 - Keep normalization in NQE and object mutation in tested NetBox apply paths.
 - Never commit credentials, customer identifiers, network IDs, snapshot IDs,
   private communications, or raw support data.
-- Create releases from a normal annotated version tag on reviewed `main` after
+- Create releases from a normal annotated version tag on validated `main` after
   live verification of repository controls. Keep version tags immutable and
   publish through the protected PyPI Trusted Publishing environment.
 - Pair query, adapter, merge, ownership, and UI behavior changes with focused

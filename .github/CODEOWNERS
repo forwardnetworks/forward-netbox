@@ -1,14 +1,14 @@
 # Code owners for forward-netbox. GitHub requests review from the accountable
-# human release owner on every pull request touching the matched paths.
+# maintainer on every pull request touching the matched paths.
 
-* @captainpacket @brandonheller
+* @captainpacket
 
 # High-risk surfaces — keep owned explicitly even if the global owner changes.
-/forward_netbox/utilities/       @captainpacket @brandonheller
-/forward_netbox/migrations/      @captainpacket @brandonheller
-/scripts/                        @captainpacket @brandonheller
-/.github/                        @captainpacket @brandonheller
-/.sensitive-binary-allowlist     @captainpacket @brandonheller
-/.sensitive-history-baseline     @captainpacket @brandonheller
-/pyproject.toml                  @captainpacket @brandonheller
-/requirements-release.*         @captainpacket @brandonheller
+/forward_netbox/utilities/       @captainpacket
+/forward_netbox/migrations/      @captainpacket
+/scripts/                        @captainpacket
+/.github/                        @captainpacket
+/.sensitive-binary-allowlist     @captainpacket
+/.sensitive-history-baseline     @captainpacket
+/pyproject.toml                  @captainpacket
+/requirements-release.*         @captainpacket

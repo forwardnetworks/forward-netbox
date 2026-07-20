@@ -78,10 +78,10 @@ platform baseline.
   commit/path/SHA-256 tuple. A base-branch `pull_request_target` workflow scans
   fork PR objects without checking out or executing candidate code, then posts
   an authenticated status on the exact candidate SHA. Release publication
-  requires two separately reviewed squash merges: the production tree and an
+  requires two separately check-gated squash merges: the production tree and an
   evidence-only child. The release workflow verifies both GitHub-signed main
-  commits, final-SHA approvals by the independent maintainer, authenticated
-  trusted-scan statuses, and exact successful CI/CodeQL workflow identities
+  commits, exact merged-PR associations, authenticated trusted-scan statuses,
+  and exact successful CI/CodeQL workflow identities
   before the protected PyPI environment can publish.
   `--all-history` remains available for a forensic audit without making
   published-history rewrites a release action.

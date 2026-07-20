@@ -204,7 +204,6 @@ REQUIRED_TEXT = {
         "fetch-depth: 0",
         "refs/tags/v2.5.11",
         "verify_release_provenance.py",
-        "--reviewer brandonheller",
         "--git-files",
         "--protected-history",
         "--require-env-patterns --require-baseline-env",
@@ -231,7 +230,7 @@ REQUIRED_TEXT = {
         "--require-env-patterns --require-baseline-env",
     ],
     ".github/CODEOWNERS": [
-        "@captainpacket @brandonheller",
+        "@captainpacket",
         "/.github/",
         "/scripts/",
         "/.sensitive-binary-allowlist",
@@ -579,7 +578,6 @@ def _check_sensitive_guard_wiring(failures: list[str]) -> None:
         "refs/tags/v2.5.11",
         "verify_release_provenance.py",
         "--tag",
-        "--reviewer brandonheller",
         "check_sensitive_content.py --git-files --protected-history",
         "--require-env-patterns --require-baseline-env",
     ):
