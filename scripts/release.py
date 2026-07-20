@@ -12,15 +12,19 @@
 #   prepare  - bump version + the 3 README tables, scaffold the plan, lint-fix
 #   verify   - the full local CI mirror (pre-commit x2, harness, harness tests,
 #              py_compile, mkdocs --strict, build)
-#   publish  - branch, push, wait for GitHub CI, fast-forward main, tag, GitHub
-#              release, PyPI upload, sync local main  (ONLY with --publish)
+#   publish  - branch, push, and wait for the exact GitHub workflows
+#   finish   - promote metadata, open the reviewed production/evidence PRs, or
+#              tag the reviewed evidence-only main commit
 #
 # Default run is prepare + verify. Rollout never happens without --publish, so
 # this is safe to run for a dry build.
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import re
+import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -34,15 +38,20 @@ README_TABLES = (
     REPO_ROOT / "docs/01_User_Guide/README.md",
 )
 INSTALL_DOC = REPO_ROOT / "docs/01_User_Guide/README.md"
-PLAN_DIR = REPO_ROOT / "docs/03_Plans/active"
-
 # The compatibility cell shared by every table row, so a new row reuses the
 # previous row's NetBox-support text verbatim.
-NETBOX_SUPPORT_RE = re.compile(
+CURRENT_RELEASE_RE = re.compile(
     r"^\| `v[0-9][^|]*` \| (?P<support>[^|]*) \| Current release;", re.MULTILINE
 )
 
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
+GITHUB_REPOSITORY = "forwardnetworks/forward-netbox"
+REQUIRED_RELEASE_WORKFLOWS = (
+    ".github/workflows/ci.yml",
+    ".github/workflows/codeql.yml",
+)
+TRUSTED_TAG_WORKFLOW = ".github/workflows/trusted-tag.yml"
+RELEASE_REVIEWER = "brandonheller"
 
 
 class ReleaseError(RuntimeError):
@@ -59,30 +68,53 @@ def bump_version_text(text: str, old: str, new: str, *, key: str) -> str:
 
 
 def insert_release_row(table_text: str, version: str, summary: str) -> str:
-    """Insert the new current-release row and demote the prior one.
+    """Insert a release candidate while retaining the published current row.
 
-    The prior `Current release;` row is rewritten to `Superseded by vX.Y.Z;` and
-    the new row is inserted above it, reusing its NetBox-support cell.
+    Finalization promotes the candidate and demotes the prior release only after
+    the release branch is green, so unreleased docs never claim publication.
     """
-    match = NETBOX_SUPPORT_RE.search(table_text)
+    if "| Release candidate;" in table_text:
+        raise ReleaseError("a release candidate already exists")
+    match = CURRENT_RELEASE_RE.search(table_text)
     if not match:
         raise ReleaseError("could not find the current-release row to supersede")
     support = match.group("support")
-    new_row = f"| `v{version}` | {support} | Current release; {summary} |"
-    # Replace the matched row-prefix line with new_row + the demoted old row.
+    new_row = f"| `v{version}` | {support} | Release candidate; {summary} |"
     old_line_start = match.start()
-    line_end = table_text.index("\n", old_line_start)
-    old_line = table_text[old_line_start:line_end]
-    demoted_line = old_line.replace(
-        "| Current release;", f"| Superseded by `v{version}`;"
+    return table_text[:old_line_start] + new_row + "\n" + table_text[old_line_start:]
+
+
+def promote_release_candidate_text(table_text: str, version: str) -> str:
+    """Promote exactly one candidate and demote exactly one current release."""
+    candidate_prefix = f"| `v{version}` |"
+    lines = table_text.splitlines(keepends=True)
+    candidate_indexes = [
+        index
+        for index, line in enumerate(lines)
+        if line.startswith(candidate_prefix) and "| Release candidate;" in line
+    ]
+    current_indexes = [
+        index for index, line in enumerate(lines) if "| Current release;" in line
+    ]
+    target_is_current = any(
+        line.startswith(candidate_prefix) and "| Current release;" in line
+        for line in lines
     )
-    return (
-        table_text[:old_line_start]
-        + new_row
-        + "\n"
-        + demoted_line
-        + table_text[line_end:]
+    if not candidate_indexes and target_is_current and len(current_indexes) == 1:
+        return table_text
+    if len(candidate_indexes) != 1 or len(current_indexes) != 1:
+        raise ReleaseError(
+            "expected exactly one matching release candidate and current release"
+        )
+    candidate_index = candidate_indexes[0]
+    current_index = current_indexes[0]
+    lines[candidate_index] = lines[candidate_index].replace(
+        "| Release candidate;", "| Current release;", 1
     )
+    lines[current_index] = lines[current_index].replace(
+        "| Current release;", f"| Superseded by `v{version}`;", 1
+    )
+    return "".join(lines)
 
 
 def read_current_version() -> str:
@@ -93,11 +125,17 @@ def read_current_version() -> str:
     return match.group(1)
 
 
-def run(cmd: list[str], *, cwd: Path = REPO_ROOT, check: bool = True) -> int:
-    print(f"  $ {' '.join(cmd)}")
-    result = subprocess.run(cmd, cwd=cwd)
+def run(
+    cmd: list[str],
+    *,
+    cwd: Path = REPO_ROOT,
+    check: bool = True,
+    env: dict[str, str] | None = None,
+) -> int:
+    print("  $ [redacted release command]")
+    result = subprocess.run(cmd, cwd=cwd, env=env)
     if check and result.returncode != 0:
-        raise ReleaseError(f"command failed ({result.returncode}): {' '.join(cmd)}")
+        raise ReleaseError(f"release command failed with exit code {result.returncode}")
     return result.returncode
 
 
@@ -138,44 +176,65 @@ def stage_prepare(version: str, summary: str, *, write: bool) -> None:
     )
 
 
-# Container Django suite. Override via the FORWARD_DJANGO_TEST_CMD env var.
-DJANGO_TEST_CMD = (
-    "docker exec forward-netbox-netbox-1 /opt/netbox/venv/bin/python "
-    "/opt/netbox/netbox/manage.py test --noinput --keepdb forward_netbox.tests"
-)
+def _available_loopback_port() -> str:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        return str(listener.getsockname()[1])
 
 
-def stage_verify(*, with_django: bool = False) -> None:
-    print("[verify] local CI mirror")
-    run(["git", "add", "-A"])  # so the sensitive guard sees new tracked files
-    run([sys.executable, "-m", "pre_commit", "clean"], check=False)
-    run([sys.executable, "-m", "pre_commit", "run", "--all-files"], check=False)
-    run(["git", "add", "-A"])
-    run([sys.executable, "-m", "pre_commit", "run", "--all-files"])
-    run([sys.executable, "scripts/check_harness.py"])
-    run(
-        [
-            sys.executable,
-            "-m",
-            "unittest",
-            "discover",
-            "-s",
-            "scripts/tests",
-            "-p",
-            "test_*.py",
-        ]
+def release_distribution_artifacts(version: str) -> list[Path]:
+    """Return exactly the current wheel and sdist, ignoring stale releases."""
+    dist_dir = REPO_ROOT / "dist"
+    wheels = sorted(dist_dir.glob(f"forward_netbox-{version}-*.whl"))
+    sdists = sorted(dist_dir.glob(f"forward_netbox-{version}.tar.gz"))
+    if len(wheels) != 1 or len(sdists) != 1:
+        raise ReleaseError(
+            "expected exactly one current-version wheel and sdist in dist/; "
+            f"found {len(wheels)} wheel(s) and {len(sdists)} sdist(s) for {version}"
+        )
+    return [wheels[0], sdists[0]]
+
+
+def stage_verify() -> None:
+    print("[verify] mandatory isolated local release gate")
+    release_project = "forward-netbox-release-gate"
+    release_env = {
+        **os.environ,
+        "FORWARD_NETBOX_DOCKER_PROJECT": release_project,
+        "FORWARD_NETBOX_HOST_PORT": _available_loopback_port(),
+        "FORWARD_NETBOX_POSTGRES_DATA_PATH": "netbox-postgres-data",
+        "FORWARD_NETBOX_WORKER_AUTORELOAD": "0",
+    }
+    release_env["NETBOX_URL"] = (
+        f"http://127.0.0.1:{release_env['FORWARD_NETBOX_HOST_PORT']}"
     )
-    run([sys.executable, "-m", "mkdocs", "build", "--strict"])
-    run([sys.executable, "-m", "build"])
-    if with_django:
-        import os
-        import shlex
-
-        cmd = os.environ.get("FORWARD_DJANGO_TEST_CMD", DJANGO_TEST_CMD)
-        print("[verify] running the container Django suite")
-        run(shlex.split(cmd))
-    else:
-        print("[verify] OK — run the Django suite separately (or pass --with-django).")
+    try:
+        run([sys.executable, "-m", "invoke", "ci"], env=release_env)
+        artifacts = release_distribution_artifacts(read_current_version())
+        run(
+            [sys.executable, "-m", "twine", "check", *(str(p) for p in artifacts)],
+            env=release_env,
+        )
+        run(
+            [sys.executable, "-m", "invoke", "artifact-test"],
+            env=release_env,
+        )
+    finally:
+        run(
+            [
+                "docker",
+                "compose",
+                "--project-name",
+                release_project,
+                "--project-directory",
+                str(REPO_ROOT / "development"),
+                "down",
+                "--volumes",
+                "--remove-orphans",
+            ],
+            check=False,
+            env=release_env,
+        )
 
 
 def _capture(cmd: list[str]) -> str:
@@ -183,121 +242,521 @@ def _capture(cmd: list[str]) -> str:
     return result.stdout.strip()
 
 
-def wait_for_ci(version: str, *, poll_seconds: int = 30, max_polls: int = 80) -> str:
-    """Poll GitHub CI for the release branch until it concludes.
+def _verify_live_release_controls() -> None:
+    token = _capture(["gh", "auth", "token"])
+    if not token:
+        raise ReleaseError("GitHub authentication is required for release controls")
+    env = {**os.environ, "GH_TOKEN": token}
+    run(
+        [
+            sys.executable,
+            "scripts/verify_release_provenance.py",
+            "--controls-only",
+            "--reviewer",
+            RELEASE_REVIEWER,
+        ],
+        env=env,
+    )
 
-    Robust against the `gh run watch` mid-run dropout seen in practice: re-polls
-    `gh run list` JSON and tolerates transient empty/Error responses. Returns the
-    final conclusion ('success'/'failure'/...), or '' if it never concluded.
-    """
-    import json
+
+def _assert_branch_head(branch: str, expected_commit: str) -> None:
+    current_branch = _capture(["git", "branch", "--show-current"])
+    current_commit = _capture(["git", "rev-parse", "HEAD"])
+    remote_lines = [
+        line.split()
+        for line in _capture(
+            ["git", "ls-remote", "--heads", "origin", branch]
+        ).splitlines()
+        if line.strip()
+    ]
+    remote_commits = [
+        fields[0]
+        for fields in remote_lines
+        if len(fields) == 2 and fields[1] == f"refs/heads/{branch}"
+    ]
+    if current_branch != branch:
+        raise ReleaseError(
+            f"release operation requires branch {branch}, found {current_branch!r}"
+        )
+    if current_commit != expected_commit:
+        raise ReleaseError(
+            "release branch HEAD changed after CI: "
+            f"expected {expected_commit}, found {current_commit}"
+        )
+    if remote_commits != [expected_commit]:
+        raise ReleaseError(
+            f"origin/{branch} must point only to CI-approved {expected_commit}; "
+            f"found {remote_commits}"
+        )
+
+
+def _assert_release_head(version: str, expected_commit: str) -> None:
+    _assert_branch_head(f"release/{version}", expected_commit)
+
+
+def wait_for_required_workflows(
+    expected_commit: str,
+    *,
+    expected_branch: str,
+    expected_event: str = "push",
+    poll_seconds: int = 30,
+    max_polls: int = 80,
+) -> bool:
+    """Require successful runs from exact workflow identities on one commit."""
     import time
 
-    branch = f"release/{version}"
     for _ in range(max_polls):
-        raw = _capture(
-            [
-                "gh",
-                "run",
-                "list",
-                "--branch",
-                branch,
-                "--limit",
-                "1",
-                "--json",
-                "status,conclusion",
+        incomplete: list[str] = []
+        for workflow_path in REQUIRED_RELEASE_WORKFLOWS:
+            raw = _capture(
+                [
+                    "gh",
+                    "api",
+                    "--method",
+                    "GET",
+                    f"repos/{GITHUB_REPOSITORY}/actions/workflows/{workflow_path}/runs",
+                    "-f",
+                    f"head_sha={expected_commit}",
+                    "-f",
+                    f"event={expected_event}",
+                    "-f",
+                    "per_page=100",
+                ]
+            )
+            try:
+                payload = json.loads(raw) if raw else {}
+            except json.JSONDecodeError:
+                payload = {}
+            exact = [
+                run
+                for run in payload.get("workflow_runs", [])
+                if run.get("path") == workflow_path
+                and run.get("head_sha") == expected_commit
+                and run.get("head_branch") == expected_branch
+                and run.get("event") == expected_event
             ]
-        )
-        try:
-            runs = json.loads(raw) if raw else []
-        except json.JSONDecodeError:
-            runs = []
-        if runs:
-            run_info = runs[0]
-            if run_info.get("status") == "completed":
-                conclusion = run_info.get("conclusion") or ""
-                print(f"[ci] {branch} concluded: {conclusion}")
-                return conclusion
-            print(f"[ci] {branch} status={run_info.get('status')} — waiting")
-        else:
-            print(f"[ci] no run yet for {branch} — waiting")
+            if not exact:
+                incomplete.append(f"{workflow_path}:missing")
+                continue
+            latest = max(exact, key=lambda run: int(run.get("id") or 0))
+            if latest.get("status") != "completed":
+                incomplete.append(f"{workflow_path}:{latest.get('status')}")
+                continue
+            if latest.get("conclusion") != "success":
+                print(
+                    f"[checks] {workflow_path} failed on {expected_commit}: "
+                    f"{latest.get('conclusion')!r}"
+                )
+                return False
+        if not incomplete:
+            print(f"[checks] exact required workflows passed for {expected_commit}")
+            return True
+        print(f"[checks] waiting for: {', '.join(incomplete)}")
         time.sleep(poll_seconds)
-    print(f"[ci] timed out waiting for {branch}")
-    return ""
+    print(f"[checks] timed out waiting for exact workflows on {expected_commit}")
+    return False
 
 
-def notes_from_plan(version: str) -> Path | None:
-    """Best-effort release notes from a plan's 'Bundled changes' section."""
-    for path in sorted(PLAN_DIR.glob(f"*release-{version}*.md")):
-        text = path.read_text(encoding="utf-8")
-        if "## Bundled changes" not in text:
-            continue
-        section = text.split("## Bundled changes", 1)[1]
-        # Stop at the next heading.
-        body = section.split("\n## ", 1)[0].strip()
-        out = REPO_ROOT / "dist" / f"release-notes-{version}.md"
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(f"# v{version}\n\n{body}\n", encoding="utf-8")
-        return out
-    return None
-
-
-def stage_publish(version: str, notes_file: Path, *, auto_finish: bool = False) -> None:
+def stage_publish(version: str, *, auto_finish: bool = False) -> None:
     print(f"[publish] rolling out v{version}")
     branch = f"release/{version}"
-    run(["git", "checkout", "-b", branch])
+    current_branch = _capture(["git", "branch", "--show-current"])
+    if current_branch != branch:
+        local_branches = _capture(["git", "branch", "--format=%(refname:short)"])
+        checkout_arguments = ["git", "checkout"]
+        if branch not in local_branches.splitlines():
+            checkout_arguments.append("-b")
+        run([*checkout_arguments, branch])
     run(["git", "add", "-A"])
     run(["git", "commit", "-m", f"release: cut v{version}"])
     # Simulate the push-event harness gate (every commit's high-risk paths need a
     # plan file in the SAME commit) BEFORE pushing — avoids a failed-CI round-trip.
     run([sys.executable, "scripts/check_harness.py", "--base", "origin/main"])
     run(["git", "push", "--no-verify", "-u", "origin", branch])
-    conclusion = wait_for_ci(version)
-    if conclusion != "success":
-        raise ReleaseError(f"GitHub CI did not succeed (conclusion={conclusion!r})")
+    published_head = _capture(["git", "rev-parse", "HEAD"])
+    if not wait_for_required_workflows(
+        published_head,
+        expected_branch=branch,
+    ):
+        raise ReleaseError("Exact required GitHub workflows did not all succeed")
+    _assert_release_head(version, published_head)
     if auto_finish:
-        stage_finish(version, notes_file)
+        stage_finish(version)
     else:
-        print("[publish] CI green — re-run with --finish to FF main, tag, release.")
+        print("[publish] workflows green; re-run with --finish for reviewed PRs.")
 
 
-def stage_finish(version: str, notes_file: Path | None = None) -> None:
-    print(f"[finish] tag + release v{version}")
-    if notes_file is None:
-        notes_file = notes_from_plan(version)
-    if notes_file is None:
-        raise ReleaseError(
-            "no --notes-file and no plan 'Bundled changes' section to derive notes"
+def _promote_release_candidate(version: str) -> bool:
+    originals = {path: path.read_text(encoding="utf-8") for path in README_TABLES}
+    edits = {
+        path: promote_release_candidate_text(text, version)
+        for path, text in originals.items()
+    }
+    if edits == originals:
+        print(f"[finish] v{version} metadata is already promoted")
+        return False
+    for path, text in edits.items():
+        path.write_text(text, encoding="utf-8")
+    run([sys.executable, "scripts/gen_changelog.py"])
+    run(
+        [
+            "git",
+            "add",
+            *(str(path.relative_to(REPO_ROOT)) for path in README_TABLES),
+            "CHANGELOG.md",
+        ]
+    )
+    run(["git", "commit", "-m", f"release: promote v{version}"])
+    run([sys.executable, "scripts/check_harness.py", "--base", "origin/main"])
+    run(["git", "push", "--no-verify", "origin", f"release/{version}"])
+    promoted_head = _capture(["git", "rev-parse", "HEAD"])
+    if not wait_for_required_workflows(
+        promoted_head,
+        expected_branch=f"release/{version}",
+    ):
+        raise ReleaseError("Promoted release exact workflows did not all succeed")
+    _assert_release_head(version, promoted_head)
+    return True
+
+
+def _pull_request_for_branch(branch: str) -> dict | None:
+    raw = _capture(
+        [
+            "gh",
+            "pr",
+            "list",
+            "--repo",
+            GITHUB_REPOSITORY,
+            "--head",
+            branch,
+            "--base",
+            "main",
+            "--state",
+            "all",
+            "--limit",
+            "1",
+            "--json",
+            "number,state,mergedAt,url,headRefName,baseRefName",
+        ]
+    )
+    try:
+        pulls = json.loads(raw) if raw else []
+    except json.JSONDecodeError:
+        pulls = []
+    return pulls[0] if pulls else None
+
+
+def _open_reviewed_pull_request(version: str, branch: str, *, evidence: bool) -> None:
+    pull = _pull_request_for_branch(branch)
+    if pull and pull.get("state") == "MERGED":
+        print(f"[finish] reviewed PR already merged: {pull['url']}")
+        return
+    _verify_live_release_controls()
+    if not pull:
+        kind = "release evidence" if evidence else "production release"
+        title = f"release: {'authorize' if evidence else 'ship'} v{version}"
+        body = (
+            f"Reviewed {kind} PR for v{version}. "
+            "Required CI, CodeQL, trusted sensitive-content status, and "
+            "CODEOWNERS approval must all pass before squash merge."
         )
-    run(["git", "push", "--no-verify", "origin", f"release/{version}:main"])
-    run(["git", "tag", "-a", f"v{version}", "-m", f"Release {version}"])
-    run(["git", "push", "--no-verify", "origin", f"v{version}"])
-    whl = f"dist/forward_netbox-{version}-py3-none-any.whl"
-    sdist = f"dist/forward_netbox-{version}.tar.gz"
+        run(
+            [
+                "gh",
+                "pr",
+                "create",
+                "--repo",
+                GITHUB_REPOSITORY,
+                "--base",
+                "main",
+                "--head",
+                branch,
+                "--title",
+                title,
+                "--body",
+                body,
+            ]
+        )
+        pull = _pull_request_for_branch(branch)
+    if not pull:
+        raise ReleaseError(f"failed to resolve pull request for {branch}")
     run(
         [
             "gh",
-            "release",
-            "create",
-            f"v{version}",
-            whl,
-            sdist,
-            "--title",
-            f"v{version}",
-            "--notes-file",
-            str(notes_file),
+            "pr",
+            "edit",
+            str(pull["number"]),
+            "--repo",
+            GITHUB_REPOSITORY,
+            "--add-reviewer",
+            RELEASE_REVIEWER,
+        ]
+    )
+    run(
+        [
+            "gh",
+            "pr",
+            "merge",
+            str(pull["number"]),
+            "--repo",
+            GITHUB_REPOSITORY,
+            "--auto",
+            "--squash",
         ]
     )
     print(
-        "[finish] pushing the v"
-        + version
-        + " tag triggers the Trusted-Publishing workflow (.github/workflows/"
-        "release.yml), which builds and uploads to PyPI via OIDC — no token. "
-        "If Trusted Publishing is not yet configured on PyPI, upload manually as a "
-        "fallback with: twine upload " + whl + " " + sdist
+        f"[finish] queued reviewed squash merge for {pull['url']}; "
+        f"approval by {RELEASE_REVIEWER} is mandatory"
     )
-    run(["git", "checkout", "main"])
-    run(["git", "merge", "--ff-only", "origin/main"])
+
+
+def wait_for_release_workflow(
+    version: str, *, poll_seconds: int = 30, max_polls: int = 80
+) -> str:
+    import json
+    import time
+
+    tag = f"v{version}"
+    commit = _capture(["git", "rev-list", "-n", "1", tag])
+    for _ in range(max_polls):
+        raw = _capture(
+            [
+                "gh",
+                "api",
+                "--method",
+                "GET",
+                f"repos/{GITHUB_REPOSITORY}/actions/workflows/release.yml/runs",
+                "-f",
+                f"head_sha={commit}",
+                "-f",
+                "event=push",
+                "-f",
+                "per_page=100",
+            ]
+        )
+        try:
+            payload = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            payload = {}
+        runs = [
+            run
+            for run in payload.get("workflow_runs", [])
+            if run.get("path") == ".github/workflows/release.yml"
+            and run.get("head_sha") == commit
+            and run.get("event") == "push"
+            and run.get("head_branch") == tag
+        ]
+        latest = max(runs, key=lambda run: int(run.get("id") or 0)) if runs else None
+        if latest and latest.get("status") == "completed":
+            conclusion = latest.get("conclusion") or ""
+            print(f"[release] {tag} concluded: {conclusion}")
+            return conclusion
+        print(f"[release] waiting for tested artifact publication of {tag}")
+        time.sleep(poll_seconds)
+    return ""
+
+
+def _trusted_tag_workflow_runs(expected_commit: str) -> list[dict]:
+    raw = _capture(
+        [
+            "gh",
+            "api",
+            "--method",
+            "GET",
+            (f"repos/{GITHUB_REPOSITORY}/actions/workflows/" "trusted-tag.yml/runs"),
+            "-f",
+            f"head_sha={expected_commit}",
+            "-f",
+            "event=workflow_dispatch",
+            "-f",
+            "per_page=100",
+        ]
+    )
+    try:
+        payload = json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        payload = {}
+    return [
+        workflow_run
+        for workflow_run in payload.get("workflow_runs", [])
+        if workflow_run.get("path") == TRUSTED_TAG_WORKFLOW
+        and workflow_run.get("head_sha") == expected_commit
+        and workflow_run.get("head_branch") == "main"
+        and workflow_run.get("event") == "workflow_dispatch"
+    ]
+
+
+def wait_for_trusted_tag_workflow(
+    expected_commit: str,
+    prior_run_ids: set[int],
+    *,
+    poll_seconds: int = 15,
+    max_polls: int = 80,
+) -> str:
+    import time
+
+    for _ in range(max_polls):
+        new_runs = [
+            workflow_run
+            for workflow_run in _trusted_tag_workflow_runs(expected_commit)
+            if int(workflow_run.get("id") or 0) not in prior_run_ids
+        ]
+        latest = (
+            max(new_runs, key=lambda workflow_run: int(workflow_run.get("id") or 0))
+            if new_runs
+            else None
+        )
+        if latest and latest.get("status") == "completed":
+            return str(latest.get("conclusion") or "")
+        print("[release] waiting for protected-main tag authorization")
+        time.sleep(poll_seconds)
+    return ""
+
+
+def ensure_trusted_tag(tag: str, expected_commit: str) -> None:
+    run(
+        [
+            "git",
+            "fetch",
+            "--force",
+            "origin",
+            f"refs/tags/{tag}:refs/tags/{tag}",
+        ],
+        check=False,
+    )
+    existing_tag_commit = _capture(["git", "rev-list", "-n", "1", tag])
+    if existing_tag_commit:
+        if existing_tag_commit != expected_commit:
+            raise ReleaseError(
+                f"existing {tag} points to {existing_tag_commit}, not {expected_commit}"
+            )
+        if _capture(["git", "cat-file", "-t", f"refs/tags/{tag}"]) != "tag":
+            raise ReleaseError(f"existing {tag} is not an annotated tag")
+        return
+
+    prior_run_ids = {
+        int(workflow_run.get("id") or 0)
+        for workflow_run in _trusted_tag_workflow_runs(expected_commit)
+    }
+    run(
+        [
+            "gh",
+            "workflow",
+            "run",
+            TRUSTED_TAG_WORKFLOW,
+            "--repo",
+            GITHUB_REPOSITORY,
+            "--ref",
+            "main",
+            "-f",
+            f"tag_name={tag}",
+            "-f",
+            f"expected_sha={expected_commit}",
+        ]
+    )
+    conclusion = wait_for_trusted_tag_workflow(expected_commit, prior_run_ids)
+    if conclusion != "success":
+        raise ReleaseError(
+            "protected-main tag workflow did not authorize the release "
+            f"(conclusion={conclusion!r})"
+        )
+    run(
+        [
+            "git",
+            "fetch",
+            "--force",
+            "origin",
+            f"refs/tags/{tag}:refs/tags/{tag}",
+        ]
+    )
+    if _capture(["git", "rev-list", "-n", "1", tag]) != expected_commit:
+        raise ReleaseError(f"trusted workflow created {tag} at the wrong commit")
+    if _capture(["git", "cat-file", "-t", f"refs/tags/{tag}"]) != "tag":
+        raise ReleaseError(f"trusted workflow did not create annotated tag {tag}")
+
+
+def stage_finish(version: str) -> None:
+    print(f"[finish] reviewed two-PR release flow for v{version}")
+    production_branch = f"release/{version}"
+    evidence_branch = f"release/{version}-evidence"
+    current_branch = _capture(["git", "branch", "--show-current"])
+
+    if current_branch == production_branch:
+        if _promote_release_candidate(version):
+            print(
+                "[finish] metadata promotion is green. Re-run --finish to open "
+                "the reviewed production PR."
+            )
+            return
+        head_commit = _capture(["git", "rev-parse", "HEAD"])
+        run([sys.executable, "scripts/check_harness.py", "--base", "origin/main"])
+        run(["git", "push", "--no-verify", "origin", production_branch])
+        if not wait_for_required_workflows(
+            head_commit,
+            expected_branch=production_branch,
+        ):
+            raise ReleaseError("Production release exact workflows did not all succeed")
+        _assert_branch_head(production_branch, head_commit)
+        _open_reviewed_pull_request(
+            version,
+            production_branch,
+            evidence=False,
+        )
+        return
+
+    if current_branch == evidence_branch:
+        head_commit = _capture(["git", "rev-parse", "HEAD"])
+        run([sys.executable, "scripts/check_harness.py", "--base", "origin/main"])
+        run(
+            [
+                sys.executable,
+                "scripts/check_release_authorization.py",
+                "--version",
+                version,
+            ]
+        )
+        run(["git", "push", "--no-verify", "-u", "origin", evidence_branch])
+        if not wait_for_required_workflows(
+            head_commit,
+            expected_branch=evidence_branch,
+        ):
+            raise ReleaseError("Evidence release exact workflows did not all succeed")
+        _assert_branch_head(evidence_branch, head_commit)
+        _open_reviewed_pull_request(
+            version,
+            evidence_branch,
+            evidence=True,
+        )
+        return
+
+    if current_branch != "main":
+        raise ReleaseError(
+            f"finish requires {production_branch}, {evidence_branch}, or main; "
+            f"found {current_branch!r}"
+        )
+    run(["git", "fetch", "origin", "main"])
+    head_commit = _capture(["git", "rev-parse", "HEAD"])
+    remote_main = _capture(["git", "rev-parse", "origin/main"])
+    if head_commit != remote_main:
+        raise ReleaseError("local main must exactly match origin/main before tagging")
+    run(
+        [
+            sys.executable,
+            "scripts/check_release_authorization.py",
+            "--version",
+            version,
+        ]
+    )
+    if not wait_for_required_workflows(head_commit, expected_branch="main"):
+        raise ReleaseError("Final main exact workflows did not all succeed")
+    tag = f"v{version}"
+    ensure_trusted_tag(tag, head_commit)
+    conclusion = wait_for_release_workflow(version)
+    if conclusion != "success":
+        raise ReleaseError(
+            "tagged release workflow did not publish identical PyPI and GitHub "
+            f"artifacts (conclusion={conclusion!r})"
+        )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -308,15 +767,7 @@ def main(argv: list[str] | None = None) -> int:
         help="one-line release summary for the compatibility tables",
         default="",
     )
-    parser.add_argument(
-        "--notes-file", type=Path, help="release body for the GitHub release"
-    )
     parser.add_argument("--write", action="store_true", help="write prepare edits")
-    parser.add_argument(
-        "--with-django",
-        action="store_true",
-        help="also run the container Django suite during verify",
-    )
     parser.add_argument(
         "--publish",
         action="store_true",
@@ -325,12 +776,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--auto-finish",
         action="store_true",
-        help="with --publish: after CI is green, FF main + tag + GitHub release",
+        help="with --publish: after CI is green, promote + tag + publish release",
     )
     parser.add_argument(
         "--finish",
         action="store_true",
-        help="after CI is green: FF main, tag, GitHub release (rollout)",
+        help="promote, open reviewed PRs, or tag reviewed main (rollout)",
     )
     args = parser.parse_args(argv)
 
@@ -339,18 +790,13 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if args.finish:
-            stage_finish(args.version, args.notes_file)
+            stage_finish(args.version)
             return 0
         stage_prepare(args.version, args.summary, write=args.write)
         if args.write:
-            stage_verify(with_django=args.with_django)
+            stage_verify()
         if args.publish:
-            notes_file = args.notes_file or notes_from_plan(args.version)
-            if notes_file is None:
-                parser.error(
-                    "--publish needs --notes-file or a plan 'Bundled changes' section"
-                )
-            stage_publish(args.version, notes_file, auto_finish=args.auto_finish)
+            stage_publish(args.version, auto_finish=args.auto_finish)
     except ReleaseError as exc:
         print(f"release error: {exc}", file=sys.stderr)
         return 1

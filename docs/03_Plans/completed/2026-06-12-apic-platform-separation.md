@@ -35,7 +35,7 @@ collapsing both controller and switch inventory into one label.
 - `invoke test-isolated --test-label forward_netbox.tests.test_query_registry`
 - Live Forward validation org query audit passed after republishing the bundled
   query set to `/forward_netbox_validation/`.
-- Live ORG query check against `Forward Platforms` on snapshot `1314736`
+- Live ORG query check against `Forward Platforms` on a private snapshot
   returned both `APIC` and `ACI` platform rows, with Cisco APIC controllers
   landing on `APIC` and ACI switches remaining on `ACI`.
 
