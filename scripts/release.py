@@ -13,8 +13,8 @@
 #   verify   - the full local CI mirror (pre-commit x2, harness, harness tests,
 #              py_compile, mkdocs --strict, build)
 #   publish  - branch, push, and wait for the exact GitHub workflows
-#   finish   - promote metadata, open the reviewed production/evidence PRs, or
-#              tag the reviewed evidence-only main commit
+#   finish   - promote metadata, open the check-gated production/evidence PRs,
+#              or tag the validated evidence-only main commit
 #
 # Default run is prepare + verify. Rollout never happens without --publish, so
 # this is safe to run for a dry build.
@@ -50,7 +50,6 @@ REQUIRED_RELEASE_WORKFLOWS = (
     ".github/workflows/ci.yml",
     ".github/workflows/codeql.yml",
 )
-RELEASE_REVIEWER = "brandonheller"
 
 
 class ReleaseError(RuntimeError):
@@ -251,8 +250,6 @@ def _verify_live_release_controls() -> None:
             sys.executable,
             "scripts/verify_release_provenance.py",
             "--controls-only",
-            "--reviewer",
-            RELEASE_REVIEWER,
         ],
         env=env,
     )
@@ -382,7 +379,7 @@ def stage_publish(version: str, *, auto_finish: bool = False) -> None:
     if auto_finish:
         stage_finish(version)
     else:
-        print("[publish] workflows green; re-run with --finish for reviewed PRs.")
+        print("[publish] workflows green; re-run with --finish for release PRs.")
 
 
 def _promote_release_candidate(version: str) -> bool:
@@ -445,19 +442,18 @@ def _pull_request_for_branch(branch: str) -> dict | None:
     return pulls[0] if pulls else None
 
 
-def _open_reviewed_pull_request(version: str, branch: str, *, evidence: bool) -> None:
+def _open_release_pull_request(version: str, branch: str, *, evidence: bool) -> None:
     pull = _pull_request_for_branch(branch)
     if pull and pull.get("state") == "MERGED":
-        print(f"[finish] reviewed PR already merged: {pull['url']}")
+        print(f"[finish] release PR already merged: {pull['url']}")
         return
     _verify_live_release_controls()
     if not pull:
         kind = "release evidence" if evidence else "production release"
         title = f"release: {'authorize' if evidence else 'ship'} v{version}"
         body = (
-            f"Reviewed {kind} PR for v{version}. "
-            "Required CI, CodeQL, trusted sensitive-content status, and "
-            "CODEOWNERS approval must all pass before squash merge."
+            f"{kind.title()} PR for v{version}. Required CI, CodeQL, and the "
+            "trusted sensitive-content status must pass before squash merge."
         )
         run(
             [
@@ -483,18 +479,6 @@ def _open_reviewed_pull_request(version: str, branch: str, *, evidence: bool) ->
         [
             "gh",
             "pr",
-            "edit",
-            str(pull["number"]),
-            "--repo",
-            GITHUB_REPOSITORY,
-            "--add-reviewer",
-            RELEASE_REVIEWER,
-        ]
-    )
-    run(
-        [
-            "gh",
-            "pr",
             "merge",
             str(pull["number"]),
             "--repo",
@@ -503,10 +487,7 @@ def _open_reviewed_pull_request(version: str, branch: str, *, evidence: bool) ->
             "--squash",
         ]
     )
-    print(
-        f"[finish] queued reviewed squash merge for {pull['url']}; "
-        f"approval by {RELEASE_REVIEWER} is mandatory"
-    )
+    print(f"[finish] queued check-gated squash merge for {pull['url']}")
 
 
 def wait_for_release_workflow(
@@ -628,12 +609,12 @@ def ensure_release_tag(tag: str, expected_commit: str) -> None:
     run(["git", "push", "origin", f"refs/tags/{tag}"])
     if _remote_annotated_tag_target(tag) != expected_commit:
         raise ReleaseError(
-            f"remote {tag} does not peel to reviewed commit {expected_commit}"
+            f"remote {tag} does not peel to validated commit {expected_commit}"
         )
 
 
 def stage_finish(version: str) -> None:
-    print(f"[finish] reviewed two-PR release flow for v{version}")
+    print(f"[finish] check-gated two-PR release flow for v{version}")
     production_branch = f"release/{version}"
     evidence_branch = f"release/{version}-evidence"
     current_branch = _capture(["git", "branch", "--show-current"])
@@ -642,7 +623,7 @@ def stage_finish(version: str) -> None:
         if _promote_release_candidate(version):
             print(
                 "[finish] metadata promotion is green. Re-run --finish to open "
-                "the reviewed production PR."
+                "the production PR."
             )
             return
         head_commit = _capture(["git", "rev-parse", "HEAD"])
@@ -654,7 +635,7 @@ def stage_finish(version: str) -> None:
         ):
             raise ReleaseError("Production release exact workflows did not all succeed")
         _assert_branch_head(production_branch, head_commit)
-        _open_reviewed_pull_request(
+        _open_release_pull_request(
             version,
             production_branch,
             evidence=False,
@@ -679,7 +660,7 @@ def stage_finish(version: str) -> None:
         ):
             raise ReleaseError("Evidence release exact workflows did not all succeed")
         _assert_branch_head(evidence_branch, head_commit)
-        _open_reviewed_pull_request(
+        _open_release_pull_request(
             version,
             evidence_branch,
             evidence=True,
@@ -738,7 +719,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--finish",
         action="store_true",
-        help="promote, open reviewed PRs, or tag reviewed main (rollout)",
+        help="promote, open release PRs, or tag validated main (rollout)",
     )
     args = parser.parse_args(argv)
 

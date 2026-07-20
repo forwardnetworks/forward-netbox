@@ -168,18 +168,6 @@ class ReleaseProvenanceTest(unittest.TestCase):
                     "merged_at": merged_at[number],
                     "head": {"sha": candidate},
                 }
-            if endpoint == f"pulls/{number}/reviews":
-                if page > 1:
-                    return []
-                return [
-                    {
-                        "id": number,
-                        "state": "APPROVED",
-                        "user": {"login": "brandonheller"},
-                        "commit_id": candidate,
-                        "submitted_at": f"2026-07-20T0{number - 2}:00:00Z",
-                    }
-                ]
 
         status_runs = {
             self.production_candidate: (201, 10),
@@ -259,9 +247,7 @@ class ReleaseProvenanceTest(unittest.TestCase):
                 provenance, "_github_json", side_effect=github or self._github
             ),
         ):
-            return provenance.verify_release_provenance(
-                "v2.6.0", "brandonheller", "token"
-            )
+            return provenance.verify_release_provenance("v2.6.0", "token")
 
     def test_accepts_reviewed_bootstrap_and_release_lineage(self):
         result = self._verify()
@@ -281,8 +267,6 @@ class ReleaseProvenanceTest(unittest.TestCase):
             "verify_release_provenance.py",
             "--tag",
             "v2.6.0",
-            "--reviewer",
-            "brandonheller",
         ]
         with (
             patch.dict(os.environ, {"GH_TOKEN": secret}, clear=True),
@@ -305,8 +289,6 @@ class ReleaseProvenanceTest(unittest.TestCase):
         argv = [
             "verify_release_provenance.py",
             "--controls-only",
-            "--reviewer",
-            "brandonheller",
         ]
         with (
             patch.dict(os.environ, {"GH_TOKEN": secret}, clear=True),
@@ -320,10 +302,7 @@ class ReleaseProvenanceTest(unittest.TestCase):
         ):
             self.assertEqual(provenance.main(), 0)
 
-        verify.assert_called_once_with(
-            "brandonheller",
-            secret,
-        )
+        verify.assert_called_once_with(secret)
         self.assertEqual(
             output.getvalue(),
             "GitHub release controls verification passed.\n",
@@ -437,45 +416,6 @@ class ReleaseProvenanceTest(unittest.TestCase):
                 release_commit,
             )
 
-    def test_rejects_stale_review(self):
-        def github(path, token):
-            payload = self._github(path, token)
-            if path.startswith("pulls/11/reviews?") and payload:
-                payload[0]["commit_id"] = "f" * 40
-            return payload
-
-        with self.assertRaisesRegex(provenance.ProvenanceError, "final SHA"):
-            self._verify(github=github)
-
-    def test_reads_all_review_pages_before_accepting_latest_state(self):
-        def github(path, token):
-            endpoint, page, _query = self._path_parts(path)
-            if endpoint == "pulls/11/reviews" and page == 1:
-                return [
-                    {
-                        "id": review_id,
-                        "state": "APPROVED",
-                        "user": {"login": "brandonheller"},
-                        "commit_id": self.evidence_candidate,
-                        "submitted_at": "2026-07-20T11:00:00Z",
-                    }
-                    for review_id in range(1, 101)
-                ]
-            if endpoint == "pulls/11/reviews" and page == 2:
-                return [
-                    {
-                        "id": 101,
-                        "state": "CHANGES_REQUESTED",
-                        "user": {"login": "brandonheller"},
-                        "commit_id": self.evidence_candidate,
-                        "submitted_at": "2026-07-20T11:30:00Z",
-                    }
-                ]
-            return self._github(path, token)
-
-        with self.assertRaisesRegex(provenance.ProvenanceError, "current approval"):
-            self._verify(github=github)
-
     def test_rejects_untrusted_candidate_status(self):
         def github(path, token):
             payload = self._github(path, token)
@@ -551,7 +491,6 @@ class ReleaseProvenanceTest(unittest.TestCase):
 
 
 class GitHubReleaseControlsTest(unittest.TestCase):
-    reviewer = "brandonheller"
 
     @staticmethod
     def _ruleset(name, target, pattern, rules, bypass):
@@ -588,10 +527,10 @@ class GitHubReleaseControlsTest(unittest.TestCase):
                 {
                     "type": "pull_request",
                     "parameters": {
-                        "required_approving_review_count": 1,
-                        "dismiss_stale_reviews_on_push": True,
-                        "require_code_owner_review": True,
-                        "require_last_push_approval": True,
+                        "required_approving_review_count": 0,
+                        "dismiss_stale_reviews_on_push": False,
+                        "require_code_owner_review": False,
+                        "require_last_push_approval": False,
                         "required_review_thread_resolution": True,
                         "allowed_merge_methods": ["squash"],
                     },
@@ -625,21 +564,7 @@ class GitHubReleaseControlsTest(unittest.TestCase):
                 "protected_branches": False,
                 "custom_branch_policies": True,
             },
-            "protection_rules": [
-                {
-                    "type": "required_reviewers",
-                    "prevent_self_review": True,
-                    "reviewers": [
-                        {
-                            "type": "User",
-                            "reviewer": {
-                                "id": provenance.RELEASE_REVIEWER_ID,
-                                "login": self.reviewer,
-                            },
-                        }
-                    ],
-                }
-            ],
+            "protection_rules": [],
         }
         return {
             "repository": {
@@ -702,10 +627,7 @@ class GitHubReleaseControlsTest(unittest.TestCase):
             "_github_json",
             side_effect=self._github(current),
         ):
-            return provenance.verify_github_release_controls(
-                self.reviewer,
-                "token",
-            )
+            return provenance.verify_github_release_controls("token")
 
     def test_accepts_complete_live_release_controls(self):
         result = self._verify()
@@ -733,6 +655,13 @@ class GitHubReleaseControlsTest(unittest.TestCase):
         payloads["environment"]["can_admins_bypass"] = True
 
         with self.assertRaisesRegex(provenance.ProvenanceError, "administrator"):
+            self._verify(payloads)
+
+    def test_rejects_environment_approval_gate(self):
+        payloads = self._payloads()
+        payloads["environment"]["protection_rules"] = [{"type": "required_reviewers"}]
+
+        with self.assertRaisesRegex(provenance.ProvenanceError, "approval gate"):
             self._verify(payloads)
 
     def test_rejects_missing_version_tag_integrity_ruleset(self):

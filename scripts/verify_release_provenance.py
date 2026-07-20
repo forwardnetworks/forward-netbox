@@ -28,7 +28,6 @@ REQUIRED_WORKFLOWS = (
     ".github/workflows/ci.yml",
     ".github/workflows/codeql.yml",
 )
-RELEASE_REVIEWER_ID = 82859
 GITHUB_ACTIONS_APP_ID = 15368
 GITHUB_ADVANCED_SECURITY_APP_ID = 57789
 MAIN_RULESET_NAME = "main-release-integrity"
@@ -170,10 +169,10 @@ def _require_main_ruleset(token: str, *, require_trusted_status: bool) -> list[s
     )
     pull_parameters = rules["pull_request"].get("parameters") or {}
     required_pull_parameters = {
-        "required_approving_review_count": 1,
-        "dismiss_stale_reviews_on_push": True,
-        "require_code_owner_review": True,
-        "require_last_push_approval": True,
+        "required_approving_review_count": 0,
+        "dismiss_stale_reviews_on_push": False,
+        "require_code_owner_review": False,
+        "require_last_push_approval": False,
         "required_review_thread_resolution": True,
         "allowed_merge_methods": ["squash"],
     }
@@ -226,7 +225,6 @@ def _require_environment(
     name: str,
     policy_name: str,
     policy_type: str,
-    reviewer: str,
 ) -> None:
     encoded_name = urllib.parse.quote(name, safe="")
     environment = _github_json(f"environments/{encoded_name}", token)
@@ -244,22 +242,8 @@ def _require_environment(
         for rule in environment.get("protection_rules") or []
         if rule.get("type") == "required_reviewers"
     ]
-    if (
-        len(reviewer_rules) != 1
-        or reviewer_rules[0].get("prevent_self_review") is not True
-    ):
-        raise ProvenanceError(f"environment {name!r} lacks independent review")
-    reviewers = reviewer_rules[0].get("reviewers") or []
-    if len(reviewers) != 1:
-        raise ProvenanceError(f"environment {name!r} has unexpected reviewers")
-    configured_reviewer = reviewers[0]
-    reviewer_data = configured_reviewer.get("reviewer") or {}
-    if (
-        configured_reviewer.get("type") != "User"
-        or reviewer_data.get("id") != RELEASE_REVIEWER_ID
-        or str(reviewer_data.get("login") or "").lower() != reviewer.lower()
-    ):
-        raise ProvenanceError(f"environment {name!r} reviewer is invalid")
+    if reviewer_rules:
+        raise ProvenanceError(f"environment {name!r} has an approval gate")
     policies = _github_json(
         f"environments/{encoded_name}/deployment-branch-policies",
         token,
@@ -274,7 +258,7 @@ def _require_environment(
         raise ProvenanceError(f"environment {name!r} deployment policy is invalid")
 
 
-def verify_github_release_controls(reviewer: str, token: str) -> dict:
+def verify_github_release_controls(token: str) -> dict:
     repository = _github_json("", token)
     if not isinstance(repository, dict):
         raise ProvenanceError("GitHub returned invalid repository settings")
@@ -307,7 +291,6 @@ def verify_github_release_controls(reviewer: str, token: str) -> dict:
         name=PYPI_ENVIRONMENT,
         policy_name="v*",
         policy_type="tag",
-        reviewer=reviewer,
     )
     return {
         "main_ruleset": MAIN_RULESET_NAME,
@@ -327,17 +310,6 @@ def _require_verified_commit(commit: str, token: str) -> dict:
     if len(parents) != 1:
         raise ProvenanceError(f"commit {commit} must have exactly one parent")
     return payload
-
-
-def _latest_review_by_user(reviews: list[dict], login: str) -> dict | None:
-    matching = [
-        review
-        for review in reviews
-        if str((review.get("user") or {}).get("login") or "").lower() == login.lower()
-    ]
-    if not matching:
-        return None
-    return max(matching, key=lambda review: int(review.get("id") or 0))
 
 
 def _trusted_scanner_workflow_id(token: str) -> int:
@@ -421,9 +393,8 @@ def _require_trusted_candidate_status(
         )
 
 
-def _require_reviewed_main_pr(
+def _require_merged_main_pr(
     commit: str,
-    reviewer: str,
     token: str,
     *,
     require_trusted_status: bool = True,
@@ -446,20 +417,6 @@ def _require_reviewed_main_pr(
     candidate = str((pull.get("head") or {}).get("sha") or "")
     if not candidate:
         raise ProvenanceError(f"pull request for {commit} has no candidate SHA")
-    reviews = _github_pages(f"pulls/{pull['number']}/reviews", token)
-    approval = _latest_review_by_user(reviews, reviewer)
-    if approval is None or approval.get("state") != "APPROVED":
-        raise ProvenanceError(
-            f"pull request #{pull['number']} lacks current approval by {reviewer}"
-        )
-    if approval.get("commit_id") != candidate:
-        raise ProvenanceError(
-            f"pull request #{pull['number']} approval does not cover its final SHA"
-        )
-    if not approval.get("submitted_at") or approval["submitted_at"] > pull["merged_at"]:
-        raise ProvenanceError(
-            f"pull request #{pull['number']} approval timestamp is invalid"
-        )
     if require_trusted_status:
         _require_trusted_candidate_status(candidate, int(pull["number"]), token)
     return pull
@@ -620,7 +577,6 @@ def _require_release_on_main_lineage(release_commit: str) -> str:
 def verify_release_commit_provenance(
     release_commit: str,
     version: str,
-    reviewer: str,
     token: str,
 ) -> dict:
     _require_release_on_main_lineage(release_commit)
@@ -636,9 +592,8 @@ def verify_release_commit_provenance(
 
     for index, commit in enumerate(reviewed_commits):
         _require_verified_commit(commit, token)
-        _require_reviewed_main_pr(
+        _require_merged_main_pr(
             commit,
-            reviewer,
             token,
             require_trusted_status=index != 0,
         )
@@ -651,18 +606,16 @@ def verify_release_commit_provenance(
         "security_bootstrap_commit": reviewed_commits[0],
         "reviewed_commits": reviewed_commits,
         "release_plan": plan,
-        "reviewer": reviewer,
         "workflows": list(REQUIRED_WORKFLOWS),
     }
 
 
-def verify_release_provenance(tag: str, reviewer: str, token: str) -> dict:
+def verify_release_provenance(tag: str, token: str) -> dict:
     if not tag.startswith("v"):
         raise ProvenanceError(f"release tag must start with v: {tag!r}")
     result = verify_release_commit_provenance(
         _require_annotated_tag(tag),
         tag[1:],
-        reviewer,
         token,
     )
     return {"tag": tag, **result}
@@ -675,7 +628,6 @@ def main() -> int:
     operation = parser.add_mutually_exclusive_group(required=True)
     operation.add_argument("--tag")
     operation.add_argument("--controls-only", action="store_true")
-    parser.add_argument("--reviewer", required=True)
     args = parser.parse_args()
     token = os.environ.get("GH_TOKEN", "").strip()
     if not token:
@@ -683,10 +635,10 @@ def main() -> int:
     if os.environ.get("GITHUB_REPOSITORY", GITHUB_REPOSITORY) != GITHUB_REPOSITORY:
         raise SystemExit(f"release must run in {GITHUB_REPOSITORY}")
     if args.controls_only:
-        verify_github_release_controls(args.reviewer, token)
+        verify_github_release_controls(token)
         print("GitHub release controls verification passed.")
     else:
-        verify_release_provenance(args.tag, args.reviewer, token)
+        verify_release_provenance(args.tag, token)
         print("Release provenance verification passed.")
     return 0
 

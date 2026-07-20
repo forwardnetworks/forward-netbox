@@ -1,6 +1,6 @@
 # Release Playbook
 
-Use this playbook for reviewed production releases.
+Use this playbook for check-gated production releases.
 
 ## Preconditions
 
@@ -10,13 +10,12 @@ Use this playbook for reviewed production releases.
 - No customer identifiers, network IDs, snapshot IDs, credentials, or private screenshots are in tracked content.
 - Repository rulesets `main-release-integrity` and `version-tag-integrity` are
   active. Main has no bypass actors and
-  requires a current CODEOWNERS approval, resolved conversations, the trusted
+  requires a pull request, resolved conversations, the trusted
   candidate scan, exact NetBox 4.6.5 CI, both CodeQL analyses, and the separate
   GitHub Advanced Security CodeQL result. Version tags
   reject deletion and movement. Releases use a normal annotated tag created by
-  the authenticated maintainer from an exact reviewed `main` commit.
-- Environment `pypi` accepts only `v*` tags, requires the independent reviewer
-  with self-review disabled, and does not permit administrator bypass. PyPI
+  the authenticated maintainer from an exact validated `main` commit.
+- Environment `pypi` accepts only `v*` tags and has no reviewer gate. PyPI
   Trusted Publishing uses GitHub OIDC; no repository or environment PyPI token
   is stored.
 - `.github/CODEOWNERS` names a valid accountable owner, the repository-level
@@ -107,24 +106,23 @@ invoke scale-soak --runs 3 --max-changes-per-staging-item 10000
 3. Run it with `--finish`; the first finish promotes candidate metadata, pushes
    it, waits for CI on that exact commit, and stops without updating `main` or
    creating a tag.
-4. Run `--finish` again. It opens the production PR, requests the independent
-   CODEOWNER, and enables squash auto-merge. GitHub will not merge it until the
-   approval, trusted base-branch scanner status, CI, and CodeQL requirements all
-   pass.
+4. Run `--finish` again. It opens the production PR and enables squash
+   auto-merge. GitHub will not merge it until the trusted base-branch scanner,
+   CI, and CodeQL requirements all pass.
 5. After that PR is on `main`, run every final-tree gate on that exact main
    commit. Create `release/X.Y.Z-evidence` from it, record its full SHA as
    `Evidence base commit`, and make one commit that changes only the release
-   plan. Run `--finish` on that branch to open the separately reviewed evidence
+   plan. Run `--finish` on that branch to open the check-gated evidence
    PR. Its squash merge preserves the evidence-only parent relationship.
-6. Update local `main` to that reviewed evidence commit and run `--finish` once
+6. Update local `main` to that validated evidence commit and run `--finish` once
    more. It checks the authorization binding and exact main-push workflows,
    verifies live GitHub controls with the maintainer's authenticated session,
-   creates a normal annotated version tag at that reviewed commit, pushes it,
+   creates a normal annotated version tag at that validated commit, pushes it,
    and proves that the remote tag peels to the expected commit. The tag-triggered
    workflow independently walks the first-parent lineage from the prior release,
-   verifies the reviewed security-bootstrap, production, and evidence PRs,
+   verifies the security-bootstrap, production, and evidence PRs,
    binds trusted statuses to their exact successful `pull_request_target` runs,
-   and requires exact CI/CodeQL workflows on every reviewed main commit.
+   and requires exact CI/CodeQL workflows on every validated main commit.
 7. The release workflow installs only the hashed release-tool lock, builds the
    wheel/sdist twice, rejects any byte mismatch, installed-runtime-tests the
    identical pair, generates and validates the full runtime SBOM, publishes the
