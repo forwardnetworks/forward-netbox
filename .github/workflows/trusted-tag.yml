@@ -1,5 +1,4 @@
 name: Create trusted release tag
-
 "on":
   workflow_dispatch:
     inputs:
@@ -11,13 +10,11 @@ name: Create trusted release tag
         description: Exact current protected-main commit
         required: true
         type: string
-
 permissions:
   actions: read
   contents: read
   pull-requests: read
   statuses: read
-
 jobs:
   create-tag:
     name: Verify and create protected tag
@@ -62,11 +59,14 @@ jobs:
           printf '%s\n' "${RELEASE_TAG_DEPLOY_KEY}" > "${HOME}/.ssh/release_tag"
           gh api meta --jq '.ssh_keys[] | "github.com " + .' \
             > "${HOME}/.ssh/known_hosts"
+          printf '%s\n' \
+            'Host github.com' \
+            '  IdentityFile ~/.ssh/release_tag' \
+            '  IdentitiesOnly yes' \
+            '  UserKnownHostsFile ~/.ssh/known_hosts' \
+            > "${HOME}/.ssh/config"
+          chmod 0600 "${HOME}/.ssh/config"
       - name: Create immutable annotated tag
-        env:
-          GIT_SSH_COMMAND: >-
-            ssh -i ${HOME}/.ssh/release_tag -o IdentitiesOnly=yes
-            -o UserKnownHostsFile=${HOME}/.ssh/known_hosts
         run: |
           git config user.name "github-actions[bot]"
           git config user.email \
