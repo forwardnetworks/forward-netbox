@@ -21,28 +21,47 @@ jobs:
       NETBOX_VER: ${{ matrix.netbox-version }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           fetch-depth: 0
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
-          python-version: "3.12"
+          python-version: "3.14"
       - name: Check commit history for sensitive content
         env:
           # Customer identifiers to block are injected from a repo secret so
-          # they are never committed; see utilities/sensitive_content.py.
+          # they are never committed; see scripts/sensitive_content.py.
           FORWARD_SENSITIVE_PATTERNS: ${{ secrets.FORWARD_SENSITIVE_PATTERNS }}
-        run: python scripts/check_sensitive_content.py --all-history
+          FORWARD_SENSITIVE_BINARY_HISTORY_ALLOWLIST: >-
+            ${{ secrets.FORWARD_SENSITIVE_BINARY_HISTORY_ALLOWLIST }}
+          FORWARD_SENSITIVE_HISTORY_BASELINE: >-
+            ${{ vars.FORWARD_SENSITIVE_HISTORY_BASELINE }}
+        run: |
+          python scripts/check_sensitive_content.py --protected-history \
+            --require-baseline-env
       - name: Check tracked file content for sensitive content
         env:
           # Scans the CONTENT of every tracked file (not just commit
           # messages) against the same secret, so a customer name in a doc
           # or test cannot slip past the message-only history scan. Set the
           # secret with word-boundary regex for short tokens, e.g.
-          # `re:\bADP\b`, to avoid substring false positives.
+          # `re:\bExampleCustomer\b`, to avoid substring false positives.
           FORWARD_SENSITIVE_PATTERNS: ${{ secrets.FORWARD_SENSITIVE_PATTERNS }}
+          FORWARD_SENSITIVE_BINARY_HISTORY_ALLOWLIST: >-
+            ${{ secrets.FORWARD_SENSITIVE_BINARY_HISTORY_ALLOWLIST }}
         run: python scripts/check_sensitive_content.py --git-files
+      - name: Require protected sensitive-content configuration
+        if: github.event_name == 'push'
+        env:
+          FORWARD_SENSITIVE_PATTERNS: ${{ secrets.FORWARD_SENSITIVE_PATTERNS }}
+          FORWARD_SENSITIVE_BINARY_HISTORY_ALLOWLIST: >-
+            ${{ secrets.FORWARD_SENSITIVE_BINARY_HISTORY_ALLOWLIST }}
+          FORWARD_SENSITIVE_HISTORY_BASELINE: >-
+            ${{ vars.FORWARD_SENSITIVE_HISTORY_BASELINE }}
+        run: |
+          python scripts/check_sensitive_content.py --git-files \
+            --protected-history --require-env-patterns --require-baseline-env
       - name: Install validation dependencies
         run: |
           python -m pip install --upgrade pip
@@ -57,10 +76,8 @@ jobs:
             mdx-truly-sane-lists \
             pymdown-extensions
       - name: Audit dependencies for known vulnerabilities (pip-audit)
-        # Non-blocking signal: Dependabot is the enforcing continuous scanner
-        # (.github/dependabot.yml). This surfaces CVEs in the declared runtime
-        # deps per-run without failing on unfixable upstream advisories.
-        continue-on-error: true
+        # A release candidate with a known vulnerable pinned dependency fails
+        # closed. Dependabot remains the continuous update source.
         run: |
           python -m pip install pip-audit
           pip-audit --progress-spinner off -r constraints.txt

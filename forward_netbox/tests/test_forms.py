@@ -8,7 +8,6 @@ from django.test import TestCase
 
 from forward_netbox.choices import FORWARD_BGP_MODELS
 from forward_netbox.choices import ForwardDiffFallbackModeChoices
-from forward_netbox.choices import ForwardExecutionBackendChoices
 from forward_netbox.choices import ForwardSourceDeploymentChoices
 from forward_netbox.exceptions import ForwardConnectivityError
 from forward_netbox.exceptions import ForwardSyncError
@@ -20,6 +19,8 @@ from forward_netbox.forms import ForwardSyncForm
 from forward_netbox.models import ForwardNQEMap
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
+from forward_netbox.utilities.crypto import decrypt_secret
+from forward_netbox.utilities.crypto import is_encrypted
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 
 
@@ -53,6 +54,21 @@ class ForwardSourceFormTest(TestCase):
             "nqe_page_size": 10000,
             "verify": True,
         }
+
+    @patch(
+        "forward_netbox.utilities.forward_api_impl.ForwardClient.get_networks",
+        return_value=[{"id": "test-network"}],
+    )
+    def test_plaintext_form_credential_validates_then_persists_encrypted(
+        self, _get_networks
+    ):
+        form = ForwardSourceForm(data=self._base_form_data())
+
+        self.assertTrue(form.is_valid(), form.errors)
+        source = form.save()
+
+        self.assertTrue(is_encrypted(source.parameters["password"]))
+        self.assertEqual(decrypt_secret(source.parameters["password"]), "secret")
 
     @patch("forward_netbox.forms.ForwardSource.validate_connection")
     def test_requires_network_id(self, mock_validate_connection):
@@ -209,11 +225,10 @@ class ForwardSyncFormTest(TestCase):
                 "name": "sync-bulk-orm",
                 "source": self.source.pk,
                 "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
-                "execution_backend": ForwardExecutionBackendChoices.BRANCHING,
                 "dcim.device": "on",
                 "auto_merge": "on",
                 "enable_bulk_orm": "on",
-                "max_changes_per_branch": "10000",
+                "max_changes_per_staging_item": "10000",
             }
         )
 
@@ -226,10 +241,9 @@ class ForwardSyncFormTest(TestCase):
                 "name": "sync-diff-fallback-default",
                 "source": self.source.pk,
                 "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
-                "execution_backend": ForwardExecutionBackendChoices.BRANCHING,
                 "dcim.device": "on",
                 "auto_merge": "on",
-                "max_changes_per_branch": "10000",
+                "max_changes_per_staging_item": "10000",
             }
         )
 
@@ -245,11 +259,10 @@ class ForwardSyncFormTest(TestCase):
                 "name": "sync-diff-required",
                 "source": self.source.pk,
                 "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
-                "execution_backend": ForwardExecutionBackendChoices.BRANCHING,
                 "dcim.device": "on",
                 "auto_merge": "on",
                 "diff_fallback_mode": ForwardDiffFallbackModeChoices.REQUIRE_DIFF,
-                "max_changes_per_branch": "10000",
+                "max_changes_per_staging_item": "10000",
             }
         )
 

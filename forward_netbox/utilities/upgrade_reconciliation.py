@@ -10,7 +10,7 @@ from django.db.models import Q
 DEFAULT_SAMPLE_LIMIT = 25
 
 
-def _legacy_endpoint_device_types(*, include_samples, sample_limit):
+def _stale_endpoint_device_types(*, include_samples, sample_limit):
     candidates = (
         DeviceType.objects.annotate(
             _has_devices=Exists(Device.objects.filter(device_type_id=OuterRef("pk")))
@@ -177,7 +177,7 @@ def compute_upgrade_reconciliation(
     """Return local, read-only post-upgrade catalog reconciliation evidence.
 
     Global NetBox catalog objects do not record Forward-source ownership. This
-    function deliberately classifies possible legacy artifacts but never
+    function deliberately classifies possible stale artifacts but never
     deletes them. Samples are opt-in so support bundles contain aggregate
     evidence without customer inventory values.
     """
@@ -194,7 +194,7 @@ def compute_upgrade_reconciliation(
                 manufacturer__isnull=True
             ).count(),
         },
-        "legacy_endpoint_device_types": _legacy_endpoint_device_types(
+        "stale_endpoint_device_types": _stale_endpoint_device_types(
             include_samples=include_samples,
             sample_limit=sample_limit,
         ),

@@ -18,6 +18,7 @@ from forward_netbox.choices import forward_configured_models
 from forward_netbox.choices import ForwardSourceStatusChoices
 from forward_netbox.models import ForwardIngestion
 from forward_netbox.models import ForwardNQEMap
+from forward_netbox.models import ForwardOwnershipReconciliation
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.models import ForwardValidationRun
@@ -28,7 +29,6 @@ from forward_netbox.utilities.health import sync_health_summary
 from forward_netbox.utilities.health_checks import ingestion_check_message
 from forward_netbox.utilities.health_checks import ingestion_check_status
 from forward_netbox.utilities.health_checks import query_drift_check_message
-from forward_netbox.utilities.health_summary_blocks import large_run_tuning_summary
 from forward_netbox.utilities.query_registry import read_compiled_builtin_query_source
 
 
@@ -502,15 +502,15 @@ class ForwardSyncHealthTest(TestCase):
             summary["optional_plugin_capabilities"]["aci.netbox_cisco_aci"],
         )
         self.assertIn(
-            "minimum_version",
+            "required_version",
             summary["optional_plugin_capabilities"]["aci.netbox_cisco_aci"],
         )
         self.assertIn(
-            "package_names",
+            "package_name",
             summary["optional_plugin_capabilities"]["aci.netbox_cisco_aci"],
         )
         self.assertIn(
-            "installed_package_name",
+            "version_matches",
             summary["optional_plugin_capabilities"]["aci.netbox_cisco_aci"],
         )
         self.assertIn(
@@ -521,265 +521,16 @@ class ForwardSyncHealthTest(TestCase):
             summary["optional_plugin_capabilities"]["aci.netbox_cisco_aci"][
                 "command_inventory_count"
             ],
-            17,
+            6,
         )
-
-    @override_settings(RQ_DEFAULT_TIMEOUT=100)
-    def test_large_run_tuning_advises_fast_bootstrap_on_timeout_risk(self):
-        summary = large_run_tuning_summary(
-            self.sync,
-            capacity={
-                "available": True,
-                "total_steps": 50,
-                "remaining_steps": 49,
-                "projected_remaining_seconds": 120,
-            },
-            query_pushdown={
-                "efficiency": {"fallback_steps": 0, "fallback_rate": 0.0},
-                "runtime_share": {},
-                "diff_utilization": {"diff_actual_ratio": None},
-                "tuning_guidance": [],
-            },
-        )
-
-        self.assertEqual(summary["status"], "warn")
-        self.assertEqual(
-            summary["execution_backend_advice"]["code"],
-            "branching_timeout_risk_consider_bootstrap",
-        )
-        self.assertEqual(
-            summary["execution_backend_advice"]["recommended_backend"],
-            "fast_bootstrap",
-        )
-        self.assertEqual(
-            summary["first_order_actions"][0]["code"],
-            "consider_fast_bootstrap_for_trusted_baseline",
-        )
-
-    def test_large_run_tuning_recommends_safe_speed_options(self):
-        self.sync.parameters = {
-            **(self.sync.parameters or {}),
-            "execution_backend": "branching",
-            "auto_merge": True,
-            "enable_bulk_orm": False,
-            "scheduler_overlap": False,
-        }
-        self.sync.auto_merge = True
-
-        summary = large_run_tuning_summary(
-            self.sync,
-            capacity={
-                "available": True,
-                "total_steps": 50,
-                "remaining_steps": 40,
-                "projected_remaining_seconds": 60,
-            },
-            query_pushdown={
-                "efficiency": {"fallback_steps": 0, "fallback_rate": 0.0},
-                "runtime_share": {},
-                "diff_utilization": {"diff_actual_ratio": None},
-                "tuning_guidance": [],
-            },
-        )
-
-        action_codes = {item["code"] for item in summary["first_order_actions"]}
-        self.assertIn("enable_safe_bulk_orm", action_codes)
-        self.assertIn("consider_scheduler_overlap", action_codes)
-
-    def test_large_run_tuning_advises_switch_back_after_fast_bootstrap(self):
-        self.sync.parameters["execution_backend"] = "fast_bootstrap"
-
-        summary = large_run_tuning_summary(
-            self.sync,
-            capacity={"available": False},
-            query_pushdown={
-                "efficiency": {"fallback_steps": 0},
-                "runtime_share": {},
-                "diff_utilization": {},
-                "tuning_guidance": [],
-            },
-        )
-
-        self.assertEqual(
-            summary["execution_backend_advice"]["code"],
-            "fast_bootstrap_baseline_active",
-        )
-        self.assertEqual(
-            summary["execution_backend_advice"]["next_backend"],
-            "branching",
-        )
-        self.assertEqual(
-            summary["first_order_actions"][0]["code"],
-            "complete_fast_bootstrap_then_branching",
-        )
-
-    def test_adaptive_capacity_recommends_one_tuning_batch(self):
-        sync = self._sync_with_source_parameters(
-            "health-sync-adaptive-recommend",
-            {
-                "timeout": 1200,
-                "query_fetch_concurrency": 8,
-                "nqe_page_size": 8000,
-                "runtime_capacity_evidence": {
-                    "active_worker_count": 12,
-                    "database_headroom": "available",
-                    "worker_headroom": "available",
-                    "queue_backlog_depth": 3,
-                },
-            },
-        )
-
-        summary = large_run_tuning_summary(
-            sync,
-            capacity={"available": True, "total_steps": 80, "remaining_steps": 70},
-            query_pushdown={
-                "available": True,
-                "efficiency": {"fallback_steps": 0, "fallback_rate": 0.0},
-                "runtime_share": {},
-                "diff_utilization": {},
-                "tuning_guidance": [],
-            },
-            throughput={
-                "available": True,
-                "shards_per_hour_1h": 2.0,
-                "shards_per_hour_6h": 2.0,
-                "issue_rate_per_hour": 0.5,
-                "bottleneck_phase": "fetch",
-            },
-        )
-
-        adaptive = summary["adaptive_capacity"]
-        batch = adaptive["next_tuning_batch"]
-
-        self.assertEqual(adaptive["status"], "warn")
-        self.assertEqual(adaptive["decision"], "recommend_tuning_batch")
-        self.assertEqual(batch["worker_count"]["recommended"], 18)
-        self.assertEqual(batch["query_fetch_concurrency"]["recommended"], 10)
-        self.assertEqual(batch["nqe_page_size"]["recommended"], 9600)
-        self.assertEqual(batch["restart_scope"], "restart_workers_only")
-        self.assertEqual(batch["hold_minutes"], 60)
-
-    def test_adaptive_capacity_holds_when_throughput_is_healthy(self):
-        sync = self._sync_with_source_parameters(
-            "health-sync-adaptive-hold",
-            {
-                "runtime_capacity_evidence": {
-                    "active_worker_count": 12,
-                    "database_headroom": "available",
-                },
-            },
-        )
-
-        summary = large_run_tuning_summary(
-            sync,
-            capacity={"available": True, "total_steps": 20, "remaining_steps": 10},
-            query_pushdown={
-                "available": True,
-                "efficiency": {"fallback_steps": 0, "fallback_rate": 0.0},
-                "runtime_share": {},
-                "diff_utilization": {},
-                "tuning_guidance": [],
-            },
-            throughput={
-                "available": True,
-                "shards_per_hour_1h": 6.0,
-                "shards_per_hour_6h": 5.5,
-                "issue_rate_per_hour": 0.0,
-                "bottleneck_phase": "apply",
-            },
-        )
-
-        adaptive = summary["adaptive_capacity"]
-
-        self.assertEqual(adaptive["status"], "pass")
-        self.assertEqual(adaptive["decision"], "hold_current_settings")
-
-    def test_adaptive_capacity_rolls_back_on_issue_spike(self):
-        sync = self._sync_with_source_parameters(
-            "health-sync-adaptive-rollback",
-            {
-                "runtime_capacity_evidence": {
-                    "active_worker_count": 12,
-                    "database_headroom": "available",
-                },
-            },
-        )
-
-        summary = large_run_tuning_summary(
-            sync,
-            capacity={"available": True, "total_steps": 20, "remaining_steps": 10},
-            query_pushdown={
-                "available": True,
-                "efficiency": {"fallback_steps": 0, "fallback_rate": 0.0},
-                "runtime_share": {},
-                "diff_utilization": {},
-                "tuning_guidance": [],
-            },
-            throughput={
-                "available": True,
-                "shards_per_hour_1h": 2.0,
-                "shards_per_hour_6h": 2.0,
-                "issue_rate_per_hour": 3.0,
-                "bottleneck_phase": "apply",
-            },
-        )
-
-        adaptive = summary["adaptive_capacity"]
-
-        self.assertEqual(adaptive["status"], "warn")
-        self.assertEqual(adaptive["decision"], "rollback_latest_tuning_batch")
-
-    def test_adaptive_capacity_requires_worker_and_database_evidence(self):
-        sync = self._sync_with_source_parameters(
-            "health-sync-adaptive-insufficient",
-            {"query_fetch_concurrency": 8, "nqe_page_size": 8000},
-        )
-
-        summary = large_run_tuning_summary(
-            sync,
-            capacity={"available": True, "total_steps": 80, "remaining_steps": 70},
-            query_pushdown={
-                "available": True,
-                "efficiency": {"fallback_steps": 0, "fallback_rate": 0.0},
-                "runtime_share": {},
-                "diff_utilization": {},
-                "tuning_guidance": [],
-            },
-            throughput={
-                "available": True,
-                "shards_per_hour_1h": 2.0,
-                "shards_per_hour_6h": 2.0,
-                "issue_rate_per_hour": 0.5,
-                "bottleneck_phase": "fetch",
-            },
-        )
-
-        adaptive = summary["adaptive_capacity"]
-
-        self.assertEqual(adaptive["status"], "info")
-        self.assertEqual(adaptive["decision"], "insufficient_evidence")
-        self.assertEqual(adaptive["capacity_evidence"]["status"], "unknown")
 
     def test_promoted_bulk_orm_models_run_without_allowlist(self):
         # ipam.ipaddress, dcim.interface, and ipam.prefix are all in the default
         # safe set now, so with bulk enabled they run bulk without an explicit
         # allowlist and are not held back as `bulk_orm_model_not_allowlisted`.
-        # There are no remaining experimental models, so the not-allowlisted gate
+        # Every bulk model is parity-tested, so the not-allowlisted gate
         # no longer applies to any built-in model.
         self.sync.parameters["enable_bulk_orm"] = True
-        self.sync.save(update_fields=["parameters"])
-
-        summary = sync_health_summary(self.sync)
-        self.assertNotIn(
-            "bulk_orm_model_not_allowlisted",
-            summary["apply_engines"]["global_fallback_reasons"],
-        )
-
-    def test_allowlisted_experimental_bulk_orm_model_has_no_gap(self):
-        # Once explicitly allowlisted, the experimental model is no longer held
-        # back as not-allowlisted.
-        self.sync.parameters["enable_bulk_orm"] = True
-        self.sync.parameters["bulk_orm_models"] = ["ipam.ipaddress", "dcim.interface"]
         self.sync.save(update_fields=["parameters"])
 
         summary = sync_health_summary(self.sync)
@@ -1164,6 +915,19 @@ class ForwardSyncHealthTest(TestCase):
         self.assertEqual(dlm["estimated_apply_work"], 4963)
         self.assertIsNone(dlm["drift"])
 
+    def test_compute_drift_report_treats_empty_payload_as_unavailable(self):
+        from forward_netbox.utilities.drift_report import compute_drift_report
+
+        report = compute_drift_report({})
+
+        self.assertFalse(report["comparison_available"])
+        self.assertIsNone(report["in_sync"])
+        self.assertIsNone(report["total_drift"])
+
+    @staticmethod
+    def _completed_ingestion_job():
+        return SimpleNamespace(status="completed", completed=timezone.now())
+
     def test_latest_sync_evidence_requires_zero_changes_on_same_snapshot(self):
         from forward_netbox.utilities.drift_report import build_latest_sync_evidence
 
@@ -1177,6 +941,7 @@ class ForwardSyncHealthTest(TestCase):
             created_change_count=2,
             updated_change_count=4,
             deleted_change_count=1,
+            job=self._completed_ingestion_job(),
         )
 
         evidence = build_latest_sync_evidence(
@@ -1201,6 +966,7 @@ class ForwardSyncHealthTest(TestCase):
             created_change_count=0,
             updated_change_count=0,
             deleted_change_count=0,
+            job=self._completed_ingestion_job(),
         )
 
         evidence = build_latest_sync_evidence(
@@ -1235,6 +1001,7 @@ class ForwardSyncHealthTest(TestCase):
             created_change_count=0,
             updated_change_count=0,
             deleted_change_count=0,
+            job=self._completed_ingestion_job(),
         )
 
         self.assertEqual(
@@ -1250,6 +1017,36 @@ class ForwardSyncHealthTest(TestCase):
         )
         self.assertEqual(mismatch["status"], "snapshot_mismatch")
         self.assertFalse(mismatch["convergence_confirmed"])
+
+    def test_latest_sync_evidence_requires_successful_job_completion(self):
+        from forward_netbox.utilities.drift_report import build_latest_sync_evidence
+
+        ingestion = SimpleNamespace(
+            pk=27,
+            baseline_ready=True,
+            snapshot_id="snapshot-2",
+            created=timezone.now(),
+            applied_change_count=0,
+            failed_change_count=0,
+            created_change_count=0,
+            updated_change_count=0,
+            deleted_change_count=0,
+            job=SimpleNamespace(status="running", completed=None),
+        )
+        payload = {"context": {"snapshot_id": "snapshot-2"}}
+
+        running = build_latest_sync_evidence(ingestion, payload)
+        self.assertEqual(running["status"], "incomplete")
+        self.assertFalse(running["execution_completed"])
+        self.assertFalse(running["convergence_confirmed"])
+
+        ingestion.job = SimpleNamespace(
+            status="errored",
+            completed=timezone.now(),
+        )
+        errored = build_latest_sync_evidence(ingestion, payload)
+        self.assertEqual(errored["status"], "failed")
+        self.assertFalse(errored["convergence_confirmed"])
 
     def _create_dependency_preview_job(self, created_at):
         return Job.objects.create(
@@ -1524,7 +1321,7 @@ class ForwardSyncHealthTest(TestCase):
                 ],
             },
         )
-        ForwardIngestion.objects.create(
+        ingestion = ForwardIngestion.objects.create(
             sync=self.sync,
             snapshot_selector="latestProcessed",
             snapshot_id="snapshot-1",
@@ -1535,6 +1332,32 @@ class ForwardSyncHealthTest(TestCase):
             updated_change_count=4,
             deleted_change_count=1,
             created=timezone.now() - timezone.timedelta(minutes=1),
+        )
+        completed_at = timezone.now()
+        ingestion.job = Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardIngestion),
+            object_id=ingestion.pk,
+            name="completed convergence evidence sync",
+            status=JobStatusChoices.STATUS_COMPLETED,
+            job_id="123e4567-e89b-12d3-a456-426614174054",
+            created=completed_at,
+            started=completed_at,
+            completed=completed_at,
+        )
+        ingestion.save(update_fields=["job"])
+        ForwardOwnershipReconciliation.objects.create(
+            sync=self.sync,
+            domain=ForwardOwnershipReconciliation.Domain.VIRTUAL_PARENTS,
+            generation=ingestion.pk,
+            snapshot_id=ingestion.snapshot_id,
+            status=ForwardOwnershipReconciliation.Status.COMPLETED,
+        )
+        ForwardOwnershipReconciliation.objects.create(
+            sync=self.sync,
+            domain=ForwardOwnershipReconciliation.Domain.STATUS_TAGS,
+            generation=ingestion.pk,
+            snapshot_id=ingestion.snapshot_id,
+            status=ForwardOwnershipReconciliation.Status.COMPLETED,
         )
         self.client.force_login(self.user)
 
@@ -1875,14 +1698,9 @@ class EnabledMapModelNotSelectedTest(TestCase):
             data_file_maps=[],
             validation_run=None,
             latest_ingestion=None,
-            execution_run=None,
-            capacity_summary=None,
-            query_pushdown=None,
-            large_run_tuning=None,
             dependency_preflight=None,
             delete_wave=None,
             throughput=None,
-            compatibility_cache=None,
             next_run={"mode": "diff_eligible", "message": ""},
             branching_available_fn=lambda: True,
         )

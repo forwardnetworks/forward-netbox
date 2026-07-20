@@ -1,6 +1,6 @@
-import logging
 from unittest.mock import patch
 
+from django.core.exceptions import ImproperlyConfigured
 from django.test import SimpleTestCase
 
 from forward_netbox import _check_runtime_dependencies
@@ -17,33 +17,27 @@ class RuntimeDependencyCheckTest(SimpleTestCase):
     warning on EVERY boot, even when branching was installed and active.
     """
 
-    def _capture(self):
-        logger = logging.getLogger("forward_netbox")
-        with self.assertLogs(logger, level="INFO") as cm:
-            _check_runtime_dependencies()
-        return "\n".join(cm.output)
-
     def test_resolves_version_by_correct_distribution_name(self):
         # netbox-branching is installed as the netboxlabs-netbox-branching dist.
         self.assertIsNotNone(_resolved_branching_version())
 
-    def test_no_false_not_installed_warning_when_installed(self):
-        out = self._capture()
-        self.assertNotIn("not installed", out)
-        self.assertNotIn("syncs will fail", out)
+    def test_exact_runtime_passes(self):
+        _check_runtime_dependencies()
 
-    def test_warns_when_version_is_not_exact(self):
+    def test_rejects_version_that_is_not_exact(self):
         with patch("forward_netbox._resolved_branching_version", return_value="1.0.4"):
-            out = self._capture()
-        self.assertIn("netbox_branching==1.1.1", out)
-        self.assertIn("syncs will fail", out)
+            with self.assertRaises(ImproperlyConfigured):
+                _check_runtime_dependencies()
 
         with patch("forward_netbox._resolved_branching_version", return_value="1.2.0"):
-            out = self._capture()
-        self.assertIn("netbox_branching==1.1.1", out)
-        self.assertIn("syncs will fail", out)
+            with self.assertRaises(ImproperlyConfigured):
+                _check_runtime_dependencies()
 
-    def test_warns_when_not_importable(self):
+        with patch("forward_netbox._resolved_branching_version", return_value=None):
+            with self.assertRaises(ImproperlyConfigured):
+                _check_runtime_dependencies()
+
+    def test_rejects_when_not_importable(self):
         real_import = (
             __builtins__["__import__"]
             if isinstance(__builtins__, dict)
@@ -55,10 +49,7 @@ class RuntimeDependencyCheckTest(SimpleTestCase):
                 raise ImportError("simulated missing plugin")
             return real_import(name, *args, **kwargs)
 
-        logger = logging.getLogger("forward_netbox")
         with patch("builtins.__import__", side_effect=fake_import):
-            with self.assertLogs(logger, level="WARNING") as cm:
+            with self.assertRaises(ImproperlyConfigured) as ctx:
                 _check_runtime_dependencies()
-        out = "\n".join(cm.output)
-        self.assertIn("not installed/enabled", out)
-        self.assertIn("PLUGINS", out)
+        self.assertIn("must be enabled", str(ctx.exception))

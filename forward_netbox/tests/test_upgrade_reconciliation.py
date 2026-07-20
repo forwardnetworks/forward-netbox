@@ -18,11 +18,11 @@ class UpgradeReconciliationCoreTest(TestCase):
         self.avocent = Manufacturer.objects.create(name="Avocent", slug="avocent")
         self.cisco = Manufacturer.objects.create(name="Cisco", slug="cisco")
 
-    def test_classifies_only_unreferenced_legacy_endpoint_device_types(self):
+    def test_classifies_only_unreferenced_stale_endpoint_device_types(self):
         opengear_legacy = DeviceType.objects.create(
             manufacturer=self.opengear,
-            model="Opengear ACM7008-2-M, Linux 5.17 OpenGear/ACM700x Version 5.3.1",
-            slug="opengear-acm7008-legacy",
+            model="Opengear Console-Example, Linux 6.0 OpenGear Version 9.9",
+            slug="opengear-console-example-legacy",
         )
         avocent_legacy = DeviceType.objects.create(
             manufacturer=self.avocent,
@@ -31,13 +31,13 @@ class UpgradeReconciliationCoreTest(TestCase):
         )
         DeviceType.objects.create(
             manufacturer=self.opengear,
-            model="Opengear ACM7008-2-M",
-            slug="opengear-acm7008",
+            model="Opengear Console-Example",
+            slug="opengear-console-example",
         )
         attached_legacy = DeviceType.objects.create(
             manufacturer=self.opengear,
-            model="Opengear ACM7004, Linux 5.10 OpenGear Version 5.2",
-            slug="opengear-acm7004-attached",
+            model="Opengear Console-Attached, Linux 6.0 OpenGear Version 9.8",
+            slug="opengear-console-attached",
         )
         site = Site.objects.create(name="Upgrade Site", slug="upgrade-site")
         role = DeviceRole.objects.create(name="Console Server", slug="console-server")
@@ -57,23 +57,23 @@ class UpgradeReconciliationCoreTest(TestCase):
         self.assertEqual(report["scope"], "global_netbox_catalog")
         self.assertEqual(report["platforms"]["with_manufacturer"], 1)
         self.assertEqual(report["platforms"]["without_manufacturer"], 1)
-        legacy = report["legacy_endpoint_device_types"]
-        self.assertEqual(legacy["candidate_count"], 2)
+        stale = report["stale_endpoint_device_types"]
+        self.assertEqual(stale["candidate_count"], 2)
         self.assertEqual(
-            {item["model"] for item in legacy["sample"]},
+            {item["model"] for item in stale["sample"]},
             {opengear_legacy.model, avocent_legacy.model},
         )
 
     def test_aggregate_report_omits_inventory_samples(self):
         DeviceType.objects.create(
             manufacturer=self.opengear,
-            model="Opengear ACM7008-2-M, Linux 5.17 OpenGear Version 5.3",
+            model="Opengear Console-Example, Linux 6.0 OpenGear Version 9.9",
             slug="opengear-legacy-no-sample",
         )
 
         report = compute_upgrade_reconciliation(include_samples=False)
 
-        self.assertNotIn("sample", report["legacy_endpoint_device_types"])
+        self.assertNotIn("sample", report["stale_endpoint_device_types"])
         self.assertEqual(report["dlm"]["available"], apps.is_installed("netbox_dlm"))
         software = report["dlm"]["software_versions"]
         self.assertNotIn("catalog_retained_sample", software)

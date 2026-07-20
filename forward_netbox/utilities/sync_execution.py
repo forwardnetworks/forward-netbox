@@ -1,4 +1,3 @@
-from ..choices import ForwardExecutionBackendChoices
 from ..exceptions import ForwardClientError
 from ..exceptions import ForwardConnectivityError
 from ..exceptions import ForwardQueryError
@@ -224,7 +223,6 @@ def run_sync_stage(runner):
                     engine = select_apply_engine(
                         sync=runner.sync,
                         model_string=model_string,
-                        backend=ForwardExecutionBackendChoices.BRANCHING,
                     )
                     engine.apply_upserts(runner, model_string, rows)
                     model_delete_rows.extend(delete_rows)
@@ -272,7 +270,6 @@ def run_sync_stage(runner):
                 engine = select_apply_engine(
                     sync=runner.sync,
                     model_string=model_string,
-                    backend=ForwardExecutionBackendChoices.BRANCHING,
                 )
                 engine.apply_deletes(runner, model_string, delete_rows)
             except ForwardSyncDataError as exc:

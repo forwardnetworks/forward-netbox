@@ -1,6 +1,4 @@
 import json
-import os
-import tempfile
 from unittest.mock import Mock
 from unittest.mock import patch
 
@@ -57,8 +55,6 @@ from forward_netbox.utilities.apply_engine import apply_engine_decision_for
 from forward_netbox.utilities.apply_engine import APPLY_ENGINE_MODEL_CLASSIFICATIONS
 from forward_netbox.utilities.apply_engine import BULK_ORM_ENABLED_MODELS
 from forward_netbox.utilities.apply_engine import BULK_ORM_ENABLED_MODELS_WITHOUT_SPECS
-from forward_netbox.utilities.apply_engine import bulk_orm_expansion_summary
-from forward_netbox.utilities.apply_engine import EXPERIMENTAL_BULK_ORM_MODELS
 from forward_netbox.utilities.apply_engine import select_apply_engine
 from forward_netbox.utilities.apply_engine import UNCLASSIFIED_SUPPORTED_MODELS
 from forward_netbox.utilities.apply_engine_bulk import (
@@ -75,6 +71,7 @@ from forward_netbox.utilities.branch_budget import shard_fetch_capability_for_mo
 from forward_netbox.utilities.branch_budget import shard_fetch_contract
 from forward_netbox.utilities.branch_budget import SHARD_FETCH_MODEL_CONTRACTS
 from forward_netbox.utilities.execution_telemetry import build_plan_preview
+from forward_netbox.utilities.forward_api import DEFAULT_QUERY_FETCH_CONCURRENCY
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from forward_netbox.utilities.query_diagnostics import (
     summarize_ipaddress_parent_prefix_rows,
@@ -166,21 +163,20 @@ class ForwardBranchBudgetPlanTest(TestCase):
             contract["fetch_parameters"],
             {"forward_netbox_shard_keys": ["device-a", "device-c"]},
         )
-        self.assertEqual(contract["fetch_column_filters"], [])
 
-    def test_effective_row_budget_scales_by_density(self):
+    def test_effective_row_budget_uses_baseline_for_unprofiled_density(self):
         budget = effective_row_budget_for_model(
             "dcim.device",
-            max_changes_per_branch=10000,
+            max_changes_per_staging_item=10000,
             model_change_density={"dcim.device": 5.0},
         )
 
-        self.assertEqual(budget, 1400)
+        self.assertEqual(budget, 7000)
 
     def test_effective_row_budget_uses_cable_default_density_and_safety(self):
         budget = effective_row_budget_for_model(
             "dcim.cable",
-            max_changes_per_branch=10000,
+            max_changes_per_staging_item=10000,
             model_change_density={},
         )
 
@@ -189,7 +185,7 @@ class ForwardBranchBudgetPlanTest(TestCase):
     def test_effective_row_budget_uses_module_default_density(self):
         budget = effective_row_budget_for_model(
             "dcim.module",
-            max_changes_per_branch=10000,
+            max_changes_per_staging_item=10000,
             model_change_density={},
         )
 
@@ -198,7 +194,7 @@ class ForwardBranchBudgetPlanTest(TestCase):
     def test_effective_row_budget_uses_bgp_peer_default_density(self):
         budget = effective_row_budget_for_model(
             "netbox_routing.bgppeer",
-            max_changes_per_branch=10000,
+            max_changes_per_staging_item=10000,
             model_change_density={},
         )
 
@@ -220,7 +216,7 @@ class ForwardBranchBudgetPlanTest(TestCase):
             "device:device-1",
         )
 
-    def test_ipam_prefix_shard_fetch_contract_filters_by_prefix_column(self):
+    def test_ipam_prefix_shard_fetch_contract_parameters_by_prefix(self):
         contract = shard_fetch_contract(
             "ipam.prefix",
             [
@@ -234,10 +230,6 @@ class ForwardBranchBudgetPlanTest(TestCase):
         self.assertEqual(
             contract["fetch_parameters"],
             {"forward_netbox_shard_keys": ["10.0.0.0/24", "2001:db8::/64"]},
-        )
-        self.assertEqual(
-            contract["fetch_column_filters"],
-            [],
         )
 
     def test_ipam_prefix_global_shard_key_preserves_parameterized_fetch(self):
@@ -267,7 +259,6 @@ class ForwardBranchBudgetPlanTest(TestCase):
             contract["fetch_parameters"],
             {"forward_netbox_shard_keys": ["10", "20"]},
         )
-        self.assertEqual(contract["fetch_column_filters"], [])
 
     def test_ipam_vrf_shard_fetch_contract_parameters_by_name_when_rd_absent(self):
         contract = shard_fetch_contract(
@@ -281,7 +272,6 @@ class ForwardBranchBudgetPlanTest(TestCase):
             contract["fetch_parameters"],
             {"forward_netbox_shard_keys": ["blue", "red"]},
         )
-        self.assertEqual(contract["fetch_column_filters"], [])
 
     def test_dcim_device_shard_fetch_contract_parameters_by_name(self):
         contract = shard_fetch_contract(
@@ -295,11 +285,8 @@ class ForwardBranchBudgetPlanTest(TestCase):
             contract["fetch_parameters"],
             {"forward_netbox_shard_keys": ["device-1", "device-2"]},
         )
-        self.assertEqual(contract["fetch_column_filters"], [])
 
-    def test_device_shard_fetch_contract_uses_query_parameters_without_column_filters(
-        self,
-    ):
+    def test_device_shard_fetch_contract_uses_query_parameters(self):
         contract = shard_fetch_contract(
             "dcim.interface",
             ["device:device-1", "device:device-2"],
@@ -310,7 +297,6 @@ class ForwardBranchBudgetPlanTest(TestCase):
             contract["fetch_parameters"],
             {"forward_netbox_shard_keys": ["device-1", "device-2"]},
         )
-        self.assertEqual(contract["fetch_column_filters"], [])
 
     def test_shard_fetch_capability_reports_model_fallbacks(self):
         device_contract = shard_fetch_capability_for_model("dcim.interface")
@@ -356,21 +342,21 @@ class ForwardBranchBudgetPlanTest(TestCase):
                 self.assertEqual(contract["reason_code"], "model_fetch_fallback")
                 self.assertIn("bucket_strategy", contract)
 
-    def test_effective_row_budget_uses_cable_safety_override_with_observed_density(
+    def test_unprofiled_density_uses_conservative_cable_baseline(
         self,
     ):
         budget = effective_row_budget_for_model(
             "dcim.cable",
-            max_changes_per_branch=10000,
+            max_changes_per_staging_item=10000,
             model_change_density={"dcim.cable": 2.0},
         )
 
-        self.assertEqual(budget, 2500)
+        self.assertEqual(budget, 1666)
 
     def test_low_confidence_density_does_not_drive_budget_auto_tuning(self):
         budget = effective_row_budget_for_model(
             "dcim.device",
-            max_changes_per_branch=10000,
+            max_changes_per_staging_item=10000,
             model_change_density={"dcim.device": 5.0},
             model_change_density_profile={
                 "dcim.device": {
@@ -387,7 +373,7 @@ class ForwardBranchBudgetPlanTest(TestCase):
     def test_medium_confidence_density_blends_with_budget_baseline(self):
         budget = effective_row_budget_for_model(
             "dcim.device",
-            max_changes_per_branch=10000,
+            max_changes_per_staging_item=10000,
             model_change_density={"dcim.device": 5.0},
             model_change_density_profile={
                 "dcim.device": {
@@ -404,7 +390,7 @@ class ForwardBranchBudgetPlanTest(TestCase):
     def test_high_confidence_density_drives_budget_auto_tuning(self):
         budget = effective_row_budget_for_model(
             "dcim.device",
-            max_changes_per_branch=10000,
+            max_changes_per_staging_item=10000,
             model_change_density={"dcim.device": 5.0},
             model_change_density_profile={
                 "dcim.device": {
@@ -421,7 +407,7 @@ class ForwardBranchBudgetPlanTest(TestCase):
     def test_high_confidence_low_density_can_widen_row_budget(self):
         budget = effective_row_budget_for_model(
             "dcim.device",
-            max_changes_per_branch=10000,
+            max_changes_per_staging_item=10000,
             model_change_density={"dcim.device": 0.2},
             model_change_density_profile={
                 "dcim.device": {
@@ -438,7 +424,7 @@ class ForwardBranchBudgetPlanTest(TestCase):
     def test_low_density_widening_requires_high_confidence_profile(self):
         budget = effective_row_budget_for_model(
             "dcim.device",
-            max_changes_per_branch=10000,
+            max_changes_per_staging_item=10000,
             model_change_density={"dcim.device": 0.2},
             model_change_density_profile={
                 "dcim.device": {
@@ -504,7 +490,7 @@ class ForwardBranchBudgetPlanTest(TestCase):
             ]
         )
 
-        preview = build_plan_preview(plan, max_changes_per_branch=10000)
+        preview = build_plan_preview(plan, max_changes_per_staging_item=10000)
 
         delete_summary = preview["delete_dependency_plan"]
         self.assertEqual(delete_summary["delete_rows"], 1)
@@ -1998,31 +1984,30 @@ class ForwardSyncRunnerTest(TestCase):
             "`missing-interface` after the first 20.",
         )
 
-    def test_apply_dcim_module_rolls_up_missing_module_bay_warnings(self):
-        # A systemic readiness gap (module sync enabled before the device-type
-        # module bays exist) skips every module row; the per-row lines are
-        # collapsed into ONE actionable summary (count + examples + remedy)
-        # instead of flooding the log.
-        self._create_device("device-module-readiness")
+    def test_apply_dcim_module_creates_all_missing_module_bays(self):
+        device = self._create_device("device-module-readiness")
         logger = Mock()
         runner = ForwardSyncRunner(
             sync=self.sync, ingestion=None, client=None, logger_=logger
         )
         rows = [
-            {"device": "device-module-readiness", "module_bay": f"module {index}"}
+            {
+                "device": "device-module-readiness",
+                "module_bay": f"module {index}",
+                "manufacturer": "vendor-1",
+                "manufacturer_slug": "vendor-1",
+                "model": f"Line Card {index}",
+                "part_number": f"LC-{index}",
+                "status": "active",
+            }
             for index in range(7)
         ]
 
         runner._apply_model_rows("dcim.module", rows)
 
-        warning_messages = [call.args[0] for call in logger.log_warning.call_args_list]
-        # Exactly one summary line, regardless of how many rows were skipped.
-        self.assertEqual(len(warning_messages), 1)
-        summary = warning_messages[0]
-        self.assertIn("Skipped 7 dcim.module row(s)", summary)
-        self.assertIn("forward_module_readiness", summary)
-        self.assertIn("device-module-readiness/module 0", summary)
-        self.assertIn("(+2 more)", summary)  # 7 skipped - 5 sampled
+        self.assertEqual(ModuleBay.objects.filter(device=device).count(), 7)
+        self.assertEqual(Module.objects.filter(device=device).count(), 7)
+        self.assertEqual(logger.log_warning.call_count, 0)
 
     def test_dependency_lookup_cache_primes_only_exact_interface_pairs(self):
         device_1 = self._create_device("device-pair-1")
@@ -3423,7 +3408,7 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertEqual(self._update_statements(queries), [])
         self.assertEqual(ObjectChange.objects.count(), before_count)
 
-    def test_apply_dcim_device_clears_stale_out_of_scope_tag_only(self):
+    def test_apply_dcim_device_does_not_mutate_owned_status_tags(self):
         from extras.models import Tag
 
         device = self._create_device("device-now-in-scope")
@@ -3459,7 +3444,7 @@ class ForwardSyncRunnerTest(TestCase):
 
         runner._apply_dcim_device(row)
 
-        self.assertFalse(device.tags.filter(pk=out_of_scope.pk).exists())
+        self.assertTrue(device.tags.filter(pk=out_of_scope.pk).exists())
         self.assertTrue(device.tags.filter(pk=customer_tag.pk).exists())
 
     def test_apply_dcim_interface_keeps_import_when_untagged_vlan_missing(self):
@@ -4424,9 +4409,7 @@ class ForwardSyncRunnerTest(TestCase):
         existing_interface.refresh_from_db()
         self.assertEqual(existing_interface.module_id, module.pk)
 
-    def test_apply_dcim_module_skips_missing_module_bay_without_side_effect_create(
-        self,
-    ):
+    def test_apply_dcim_module_creates_missing_module_bay(self):
         device = self._create_device("device-a")
         runner = ForwardSyncRunner(
             sync=self.sync, ingestion=None, client=None, logger_=Mock()
@@ -4441,20 +4424,17 @@ class ForwardSyncRunnerTest(TestCase):
             "status": "active",
         }
 
-        before_count = ObjectChange.objects.count()
-        result = runner._apply_dcim_module(row)
+        runner._apply_dcim_module(row)
 
-        self.assertFalse(result)
-        self.assertFalse(
-            ModuleBay.objects.filter(device=device, name="Slot 2").exists()
+        module_bay = ModuleBay.objects.get(device=device, name="Slot 2")
+        self.assertEqual(module_bay.position, "2")
+        self.assertEqual(module_bay.label, "Slot 2")
+        self.assertTrue(
+            Module.objects.filter(device=device, module_bay=module_bay).exists()
         )
-        self.assertFalse(Module.objects.filter(device=device).exists())
-        self.assertEqual(ObjectChange.objects.count(), before_count)
-        self.assertEqual(
-            runner._aggregated_skip_warning_counts[
-                ("dcim.module", "missing-module-bay")
-            ],
-            1,
+        self.assertNotIn(
+            ("dcim.module", "missing-module-bay"),
+            runner._aggregated_skip_warning_counts,
         )
 
     def test_apply_dcim_module_reuses_existing_module_bay_and_module_type(self):
@@ -6768,12 +6748,10 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["interface"], "Ethernet1/1")
         self.assertEqual(fetch_meta["fetch_mode"], "nqe_parameters")
-        self.assertEqual(fetch_meta["fetch_column_filters"], [])
         self.assertEqual(
             client.run_nqe_query.call_args.kwargs["parameters"],
             {"forward_netbox_shard_keys": ["device-a"]},
         )
-        self.assertNotIn("column_filters", client.run_nqe_query.call_args.kwargs)
 
     def test_fetch_spec_rows_passes_prefix_shard_keys_as_nqe_parameters(self):
         client = Mock()
@@ -6832,9 +6810,7 @@ class ForwardSyncRunnerTest(TestCase):
             ],
         )
         self.assertEqual(fetch_meta["fetch_mode"], "nqe_parameters")
-        self.assertEqual(fetch_meta["fetch_column_filters"], [])
         client.run_nqe_query.assert_called_once()
-        self.assertNotIn("column_filters", client.run_nqe_query.call_args.kwargs)
         self.assertEqual(
             client.run_nqe_query.call_args.kwargs["parameters"],
             {
@@ -6962,7 +6938,7 @@ class ForwardSyncRunnerTest(TestCase):
 
         self.assertNotIn("sync_device_tags", resolved)
 
-    def test_fetch_spec_rows_rejects_legacy_column_filter_scope(self):
+    def test_fetch_spec_rows_rejects_unsupported_fetch_mode(self):
         client = Mock()
         logger = Mock()
         fetcher = ForwardQueryFetcher(
@@ -6981,21 +6957,14 @@ class ForwardSyncRunnerTest(TestCase):
             query="@query f() = []",
         )
         shard_scope = {
-            "fetch_mode": "nqe_column_filter",
+            "fetch_mode": "unsupported",
             "fetch_key_family": "prefix",
-            "fetch_column_filters": [
-                {
-                    "operator": "EQUALS_ANY",
-                    "columnName": "prefix",
-                    "values": ["10.0.0.0/24"],
-                }
-            ],
             "shard_keys": ["prefix=10.0.0.0/24"],
         }
 
         with self.assertRaisesRegex(
             ForwardQueryError,
-            "Legacy NQE column-filter shard fetches are no longer supported",
+            "Unsupported shard fetch mode `unsupported`",
         ):
             fetcher._fetch_spec_rows(
                 "ipam.prefix",
@@ -7115,36 +7084,6 @@ class ForwardSyncRunnerTest(TestCase):
                 coalesce_fields=[["device", "name"]],
             )
 
-    def test_resolve_context_carries_ingestion_id_from_branch_state(self):
-        client = Mock()
-        client.get_snapshot_metrics.return_value = {}
-        client.get_snapshots.return_value = []
-        client.get_latest_processed_snapshot.return_value = {
-            "id": "snapshot-after",
-            "processedAt": "2026-03-31T12:15:00Z",
-        }
-        fetcher = ForwardQueryFetcher(
-            sync=self.sync,
-            client=client,
-            logger_=Mock(),
-        )
-        self.sync.get_network_id = Mock(return_value="test-network")
-        self.sync.get_snapshot_id = Mock(return_value=LATEST_PROCESSED_SNAPSHOT)
-        self.sync.resolve_snapshot_id = Mock(return_value="snapshot-after")
-        self.sync.get_query_parameters = Mock(return_value={})
-        self.sync.get_maps = Mock(return_value=[])
-
-        context = fetcher.resolve_context(
-            branch_run_state={
-                "pending_ingestion_id": 42,
-                "snapshot_selector": LATEST_PROCESSED_SNAPSHOT,
-                "snapshot_id": "snapshot-after",
-            }
-        )
-
-        self.assertEqual(context.ingestion_id, 42)
-        self.assertEqual(context.as_dict()["ingestion_id"], 42)
-
     def test_resolve_context_applies_source_device_tag_scope(self):
         self.source.parameters["device_tag_include_tags"] = ["DATACENTER", "CORE"]
         self.source.parameters["device_tag_include_match"] = "any"
@@ -7179,95 +7118,6 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertEqual(context.device_tag_exclude_tags, ["BRANCH"])
         self.assertEqual(context.scoped_device_names, {"core-1", "core-2"})
         self.assertEqual(context.scoped_site_names, {"main dc", "main-dc"})
-
-    @patch("forward_netbox.utilities.query_fetch_execution.active_execution_run")
-    def test_resolve_context_reuses_per_fetcher_context_cache(self, mock_active_run):
-        self.source.parameters["device_tag_include_tags"] = ["DATACENTER"]
-        self.source.parameters["device_tag_exclude_tags"] = ["BRANCH"]
-        self.source.save(update_fields=["parameters"])
-        with tempfile.TemporaryDirectory() as artifact_dir, patch.dict(
-            os.environ,
-            {"FORWARD_NETBOX_FETCH_ARTIFACT_DIR": artifact_dir},
-        ):
-            run = Mock()
-            run.pk = 1
-            run.next_step_index = 1
-            candidate = Mock()
-            candidate.ingestion_id = 9
-            stage_steps = Mock()
-            stage_steps.filter.return_value.order_by.return_value.first.return_value = (
-                candidate
-            )
-            run.steps.filter.return_value = stage_steps
-            mock_active_run.return_value = run
-            client = Mock()
-            client.get_snapshot_metrics.return_value = {"deviceCount": 2}
-            client.get_snapshots.return_value = [
-                {
-                    "id": "snapshot-after",
-                    "state": "processed",
-                    "created_at": "2026-03-31T10:00:00Z",
-                    "processed_at": "2026-03-31T12:00:00Z",
-                }
-            ]
-            client.get_latest_processed_snapshot.return_value = {
-                "id": "snapshot-after",
-                "processedAt": "2026-03-31T12:15:00Z",
-            }
-            client.run_nqe_query.return_value = [{"name": "core-1"}]
-            fetcher = ForwardQueryFetcher(
-                sync=self.sync,
-                client=client,
-                logger_=Mock(),
-            )
-            self.sync.get_network_id = Mock(return_value="test-network")
-            self.sync.get_snapshot_id = Mock(return_value=LATEST_PROCESSED_SNAPSHOT)
-            self.sync.resolve_snapshot_id = Mock(return_value="snapshot-after")
-            self.sync.get_query_parameters = Mock(return_value={})
-            self.sync.get_maps = Mock(return_value=[])
-            branch_run_state = {
-                "snapshot_selector": LATEST_PROCESSED_SNAPSHOT,
-                "snapshot_id": "snapshot-after",
-            }
-
-            first = fetcher.resolve_context(branch_run_state=branch_run_state)
-            second = fetcher.resolve_context(branch_run_state=branch_run_state)
-
-            self.assertEqual(first.ingestion_id, 9)
-            self.assertEqual(second.ingestion_id, 9)
-            self.assertIs(first, second)
-            self.assertEqual(mock_active_run.call_count, 2)
-            self.sync.resolve_snapshot_id.assert_not_called()
-            self.assertEqual(client.get_snapshot_metrics.call_count, 1)
-            self.assertEqual(client.get_snapshots.call_count, 1)
-            self.assertEqual(client.run_nqe_query.call_count, 1)
-
-    @patch("forward_netbox.utilities.query_fetch_execution.active_execution_run")
-    def test_resolve_context_ingestion_id_reuses_run_step_cache(self, mock_active_run):
-        run = Mock()
-        run.pk = 1
-        run.next_step_index = 2
-        candidate = Mock()
-        candidate.ingestion_id = 7
-        stage_steps = Mock()
-        stage_steps.filter.return_value.order_by.return_value.first.return_value = (
-            candidate
-        )
-        run.steps.filter.return_value = stage_steps
-        mock_active_run.return_value = run
-        fetcher = ForwardQueryFetcher(
-            sync=self.sync,
-            client=Mock(),
-            logger_=Mock(),
-        )
-
-        first = fetcher._resolve_context_ingestion_id({})
-        second = fetcher._resolve_context_ingestion_id({})
-
-        self.assertEqual(first, 7)
-        self.assertEqual(second, 7)
-        run.steps.filter.assert_called_once_with(kind="stage")
-        self.assertEqual(stage_steps.filter.call_count, 1)
 
     def test_apply_device_tag_scope_filters_rows_with_device_keys(self):
         fetcher = ForwardQueryFetcher(
@@ -7573,7 +7423,6 @@ class ForwardSyncRunnerTest(TestCase):
             decision = apply_engine_decision_for(
                 sync=self.sync,
                 model_string=model_string,
-                backend="branching",
             )
             if model_string in BULK_ORM_ENABLED_MODELS:
                 self.assertEqual(decision.selected_engine, "adapter")
@@ -7601,24 +7450,12 @@ class ForwardSyncRunnerTest(TestCase):
             decision = apply_engine_decision_for(
                 sync=self.sync,
                 model_string=model_string,
-                backend="branching",
             )
             if model_string in BULK_ORM_ENABLED_MODELS:
                 self.assertEqual(decision.selected_engine, "bulk_orm")
                 self.assertEqual(
                     decision.reason_code,
                     "bulk_orm_enabled_safe_model_set",
-                )
-            elif (
-                model_string in EXPERIMENTAL_BULK_ORM_MODELS
-                and model_string not in ADAPTER_REQUIRED_MODELS
-            ):
-                # Experimental opt-in models stay on adapter until explicitly
-                # allowlisted in the sync's bulk_orm_models.
-                self.assertEqual(decision.selected_engine, "adapter")
-                self.assertEqual(
-                    decision.reason_code,
-                    "bulk_orm_model_not_allowlisted",
                 )
             elif model_string in ADAPTER_REQUIRED_MODELS:
                 self.assertEqual(decision.selected_engine, "adapter")
@@ -7628,51 +7465,6 @@ class ForwardSyncRunnerTest(TestCase):
                 )
             else:
                 self.fail(f"Unhandled model classification for {model_string}")
-
-    def test_bulk_orm_expansion_summary_requires_parity_for_blocked_models(self):
-        summary = bulk_orm_expansion_summary(FORWARD_SUPPORTED_MODELS)
-
-        # ipam.ipaddress and dcim.interface were promoted to the default safe
-        # set. The only remaining experimental model (ipam.prefix) is also
-        # adapter-required, so there are no promotable experimental candidates
-        # and the summary reports the remaining models as blocked pending parity.
-        self.assertEqual(summary["status"], "blocked_pending_parity")
-        self.assertIn("dcim.site", summary["safe_models"])
-        self.assertIn("dcim.interface", summary["safe_models"])
-        self.assertIn("ipam.ipaddress", summary["safe_models"])
-        self.assertGreater(summary["blocked_model_count"], 0)
-        self.assertGreater(len(summary["promotion_lanes"]), 0)
-        self.assertEqual(
-            summary["promotion_lanes"][0]["lane"],
-            "dependency_anchored_models",
-        )
-        self.assertEqual(
-            summary["promotion_lanes"][0]["required_gates"],
-            ["dependency_resolution_parity"],
-        )
-        # dcim.device was promoted to the bulk path in 2.0, so it is now a safe
-        # model and the planner has advanced to the next blocked candidate (it is
-        # no longer recommended/queued for promotion).
-        self.assertIn("dcim.device", summary["safe_models"])
-        self.assertTrue(summary["recommended_next_models"])
-        self.assertNotIn(
-            "dcim.device",
-            [model["model"] for model in summary["recommended_next_models"]],
-        )
-        self.assertEqual(summary["parity_gates"][0]["code"], "netbox_validation_parity")
-        self.assertIn("Branching", summary["parity_gates"][2]["description"])
-        self.assertEqual(
-            summary["parity_plan"]["status"],
-            "pending_candidate_parity",
-        )
-        self.assertTrue(summary["parity_plan"]["candidates"])
-        candidate = summary["parity_plan"]["candidates"][0]
-        self.assertNotEqual(candidate["model"], "dcim.device")
-        self.assertIn(
-            "branching_semantics_parity",
-            [gate["code"] for gate in candidate["required_checklist"]],
-        )
-        self.assertIn("first recommended promotion lane", summary["next_action"])
 
     def test_apply_model_rows_records_forward_query_error_and_continues(self):
         runner = ForwardSyncRunner(
@@ -7874,17 +7666,7 @@ class ForwardSyncRunnerTest(TestCase):
 
         logger.increment_statistics.assert_called_with("dcim.site", outcome="skipped")
 
-    def test_apply_model_rows_emits_progress_heartbeat_for_branch_runs(self):
-        self.sync.set_branch_run_state(
-            {
-                "phase": "executing",
-                "phase_message": "Applying planned shard changes.",
-                "current_model_string": "dcim.site",
-                "current_shard_index": 131,
-                "total_plan_items": 146,
-                "current_row_total": 2,
-            }
-        )
+    def test_apply_model_rows_emits_job_log_progress_heartbeat(self):
         logger = Mock()
         runner = ForwardSyncRunner(
             sync=self.sync, ingestion=None, client=None, logger_=logger
@@ -7892,8 +7674,6 @@ class ForwardSyncRunnerTest(TestCase):
         runner._apply_dcim_site = Mock(side_effect=[True, True])
 
         with patch(
-            "forward_netbox.utilities.sync_reporting.touch_branch_run_progress"
-        ) as touch_progress, patch(
             "forward_netbox.utilities.sync_reporting.time.monotonic",
             side_effect=[0.0, 120.0],
         ):
@@ -7905,14 +7685,12 @@ class ForwardSyncRunnerTest(TestCase):
                 ],
             )
 
-        self.assertGreaterEqual(touch_progress.call_count, 2)
-        first_call = touch_progress.call_args_list[0]
-        _, kwargs = first_call
-        self.assertEqual(
-            kwargs["phase_message"],
-            "Applying shard 131/146 for dcim.site: 1/2 rows.",
+        logger.log_info.assert_any_call(
+            "Applying 1/2 rows for dcim.site.", obj=self.sync
         )
-        self.assertEqual(kwargs["model_string"], "dcim.site")
+        logger.log_info.assert_any_call(
+            "Applying 2/2 rows for dcim.site.", obj=self.sync
+        )
 
     def test_record_issue_reuses_issue_id_and_does_not_duplicate(self):
         ingestion = ForwardIngestion.objects.create(sync=self.sync)
@@ -8163,35 +7941,30 @@ class ForwardApplyEngineParityTest(TestCase):
         return apply_engine_decision_for(
             sync=self.sync,
             model_string="dcim.virtualchassis",
-            backend="branching",
         )
 
     def _virtual_chassis_engine(self):
         return select_apply_engine(
             sync=self.sync,
             model_string="dcim.virtualchassis",
-            backend="branching",
         )
 
     def _device_decision(self):
         return apply_engine_decision_for(
             sync=self.sync,
             model_string="dcim.device",
-            backend="branching",
         )
 
     def _prefix_decision(self):
         return apply_engine_decision_for(
             sync=self.sync,
             model_string="ipam.prefix",
-            backend="branching",
         )
 
     def _prefix_engine(self):
         return select_apply_engine(
             sync=self.sync,
             model_string="ipam.prefix",
-            backend="branching",
         )
 
     def _assert_device_stays_adapter(self):
@@ -8548,12 +8321,6 @@ class ForwardApplyEngineParityTest(TestCase):
         self.assertEqual(decision.reason_code, "bulk_orm_enabled_safe_model_set")
         self.assertEqual(rejected_bulk, [])
 
-    def test_dcim_virtualchassis_branching_semantics_parity(self):
-        expansion = bulk_orm_expansion_summary(["dcim.virtualchassis"])
-        self.assertEqual(expansion["status"], "safe_set_only")
-        self.assertIn("dcim.virtualchassis", expansion["safe_models"])
-        self.assertEqual(expansion["parity_plan"]["candidate_count"], 0)
-
     def test_dcim_virtualchassis_support_bundle_statistics_parity(self):
         device = self._device("device-stats")
         runner = self._runner()
@@ -8584,11 +8351,6 @@ class ForwardApplyEngineParityTest(TestCase):
             "dcim.virtualchassis",
             outcome="skipped",
         )
-
-    def test_dcim_virtualchassis_runtime_non_regression(self):
-        expansion = bulk_orm_expansion_summary(["dcim.virtualchassis"])
-        self.assertIn("dcim.virtualchassis", expansion["safe_models"])
-        self.assertEqual(self._virtual_chassis_decision().selected_engine, "bulk_orm")
 
     def test_bulk_tree_lookup_cache_reuses_device_role_lookup_across_rows(self):
         role = DeviceRole.objects.create(
@@ -8626,9 +8388,7 @@ class ForwardApplyEngineParityTest(TestCase):
         self.assertEqual(role.pk, DeviceRole.objects.get(slug="role-1").pk)
 
     def _device_engine(self):
-        return select_apply_engine(
-            sync=self.sync, model_string="dcim.device", backend="branching"
-        )
+        return select_apply_engine(sync=self.sync, model_string="dcim.device")
 
     def _device_row(self, name, *, status="active", platform=""):
         return {
@@ -8717,7 +8477,7 @@ class ForwardApplyEngineParityTest(TestCase):
         self.assertEqual(updates, [])
         self.assertEqual(Device.objects.filter(name="device-1").count(), 1)
 
-    def test_dcim_device_bulk_clears_stale_out_of_scope_tag_only(self):
+    def test_dcim_device_bulk_does_not_mutate_owned_status_tags(self):
         device = self._device("device-1")
         out_of_scope = Tag.objects.create(
             name="Forward Out Of Scope",
@@ -8736,7 +8496,7 @@ class ForwardApplyEngineParityTest(TestCase):
             runner, "dcim.device", [self._device_row("device-1")]
         )
 
-        self.assertFalse(device.tags.filter(pk=out_of_scope.pk).exists())
+        self.assertTrue(device.tags.filter(pk=out_of_scope.pk).exists())
         self.assertTrue(device.tags.filter(pk=customer_tag.pk).exists())
 
     def test_dcim_device_delegates_when_parent_missing(self):
@@ -8748,10 +8508,6 @@ class ForwardApplyEngineParityTest(TestCase):
         )
         device = Device.objects.get(name="dev-d")
         self.assertEqual(device.site.slug, "dev-d-site")
-
-    def test_dcim_device_is_safe_model_in_expansion_summary(self):
-        summary = bulk_orm_expansion_summary(FORWARD_SUPPORTED_MODELS)
-        self.assertIn("dcim.device", summary["safe_models"])
 
     def test_ipam_prefix_defaults_to_bulk(self):
         # Promoted to the default safe set (it runs the per-object tree path that
@@ -8818,7 +8574,33 @@ class EventsClearerTest(TestCase):
         mock_clear_events_send.assert_called_once_with(sender=None)
 
 
-class QueryParameterCompatibilityTest(TestCase):
+class QueryParameterContractTest(TestCase):
+    @patch(
+        "forward_netbox.utilities.plugin_integrations.registry.integration_capability",
+        return_value={
+            "available": False,
+            "availability_status": "unsupported_version",
+            "availability_reason": "Canonical package version must be exactly 0.4.3.",
+        },
+    )
+    def test_query_fetch_skips_optional_model_when_exact_contract_is_unavailable(
+        self, _capability
+    ):
+        sync = Mock()
+        logger = Mock()
+        fetcher = ForwardQueryFetcher(sync=sync, client=Mock(), logger_=logger)
+
+        kept = fetcher._drop_unavailable_integration_models(
+            ["dcim.device", "netbox_routing.bgppeer"]
+        )
+
+        self.assertEqual(kept, ["dcim.device"])
+        logger.log_warning.assert_called_once()
+        self.assertIn(
+            "unsupported_version",
+            logger.log_warning.call_args.args[0],
+        )
+
     def test_sync_facade_returns_empty_parameters_for_local_filter_mode(self):
         source = Mock(
             parameters={
@@ -8847,7 +8629,6 @@ class QueryParameterCompatibilityTest(TestCase):
                 "device_tag_include_tags": ["Core", "DC"],
                 "device_tag_include_match": "all",
                 "device_tag_exclude_tags": ["Branch"],
-                "device_tag_exclude": "Branch",
             },
         )
 
@@ -8867,7 +8648,7 @@ class QueryParameterCompatibilityTest(TestCase):
         rows = fetcher._run_nqe_query(
             spec=spec,
             context=context,
-            parameters={"device_tag_include": "Core"},
+            parameters={"device_tag_include_tags": ["Core"]},
             fetch_all=True,
         )
 
@@ -8875,7 +8656,7 @@ class QueryParameterCompatibilityTest(TestCase):
         self.assertEqual(fetcher.client.run_nqe_query.call_count, 1)
         self.assertEqual(
             fetcher.client.run_nqe_query.call_args.kwargs["parameters"],
-            {"device_tag_include": "Core"},
+            {"device_tag_include_tags": ["Core"]},
         )
         logger.log_info.assert_not_called()
         logger.log_warning.assert_not_called()
@@ -8931,7 +8712,7 @@ class QueryParameterCompatibilityTest(TestCase):
             },
         )
 
-    def test_apply_context_tag_parameters_strips_legacy_aliases(self):
+    def test_apply_context_tag_parameters_removes_undeclared_tag_parameters(self):
         sync = Mock()
         fetcher = ForwardQueryFetcher(sync=sync, client=Mock(), logger_=Mock())
         spec = Mock(
@@ -8955,8 +8736,7 @@ class QueryParameterCompatibilityTest(TestCase):
             spec,
             {
                 "forward_netbox_shard_keys": [],
-                "device_tag_include": "Core",
-                "device_tag_exclude": "Branch",
+                "device_tag_unrecognized": "Core",
                 "device_tag_prune_out_of_scope": True,
             },
             context,
@@ -8990,7 +8770,7 @@ class QueryParameterCompatibilityTest(TestCase):
                     "sync_endpoints": False,
                     "sync_generic_endpoints": False,
                     "scope_endpoints_by_include_tags": False,
-                    "device_tag_include": "Core",
+                    "device_tag_include_tags": ["Core"],
                     "device_tag_exclude_tags": ["Branch"],
                 }
             ),
@@ -9167,13 +8947,13 @@ class QueryParameterCompatibilityTest(TestCase):
         first = fetcher._run_nqe_query(
             spec=spec,
             context=context,
-            parameters={"device_tag_include": "Core"},
+            parameters={"device_tag_include_tags": ["Core"]},
             fetch_all=True,
         )
         second = fetcher._run_nqe_query(
             spec=spec,
             context=context,
-            parameters={"device_tag_include": "Core"},
+            parameters={"device_tag_include_tags": ["Core"]},
             fetch_all=True,
         )
 
@@ -9203,20 +8983,17 @@ class QueryParameterCompatibilityTest(TestCase):
             fetcher.client.run_nqe_diff.call_args_list[0].kwargs["parameters"], {}
         )
 
-    def test_query_fetch_worker_count_defaults_to_fast_bootstrap_max(self):
-        sync = Mock(
-            parameters={"execution_backend": "fast_bootstrap"},
-            source=Mock(parameters={}),
-        )
+    def test_query_fetch_worker_count_uses_default_without_source_override(self):
+        sync = Mock(parameters={}, source=Mock(parameters={}))
         fetcher = ForwardQueryFetcher(sync=sync, client=Mock(), logger_=Mock())
 
         worker_count = fetcher._query_fetch_worker_count(32)
 
-        self.assertEqual(worker_count, 16)
+        self.assertEqual(worker_count, DEFAULT_QUERY_FETCH_CONCURRENCY)
 
     def test_query_fetch_worker_count_honors_source_override(self):
         sync = Mock(
-            parameters={"execution_backend": "fast_bootstrap"},
+            parameters={},
             source=Mock(parameters={"query_fetch_concurrency": 6}),
         )
         fetcher = ForwardQueryFetcher(sync=sync, client=Mock(), logger_=Mock())

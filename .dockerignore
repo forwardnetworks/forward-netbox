@@ -19,6 +19,7 @@ __pycache__
 node_modules
 site
 dist
+!dist/*.whl
 build
 *.egg-info
 

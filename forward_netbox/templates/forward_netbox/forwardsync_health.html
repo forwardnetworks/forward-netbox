@@ -13,11 +13,8 @@
           <a class="btn btn-sm btn-outline-primary" href="{% url 'plugins:forward_netbox:forwardsync_source_health' pk=object.pk %}">
             {% trans "Export Live Source Check" %}
           </a>
-          <a class="btn btn-sm btn-outline-primary ms-2" href="{% url 'plugins:forward_netbox:forwardsync_pushdown_trends' pk=object.pk %}?limit=180">
-            {% trans "Export Pushdown Trends" %}
-          </a>
           <span class="text-muted ms-2">
-            {% trans "Export source reachability diagnostics and long-window pushdown trend history." %}
+            {% trans "Export source reachability diagnostics." %}
           </span>
         </div>
         <table class="table table-hover attr-table">
@@ -34,16 +31,12 @@
             <td>{{ health.source.url }}</td>
           </tr>
           <tr>
-            <th scope="row">{% trans "Execution backend" %}</th>
-            <td>{{ health.runtime.execution_backend }}</td>
-          </tr>
-          <tr>
             <th scope="row">{% trans "Branching available" %}</th>
             <td>{{ health.runtime.branching_available|yesno:"Yes,No" }}</td>
           </tr>
           <tr>
-            <th scope="row">{% trans "Max changes per branch" %}</th>
-            <td>{{ health.runtime.max_changes_per_branch }}</td>
+            <th scope="row">{% trans "Max changes per staging item" %}</th>
+            <td>{{ health.runtime.max_changes_per_staging_item }}</td>
           </tr>
           <tr>
             <th scope="row">{% trans "Forward API timeout" %}</th>
@@ -172,7 +165,7 @@
           {% endwith %}
         {% else %}
           <p class="text-muted mb-0">
-            {% trans "No stored Forward API usage evidence is available for the latest execution run." %}
+            {% trans "No stored Forward API usage evidence is available for the latest ingestion." %}
           </p>
         {% endif %}
       </div>
@@ -213,7 +206,7 @@
           {% endif %}
         {% else %}
           <p class="text-muted mb-0">
-            {% trans "No dependency lookup cache evidence is available for the latest execution run." %}
+            {% trans "No dependency lookup cache evidence is available for the latest ingestion." %}
           </p>
         {% endif %}
       </div>
@@ -240,16 +233,12 @@
                 <td>{{ integration.version|placeholder }}</td>
               </tr>
               <tr>
-                <th scope="row">{% trans "Minimum version" %}</th>
-                <td>{{ integration.minimum_version|placeholder }}</td>
+                <th scope="row">{% trans "Required version" %}</th>
+                <td>{{ integration.required_version|placeholder }}</td>
               </tr>
               <tr>
-                <th scope="row">{% trans "Package names" %}</th>
-                <td>{{ integration.package_names|join:", " }}</td>
-              </tr>
-              <tr>
-                <th scope="row">{% trans "Detected package" %}</th>
-                <td>{{ integration.installed_package_name|placeholder }}</td>
+                <th scope="row">{% trans "Package" %}</th>
+                <td>{{ integration.package_name|placeholder }}</td>
               </tr>
               <tr>
                 <th scope="row">{% trans "Available" %}</th>
@@ -264,16 +253,12 @@
                 <td>{{ integration.availability_reason|placeholder }}</td>
               </tr>
               <tr>
-                <th scope="row">{% trans "Unsupported version" %}</th>
-                <td>{{ integration.unsupported_version|yesno:"Yes,No" }}</td>
+                <th scope="row">{% trans "Version matches" %}</th>
+                <td>{{ integration.version_matches|yesno:"Yes,No" }}</td>
               </tr>
               <tr>
                 <th scope="row">{% trans "Required models missing" %}</th>
                 <td>{{ integration.missing_required|length }}</td>
-              </tr>
-              <tr>
-                <th scope="row">{% trans "Optional models missing" %}</th>
-                <td>{{ integration.missing_optional|length }}</td>
               </tr>
               <tr>
                 <th scope="row">{% trans "Command inventory entries" %}</th>
@@ -284,14 +269,6 @@
               <div class="small text-muted mb-2">{% trans "Missing required models" %}</div>
               <ul class="mb-0 ps-3">
                 {% for model in integration.missing_required %}
-                  <li>{{ model }}</li>
-                {% endfor %}
-              </ul>
-            {% endif %}
-            {% if integration.missing_optional %}
-              <div class="small text-muted mt-3 mb-2">{% trans "Missing optional models" %}</div>
-              <ul class="mb-0 ps-3">
-                {% for model in integration.missing_optional %}
                   <li>{{ model }}</li>
                 {% endfor %}
               </ul>
@@ -403,25 +380,13 @@
                 <td>{{ resolution.total_query_path_specs|placeholder }}</td>
               </tr>
               <tr>
-                <th scope="row">{% trans "Artifact hits" %}</th>
-                <td>{{ resolution.artifact_hit_count|placeholder }}</td>
-              </tr>
-              <tr>
-                <th scope="row">{% trans "Repository index reads" %}</th>
-                <td>{{ resolution.repository_index_count|placeholder }}</td>
-              </tr>
-              <tr>
-                <th scope="row">{% trans "Forward lookups" %}</th>
-                <td>{{ resolution.client_resolve_count|placeholder }}</td>
-              </tr>
-              <tr>
-                <th scope="row">{% trans "Cache hit rate" %}</th>
-                <td>{{ resolution.cache_hit_rate|placeholder }}</td>
+                <th scope="row">{% trans "Resolved specs" %}</th>
+                <td>{{ resolution.resolved_spec_count|placeholder }}</td>
               </tr>
             </table>
           {% else %}
             <p class="text-muted mb-0">
-              {% trans "No query-path resolution telemetry is available for the latest execution run." %}
+              {% trans "No query-path resolution telemetry is available for the latest ingestion." %}
             </p>
           {% endif %}
         {% endwith %}
@@ -456,63 +421,6 @@
             </td>
           </tr>
         </table>
-      </div>
-    </div>
-    <div class="card">
-      <h5 class="card-header">{% trans "Live Query Drift" %}</h5>
-      <div class="card-body">
-        {% with live_query_drift=live_diagnostics.query_drift %}
-          {% if live_diagnostics.available and live_query_drift.available %}
-            <table class="table table-hover attr-table">
-              <tr>
-                <th scope="row">{% trans "Maps checked" %}</th>
-                <td>{{ live_query_drift.live_summary.total_maps|placeholder }}</td>
-              </tr>
-              <tr>
-                <th scope="row">{% trans "Live checked" %}</th>
-                <td>{{ live_query_drift.live_summary.checked_maps|placeholder }}</td>
-              </tr>
-              <tr>
-                <th scope="row">{% trans "Warn / info / pass" %}</th>
-                <td>
-                  {{ live_query_drift.live_summary.warn_count }}/{{ live_query_drift.live_summary.info_count }}/{{ live_query_drift.live_summary.pass_count }}
-                </td>
-              </tr>
-              <tr>
-                <th scope="row">{% trans "Direct query ID warnings" %}</th>
-                <td>
-                  {{ live_query_drift.live_summary.query_id_warn_count|placeholder }}
-                  {% if live_query_drift.live_summary.query_id_not_found_count or live_query_drift.live_summary.query_id_ambiguous_count or live_query_drift.live_summary.query_id_modified_count %}
-                    <span class="text-muted">
-                      (
-                      {% trans "not found" %}: {{ live_query_drift.live_summary.query_id_not_found_count|placeholder }},
-                      {% trans "ambiguous" %}: {{ live_query_drift.live_summary.query_id_ambiguous_count|placeholder }},
-                      {% trans "modified" %}: {{ live_query_drift.live_summary.query_id_modified_count|placeholder }}
-                      )
-                    </span>
-                  {% endif %}
-                </td>
-              </tr>
-              <tr>
-                <th scope="row">{% trans "Lookup errors" %}</th>
-                <td>{{ live_query_drift.live_summary.lookup_error_count|placeholder }}</td>
-              </tr>
-            </table>
-            {% if live_query_drift.live_summary.error %}
-              <p class="text-warning mb-0">
-                {% trans "Live query drift summary error" %}: {{ live_query_drift.live_summary.error }}
-              </p>
-            {% endif %}
-          {% else %}
-            <p class="text-muted mb-0">
-              {% if live_diagnostics.message %}
-                {{ live_diagnostics.message }}
-              {% else %}
-                {% trans "Live Forward query-drift diagnostics are unavailable." %}
-              {% endif %}
-            </p>
-          {% endif %}
-        {% endwith %}
       </div>
     </div>
     <div class="card">
@@ -584,34 +492,6 @@
             <th scope="row">{% trans "Fallback reasons" %}</th>
             <td>{{ health.apply_engines.fallback_reasons }}</td>
           </tr>
-          <tr>
-            <th scope="row">{% trans "Bulk ORM expansion" %}</th>
-            <td>{{ health.apply_engines.bulk_orm_expansion.status }} - {{ health.apply_engines.bulk_orm_expansion.message }}</td>
-          </tr>
-          <tr>
-            <th scope="row">{% trans "Blocked models" %}</th>
-            <td>{{ health.apply_engines.bulk_orm_expansion.blocked_model_count }}</td>
-          </tr>
-          <tr>
-            <th scope="row">{% trans "Parity gates" %}</th>
-            <td>{{ health.apply_engines.bulk_orm_expansion.parity_gates|length }}</td>
-          </tr>
-          <tr>
-            <th scope="row">{% trans "Next parity target" %}</th>
-            <td>
-              {% with candidate=health.apply_engines.bulk_orm_expansion.parity_plan.candidates.0 %}
-                {% if candidate %}
-                  {{ candidate.model }} - {{ candidate.promotion_lane }} ({{ candidate.lane_gate }})
-                {% else %}
-                  {% trans "No blocked candidates" %}
-                {% endif %}
-              {% endwith %}
-            </td>
-          </tr>
-          <tr>
-            <th scope="row">{% trans "Parity plan" %}</th>
-            <td>{{ health.apply_engines.bulk_orm_expansion.parity_plan.status }} - {{ health.apply_engines.bulk_orm_expansion.parity_plan.next_action }}</td>
-          </tr>
         </table>
       </div>
     </div>
@@ -630,166 +510,6 @@
           <tr>
             <th scope="row">{% trans "Model-fetch fallbacks" %}</th>
             <td>{{ health.fetch_contracts.model_fallback_count }}</td>
-          </tr>
-        </table>
-      </div>
-    </div>
-    <div class="card">
-      <h5 class="card-header">{% trans "Query Runtime & Pushdown" %}</h5>
-      <div class="card-body">
-        <table class="table table-hover attr-table">
-          <tr>
-            <th scope="row">{% trans "Summary" %}</th>
-            <td>{{ health.query_pushdown.message }}</td>
-          </tr>
-          <tr>
-            <th scope="row">{% trans "Stage steps profiled" %}</th>
-            <td>{{ health.query_pushdown.total_stage_steps|placeholder }}</td>
-          </tr>
-          <tr>
-            <th scope="row">{% trans "Fetch modes observed" %}</th>
-            <td>{{ health.query_pushdown.fetch_mode_counts }}</td>
-          </tr>
-          <tr>
-            <th scope="row">{% trans "Fallback steps" %}</th>
-            <td>{{ health.query_pushdown.fallback_step_count|placeholder }}</td>
-          </tr>
-          <tr>
-            <th scope="row">{% trans "Fallback reasons" %}</th>
-            <td>{{ health.query_pushdown.fallback_reasons|default:"[]" }}</td>
-          </tr>
-          <tr>
-            <th scope="row">{% trans "Pushdown rate" %}</th>
-            <td>{{ health.query_pushdown.efficiency.pushdown_rate|placeholder }}</td>
-          </tr>
-          <tr>
-            <th scope="row">{% trans "Fallback rate" %}</th>
-            <td>{{ health.query_pushdown.efficiency.fallback_rate|placeholder }}</td>
-          </tr>
-          <tr>
-            <th scope="row">{% trans "Efficiency advisory" %}</th>
-            <td>{{ health.query_pushdown.efficiency.message|default:"" }}</td>
-          </tr>
-          <tr>
-            <th scope="row">{% trans "Fallback runtime share" %}</th>
-            <td>{{ health.query_pushdown.runtime_share.fallback_runtime_share|placeholder }}</td>
-          </tr>
-          <tr>
-            <th scope="row">{% trans "Full-fallback runtime share" %}</th>
-            <td>{{ health.query_pushdown.runtime_share.full_fallback_runtime_share|placeholder }}</td>
-          </tr>
-          <tr>
-            <th scope="row">{% trans "Diff actual ratio" %}</th>
-            <td>{{ health.query_pushdown.diff_utilization.diff_actual_ratio|placeholder }}</td>
-          </tr>
-          <tr>
-            <th scope="row">{% trans "Baseline to diff" %}</th>
-            <td>{{ health.query_pushdown.diff_baseline_transition.message|default:"" }}</td>
-          </tr>
-          <tr>
-            <th scope="row">{% trans "Tuning guidance" %}</th>
-            <td>
-              {% if health.query_pushdown.tuning_guidance %}
-                <ul class="mb-0 ps-3">
-                  {% for item in health.query_pushdown.tuning_guidance %}
-                    <li>{{ item.message }}</li>
-                  {% endfor %}
-                </ul>
-              {% else %}
-                <span class="text-muted">{% trans "No tuning guidance emitted for this run." %}</span>
-              {% endif %}
-            </td>
-          </tr>
-        </table>
-      </div>
-      <div class="table-responsive">
-        <table class="table table-hover">
-          <thead>
-            <tr>
-              <th>{% trans "Model" %}</th>
-              <th>{% trans "Query runtime (ms)" %}</th>
-              <th>{% trans "Fetched rows" %}</th>
-              <th>{% trans "Steps" %}</th>
-              <th>{% trans "Fallback steps" %}</th>
-              <th>{% trans "Fetch modes" %}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for item in health.query_pushdown.slow_models %}
-              <tr>
-                <td>{{ item.model }}</td>
-                <td>{{ item.query_runtime_ms|placeholder }}</td>
-                <td>{{ item.fetched_row_count|placeholder }}</td>
-                <td>{{ item.steps|placeholder }}</td>
-                <td>{{ item.fallback_steps|placeholder }}</td>
-                <td>{{ item.fetch_modes }}</td>
-              </tr>
-            {% empty %}
-              <tr>
-                <td colspan="6" class="text-muted">{% trans "No stage query runtime samples are available yet" %}</td>
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-      <div class="table-responsive">
-        <table class="table table-hover">
-          <thead>
-            <tr>
-              <th>{% trans "Run" %}</th>
-              <th>{% trans "Status" %}</th>
-              <th>{% trans "Fallback rate" %}</th>
-              <th>{% trans "Full-fallback runtime share" %}</th>
-              <th>{% trans "Diff actual ratio" %}</th>
-              <th>{% trans "Diff baseline correlation" %}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for item in health.query_pushdown.trend_snapshots %}
-              <tr>
-                <td>{{ item.run_id }}</td>
-                <td>{{ item.status }}</td>
-                <td>{{ item.fallback_rate|placeholder }}</td>
-                <td>{{ item.full_fallback_runtime_share|placeholder }}</td>
-                <td>{{ item.diff_actual_ratio|placeholder }}</td>
-                <td>{{ item.baseline_reason_summary|default:"" }}</td>
-              </tr>
-            {% empty %}
-              <tr>
-                <td colspan="6" class="text-muted">{% trans "No pushdown trend snapshots are available yet" %}</td>
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-    </div>
-    <div class="card">
-      <h5 class="card-header">{% trans "Compatibility Cache" %}</h5>
-      <div class="card-body">
-        <table class="table table-hover attr-table">
-          <tr>
-            <th scope="row">{% trans "Summary" %}</th>
-            <td>{{ health.compatibility_cache.message }}</td>
-          </tr>
-          <tr>
-            <th scope="row">{% trans "Ledger history exists" %}</th>
-            <td>{{ health.compatibility_cache.ledger_history|yesno:"Yes,No" }}</td>
-          </tr>
-          <tr>
-            <th scope="row">{% trans "Active execution run" %}</th>
-            <td>{{ health.compatibility_cache.active_execution_run|yesno:"Yes,No" }}</td>
-          </tr>
-          <tr>
-            <th scope="row">{% trans "Compatibility payload present" %}</th>
-            <td>{{ health.compatibility_cache.compatibility_state_present|yesno:"Yes,No" }}</td>
-          </tr>
-          <tr>
-            <th scope="row">{% trans "Compatibility payload keys" %}</th>
-            <td>{{ health.compatibility_cache.compatibility_state_size|placeholder }}</td>
-          </tr>
-          <tr>
-            <th scope="row">{% trans "Prune recommended" %}</th>
-            <td>{{ health.compatibility_cache.prune_recommended|yesno:"Yes,No" }}</td>
           </tr>
         </table>
       </div>
@@ -914,103 +634,26 @@
             </td>
           </tr>
           <tr>
-            <th scope="row">{% trans "Latest execution run" %}</th>
+            <th scope="row">{% trans "Latest branch" %}</th>
             <td>
-              {% if health.latest_execution_run %}
-                {{ health.latest_execution_run.status }} - {{ health.latest_execution_run.phase|placeholder }}
+              {% if health.latest_ingestion.branch %}
+                {{ health.latest_ingestion.branch }} ({{ health.latest_ingestion.branch_status|placeholder }})
               {% else %}
                 {{ ""|placeholder }}
               {% endif %}
             </td>
           </tr>
           <tr>
-            <th scope="row">{% trans "Recovery recommendation" %}</th>
+            <th scope="row">{% trans "Ownership finalization" %}</th>
             <td>
-              {% if health.latest_execution_run %}
-                {{ health.latest_execution_run.recovery_recommendation.message }}
+              {% if health.ownership_finalization.complete %}
+                {% trans "Complete" %}
+              {% elif health.ownership_finalization.failed_domains %}
+                {% trans "Failed" %}: {{ health.ownership_finalization.failed_domains|join:", " }}
+              {% elif health.ownership_finalization.pending_domains %}
+                {% trans "Pending" %}: {{ health.ownership_finalization.pending_domains|join:", " }}
               {% else %}
                 {{ ""|placeholder }}
-              {% endif %}
-            </td>
-          </tr>
-        </table>
-      </div>
-    </div>
-    <div class="card">
-      <h5 class="card-header">{% trans "Large Run Tuning" %}</h5>
-      <div class="card-body">
-        <table class="table table-hover attr-table">
-          <tr>
-            <th scope="row">{% trans "Status" %}</th>
-            <td>{{ health.large_run_tuning.status|placeholder }}</td>
-          </tr>
-          <tr>
-            <th scope="row">{% trans "Summary" %}</th>
-            <td>{{ health.large_run_tuning.message }}</td>
-          </tr>
-          <tr>
-            <th scope="row">{% trans "Query fetch concurrency" %}</th>
-            <td>{{ health.large_run_tuning.query_fetch_concurrency|placeholder }}</td>
-          </tr>
-          <tr>
-            <th scope="row">{% trans "Worker timeout seconds" %}</th>
-            <td>{{ health.large_run_tuning.worker_timeout_seconds|placeholder }}</td>
-          </tr>
-          <tr>
-            <th scope="row">{% trans "Backend advice" %}</th>
-            <td>{{ health.large_run_tuning.execution_backend_advice.message|placeholder }}</td>
-          </tr>
-          <tr>
-            <th scope="row">{% trans "Adaptive capacity" %}</th>
-            <td>{{ health.large_run_tuning.adaptive_capacity.message|placeholder }}</td>
-          </tr>
-          <tr>
-            <th scope="row">{% trans "Scheduler overlap readiness" %}</th>
-            <td>
-              {{ health.large_run_tuning.scheduler_overlap_readiness.message|placeholder }}
-              {% with readiness=health.large_run_tuning.scheduler_overlap_readiness %}
-                {% if readiness.hotspot_models %}
-                  <ul class="mb-0 ps-3">
-                    {% for item in readiness.hotspot_models|slice:":3" %}
-                      <li>
-                        {{ item.model }}:
-                        {{ item.wait_seconds }}s wait,
-                        {{ item.wait_share }} share
-                      </li>
-                    {% endfor %}
-                  </ul>
-                {% endif %}
-              {% endwith %}
-            </td>
-          </tr>
-          <tr>
-            <th scope="row">{% trans "Next tuning batch" %}</th>
-            <td>
-              {% with batch=health.large_run_tuning.adaptive_capacity.next_tuning_batch %}
-                {% if batch %}
-                  <ul class="mb-0 ps-3">
-                    <li>{% trans "Workers" %}: {{ batch.worker_count.current|placeholder }} -> {{ batch.worker_count.recommended|placeholder }}</li>
-                    <li>{% trans "Query fetch concurrency" %}: {{ batch.query_fetch_concurrency.current|placeholder }} -> {{ batch.query_fetch_concurrency.recommended|placeholder }}</li>
-                    <li>{% trans "NQE page size" %}: {{ batch.nqe_page_size.current|placeholder }} -> {{ batch.nqe_page_size.recommended|placeholder }}</li>
-                    <li>{{ batch.restart_scope }}; {% trans "hold minutes" %}: {{ batch.hold_minutes }}</li>
-                  </ul>
-                {% else %}
-                  <span class="text-muted">{% trans "No adaptive capacity batch is available yet." %}</span>
-                {% endif %}
-              {% endwith %}
-            </td>
-          </tr>
-          <tr>
-            <th scope="row">{% trans "First actions" %}</th>
-            <td>
-              {% if health.large_run_tuning.first_order_actions %}
-                <ul class="mb-0 ps-3">
-                  {% for item in health.large_run_tuning.first_order_actions %}
-                    <li>{{ item.message }}</li>
-                  {% endfor %}
-                </ul>
-              {% else %}
-                <span class="text-muted">{% trans "No large-run tuning actions are available yet." %}</span>
               {% endif %}
             </td>
           </tr>
@@ -1030,127 +673,43 @@
             <td>{{ health.delete_wave.message }}</td>
           </tr>
           <tr>
-            <th scope="row">{% trans "Planned delete rows" %}</th>
-            <td>{{ health.delete_wave.plan.delete_rows|placeholder }}</td>
-          </tr>
-          <tr>
-            <th scope="row">{% trans "Delete share" %}</th>
-            <td>{{ health.delete_wave.plan.delete_share|placeholder }}</td>
-          </tr>
-          <tr>
-            <th scope="row">{% trans "Delete shards" %}</th>
-            <td>{{ health.delete_wave.plan.delete_shards|placeholder }}</td>
-          </tr>
-          <tr>
-            <th scope="row">{% trans "Warning codes" %}</th>
-            <td>{{ health.delete_wave.warning_codes|join:", "|placeholder }}</td>
-          </tr>
-          <tr>
-            <th scope="row">{% trans "Delete execution order" %}</th>
-            <td>{{ health.delete_wave.plan.execution_order|join:", "|placeholder }}</td>
-          </tr>
-          <tr>
-            <th scope="row">{% trans "High-risk models" %}</th>
-            <td>
-              {% if health.delete_wave.high_risk_models %}
-                <ul class="mb-0 ps-3">
-                  {% for item in health.delete_wave.high_risk_models %}
-                    <li>
-                      {{ item.model }}:
-                      {{ item.reference_blocker_risk }},
-                      {{ item.delete_rows }} {% trans "rows" %}
-                    </li>
-                  {% endfor %}
-                </ul>
-              {% else %}
-                <span class="text-muted">{% trans "No elevated delete-risk models are recorded." %}</span>
-              {% endif %}
-            </td>
+            <th scope="row">{% trans "Deleted objects" %}</th>
+            <td>{{ health.delete_wave.latest_ingestion.deleted_change_count|placeholder }}</td>
           </tr>
           <tr>
             <th scope="row">{% trans "Dependency skip issues" %}</th>
             <td>{{ health.delete_wave.latest_ingestion.dependency_skip_issues.count|placeholder }}</td>
           </tr>
-          <tr>
-            <th scope="row">{% trans "Delete step status" %}</th>
-            <td>
-              {{ health.delete_wave.steps.completed_delete_step_count|placeholder }}/{{ health.delete_wave.steps.delete_step_count|placeholder }}
-              {% trans "terminal" %}
-            </td>
-          </tr>
         </table>
       </div>
     </div>
     <div class="card">
-      <h5 class="card-header">{% trans "Run Throughput & Capacity" %}</h5>
+      <h5 class="card-header">{% trans "Current Branch & Jobs" %}</h5>
       <div class="card-body">
         <table class="table table-hover attr-table">
           <tr>
-            <th scope="row">{% trans "Throughput summary" %}</th>
-            <td>{{ health.throughput.message }}</td>
+            <th scope="row">{% trans "Branch" %}</th>
+            <td>{{ health.latest_ingestion.branch|placeholder }}</td>
           </tr>
           <tr>
-            <th scope="row">{% trans "Queue / merge smoothing" %}</th>
-            <td>{{ health.throughput.throughput_smoothing.message|placeholder }}</td>
+            <th scope="row">{% trans "Branch status" %}</th>
+            <td>{{ health.latest_ingestion.branch_status|placeholder }}</td>
           </tr>
           <tr>
-            <th scope="row">{% trans "Dominant wait component" %}</th>
-            <td>{{ health.throughput.scheduler_overlap_dominant_wait_component|placeholder }}</td>
+            <th scope="row">{% trans "Stage job" %}</th>
+            <td>{{ health.latest_ingestion.stage_job_status|placeholder }}</td>
           </tr>
           <tr>
-            <th scope="row">{% trans "Current shard" %}</th>
-            <td>{{ health.throughput.current_shard_index|placeholder }}/{{ health.throughput.total_shards|placeholder }}</td>
+            <th scope="row">{% trans "Merge job" %}</th>
+            <td>{{ health.latest_ingestion.merge_job_status|placeholder }}</td>
           </tr>
           <tr>
-            <th scope="row">{% trans "Shards per hour" %}</th>
-            <td>
-              1h={{ health.throughput.shards_per_hour_1h|placeholder }},
-              6h={{ health.throughput.shards_per_hour_6h|placeholder }}
-            </td>
+            <th scope="row">{% trans "Applied / failed changes" %}</th>
+            <td>{{ health.latest_ingestion.applied_change_count|placeholder }} / {{ health.latest_ingestion.failed_change_count|placeholder }}</td>
           </tr>
           <tr>
-            <th scope="row">{% trans "ETA range" %}</th>
-            <td>{{ health.throughput.eta_seconds_low|placeholder }} - {{ health.throughput.eta_seconds_high|placeholder }} seconds</td>
-          </tr>
-          <tr>
-            <th scope="row">{% trans "Active step age" %}</th>
-            <td>{{ health.throughput.active_step_age_seconds|placeholder }} seconds</td>
-          </tr>
-          <tr>
-            <th scope="row">{% trans "Issue rate" %}</th>
-            <td>{{ health.throughput.issue_rate_per_hour|placeholder }} / hour</td>
-          </tr>
-          <tr>
-            <th scope="row">{% trans "Bottleneck phase" %}</th>
-            <td>{{ health.throughput.bottleneck_phase|placeholder }}</td>
-          </tr>
-          <tr>
-            <th scope="row">{% trans "Runtime knobs" %}</th>
-            <td>
-              query_fetch_concurrency={{ health.throughput.query_fetch_concurrency|placeholder }},
-              nqe_page_size={{ health.throughput.nqe_page_size|placeholder }},
-              worker_timeout={{ health.throughput.worker_timeout_seconds|placeholder }}
-            </td>
-          </tr>
-          <tr>
-            <th scope="row">{% trans "Completed steps" %}</th>
-            <td>{{ health.capacity.completed_steps|placeholder }}</td>
-          </tr>
-          <tr>
-            <th scope="row">{% trans "Remaining steps" %}</th>
-            <td>{{ health.capacity.remaining_steps|placeholder }}</td>
-          </tr>
-          <tr>
-            <th scope="row">{% trans "Average shard seconds" %}</th>
-            <td>{{ health.capacity.average_completed_step_seconds|placeholder }}</td>
-          </tr>
-          <tr>
-            <th scope="row">{% trans "Max shard seconds" %}</th>
-            <td>{{ health.capacity.max_completed_step_seconds|placeholder }}</td>
-          </tr>
-          <tr>
-            <th scope="row">{% trans "Projection" %}</th>
-            <td>{{ health.capacity.message }}</td>
+            <th scope="row">{% trans "Ingestion issues" %}</th>
+            <td>{{ health.latest_ingestion.issue_count|placeholder }}</td>
           </tr>
         </table>
       </div>

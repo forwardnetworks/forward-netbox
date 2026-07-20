@@ -37,8 +37,8 @@ platform baseline.
 
 | Version | Supported |
 | --- | --- |
-| Latest release (currently `2.3.x`) | ✅ |
-| Older releases | ❌ (upgrade to the latest release) |
+| Latest release (currently `2.6.x`) | Supported |
+| Older releases | Upgrade to the latest release |
 
 ## Scope and handling notes
 
@@ -49,8 +49,10 @@ platform baseline.
   password. Two consequences: (1) protect `SECRET_KEY` like a credential (a leaked
   `SECRET_KEY` + DB dump can recover the password), and (2) **rotating `SECRET_KEY`
   makes stored Forward passwords undecryptable** — after a rotation, re-enter the
-  password on each Forward source. Still keep the NetBox database and its backups
-  access-controlled, and scope the Forward service account to least privilege.
+  password on each Forward source. Runtime rejects plaintext and undecryptable
+  credential values before any Forward request. Still keep the NetBox database
+  and its backups access-controlled, and scope the Forward service account to
+  least privilege.
 - **Sync is an inventory-wide write trust boundary.** A Forward sync creates,
   updates, and deletes DCIM/IPAM objects across NetBox via the branch-merge apply
   path; these writes are **not gated by NetBox object-level permissions**. Treat
@@ -59,6 +61,27 @@ platform baseline.
   plugin's own models and operational process) to trusted operators. Destructive
   actions (device prune, IPAM delete-tagging) are additionally dry-run-by-default
   and refuse to act on an empty Forward scope.
-- Do not include customer names, network identifiers, snapshot IDs, or credentials
-  in reports committed to this repository; a pre-commit and CI content scanner
-  (`scripts/check_sensitive_content.py`) blocks such identifiers.
+- Do not include customer names, organization, network, snapshot, or query
+  identifiers, or credentials in reports committed to this repository. The
+  fail-closed pre-commit and CI scanner (`scripts/check_sensitive_content.py`)
+  blocks known identifier formats. It scans current files, changed historical
+  blobs, commit messages, and annotated tag messages. Binary or non-UTF-8 files
+  are rejected unless their exact path and SHA-256 are recorded in the reviewed
+  `.sensitive-binary-allowlist`. Maintainers keep customer-specific literals and
+  regular expressions in the gitignored `.sensitive-patterns.local.txt`; CI
+  supplies the equivalent secret-backed list through
+  `FORWARD_SENSITIVE_PATTERNS`. Release validation requires that feed to be
+  nonempty and verifies `.sensitive-history-baseline` against the external
+  `FORWARD_SENSITIVE_HISTORY_BASELINE` repository variable. Historical binary
+  exceptions are accepted only from the external
+  `FORWARD_SENSITIVE_BINARY_HISTORY_ALLOWLIST` secret as an exact
+  commit/path/SHA-256 tuple. A base-branch `pull_request_target` workflow scans
+  fork PR objects without checking out or executing candidate code, then posts
+  an authenticated status on the exact candidate SHA. Release publication
+  requires two separately reviewed squash merges: the production tree and an
+  evidence-only child. The tag workflow verifies both GitHub-signed main
+  commits, final-SHA approvals by the independent maintainer, authenticated
+  trusted-scan statuses, and exact successful CI/CodeQL workflow identities
+  before the protected PyPI environment can publish.
+  `--all-history` remains available for a forensic audit without making
+  published-history rewrites a release action.

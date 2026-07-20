@@ -12,12 +12,9 @@ from ..exceptions import ForwardDependencySkipError
 from ..exceptions import ForwardQueryError
 from ..exceptions import ForwardSearchError
 from ..exceptions import ForwardSyncDataError
-from .execution_ledger import touch_execution_step_progress
 from .json_safe import json_safe_value
 from .sync_primitives import dependency_parent_coverage_summary
 from .sync_primitives import prime_dependency_lookup_caches
-from .sync_state import get_branch_run_display_state
-from .sync_state import touch_branch_run_progress
 
 PROGRESS_HEARTBEAT_ROW_INTERVAL = 500
 PROGRESS_HEARTBEAT_SECONDS = 60
@@ -73,9 +70,8 @@ SKIP_WARNING_ROLLUP_SAMPLES = 5
 # One-line summary per rollup reason ({total},{model},{reason},{examples},{suffix}).
 ROLLUP_SUMMARY_TEMPLATES = {
     "missing-module-bay": (
-        "Skipped {total} {model} row(s) because the target module bay "
-        "does not exist in NetBox. Run `forward_module_readiness`, import the "
-        "generated module-bay CSV, then re-run module sync. "
+        "Skipped {total} {model} row(s) because the Forward row did not provide "
+        "a module-bay name. Correct the source query data and re-run the sync. "
         "Examples: {examples}{suffix}."
     ),
     "shared-vip": (
@@ -263,7 +259,6 @@ def _emit_progress_heartbeat(
     model_string,
     processed_rows,
     total_rows,
-    state,
     last_emit_at,
 ):
     current_time = time.monotonic()
@@ -272,32 +267,10 @@ def _emit_progress_heartbeat(
         or processed_rows % PROGRESS_HEARTBEAT_ROW_INTERVAL == 0
         or current_time - last_emit_at >= PROGRESS_HEARTBEAT_SECONDS
     ):
-        shard_index = state.get("current_shard_index")
-        total_plan_items = state.get("total_plan_items")
-        if shard_index and total_plan_items:
-            message = (
-                f"{activity_verb} shard {shard_index}/{total_plan_items} for "
-                f"{model_string}: {processed_rows}/{total_rows} rows."
-            )
-        else:
-            message = f"{activity_verb} {processed_rows}/{total_rows} rows for {model_string}."
+        message = (
+            f"{activity_verb} {processed_rows}/{total_rows} rows for {model_string}."
+        )
         runner.logger.log_info(message, obj=runner.sync)
-        touch_branch_run_progress(
-            runner.sync,
-            phase_message=message,
-            model_string=model_string,
-            shard_index=shard_index,
-            total_plan_items=total_plan_items,
-            row_count=processed_rows,
-            row_total=total_rows,
-        )
-        touch_execution_step_progress(
-            runner.sync,
-            model_string=model_string,
-            shard_index=shard_index,
-            row_count=processed_rows,
-            row_total=total_rows,
-        )
         return current_time
     return last_emit_at
 
@@ -439,7 +412,6 @@ def apply_model_rows(runner, model_string, rows):
             model_string,
             dependency_parent_coverage,
         )
-    state = get_branch_run_display_state(runner.sync)
     last_emit_at = 0.0
     processed_rows = 0
     for row in rows:
@@ -513,7 +485,6 @@ def apply_model_rows(runner, model_string, rows):
             model_string=model_string,
             processed_rows=processed_rows,
             total_rows=total_rows,
-            state=state,
             last_emit_at=last_emit_at,
         )
     runner.logger.log_info(
@@ -641,7 +612,6 @@ def delete_model_rows(runner, model_string, rows):
         runner, model_string, rows
     )
     runner.logger.add_dependency_lookup_summary(dependency_lookup_summary)
-    state = get_branch_run_display_state(runner.sync)
     last_emit_at = 0.0
     processed_rows = 0
     pending_deleted = 0
@@ -715,7 +685,6 @@ def delete_model_rows(runner, model_string, rows):
             model_string=model_string,
             processed_rows=processed_rows,
             total_rows=len(rows),
-            state=state,
             last_emit_at=last_emit_at,
         )
     _increment_ingestion_delete_totals(runner, pending_deleted)

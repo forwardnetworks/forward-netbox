@@ -18,7 +18,6 @@ from utilities.forms.widgets import NumberWithOptions
 from .choices import forward_configured_models
 from .choices import FORWARD_OPTIONAL_MODELS
 from .choices import ForwardDiffFallbackModeChoices
-from .choices import ForwardExecutionBackendChoices
 from .choices import ForwardSourceDeploymentChoices
 from .choices import ForwardSourceStatusChoices
 from .choices import ForwardSyncStatusChoices
@@ -58,7 +57,6 @@ from .utilities.runtime_guidance import (
 )
 from .utilities.sync_facade import DEFAULT_ENABLE_BULK_ORM_FOR_NEW_SYNCS
 from .utilities.sync_facade import effective_scope_endpoints_by_include_tags
-from .utilities.sync_facade import SCOPE_ENDPOINTS_BY_INCLUDE_TAGS_CONFIGURED
 
 
 def _configure_api_select(widget, query_params=None):
@@ -413,12 +411,12 @@ class ForwardSourceForm(NetBoxModelForm):
                 ("local", "Plugin Local Filter (default)"),
                 (
                     "query_parameters",
-                    "Forward Query Parameters (query_id/query compatible only)",
+                    "Forward Query Parameters",
                 ),
             ),
             help_text=(
-                "Use Local Filter for maximum compatibility. Use Query Parameters only when "
-                "your Forward query IDs support device_tag_include/device_tag_exclude."
+                "Use Local Filter to filter rows after retrieval. Use Query Parameters "
+                "when the selected Forward queries declare the plural device-tag parameters."
             ),
         )
         self.fields["device_tag_prune_out_of_scope"] = forms.BooleanField(
@@ -621,16 +619,12 @@ class ForwardSourceForm(NetBoxModelForm):
             if self.is_bound
             else parameters.get("device_tag_include_tags")
         )
-        if include_initial is None and parameters.get("device_tag_include"):
-            include_initial = [parameters.get("device_tag_include")]
         include_initial = self._normalize_tag_values(include_initial)
         exclude_initial = (
             exclude_bound
             if self.is_bound
             else parameters.get("device_tag_exclude_tags")
         )
-        if exclude_initial is None and parameters.get("device_tag_exclude"):
-            exclude_initial = [parameters.get("device_tag_exclude")]
         exclude_initial = self._normalize_tag_values(exclude_initial)
         sync_tags_initial = (
             sync_tags_bound if self.is_bound else parameters.get("sync_device_tags")
@@ -879,8 +873,6 @@ class ForwardSourceForm(NetBoxModelForm):
             "device_tag_include_match": (
                 cleaned.get("device_tag_include_match") or "any"
             ),
-            "device_tag_include": include_tags[0] if len(include_tags) == 1 else "",
-            "device_tag_exclude": exclude_tags[0] if len(exclude_tags) == 1 else "",
             "device_tag_filter_mode": (
                 cleaned.get("device_tag_filter_mode") or "local"
             ),
@@ -894,7 +886,6 @@ class ForwardSourceForm(NetBoxModelForm):
             "scope_endpoints_by_include_tags": bool(
                 cleaned.get("scope_endpoints_by_include_tags")
             ),
-            SCOPE_ENDPOINTS_BY_INCLUDE_TAGS_CONFIGURED: True,
         }
         self.instance.type = source_type
         self.instance.url = (
@@ -904,10 +895,20 @@ class ForwardSourceForm(NetBoxModelForm):
         )
         self.instance.parameters = candidate_parameters
         super().clean()
+        # Runtime API clients accept only encrypted credentials. The form is the
+        # plaintext input boundary, so validate with an encrypted, unsaved copy
+        # while leaving ``self.instance`` for ``ForwardSource.save()`` to persist.
+        from .utilities.crypto import encrypt_secret
+
+        candidate_validation_parameters = dict(candidate_parameters)
+        try:
+            candidate_validation_parameters["password"] = encrypt_secret(password)
+        except ValueError as error:
+            raise forms.ValidationError(str(error)) from error
         candidate_source = ForwardSource(
             type=source_type,
             url=cleaned.get("url") or "",
-            parameters=candidate_parameters,
+            parameters=candidate_validation_parameters,
         )
         try:
             candidate_source.validate_connection()
@@ -1076,8 +1077,6 @@ class ForwardSourceForm(NetBoxModelForm):
             "device_tag_include_match": (
                 self.cleaned_data.get("device_tag_include_match") or "any"
             ),
-            "device_tag_include": include_tags[0] if len(include_tags) == 1 else "",
-            "device_tag_exclude": exclude_tags[0] if len(exclude_tags) == 1 else "",
             "device_tag_filter_mode": (
                 self.cleaned_data.get("device_tag_filter_mode") or "local"
             ),
@@ -1095,7 +1094,6 @@ class ForwardSourceForm(NetBoxModelForm):
             "scope_endpoints_by_include_tags": bool(
                 self.cleaned_data.get("scope_endpoints_by_include_tags")
             ),
-            SCOPE_ENDPOINTS_BY_INCLUDE_TAGS_CONFIGURED: True,
         }
         self.instance.status = ForwardSourceStatusChoices.NEW
         return super().save(*args, **kwargs)
@@ -1147,8 +1145,8 @@ class ForwardSyncForm(NetBoxModelForm):
         label="Auto merge",
         initial=True,
         help_text=(
-            "Automatically merge each native Branching shard and continue to the next shard. "
-            "Leave unchecked to pause for review after each shard."
+            "Automatically merge the native sync branch after staging. "
+            "Leave unchecked to pause for review before the merge."
         ),
     )
     enable_bulk_orm = forms.BooleanField(
@@ -1368,13 +1366,9 @@ class ForwardSyncForm(NetBoxModelForm):
         ):
             raise forms.ValidationError("Select at least one NetBox model to sync.")
         parameters = {
-            "execution_backend": ForwardExecutionBackendChoices.SINGLE_BRANCH,
             "auto_merge": cleaned.get("auto_merge", False),
             "snapshot_id": snapshot_id,
             "enable_bulk_orm": bool(cleaned.get("enable_bulk_orm", False)),
-            "bulk_orm_models": list(
-                (self.instance.parameters or {}).get("bulk_orm_models") or []
-            ),
             "skip_unchanged_snapshot": bool(
                 cleaned.get("skip_unchanged_snapshot", False)
             ),
@@ -1399,14 +1393,10 @@ class ForwardSyncForm(NetBoxModelForm):
 
     def save(self, *args, **kwargs):
         parameters = {
-            "execution_backend": ForwardExecutionBackendChoices.SINGLE_BRANCH,
             "auto_merge": self.cleaned_data.get("auto_merge", False),
             "snapshot_id": self.cleaned_data.get("snapshot_id")
             or LATEST_PROCESSED_SNAPSHOT,
             "enable_bulk_orm": bool(self.cleaned_data.get("enable_bulk_orm", False)),
-            "bulk_orm_models": list(
-                (self.instance.parameters or {}).get("bulk_orm_models") or []
-            ),
             "skip_unchanged_snapshot": bool(
                 self.cleaned_data.get("skip_unchanged_snapshot", False)
             ),

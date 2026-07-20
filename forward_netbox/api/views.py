@@ -603,9 +603,10 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
             standing_schedule_intent,
         )
 
+        serializer.validated_data["user"] = self.request.user
         super().perform_create(serializer)
         intent = standing_schedule_intent(serializer.instance.parameters)
-        if any(present and desired > 0 for present, desired in intent.values()):
+        if any(desired > 0 for desired in intent.values()):
             reconcile_standing_schedules(serializer.instance, user=self.request.user)
 
     @action(detail=False, methods=["get"], url_path="available-snapshots")
@@ -839,8 +840,8 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
         except JobBlockedBySyncRun as exc:
             # Distinct from already_running: the requested work is NOT
             # queued (prune refuses while a sync run is active). Still 2xx
-            # so retry-blind crons stay green; the status string says why,
-            # and the post-sync auto-prune covers the gap when enabled.
+            # so retry-blind crons stay green; the status string says why and
+            # the caller can retry after the sync completes.
             return Response(
                 {
                     "status": "blocked_by_sync_run",
@@ -886,7 +887,7 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
         if interval == 0 or schedule_at or interval:
             # Standing-schedule management: fixed JobRunner name +
             # enqueue_once dedup (one schedule per sync); interval=0 cancels.
-            # Immediate runs below keep the legacy per-sync job name the
+            # Immediate runs below keep the sync-qualified one-shot name the
             # drift report and preview GET match on.
             from ..utilities.sync_facade import button_job_permission
             from ..utilities.sync_facade import cancel_standing_schedule
@@ -944,20 +945,6 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
     @action(detail=True, methods=["post"], url_path="tag-delete-eligible-ipam")
     def tag_delete_eligible_ipam(self, request, pk):
         return self._enqueue_button_job_response(request, "tag_delete_eligible_ipam")
-
-    @extend_schema(
-        methods=["post"],
-        request=EmptySerializer(),
-        responses={
-            201: JobSerializer(),
-            202: OpenApiResponse(
-                description='{"status": "already_running", "job_id": N}'
-            ),
-        },
-    )
-    @action(detail=True, methods=["post"], url_path="create-module-bays")
-    def create_module_bays(self, request, pk):
-        return self._enqueue_button_job_response(request, "create_module_bays")
 
 
 class ForwardIngestionViewSet(NetBoxReadOnlyModelViewSet):

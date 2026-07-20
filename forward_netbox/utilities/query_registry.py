@@ -324,11 +324,6 @@ BUILTIN_QUERY_MAPS = [
         "filename": "forward_devices.nqe",
     },
     {
-        "model_string": "dcim.virtualchassis",
-        "name": "Forward Virtual Chassis",
-        "filename": "forward_virtual_chassis.nqe",
-    },
-    {
         "model_string": "extras.taggeditem",
         "name": "Forward Device Feature Tags",
         "filename": "forward_device_feature_tags.nqe",
@@ -391,6 +386,12 @@ BUILTIN_QUERY_MAPS = [
 ]
 
 BUILTIN_OPTIONAL_QUERY_MAPS = [
+    {
+        "model_string": "dcim.virtualchassis",
+        "name": "Forward Virtual Chassis",
+        "filename": "forward_virtual_chassis.nqe",
+        "enabled": False,
+    },
     {
         "model_string": "dcim.devicetype",
         "name": "Forward Device Models with NetBox Device Type Aliases",
@@ -554,24 +555,6 @@ BUILTIN_OPTIONAL_QUERY_MAPS = [
         "enabled": False,
     },
     {
-        "model_string": "netbox_cisco_aci.aciappprofile",
-        "name": "Forward ACI Application Profiles",
-        "filename": "forward_aci_app_profiles.nqe",
-        "enabled": False,
-    },
-    {
-        "model_string": "netbox_cisco_aci.aciendpointgroup",
-        "name": "Forward ACI Endpoint Groups",
-        "filename": "forward_aci_endpoint_groups.nqe",
-        "enabled": False,
-    },
-    {
-        "model_string": "netbox_cisco_aci.acicontract",
-        "name": "Forward ACI Contracts",
-        "filename": "forward_aci_contracts.nqe",
-        "enabled": False,
-    },
-    {
         "model_string": "netbox_cisco_aci.acifilter",
         "name": "Forward ACI Filters",
         "filename": "forward_aci_filters.nqe",
@@ -581,12 +564,6 @@ BUILTIN_OPTIONAL_QUERY_MAPS = [
         "model_string": "netbox_cisco_aci.acil3out",
         "name": "Forward ACI L3Outs",
         "filename": "forward_aci_l3outs.nqe",
-        "enabled": False,
-    },
-    {
-        "model_string": "netbox_cisco_aci.acistaticportbinding",
-        "name": "Forward ACI Static Port Bindings",
-        "filename": "forward_aci_static_port_bindings.nqe",
         "enabled": False,
     },
 ]

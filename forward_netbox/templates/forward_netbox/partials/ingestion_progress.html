@@ -9,14 +9,6 @@
     {% endif %}
   </h5>
   <div class="card-body">
-    {% if execution_state and active_stage == 'sync' and execution_state.current_model_string and execution_state.current_row_total %}
-      <p class="text-muted mb-2">
-        {% trans "Current shard:" %}
-        <strong>{{ execution_state.current_model_string }}</strong>
-        {% trans "rows" %}
-        <strong>{{ execution_state.current_row_count|default:0 }}</strong>/<strong>{{ execution_state.current_row_total }}</strong>
-      </p>
-    {% endif %}
     {% if not job %}
       {% trans "Cannot show progress, no sync job exists anymore." %}
     {% elif statistics %}

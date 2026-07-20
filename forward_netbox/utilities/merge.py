@@ -1,8 +1,8 @@
 """
 Custom merge orchestrator for ForwardIngestion.
 
-This preserves the existing branch-backed merge workflow closely:
-- merge one ObjectChange at a time inside its own savepoint
+This preserves the branch-backed merge lifecycle while scaling its apply path:
+- batch supported changes and isolate exceptional rows in per-object savepoints
 - record failed changes as ForwardIngestionIssue(phase='merge')
 - report progress through SyncLogging statistics
 - preserve branching lifecycle signals and status transitions
@@ -11,7 +11,7 @@ This preserves the existing branch-backed merge workflow closely:
 import logging
 import time
 import traceback
-from collections import Counter
+import uuid
 from functools import partial
 from typing import TYPE_CHECKING
 
@@ -19,6 +19,7 @@ from core.exceptions import SyncError
 from core.models import ObjectChange as ObjectChange_
 from django.db import DEFAULT_DB_ALIAS
 from django.db import transaction
+from django.db.models import Count
 from django.db.models.signals import post_save
 from django.test import RequestFactory
 from django.urls import reverse
@@ -28,6 +29,7 @@ from netbox_branching.choices import BranchEventTypeChoices
 from netbox_branching.choices import BranchStatusChoices
 from netbox_branching.merge_strategies import get_merge_strategy
 
+from .bulk_merge import _ApplyOneFailure
 from .bulk_merge import bulk_merge_changes
 from netbox_branching.models import Branch
 from netbox_branching.models import BranchEvent
@@ -35,6 +37,7 @@ from netbox_branching.signals import post_merge
 from netbox_branching.utilities import record_applied_change
 
 from ..choices import ForwardIngestionPhaseChoices
+from ..exceptions import ForwardPartialMergeError
 from ..models import ForwardIngestionIssue
 
 if TYPE_CHECKING:
@@ -48,52 +51,36 @@ MERGE_HEARTBEAT_SECONDS = 60
 MERGE_LOG_ROW_INTERVAL = 5000
 MERGE_LOG_SECONDS = 300
 
-# Models the plugin never syncs directly: their branch changes are NetBox
-# component-replication side effects. Creating a Device or Module instantiates
-# ModuleBay rows from the device/module type's templates. ModuleBay has a custom
-# MPTT save() that takes an UPDATE path when Branching deserializes the create
-# with a pk, so the row never lands in main and every such change fails the
-# merge with NotUpdated ("Save with update_fields did not affect any rows").
-# This is a NetBox Branching <-> MPTT-ModuleBay limitation, not a plugin sync
-# failure; one device with module bays can emit dozens of identical failures
-# plus cascading module failures. Collapse them into a single actionable summary
-# that points at the out-of-band remediation (forward_module_readiness) instead
-# of flooding the ingestion issues list. Device/interface sync is unaffected.
-REPLICATION_SIDE_EFFECT_MODELS = frozenset({"dcim.modulebay"})
+RESOLVED_MERGE_ISSUES_KEY = "resolved_merge_issues"
 
-MODULE_BAY_MERGE_REMEDIATION = (
-    "{count} module-bay change(s) could not be merged because NetBox Branching "
-    "cannot create MPTT module bays during a merge (a NetBox limitation, not a "
-    "data error). The affected module bays were not created, so any modules "
-    "targeting them were skipped. Run the `forward_module_readiness` management "
-    "command and import the generated module-bay CSV directly into NetBox, then "
-    "re-run module sync. Device and interface sync are unaffected."
-)
+
+def _replication_side_effect_exists(collapsed_change) -> bool:
+    """Return true when main already materialized a redundant branch create."""
+    model_class = collapsed_change.model_class
+    model_string = f"{model_class._meta.app_label}.{model_class._meta.model_name}"
+    action = getattr(
+        collapsed_change.final_action, "value", collapsed_change.final_action
+    )
+    if model_string != "dcim.modulebay" or action != "create":
+        return False
+    data = collapsed_change.postchange_data or {}
+    device_id = data.get("device") or data.get("device_id")
+    name = str(data.get("name") or "")
+    if not device_id or not name:
+        return False
+    return model_class.objects.filter(device_id=device_id, name=name).exists()
 
 
 class _MergeIssueRecorder:
-    """Record merge-time change failures as ForwardIngestionIssue rows.
-
-    Failures for models the plugin syncs directly are recorded one issue per
-    change. Failures for replication side-effect models (see
-    REPLICATION_SIDE_EFFECT_MODELS) are collapsed into a single actionable
-    summary issue at ``flush()`` time, so one device's worth of unmergeable
-    module bays does not flood the list with dozens of identical rows.
-    """
+    """Record merge-time change failures as ForwardIngestionIssue rows."""
 
     def __init__(self, ingestion, sync_logger):
         self._ingestion = ingestion
         self._sync_logger = sync_logger
-        self._side_effect_counts: Counter = Counter()
-        self._side_effect_samples: dict[str, str] = {}
 
     def record(self, *, model_string, message, exc):
-        if model_string in REPLICATION_SIDE_EFFECT_MODELS:
-            self._side_effect_counts[model_string] += 1
-            self._side_effect_samples.setdefault(model_string, str(exc))
-            logger.debug(message, exc_info=True)
-            return
-        logger.error(message, exc_info=True)
+        exception_info = (type(exc), exc, exc.__traceback__)
+        logger.error(message, exc_info=exception_info)
         if self._sync_logger:
             self._sync_logger.log_failure(message)
         ForwardIngestionIssue.objects.create(
@@ -102,62 +89,192 @@ class _MergeIssueRecorder:
             model=model_string,
             message=message,
             exception=exc.__class__.__name__,
-            raw_data={"traceback": traceback.format_exc()},
+            raw_data={
+                "traceback": "".join(traceback.format_exception(*exception_info))
+            },
         )
 
-    def flush(self):
-        for model_string, count in self._side_effect_counts.items():
-            summary = MODULE_BAY_MERGE_REMEDIATION.format(count=count)
-            if self._sync_logger:
-                self._sync_logger.log_warning(summary)
-            ForwardIngestionIssue.objects.create(
-                ingestion=self._ingestion,
+
+def _attest_branch_merged(ingestion, branch, user) -> None:
+    """Atomically persist Branching completion and durable ingestion evidence."""
+    merged_at = timezone.now()
+    with transaction.atomic():
+        branch.status = BranchStatusChoices.MERGED
+        branch.merged_time = merged_at
+        branch.merged_by = user
+        branch.save(
+            update_merge_sync_fields=True,
+            update_fields=["status", "merged_time", "merged_by", "last_updated"],
+        )
+        BranchEvent.objects.create(
+            branch=branch,
+            user=user,
+            type=BranchEventTypeChoices.MERGED,
+        )
+        ingestion.__class__.objects.filter(pk=ingestion.pk).update(
+            merge_applied_at=merged_at
+        )
+        ingestion.merge_applied_at = merged_at
+    post_merge.send(sender=Branch, branch=branch, user=user)
+
+
+def _retire_resolved_merge_issues(ingestion, issue_ids) -> int:
+    """Archive and remove merge issues superseded by a successful retry."""
+    issue_ids = tuple(issue_ids)
+    if not issue_ids:
+        return 0
+
+    with transaction.atomic():
+        locked_ingestion = ingestion.__class__.objects.select_for_update().get(
+            pk=ingestion.pk
+        )
+        issues = list(
+            ForwardIngestionIssue.objects.filter(
+                pk__in=issue_ids,
+                ingestion=locked_ingestion,
                 phase=ForwardIngestionPhaseChoices.MERGE,
-                model=model_string,
-                message=summary,
-                exception="ModuleBayMergeUnsupported",
-                raw_data={
-                    "sample_error": self._side_effect_samples.get(model_string, "")
-                },
             )
+            .order_by("pk")
+            .values(
+                "pk",
+                "timestamp",
+                "model",
+                "message",
+                "coalesce_fields",
+                "defaults",
+                "raw_data",
+                "exception",
+            )
+        )
+        if not issues:
+            return 0
+
+        resolved_at = timezone.now().isoformat()
+        archived = list(
+            (locked_ingestion.snapshot_info or {}).get(RESOLVED_MERGE_ISSUES_KEY) or []
+        )
+        for issue in issues:
+            timestamp = issue["timestamp"]
+            archived.append(
+                {
+                    "issue_id": issue["pk"],
+                    "timestamp": timestamp.isoformat() if timestamp else None,
+                    "resolved_at": resolved_at,
+                    "model": issue["model"],
+                    "message": issue["message"],
+                    "coalesce_fields": issue["coalesce_fields"],
+                    "defaults": issue["defaults"],
+                    "raw_data": issue["raw_data"],
+                    "exception": issue["exception"],
+                }
+            )
+
+        snapshot_info = dict(locked_ingestion.snapshot_info or {})
+        snapshot_info[RESOLVED_MERGE_ISSUES_KEY] = archived
+        locked_ingestion.snapshot_info = snapshot_info
+        locked_ingestion.save(update_fields=["snapshot_info"])
+        ForwardIngestionIssue.objects.filter(
+            pk__in=[issue["pk"] for issue in issues],
+            ingestion=locked_ingestion,
+            phase=ForwardIngestionPhaseChoices.MERGE,
+        ).delete()
+
+    ingestion.snapshot_info = snapshot_info
+    return len(issues)
 
 
 def merge_branch(
-    ingestion: "ForwardIngestion", sync_logger: "SyncLogging | None" = None
+    ingestion: "ForwardIngestion",
+    sync_logger: "SyncLogging | None" = None,
+    *,
+    user=None,
 ) -> None:
     branch = ingestion.branch
-    user = ingestion.sync.user
+    user = user or ingestion.sync.user
 
     if not branch:
         raise SyncError("Ingestion has no staged branch to merge.")
+    if user is None:
+        raise SyncError("Merge attribution requires an invoking user or sync owner.")
     if not branch.ready:
         raise SyncError(f"Branch {branch} is not ready to merge")
 
+    previous_applied = int(ingestion.applied_change_count or 0)
+    previous_failed = int(ingestion.failed_change_count or 0)
+    retrying_partial = previous_failed > 0
+    prior_merge_issue_ids = list(
+        ingestion.issues.filter(phase=ForwardIngestionPhaseChoices.MERGE).values_list(
+            "pk", flat=True
+        )
+    )
     changes = branch.get_unmerged_changes().order_by("time")
-    total_changes = changes.count()
-    action_counts = Counter(changes.values_list("action", flat=True))
-    if not total_changes:
+    if not changes.exists():
+        if retrying_partial:
+            ingestion.record_change_totals(
+                applied=previous_applied + previous_failed,
+                failed=0,
+                created=int(ingestion.created_change_count or 0),
+                updated=int(ingestion.updated_change_count or 0),
+                deleted=int(ingestion.deleted_change_count or 0),
+            )
+        else:
+            ingestion.record_change_totals(
+                applied=0,
+                failed=0,
+                created=0,
+                updated=0,
+                deleted=0,
+            )
+        _attest_branch_merged(ingestion, branch, user)
+        if retrying_partial:
+            _retire_resolved_merge_issues(ingestion, prior_merge_issue_ids)
         if sync_logger:
             sync_logger.log_info("No changes to merge.")
         return
 
     if sync_logger:
-        model_counts: Counter = Counter()
-        for app_label, model_name in changes.values_list(
-            "changed_object_type__app_label", "changed_object_type__model"
-        ):
-            model_counts[f"{app_label}.{model_name}"] += 1
-        for model_string, count in model_counts.items():
-            sync_logger.init_statistics(model_string, total=count)
-            sync_logger.log_info(
-                f"Going to merge {count} changes for `{model_string}`."
+        for model_count in (
+            changes.order_by()
+            .values(
+                "changed_object_type__app_label",
+                "changed_object_type__model",
             )
+            .annotate(total=Count("changed_object_id", distinct=True))
+        ):
+            model_string = (
+                f"{model_count['changed_object_type__app_label']}."
+                f"{model_count['changed_object_type__model']}"
+            )
+            sync_logger.init_statistics(model_string, total=model_count["total"])
+            sync_logger.log_info(
+                f"Going to merge {model_count['total']} changes for `{model_string}`."
+            )
+
+    logical_total_changes = (
+        changes.order_by()
+        .values("changed_object_type_id", "changed_object_id")
+        .distinct()
+        .count()
+    )
+    previous_logical_total = previous_applied + previous_failed
+    if retrying_partial and logical_total_changes != previous_logical_total:
+        raise RuntimeError(
+            "Partial-merge retry changed the logical branch total: "
+            f"previously {previous_logical_total}, now {logical_total_changes}. "
+            "Refusing to overwrite cumulative merge evidence."
+        )
 
     Branch.objects.filter(pk=branch.pk).update(status=BranchStatusChoices.MERGING)
 
     handler = partial(record_applied_change, branch=branch)
     post_save.connect(handler, sender=ObjectChange_, weak=False)
+    if ingestion.change_request_id is None:
+        ingestion.change_request_id = uuid.uuid4()
+        ingestion.save(update_fields=["change_request_id"])
+
     request = RequestFactory().get(reverse("home"))
+    request.user = user
+    request.id = ingestion.change_request_id
 
     models_touched = set()
     failed = 0
@@ -166,7 +283,6 @@ def merge_branch(
     processed = 0
     last_heartbeat_at = time.monotonic()
     last_log_at = last_heartbeat_at
-    step_index = _merge_step_index(ingestion)
 
     def _model_string(model_class):
         return f"{model_class._meta.app_label}.{model_class._meta.model_name}"
@@ -179,26 +295,34 @@ def merge_branch(
         model_class = collapsed_change.model_class
         model_string = _model_string(model_class)
         dummy_change = collapsed_change.generate_object_change()
-        last = collapsed_change.last_change
         try:
             with transaction.atomic():
                 with event_tracking(request):
-                    request.id = getattr(last, "request_id", None)
-                    request.user = getattr(last, "user", None) or user
                     dummy_change.apply(branch, using=DEFAULT_DB_ALIAS, logger=logger)
             models_touched.add(model_class)
             return True
         except Exception as exc:
-            issue_recorder.record(
-                model_string=model_string,
-                message=(
-                    f"Failed to apply collapsed change "
-                    f"({collapsed_change.final_action} {model_string}: "
-                    f"{collapsed_change.key[1]}): {exc}"
-                ),
-                exc=exc,
-            )
-            return False
+            if _replication_side_effect_exists(collapsed_change):
+                logger.info(
+                    "Treating redundant %s create for %s as applied; main "
+                    "materialized it while creating the parent device.",
+                    model_string,
+                    collapsed_change.key[1],
+                )
+                return True
+            return _ApplyOneFailure(exc)
+
+    def _record_failed(collapsed_change, exc):
+        model_string = _model_string(collapsed_change.model_class)
+        issue_recorder.record(
+            model_string=model_string,
+            message=(
+                "Failed to apply collapsed change "
+                f"({collapsed_change.final_action} {model_string}: "
+                f"{collapsed_change.key[1]}): {exc}"
+            ),
+            exc=exc,
+        )
 
     def _record_applied(model_class):
         nonlocal processed, last_heartbeat_at, last_log_at
@@ -209,13 +333,13 @@ def merge_branch(
             ingestion,
             sync_logger=sync_logger,
             model_string=_model_string(model_class),
-            step_index=step_index,
             processed=processed,
-            total_changes=total_changes,
+            total_changes=logical_total_changes,
             last_heartbeat_at=last_heartbeat_at,
             last_log_at=last_log_at,
         )
 
+    merge_metadata = {}
     try:
         applied_count, bulk_failed, bulk_models = bulk_merge_changes(
             branch,
@@ -225,41 +349,68 @@ def merge_branch(
             logger,
             apply_one=_apply_one,
             record_applied=_record_applied,
+            record_failed=_record_failed,
+            result_metadata=merge_metadata,
         )
         failed += bulk_failed
         models_touched |= bulk_models
     finally:
         post_save.disconnect(handler, sender=ObjectChange_)
 
-    issue_recorder.flush()
-
     if models_touched:
         strategy_class = get_merge_strategy(branch.merge_strategy)
         strategy_class()._clean(models_touched)
 
-    branch.status = BranchStatusChoices.MERGED
-    branch.merged_time = timezone.now()
-    branch.merged_by = user
-    branch.save()
-
-    BranchEvent.objects.create(
-        branch=branch,
-        user=user,
-        type=BranchEventTypeChoices.MERGED,
-    )
-    post_merge.send(sender=Branch, branch=branch, user=user)
+    reported_logical_total = int(merge_metadata.get("logical_total", -1))
+    if reported_logical_total != logical_total_changes:
+        raise RuntimeError(
+            "Branch logical-change count changed during merge: "
+            f"expected {logical_total_changes}, merged {reported_logical_total}."
+        )
+    if applied_count + failed != logical_total_changes:
+        raise RuntimeError(
+            "Bulk merge returned inconsistent logical totals: "
+            f"{applied_count} applied + {failed} failed != "
+            f"{logical_total_changes} staged."
+        )
 
     failed_message = "no failed."
     if failed:
         failed_message = f"{failed} skipped (recorded as ingestion issues)."
-    summary = f"Merge completed: {total_changes - failed} applied, {failed_message}"
+    summary = f"Merge completed: {applied_count} applied, {failed_message}"
+    cumulative_applied = applied_count
+    logical_action_counts = merge_metadata.get("logical_action_counts", {})
+    created = int(logical_action_counts.get("create", 0))
+    updated = int(logical_action_counts.get("update", 0))
+    deleted = int(logical_action_counts.get("delete", 0))
     ingestion.record_change_totals(
-        applied=total_changes - failed,
+        applied=cumulative_applied,
         failed=failed,
-        created=action_counts.get("create", 0),
-        updated=action_counts.get("update", 0),
-        deleted=action_counts.get("delete", 0),
+        created=created,
+        updated=updated,
+        deleted=deleted,
     )
+
+    if failed:
+        branch.status = BranchStatusChoices.READY
+        branch.save(update_fields=["status", "last_updated"])
+        summary = (
+            f"Merge incomplete: {applied_count} applied, {failed} failed. "
+            "The branch remains ready for inspection and retry."
+        )
+        logger.error(summary)
+        if sync_logger:
+            sync_logger.log_failure(summary)
+        raise ForwardPartialMergeError(
+            summary,
+            applied=applied_count,
+            failed=failed,
+        )
+
+    _attest_branch_merged(ingestion, branch, user)
+    if retrying_partial:
+        _retire_resolved_merge_issues(ingestion, prior_merge_issue_ids)
+
     logger.info(summary)
     if sync_logger:
         sync_logger.log_info(summary)
@@ -270,7 +421,6 @@ def _report_merge_progress(
     *,
     sync_logger: "SyncLogging | None",
     model_string: str,
-    step_index: int | None,
     processed: int,
     total_changes: int,
     last_heartbeat_at: float,
@@ -289,16 +439,6 @@ def _report_merge_progress(
     )
 
     if heartbeat_due:
-        try:
-            from .execution_ledger import touch_execution_step_progress
-
-            touch_execution_step_progress(
-                ingestion.sync,
-                model_string=model_string,
-                shard_index=step_index,
-            )
-        except Exception:
-            logger.debug("Unable to update merge progress heartbeat.", exc_info=True)
         last_heartbeat_at = now
 
     if sync_logger and log_due:
@@ -309,14 +449,3 @@ def _report_merge_progress(
         last_log_at = now
 
     return last_heartbeat_at, last_log_at
-
-
-def _merge_step_index(ingestion: "ForwardIngestion") -> int | None:
-    try:
-        from .execution_ledger import execution_step_for_ingestion
-
-        step = execution_step_for_ingestion(ingestion)
-    except Exception:
-        logger.debug("Unable to resolve merge execution step.", exc_info=True)
-        return None
-    return getattr(step, "index", None)

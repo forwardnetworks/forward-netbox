@@ -18,7 +18,6 @@ from ..utilities.logging import SyncLogging
 from .api_usage import evaluate_forward_api_usage
 from .runtime_guidance import log_worker_timeout_guidance
 from .snapshot_freshness import latest_processed_catchup_decision
-from .sync_state import mark_branch_run_failed
 
 logger = logging.getLogger("forward_netbox.models")
 
@@ -28,7 +27,7 @@ def _prepare_forward_sync(sync, job=None):
         sync.logger = SyncLogging(job=job.pk)
         user = job.user
     else:
-        sync.logger = SyncLogging(job=sync.pk)
+        sync.logger = SyncLogging()
         user = sync.user
 
     pre_sync.send(sender=sync.__class__, instance=sync)
@@ -70,7 +69,6 @@ def _record_forward_sync_failure(sync, job, executor, ingestion, exc):
         ):
             ingestion.validation_run = validation_run
             ingestion.save(update_fields=["validation_run"])
-    mark_branch_run_failed(sync, f"Forward ingestion failed: {exc}")
     sync.logger.log_failure(f"Forward ingestion failed: {exc}", obj=ingestion)
     ForwardIngestionIssue.objects.create(
         ingestion=ingestion,
@@ -174,10 +172,10 @@ def _record_forward_api_usage(sync, executor):
     )
 
 
-def run_forward_sync(sync, job=None, *, max_changes_per_branch=None, adhoc=False):
+def run_forward_sync(sync, job=None, *, max_changes_per_staging_item=None, adhoc=False):
     from .single_branch_executor import ForwardSingleBranchExecutor
 
-    sync.logger = SyncLogging(job=job.pk if job else sync.pk)
+    sync.logger = SyncLogging(job=job.pk if job else None)
     try:
         sync.full_clean()
     except ValidationError as exc:
@@ -187,9 +185,9 @@ def run_forward_sync(sync, job=None, *, max_changes_per_branch=None, adhoc=False
         )
         raise
 
-    if sync.is_waiting_for_branch_merge:
+    if sync.status == ForwardSyncStatusChoices.READY_TO_MERGE:
         sync.logger.log_warning(
-            "Forward sync is waiting for the current shard branch to be merged.",
+            "Forward sync is waiting for its branch to be merged.",
             obj=sync,
         )
         return
@@ -284,4 +282,7 @@ def run_forward_sync(sync, job=None, *, max_changes_per_branch=None, adhoc=False
                     "queuing a catch-up sync.",
                     obj=sync,
                 )
-                sync.enqueue_sync_job(adhoc=True, user=user)
+                enqueue_kwargs = {"adhoc": True, "user": user}
+                if job is not None:
+                    enqueue_kwargs["current_job"] = job
+                sync.enqueue_sync_job(**enqueue_kwargs)

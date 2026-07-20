@@ -139,20 +139,7 @@ def apply_dcim_module(runner, row):
             sample=device.name,
         )
         return False
-    module_bay = runner._lookup_module_bay(device, row["module_bay"])
-    if module_bay is None:
-        runner._record_aggregated_skip_warning(
-            model_string="dcim.module",
-            reason="missing-module-bay",
-            warning_message=(
-                f"Skipping module row because module bay `{row['module_bay']}` "
-                f"does not exist on `{device.name}`. Run "
-                f"`forward_module_readiness` and import the generated module-bay "
-                f"CSV before enabling module sync for this hardware."
-            ),
-            sample=f"{device.name}/{row['module_bay']}",
-        )
-        return False
+    module_bay = runner._ensure_module_bay(device, row)
     module_type = runner._ensure_module_type(row)
     runner._upsert_values_from_defaults(
         "dcim.module",

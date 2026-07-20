@@ -1,5 +1,6 @@
 from django.test import TestCase
 
+from forward_netbox.exceptions import ForwardClientError
 from forward_netbox.models import ForwardSource
 from forward_netbox.utilities.crypto import decrypt_secret
 from forward_netbox.utilities.crypto import encrypt_secret
@@ -20,8 +21,9 @@ class CryptoHelperTest(TestCase):
         self.assertEqual(once, twice)
         self.assertEqual(decrypt_secret(twice), "pw")
 
-    def test_decrypt_passes_plaintext_through(self):
-        self.assertEqual(decrypt_secret("plain"), "plain")
+    def test_decrypt_rejects_plaintext(self):
+        with self.assertRaisesRegex(ValueError, "credential is not encrypted"):
+            decrypt_secret("plain")
         self.assertFalse(is_encrypted("plain"))
 
     def test_empty_values_untouched(self):
@@ -65,3 +67,16 @@ class SourceCredentialAtRestTest(TestCase):
         source.refresh_from_db()
         self.assertEqual(source.parameters["password"], first)
         self.assertEqual(source.get_client().password, "my-password")
+
+    def test_client_rejects_plaintext_database_value(self):
+        source = self._source(password="my-password")
+        ForwardSource.objects.filter(pk=source.pk).update(
+            parameters={
+                **source.parameters,
+                "password": "plaintext-bypass",
+            }
+        )
+        source.refresh_from_db()
+
+        with self.assertRaisesRegex(ForwardClientError, "credential is not encrypted"):
+            source.get_client()

@@ -1,19 +1,8 @@
 from __future__ import annotations
 
-import csv
 import re
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Iterable
-
-
-MODULE_BAY_IMPORT_FIELDS = (
-    "device",
-    "name",
-    "label",
-    "position",
-    "description",
-)
 
 
 @dataclass(frozen=True)
@@ -23,26 +12,17 @@ class ModuleReadinessReport:
     missing_bay_rows: int
     missing_device_rows: int
     unique_missing_bays: int
-    module_bay_import_rows: tuple[dict[str, str], ...]
+    module_bay_plan_rows: tuple[dict[str, str], ...]
     missing_device_names: tuple[str, ...]
 
-    @property
-    def ready(self) -> bool:
-        # Readiness is about module BAYS: dcim.module sync is safe once every
-        # module row's bay exists. Rows whose device is not in NetBox
-        # (missing_device_rows) simply skip with a non-blocking warning — they are
-        # a device-scope concern, not a module-readiness blocker — so they do not
-        # hold readiness "No". They are still reported separately.
-        return self.missing_bay_rows == 0
-
-    def as_dict(self) -> dict[str, int | bool | tuple[str, ...]]:
+    def as_dict(self) -> dict[str, object]:
         return {
             "candidate_rows": self.candidate_rows,
             "existing_bay_rows": self.existing_bay_rows,
             "missing_bay_rows": self.missing_bay_rows,
             "missing_device_rows": self.missing_device_rows,
             "unique_missing_bays": self.unique_missing_bays,
-            "ready": self.ready,
+            "planned_bays": self.module_bay_plan_rows,
             "missing_device_names": self.missing_device_names,
         }
 
@@ -55,7 +35,7 @@ def _clean(value, *, max_length: int | None = None) -> str:
 
 
 def derive_module_bay_position(module_bay_name: str) -> str:
-    """Best-effort native import convenience; blank is valid in NetBox."""
+    """Best-effort branch creation value; blank is valid in NetBox."""
 
     name = _clean(module_bay_name)
     match = re.search(r"(\d+)\s*$", name)
@@ -64,7 +44,7 @@ def derive_module_bay_position(module_bay_name: str) -> str:
     return ""
 
 
-def module_bay_import_row(row: dict) -> dict[str, str]:
+def module_bay_plan_row(row: dict) -> dict[str, str]:
     module_bay_name = _clean(row.get("module_bay"), max_length=64)
     return {
         "device": _clean(row.get("device")),
@@ -75,7 +55,7 @@ def module_bay_import_row(row: dict) -> dict[str, str]:
             or derive_module_bay_position(module_bay_name),
             max_length=30,
         ),
-        "description": "Required for optional Forward module import.",
+        "description": "Created by Forward sync for module import.",
     }
 
 
@@ -109,9 +89,9 @@ def summarize_module_readiness(
             continue
         missing_bay_rows += 1
         if module_bay:
-            missing_bays.setdefault(key, module_bay_import_row(row))
+            missing_bays.setdefault(key, module_bay_plan_row(row))
 
-    import_rows = tuple(
+    plan_rows = tuple(
         missing_bays[key] for key in sorted(missing_bays, key=lambda item: item)
     )
     return ModuleReadinessReport(
@@ -119,21 +99,10 @@ def summarize_module_readiness(
         existing_bay_rows=existing_bay_rows,
         missing_bay_rows=missing_bay_rows,
         missing_device_rows=missing_device_rows,
-        unique_missing_bays=len(import_rows),
-        module_bay_import_rows=import_rows,
+        unique_missing_bays=len(plan_rows),
+        module_bay_plan_rows=plan_rows,
         missing_device_names=tuple(sorted(missing_devices)),
     )
-
-
-def write_module_bay_import_csv(path: Path, rows: Iterable[dict[str, str]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="") as output:
-        writer = csv.DictWriter(output, fieldnames=MODULE_BAY_IMPORT_FIELDS)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow(
-                {field: row.get(field, "") for field in MODULE_BAY_IMPORT_FIELDS}
-            )
 
 
 def fetch_module_rows_for_sync(sync) -> list[dict]:
@@ -177,46 +146,3 @@ def compute_module_readiness_for_sync(sync) -> ModuleReadinessReport:
         existing_devices=set(Device.objects.values_list("name", flat=True)),
         existing_module_bays=set(ModuleBay.objects.values_list("device__name", "name")),
     )
-
-
-def create_missing_module_bays(report: ModuleReadinessReport) -> dict:
-    """Create the missing module bays directly in NetBox (out-of-band ORM).
-
-    This is the same effect as importing the readiness CSV — module bays are
-    MPTT, but a plain ``.save()`` outside a Branching merge creates them fine.
-    Idempotent: bays that already exist are skipped.
-    """
-    from dcim.models import Device
-    from dcim.models.device_components import ModuleBay
-    from django.db import transaction
-
-    wanted_devices = {row["device"] for row in report.module_bay_import_rows}
-    devices_by_name = {
-        device.name: device for device in Device.objects.filter(name__in=wanted_devices)
-    }
-
-    created = 0
-    skipped_missing_device = 0
-    with transaction.atomic():
-        for row in report.module_bay_import_rows:
-            device = devices_by_name.get(row["device"])
-            if device is None:
-                skipped_missing_device += 1
-                continue
-            if ModuleBay.objects.filter(device=device, name=row["name"]).exists():
-                continue
-            module_bay = ModuleBay(
-                device=device,
-                name=row["name"],
-                label=row.get("label", ""),
-                position=row.get("position", "") or "",
-                description=row.get("description", ""),
-            )
-            module_bay.full_clean()
-            module_bay.save()
-            created += 1
-    return {
-        "candidate_bays": len(report.module_bay_import_rows),
-        "created": created,
-        "skipped_missing_device": skipped_missing_device,
-    }

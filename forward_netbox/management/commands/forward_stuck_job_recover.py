@@ -11,9 +11,12 @@ logger = logging.getLogger("forward_netbox.stuck_recovery")
 
 class Command(BaseCommand):
     help = (
-        "Recover syncs wedged by a dead worker: a MERGING sync whose worker "
+        "Recover durable work interrupted by a dead worker: a MERGING sync whose worker "
         "died is re-enqueued for merge (idempotent — resumes the unmerged "
-        "suffix); a dead sync-run is failed cleanly so schedules resume. "
+        "suffix); a dead sync-run is failed cleanly so schedules resume; and "
+        "a completed ingestion with unconverged ownership is redispatched; "
+        "dead standing validation/preview occurrences are terminated and "
+        "recreated from durable schedule intent without changing sync state. "
         "Detection-only by default; pass --apply to act. The companion "
         "forward_stuck_job_alert command stays detect-only."
     )

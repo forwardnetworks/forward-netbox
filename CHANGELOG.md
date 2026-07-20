@@ -4,7 +4,7 @@ Generated from the README compatibility table by `scripts/gen_changelog.py`. Do 
 
 ## v2.6.0
 
-Feature: **scope and convergence safety** - successful syncs automatically clear stale plugin-managed include-tag assignments without globally classifying unrelated NetBox devices; reviewed reconciliation keeps backfilled/out-of-scope status tagging manual by default. The Drift Report uses persisted same-snapshot ingestion counters to prove convergence instead of treating dependency workload as exact drift, and support bundles carry redacted dependency-preview and change-count evidence. Compatibility: requires NetBox `4.6.5` and pins `netbox-branching` `1.1.1`. Python/UI only; no NQE change, migration, or query republish.
+Release candidate; Feature: **durable convergence control plane** - main-schema, per-sync identity and ownership claims are stamped with the exact merged ingestion generation. Managed scope/status tags and virtual-parent links materialize from the union of current claims, including shared tags across sources; only syncs with a completed baseline participate, every completed ingestion reconciles status ownership, and last-claim removal waits for every participating sync. Pending, failed, stale, conflicting, and missing materialization states block convergence in Drift, Health, support evidence, recovery, and the read-only ownership audit. Post-sync analysis, scope/status, and parent work runs through NetBox JobRunner with generation guards; invoking users become durable sync owners, and unattended execution fails closed without attributable ownership. A branch merge with any failed row remains retryable and cannot mark the ingestion complete or enqueue overlays. One Branching branch is used per sync; bounded workload shards target that branch, conservative density baselines shape unprofiled work, and module bays are created branch-natively. Migration `0037` converts retired execution keys, standing schedules, endpoint scope markers, owners, and built-in virtual-chassis state once; runtime rejects retired or unknown configuration instead of carrying compatibility shims. Unsupported no-op ACI maps and inventory contracts are removed. NetBox `4.6.5`, netbox-branching `1.1.1`, and Python `3.14` are exact startup, CI, and packaging requirements. Orphan deletion remains reviewed and manual. Python/UI plus schema and data migrations. No new or modified Forward query must be published when upgrading from `2.5.11`; direct upgrades from `2.5.10` or earlier must run **Publish Bundled Queries** once with overwrite enabled.
 
 ## v2.5.11
 
@@ -352,7 +352,7 @@ keeps the shared-branch architecture, execution ledger, support logging, and sca
 
 ## v0.9.0
 
-adds read-only analysis, workload preview, advisory summaries, and native log export for troubleshooting while keeping lifecycle enrichment and predict deferred
+adds read-only analysis, workload preview, advisory summaries, and native log export for troubleshooting
 
 ## v0.8.6.3
 

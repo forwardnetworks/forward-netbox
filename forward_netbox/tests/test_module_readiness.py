@@ -1,4 +1,3 @@
-import csv
 import json
 from io import StringIO
 from pathlib import Path
@@ -47,29 +46,26 @@ class ModuleReadinessUtilityTest(TestCase):
             existing_module_bays={("device-a", "Slot 1")},
         )
 
-        self.assertFalse(report.ready)
         self.assertEqual(report.candidate_rows, 4)
         self.assertEqual(report.existing_bay_rows, 1)
         self.assertEqual(report.missing_bay_rows, 2)
         self.assertEqual(report.missing_device_rows, 1)
         self.assertEqual(report.unique_missing_bays, 1)
         self.assertEqual(
-            report.module_bay_import_rows,
+            report.module_bay_plan_rows,
             (
                 {
                     "device": "device-a",
                     "name": "Slot 2",
                     "label": "Slot 2",
                     "position": "2",
-                    "description": "Required for optional Forward module import.",
+                    "description": "Created by Forward sync for module import.",
                 },
             ),
         )
         self.assertEqual(report.missing_device_names, ("device-b",))
 
-    def test_ready_ignores_missing_device_rows(self):
-        # All bays for present devices exist; the only gaps are rows for devices
-        # not in NetBox. Module sync is ready — those rows just skip.
+    def test_missing_device_rows_do_not_create_bay_plan_rows(self):
         report = summarize_module_readiness(
             [
                 {"device": "device-a", "module_bay": "Slot 1"},
@@ -81,7 +77,7 @@ class ModuleReadinessUtilityTest(TestCase):
         )
         self.assertEqual(report.missing_bay_rows, 0)
         self.assertEqual(report.missing_device_rows, 2)
-        self.assertTrue(report.ready)
+        self.assertEqual(report.module_bay_plan_rows, ())
 
     def test_derive_module_bay_position_uses_trailing_number_only(self):
         self.assertEqual(derive_module_bay_position("Slot 27"), "27")
@@ -138,7 +134,7 @@ class ForwardModuleReadinessCommandTest(TestCase):
             status="active",
         )
 
-    def test_command_writes_netbox_module_bay_import_csv(self):
+    def test_command_writes_branch_native_module_bay_plan(self):
         client = Mock()
         client.run_nqe_query.return_value = [
             {
@@ -168,23 +164,22 @@ class ForwardModuleReadinessCommandTest(TestCase):
             output_dirs = list(Path(temp_dir).iterdir())
             self.assertEqual(len(output_dirs), 1)
             summary = json.loads((output_dirs[0] / "summary.json").read_text())
-            with (output_dirs[0] / "netbox-module-bays.csv").open(
-                encoding="utf-8"
-            ) as input_file:
-                csv_rows = list(csv.DictReader(input_file))
+            self.assertEqual(
+                [path.name for path in output_dirs[0].iterdir()], ["summary.json"]
+            )
 
         self.assertEqual(summary["candidate_rows"], 1)
         self.assertEqual(summary["missing_bay_rows"], 1)
         self.assertEqual(summary["unique_missing_bays"], 1)
         self.assertEqual(
-            csv_rows,
+            summary["planned_bays"],
             [
                 {
                     "device": "device-a",
                     "name": "Slot 1",
                     "label": "Slot 1",
                     "position": "1",
-                    "description": "Required for optional Forward module import.",
+                    "description": "Created by Forward sync for module import.",
                 }
             ],
         )

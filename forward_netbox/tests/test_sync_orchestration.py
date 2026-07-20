@@ -213,7 +213,7 @@ class ForwardSyncOrchestrationHelperTest(TestCase):
         self,
         mock_executor_class,
     ):
-        self.sync.status = ForwardSyncStatusChoices.READY_TO_MERGE
+        self.sync.status = ForwardSyncStatusChoices.COMPLETED
         self.sync.save(update_fields=["status"])
         mock_executor = mock_executor_class.return_value
         mock_executor.run.return_value = []

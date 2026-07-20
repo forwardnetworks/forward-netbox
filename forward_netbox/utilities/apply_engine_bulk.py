@@ -1,4 +1,8 @@
+from collections import defaultdict
 from typing import Any
+
+from netbox_branching.contextvars import active_branch
+from netbox_branching.models import ChangeDiff
 
 # Fields the bulk engines must set on CREATE but preserve on UPDATE, matching the
 # adapter's intent. Platform-map manufacturer values are authoritative in this
@@ -43,11 +47,15 @@ def _isolate_bulk_objects(
     own savepoint — good rows apply, the offending row(s) are recorded as
     ingestion issues — restoring the per-row resilience the adapter path has.
     """
+    from django.db import DEFAULT_DB_ALIAS
     from django.db import transaction
+
+    branch = active_branch.get()
+    using = branch.connection_name if branch is not None else DEFAULT_DB_ALIAS
 
     for obj in objects:
         try:
-            with transaction.atomic():
+            with transaction.atomic(using=using):
                 if operation == "create":
                     obj.save(force_insert=True)
                 else:
@@ -63,14 +71,146 @@ def _isolate_bulk_objects(
 
 def _branch_is_active():
     """True when staging into a netbox_branching branch (vs direct-to-main)."""
-    try:
-        from netbox_branching.contextvars import active_branch
-    except Exception:  # pragma: no cover - branching not installed
-        return False
     return active_branch.get() is not None
 
 
-def emit_branch_object_changes(created, updated):
+def _active_write_alias():
+    from django.db import DEFAULT_DB_ALIAS
+
+    branch = active_branch.get()
+    return branch.connection_name if branch is not None else DEFAULT_DB_ALIAS
+
+
+def _serializer_prefetch_fields(model):
+    from extras.utils import is_taggable
+
+    fields = [
+        field.name
+        for field in model._meta.many_to_many
+        if field.remote_field.through._meta.auto_created
+    ]
+    if is_taggable(model) and "tags" not in fields:
+        fields.append("tags")
+    return fields
+
+
+def _rebuild_prefix_hierarchies(vrf_ids, objects, *, using):
+    """Rebuild affected NetBox prefix trees after a bulk write."""
+    from django.db import transaction
+    from ipam.models import Prefix
+    from ipam.utils import rebuild_prefixes
+
+    with transaction.atomic(using=using):
+        for vrf_id in sorted(
+            set(vrf_ids), key=lambda value: (value is not None, value or 0)
+        ):
+            rebuild_prefixes(vrf_id)
+        objects_by_pk = {
+            obj.pk: obj for obj in objects if getattr(obj, "pk", None) is not None
+        }
+        refreshed = {}
+        for pk_batch in _chunks(list(objects_by_pk), size=1000):
+            refreshed.update(
+                {
+                    pk: (depth, children)
+                    for pk, depth, children in Prefix.objects.using(using)
+                    .filter(pk__in=pk_batch)
+                    .values_list("pk", "_depth", "_children")
+                }
+            )
+        for pk, obj in objects_by_pk.items():
+            if pk in refreshed:
+                obj._depth, obj._children = refreshed[pk]
+
+
+def _current_change_diff_data(model, object_ids):
+    from django.db.models import prefetch_related_objects
+    from netbox_branching.utilities import deactivate_branch
+
+    with deactivate_branch():
+        objects = list(model.objects.filter(pk__in=object_ids))
+        prefetch_fields = _serializer_prefetch_fields(model)
+        if prefetch_fields and objects:
+            prefetch_related_objects(objects, *prefetch_fields)
+        return {
+            obj.pk: obj.serialize_object(exclude=["created", "last_updated"])
+            for obj in objects
+        }
+
+
+def _sync_branch_change_diffs(branch, object_changes, action):
+    """Batch the ChangeDiff state normally produced by post_save signals."""
+    from core.choices import ObjectChangeActionChoices
+    from django.utils import timezone
+
+    if not object_changes:
+        return
+    object_type = object_changes[0].changed_object_type
+    object_ids = [change.changed_object_id for change in object_changes]
+    existing = {
+        diff.object_id: diff
+        for diff in ChangeDiff.objects.using(branch.connection_name)
+        .select_related("object_type")
+        .filter(
+            branch=branch,
+            object_type_id=object_type.pk,
+            object_id__in=object_ids,
+        )
+    }
+    needs_current = [
+        object_id
+        for object_id in object_ids
+        if object_id not in existing
+        and action != ObjectChangeActionChoices.ACTION_CREATE
+    ]
+    current_by_pk = _current_change_diff_data(object_type.model_class(), needs_current)
+    create_diffs = []
+    update_diffs = []
+    now = timezone.now()
+    for change in object_changes:
+        diff = existing.get(change.changed_object_id)
+        if diff is None:
+            diff = ChangeDiff(
+                branch=branch,
+                object_type=object_type,
+                object_id=change.changed_object_id,
+                object_repr=(change.object_repr or "")[:200],
+                action=action,
+                original=change.prechange_data_clean or None,
+                modified=change.postchange_data_clean or None,
+                current=current_by_pk.get(change.changed_object_id),
+                last_updated=now,
+            )
+            diff._update_conflicts()
+            create_diffs.append(diff)
+            continue
+        diff.object_repr = (change.object_repr or "")[:200]
+        if diff.action != ObjectChangeActionChoices.ACTION_CREATE:
+            diff.action = action
+        diff.modified = change.postchange_data_clean or None
+        diff.last_updated = now
+        diff._update_conflicts()
+        update_diffs.append(diff)
+    if create_diffs:
+        ChangeDiff.objects.using(branch.connection_name).bulk_create(
+            create_diffs,
+            batch_size=EMIT_OBJECT_CHANGE_CHUNK,
+        )
+    if update_diffs:
+        ChangeDiff.objects.using(branch.connection_name).bulk_update(
+            update_diffs,
+            fields=[
+                "object_repr",
+                "action",
+                "modified",
+                "conflicts",
+                "last_updated",
+            ],
+            batch_size=EMIT_OBJECT_CHANGE_CHUNK,
+        )
+
+
+def emit_branch_object_changes(created, updated, deleted=()):
     """Synthesize the core.ObjectChange rows a bulk write would otherwise skip.
 
     bulk_create / bulk_update fire no post_save, so NetBox records no
@@ -85,20 +225,16 @@ def emit_branch_object_changes(created, updated):
     the same pks they had in the branch (it shares main's id sequence).
 
     ``postchange_data`` must be exactly ``serialize_object`` output (the inverse
-    the merge's ``deserialize`` consumes). Rather than per-object
-    ``to_objectchange`` (which runs Django's JSON serializer + a tag query per
-    row — the dominant staging cost), serialize a whole chunk in ONE
-    ``serialize('json', chunk)`` and prefetch the chunk's tags in one query.
-    CREATE uses the freshly-saved instance (pk back-filled by bulk_create);
-    UPDATE requires the caller to have ``snapshot()``-ed before mutating so
-    ``prechange_data`` is correct. No-op (returns False) when not staging into a
-    branch or without a request context, so FAST_BOOTSTRAP direct-to-main is
-    untouched.
+    the merge's ``deserialize`` consumes). Django's serializer otherwise issues
+    one query per many-to-many field per object, so prefetch every serialized
+    relationship once per chunk before calling the model's authoritative
+    ``to_objectchange`` override. CREATE uses the freshly-saved instance (pk
+    back-filled by bulk_create); UPDATE requires the caller to have
+    ``snapshot()``-ed before mutating so ``prechange_data`` is correct. DELETE
+    is emitted before the bulk delete while the authoritative object still
+    exists. No-op (returns False) when not staging into a branch or without a
+    request context.
     """
-    try:
-        from netbox_branching.contextvars import active_branch
-    except Exception:  # pragma: no cover - branching not installed
-        return False
     branch = active_branch.get()
     if branch is None:
         return False
@@ -112,12 +248,6 @@ def emit_branch_object_changes(created, updated):
     from core.choices import ObjectChangeActionChoices
     from core.models import ObjectChange
     from django.db.models import prefetch_related_objects
-    from extras.utils import is_taggable
-
-    try:
-        from netbox_branching.models import ChangeDiff
-    except Exception:  # pragma: no cover - branching not installed
-        ChangeDiff = None
 
     user = request.user
     user_name = getattr(user, "username", "") or ""
@@ -128,13 +258,15 @@ def emit_branch_object_changes(created, updated):
         # the model's total row count (a single shard can be ~500k rows).
         for start in range(0, len(objs), EMIT_OBJECT_CHANGE_CHUNK):
             chunk = objs[start : start + EMIT_OBJECT_CHANGE_CHUNK]
-            if is_taggable(type(chunk[0])):
-                # serialize_object resolves tags via obj.tags.all() (one query per
-                # row); prefetch the chunk's tags in a single query so each access
-                # hits the cache.
-                prefetch_related_objects(chunk, "tags")
+            prefetch_fields = _serializer_prefetch_fields(type(chunk[0]))
+            if prefetch_fields:
+                prefetch_related_objects(chunk, *prefetch_fields)
             ocs = []
             for obj in chunk:
+                if action == ObjectChangeActionChoices.ACTION_DELETE and not getattr(
+                    obj, "_prechange_snapshot", None
+                ):
+                    obj.snapshot()
                 # to_objectchange builds postchange_data via serialize_object —
                 # the exact inverse the merge's deserialize consumes.
                 oc = obj.to_objectchange(action)
@@ -145,49 +277,145 @@ def emit_branch_object_changes(created, updated):
             ObjectChange.objects.using(branch.connection_name).bulk_create(
                 ocs, batch_size=EMIT_OBJECT_CHANGE_CHUNK
             )
-            # bulk_create fires no post_save, so netbox_branching.record_change_diff
-            # never runs and no ChangeDiff row is written. ChangeDiff(action=CREATE)
-            # is the ONLY thing check_object_accessible_in_branch consults to allow a
-            # later in-branch modify of a branch-created object (signal_receivers.py).
-            # Without it, on a clean main every modify of a bulk-created row aborts
-            # with "deleted in the main branch" (a dirty main masked this because the
-            # rows already existed in main). The merge replays ObjectChange only and
-            # never reads ChangeDiff, so synthesizing these is purely additive — no
-            # double-apply. Only CREATE diffs are needed: an UPDATEd object either
-            # exists in main (accessible) or was created in this branch (already has a
-            # CREATE diff from the create pass above).
-            if (
-                ChangeDiff is not None
-                and action == ObjectChangeActionChoices.ACTION_CREATE
-            ):
-                diffs = [
-                    ChangeDiff(
-                        branch=branch,
-                        object_type_id=oc.changed_object_type_id,
-                        object_id=oc.changed_object_id,
-                        # object_repr is NOT NULL and only set in ChangeDiff.save(),
-                        # which bulk_create bypasses — populate it explicitly.
-                        object_repr=(oc.object_repr or "")[:200],
-                        action=ObjectChangeActionChoices.ACTION_CREATE,
-                        original=None,
-                        modified=oc.postchange_data_clean or None,
-                        current=None,
-                        conflicts=None,
-                    )
-                    for oc in ocs
-                ]
-                # ChangeDiff is branch metadata in main (record_change_diff writes it
-                # with no using()); mirror that — do NOT target the branch connection.
-                ChangeDiff.objects.bulk_create(
-                    diffs, batch_size=EMIT_OBJECT_CHANGE_CHUNK
-                )
+            # bulk_create bypasses Branching's post_save receiver. Mirror its
+            # CREATE and UPDATE semantics in batches on this same connection so
+            # branch rows, ObjectChanges, and review/conflict metadata are atomic.
+            _sync_branch_change_diffs(branch, ocs, action)
 
     created = list(created)
     updated = list(updated)
+    deleted = list(deleted)
     if created:
         _flush(created, ObjectChangeActionChoices.ACTION_CREATE)
     if updated:
         _flush(updated, ObjectChangeActionChoices.ACTION_UPDATE)
+    if deleted:
+        _flush(deleted, ObjectChangeActionChoices.ACTION_DELETE)
+    return True
+
+
+class _BulkDeleteNeedsIsolation(Exception):
+    pass
+
+
+def bulk_orm_delete_prefixes(runner, rows: list[dict[str, Any]]):
+    """Delete a Prefix shard transactionally while preserving branch evidence."""
+    branch = active_branch.get()
+    if branch is None:
+        return False
+
+    from django.db import IntegrityError
+    from django.db import transaction
+    from django.db.models.deletion import ProtectedError
+    from django.db.models.deletion import RestrictedError
+    from ipam.models import Prefix
+    from ipam.models import VRF
+    from netbox.context import current_request
+    from utilities.exceptions import AbortRequest
+
+    from .bulk_delete import collector_delete_without_model_signals
+    from .sync_reporting import _increment_ingestion_delete_totals
+
+    rows = list(rows)
+    if not rows:
+        return True
+    runner.logger.log_info(
+        f"Deleting {len(rows)} rows for ipam.prefix.",
+        obj=runner.sync,
+    )
+
+    requested_vrf_names = {
+        row.get("vrf") for row in rows if row.get("vrf") not in ("", None)
+    }
+    vrfs_by_name = {}
+    for batch in _chunks(sorted(requested_vrf_names)):
+        vrfs_by_name.update(
+            {vrf.name: vrf for vrf in VRF.objects.filter(name__in=batch)}
+        )
+
+    identities_by_vrf = defaultdict(set)
+    requested_identities = []
+    for row in rows:
+        prefix = row.get("prefix")
+        vrf_name = row.get("vrf")
+        if not prefix or (vrf_name and vrf_name not in vrfs_by_name):
+            requested_identities.append(None)
+            continue
+        vrf_id = vrfs_by_name[vrf_name].pk if vrf_name else None
+        identity = (str(prefix), vrf_id)
+        requested_identities.append(identity)
+        identities_by_vrf[vrf_id].add(str(prefix))
+
+    found_by_identity = {}
+    for vrf_id, prefixes in identities_by_vrf.items():
+        for batch in _chunks(sorted(prefixes)):
+            queryset = Prefix.objects.filter(prefix__in=batch)
+            queryset = (
+                queryset.filter(vrf_id=vrf_id)
+                if vrf_id is not None
+                else queryset.filter(vrf__isnull=True)
+            )
+            for prefix in queryset:
+                found_by_identity[(str(prefix.prefix), prefix.vrf_id)] = prefix
+
+    delete_objects = []
+    seen_pks = set()
+    for identity in requested_identities:
+        obj = found_by_identity.get(identity)
+        if obj is None or obj.pk in seen_pks:
+            continue
+        seen_pks.add(obj.pk)
+        delete_objects.append(obj)
+
+    skipped_count = len(rows) - len(delete_objects)
+    if delete_objects:
+        using = branch.connection_name
+        affected_vrf_ids = {obj.vrf_id for obj in delete_objects}
+        try:
+            with transaction.atomic(using=using):
+                emit_branch_object_changes((), (), delete_objects)
+                request_token = current_request.set(None)
+                try:
+                    try:
+                        collector_delete_without_model_signals(
+                            Prefix.objects.using(using).filter(
+                                pk__in=[obj.pk for obj in delete_objects]
+                            ),
+                            signal_free_models={Prefix},
+                        )
+                    except (
+                        AbortRequest,
+                        IntegrityError,
+                        ProtectedError,
+                        RestrictedError,
+                    ) as exc:
+                        raise _BulkDeleteNeedsIsolation from exc
+                finally:
+                    current_request.reset(request_token)
+                _rebuild_prefix_hierarchies(affected_vrf_ids, (), using=using)
+        except _BulkDeleteNeedsIsolation as exc:
+            runner.logger.log_warning(
+                "Bulk delete for ipam.prefix encountered a protected or constrained "
+                f"row ({exc.__cause__}); retrying row-by-row to isolate it.",
+                obj=runner.sync,
+            )
+            return False
+
+        runner.logger.increment_statistics(
+            "ipam.prefix", outcome="applied", amount=len(delete_objects)
+        )
+        _increment_ingestion_delete_totals(runner, len(delete_objects))
+        for _ in delete_objects:
+            runner.events_clearer.increment()
+    if skipped_count:
+        runner.logger.increment_statistics(
+            "ipam.prefix", outcome="skipped", amount=skipped_count
+        )
+    runner.logger.log_info(
+        "Finished deleting rows for ipam.prefix.",
+        obj=runner.sync,
+    )
+    runner.events_clearer.clear()
     return True
 
 
@@ -255,7 +483,10 @@ def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str,
             "required": ("manufacturer", "model", "slug"),
             "fields": ("manufacturer", "model", "slug"),
             "lookup_fields": ("slug", "model"),
-            "lookup_sets": (("slug",), ("manufacturer", "model")),
+            "lookup_sets": (
+                ("manufacturer", "slug"),
+                ("manufacturer", "model"),
+            ),
         },
         "ipam.vlan": {
             "model": VLAN,
@@ -394,7 +625,7 @@ def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str,
                     row.get("manufacturer_slug")
                 ) or manufacturer_by_name.get(row.get("manufacturer"))
             # The grouped Platform query emits a blank manufacturer for a
-            # cross-vendor platform. None is authoritative and clears a legacy
+            # cross-vendor platform. None is authoritative and clears a stale
             # owner; a unique manufacturer resolves to the canonical FK.
             normalized["manufacturer"] = manufacturer
         if model_string == "dcim.devicetype":
@@ -431,10 +662,8 @@ def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str,
     if not normalized_rows:
         return True
 
-    if model_string in {"dcim.devicerole", "dcim.platform", "ipam.prefix"}:
-        # Per-object save path. ipam.prefix relies on this so NetBox's post_save
-        # hierarchy signal recomputes `_depth`/`_children` (bulk_create would skip
-        # it), keeping parity with the adapter.
+    if model_string in {"dcim.devicerole", "dcim.platform"}:
+        # These low-volume models retain the adapter-equivalent save path.
         return bulk_orm_apply_tree_models(
             runner=runner,
             model_string=model_string,
@@ -462,6 +691,7 @@ def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str,
 
     create_objects = []
     update_objects = []
+    prefix_vrf_ids = set()
     branch_active = _branch_is_active()
     for values in normalized_rows:
         existing = None
@@ -486,6 +716,8 @@ def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str,
             # is kept.
             obj.full_clean(validate_unique=False, validate_constraints=False)
             create_objects.append(obj)
+            if model_string == "ipam.prefix":
+                prefix_vrf_ids.add(getattr(values.get("vrf"), "pk", None))
             for lookup_set in lookup_sets:
                 key = lookup_key_from_values(
                     values,
@@ -498,11 +730,7 @@ def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str,
             runner.logger.increment_statistics(model_string, outcome="applied")
             runner.events_clearer.increment()
             continue
-        if branch_active and getattr(existing, "pk", None) is not None:
-            # Capture pre-mutation state so a synthesized UPDATE ObjectChange (or
-            # the per-object isolate fallback) gets correct prechange_data.
-            existing.snapshot()
-        changed = False
+        changed_values = []
         for field_name in fields:
             if field_name in create_only_fields:
                 continue
@@ -512,9 +740,17 @@ def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str,
             # so a re-applied row does not churn just because the stored type
             # differs from the incoming string.
             if not _model_field_value_matches(model, existing, field_name, incoming):
+                changed_values.append((field_name, incoming))
+        if changed_values and getattr(existing, "pk", None) is not None:
+            if model_string == "ipam.prefix":
+                prefix_vrf_ids.add(existing.vrf_id)
+                prefix_vrf_ids.add(getattr(values.get("vrf"), "pk", None))
+            if branch_active:
+                # Snapshot only a row that will actually change. On repeat syncs,
+                # unchanged rows avoid serializer and relationship queries.
+                existing.snapshot()
+            for field_name, incoming in changed_values:
                 setattr(existing, field_name, incoming)
-                changed = True
-        if changed and getattr(existing, "pk", None) is not None:
             # Existing objects already satisfy DB constraints; skip
             # validate_unique/validate_constraints (both issue DB queries).
             existing.clean_fields()
@@ -527,46 +763,61 @@ def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str,
 
     from django.db import IntegrityError
 
-    try:
-        with transaction.atomic():
-            if create_objects:
-                model.objects.bulk_create(create_objects, batch_size=1000)
-            if update_objects:
-                model.objects.bulk_update(
-                    update_objects,
-                    fields=list(fields),
-                    batch_size=1000,
-                )
-    except IntegrityError as exc:
-        # A DB constraint violation rolled the whole batch back. Isolate per row
-        # so a single bad row does not fail the entire shard; the offending
-        # row(s) become ingestion issues for operator review.
-        runner.logger.log_warning(
-            f"Bulk write for {model_string} hit a constraint error ({exc}); "
-            "retrying the batch row-by-row to isolate the offending row(s).",
-            obj=runner.sync,
-        )
-        # Per-object isolate saves fire post_save, so when staging into a branch
-        # they record their own ObjectChanges (CREATE, and UPDATE via the
-        # snapshot taken above) — no synthesized emission needed on this path.
-        _isolate_bulk_objects(model, create_objects, "create", runner, model_string)
-        _isolate_bulk_objects(
-            model, update_objects, "update", runner, model_string, fields=fields
-        )
-    else:
-        # Bulk write succeeded and recorded no post_save, so synthesize the
-        # branch ObjectChanges the merge replays from (no-op direct-to-main).
-        if branch_active:
-            try:
-                emit_branch_object_changes(create_objects, update_objects)
-            except Exception as exc:  # noqa: BLE001 - surface, do not crash shard
-                runner._record_issue(
-                    model_string,
-                    f"Bulk write staged into the branch but its change log could "
-                    f"not be recorded; these rows would not merge: {exc}",
-                    {},
-                    exception=exc,
-                )
+    isolated_write = False
+    using = _active_write_alias()
+    with transaction.atomic(using=using):
+        try:
+            with transaction.atomic(using=using):
+                if create_objects:
+                    model.objects.bulk_create(create_objects, batch_size=1000)
+                if update_objects:
+                    model.objects.bulk_update(
+                        update_objects,
+                        fields=list(fields),
+                        batch_size=1000,
+                    )
+        except IntegrityError as exc:
+            if branch_active:
+                # Branch rows, ObjectChanges, and ChangeDiffs are one transaction.
+                # Do not partially isolate through signal-driven writes on a
+                # second connection.
+                raise
+            isolated_write = True
+            # A DB constraint violation rolled the whole batch back. Isolate per row
+            # so a single bad row does not fail the entire shard; the offending
+            # row(s) become ingestion issues for operator review.
+            runner.logger.log_warning(
+                f"Bulk write for {model_string} hit a constraint error ({exc}); "
+                "retrying the batch row-by-row to isolate the offending row(s).",
+                obj=runner.sync,
+            )
+            # Per-object isolate saves fire post_save, so when staging into a branch
+            # they record their own ObjectChanges (CREATE, and UPDATE via the
+            # snapshot taken above) — no synthesized emission needed on this path.
+            _isolate_bulk_objects(model, create_objects, "create", runner, model_string)
+            _isolate_bulk_objects(
+                model,
+                update_objects,
+                "update",
+                runner,
+                model_string,
+                fields=fields,
+            )
+        if model_string == "ipam.prefix" and (create_objects or update_objects):
+            # NetBox's per-row Prefix signal is quadratic for large initial loads.
+            # The supported bulk rebuild computes the same cached hierarchy once per
+            # affected VRF, then refreshed instances serialize the correct branch state.
+            _rebuild_prefix_hierarchies(
+                prefix_vrf_ids,
+                [*create_objects, *update_objects],
+                using=using,
+            )
+        # Bulk write succeeded and recorded no post_save, so synthesize the branch
+        # ObjectChanges the merge replays from (no-op direct-to-main). Isolated saves
+        # already emitted their own changes. Evidence is mandatory: any emission
+        # error aborts the branch transaction instead of stranding rows.
+        if branch_active and not isolated_write:
+            emit_branch_object_changes(create_objects, update_objects)
     runner.events_clearer.clear()
     return True
 
@@ -792,45 +1043,49 @@ def bulk_orm_apply_macaddress(runner, rows: list[dict[str, Any]]):
     from django.db import IntegrityError
 
     mac_update_fields = ["assigned_object_type", "assigned_object_id"]
-    try:
-        with transaction.atomic():
-            if create_objects:
-                MACAddress.objects.bulk_create(
-                    list(create_objects.values()),
-                    batch_size=1000,
-                )
-            if update_objects:
-                MACAddress.objects.bulk_update(
-                    list(update_objects.values()),
-                    fields=mac_update_fields,
-                    batch_size=1000,
-                )
-    except IntegrityError as exc:
-        runner.logger.log_warning(
-            f"Bulk write for dcim.macaddress hit a constraint error ({exc}); "
-            "retrying row-by-row to isolate the offending row(s).",
-            obj=runner.sync,
-        )
-        _isolate_bulk_objects(
-            MACAddress,
-            list(create_objects.values()),
-            "create",
-            runner,
-            "dcim.macaddress",
-        )
-        _isolate_bulk_objects(
-            MACAddress,
-            list(update_objects.values()),
-            "update",
-            runner,
-            "dcim.macaddress",
-            fields=mac_update_fields,
-        )
-    else:
-        if branch_active:
-            emit_branch_object_changes(
-                list(create_objects.values()), list(update_objects.values())
+    using = _active_write_alias()
+    with transaction.atomic(using=using):
+        try:
+            with transaction.atomic(using=using):
+                if create_objects:
+                    MACAddress.objects.bulk_create(
+                        list(create_objects.values()),
+                        batch_size=1000,
+                    )
+                if update_objects:
+                    MACAddress.objects.bulk_update(
+                        list(update_objects.values()),
+                        fields=mac_update_fields,
+                        batch_size=1000,
+                    )
+        except IntegrityError as exc:
+            if branch_active:
+                raise
+            runner.logger.log_warning(
+                f"Bulk write for dcim.macaddress hit a constraint error ({exc}); "
+                "retrying row-by-row to isolate the offending row(s).",
+                obj=runner.sync,
             )
+            _isolate_bulk_objects(
+                MACAddress,
+                list(create_objects.values()),
+                "create",
+                runner,
+                "dcim.macaddress",
+            )
+            _isolate_bulk_objects(
+                MACAddress,
+                list(update_objects.values()),
+                "update",
+                runner,
+                "dcim.macaddress",
+                fields=mac_update_fields,
+            )
+        else:
+            if branch_active:
+                emit_branch_object_changes(
+                    list(create_objects.values()), list(update_objects.values())
+                )
 
     runner.events_clearer.clear()
     return True
@@ -850,16 +1105,17 @@ def _interface_field_differs(existing, field, value) -> bool:
 
 
 def bulk_orm_apply_interface(runner, rows: list[dict[str, Any]]):
-    """Batched apply for dcim.interface (experimental, opt-in).
+    """Batched apply for dcim.interface.
 
     Plain interfaces are resolved with adapter-parity semantics (device skip/
     fail, optional mtu/speed/description, access/tagged mode + untagged VLAN) and
-    written with bulk_create/bulk_update. Rows with LAG interdependencies — LAG
-    membership (``lag``) or converting an interface to type ``lag`` while it
-    still has a cable — are delegated row-by-row to the adapter
-    ``apply_dcim_interface`` so their parent-ordering and cable side-effects keep
-    exact parity. Existing rows load from the DB, so fields absent from a row are
-    written back unchanged (no clearing), matching the adapter upsert.
+    written with bulk_create/bulk_update. LAG memberships are resolved after all
+    interfaces in the shard have been created, then assigned with one bulk
+    update in the same transaction. Existing cabled interfaces becoming LAGs,
+    including a parent discovered through a member row, use an isolated atomic
+    sequence which removes the cable before changing the type. Existing rows
+    load from the DB, so fields absent from a row are written back unchanged
+    (no clearing), matching the adapter upsert.
     """
     from dcim.models import Device
     from dcim.models import Interface
@@ -870,7 +1126,7 @@ def bulk_orm_apply_interface(runner, rows: list[dict[str, Any]]):
     from ..exceptions import ForwardSearchError
     from .interface_naming import canonical_interface_key
     from .sync_interface import _interface_untagged_vlan
-    from .sync_interface import apply_dcim_interface
+    from .sync_primitives import forget_lookup_object
 
     update_field_names = [
         "type",
@@ -880,7 +1136,21 @@ def bulk_orm_apply_interface(runner, rows: list[dict[str, Any]]):
         "description",
         "mode",
         "untagged_vlan",
+        "lag",
     ]
+
+    def _validate_interface(interface):
+        # A device created earlier in the same native branch has no row in the
+        # main schema. Django's ForeignKey field validation resolves its
+        # queryset outside the active branch and rejects that valid branch-only
+        # device. The device was already resolved explicitly above and the
+        # branch FK enforces it at write time, so validate every other field and
+        # the model contract without repeating that cross-schema lookup.
+        interface.full_clean(
+            exclude={"device"},
+            validate_unique=False,
+            validate_constraints=False,
+        )
 
     device_names = {row.get("device") for row in rows if row.get("device")}
     devices_by_name = {}
@@ -895,21 +1165,47 @@ def bulk_orm_apply_interface(runner, rows: list[dict[str, Any]]):
     # emits both ``po9`` and ``Port-channel9``) collapses onto the first instead
     # of staging a duplicate the lookup can't yet see (it isn't committed).
     pending_canonical = {}
-    # LAG-interdependent rows (members or lag-type-with-cable) are deferred until
-    # AFTER the bulk write commits. A plain LAG parent (``po9``) is staged in
-    # create_objects (uncommitted); delegating a member that references it inline
-    # would have the adapter independently create the parent it can't see in the
-    # pending dict, so the trailing bulk_create then hits a duplicate-key error.
-    # Deferring guarantees the parent is committed (and cached) before members
-    # are applied.
-    adapter_rows = []
+    # Existing cabled interfaces becoming LAGs retain the established
+    # cable-removal behavior through an isolated branch transaction. Ordinary
+    # LAG memberships are collected and resolved in a second bulk phase.
+    cabled_lag_rows = []
+    lag_links = []
+    row_outcomes = []
+    snapshotted_pks = set()
 
-    def _delegate_to_adapter(row):
-        # Hard LAG/cable cases keep exact adapter semantics (parent ensure,
-        # cable removal). Mirror the runner's row-error handling.
+    def _snapshot_once(interface):
+        if (
+            branch_active
+            and getattr(interface, "pk", None) is not None
+            and interface.pk not in snapshotted_pks
+        ):
+            interface.snapshot()
+            snapshotted_pks.add(interface.pk)
+
+    def _apply_cabled_lag_row(row, cabled_interface):
+        # Keep cable deletion and the row's complete bulk mutation/evidence on
+        # the branch alias in one transaction. The cable's normal model signals
+        # still run, but request tracking is suppressed because evidence is
+        # emitted explicitly on the same alias before recursively applying the
+        # now-uncabled row through this bulk path.
+        from netbox.context import current_request
+
         try:
-            apply_dcim_interface(runner, row)
-            runner.logger.increment_statistics("dcim.interface", outcome="applied")
+            with transaction.atomic(using=_active_write_alias()):
+                cable = getattr(cabled_interface, "cable", None)
+                if cable is None:
+                    return bulk_orm_apply_interface(runner, [row])
+                if branch_active:
+                    emit_branch_object_changes([], [], [cable])
+                request_token = current_request.set(None)
+                try:
+                    cable.delete()
+                finally:
+                    current_request.reset(request_token)
+                cabled_interface.cable_id = None
+                cabled_interface._state.fields_cache.pop("cable", None)
+                forget_lookup_object(runner, cabled_interface)
+                return bulk_orm_apply_interface(runner, [row])
         except ForwardDependencySkipError as exc:
             runner.logger.increment_statistics("dcim.interface", outcome="skipped")
             runner._record_issue(
@@ -921,6 +1217,7 @@ def bulk_orm_apply_interface(runner, rows: list[dict[str, Any]]):
                 defaults=getattr(exc, "defaults", None),
             )
         except (ForwardSearchError, Exception) as exc:  # noqa: BLE001
+            forget_lookup_object(runner, cabled_interface)
             runner._mark_dependency_failed("dcim.interface", row)
             runner.logger.increment_statistics("dcim.interface", outcome="failed")
             runner._record_issue(
@@ -931,6 +1228,28 @@ def bulk_orm_apply_interface(runner, rows: list[dict[str, Any]]):
                 context=getattr(exc, "context", None),
                 defaults=getattr(exc, "defaults", None),
             )
+
+    def _reject_lag_self_parent(row, device):
+        exc = ForwardSearchError(
+            f"Interface `{row['name']}` on device `{device.name}` cannot be "
+            "its own LAG parent.",
+            model_string="dcim.interface",
+            context={
+                "device": device.name,
+                "name": row["name"],
+                "lag": row.get("lag"),
+            },
+            data=row,
+        )
+        runner._mark_dependency_failed("dcim.interface", row)
+        runner.logger.increment_statistics("dcim.interface", outcome="failed")
+        runner._record_issue(
+            "dcim.interface",
+            str(exc),
+            row,
+            exception=exc,
+            context=getattr(exc, "context", None),
+        )
 
     branch_active = _branch_is_active()
     for row in rows:
@@ -970,14 +1289,36 @@ def bulk_orm_apply_interface(runner, rows: list[dict[str, Any]]):
 
         existing = runner._lookup_interface(device, row["name"])
 
-        # Delegate LAG-interdependent rows to the adapter for exact parity.
-        needs_adapter = bool(row.get("lag")) or (
+        # Reject raw or canonically equivalent self-parenting before the member
+        # enters any create/update collection. Otherwise `Po1` with
+        # `lag=Port-channel1` is reported failed but still written.
+        if row.get("lag"):
+            name_key = canonical_interface_key(row["name"])
+            lag_key = canonical_interface_key(row["lag"])
+            if row["lag"] == row["name"] or (
+                name_key is not None and name_key == lag_key
+            ):
+                _reject_lag_self_parent(row, device)
+                continue
+
+            existing_parent = runner._lookup_interface(device, row["lag"])
+            if (
+                existing_parent is not None
+                and existing_parent.type != "lag"
+                and getattr(existing_parent, "cable", None) is not None
+            ):
+                cabled_lag_rows.append((row, existing_parent))
+                continue
+
+        # Cable removal remains deliberately row-oriented; it is destructive
+        # and uncommon, unlike ordinary LAG membership at customer scale.
+        needs_cabled_conversion = (
             row.get("type") == "lag"
             and existing is not None
             and getattr(existing, "cable", None) is not None
         )
-        if needs_adapter:
-            adapter_rows.append(row)
+        if needs_cabled_conversion:
+            cabled_lag_rows.append((row, existing))
             continue
 
         defaults = {
@@ -1011,68 +1352,152 @@ def bulk_orm_apply_interface(runner, rows: list[dict[str, Any]]):
                 interface = Interface(**defaults)
                 # Identity proven absent above; skip the per-row validate_unique
                 # DB query (constraint violations still surface via isolate).
-                interface.full_clean(validate_unique=False, validate_constraints=False)
+                _validate_interface(interface)
                 create_objects[key] = interface
                 if canon_key is not None:
                     pending_canonical[canon_key] = interface
-            runner.logger.increment_statistics("dcim.interface", outcome="applied")
-            runner.events_clearer.increment()
+            outcome = ["applied"]
+            row_outcomes.append(outcome)
+            if row.get("lag"):
+                lag_links.append((row, device, interface, outcome))
             continue
 
         # Existing interface: only write when a field actually changes,
         # otherwise every sync re-PATCHes unchanged interfaces.
-        if branch_active:
-            existing.snapshot()
-        changed = False
+        changed_values = []
         for field, value in defaults.items():
             if _interface_field_differs(existing, field, value):
+                changed_values.append((field, value))
+        outcome = ["unchanged"]
+        row_outcomes.append(outcome)
+        if changed_values:
+            _snapshot_once(existing)
+            for field, value in changed_values:
                 setattr(existing, field, value)
-                changed = True
-        if not changed:
-            runner.logger.increment_statistics("dcim.interface", outcome="unchanged")
-            continue
-        existing.full_clean()
-        if getattr(existing, "pk", None):
+            _validate_interface(existing)
             update_objects[existing.pk] = existing
-        runner.logger.increment_statistics("dcim.interface", outcome="applied")
-        runner.events_clearer.increment()
+            outcome[0] = "applied"
+        if row.get("lag"):
+            lag_links.append((row, device, existing, outcome))
+
+    # Resolve every LAG relationship against the existing DB rows and this
+    # shard's pending creates. The adapter creates a missing parent as a minimal
+    # enabled LAG; preserve that behavior, but do it once per parent.
+    resolved_lag_links = []
+    for row, device, member, outcome in lag_links:
+        lag_name = row["lag"]
+        parent = create_objects.get((device.pk, lag_name))
+        if parent is None:
+            canon = canonical_interface_key(lag_name)
+            if canon is not None:
+                parent = pending_canonical.get((device.pk, canon))
+        if parent is None:
+            parent = runner._lookup_interface(device, lag_name)
+        if parent is None:
+            parent = Interface(
+                device=device,
+                name=lag_name,
+                type="lag",
+                enabled=True,
+                mtu=None,
+                description="",
+                speed=None,
+            )
+            _validate_interface(parent)
+            create_objects[(device.pk, lag_name)] = parent
+            canon = canonical_interface_key(lag_name)
+            if canon is not None:
+                pending_canonical[(device.pk, canon)] = parent
+            outcome[0] = "applied"
+        elif parent.type != "lag":
+            _snapshot_once(parent)
+            parent.type = "lag"
+            _validate_interface(parent)
+            if getattr(parent, "pk", None) is not None:
+                update_objects[parent.pk] = parent
+            outcome[0] = "applied"
+
+        if parent is member:
+            # Canonical spellings can identify the same interface even when the
+            # raw strings differ. Treat that as the same invalid self-parent as
+            # an exact spelling.
+            runner._mark_dependency_failed("dcim.interface", row)
+            runner._record_issue(
+                "dcim.interface",
+                f"Interface `{row['name']}` on device `{device.name}` cannot be "
+                "its own LAG parent.",
+                row,
+                exception=ForwardSearchError(
+                    "interface cannot be its own LAG parent",
+                    model_string="dcim.interface",
+                ),
+            )
+            outcome[0] = "failed"
+            continue
+
+        if parent.pk is None or member.lag_id != parent.pk:
+            _snapshot_once(member)
+            if getattr(member, "pk", None) is not None:
+                update_objects[member.pk] = member
+            outcome[0] = "applied"
+            resolved_lag_links.append((member, parent))
 
     from django.db import IntegrityError
 
-    try:
-        with transaction.atomic():
-            if create_objects:
-                Interface.objects.bulk_create(
-                    list(create_objects.values()), batch_size=1000
-                )
-            if update_objects:
-                Interface.objects.bulk_update(
-                    list(update_objects.values()),
-                    fields=update_field_names,
-                    batch_size=1000,
-                )
-    except IntegrityError as exc:
-        runner.logger.log_warning(
-            f"Bulk write for dcim.interface hit a constraint error ({exc}); "
-            "retrying row-by-row to isolate the offending row(s).",
-            obj=runner.sync,
-        )
-        _isolate_bulk_objects(
-            Interface, list(create_objects.values()), "create", runner, "dcim.interface"
-        )
-        _isolate_bulk_objects(
-            Interface,
-            list(update_objects.values()),
-            "update",
-            runner,
-            "dcim.interface",
-            fields=update_field_names,
-        )
-    else:
-        if branch_active:
-            emit_branch_object_changes(
-                list(create_objects.values()), list(update_objects.values())
+    using = _active_write_alias()
+    with transaction.atomic(using=using):
+        try:
+            with transaction.atomic(using=using):
+                if create_objects:
+                    Interface.objects.bulk_create(
+                        list(create_objects.values()), batch_size=1000
+                    )
+                created_lag_members = []
+                for member, parent in resolved_lag_links:
+                    member.lag = parent
+                    if member.pk in update_objects:
+                        continue
+                    created_lag_members.append(member)
+                if update_objects:
+                    Interface.objects.bulk_update(
+                        list(update_objects.values()),
+                        fields=update_field_names,
+                        batch_size=1000,
+                    )
+                if created_lag_members:
+                    Interface.objects.bulk_update(
+                        created_lag_members,
+                        fields=["lag"],
+                        batch_size=1000,
+                    )
+        except IntegrityError as exc:
+            if branch_active:
+                raise
+            runner.logger.log_warning(
+                f"Bulk write for dcim.interface hit a constraint error ({exc}); "
+                "retrying row-by-row to isolate the offending row(s).",
+                obj=runner.sync,
             )
+            _isolate_bulk_objects(
+                Interface,
+                list(create_objects.values()),
+                "create",
+                runner,
+                "dcim.interface",
+            )
+            _isolate_bulk_objects(
+                Interface,
+                list(update_objects.values()),
+                "update",
+                runner,
+                "dcim.interface",
+                fields=update_field_names,
+            )
+        else:
+            if branch_active:
+                emit_branch_object_changes(
+                    list(create_objects.values()), list(update_objects.values())
+                )
 
     # Reflect freshly-created interfaces in the runner lookup caches so the
     # deferred LAG rows (and any later same-run lookup) resolve them instead of
@@ -1096,10 +1521,17 @@ def bulk_orm_apply_interface(runner, rows: list[dict[str, Any]]):
                 if device_map is not None:
                     device_map.setdefault(canon, iface)
 
-    # Apply deferred LAG-interdependent rows now that their parent interfaces are
-    # committed and cached (parent-first ordering, no duplicate-key race).
-    for row in adapter_rows:
-        _delegate_to_adapter(row)
+    # Apply isolated cabled conversions after unrelated rows are committed. Each
+    # conversion re-enters this bulk path after its cable is removed, so its
+    # parent/member/evidence state is all-or-nothing without slowing ordinary
+    # LAG memberships.
+    for row, cabled_lag_parent in cabled_lag_rows:
+        _apply_cabled_lag_row(row, cabled_lag_parent)
+
+    for (outcome,) in row_outcomes:
+        runner.logger.increment_statistics("dcim.interface", outcome=outcome)
+        if outcome == "applied":
+            runner.events_clearer.increment()
 
     runner.events_clearer.clear()
     return True
@@ -1118,11 +1550,11 @@ def bulk_orm_apply_device(runner, rows: list[dict[str, Any]]):
     platform) are already staged by their own workloads immediately before
     dcim.device, with no virtual-chassis membership — is resolved by batch FK
     lookup and written with bulk_create/bulk_update + branch ObjectChange
-    synthesis. Rows that need adapter sequencing (a missing parent the adapter
-    would create on demand, virtual-chassis membership, or the opt-in
-    ``apply_device_scope_tags`` per-device tagging, or stale maintained scope
-    tags) delegate row-by-row to ``apply_dcim_device`` so their behavior stays
-    byte-for-byte identical.
+    synthesis. Opt-in device scope tags are resolved once and their missing
+    TaggedItem relations are bulk-created before final Device serialization.
+    Rows that need adapter sequencing (a missing parent the adapter would create
+    on demand or virtual-chassis membership) delegate row-by-row to
+    ``apply_dcim_device`` so their behavior stays byte-for-byte identical.
     Existing devices are written only when a field actually changes.
     """
     from dcim.models import Device
@@ -1132,11 +1564,16 @@ def bulk_orm_apply_device(runner, rows: list[dict[str, Any]]):
     from dcim.models import Site
     from django.db import IntegrityError
     from django.db import transaction
+    from django.db.models import Q
+    from django.utils.text import slugify
+    from extras.models import Tag
+    from extras.models import TaggedItem
 
     from ..exceptions import ForwardDependencySkipError
     from ..exceptions import ForwardSearchError
     from .sync_device import _scope_tags_enabled
     from .sync_device import apply_dcim_device
+    from .sync_device import record_device_identity_candidate
 
     update_field_names = ["site", "role", "device_type", "platform", "serial", "status"]
 
@@ -1166,38 +1603,15 @@ def bulk_orm_apply_device(runner, rows: list[dict[str, Any]]):
                 defaults=getattr(exc, "defaults", None),
             )
 
-    # Opt-in per-device scope tagging is an adapter side effect; keep exact parity
-    # by delegating the whole batch when it is enabled.
-    if _scope_tags_enabled(runner):
-        for row in rows:
-            _delegate(row)
-        runner.events_clearer.clear()
-        return True
-
-    # A successfully applied device must not retain the plugin-maintained
-    # out-of-scope tag. Delegate only those existing rows to the adapter so the
-    # tag mutation gets normal NetBox/branch change tracking; keep the common
-    # tag-free path batched.
-    from .scope_reconciliation import OUT_OF_SCOPE_TAG_SLUG
-
-    row_names = {str(row.get("name") or "").strip() for row in rows}
-    tagged_out_of_scope_names = set(
-        Device.objects.filter(
-            name__in=row_names,
-            tags__slug=OUT_OF_SCOPE_TAG_SLUG,
-        ).values_list("name", flat=True)
-    )
-    if tagged_out_of_scope_names:
-        bulk_rows = []
-        for row in rows:
-            if row.get("name") in tagged_out_of_scope_names:
-                _delegate(row)
-            else:
-                bulk_rows.append(row)
-        rows = bulk_rows
-        if not rows:
-            runner.events_clearer.clear()
-            return True
+    scope_tags_enabled = _scope_tags_enabled(runner)
+    scope_tags_by_name = {}
+    scope_names = set()
+    if scope_tags_enabled:
+        scope_names = {
+            tag_name
+            for row in rows
+            for tag_name in runner._scope_matched_tags.get(row.get("name"), [])
+        }
 
     # Endpoint-only platforms are absent from the network.devices-backed
     # Platform map. Their NQE rows explicitly mark manufacturer ownership as
@@ -1243,21 +1657,48 @@ def bulk_orm_apply_device(runner, rows: list[dict[str, Any]]):
     dt_model_v = {r.get("device_type") for r in rows if r.get("device_type")}
     dts = []
     for batch in _chunks(list(dt_slug_v)):
-        dts.extend(DeviceType.objects.filter(slug__in=batch))
+        dts.extend(
+            DeviceType.objects.filter(slug__in=batch).select_related("manufacturer")
+        )
     for batch in _chunks(list(dt_model_v)):
-        dts.extend(DeviceType.objects.filter(model__in=batch))
-    dt_by_slug = {dt.slug: dt for dt in dts if dt.slug}
-    dt_by_model = {dt.model: dt for dt in dts if dt.model}
+        dts.extend(
+            DeviceType.objects.filter(model__in=batch).select_related("manufacturer")
+        )
+    dt_by_slug = {}
+    dt_by_model = {}
+    for device_type in dts:
+        manufacturer_keys = {
+            device_type.manufacturer.slug,
+            device_type.manufacturer.name,
+        }
+        for manufacturer_key in manufacturer_keys:
+            if device_type.slug:
+                dt_by_slug[(manufacturer_key, device_type.slug)] = device_type
+            if device_type.model:
+                dt_by_model[(manufacturer_key, device_type.model)] = device_type
 
-    existing_by_name = {}
+    existing_by_name = defaultdict(list)
     existing_device_names = {r["name"] for r in rows if r.get("name")}
     for batch in _chunks(list(existing_device_names)):
         for device in Device.objects.filter(name__in=batch):
-            existing_by_name[device.name] = device
+            existing_by_name[device.name].append(device)
 
     create_objects = {}
     update_objects = {}
+    identity_devices = {}
+    row_devices = []
+    row_outcomes = []
     branch_active = _branch_is_active()
+    snapshotted_device_ids = set()
+
+    def _snapshot_device_once(device):
+        if (
+            branch_active
+            and getattr(device, "pk", None) is not None
+            and device.pk not in snapshotted_device_ids
+        ):
+            device.snapshot()
+            snapshotted_device_ids.add(device.pk)
 
     for row in rows:
         if not row.get("name"):
@@ -1272,9 +1713,19 @@ def bulk_orm_apply_device(runner, rows: list[dict[str, Any]]):
         role = roles_by_slug.get(row.get("role_slug")) or roles_by_name.get(
             row.get("role")
         )
-        device_type = dt_by_slug.get(row.get("device_type_slug")) or dt_by_model.get(
-            row.get("device_type")
+        device_type = None
+        manufacturer_keys = (
+            row.get("manufacturer_slug"),
+            row.get("manufacturer"),
         )
+        for manufacturer_key in manufacturer_keys:
+            if not manufacturer_key:
+                continue
+            device_type = dt_by_slug.get(
+                (manufacturer_key, row.get("device_type_slug"))
+            ) or dt_by_model.get((manufacturer_key, row.get("device_type")))
+            if device_type is not None:
+                break
         platform = None
         wants_platform = bool(row.get("platform"))
         if wants_platform:
@@ -1299,35 +1750,55 @@ def bulk_orm_apply_device(runner, rows: list[dict[str, Any]]):
             "role": role,
             "device_type": device_type,
             "platform": platform,
-            "serial": row.get("serial", ""),
             "status": row["status"],
         }
+        if row.get("serial") not in (None, ""):
+            defaults["serial"] = row["serial"]
         try:
-            existing = existing_by_name.get(row["name"])
+            matching = [
+                device
+                for device in existing_by_name.get(row["name"], [])
+                if device.site_id == site.pk
+            ]
+            if len(matching) > 1:
+                raise ForwardSearchError(
+                    f"Multiple NetBox devices named `{row['name']}` exist in "
+                    f"site `{site.name}`.",
+                    model_string="dcim.device",
+                    context={"name": row["name"], "site": site.name},
+                    data=row,
+                )
+            existing = matching[0] if matching else None
             if existing is None:
-                device = create_objects.get(row["name"])
+                create_key = (row["name"], site.pk)
+                device = create_objects.get(create_key)
                 if device is None:
                     device = Device(**defaults)
                     device.full_clean(validate_unique=False, validate_constraints=False)
-                    create_objects[row["name"]] = device
-                runner.logger.increment_statistics("dcim.device", outcome="applied")
-                runner.events_clearer.increment()
+                    create_objects[create_key] = device
+                outcome = ["applied"]
+                row_outcomes.append(outcome)
+                row_devices.append((row, device, outcome))
                 continue
-            if branch_active:
-                existing.snapshot()
-            changed = False
+            identity_devices[existing.pk] = existing
+            changed_values = []
             for field, value in defaults.items():
                 if _device_field_differs(existing, field, value):
-                    setattr(existing, field, value)
-                    changed = True
-            if not changed:
-                runner.logger.increment_statistics("dcim.device", outcome="unchanged")
+                    changed_values.append((field, value))
+            if not changed_values:
+                outcome = ["unchanged"]
+                row_outcomes.append(outcome)
+                row_devices.append((row, existing, outcome))
                 continue
+            _snapshot_device_once(existing)
+            for field, value in changed_values:
+                setattr(existing, field, value)
             existing.full_clean()
             if getattr(existing, "pk", None):
                 update_objects[existing.pk] = existing
-            runner.logger.increment_statistics("dcim.device", outcome="applied")
-            runner.events_clearer.increment()
+            outcome = ["applied"]
+            row_outcomes.append(outcome)
+            row_devices.append((row, existing, outcome))
         except Exception as exc:  # noqa: BLE001 - isolate one device, keep staging
             # e.g. a device deleted in main while the branch modifies it, or any
             # per-row validation conflict: record the issue + mark the dependency
@@ -1343,40 +1814,185 @@ def bulk_orm_apply_device(runner, rows: list[dict[str, Any]]):
             )
             continue
 
-    try:
-        with transaction.atomic():
-            if create_objects:
-                Device.objects.bulk_create(
-                    list(create_objects.values()), batch_size=1000
-                )
-            if update_objects:
-                Device.objects.bulk_update(
-                    list(update_objects.values()),
-                    fields=update_field_names,
-                    batch_size=1000,
-                )
-    except IntegrityError as exc:
-        runner.logger.log_warning(
-            f"Bulk write for dcim.device hit a constraint error ({exc}); retrying "
-            "row-by-row to isolate the offending row(s).",
-            obj=runner.sync,
-        )
-        _isolate_bulk_objects(
-            Device, list(create_objects.values()), "create", runner, "dcim.device"
-        )
-        _isolate_bulk_objects(
-            Device,
-            list(update_objects.values()),
-            "update",
-            runner,
-            "dcim.device",
-            fields=update_field_names,
-        )
-    else:
-        if branch_active:
-            emit_branch_object_changes(
-                list(create_objects.values()), list(update_objects.values())
+    using = _active_write_alias()
+
+    def _ensure_scope_tags_in_transaction():
+        """Resolve scope tags without framework signal writes on another alias."""
+        if not scope_tags_enabled or not scope_names:
+            return {}
+        created = []
+        updated = []
+        resolved = {}
+        for name in sorted(scope_names):
+            slug = slugify(name) or slugify(name.replace(".", "-"))
+            if not slug:
+                resolved[name] = None
+                continue
+            matches = list(
+                Tag.objects.using(using)
+                .filter(Q(name=name) | Q(slug=slug))
+                .order_by("pk")[:2]
             )
+            if len(matches) > 1:
+                raise ForwardSearchError(
+                    f"Multiple NetBox tags match scope tag `{name}` / `{slug}`.",
+                    model_string="extras.taggeditem",
+                    context={"name": name, "slug": slug},
+                )
+            if not matches:
+                tag = Tag(name=name, slug=slug, color="9e9e9e")
+                tag.full_clean(validate_unique=False, validate_constraints=False)
+                created.append(tag)
+                resolved[name] = tag
+                continue
+            tag = matches[0]
+            changed = False
+            for field_name, value in (
+                ("name", name),
+                ("slug", slug),
+                ("color", "9e9e9e"),
+            ):
+                if getattr(tag, field_name) == value:
+                    continue
+                if branch_active and not changed:
+                    tag.snapshot()
+                setattr(tag, field_name, value)
+                changed = True
+            if changed:
+                tag.full_clean(validate_unique=False, validate_constraints=False)
+                updated.append(tag)
+            resolved[name] = tag
+        if created:
+            Tag.objects.using(using).bulk_create(created, batch_size=1000)
+        if updated:
+            Tag.objects.using(using).bulk_update(
+                updated,
+                fields=["name", "slug", "color"],
+                batch_size=1000,
+            )
+        if branch_active and (created or updated):
+            emit_branch_object_changes(created, updated)
+
+        cache = getattr(runner, "_scope_tag_objs", None)
+        if not isinstance(cache, dict):
+            cache = runner._scope_tag_objs = {}
+        cache.update(resolved)
+        slug_cache = getattr(runner, "_tag_by_slug_cache", None)
+        name_cache = getattr(runner, "_tag_by_name_cache", None)
+        for tag in resolved.values():
+            if tag is None:
+                continue
+            if isinstance(slug_cache, dict):
+                slug_cache[tag.slug] = tag
+            if isinstance(name_cache, dict):
+                name_cache[tag.name] = tag
+        return {name: tag for name, tag in resolved.items() if tag is not None}
+
+    with transaction.atomic(using=using):
+        try:
+            with transaction.atomic(using=using):
+                # Tag creation is part of the same atomic branch mutation as
+                # Device, TaggedItem, and ObjectChange writes. An assignment or
+                # evidence failure must not leave an orphan managed Tag change.
+                scope_tags_by_name = _ensure_scope_tags_in_transaction()
+                if create_objects:
+                    Device.objects.bulk_create(
+                        list(create_objects.values()), batch_size=1000
+                    )
+                if update_objects:
+                    Device.objects.bulk_update(
+                        list(update_objects.values()),
+                        fields=update_field_names,
+                        batch_size=1000,
+                    )
+
+                if scope_tags_enabled and scope_tags_by_name:
+                    device_content_type = runner._content_type_for(Device)
+                    created_device_ids = {
+                        device.pk for device in create_objects.values()
+                    }
+                    wanted = []
+                    for row, device, outcome in row_devices:
+                        for name in runner._scope_matched_tags.get(row["name"], []):
+                            tag = scope_tags_by_name.get(name)
+                            if tag is not None:
+                                wanted.append((device, tag, outcome))
+                    device_ids = {device.pk for device, _, _ in wanted}
+                    tag_ids = {tag.pk for _, tag, _ in wanted}
+                    existing_assignments = set()
+                    if device_ids and tag_ids:
+                        existing_assignments = set(
+                            TaggedItem.objects.using(using)
+                            .filter(
+                                content_type=device_content_type,
+                                object_id__in=device_ids,
+                                tag_id__in=tag_ids,
+                            )
+                            .values_list("object_id", "tag_id")
+                        )
+                    assignment_objects = []
+                    seen_assignments = set(existing_assignments)
+                    for device, tag, outcome in wanted:
+                        key = (device.pk, tag.pk)
+                        if key in seen_assignments:
+                            continue
+                        if device.pk not in created_device_ids:
+                            _snapshot_device_once(device)
+                            update_objects[device.pk] = device
+                        assignment_objects.append(
+                            TaggedItem(
+                                content_type=device_content_type,
+                                object_id=device.pk,
+                                tag=tag,
+                            )
+                        )
+                        runner._device_tag_ids_cache.setdefault(device.pk, set()).add(
+                            tag.pk
+                        )
+                        seen_assignments.add(key)
+                        outcome[0] = "applied"
+                    if assignment_objects:
+                        TaggedItem.objects.using(using).bulk_create(
+                            assignment_objects,
+                            batch_size=1000,
+                        )
+        except IntegrityError as exc:
+            if branch_active:
+                raise
+            runner.logger.log_warning(
+                f"Bulk write for dcim.device hit a constraint error ({exc}); retrying "
+                "row-by-row to isolate the offending row(s).",
+                obj=runner.sync,
+            )
+            _isolate_bulk_objects(
+                Device,
+                list(create_objects.values()),
+                "create",
+                runner,
+                "dcim.device",
+            )
+            _isolate_bulk_objects(
+                Device,
+                list(update_objects.values()),
+                "update",
+                runner,
+                "dcim.device",
+                fields=update_field_names,
+            )
+        else:
+            if branch_active:
+                emit_branch_object_changes(
+                    list(create_objects.values()), list(update_objects.values())
+                )
+
+    for device in list(create_objects.values()) + list(identity_devices.values()):
+        if getattr(device, "pk", None):
+            record_device_identity_candidate(runner, device)
+
+    for (outcome,) in row_outcomes:
+        runner.logger.increment_statistics("dcim.device", outcome=outcome)
+        if outcome == "applied":
+            runner.events_clearer.increment()
 
     runner.events_clearer.clear()
     return True
@@ -1389,8 +2005,8 @@ def bulk_orm_apply_ipaddress(runner, rows: list[dict[str, Any]]):
     interface resolution, dependency skip/fail, network-id/broadcast skips, VRF
     ensure, and the null-VRF net_host vs (address, vrf) coalesce — but collects
     resolved IPAddress objects and writes them with bulk_create/bulk_update at
-    the end instead of saving per row. Experimental: enabled only when
-    `ipam.ipaddress` is explicitly listed in the sync's `bulk_orm_models`.
+    the end instead of saving per row. The apply-engine decision limits this
+    path to the parity-tested model set.
     """
     import operator
     from functools import reduce
@@ -1574,31 +2190,26 @@ def bulk_orm_apply_ipaddress(runner, rows: list[dict[str, Any]]):
             runner.events_clearer.increment()
             continue
 
-        # `ip` may be a not-yet-saved in-memory create from an earlier row that
-        # shares this (host_ip, vrf) key (duplicate IP across devices — only
-        # surfaces at full-network scale). snapshot() touches tags, which raises
-        # on an unsaved object; only snapshot already-persisted rows.
-        if branch_active and ip.pk is not None:
-            ip.snapshot()
-        changed = False
+        changed_values = []
         if str(ip.address) != str(row["address"]):
-            ip.address = row["address"]
-            changed = True
+            changed_values.append(("address", row["address"]))
         if ip.vrf_id != vrf_id:
-            ip.vrf = vrf
-            changed = True
+            changed_values.append(("vrf", vrf))
         if ip.status != row["status"]:
-            ip.status = row["status"]
-            changed = True
+            changed_values.append(("status", row["status"]))
         if ip.assigned_object_type_id != interface_ct.pk:
-            ip.assigned_object_type = interface_ct
-            changed = True
+            changed_values.append(("assigned_object_type", interface_ct))
         if ip.assigned_object_id != interface.pk:
-            ip.assigned_object_id = interface.pk
-            changed = True
-        if not changed:
+            changed_values.append(("assigned_object_id", interface.pk))
+        if not changed_values:
             runner.logger.increment_statistics("ipam.ipaddress", outcome="unchanged")
             continue
+        # `ip` may be a not-yet-saved in-memory create from an earlier duplicate
+        # row. Snapshot only a persisted object that will actually change.
+        if branch_active and ip.pk is not None:
+            ip.snapshot()
+        for field, value in changed_values:
+            setattr(ip, field, value)
         if getattr(ip, "pk", None):
             # Field-level validation only on update. IPAddress.clean() runs the
             # global-duplicate check, which would raise when a pre-existing
@@ -1612,40 +2223,48 @@ def bulk_orm_apply_ipaddress(runner, rows: list[dict[str, Any]]):
 
     from django.db import IntegrityError
 
-    try:
-        with transaction.atomic():
-            if create_objects:
-                IPAddress.objects.bulk_create(
-                    list(create_objects.values()), batch_size=1000
-                )
-            if update_objects:
-                IPAddress.objects.bulk_update(
-                    list(update_objects.values()),
-                    fields=update_field_names,
-                    batch_size=1000,
-                )
-    except IntegrityError as exc:
-        runner.logger.log_warning(
-            f"Bulk write for ipam.ipaddress hit a constraint error ({exc}); "
-            "retrying row-by-row to isolate the offending row(s).",
-            obj=runner.sync,
-        )
-        _isolate_bulk_objects(
-            IPAddress, list(create_objects.values()), "create", runner, "ipam.ipaddress"
-        )
-        _isolate_bulk_objects(
-            IPAddress,
-            list(update_objects.values()),
-            "update",
-            runner,
-            "ipam.ipaddress",
-            fields=update_field_names,
-        )
-    else:
-        if branch_active:
-            emit_branch_object_changes(
-                list(create_objects.values()), list(update_objects.values())
+    using = _active_write_alias()
+    with transaction.atomic(using=using):
+        try:
+            with transaction.atomic(using=using):
+                if create_objects:
+                    IPAddress.objects.bulk_create(
+                        list(create_objects.values()), batch_size=1000
+                    )
+                if update_objects:
+                    IPAddress.objects.bulk_update(
+                        list(update_objects.values()),
+                        fields=update_field_names,
+                        batch_size=1000,
+                    )
+        except IntegrityError as exc:
+            if branch_active:
+                raise
+            runner.logger.log_warning(
+                f"Bulk write for ipam.ipaddress hit a constraint error ({exc}); "
+                "retrying row-by-row to isolate the offending row(s).",
+                obj=runner.sync,
             )
+            _isolate_bulk_objects(
+                IPAddress,
+                list(create_objects.values()),
+                "create",
+                runner,
+                "ipam.ipaddress",
+            )
+            _isolate_bulk_objects(
+                IPAddress,
+                list(update_objects.values()),
+                "update",
+                runner,
+                "ipam.ipaddress",
+                fields=update_field_names,
+            )
+        else:
+            if branch_active:
+                emit_branch_object_changes(
+                    list(create_objects.values()), list(update_objects.values())
+                )
 
     runner.events_clearer.clear()
     return True
@@ -2051,9 +2670,9 @@ def bulk_orm_apply_tree_models(
         existing_objects = {}
         if any(lookup_values.values()):
             # Single combined-OR prefetch (one SELECT, reused across every row
-            # in the shard). Tree models (devicerole/platform/prefix) are the
-            # lowest-volume apply path, so this is left unchunked on purpose —
-            # the lookup-cache-reuse test pins the single-query behavior.
+            # in the shard). This simple-model path handles bounded reference
+            # tables, so the lookup-cache-reuse test intentionally pins one
+            # unchunked query.
             from django.db.models import Q
 
             query = Q()
@@ -2145,7 +2764,7 @@ def bulk_orm_apply_tree_models(
                 existing.refresh_from_db()
                 runner._record_issue(
                     model_string,
-                    "Tree-model row failed; isolated so the shard " f"continues: {exc}",
+                    f"Tree-model row failed; isolated so the shard continues: {exc}",
                     values,
                     exception=exc,
                 )

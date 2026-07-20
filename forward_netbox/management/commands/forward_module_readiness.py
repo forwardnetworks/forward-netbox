@@ -16,14 +16,13 @@ from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from forward_netbox.utilities.module_readiness import summarize_module_readiness
-from forward_netbox.utilities.module_readiness import write_module_bay_import_csv
 from forward_netbox.utilities.query_registry import get_query_specs
 from forward_netbox.utilities.query_registry import get_seeded_builtin_query_spec
 from forward_netbox.utilities.query_registry import resolve_query_specs_for_client
 
 
 class Command(BaseCommand):
-    help = "Report readiness for optional dcim.module imports."
+    help = "Report the branch-native module bay creation plan."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -58,7 +57,7 @@ class Command(BaseCommand):
                 "FORWARD_MODULE_READINESS_OUTPUT_DIR",
                 "/tmp/forward-netbox-module-readiness",
             ),
-            help="Directory where summary and NetBox import CSV files will be written.",
+            help="Directory where the read-only summary file will be written.",
         )
 
     def handle(self, *args, **options):
@@ -90,9 +89,7 @@ class Command(BaseCommand):
         )
         output_dir = self._output_dir(options["output_dir"], sync=sync, source=source)
         output_dir.mkdir(parents=True, exist_ok=True)
-        csv_path = output_dir / "netbox-module-bays.csv"
         summary_path = output_dir / "summary.json"
-        write_module_bay_import_csv(csv_path, report.module_bay_import_rows)
         summary_path.write_text(
             json.dumps(report.as_dict(), indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
@@ -107,19 +104,12 @@ class Command(BaseCommand):
             f"unique_missing_bays={report.unique_missing_bays}"
         )
         self.stdout.write(f"Summary: {summary_path}")
-        self.stdout.write(f"NetBox module-bay import CSV: {csv_path}")
-        if report.ready:
-            self.stdout.write(
-                self.style.SUCCESS("Module import prerequisites are ready.")
+        self.stdout.write(
+            self.style.SUCCESS(
+                "The sync creates each missing module bay in its native branch before "
+                "applying the corresponding module row."
             )
-        else:
-            self.stdout.write(
-                self.style.WARNING(
-                    "Missing module bays must be imported before dcim.module sync. "
-                    "Import the generated CSV through native NetBox import, rerun "
-                    "this readiness check, then enable module sync when it reports ready."
-                )
-            )
+        )
 
     def _resolve_sync_and_source(self, options):
         sync_name = str(options["sync_name"] or "").strip()

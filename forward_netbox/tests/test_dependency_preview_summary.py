@@ -38,9 +38,8 @@ class DependencyModelResultSummaryTest(SimpleTestCase):
         summary = _dependency_model_result_summary(self._result(runtime_ms=None))
         self.assertEqual(summary["runtime_ms"], 0.0)
 
-    def test_summary_still_accepts_plain_dict(self):
-        summary = _dependency_model_result_summary(
-            {"model": "dcim.device", "row_count": 5, "delete_count": 1}
-        )
-        self.assertEqual(summary["model"], "dcim.device")
-        self.assertEqual(summary["estimated_changes"], 6)
+    def test_summary_rejects_noncanonical_plain_dict(self):
+        with self.assertRaisesRegex(TypeError, "must be ForwardModelResult"):
+            _dependency_model_result_summary(
+                {"model": "dcim.device", "row_count": 5, "delete_count": 1}
+            )

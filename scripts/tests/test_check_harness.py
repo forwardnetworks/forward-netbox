@@ -187,6 +187,336 @@ class CheckHarnessKnowledgeTest(unittest.TestCase):
         self.assertIn("invalid review date", failures[0])
 
 
+class CheckHarnessRuntimeRetirementTest(unittest.TestCase):
+    def test_retired_runtime_path_fails(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_root = Path(temp_dir)
+            runtime_file = repo_root / "forward_netbox/utilities/sync.py"
+            runtime_file.parent.mkdir(parents=True)
+            runtime_file.write_text(
+                'state = payload.get("_execution_progress")\n',
+                encoding="utf-8",
+            )
+            failures = []
+
+            with patch.object(check_harness, "REPO_ROOT", repo_root):
+                check_harness._check_retired_runtime_paths(failures)
+
+        self.assertEqual(len(failures), 1)
+        self.assertIn("forward_netbox/utilities/sync.py:1", failures[0])
+        self.assertIn("retired persisted execution progress", failures[0])
+
+    def test_migration_cleanup_and_tests_are_excluded(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_root = Path(temp_dir)
+            for relative_path in (
+                "forward_netbox/migrations/0042_cleanup.py",
+                "forward_netbox/tests/test_cleanup.py",
+            ):
+                path = repo_root / relative_path
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(
+                    'parameters.pop("device_tag_include", None)\n',
+                    encoding="utf-8",
+                )
+            runtime_file = repo_root / "forward_netbox/models.py"
+            runtime_file.write_text(
+                'parameters.get("device_tag_include_tags", [])\n',
+                encoding="utf-8",
+            )
+            failures = []
+
+            with patch.object(check_harness, "REPO_ROOT", repo_root):
+                check_harness._check_retired_runtime_paths(failures)
+
+        self.assertEqual(failures, [])
+
+    def test_retired_paths_fail_in_queries_package_and_workflow_surfaces(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_root = Path(temp_dir)
+            files = {
+                "forward_netbox/queries/retired.nqe": "column_filters = []\n",
+                "pyproject.toml": 'package_names = ["netbox-routing"]\n',
+                ".github/workflows/ci.yml": "JOBRESULT_RETENTION: 30\n",
+            }
+            for relative_path, content in files.items():
+                path = repo_root / relative_path
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding="utf-8")
+            failures = []
+
+            with patch.object(check_harness, "REPO_ROOT", repo_root):
+                check_harness._check_retired_runtime_paths(failures)
+
+        self.assertEqual(len(failures), 3)
+        self.assertTrue(any("retired.nqe:1" in failure for failure in failures))
+        self.assertTrue(any("pyproject.toml:1" in failure for failure in failures))
+        self.assertTrue(any("ci.yml:1" in failure for failure in failures))
+
+
+class CheckHarnessComposeHealthProbeTest(unittest.TestCase):
+    def _check(self, compose_text):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_root = Path(temp_dir)
+            path = repo_root / "development/docker-compose.yml"
+            path.parent.mkdir(parents=True)
+            path.write_text(compose_text, encoding="utf-8")
+            failures = []
+            with patch.object(check_harness, "REPO_ROOT", repo_root):
+                check_harness._check_compose_health_probe(failures)
+        return failures
+
+    def test_exact_login_probe_passes(self):
+        failures = self._check(
+            "services:\n"
+            "  netbox:\n"
+            "    healthcheck:\n"
+            "      test: 'curl -f http://localhost:8000/login/ || exit 1'\n"
+        )
+
+        self.assertEqual(failures, [])
+
+    def test_comment_cannot_mask_incorrect_probe(self):
+        failures = self._check(
+            "# curl -f http://localhost:8000/login/ || exit 1\n"
+            "services:\n"
+            "  netbox:\n"
+            "    healthcheck:\n"
+            "      test: 'curl -f http://localhost:8000/api/ || exit 1'\n"
+        )
+
+        self.assertEqual(len(failures), 1)
+        self.assertIn("services.netbox.healthcheck.test must equal", failures[0])
+
+    def test_missing_probe_fails(self):
+        failures = self._check("services:\n  netbox: {}\n")
+
+        self.assertEqual(len(failures), 1)
+        self.assertIn("no parseable netbox health probe", failures[0])
+
+
+class CheckHarnessGardeningDependencyTest(unittest.TestCase):
+    def _check(self, workflow_text):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_root = Path(temp_dir)
+            path = repo_root / ".github/workflows/harness-gardening.yml"
+            path.parent.mkdir(parents=True)
+            path.write_text(workflow_text, encoding="utf-8")
+            failures = []
+            with patch.object(check_harness, "REPO_ROOT", repo_root):
+                check_harness._check_harness_gardening_dependency(failures)
+        return failures
+
+    def test_dependency_before_harness_passes(self):
+        failures = self._check(
+            "jobs:\n"
+            "  audit:\n"
+            "    steps:\n"
+            "      - run: python -m pip install --disable-pip-version-check PyYAML==6.0.3\n"
+            "      - run: python scripts/check_harness.py\n"
+        )
+
+        self.assertEqual(failures, [])
+
+    def test_missing_dependency_fails(self):
+        failures = self._check(
+            "jobs:\n"
+            "  audit:\n"
+            "    steps:\n"
+            "      - run: python scripts/check_harness.py\n"
+        )
+
+        self.assertEqual(len(failures), 1)
+        self.assertIn("must install PyYAML 6.0.3", failures[0])
+
+    def test_dependency_after_harness_fails(self):
+        failures = self._check(
+            "jobs:\n"
+            "  audit:\n"
+            "    steps:\n"
+            "      - run: python scripts/check_harness.py\n"
+            "      - run: python -m pip install --disable-pip-version-check PyYAML==6.0.3\n"
+        )
+
+        self.assertEqual(len(failures), 1)
+        self.assertIn("before the harness check", failures[0])
+
+
+class CheckHarnessSensitiveGuardTest(unittest.TestCase):
+    CI_WORKFLOW = """jobs:
+  validate:
+    steps:
+      - uses: actions/checkout@example
+        with:
+          fetch-depth: 0
+      - run: python scripts/check_sensitive_content.py --protected-history --require-baseline-env
+      - run: python scripts/check_sensitive_content.py --git-files
+      - if: github.event_name == 'push'
+        env:
+          FORWARD_SENSITIVE_PATTERNS: ${{ secrets.FORWARD_SENSITIVE_PATTERNS }}
+          FORWARD_SENSITIVE_HISTORY_BASELINE: ${{ vars.FORWARD_SENSITIVE_HISTORY_BASELINE }}
+        run: python scripts/check_sensitive_content.py --git-files --protected-history --require-env-patterns --require-baseline-env
+"""
+    RELEASE_WORKFLOW = """permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+jobs:
+  validate:
+    steps:
+      - uses: actions/checkout@example
+        with:
+          fetch-depth: 0
+      - run: python scripts/verify_release_provenance.py --tag v2.6.0 --reviewer brandonheller
+      - env:
+          FORWARD_SENSITIVE_PATTERNS: ${{ secrets.FORWARD_SENSITIVE_PATTERNS }}
+          FORWARD_SENSITIVE_HISTORY_BASELINE: ${{ vars.FORWARD_SENSITIVE_HISTORY_BASELINE }}
+        run: python scripts/check_sensitive_content.py --git-files --protected-history --require-env-patterns --require-baseline-env
+"""
+    TRUSTED_WORKFLOW = """\"on\":
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+permissions:
+  statuses: write
+jobs:
+  sensitive-content:
+    steps:
+      - uses: actions/checkout@example
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.base.sha }}
+      - run: git fetch origin \"pull/${PR_NUMBER}/head\"
+      - id: scan
+        env:
+          FORWARD_SENSITIVE_PATTERNS: ${{ secrets.FORWARD_SENSITIVE_PATTERNS }}
+          FORWARD_SENSITIVE_HISTORY_BASELINE: ${{ vars.FORWARD_SENSITIVE_HISTORY_BASELINE }}
+        run: python scripts/check_sensitive_content.py --rev-list base..head --git-tree head --ref-name branch --require-env-patterns --require-baseline-env
+      - if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SCAN_OUTCOME: ${{ steps.scan.outcome }}
+        run: echo Trusted sensitive-content scan
+"""
+    TASKS = """def sensitive_check(context):
+    context.run(f\"python scripts/check_sensitive_content.py\")
+    context.run(f\"python scripts/check_sensitive_content.py --protected-history\")
+"""
+
+    def _check(self, *, ci=None, release=None, tasks=None):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_root = Path(temp_dir)
+            files = {
+                ".github/workflows/ci.yml": ci or self.CI_WORKFLOW,
+                ".github/workflows/release.yml": release or self.RELEASE_WORKFLOW,
+                ".github/workflows/trusted-sensitive-pr.yml": self.TRUSTED_WORKFLOW,
+                "tasks.py": tasks or self.TASKS,
+            }
+            for relative_path, content in files.items():
+                path = repo_root / relative_path
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding="utf-8")
+            failures = []
+            with patch.object(check_harness, "REPO_ROOT", repo_root):
+                check_harness._check_sensitive_guard_wiring(failures)
+        return failures
+
+    def test_complete_sensitive_guard_wiring_passes(self):
+        self.assertEqual(self._check(), [])
+
+    def test_shallow_checkout_fails(self):
+        failures = self._check(
+            ci=self.CI_WORKFLOW.replace("fetch-depth: 0", "fetch-depth: 1")
+        )
+
+        self.assertTrue(any("fetch-depth: 0" in failure for failure in failures))
+
+    def test_missing_release_secret_enforcement_fails(self):
+        failures = self._check(
+            release=self.RELEASE_WORKFLOW.replace(" --require-env-patterns", "")
+        )
+
+        self.assertTrue(
+            any("--require-env-patterns" in failure for failure in failures)
+        )
+
+    def test_missing_release_provenance_permission_fails(self):
+        failures = self._check(
+            release=self.RELEASE_WORKFLOW.replace("  actions: read\n", "")
+        )
+
+        self.assertTrue(any("actions: read" in failure for failure in failures))
+
+    def test_missing_task_history_scan_fails(self):
+        failures = self._check(
+            tasks='context.run(f"python scripts/check_sensitive_content.py")\n'
+        )
+
+        self.assertTrue(any("--protected-history" in failure for failure in failures))
+
+    def test_disabled_scanner_step_fails(self):
+        failures = self._check(
+            release=self.RELEASE_WORKFLOW.replace(
+                "      - env:\n",
+                "      - if: false\n        env:\n",
+            )
+        )
+
+        self.assertTrue(
+            any("must not be conditional" in failure for failure in failures)
+        )
+
+    def test_untrusted_environment_provenance_fails(self):
+        failures = self._check(
+            release=self.RELEASE_WORKFLOW.replace(
+                "${{ vars.FORWARD_SENSITIVE_HISTORY_BASELINE }}",
+                "candidate-value",
+            )
+        )
+
+        self.assertTrue(any("trusted settings" in failure for failure in failures))
+
+    def test_missing_candidate_status_permission_fails(self):
+        trusted = self.TRUSTED_WORKFLOW.replace("  statuses: write\n", "")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_root = Path(temp_dir)
+            files = {
+                ".github/workflows/ci.yml": self.CI_WORKFLOW,
+                ".github/workflows/release.yml": self.RELEASE_WORKFLOW,
+                ".github/workflows/trusted-sensitive-pr.yml": trusted,
+                "tasks.py": self.TASKS,
+            }
+            for relative_path, content in files.items():
+                path = repo_root / relative_path
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding="utf-8")
+            failures = []
+            with patch.object(check_harness, "REPO_ROOT", repo_root):
+                check_harness._check_sensitive_guard_wiring(failures)
+
+        self.assertTrue(any("statuses: write" in failure for failure in failures))
+
+    def test_conditional_candidate_status_fails(self):
+        trusted = self.TRUSTED_WORKFLOW.replace("if: always()", "if: success()")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_root = Path(temp_dir)
+            files = {
+                ".github/workflows/ci.yml": self.CI_WORKFLOW,
+                ".github/workflows/release.yml": self.RELEASE_WORKFLOW,
+                ".github/workflows/trusted-sensitive-pr.yml": trusted,
+                "tasks.py": self.TASKS,
+            }
+            for relative_path, content in files.items():
+                path = repo_root / relative_path
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding="utf-8")
+            failures = []
+            with patch.object(check_harness, "REPO_ROOT", repo_root):
+                check_harness._check_sensitive_guard_wiring(failures)
+
+        self.assertTrue(any("if: always()" in failure for failure in failures))
+
+
 class CheckHarnessGitHubDiffTest(unittest.TestCase):
     def test_github_changed_files_uses_commit_file_lists(self):
         event = {

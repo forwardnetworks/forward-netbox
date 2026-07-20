@@ -18,13 +18,13 @@ Three flows are documented:
 ## 1. Sync execution pipeline
 
 A sync is triggered manually, on a schedule/interval, or via the REST API. The
-job runs a preflight, a gating validation run, query fetch, and then applies
-changes through the selected execution backend.
+job runs a preflight, a gating validation run, query fetch, and then stages all
+changes in one native NetBox Branching branch.
 
 ```mermaid
 flowchart TD
     trigger["Trigger\n(manual / scheduled / interval / API)"] --> enqueue["Enqueue sync job"]
-    enqueue --> preflight["Preflight\nresolve network + snapshot,\nresolve query specs,\nbuild shard plan"]
+    enqueue --> preflight["Preflight\nresolve network + snapshot,\nresolve query specs,\nbuild workload plan"]
 
     preflight --> snap{"Resolve snapshot\n(see flow 2)"}
     snap -->|"no collected snapshot\n/ no network"| fail["Fail run with\nclear error"]
@@ -35,14 +35,13 @@ flowchart TD
     gate -->|"allowed"| fetch["Fetch workloads\none NQE job per enabled map\n(see flow 3)"]
 
     fetch --> scope["Apply device tag scope\n(include / exclude / match)"]
-    scope --> backend{"Execution backend"}
-
-    backend -->|"branching (default)"| shards["Plan branches by shard key\nstage -> auto-merge each shard"]
-    backend -->|"fast bootstrap"| direct["Write directly to NetBox\nafter validation"]
-
-    shards --> apply["Apply via bulk ORM\nor adapter per model"]
-    direct --> apply
-    apply --> complete["Ingestion complete\nrecord baseline if clean"]
+    scope --> branch["Create one native branch\nfor the complete sync"]
+    branch --> apply["Apply dependency-ordered work\nvia bulk ORM or adapters"]
+    apply --> merge{"Merge complete\nwith zero failed changes?"}
+    merge -->|"no"| retry["Keep branch ready\nwithhold baseline and overlays"]
+    retry --> merge
+    merge -->|"yes"| overlays["Queue generation-guarded\nownership overlays"]
+    overlays --> complete["Ingestion complete\nbaseline and ownership evidence"]
 ```
 
 Notes:
@@ -50,12 +49,17 @@ Notes:
 - The validation run gates the device sync. If the foundational models
   `dcim.platform` or `dcim.devicetype` report any query failures, the run is
   blocked before `dcim.device` is touched.
-- `Branching` stages each shard as a native NetBox Branching branch and merges
-  serially. `Auto merge` advances shards automatically; with it off the run
-  pauses for review after each shard.
-- Per-model apply uses the parity-tested bulk ORM safe set where eligible and
-  the adapter path for models with dependency, relationship, or IPAM-hierarchy
-  contracts.
+- Every sync stages one native NetBox Branching branch. `Auto merge` queues its
+  merge automatically; with it off the run pauses for review after staging.
+- A partial merge is not completion: the branch remains retryable, baseline
+  state does not advance, and ownership overlays are not accepted as complete.
+- Per-model apply uses the parity-tested bulk ORM safe set where eligible,
+  including aggregate-rebuilt Prefix hierarchy operations and two-phase
+  Interface LAG relationships. The adapter path remains for exceptional rows
+  with destructive or otherwise row-specific side effects.
+- Post-merge tag and virtual-parent ownership uses generation-stamped per-sync
+  claims. Materialized assignments are the union of current claims, so one sync
+  cannot remove an assignment still claimed by another.
 
 ---
 
@@ -145,7 +149,9 @@ Notes:
 | Device collection filter | Only `snapshotInfo.result == completed` devices are ingested; backfilled devices are excluded. |
 | Snapshot selectors | `latestProcessed` (newest processed), `latestCollected` (newest with a collected in-scope device), or a pinned snapshot id. |
 | Validation gate | Foundational models `dcim.platform` and `dcim.devicetype` must pass before device sync proceeds. |
-| Default backend | `Branching` — native NetBox Branching shards, serial auto-merge. |
+| Execution | Exactly one native NetBox Branching branch per sync; no direct-write backend. |
+| Merge completion | Any failed merge row leaves the branch retryable and withholds baseline and ownership completion. |
+| Ownership | Main-schema, generation-stamped per-sync claims with union/last-claim semantics. |
 | Diff vs full | Forward `nqe-diff` on eligible `latestProcessed` runs with a prior baseline; full query otherwise. |
 | Device tag scope | Optional include/exclude tag filter on the source narrows every query and the `latestCollected` probe. |
 

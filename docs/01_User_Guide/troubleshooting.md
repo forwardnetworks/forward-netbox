@@ -58,7 +58,10 @@ Checks:
   logs capped examples on full baseline runs where both models are enabled, but
   does not synthesize missing parent prefixes.
 
-Expected row-scoped apply/delete failures are recorded as `Forward Ingestion Issues` and counted as failed or skipped rows without stopping the rest of the shard. Preflight, query execution, branch, and merge failures can still stop the current phase because they are not tied to a single row.
+Expected row-scoped apply/delete failures are recorded as `Forward Ingestion
+Issues` and counted as failed or skipped rows without stopping the rest of the
+current workload unit. Preflight, query execution, branch, and merge failures
+can still stop the current phase because they are not tied to a single row.
 
 ## Sync Fails Before Staging
 
@@ -75,8 +78,9 @@ Checks:
 - Confirm the required NQE maps are enabled.
 - Open the sync `Health` tab before rerunning. It summarizes source status,
   query binding mode, diff eligibility, data-file-dependent maps, worker/source
-  timeout settings, latest validation, latest ingestion, latest execution run,
-  and the current recovery recommendation without making live Forward API calls.
+  timeout settings, latest validation, latest ingestion, branch and job state,
+  ownership reconciliation, and the current recovery recommendation without
+  making live Forward API calls.
   The `Export ZIP` control on the sync page packages the same support-bundle
   evidence into a compressed archive, and accepts an optional password when the
   bundle needs to be shared externally.
@@ -94,19 +98,11 @@ Checks:
   diagnostics. Use `Export Live Data File Check` when optional data-file-backed
   maps are enabled and you need to confirm the selected snapshot actually sees
   rows for the required Forward NQE data files. When execution-step timing is
-  available, `Capacity Projection` estimates remaining shard time from completed
-  ledger steps and warns when observed shard duration approaches the configured
-  worker timeout. `Compatibility Cache` also reports whether the sync still has
-  legacy `_branch_run` payload state after execution-ledger history exists.
-  If it reports stale payloads, prune them with:
-
-  ```bash
-  invoke prune-compat-cache --sync-name "<sync_name>" --dry-run=True
-  invoke prune-compat-cache --sync-name "<sync_name>" --dry-run=False
-  ```
-- If the selected model is `dcim.module`, confirm the optional beta module path
-  is still enabled in the plugin and that the `Forward Modules` NQE Map remains
-  turned on.
+  available, `Capacity Projection` uses ingestion and job timing to warn when
+  the complete one-branch run approaches the configured worker timeout.
+- If the selected model is `dcim.module`, confirm that the `Forward Modules`
+  NQE Map remains enabled and that the exact NetBox 4.6.5/Branching 1.1.1
+  runtime is installed.
 - Open the latest `Forward Validation Run` from the sync detail page and review `Blocking Reasons`, `Drift Summary`, and `Model Results`.
 - If a drift policy blocked the run, adjust the policy or fix the query/source data before rerunning the sync.
 - If the block is intentionally accepted, use `Force allow` on the validation run to record the override reason and reviewer, then rerun the sync.
@@ -145,26 +141,19 @@ Checks:
   default query-compute timeout.
 - Increase the RQ worker timeout in your NetBox deployment before rerunning a
   large baseline.
-- For a very large trusted first baseline, consider `Fast bootstrap`; switch
-  back to `Branching` for normal diff-based runs after the baseline succeeds.
-- If using Branching, keep `Max changes per branch` aligned to your Branching
-  guidance and let the plugin shard the run instead of raising the branch
-  budget to force everything into one branch.
-- Use `Continue Ingestion` to resume a resumable Branching baseline from the
-  recorded plan index after a timeout. Do not start a new baseline unless the
-  plan or source data needs to change.
-- If the timeout happened after a shard was staged, open that ingestion and
-  requeue the merge instead of rerunning the shard.
+- Keep `Max changes per staging item` aligned to local capacity guidance so planning
+  warnings remain meaningful; version 2.6 still stages exactly one branch.
+- If staging timed out, inspect the branch and ingestion issues before
+  rerunning. Do not start a second sync while the prior branch is nonterminal.
+- If the timeout happened during merge, open that ingestion and requeue the
+  same branch merge. A partial merge remains retryable and cannot become a
+  baseline.
 - Use `Export Support Bundle` from the sync page or `Export Logs` from the
-  ingestion page. For multi-shard Branching
-  runs, the export includes the execution run/step bundle with shard statuses,
-  linked stage/merge jobs, retry counts, branch names, health summary, and last
-  errors. Execution-run support bundles now also include compatibility-cache
-  retirement evidence (legacy payload presence, active-run linkage, stale
-  payload detection, and prune recommendation). The `Export ZIP` control on the
-  sync and execution-run pages compresses the same payload and can be password
-  protected when the archive needs to be shared outside the current trust
-  boundary.
+  ingestion page. The export includes branch status, linked stage/merge jobs,
+  ingestion counters, issues, ownership reconciliation, health summary, and
+  last errors. The `Export ZIP` control compresses the same sanitized payload
+  and can be password protected when the archive needs to be shared outside
+  the current trust boundary.
 - Review `core/jobs` plus ingestion issues for the matching timestamp window
   when the exported bundle points to a specific failed job.
 
@@ -182,31 +171,25 @@ and how long a trusted large baseline is allowed to run.
 Symptoms:
 
 - Sync stays in `Syncing` for a long time.
-- No timeout/failure is recorded, but shard progress is slow.
+- No timeout/failure is recorded, but staging or merge progress is slow.
 - Host CPU and memory look underutilized.
 
 Checks:
 
 - Confirm the run is actually progressing:
-  `Sync` detail `Execution` summary, latest ingestion `Logs`, and execution-step heartbeat.
+  sync status, latest ingestion logs, branch status, and the linked NetBox jobs.
 - Open the sync `Health` tab and review `Large Run Tuning`. It ranks the first
-  action the plugin can infer from ledger metrics: restore diff utilization,
+  action the plugin can infer from persisted run evidence: restore diff utilization,
   reduce fallback fetches, tune timeout/capacity, inspect worker/database
-  headroom, adjust query fetch concurrency, or choose the right execution
-  backend for the current run.
-- In `Large Run Tuning`, check `Backend advice` before changing worker or query
-  settings. If a Branching baseline is projected near worker timeout, use Fast
-  bootstrap only for a trusted first baseline. If Fast bootstrap is active,
-  complete the baseline and switch back to Branching for steady-state diff
-  review.
+  headroom, or adjust query fetch concurrency.
 - In `Query Runtime & Pushdown`, check `Baseline to diff`. This explains
-  whether the run is using API diffs, is still creating a Fast bootstrap
-  baseline, is missing a compatible prior baseline, is using non-diff-capable
+  whether the run is using API diffs, is still creating its first baseline, is
+  missing a compatible prior baseline, is using non-diff-capable
   raw query maps, or requested diffs but fell back to full execution.
 - For steady-state diff runs where speed is the priority, set sync `Diff fallback mode` to
   `Require diff` so maps fail fast instead of silently broadening to full-query execution.
-- Export the sync support bundle when asking for help. The execution-run
-  metrics include `operator_tuning_summary`, `throughput_smoothing`,
+- Export the sync support bundle when asking for help. Its aggregate metrics
+  include `operator_tuning_summary`, `throughput_smoothing`,
   `fallback_reason_summary`, `diff_baseline_transition`, and pushdown/diff
   signals needed to identify whether the run is query-bound, apply-bound,
   merge-bound, waiting on scheduling/merge handoff, or missing the expected API
@@ -214,20 +197,18 @@ Checks:
 - Verify source runtime knobs:
   `query_fetch_concurrency` and `nqe_page_size` on the active `Forward Source`.
 - Verify NetBox worker replica count and Postgres capacity for the same window.
-- Keep `max_changes_per_branch` near guidance; increasing it can make each shard
-  take longer even when total shard count drops.
+- Keep `max_changes_per_staging_item` near guidance so oversized workload warnings
+  remain actionable. It does not split the sync into multiple branches.
 
 Large-ingestion triage order:
 
-1. Confirm execution mode and intent:
-   - First baseline: `Fast bootstrap` for trusted high-volume imports.
-   - Steady state: `Branching` with repository `query_path`/`query_id` maps for diff eligibility.
-   - Use the Sync Health `Backend advice` field as the first local signal when
-     timeout or baseline size makes the backend choice unclear.
+1. Confirm snapshot and query intent: the first run establishes a reviewable
+   Branching baseline; steady-state repository `query_path`/`query_id` maps can
+   become diff eligible.
 2. Confirm workers/database are not under-sized relative to host capacity.
 3. Confirm `query_fetch_concurrency` is not too low for preflight volume.
-4. Confirm shard sizing is conservative (`max_changes_per_branch` near guidance) instead of oversized branches.
-5. Confirm long-running jobs have sufficient worker timeout (`RQ_DEFAULT_TIMEOUT` > expected shard runtime).
+4. Confirm `max_changes_per_staging_item` remains near local guidance so warnings are useful.
+5. Confirm long-running jobs have sufficient worker timeout (`RQ_DEFAULT_TIMEOUT` > expected stage or merge runtime).
 
 Local Docker tuning path:
 
@@ -237,10 +218,8 @@ invoke forward_netbox.optimize-runtime --worker-replicas 0 --query-fetch-concurr
 
 Operational notes:
 
-- This improves query fetch/preflight and DB throughput, but one Branching
-  shard/merge remains mostly serialized by native NetBox Branching semantics.
-- For trusted very large first baselines, use `Fast bootstrap`, then switch
-  back to `Branching` once baseline exists for diff-based steady state.
+- This improves query fetch/preflight and DB throughput, but the one Branching
+  branch and merge remain mostly serialized by native NetBox semantics.
 - Use `invoke ingestion-delete-regression` to validate ingest and
   diff-delete behavior in synthetic regression before live reruns.
 
@@ -248,46 +227,47 @@ What to collect when opening a tuning issue:
 
 - `Export Support Bundle` from the Sync page.
 - Source runtime parameters (`timeout`, `nqe_page_size`, `query_fetch_concurrency`, `nqe_fetch_all_max_pages`, `nqe_identical_full_page_streak_limit`).
-- Sync mode (`Fast bootstrap` or `Branching`) and `max_changes_per_branch`.
+- Single-branch workload estimate and `max_changes_per_staging_item`.
 - NetBox worker count and worker timeout (`RQ_DEFAULT_TIMEOUT`).
 
-## Fast Bootstrap Looks Like A Dry Run
+## Single-Execution Progress Looks Like A Dry Run
 
 Symptoms:
 
-- A fast-bootstrap ingestion is running or completed.
+- A single-branch ingestion is running or completed.
 - The ingestion counters stay empty.
 - The ingestion `Changes` tab says no changes were found.
 - The global NetBox change log does not show expected object changes.
 
 Checks:
 
-- Confirm the plugin version includes fast-bootstrap direct change tracking.
-  Fast bootstrap should store a request id on the branchless ingestion and use
-  native NetBox `ObjectChange` rows for created/updated/deleted counters.
-- Open the branchless ingestion `Changes` tab; for fast bootstrap it should list
-  direct NetBox object changes rather than Branching diffs.
+- Confirm the ingestion has one provisioned Branching branch and that the branch
+  contains native `ObjectChange` rows.
+- Open the ingestion `Changes` tab; it should list the staged branch diff.
 - If the counters remain empty after rows are applied, check `Forward Ingestion
   Issues` for row-level failures and confirm the enabled maps are returning
   non-empty rows for the selected snapshot.
-- If the global change log is empty but objects exist, verify NetBox change
-  logging is enabled and the sync is not running under a custom path that clears
-  the NetBox request context.
+- If staging counters remain empty, verify NetBox change logging is enabled and
+  inspect the sync job before attempting a merge.
 
 ## Merge Records Skipped Changes
 
 Symptoms:
 
-- The merge completes, but the merge log reports skipped changes.
+- The merge job errors and reports an incomplete merge.
 - `Forward Ingestion Issues` contains merge-phase failures.
+- The branch remains ready for inspection and the sync returns to **Ready to merge**.
 
 Checks:
 
 - Review the merge-phase ingestion issues first; they identify the exact model and validation error.
 - Confirm the affected built-in or custom NQE map is emitting NetBox-valid values directly.
 - Do not patch the value in Python if the intended contract is NetBox-ready NQE output; fix the query instead.
+- Retry the same branch after correcting the cause. Already-applied rows are
+  idempotent; only a clean retry marks the baseline complete and starts
+  ownership reconciliation.
 
-## Virtual Chassis Shard Fails With `vc_position`
+## Virtual Chassis Workload Fails With `vc_position`
 
 Symptoms:
 
@@ -295,13 +275,13 @@ Symptoms:
   records a failure similar to `A device assigned to a virtual chassis must
   have its position defined` or a duplicate `vc_position` validation error.
 - Routing, cabling, IP, or other downstream models appear empty or incomplete
-  because the base device/virtual-chassis shard did not finish cleanly.
+  because the base device/virtual-chassis workload did not finish cleanly.
 
 Checks:
 
-- Confirm whether the `Forward Virtual Chassis` map is customized or bound to an
-  older Forward repository query. The bundled map is conservative and emits no
-  rows by default because Forward HA peer relationships such as vPC, MLAG, and
+- Confirm the optional `dcim.virtualchassis` model is enabled only with a custom
+  `Forward Virtual Chassis` map. The bundled contract template is disabled and
+  emits no rows because Forward HA peer relationships such as vPC, MLAG, and
   active/standby clusters are not native NetBox virtual chassis membership.
 - If you intentionally import `dcim.virtualchassis`, confirm the map emits
   `device`, `vc_name`, `name`, `vc_domain`, and a unique `vc_position` per
@@ -340,7 +320,14 @@ Checks:
 
 - Review the merge job record from the ingestion detail page.
 - Review the branch diff for unexpected object conflicts.
-- Re-run the sync after correcting the underlying data or query issue.
+- Correct the underlying data or query issue and retry the same branch. Do not
+  start a replacement sync while the incomplete branch is open.
+- After a clean merge and completed overlays, run:
+
+  ```bash
+  python manage.py forward_ownership_audit \
+    --fail-on-inconsistent --require-no-open-branches
+  ```
 
 ## Built-In Maps Are Missing
 
@@ -375,12 +362,12 @@ Cause:
   fall outside scope, and orphans are absent from the result. Tagged devices that
   were backfilled (collection canceled) are also excluded from the current
   allowlist, so they linger too (but are real, not orphans).
-- SNMP endpoints use a separate compatibility toggle. On an existing source,
-  **Scope SNMP Endpoints by Include Tags** can remain off after upgrade, allowing
-  untagged endpoints to import even when modeled devices are tag-scoped. Before
-  2.5.10, endpoint tag intersections were not added to the device scope-tag map,
-  and console-server `sysDescr` software/build suffixes could become DeviceType
-  identity.
+- SNMP endpoints use the source's explicit **Scope SNMP Endpoints by Include
+  Tags** policy. Version 2.6 converts an include-scoped source with no recorded
+  decision to enabled (fail closed); only a previously explicit opt-out remains
+  disabled. Before 2.5.10, endpoint tag intersections were not added to the
+  device scope-tag map, and console-server `sysDescr` software/build suffixes
+  could become DeviceType identity.
 - Endpoint import now defaults to recognized Avocent/Opengear console servers.
   **Import Generic SNMP Endpoints as Devices** is a separate broad opt-in. CIMC
   endpoints are excluded by endpoint name, profile, or controller `sysDescr`.
@@ -416,7 +403,8 @@ Checks (CLI):
 
 Remediation:
 
-- Upgrade to 2.5.10 and run **Publish Bundled Queries** with overwrite enabled.
+- Upgrade to 2.6.0. If upgrading from 2.5.10 or earlier, run **Publish Bundled
+  Queries** with overwrite enabled; 2.5.11 already has the required query set.
   On the Forward source, enable **Scope SNMP Endpoints by Include Tags** and keep
   **Apply Device Scope Tags** enabled when matching Forward tags should be
   visible in NetBox. Run **Preview Dependencies** before the next sync; resolve
@@ -428,7 +416,13 @@ Remediation:
 - Run **Reconcile device scope tags**. With **Apply Device Scope Tags** enabled,
   it removes stale configured include-tag assignments from the current
   out-of-scope set while preserving unrelated tags; it does not delete devices.
+  A zero-row or failed Forward scope changes no assignments. Shared managed tags
+  are supported through per-sync claims; the assignment remains until the last
+  current claim is released.
 - Use the **Prune orphans** button on the Scope Reconciliation page, or the CLI:
+
+  In 2.6 this is intentionally manual-only. Upgrade and runtime normalization
+  remove old automatic-prune state.
 
   ```
   python manage.py forward_device_scope_reconciliation_audit \
@@ -544,14 +538,14 @@ curl -sS -H "Authorization: Token ${NETBOX_TOKEN}" \
 
 For a full sync/run handoff, use `Export Support Bundle` from the sync detail
 page first. For a single failed ingestion, use the native `Export Logs` action
-on the ingestion detail page. Both downloads include linked execution-run and
-job context so the failure can be investigated without scraping the UI.
+on the ingestion detail page. Both downloads include linked ingestion and job
+context so the failure can be investigated without scraping the UI.
 
 Also check the sync `Health` tab before collecting logs. It is read-only and is
 intended to answer the common first-pass questions: whether the source is marked
 ready, whether enabled maps are diff-capable, whether optional data-file maps
 are active, whether a baseline-ready ingestion exists, and whether the latest
-execution run recommends waiting, retrying, requeueing merge, or exporting a
+sync run recommends waiting, retrying, requeueing merge, or exporting a
 support bundle. Use `Export Live Source Check` from that tab for a live
 Forward reachability export. Its local query-drift check can identify raw bundled-query
 modifications and repository paths that no longer match the bundled query name;
@@ -621,12 +615,9 @@ python manage.py forward_watch_sync --sync-id <sync-id> --max-polls 120 --interv
 python manage.py forward_watch_sync --sync-id <sync-id> --max-polls 120 --interval-seconds 30 --allow-nonterminal
 ```
 
-Each poll now includes `execution_run` state (active shard, shard job id,
-run/step heartbeat age) in addition to the initial sync job log entry. Use this
-to distinguish:
-
-- a queued planning job that already finished, versus
-- an active shard stage still running under the execution ledger.
+Each poll includes the sync and ingestion status, one native branch, stage and
+merge jobs, change and blocker counts, and ownership reconciliation state. The
+command is read-only: it does not requeue staging or merge while it watches.
 
 ### 4d) Audit warning/error volume for regression checks
 
@@ -642,11 +633,10 @@ python manage.py forward_warning_audit --sync-id <sync-id> --all-ingestions --fa
 ```
 
 Use this command after upgrades to confirm warning noise is stable and to surface
-new high-volume warnings that may indicate a regression. The audit includes:
-
-- ingestion and merge jobs, and
-- active execution-run shard/merge jobs (including live `job.log_entries` before
-  final `job.data["logs"]` serialization).
+new high-volume warnings that may indicate a regression. The audit includes the
+selected ingestion stage and merge jobs. It reads live `job.log_entries` before
+final serialization and the stored `job.data["logs"]` representation after
+completion.
 
 ### 5) Validate Forward connectivity from the NetBox runtime
 

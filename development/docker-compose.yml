@@ -8,10 +8,6 @@ services:
     env_file: env/netbox.env
     environment:
       NETBOX_VER: "${NETBOX_VER}"
-      FORWARD_NETBOX_ENABLE_ACI_PLUGIN: "${FORWARD_NETBOX_ENABLE_ACI_PLUGIN:-}"
-      FORWARD_NETBOX_FETCH_ARTIFACT_DIR: "/fetch-artifacts"
-      FORWARD_NETBOX_FETCH_ARTIFACT_TTL_SECONDS: "86400"
-      FORWARD_NETBOX_FETCH_ARTIFACT_MAX_BYTES: "536870912"
     healthcheck:
       start_period: 5s
       timeout: 3s
@@ -19,20 +15,16 @@ services:
       # Fresh environments can take longer than 180s.
       # Reason: full NetBox/plugin migrations on first boot.
       retries: 120
-      test: "curl -f http://localhost:8000/api/ || exit 1"
+      test: "curl -f http://localhost:8000/login/ || exit 1"
     volumes:
       - ./configuration:/etc/netbox/config:ro
       - ../:/source
       - ./logs:/var/log/netbox
-      - type: bind
-        source: ${FORWARD_NETBOX_FETCH_ARTIFACT_HOST_PATH:-./fetch-artifacts}
-        target: /fetch-artifacts
     build:
       context: ../
       dockerfile: development/Dockerfile
       args:
         NETBOX_VER: "${NETBOX_VER}"
-        ACI_PLUGIN_PACKAGE: "${ACI_PLUGIN_PACKAGE:-}"
   netbox-worker:
     !!merge <<: *netbox
     depends_on:
@@ -61,6 +53,7 @@ services:
       test: "ps -aux | grep -v grep | grep -q rqworker || exit 1"
   postgres:
     image: postgres:16-alpine
+    shm_size: ${FORWARD_NETBOX_POSTGRES_SHM_SIZE:-1gb}
     env_file: env/postgres.env
     volumes:
       - ${FORWARD_NETBOX_POSTGRES_DATA_PATH:-netbox-postgres-data}:/var/lib/postgresql/data

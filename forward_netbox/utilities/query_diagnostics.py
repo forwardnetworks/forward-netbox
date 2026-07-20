@@ -188,17 +188,6 @@ def _ip_is_in_intervals(
 
 
 def run_ipaddress_unassignable_diagnostic(fetcher, context):
-    cached_lookup = getattr(fetcher, "_load_cached_diagnostic_result", None)
-    cached_store = getattr(fetcher, "_store_cached_diagnostic_result", None)
-    cache_hit = False
-    if callable(cached_lookup):
-        cache_hit, cached_diagnostic = cached_lookup(
-            diagnostic_name="unassignable_interface_addresses",
-            context=context,
-        )
-        if cache_hit:
-            return cached_diagnostic
-
     try:
         rows = fetcher.client.run_nqe_query(
             query=ipaddress_unassignable_diagnostic_query(),
@@ -217,12 +206,6 @@ def run_ipaddress_unassignable_diagnostic(fetcher, context):
 
     diagnostic = summarize_unassignable_ipaddress_rows(rows)
     if diagnostic["total"] <= 0:
-        if callable(cached_store):
-            cached_store(
-                diagnostic_name="unassignable_interface_addresses",
-                context=context,
-                diagnostic=None,
-            )
         return None
 
     count_summary = ", ".join(
@@ -242,12 +225,6 @@ def run_ipaddress_unassignable_diagnostic(fetcher, context):
         f"Examples: {examples}{suffix}.",
         obj=fetcher.sync,
     )
-    if callable(cached_store):
-        cached_store(
-            diagnostic_name="unassignable_interface_addresses",
-            context=context,
-            diagnostic=diagnostic,
-        )
     return diagnostic
 
 
@@ -299,17 +276,6 @@ def append_routing_diagnostics(fetcher, context):
 
 
 def run_routing_import_diagnostic(fetcher, context):
-    cached_lookup = getattr(fetcher, "_load_cached_diagnostic_result", None)
-    cached_store = getattr(fetcher, "_store_cached_diagnostic_result", None)
-    cache_hit = False
-    if callable(cached_lookup):
-        cache_hit, cached_diagnostic = cached_lookup(
-            diagnostic_name="routing_import_skipped_rows",
-            context=context,
-        )
-        if cache_hit:
-            return cached_diagnostic
-
     try:
         rows = fetcher.client.run_nqe_query(
             query=routing_import_diagnostic_query(),
@@ -328,12 +294,6 @@ def run_routing_import_diagnostic(fetcher, context):
 
     diagnostic = summarize_routing_import_diagnostic_rows(rows)
     if diagnostic["total"] <= 0:
-        if callable(cached_store):
-            cached_store(
-                diagnostic_name="routing_import_skipped_rows",
-                context=context,
-                diagnostic=None,
-            )
         return None
 
     count_summary = ", ".join(
@@ -342,7 +302,7 @@ def run_routing_import_diagnostic(fetcher, context):
     )
     fetcher.logger.log_warning(
         "Forward routing diagnostics found "
-        f"{diagnostic['total']} rows that the beta routing maps cannot import: "
+        f"{diagnostic['total']} rows that the routing maps cannot import safely: "
         f"{count_summary}.",
         obj=fetcher.sync,
     )
@@ -360,12 +320,6 @@ def run_routing_import_diagnostic(fetcher, context):
             f"{suppressed} additional routing diagnostic examples after the "
             f"first {ROUTING_DIAGNOSTIC_DETAIL_LIMIT}.",
             obj=fetcher.sync,
-        )
-    if callable(cached_store):
-        cached_store(
-            diagnostic_name="routing_import_skipped_rows",
-            context=context,
-            diagnostic=diagnostic,
         )
     return diagnostic
 

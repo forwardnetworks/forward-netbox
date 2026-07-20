@@ -843,10 +843,8 @@ class QueryRegistryTest(TestCase):
         )
 
     def test_virtual_chassis_query_does_not_map_ha_peers_by_default(self):
-        spec = next(
-            spec
-            for spec in BUILTIN_QUERY_SPECS["dcim.virtualchassis"]
-            if spec.query_name == "Forward Virtual Chassis"
+        spec = get_seeded_builtin_query_spec(
+            "dcim.virtualchassis", "Forward Virtual Chassis"
         )
 
         self.assertIn("foreach device in network.devices", spec.query)
@@ -858,6 +856,23 @@ class QueryRegistryTest(TestCase):
         self.assertNotIn("device.ha.vpc", spec.query)
         self.assertNotIn("device.ha.mlagPeer", spec.query)
         self.assertNotIn("clusterHa", spec.query)
+
+    def test_virtual_chassis_contract_map_is_optional_and_disabled(self):
+        rows = {
+            (row["model_string"], row["name"]): row for row in builtin_nqe_map_rows()
+        }
+
+        row = rows[("dcim.virtualchassis", "Forward Virtual Chassis")]
+        self.assertFalse(row["enabled"])
+        self.assertEqual(BUILTIN_QUERY_SPECS["dcim.virtualchassis"], [])
+        self.assertNotIn(
+            "Forward Virtual Chassis",
+            {query_default["name"] for query_default in BUILTIN_QUERY_MAPS},
+        )
+        self.assertIn(
+            "Forward Virtual Chassis",
+            {query_default["name"] for query_default in BUILTIN_OPTIONAL_QUERY_MAPS},
+        )
 
     def test_wrapped_device_queries_keep_device_first_parallel_shape(self):
         rows = {row["name"]: row for row in builtin_nqe_map_rows()}
@@ -1060,10 +1075,7 @@ class QueryRegistryTest(TestCase):
         self.assertTrue(cimc_queries[0]["seeds_empty_shard_parameter"])
         self.assertTrue(cimc_queries[0]["has_empty_shard_guard"])
         self.assertTrue(cimc_queries[0]["has_positive_shard_predicate"])
-        self.assertEqual(
-            aci_summary["models"]["netbox_cisco_aci.acicontract"]["query_count"],
-            1,
-        )
+        self.assertNotIn("netbox_cisco_aci.acicontract", aci_summary["models"])
         self.assertIn("routing.netbox_routing", summary)
         routing_summary = summary["routing.netbox_routing"]
         self.assertEqual(routing_summary["status"], "pass")
@@ -1352,21 +1364,8 @@ class QueryRegistryTest(TestCase):
         bd_row = rows[
             ("netbox_cisco_aci.acibridgedomain", "Forward ACI Bridge Domains")
         ]
-        app_profile_row = rows[
-            ("netbox_cisco_aci.aciappprofile", "Forward ACI Application Profiles")
-        ]
-        epg_row = rows[
-            ("netbox_cisco_aci.aciendpointgroup", "Forward ACI Endpoint Groups")
-        ]
-        contract_row = rows[("netbox_cisco_aci.acicontract", "Forward ACI Contracts")]
         filter_row = rows[("netbox_cisco_aci.acifilter", "Forward ACI Filters")]
         l3out_row = rows[("netbox_cisco_aci.acil3out", "Forward ACI L3Outs")]
-        static_binding_row = rows[
-            (
-                "netbox_cisco_aci.acistaticportbinding",
-                "Forward ACI Static Port Bindings",
-            )
-        ]
 
         aci_rows = (
             fabric_row,
@@ -1377,12 +1376,8 @@ class QueryRegistryTest(TestCase):
             tenant_row,
             vrf_row,
             bd_row,
-            app_profile_row,
-            epg_row,
-            contract_row,
             filter_row,
             l3out_row,
-            static_binding_row,
         )
         for row in aci_rows:
             self.assertFalse(row["enabled"])
@@ -1431,9 +1426,6 @@ class QueryRegistryTest(TestCase):
         self.assertIn("unicast_routing_enabled:", bd_row["query"])
         self.assertIn("limit_ip_learn_to_subnets:", bd_row["query"])
         self.assertIn("mac_address:", bd_row["query"])
-        self.assertIn("where false", app_profile_row["query"])
-        self.assertIn("where false", epg_row["query"])
-        self.assertIn("where false", contract_row["query"])
         self.assertIn("CISCO_ACI_ZONING_FILTER", filter_row["query"])
         self.assertIn(
             'matches(toLowerCase(command.commandText), "moquery -c l3extinstp*")',
@@ -1443,14 +1435,19 @@ class QueryRegistryTest(TestCase):
         self.assertIn("(?<pcEnfPref>", l3out_row["query"])
         self.assertIn("(?<prefGrMemb>", l3out_row["query"])
         self.assertIn("(?<target_dscp>", l3out_row["query"])
-        self.assertIn("where false", static_binding_row["query"])
         self.assertNotIn(
             "Forward ACI Nodes",
             {query_default["name"] for query_default in BUILTIN_QUERY_MAPS},
         )
-        self.assertIn(
-            "Forward ACI Static Port Bindings",
-            {query_default["name"] for query_default in BUILTIN_OPTIONAL_QUERY_MAPS},
+        self.assertTrue(
+            {
+                "Forward ACI Application Profiles",
+                "Forward ACI Endpoint Groups",
+                "Forward ACI Contracts",
+                "Forward ACI Static Port Bindings",
+            }.isdisjoint(
+                {query_default["name"] for query_default in BUILTIN_OPTIONAL_QUERY_MAPS}
+            )
         )
 
     def test_seeded_builtin_query_spec_resolves_optional_module_query(self):
@@ -1620,18 +1617,15 @@ class QueryRegistryTest(TestCase):
         )
         self.assertFalse(dlm_maps.filter(enabled=True).exists())
 
-    def test_seed_builtin_maps_skips_aci_maps_when_plugin_contenttypes_are_absent(self):
-        self.assertFalse(
-            ContentType.objects.filter(app_label="netbox_cisco_aci").exists()
-        )
-
+    def test_seed_builtin_maps_includes_installed_aci_models(self):
         seed_builtin_nqe_maps(type("Sender", (), {"label": "forward_netbox"}))
 
         aci_maps = ForwardNQEMap.objects.filter(
             netbox_model__app_label="netbox_cisco_aci",
             built_in=True,
         )
-        self.assertEqual(aci_maps.count(), 0)
+        self.assertGreater(aci_maps.count(), 0)
+        self.assertFalse(aci_maps.filter(enabled=True).exists())
 
     def test_builtin_map_query_id_overrides_bundled_query_for_diff_support(self):
         content_type = ContentType.objects.get(app_label="dcim", model="site")

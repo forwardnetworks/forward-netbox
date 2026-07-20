@@ -20,22 +20,21 @@ class MissingBranchTableReportTest(TestCase):
         self.assertEqual(missing_branch_table_report(), {})
 
     def test_unmigrated_table_is_reported(self):
-        real_tables = ["dcim_device", "netbox_dlm_contract"]
+        real_tables = ["dcim_device", "missing_plugin_widget"]
         with patch(
             "netbox_branching.utilities.get_tables_to_replicate",
             return_value=real_tables,
         ):
             report = missing_branch_table_report()
-        # dcim_device exists; the dlm table does not (no model registered for
-        # it in this environment either, so it lands in the unknown bucket).
-        self.assertEqual(report, {"unknown": ["netbox_dlm_contract"]})
+        self.assertEqual(report, {"unknown": ["missing_plugin_widget"]})
 
 
 class ExecutorTablePreflightTest(TestCase):
     def test_run_raises_actionable_sync_error_before_fetch(self):
         executor = object.__new__(ForwardSingleBranchExecutor)
+        executor.logger = Mock()
+        executor.sync = Mock()
         with (
-            patch.object(ForwardSingleBranchExecutor, "_set_runtime_phase", Mock()),
             patch(
                 "forward_netbox.utilities.single_branch_executor."
                 "missing_branch_table_report",

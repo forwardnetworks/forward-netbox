@@ -168,10 +168,29 @@ The **Reconcile device scope tags** button queues a job that maintains the
 self-heal on the next run. When **Apply Device Scope Tags** is enabled, the same
 job also removes only the source's configured include-tag assignments from
 devices that are now out of scope; unrelated operator tags remain untouched.
-After each successful sync, an automatic bounded cleanup performs only this
-stale-assignment removal. It does not apply global status tags to unrelated
-NetBox devices; full classification remains a reviewed action unless the legacy
-`auto_tag_backfilled` option is explicitly enabled.
+After each successful sync, the same pinned-generation job reconciles status
+and include-tag ownership automatically. Out-of-scope status applies only to
+devices previously claimed by that sync, so unrelated NetBox devices are never
+classified by absence.
+
+Automatic cleanup starts only after the sync is merged and completed, and it
+uses the exact generation and snapshot recorded on that ingestion. Each sync
+persists its claims in the main schema, and shared managed tags materialize from
+the union of every current claim. The last assignment is removed only after all
+relevant syncs reconcile their latest baselines. An empty or failed Forward
+scope removes nothing and leaves failed reconciliation evidence. An obsolete
+queued overlay completes without mutation and requests a catch-up for the
+newest completed ingestion. Orphan pruning is never part of this automatic
+path; it remains a reviewed manual job.
+
+Deleting a source or sync releases only that object's durable tag and virtual
+parent claims. Conflicting parent evidence owned by another source is preserved
+for its operator to resolve and does not block deletion of an unrelated sync.
+
+Virtual-parent reconciliation uses the same per-sync claim model. Compatible
+claims materialize one parent link and one plugin-owned Virtual Device Context.
+Conflicting claims are retained as evidence, preserve the current link, fail the
+overlay, and block convergence until the source data is corrected.
 
 The **Collection gap** health signal (sync health summary) flags when the
 backfilled count is non-trivial so you can investigate collection in Forward.
@@ -198,17 +217,16 @@ These are different buckets — only one is removable:
 So a device showing `forward-backfilled` but not an included tag in NetBox is
 **not** an out-of-scope orphan — it is in scope and intentionally retained.
 
-## Module readiness
+## Module synchronization
 
-NetBox Branching cannot create a new device's module bays during a merge, so
-optional `dcim.module` sync needs the bays to exist first. The **Module
-Readiness** page reports how many module rows already have bays, how many are
-missing, and whether sync is ready.
+Under the required NetBox 4.6.5 and Branching 1.1.1 matrix, module sync creates
+missing module bays inside the same branch before it creates each module. The
+**Module Readiness** page remains an optional preflight that reports existing
+and missing bays.
 
-- **Ready** reflects *missing module bays only*. Module rows for devices not in
-  NetBox skip harmlessly and do not hold readiness at "No".
-- The **Create missing module bays** button queues a job that creates the bays
-  directly (MPTT-safe, idempotent). Re-run the sync afterward to import modules.
+- It reports the exact `(device, bay)` identities the sync will create.
+- Rows whose devices are not yet in NetBox are reported separately; device and
+  module ordering is resolved inside the sync branch.
 
 When modules are created, the device's existing Forward-synced interfaces are
 **adopted** into the module rather than recreated, so enabling module sync does
@@ -218,8 +236,8 @@ CLI equivalent: `python manage.py forward_module_readiness --sync-name "<sync>"`
 
 ## Dependency preview
 
-The **Preview Dependencies** button queues a job that builds the multi-branch
-dependency plan (a heavy live dry-run). When it finishes, **View Last Preview**
+The **Preview Dependencies** button queues a job that builds the single-branch
+dependency workload (a heavy live dry-run). When it finishes, **View Last Preview**
 renders the cached result and `?format=json` downloads it. The preview never runs
 the dry-run in the web request, so it does not time out on large fabrics.
 
@@ -428,14 +446,13 @@ snapshot** as the safety net for missed deliveries.
 
 ## Automating operator jobs (API + standing schedules)
 
-The four operator buttons are also exposed as token-authenticated REST
+The three operator jobs are also exposed as token-authenticated REST
 actions, so an external scheduler can drive them:
 
 ```bash
 POST /api/plugins/forward/sync/<id>/dependency-preview/
 POST /api/plugins/forward/sync/<id>/prune-orphans/
 POST /api/plugins/forward/sync/<id>/tag-delete-eligible-ipam/
-POST /api/plugins/forward/sync/<id>/create-module-bays/
 ```
 
 Each returns `201` with the job on success, `403` without permission, and
@@ -444,7 +461,7 @@ already queued or running — duplicates never stack (across buttons, API
 calls, and scheduled occurrences) and retries from a calendar-blind cron
 stay green. Prune while a sync run is active answers
 `202 {"status": "blocked_by_sync_run"}` instead: that prune did **not** run
-(enable post-sync auto-prune to cover the gap, or retry after the sync). Permissions: in addition to each button's own permission (e.g.
+(retry after the sync completes). Permissions: in addition to each button's own permission (e.g.
 `dcim.delete_device` for prune), NetBox's API token layer requires
 `forward_netbox.add_forwardsync` for any POST to this viewset — grant both
 to the service account. **Validate** (`POST .../validate/`) follows the same
@@ -459,7 +476,7 @@ blank disables) or via the API on `validate` and `dependency-preview`:
 ```bash
 curl -X POST https://netbox.example.com/api/plugins/forward/sync/<id>/dependency-preview/ \
   -H "Authorization: Token <api-token>" -H "Content-Type: application/json" \
-  -d '{"interval": 1440}'          # minutes; 0 cancels; optional future "schedule_at"
+  -d '{"interval": 1440}'          # minutes; 0 cancels; optional "schedule_at"
 ```
 
 - An empty body keeps the one-shot behavior unchanged.
@@ -475,16 +492,18 @@ curl -X POST https://netbox.example.com/api/plugins/forward/sync/<id>/dependency
 - **To cancel**: blank the form field, or POST `{"interval": 0}`. Deleting
   the scheduled job from the Jobs list alone is not enough anymore — the
   recorded intent recreates it (see self-healing below). Deleting the sync
-  cancels its schedules. Cancelling while an occurrence is mid-run is safe:
-  the in-flight run finishes, then its chain reads the cancelled intent and
-  stops itself.
+  cancels pending schedules; deletion is rejected while any sync-bound worker
+  is running so its terminal status and logs cannot be discarded. Cancelling
+  while an occurrence is mid-run is safe: the in-flight run finishes, then its
+  chain reads the cancelled intent and stops itself.
 - **Self-healing**: the schedule intent lives on the sync; the plugin
   re-creates a missing schedule at the end of every sync run, every
   occurrence re-checks the intent (a stale or duplicate chain re-aligns or
-  stops itself), and schedules created on 2.5.6 (before intent storage) are
-  adopted automatically. A worker hard-killed mid-occurrence (OOM/SIGKILL)
-  no longer silently kills the schedule. The sync detail page shows each
-  standing schedule and its next run.
+  stops itself), checks RQ liveness before retaining a running occurrence, and
+  schedules created on 2.5.6 (before intent storage) are adopted automatically.
+  A worker hard-killed mid-occurrence (OOM/SIGKILL) no longer silently kills
+  the schedule. The sync detail page shows each standing schedule and its next
+  run.
 - Editing the intent keys directly via a REST `PATCH` of `parameters` is
   validated (non-negative minutes; preview ≥ 60) but only takes effect at
   the next sync run, form save, or occurrence — the API actions above apply
@@ -529,11 +548,14 @@ Maintainers cut releases with `invoke release` (see `scripts/release.py`):
 invoke release --version X.Y.Z --summary "one-line note" --write
 ```
 
-`--write` runs prepare (version bump + compatibility tables) and the local CI
-mirror. Rollout (branch, push, tag, GitHub release, PyPI) only happens with
-`--publish`/`--finish`, after GitHub CI is green. Pushing the `vX.Y.Z` tag
-triggers the Trusted-Publishing workflow (`.github/workflows/release.yml`), which
-builds and uploads to PyPI over OIDC with no stored token.
+`--write` creates a release-candidate row and runs the local CI mirror while the
+previous published release remains marked current. Rollout only happens with
+`--publish`/`--finish`. Finalization promotes the candidate in a separately
+tested commit, fast-forwards `main`, and pushes `vX.Y.Z`. The tag workflow builds
+and validates one wheel/sdist pair, inventories the installed NetBox runtime in
+a CycloneDX SBOM, publishes the pair to PyPI over OIDC, then attaches those exact
+same bytes and the SBOM to the GitHub release. The release command waits for that
+workflow to succeed before reporting completion.
 
 ## Large-fabric fetch safety
 

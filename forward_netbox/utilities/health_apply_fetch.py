@@ -3,7 +3,6 @@ from collections import Counter
 from ..choices import FORWARD_OPTIONAL_MODELS
 from ..choices import FORWARD_SUPPORTED_MODELS
 from .apply_engine import apply_engine_decision_summary
-from .apply_engine import bulk_orm_expansion_summary
 from .model_contracts import architecture_contract_summary
 from .model_contracts import architecture_fetch_contract_for_model
 
@@ -45,7 +44,6 @@ def apply_engine_summary(sync, model_strings):
         apply_engine_decision_summary(
             sync=sync,
             model_string=model_string,
-            backend=None,
         )
         for model_string in model_strings
     ]
@@ -53,7 +51,6 @@ def apply_engine_summary(sync, model_strings):
         apply_engine_decision_summary(
             sync=sync,
             model_string=model_string,
-            backend=None,
         )
         for model_string in FORWARD_SUPPORTED_MODELS
     ]
@@ -86,7 +83,6 @@ def apply_engine_summary(sync, model_strings):
         "global_fallback_reasons": dict(global_fallback_reasons),
         "global_blocker_codes": dict(global_adapter_blockers),
         "global_decisions": global_matrix,
-        "bulk_orm_expansion": bulk_orm_expansion_summary(model_strings),
     }
 
 

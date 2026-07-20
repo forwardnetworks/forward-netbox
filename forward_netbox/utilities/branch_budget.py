@@ -15,8 +15,7 @@ from .sync_contracts import row_coalesce_field_is_complete
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MAX_CHANGES_PER_BRANCH = 10000
-BRANCH_RUN_STATE_PARAMETER = "_branch_run"
+DEFAULT_MAX_CHANGES_PER_STAGING_ITEM = 10000
 MODEL_CHANGE_DENSITY_PARAMETER = "_model_change_density"
 MODEL_CHANGE_DENSITY_PROFILE_PARAMETER = "_model_change_density_profile"
 DEFAULT_DENSITY_SAFETY_FACTOR = 0.7
@@ -91,12 +90,8 @@ APPLY_DEPENDENCY_MODEL_ORDER = (
     "netbox_cisco_aci.acitenant",
     "netbox_cisco_aci.acivrf",
     "netbox_cisco_aci.acibridgedomain",
-    "netbox_cisco_aci.aciappprofile",
-    "netbox_cisco_aci.aciendpointgroup",
-    "netbox_cisco_aci.acicontract",
     "netbox_cisco_aci.acifilter",
     "netbox_cisco_aci.acil3out",
-    "netbox_cisco_aci.acistaticportbinding",
 )
 APPLY_DEPENDENCY_MODEL_RANK = {
     model_string: index
@@ -150,19 +145,8 @@ APPLY_PARENT_MODEL_DEPENDENCIES = {
     "netbox_cisco_aci.acitenant": ("netbox_cisco_aci.acifabric",),
     "netbox_cisco_aci.acivrf": ("netbox_cisco_aci.acitenant",),
     "netbox_cisco_aci.acibridgedomain": ("netbox_cisco_aci.acivrf",),
-    "netbox_cisco_aci.aciappprofile": ("netbox_cisco_aci.acitenant",),
-    "netbox_cisco_aci.aciendpointgroup": (
-        "netbox_cisco_aci.aciappprofile",
-        "netbox_cisco_aci.acibridgedomain",
-    ),
-    "netbox_cisco_aci.acicontract": ("netbox_cisco_aci.acitenant",),
     "netbox_cisco_aci.acifilter": ("netbox_cisco_aci.acitenant",),
     "netbox_cisco_aci.acil3out": ("netbox_cisco_aci.acitenant",),
-    "netbox_cisco_aci.acistaticportbinding": (
-        "dcim.device",
-        "dcim.interface",
-        "netbox_cisco_aci.aciendpointgroup",
-    ),
 }
 DELETE_DEPENDENCY_MODEL_ORDER = (
     "netbox_dlm.vulnerability",
@@ -184,12 +168,8 @@ DELETE_DEPENDENCY_MODEL_ORDER = (
     "netbox_routing.ospfinterface",
     "netbox_routing.ospfinstance",
     "netbox_routing.ospfarea",
-    "netbox_cisco_aci.acistaticportbinding",
     "netbox_cisco_aci.acil3out",
     "netbox_cisco_aci.acifilter",
-    "netbox_cisco_aci.acicontract",
-    "netbox_cisco_aci.aciendpointgroup",
-    "netbox_cisco_aci.aciappprofile",
     "netbox_cisco_aci.acibridgedomain",
     "netbox_cisco_aci.acivrf",
     "netbox_cisco_aci.acitenant",
@@ -315,25 +295,8 @@ STRUCTURED_SHARD_FILTER_FIELDS = {
     "netbox_cisco_aci.acitenant": ("fabric_name", "name"),
     "netbox_cisco_aci.acivrf": ("fabric_name", "tenant_name", "name"),
     "netbox_cisco_aci.acibridgedomain": ("fabric_name", "tenant_name", "name"),
-    "netbox_cisco_aci.aciappprofile": ("fabric_name", "tenant_name", "name"),
-    "netbox_cisco_aci.aciendpointgroup": (
-        "fabric_name",
-        "tenant_name",
-        "app_profile_name",
-        "name",
-    ),
-    "netbox_cisco_aci.acicontract": ("fabric_name", "tenant_name", "name"),
     "netbox_cisco_aci.acifilter": ("fabric_name", "tenant_name", "name"),
     "netbox_cisco_aci.acil3out": ("fabric_name", "tenant_name", "name"),
-    "netbox_cisco_aci.acistaticportbinding": (
-        "fabric_name",
-        "tenant_name",
-        "app_profile_name",
-        "endpoint_group_name",
-        "device",
-        "interface",
-        "encap_vlan",
-    ),
     **IPAM_SHARD_FILTER_FIELDS,
 }
 
@@ -517,7 +480,6 @@ class BranchWorkload:
     fetch_key_family: str = ""
     fetch_parameters: dict = field(default_factory=dict)
     query_parameters: dict = field(default_factory=dict)
-    fetch_column_filters: list = field(default_factory=list)
     operation: str = BRANCH_PLAN_OPERATION_MIXED
     shard_keys: tuple[str, ...] = ()
 
@@ -549,7 +511,6 @@ class BranchPlanItem:
     fetch_key_family: str = ""
     fetch_parameters: dict = field(default_factory=dict)
     query_parameters: dict = field(default_factory=dict)
-    fetch_column_filters: list = field(default_factory=list)
     operation: str = BRANCH_PLAN_OPERATION_MIXED
 
 
@@ -641,7 +602,7 @@ def split_workload(
         if is_oversized:
             message = (
                 f"`{workload.model_string}` shard bucket `{key}` has {bucket_size} "
-                f"rows, exceeding the branch budget of {max_row_budget}."
+                f"rows, exceeding the staging-item budget of {max_row_budget}."
             )
             if oversized_bucket_policy == "fail":
                 raise ForwardQueryError(message)
@@ -692,7 +653,6 @@ def split_workload(
             fetch_key_family=workload.fetch_key_family,
             fetch_parameters=workload.fetch_parameters,
             query_parameters=workload.query_parameters,
-            fetch_column_filters=workload.fetch_column_filters,
             operation=workload.operation,
             shard_keys=tuple(sorted(chunk["shard_keys"])),
         )
@@ -708,7 +668,6 @@ def shard_fetch_contract(model_string, shard_keys):
             "fetch_mode": "model",
             "fetch_key_family": "",
             "fetch_parameters": {},
-            "fetch_column_filters": [],
         }
 
     cable_device_names = _cable_device_names_from_shard_keys(shard_keys)
@@ -721,7 +680,6 @@ def shard_fetch_contract(model_string, shard_keys):
             "fetch_key_family": "device",
             "fetch_parameters": fetch_parameters,
             "query_parameters": {},
-            "fetch_column_filters": [],
         }
 
     device_names = _device_names_from_shard_keys(shard_keys)
@@ -738,7 +696,6 @@ def shard_fetch_contract(model_string, shard_keys):
             "fetch_key_family": "device",
             "fetch_parameters": fetch_parameters,
             "query_parameters": {},
-            "fetch_column_filters": [],
         }
 
     structured_contract = _structured_parameter_contract(model_string, shard_keys)
@@ -750,7 +707,6 @@ def shard_fetch_contract(model_string, shard_keys):
         "fetch_key_family": "",
         "fetch_parameters": {},
         "query_parameters": {},
-        "fetch_column_filters": [],
     }
 
 
@@ -821,7 +777,6 @@ def _structured_parameter_contract(model_string, shard_keys):
                 },
                 "query_parameters": {},
                 "fetch_mode": "nqe_parameters",
-                "fetch_column_filters": [],
             }
         return {
             "fetch_key_family": field_name,
@@ -829,7 +784,6 @@ def _structured_parameter_contract(model_string, shard_keys):
                 SHARD_FETCH_PARAMETER_KEYS: list(unique_values),
             },
             "fetch_mode": "nqe_parameters",
-            "fetch_column_filters": [],
         }
     return {}
 
@@ -916,28 +870,23 @@ def _workload_for_operation(workload, *, upsert_rows, delete_rows, operation):
         fetch_key_family=workload.fetch_key_family,
         fetch_parameters=workload.fetch_parameters,
         query_parameters=workload.query_parameters,
-        fetch_column_filters=workload.fetch_column_filters,
         operation=operation,
     )
 
 
 def build_branch_plan(
-    workloads, *, max_changes_per_branch=None, oversized_bucket_policy="warn"
+    workloads, *, max_changes_per_staging_item=None, oversized_bucket_policy="warn"
 ):
-    """Build dependency-phased plan items, optionally split by row budget.
-
-    The default remains one item per workload for 2.0 compatibility. A caller
-    must supply a budget to opt into deterministic shard-key bucket packing.
-    """
+    """Build dependency-phased plan items, split when a row budget is supplied."""
     phased_workloads = dependency_phased_workloads(workloads)
-    if max_changes_per_branch is None:
+    if max_changes_per_staging_item is None:
         plan_workloads = [(workload, workload.label) for workload in phased_workloads]
     else:
         plan_workloads = []
         for workload in phased_workloads:
             chunks = split_workload(
                 workload,
-                max_row_budget=max_changes_per_branch,
+                max_row_budget=max_changes_per_staging_item,
                 oversized_bucket_policy=oversized_bucket_policy,
             )
             chunk_count = len(chunks)
@@ -975,7 +924,6 @@ def build_branch_plan(
             fetch_key_family=workload.fetch_key_family,
             fetch_parameters=workload.fetch_parameters,
             query_parameters=workload.query_parameters,
-            fetch_column_filters=workload.fetch_column_filters,
             operation=workload.operation,
             shard_keys=workload.shard_keys,
         )
@@ -986,13 +934,13 @@ def build_branch_plan(
 def effective_row_budget_for_model(
     model_string,
     *,
-    max_changes_per_branch,
+    max_changes_per_staging_item,
     model_change_density=None,
     model_change_density_profile=None,
     safety_factor=DEFAULT_DENSITY_SAFETY_FACTOR,
 ):
-    if max_changes_per_branch < 1:
-        raise ValueError("`max_changes_per_branch` must be at least 1.")
+    if max_changes_per_staging_item < 1:
+        raise ValueError("`max_changes_per_staging_item` must be at least 1.")
 
     density_policy = _effective_budget_density_policy(
         model_string,
@@ -1001,26 +949,26 @@ def effective_row_budget_for_model(
     )
     density = density_policy.get("density")
     if density is None:
-        return max_changes_per_branch
+        return max_changes_per_staging_item
     try:
         density_value = float(density)
     except (TypeError, ValueError):
-        return max_changes_per_branch
+        return max_changes_per_staging_item
     if density_value <= 0:
-        return max_changes_per_branch
+        return max_changes_per_staging_item
 
     effective_safety_factor = MODEL_DENSITY_SAFETY_FACTORS.get(
         model_string,
         float(safety_factor),
     )
     row_budget_ceiling = _density_row_budget_ceiling(
-        max_changes_per_branch,
+        max_changes_per_staging_item,
         density_policy=density_policy,
         density_value=density_value,
         safety_factor=effective_safety_factor,
     )
     scaled_budget = int(
-        (max_changes_per_branch * float(effective_safety_factor)) / density_value
+        (max_changes_per_staging_item * float(effective_safety_factor)) / density_value
     )
     return max(1, min(row_budget_ceiling, scaled_budget))
 
@@ -1028,14 +976,14 @@ def effective_row_budget_for_model(
 def build_branch_budget_hints(
     model_strings,
     *,
-    max_changes_per_branch,
+    max_changes_per_staging_item,
     model_change_density=None,
     model_change_density_profile=None,
 ):
     return {
         model_string: effective_row_budget_for_model(
             model_string,
-            max_changes_per_branch=max_changes_per_branch,
+            max_changes_per_staging_item=max_changes_per_staging_item,
             model_change_density=model_change_density,
             model_change_density_profile=model_change_density_profile,
         )
@@ -1043,7 +991,7 @@ def build_branch_budget_hints(
     }
 
 
-def delete_dependency_plan_summary(plan_items, *, max_changes_per_branch):
+def delete_dependency_plan_summary(plan_items, *, max_changes_per_staging_item):
     total_changes = sum(max(0, int(item.estimated_changes or 0)) for item in plan_items)
     delete_items = [
         item
@@ -1106,7 +1054,8 @@ def delete_dependency_plan_summary(plan_items, *, max_changes_per_branch):
             }
         )
     soft_large_shard = int(
-        max(1, int(max_changes_per_branch or 1)) * DELETE_LARGE_SHARD_WARNING_RATIO
+        max(1, int(max_changes_per_staging_item or 1))
+        * DELETE_LARGE_SHARD_WARNING_RATIO
     )
     if max_delete_shard_changes >= soft_large_shard:
         warnings.append(
@@ -1114,7 +1063,7 @@ def delete_dependency_plan_summary(plan_items, *, max_changes_per_branch):
                 "code": "large_delete_shard",
                 "severity": "warning",
                 "message": (
-                    "At least one delete shard is near the branch budget; "
+                    "At least one delete staging item is near its budget; "
                     "reference blockers may make the merge slower or noisier."
                 ),
             }
@@ -1212,19 +1161,6 @@ def _effective_budget_density_policy(
     learned_density = (model_change_density or {}).get(model_string)
     default_density = DEFAULT_MODEL_CHANGE_DENSITY.get(model_string)
     profile = normalize_density_profile(model_change_density_profile or {})
-    if model_change_density_profile is None or not profile:
-        density = learned_density if learned_density is not None else default_density
-        return {
-            "model": str(model_string or ""),
-            "density": density,
-            "policy": (
-                "legacy_learned_density"
-                if learned_density is not None
-                else "default_density"
-            ),
-            "confidence": "",
-            "confidence_score": None,
-        }
     return density_budget_policy(
         model_string,
         learned_density=learned_density,
@@ -1234,13 +1170,13 @@ def _effective_budget_density_policy(
 
 
 def _density_row_budget_ceiling(
-    max_changes_per_branch,
+    max_changes_per_staging_item,
     *,
     density_policy,
     density_value,
     safety_factor,
 ):
-    base = max(1, int(max_changes_per_branch))
+    base = max(1, int(max_changes_per_staging_item))
     policy = str((density_policy or {}).get("policy") or "")
     if policy not in DENSITY_ROW_BUDGET_WIDEN_POLICIES:
         return base

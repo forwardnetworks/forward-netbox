@@ -63,7 +63,12 @@
   {% elif latest_sync_evidence.status == "incomplete" %}
     <div class="alert alert-warning d-flex align-items-center" role="alert">
       <i class="mdi mdi-progress-clock me-2" aria-hidden="true"></i>
-      <div>{% trans "The latest ingestion is not merged and baseline-ready, so its counters cannot confirm convergence." %}</div>
+      <div>{% trans "The latest ingestion is not completed, merged, and baseline-ready, so its counters cannot confirm convergence." %}</div>
+    </div>
+  {% elif latest_sync_evidence.status == "ownership_incomplete" %}
+    <div class="alert alert-danger d-flex align-items-center" role="alert">
+      <i class="mdi mdi-shield-alert me-2" aria-hidden="true"></i>
+      <div>{% trans "The latest ingestion has not completed durable ownership reconciliation. Convergence remains blocked until the required post-merge ownership domains finish without conflicts." %}</div>
     </div>
   {% elif latest_sync_evidence.status == "snapshot_mismatch" %}
     <div class="alert alert-warning d-flex align-items-center" role="alert">
@@ -145,6 +150,16 @@
             <tr>
               <th scope="row">{% trans "Sync snapshot" %}</th>
               <td><code>{{ latest_sync_evidence.snapshot_id|placeholder }}</code></td>
+            </tr>
+            <tr>
+              <th scope="row">{% trans "Ownership" %}</th>
+              <td>
+                {% if latest_sync_evidence.ownership.complete %}
+                  <span class="badge text-bg-success">{% trans "Current" %}</span>
+                {% else %}
+                  <span class="badge text-bg-danger">{% trans "Incomplete" %}</span>
+                {% endif %}
+              </td>
             </tr>
             <tr>
               <th scope="row">{% trans "Same as preview" %}</th>

@@ -1,6 +1,5 @@
 from django.core.exceptions import ValidationError
 
-from ..exceptions import ForwardDependencySkipError
 from ..exceptions import ForwardQueryError
 
 
@@ -181,120 +180,6 @@ def _ensure_aci_bridge_domain(runner, row):
     return bd
 
 
-def _ensure_aci_app_profile(runner, row):
-    ACIAppProfile = _aci_model(
-        runner,
-        "ACIAppProfile",
-        "netbox_cisco_aci.aciappprofile",
-    )
-    tenant = _ensure_aci_tenant(
-        runner,
-        {"fabric_name": row["fabric_name"], "name": row["tenant_name"]},
-    )
-    values = _aci_model_values(
-        runner,
-        ACIAppProfile,
-        {
-            "aci_tenant": tenant,
-            "name": row["name"],
-            "description": row.get("description") or "",
-        },
-    )
-    app_profile, _ = runner._upsert_values_from_defaults(
-        "netbox_cisco_aci.aciappprofile",
-        ACIAppProfile,
-        values=values,
-        coalesce_sets=[("aci_tenant", "name")],
-    )
-    return app_profile
-
-
-def _ensure_aci_endpoint_group(runner, row):
-    ACIEndpointGroup = _aci_model(
-        runner,
-        "ACIEndpointGroup",
-        "netbox_cisco_aci.aciendpointgroup",
-    )
-    app_profile = _ensure_aci_app_profile(
-        runner,
-        {
-            "fabric_name": row["fabric_name"],
-            "tenant_name": row["tenant_name"],
-            "name": row["app_profile_name"],
-        },
-    )
-    bridge_domain = _ensure_aci_bridge_domain(
-        runner,
-        {
-            "fabric_name": row["fabric_name"],
-            "tenant_name": row["tenant_name"],
-            "vrf_tenant_name": row.get("vrf_tenant_name") or row["tenant_name"],
-            "vrf_name": row["vrf_name"],
-            "name": row["bridge_domain_name"],
-        },
-    )
-    values = _aci_model_values(
-        runner,
-        ACIEndpointGroup,
-        {
-            "aci_tenant": app_profile.aci_tenant,
-            "aci_app_profile": app_profile,
-            "aci_bridge_domain": bridge_domain,
-            "name": row["name"],
-            "admin_shutdown": _coerce_bool(row.get("admin_shutdown"), False),
-            "is_useg": _coerce_bool(row.get("is_useg"), False),
-            "intra_epg_isolation": _coerce_bool(
-                row.get("intra_epg_isolation"),
-                False,
-            ),
-            "preferred_group_member": _coerce_bool(
-                row.get("preferred_group_member"),
-                False,
-            ),
-            "qos_class": row.get("qos_class") or "unspecified",
-            "description": row.get("description") or "",
-        },
-    )
-    epg, _ = runner._upsert_values_from_defaults(
-        "netbox_cisco_aci.aciendpointgroup",
-        ACIEndpointGroup,
-        values=values,
-        coalesce_sets=[("aci_app_profile", "name")],
-    )
-    return epg
-
-
-def _ensure_aci_contract(runner, row):
-    ACIContract = _aci_model(
-        runner,
-        "ACIContract",
-        "netbox_cisco_aci.acicontract",
-    )
-    tenant = _ensure_aci_tenant(
-        runner,
-        {"fabric_name": row["fabric_name"], "name": row["tenant_name"]},
-    )
-    values = _aci_model_values(
-        runner,
-        ACIContract,
-        {
-            "aci_tenant": tenant,
-            "name": row["name"],
-            "scope": row.get("scope") or "context",
-            "qos_class": row.get("qos_class") or "",
-            "target_dscp": row.get("target_dscp") or "",
-            "description": row.get("description") or "",
-        },
-    )
-    contract, _ = runner._upsert_values_from_defaults(
-        "netbox_cisco_aci.acicontract",
-        ACIContract,
-        values=values,
-        coalesce_sets=[("aci_tenant", "name")],
-    )
-    return contract
-
-
 def _ensure_aci_filter(runner, row):
     ACIFilter = _aci_model(runner, "ACIFilter", "netbox_cisco_aci.acifilter")
     tenant = _ensure_aci_tenant(
@@ -418,21 +303,6 @@ def _resolve_aci_vrf(runner, row):
     )
 
 
-def _resolve_aci_app_profile(runner, row):
-    ACIAppProfile = _aci_model(
-        runner,
-        "ACIAppProfile",
-        "netbox_cisco_aci.aciappprofile",
-    )
-    tenant = _resolve_aci_tenant(runner, row)
-    if tenant is None or not row.get("app_profile_name"):
-        return None
-    return runner._get_unique_or_raise(
-        ACIAppProfile,
-        {"aci_tenant": tenant, "name": row["app_profile_name"]},
-    )
-
-
 def _resolve_aci_bridge_domain(runner, row):
     ACIBridgeDomain = _aci_model(
         runner,
@@ -445,21 +315,6 @@ def _resolve_aci_bridge_domain(runner, row):
     return runner._get_unique_or_raise(
         ACIBridgeDomain,
         {"aci_tenant": tenant, "name": row["bridge_domain_name"]},
-    )
-
-
-def _resolve_aci_endpoint_group(runner, row):
-    ACIEndpointGroup = _aci_model(
-        runner,
-        "ACIEndpointGroup",
-        "netbox_cisco_aci.aciendpointgroup",
-    )
-    app_profile = _resolve_aci_app_profile(runner, row)
-    if app_profile is None or not row.get("endpoint_group_name"):
-        return None
-    return runner._get_unique_or_raise(
-        ACIEndpointGroup,
-        {"aci_app_profile": app_profile, "name": row["endpoint_group_name"]},
     )
 
 
@@ -547,69 +402,12 @@ def apply_netbox_cisco_aci_acibridgedomain(runner, row):
     return _ensure_aci_bridge_domain(runner, row)
 
 
-def apply_netbox_cisco_aci_aciappprofile(runner, row):
-    return _ensure_aci_app_profile(runner, row)
-
-
-def apply_netbox_cisco_aci_aciendpointgroup(runner, row):
-    return _ensure_aci_endpoint_group(runner, row)
-
-
-def apply_netbox_cisco_aci_acicontract(runner, row):
-    return _ensure_aci_contract(runner, row)
-
-
 def apply_netbox_cisco_aci_acifilter(runner, row):
     return _ensure_aci_filter(runner, row)
 
 
 def apply_netbox_cisco_aci_acil3out(runner, row):
     return _ensure_aci_l3out(runner, row)
-
-
-def apply_netbox_cisco_aci_acistaticportbinding(runner, row):
-    ACIStaticPortBinding = _aci_model(
-        runner,
-        "ACIStaticPortBinding",
-        "netbox_cisco_aci.acistaticportbinding",
-    )
-    epg = _resolve_aci_endpoint_group(runner, row)
-    if epg is None:
-        raise ForwardDependencySkipError(
-            "Skipping ACI static-port binding because the endpoint group was not found.",
-            model_string="netbox_cisco_aci.acistaticportbinding",
-            context=row,
-        )
-    device_name = row.get("device_name") or row.get("device")
-    interface_name = row.get("interface_name") or row.get("interface")
-    device = runner._lookup_device_by_name(device_name)
-    interface = runner._lookup_interface(device, interface_name)
-    if device is None or interface is None:
-        raise ForwardDependencySkipError(
-            "Skipping ACI static-port binding because the NetBox interface was not found.",
-            model_string="netbox_cisco_aci.acistaticportbinding",
-            context=row,
-        )
-    values = _aci_model_values(
-        runner,
-        ACIStaticPortBinding,
-        {
-            "aci_endpoint_group": epg,
-            "dcim_interface": interface,
-            "encap_vlan": _coerce_int(row["encap_vlan"], "encap_vlan"),
-            "binding_type": row.get("binding_type") or "regular",
-            "mode": row.get("mode") or "regular",
-            "deployment_immediacy": row.get("deployment_immediacy") or "lazy",
-            "description": row.get("description") or "",
-        },
-    )
-    binding, _ = runner._upsert_values_from_defaults(
-        "netbox_cisco_aci.acistaticportbinding",
-        ACIStaticPortBinding,
-        values=values,
-        coalesce_sets=[("aci_endpoint_group", "dcim_interface", "encap_vlan")],
-    )
-    return binding
 
 
 def apply_netbox_cisco_aci_acipod(runner, row):
@@ -709,51 +507,6 @@ def delete_netbox_cisco_aci_acibridgedomain(runner, row):
     )
 
 
-def delete_netbox_cisco_aci_aciappprofile(runner, row):
-    ACIAppProfile = _aci_model(
-        runner,
-        "ACIAppProfile",
-        "netbox_cisco_aci.aciappprofile",
-    )
-    tenant = _resolve_aci_tenant(runner, row)
-    if tenant is None:
-        return False
-    return runner._delete_by_coalesce(
-        ACIAppProfile,
-        [{"aci_tenant": tenant, "name": row.get("name")}],
-    )
-
-
-def delete_netbox_cisco_aci_aciendpointgroup(runner, row):
-    ACIEndpointGroup = _aci_model(
-        runner,
-        "ACIEndpointGroup",
-        "netbox_cisco_aci.aciendpointgroup",
-    )
-    app_profile = _resolve_aci_app_profile(runner, row)
-    if app_profile is None:
-        return False
-    return runner._delete_by_coalesce(
-        ACIEndpointGroup,
-        [{"aci_app_profile": app_profile, "name": row.get("name")}],
-    )
-
-
-def delete_netbox_cisco_aci_acicontract(runner, row):
-    ACIContract = _aci_model(
-        runner,
-        "ACIContract",
-        "netbox_cisco_aci.acicontract",
-    )
-    tenant = _resolve_aci_tenant(runner, row)
-    if tenant is None:
-        return False
-    return runner._delete_by_coalesce(
-        ACIContract,
-        [{"aci_tenant": tenant, "name": row.get("name")}],
-    )
-
-
 def delete_netbox_cisco_aci_acifilter(runner, row):
     ACIFilter = _aci_model(runner, "ACIFilter", "netbox_cisco_aci.acifilter")
     tenant = _resolve_aci_tenant(runner, row)
@@ -773,35 +526,6 @@ def delete_netbox_cisco_aci_acil3out(runner, row):
     return runner._delete_by_coalesce(
         ACIL3Out,
         [{"aci_tenant": tenant, "name": row.get("name")}],
-    )
-
-
-def delete_netbox_cisco_aci_acistaticportbinding(runner, row):
-    ACIStaticPortBinding = _aci_model(
-        runner,
-        "ACIStaticPortBinding",
-        "netbox_cisco_aci.acistaticportbinding",
-    )
-    epg = _resolve_aci_endpoint_group(runner, row)
-    device_name = row.get("device_name") or row.get("device")
-    interface_name = row.get("interface_name") or row.get("interface")
-    device = runner._lookup_device_by_name(device_name)
-    interface = runner._lookup_interface(device, interface_name)
-    if epg is None or interface is None:
-        return False
-    try:
-        encap_vlan = _coerce_int(row["encap_vlan"], "encap_vlan")
-    except ForwardQueryError:
-        return False
-    return runner._delete_by_coalesce(
-        ACIStaticPortBinding,
-        [
-            {
-                "aci_endpoint_group": epg,
-                "dcim_interface": interface,
-                "encap_vlan": encap_vlan,
-            }
-        ],
     )
 
 

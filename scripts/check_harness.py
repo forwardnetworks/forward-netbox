@@ -10,10 +10,14 @@ from datetime import date
 from datetime import datetime
 from pathlib import Path
 
+import yaml
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 REQUIRED_PATHS = [
+    ".sensitive-binary-allowlist",
+    ".sensitive-history-baseline",
     "AGENTS.md",
     "ARCHITECTURE.md",
     "docs/00_Project_Knowledge/README.md",
@@ -28,15 +32,64 @@ REQUIRED_PATHS = [
     "docs/03_Plans/active/README.md",
     "docs/03_Plans/completed/README.md",
     "docs/03_Plans/plan-template.md",
-    "docs/03_Plans/technical-debt.md",
     "scripts/tests/test_check_harness.py",
+    "scripts/check_release_authorization.py",
+    "scripts/verify_release_provenance.py",
+    "scripts/check_sensitive_content.py",
+    "scripts/sensitive_content.py",
+    "scripts/tests/test_release_authorization.py",
+    "scripts/tests/test_verify_release_provenance.py",
+    "scripts/tests/test_sensitive_content.py",
     ".github/workflows/harness-gardening.yml",
+    ".github/workflows/codeql.yml",
+    ".github/workflows/trusted-sensitive-pr.yml",
 ]
 
 AGENTS_ENTRYPOINT_MAX_LINES = 120
 KNOWLEDGE_FRESHNESS_DAYS = {
     "docs/00_Project_Knowledge/harness-engineering-alignment.md": 90,
     "docs/00_Project_Knowledge/quality-score.md": 90,
+}
+EXPECTED_NETBOX_HEALTHCHECK = "curl -f http://localhost:8000/login/ || exit 1"
+EXPECTED_HARNESS_DEPENDENCY_COMMAND = (
+    "python -m pip install --disable-pip-version-check PyYAML==6.0.3"
+)
+EXPECTED_HARNESS_CHECK_COMMAND = "python scripts/check_harness.py"
+
+RUNTIME_SOURCE_SUFFIXES = {".html", ".js", ".nqe", ".py"}
+RUNTIME_SOURCE_EXCLUDED_DIRECTORIES = {"migrations", "tests"}
+RETIREMENT_CONFIGURATION_SUFFIXES = {
+    "",
+    ".env",
+    ".py",
+    ".toml",
+    ".txt",
+    ".yaml",
+    ".yml",
+}
+RETIREMENT_CONFIGURATION_ROOTS = ("development", ".github/workflows")
+RETIREMENT_CONFIGURATION_FILES = ("tasks.py", "pyproject.toml", "constraints.txt")
+RETIRED_RUNTIME_PATTERNS = {
+    r"\b_execution_progress\b": "retired persisted execution progress",
+    r"\bget_execution_display_state\b": "retired execution-state display adapter",
+    r"\bset_execution_progress\b": "retired execution progress writer",
+    r"\bset_runtime_phase\b": "retired runtime-phase compatibility shim",
+    r"\bfetch_column_filters\b": "retired column-filter fetch mode",
+    r"\bcolumn_filters\b": "retired column-filter query contract",
+    r"['\"]device_tag_include['\"]": "retired singular include-tag key",
+    r"['\"]device_tag_exclude['\"]": "retired singular exclude-tag key",
+    r"\bJOBRESULT_RETENTION\b": "retired job-retention environment alias",
+    r"\bLOGIN_REQUIRED\b": "retired NetBox login setting",
+    r"PluginConfig\s*=\s*object": "retired PluginConfig import fallback",
+    r"_CoreSyncError\s*=\s*Exception": "retired sync-error import fallback",
+    r"\b_load_cached_diagnostic_result\b": "retired diagnostic cache reader",
+    r"\b_store_cached_diagnostic_result\b": "retired diagnostic cache writer",
+    r"\blegacy_endpoint_device_types\b": "retired endpoint diagnostic key",
+    r"['\"]forward_sync_": "retired Django-cache job-result key",
+    r"\bpackage_names\b": "retired optional-plugin package aliases",
+    r"\binstalled_package_name\b": "retired optional-plugin package detection alias",
+    r"\bnetbox_aci_plugin\b": "retired Cisco ACI package alias",
+    r"\bnetbox-aci-plugin\b": "retired Cisco ACI distribution alias",
 }
 
 PLAN_REQUIRED_HEADINGS = [
@@ -79,7 +132,7 @@ REQUIRED_TEXT = {
     ],
     "ARCHITECTURE.md": [
         "Production Boundaries",
-        "Overgrown But Stable Areas",
+        "Ownership Control Plane",
         "Non-Negotiable Constraints",
     ],
     "docs/00_Project_Knowledge/validation-matrix.md": [
@@ -91,7 +144,7 @@ REQUIRED_TEXT = {
         "invoke scenario-test",
         "invoke test",
         "invoke docs",
-        "scripts/check_sensitive_content.py --all-history",
+        "scripts/check_sensitive_content.py --protected-history",
     ],
     "docs/00_Project_Knowledge/agent-workflow.md": [
         "Choose The Lane",
@@ -110,7 +163,6 @@ REQUIRED_TEXT = {
         "Application legibility",
         "Architecture enforcement",
         "Entropy control",
-        "Known Gaps",
     ],
     "docs/00_Project_Knowledge/release-playbook.md": [
         "GitHub CI",
@@ -135,11 +187,41 @@ REQUIRED_TEXT = {
         "Run harness tests",
         "Run NetBox database migrations",
         "Run synthetic scenario tests",
+        "fetch-depth: 0",
+        "--require-baseline-env",
+        "--require-env-patterns",
+        "FORWARD_SENSITIVE_HISTORY_BASELINE",
+    ],
+    ".github/workflows/release.yml": [
+        "fetch-depth: 0",
+        "verify_release_provenance.py",
+        "--reviewer brandonheller",
+        "--git-files",
+        "--protected-history",
+        "--require-env-patterns --require-baseline-env",
+        "FORWARD_SENSITIVE_HISTORY_BASELINE",
     ],
     ".github/workflows/harness-gardening.yml": [
         "schedule:",
         "scripts/check_harness.py",
         "test_check_harness.py",
+    ],
+    ".github/workflows/trusted-sensitive-pr.yml": [
+        "pull_request_target:",
+        "persist-credentials: false",
+        "github.event.pull_request.base.sha",
+        "statuses: write",
+        "Trusted sensitive-content scan",
+        "--git-tree",
+        "--ref-name",
+        "--require-env-patterns --require-baseline-env",
+    ],
+    ".github/CODEOWNERS": [
+        "@captainpacket @brandonheller",
+        "/.github/",
+        "/scripts/",
+        "/.sensitive-binary-allowlist",
+        "/.sensitive-history-baseline",
     ],
 }
 
@@ -187,6 +269,47 @@ def _check_knowledge_freshness(
             failures.append(
                 f"{relative_path} review is stale: {age_days} days old "
                 f"(maximum {max_age_days})"
+            )
+
+
+def _check_retired_runtime_paths(failures: list[str]) -> None:
+    runtime_root = REPO_ROOT / "forward_netbox"
+    paths = []
+    if runtime_root.exists():
+        for path in sorted(runtime_root.rglob("*")):
+            if not path.is_file() or path.suffix not in RUNTIME_SOURCE_SUFFIXES:
+                continue
+            relative_path = path.relative_to(runtime_root)
+            if any(
+                part in RUNTIME_SOURCE_EXCLUDED_DIRECTORIES
+                for part in relative_path.parts[:-1]
+            ):
+                continue
+            paths.append(path)
+    for relative_root in RETIREMENT_CONFIGURATION_ROOTS:
+        root = REPO_ROOT / relative_root
+        if not root.exists():
+            continue
+        paths.extend(
+            path
+            for path in sorted(root.rglob("*"))
+            if path.is_file() and path.suffix in RETIREMENT_CONFIGURATION_SUFFIXES
+        )
+    paths.extend(
+        path
+        for relative_path in RETIREMENT_CONFIGURATION_FILES
+        if (path := REPO_ROOT / relative_path).is_file()
+    )
+
+    for path in dict.fromkeys(paths):
+        text = path.read_text(encoding="utf-8")
+        for pattern, description in RETIRED_RUNTIME_PATTERNS.items():
+            match = re.search(pattern, text)
+            if match is None:
+                continue
+            line = text.count("\n", 0, match.start()) + 1
+            failures.append(
+                f"{path.relative_to(REPO_ROOT)}:{line} contains {description}"
             )
 
 
@@ -336,6 +459,255 @@ def _check_per_commit_plan_lifecycle(failures: list[str], base: str) -> None:
             )
 
 
+def _check_compose_health_probe(failures: list[str]) -> None:
+    relative_path = "development/docker-compose.yml"
+    path = REPO_ROOT / relative_path
+    if not path.exists():
+        return
+    try:
+        rendered = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        actual = rendered["services"]["netbox"]["healthcheck"]["test"]
+    except (KeyError, TypeError, yaml.YAMLError) as exc:
+        failures.append(f"{relative_path} has no parseable netbox health probe: {exc}")
+        return
+    if actual != EXPECTED_NETBOX_HEALTHCHECK:
+        failures.append(
+            f"{relative_path} services.netbox.healthcheck.test must equal "
+            f"{EXPECTED_NETBOX_HEALTHCHECK!r}; got {actual!r}"
+        )
+
+
+def _check_harness_gardening_dependency(failures: list[str]) -> None:
+    relative_path = ".github/workflows/harness-gardening.yml"
+    path = REPO_ROOT / relative_path
+    if not path.exists():
+        return
+    try:
+        rendered = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        steps = rendered["jobs"]["audit"]["steps"]
+        commands = [step.get("run") for step in steps if isinstance(step, dict)]
+        dependency_index = commands.index(EXPECTED_HARNESS_DEPENDENCY_COMMAND)
+        harness_index = commands.index(EXPECTED_HARNESS_CHECK_COMMAND)
+    except (KeyError, TypeError, ValueError, yaml.YAMLError) as exc:
+        failures.append(
+            f"{relative_path} must install PyYAML 6.0.3 before the harness check: {exc}"
+        )
+        return
+    if dependency_index >= harness_index:
+        failures.append(
+            f"{relative_path} must install PyYAML 6.0.3 before the harness check"
+        )
+
+
+def _workflow_steps(relative_path: str, job_name: str) -> list[dict]:
+    path = REPO_ROOT / relative_path
+    if not path.exists():
+        return []
+    rendered = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    steps = rendered.get("jobs", {}).get(job_name, {}).get("steps", [])
+    return [step for step in steps if isinstance(step, dict)]
+
+
+def _workflow(relative_path: str) -> dict:
+    path = REPO_ROOT / relative_path
+    if not path.exists():
+        return {}
+    return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+
+
+def _check_sensitive_guard_wiring(failures: list[str]) -> None:
+    try:
+        ci_steps = _workflow_steps(".github/workflows/ci.yml", "validate")
+        release_workflow = _workflow(".github/workflows/release.yml")
+        release_steps = _workflow_steps(".github/workflows/release.yml", "validate")
+        trusted_workflow = _workflow(".github/workflows/trusted-sensitive-pr.yml")
+        trusted_steps = _workflow_steps(
+            ".github/workflows/trusted-sensitive-pr.yml",
+            "sensitive-content",
+        )
+    except yaml.YAMLError as exc:
+        failures.append(f"sensitive-content workflows must parse as YAML: {exc}")
+        return
+
+    for relative_path, steps in (
+        (".github/workflows/ci.yml", ci_steps),
+        (".github/workflows/release.yml", release_steps),
+        (".github/workflows/trusted-sensitive-pr.yml", trusted_steps),
+    ):
+        checkout_steps = [
+            step
+            for step in steps
+            if str(step.get("uses", "")).startswith("actions/checkout@")
+        ]
+        if (
+            not checkout_steps
+            or checkout_steps[0].get("with", {}).get("fetch-depth") != 0
+        ):
+            failures.append(f"{relative_path} sensitive scan requires fetch-depth: 0")
+
+    def normalized_commands(steps: list[dict]) -> str:
+        raw = "\n".join(str(step.get("run", "")) for step in steps)
+        return " ".join(raw.replace("\\\n", " ").split())
+
+    ci_commands = normalized_commands(ci_steps)
+    release_commands = normalized_commands(release_steps)
+    trusted_commands = normalized_commands(trusted_steps)
+    required_ci_fragments = (
+        "check_sensitive_content.py --protected-history",
+        "check_sensitive_content.py --git-files",
+        "--require-baseline-env",
+        "--require-env-patterns",
+    )
+    for fragment in required_ci_fragments:
+        if fragment not in ci_commands:
+            failures.append(f".github/workflows/ci.yml must execute {fragment}")
+    for fragment in (
+        "verify_release_provenance.py --tag",
+        "--reviewer brandonheller",
+        "check_sensitive_content.py --git-files --protected-history",
+        "--require-env-patterns --require-baseline-env",
+    ):
+        if fragment not in release_commands:
+            failures.append(f".github/workflows/release.yml must execute {fragment}")
+    release_permissions = release_workflow.get("permissions", {})
+    for permission in ("actions", "contents", "pull-requests"):
+        if not isinstance(release_permissions, dict) or (
+            release_permissions.get(permission) != "read"
+        ):
+            failures.append(
+                f".github/workflows/release.yml must grant {permission}: read"
+            )
+
+    for fragment in (
+        "pull/${PR_NUMBER}/head",
+        "check_sensitive_content.py --rev-list",
+        "--git-tree",
+        "--ref-name",
+        "--require-env-patterns --require-baseline-env",
+    ):
+        if fragment not in trusted_commands:
+            failures.append(
+                f".github/workflows/trusted-sensitive-pr.yml must execute {fragment}"
+            )
+
+    trusted_events = trusted_workflow.get("on", {})
+    target = (
+        trusted_events.get("pull_request_target", {})
+        if isinstance(trusted_events, dict)
+        else {}
+    )
+    if set(target.get("types", [])) != {"opened", "reopened", "synchronize"}:
+        failures.append(
+            ".github/workflows/trusted-sensitive-pr.yml must use only the reviewed "
+            "pull_request_target event types"
+        )
+    permissions = trusted_workflow.get("permissions", {})
+    if not isinstance(permissions, dict) or permissions.get("statuses") != "write":
+        failures.append(
+            ".github/workflows/trusted-sensitive-pr.yml must have statuses: write "
+            "to bind the trusted result to the candidate SHA"
+        )
+
+    def command_step(steps: list[dict], fragment: str) -> tuple[int, dict] | None:
+        for index, step in enumerate(steps):
+            command = " ".join(str(step.get("run", "")).replace("\\\n", " ").split())
+            if fragment in command:
+                return index, step
+        return None
+
+    required_steps = (
+        (ci_steps, "--protected-history", "ci history"),
+        (ci_steps, "--require-env-patterns", "ci push enforcement"),
+        (release_steps, "--require-env-patterns", "release enforcement"),
+        (trusted_steps, "--git-tree", "trusted PR enforcement"),
+    )
+    for steps, fragment, label in required_steps:
+        found = command_step(steps, fragment)
+        if found is None:
+            continue
+        _index, step = found
+        condition = str(step.get("if", "")).strip()
+        if label == "ci push enforcement":
+            if condition != "github.event_name == 'push'":
+                failures.append("CI private-pattern enforcement must run on every push")
+        elif condition:
+            failures.append(f"{label} must not be conditional")
+
+    expected_env = {
+        "FORWARD_SENSITIVE_PATTERNS": "${{ secrets.FORWARD_SENSITIVE_PATTERNS }}",
+        "FORWARD_SENSITIVE_HISTORY_BASELINE": (
+            "${{ vars.FORWARD_SENSITIVE_HISTORY_BASELINE }}"
+        ),
+    }
+    for steps, fragment, label in (
+        (ci_steps, "--require-env-patterns", "CI"),
+        (release_steps, "--require-env-patterns", "release"),
+        (trusted_steps, "--git-tree", "trusted PR"),
+    ):
+        found = command_step(steps, fragment)
+        if found is None:
+            continue
+        _index, step = found
+        environment = step.get("env", {})
+        for name, expected_value in expected_env.items():
+            if str(environment.get(name, "")).strip() != expected_value:
+                failures.append(
+                    f"{label} sensitive scan must source {name} from trusted settings"
+                )
+
+    trusted_checkout = next(
+        (
+            step
+            for step in trusted_steps
+            if str(step.get("uses", "")).startswith("actions/checkout@")
+        ),
+        {},
+    )
+    checkout_with = trusted_checkout.get("with", {})
+    if (
+        checkout_with.get("persist-credentials") is not False
+        or str(checkout_with.get("ref", "")).strip()
+        != "${{ github.event.pull_request.base.sha }}"
+    ):
+        failures.append(
+            "trusted PR scan must check out only the credential-free base revision"
+        )
+
+    trusted_fetch = command_step(trusted_steps, "pull/${PR_NUMBER}/head")
+    trusted_scan = command_step(trusted_steps, "--git-tree")
+    if trusted_fetch and trusted_scan and trusted_fetch[0] >= trusted_scan[0]:
+        failures.append("trusted PR scan must fetch candidate objects before scanning")
+
+    trusted_status = command_step(trusted_steps, "Trusted sensitive-content scan")
+    if trusted_status is None:
+        failures.append("trusted PR scan must publish a candidate commit status")
+    else:
+        status_index, status_step = trusted_status
+        if trusted_scan and status_index <= trusted_scan[0]:
+            failures.append("trusted PR status must be published after candidate scan")
+        if str(status_step.get("if", "")).strip() != "always()":
+            failures.append("trusted PR status publication must run with if: always()")
+        status_environment = status_step.get("env", {})
+        if str(status_environment.get("GH_TOKEN", "")).strip() != (
+            "${{ secrets.GITHUB_TOKEN }}"
+        ):
+            failures.append("trusted PR status must use the repository GITHUB_TOKEN")
+        if str(status_environment.get("SCAN_OUTCOME", "")).strip() != (
+            "${{ steps.scan.outcome }}"
+        ):
+            failures.append("trusted PR status must derive from the scanner outcome")
+
+    tasks_path = REPO_ROOT / "tasks.py"
+    if tasks_path.exists():
+        tasks_text = tasks_path.read_text(encoding="utf-8")
+        for fragment in (
+            'scripts/check_sensitive_content.py")',
+            "scripts/check_sensitive_content.py --protected-history",
+        ):
+            if fragment not in tasks_text:
+                failures.append(f"tasks.py sensitive-check must execute {fragment}")
+
+
 def main() -> int:
     import argparse
 
@@ -372,6 +744,10 @@ def main() -> int:
     _check_plan_lifecycle(failures)
     _check_agents_entrypoint(failures)
     _check_knowledge_freshness(failures)
+    _check_retired_runtime_paths(failures)
+    _check_compose_health_probe(failures)
+    _check_harness_gardening_dependency(failures)
+    _check_sensitive_guard_wiring(failures)
     if args.base:
         _check_per_commit_plan_lifecycle(failures, args.base)
 

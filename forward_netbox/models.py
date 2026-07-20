@@ -9,6 +9,7 @@ from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator
 from django.core.validators import MinValueValidator
 from django.db import models
+from django.db import transaction
 from django.db.models import Q
 from django.urls import reverse
 from django.utils import timezone
@@ -31,7 +32,7 @@ from .choices import ForwardSyncStatusChoices
 from .choices import ForwardValidationStatusChoices
 from .exceptions import ForwardQueryError
 from .exceptions import ForwardSyncError
-from .utilities.branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
+from .utilities.branch_budget import DEFAULT_MAX_CHANGES_PER_STAGING_ITEM
 from .utilities.forward_api import ForwardClient
 from .utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from .utilities.ingestion_merge import (
@@ -80,13 +81,8 @@ from .utilities.sync_facade import get_maps as build_sync_maps
 from .utilities.sync_facade import get_query_parameters as build_sync_query_parameters
 from .utilities.sync_facade import normalize_forward_sync
 from .utilities.sync_facade import resolve_snapshot_id as resolve_forward_snapshot_id
-from .utilities.sync_state import clear_branch_run_state as clear_sync_branch_run_state
 from .utilities.sync_state import get_advisory_summary as build_sync_advisory_summary
 from .utilities.sync_state import get_analysis_summary as build_sync_analysis_summary
-from .utilities.sync_state import (
-    get_branch_run_display_state as get_sync_branch_run_display_state,
-)
-from .utilities.sync_state import get_branch_run_state as get_sync_branch_run_state
 from .utilities.sync_state import (
     get_display_parameters as build_sync_display_parameters,
 )
@@ -95,7 +91,7 @@ from .utilities.sync_state import (
 )
 from .utilities.sync_state import get_job_logs as get_sync_job_logs
 from .utilities.sync_state import (
-    get_max_changes_per_branch as get_state_max_changes_per_branch,
+    get_max_changes_per_staging_item as get_state_max_changes_per_staging_item,
 )
 from .utilities.sync_state import (
     get_model_change_density as get_sync_model_change_density,
@@ -105,15 +101,7 @@ from .utilities.sync_state import (
 )
 from .utilities.sync_state import get_sync_activity as build_sync_activity
 from .utilities.sync_state import get_workload_summary as build_sync_workload_summary
-from .utilities.sync_state import has_pending_branch_run as has_pending_sync_branch_run
-from .utilities.sync_state import (
-    is_waiting_for_branch_merge as is_sync_waiting_for_branch_merge,
-)
 from .utilities.sync_state import ready_for_sync as is_sync_ready_for_sync
-from .utilities.sync_state import (
-    ready_to_continue_sync as is_sync_ready_to_continue_sync,
-)
-from .utilities.sync_state import set_branch_run_state as set_sync_branch_run_state
 from .utilities.sync_state import (
     set_model_change_density as set_sync_model_change_density,
 )
@@ -147,8 +135,26 @@ class ForwardPluginModelDocsMixin:
         return ""
 
 
+class ForwardOwnershipReleaseQuerySet(RestrictedQuerySet):
+    """Route bulk source/sync deletion through model ownership cleanup."""
+
+    def delete(self):
+        from .utilities.ownership import ownership_write_lock
+
+        total = 0
+        details = {}
+        with ownership_write_lock():
+            objects = list(self.select_for_update())
+            for obj in objects:
+                deleted, deleted_by_model = obj.delete()
+                total += deleted
+                for model_label, count in deleted_by_model.items():
+                    details[model_label] = details.get(model_label, 0) + count
+        return total, details
+
+
 class ForwardSource(ForwardPluginModelDocsMixin, JobsMixin, PrimaryModel):
-    objects = RestrictedQuerySet.as_manager()
+    objects = ForwardOwnershipReleaseQuerySet.as_manager()
 
     name = models.CharField(max_length=100, unique=True)
     type = models.CharField(
@@ -201,6 +207,13 @@ class ForwardSource(ForwardPluginModelDocsMixin, JobsMixin, PrimaryModel):
                 self.parameters = parameters
         super().save(*args, **kwargs)
 
+    def delete(self, *args, **kwargs):
+        from .utilities.ownership import release_source_ownership
+
+        with transaction.atomic():
+            release_source_ownership(self)
+            return super().delete(*args, **kwargs)
+
     def get_client(self):
         return ForwardClient(self)
 
@@ -223,13 +236,16 @@ class ForwardSource(ForwardPluginModelDocsMixin, JobsMixin, PrimaryModel):
             "pushdown_fallback_warn_rate",
             "pushdown_runtime_fallback_warn_share",
             "pushdown_diff_warn_ratio",
-            "device_tag_include",
-            "device_tag_exclude",
             "device_tag_include_tags",
             "device_tag_exclude_tags",
             "device_tag_include_match",
             "device_tag_filter_mode",
             "device_tag_prune_out_of_scope",
+            "apply_device_scope_tags",
+            "sync_device_tags",
+            "sync_endpoints",
+            "sync_generic_endpoints",
+            "scope_endpoints_by_include_tags",
         }
         parameters = {
             key: value
@@ -412,7 +428,7 @@ class ForwardNQEMap(ForwardPluginModelDocsMixin, ChangeLoggedModel):
 
 
 class ForwardSync(ForwardPluginModelDocsMixin, JobsMixin, TagsMixin, ChangeLoggedModel):
-    objects = RestrictedQuerySet.as_manager()
+    objects = ForwardOwnershipReleaseQuerySet.as_manager()
 
     name = models.CharField(max_length=100, unique=True)
     source = models.ForeignKey(
@@ -464,9 +480,16 @@ class ForwardSync(ForwardPluginModelDocsMixin, JobsMixin, TagsMixin, ChangeLogge
     def get_absolute_url(self):
         return reverse("plugins:forward_netbox:forwardsync", args=[self.pk])
 
+    def delete(self, *args, **kwargs):
+        from .utilities.ownership import release_sync_ownership
+
+        with transaction.atomic():
+            release_sync_ownership(self)
+            return super().delete(*args, **kwargs)
+
     @property
     def logger(self):
-        return getattr(self, "_logger", SyncLogging(job=self.pk))
+        return getattr(self, "_logger", SyncLogging())
 
     @logger.setter
     def logger(self, value):
@@ -475,10 +498,6 @@ class ForwardSync(ForwardPluginModelDocsMixin, JobsMixin, TagsMixin, ChangeLogge
     @property
     def ready_for_sync(self):
         return is_sync_ready_for_sync(self)
-
-    @property
-    def ready_to_continue_sync(self):
-        return is_sync_ready_to_continue_sync(self)
 
     @property
     def last_ingestion(self):
@@ -569,32 +588,11 @@ class ForwardSync(ForwardPluginModelDocsMixin, JobsMixin, TagsMixin, ChangeLogge
     def get_query_parameters(self):
         return build_sync_query_parameters(self)
 
-    def get_branch_run_state(self):
-        return get_sync_branch_run_state(self)
-
     def get_model_change_density(self):
         return get_sync_model_change_density(self)
 
     def get_model_change_density_profile(self):
         return get_sync_model_change_density_profile(self)
-
-    @property
-    def has_pending_branch_run(self):
-        return has_pending_sync_branch_run(self)
-
-    @property
-    def has_pending_execution(self):
-        return has_pending_sync_branch_run(self)
-
-    @property
-    def is_waiting_for_branch_merge(self):
-        return is_sync_waiting_for_branch_merge(self)
-
-    def set_branch_run_state(self, state):
-        set_sync_branch_run_state(self, state)
-
-    def clear_branch_run_state(self):
-        clear_sync_branch_run_state(self)
 
     def set_model_change_density(self, model_change_density):
         set_sync_model_change_density(self, model_change_density)
@@ -602,10 +600,10 @@ class ForwardSync(ForwardPluginModelDocsMixin, JobsMixin, TagsMixin, ChangeLogge
     def set_model_change_density_profile(self, model_change_density_profile):
         set_sync_model_change_density_profile(self, model_change_density_profile)
 
-    def get_max_changes_per_branch(self):
-        return get_state_max_changes_per_branch(
+    def get_max_changes_per_staging_item(self):
+        return get_state_max_changes_per_staging_item(
             self,
-            DEFAULT_MAX_CHANGES_PER_BRANCH,
+            DEFAULT_MAX_CHANGES_PER_STAGING_ITEM,
         )
 
     def get_model_strings(self):
@@ -614,7 +612,7 @@ class ForwardSync(ForwardPluginModelDocsMixin, JobsMixin, TagsMixin, ChangeLogge
     def get_display_parameters(self):
         return build_sync_display_parameters(
             self,
-            max_changes_per_branch_default=DEFAULT_MAX_CHANGES_PER_BRANCH,
+            max_changes_per_staging_item_default=DEFAULT_MAX_CHANGES_PER_STAGING_ITEM,
         )
 
     def get_execution_summary(self):
@@ -644,8 +642,13 @@ class ForwardSync(ForwardPluginModelDocsMixin, JobsMixin, TagsMixin, ChangeLogge
     def enabled_models(self):
         return build_enabled_models(self)
 
-    def enqueue_sync_job(self, adhoc=False, user=None):
-        return enqueue_forward_sync_job(self, adhoc=adhoc, user=user)
+    def enqueue_sync_job(self, adhoc=False, user=None, current_job=None):
+        return enqueue_forward_sync_job(
+            self,
+            adhoc=adhoc,
+            user=user,
+            current_job=current_job,
+        )
 
     def enqueue_validation_job(
         self, adhoc=False, user=None, schedule_at=None, interval=None
@@ -654,13 +657,13 @@ class ForwardSync(ForwardPluginModelDocsMixin, JobsMixin, TagsMixin, ChangeLogge
             self, adhoc=adhoc, user=user, schedule_at=schedule_at, interval=interval
         )
 
-    def sync(self, job=None, *, max_changes_per_branch=None, adhoc=False):
+    def sync(self, job=None, *, max_changes_per_staging_item=None, adhoc=False):
         from .utilities.sync_orchestration import run_forward_sync
 
         run_forward_sync(
             self,
             job=job,
-            max_changes_per_branch=max_changes_per_branch,
+            max_changes_per_staging_item=max_changes_per_staging_item,
             adhoc=adhoc,
         )
 
@@ -799,6 +802,8 @@ class ForwardIngestion(ForwardPluginModelDocsMixin, JobsMixin, models.Model):
         default="full",
     )
     baseline_ready = models.BooleanField(default=False)
+    merge_applied_at = models.DateTimeField(blank=True, null=True, db_index=True)
+    merge_finalized_at = models.DateTimeField(blank=True, null=True, db_index=True)
     applied_change_count = models.PositiveIntegerField(default=0)
     failed_change_count = models.PositiveIntegerField(default=0)
     created_change_count = models.PositiveIntegerField(default=0)
@@ -856,33 +861,27 @@ class ForwardIngestion(ForwardPluginModelDocsMixin, JobsMixin, models.Model):
     def get_job_logs(job):
         return get_sync_job_logs(job)
 
-    def enqueue_merge_job(self, user, remove_branch=False):
+    def enqueue_merge_job(
+        self,
+        user,
+        remove_branch=False,
+        *,
+        recovery_sync_job_pks=None,
+    ):
         return enqueue_forward_merge_job(
             self,
             user,
             remove_branch=remove_branch,
+            recovery_sync_job_pks=recovery_sync_job_pks,
         )
 
     @property
     def can_queue_merge(self):
         if not self.branch or getattr(self.branch, "status", "") == "merged":
             return False
-        from .utilities.execution_ledger import (
-            ingestion_has_mergeable_execution_step,
-            ingestion_has_requeueable_merge_timeout_step,
-        )
-
-        if ingestion_has_requeueable_merge_timeout_step(self):
-            return True
         if self.merge_job and not self.merge_job.completed:
             return False
-        if ingestion_has_mergeable_execution_step(self):
-            return True
-        state = get_sync_branch_run_display_state(self.sync)
-        return bool(
-            self.sync.status == ForwardSyncStatusChoices.READY_TO_MERGE
-            or state.get("pending_ingestion_id") == self.pk
-        )
+        return self.sync.status == ForwardSyncStatusChoices.READY_TO_MERGE
 
     def get_statistics(self, stage="sync"):
         return build_ingestion_statistics(self, stage=stage)
@@ -908,13 +907,20 @@ class ForwardIngestion(ForwardPluginModelDocsMixin, JobsMixin, models.Model):
     def _cleanup_merged_branch(self):
         cleanup_forward_merged_branch(self)
 
-    def sync_merge(self, *, mark_baseline_ready=None, remove_branch=True):
+    def sync_merge(
+        self,
+        *,
+        mark_baseline_ready=None,
+        remove_branch=True,
+        claimed_job=None,
+    ):
         from .utilities.ingestion_merge import sync_merge_ingestion
 
         sync_merge_ingestion(
             self,
             mark_baseline_ready=mark_baseline_ready,
             remove_branch=remove_branch,
+            claimed_job=claimed_job,
         )
 
 
@@ -950,12 +956,317 @@ class ForwardIngestionIssue(ForwardPluginModelDocsMixin, models.Model):
         return f"[{self.timestamp}] {self.message}"
 
 
+class ForwardManagedDeviceTag(ForwardPluginModelDocsMixin, models.Model):
+    """Declares a NetBox tag whose assignments are materialized from claims."""
+
+    class ClaimType(models.TextChoices):
+        SCOPE = "scope", _("Managed scope")
+        BACKFILLED = "backfilled", _("Backfilled status")
+        OUT_OF_SCOPE = "out_of_scope", _("Out-of-scope status")
+
+    tag = models.ForeignKey(
+        "extras.Tag",
+        on_delete=models.PROTECT,
+        related_name="+",
+    )
+    claim_type = models.CharField(max_length=32, choices=ClaimType.choices)
+
+    class Meta:
+        ordering = ("tag__name", "claim_type")
+        verbose_name = _("Forward Managed Device Tag")
+        verbose_name_plural = _("Forward Managed Device Tags")
+        db_table = "forward_netbox_managed_device_tag"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["tag"],
+                name="forward_managed_device_tag_identity",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.tag} ({self.claim_type})"
+
+
+class ForwardPreservedDeviceTagAssignment(ForwardPluginModelDocsMixin, models.Model):
+    """Pre-adoption assignment that plugin reconciliation must not remove."""
+
+    device = models.ForeignKey(
+        "dcim.Device",
+        on_delete=models.CASCADE,
+        related_name="+",
+    )
+    tag = models.ForeignKey(
+        "extras.Tag",
+        on_delete=models.CASCADE,
+        related_name="+",
+    )
+    recorded_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        ordering = ("tag__name", "device__name")
+        verbose_name = _("Forward Preserved Device Tag Assignment")
+        verbose_name_plural = _("Forward Preserved Device Tag Assignments")
+        db_table = "forward_netbox_preserved_device_tag_assignment"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["device", "tag"],
+                name="forward_preserved_device_tag_assignment_identity",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.device} -> {self.tag}"
+
+
+class ForwardIngestionProvenanceMixin(models.Model):
+    """Protected ownership evidence tied to one exact merged ingestion."""
+
+    ingestion = models.ForeignKey(
+        ForwardIngestion,
+        db_column="generation",
+        on_delete=models.PROTECT,
+        related_name="+",
+    )
+
+    class Meta:
+        abstract = True
+
+    @property
+    def generation(self):
+        return self.ingestion_id
+
+    @generation.setter
+    def generation(self, value):
+        self.ingestion_id = value
+
+    def _validate_ingestion_sync(self):
+        if not self.ingestion_id or not self.sync_id:
+            return
+        ingestion_sync_id = (
+            ForwardIngestion.objects.filter(pk=self.ingestion_id)
+            .values_list("sync_id", flat=True)
+            .first()
+        )
+        if ingestion_sync_id != self.sync_id:
+            raise ValidationError(
+                {
+                    "ingestion": "Ownership evidence must reference an ingestion from the same sync."
+                }
+            )
+
+    def clean(self):
+        super().clean()
+        self._validate_ingestion_sync()
+
+    def save(self, *args, **kwargs):
+        self._validate_ingestion_sync()
+        return super().save(*args, **kwargs)
+
+
+class ForwardDeviceIdentity(
+    ForwardIngestionProvenanceMixin,
+    ForwardPluginModelDocsMixin,
+):
+    """Stable mapping from one Forward-network device identity to a NetBox row."""
+
+    sync = models.ForeignKey(
+        ForwardSync,
+        on_delete=models.PROTECT,
+        related_name="device_identities",
+    )
+    source_device_key = models.CharField(max_length=255)
+    device = models.ForeignKey(
+        "dcim.Device",
+        on_delete=models.PROTECT,
+        related_name="+",
+    )
+    snapshot_id = models.CharField(max_length=100, blank=True, default="")
+
+    class Meta:
+        ordering = ("sync__name", "source_device_key")
+        verbose_name = _("Forward Device Identity")
+        verbose_name_plural = _("Forward Device Identities")
+        db_table = "forward_netbox_device_identity"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["sync", "source_device_key"],
+                name="forward_device_identity_source_key",
+            ),
+            models.UniqueConstraint(
+                fields=["sync", "device"],
+                name="forward_device_identity_device",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.sync}: {self.source_device_key} -> {self.device}"
+
+
+class ForwardDeviceTagClaim(
+    ForwardIngestionProvenanceMixin,
+    ForwardPluginModelDocsMixin,
+):
+    """Latest-ingestion assertion for one managed NetBox tag assignment."""
+
+    class ClaimType(models.TextChoices):
+        SCOPE = "scope", _("Managed scope")
+        BACKFILLED = "backfilled", _("Backfilled status")
+        OUT_OF_SCOPE = "out_of_scope", _("Out-of-scope status")
+
+    sync = models.ForeignKey(
+        ForwardSync,
+        on_delete=models.PROTECT,
+        related_name="device_tag_claims",
+    )
+    device = models.ForeignKey(
+        "dcim.Device",
+        on_delete=models.PROTECT,
+        related_name="+",
+    )
+    tag = models.ForeignKey(
+        "extras.Tag",
+        on_delete=models.PROTECT,
+        related_name="+",
+    )
+    claim_type = models.CharField(max_length=32, choices=ClaimType.choices)
+    snapshot_id = models.CharField(max_length=100, blank=True, default="")
+
+    class Meta:
+        ordering = ("sync__name", "device__name", "tag__name", "claim_type")
+        verbose_name = _("Forward Device Tag Claim")
+        verbose_name_plural = _("Forward Device Tag Claims")
+        db_table = "forward_netbox_device_tag_claim"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["sync", "device", "tag", "claim_type"],
+                name="forward_device_tag_claim_identity",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.sync}: {self.device} -> {self.tag} ({self.claim_type})"
+
+
+class ForwardManagedVirtualContext(ForwardPluginModelDocsMixin, models.Model):
+    """Marks a VirtualDeviceContext created and lifecycle-owned by the plugin."""
+
+    virtual_context = models.OneToOneField(
+        "dcim.VirtualDeviceContext",
+        on_delete=models.PROTECT,
+        related_name="+",
+    )
+
+    class Meta:
+        ordering = ("virtual_context__device__name", "virtual_context__name")
+        verbose_name = _("Forward Managed Virtual Context")
+        verbose_name_plural = _("Forward Managed Virtual Contexts")
+        db_table = "forward_netbox_managed_virtual_context"
+
+    def __str__(self):
+        return str(self.virtual_context)
+
+
+class ForwardVirtualParentClaim(
+    ForwardIngestionProvenanceMixin,
+    ForwardPluginModelDocsMixin,
+):
+    """Latest-ingestion assertion for a virtual device and physical parent."""
+
+    sync = models.ForeignKey(
+        ForwardSync,
+        on_delete=models.PROTECT,
+        related_name="virtual_parent_claims",
+    )
+    device = models.ForeignKey(
+        "dcim.Device",
+        on_delete=models.PROTECT,
+        related_name="+",
+    )
+    parent_device = models.ForeignKey(
+        "dcim.Device",
+        on_delete=models.PROTECT,
+        related_name="+",
+    )
+    virtual_context = models.ForeignKey(
+        "dcim.VirtualDeviceContext",
+        blank=True,
+        null=True,
+        on_delete=models.PROTECT,
+        related_name="+",
+    )
+    snapshot_id = models.CharField(max_length=100, blank=True, default="")
+
+    class Meta:
+        ordering = ("sync__name", "device__name")
+        verbose_name = _("Forward Virtual Parent Claim")
+        verbose_name_plural = _("Forward Virtual Parent Claims")
+        db_table = "forward_netbox_virtual_parent_claim"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["sync", "device"],
+                name="forward_virtual_parent_claim_identity",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.sync}: {self.device} -> {self.parent_device}"
+
+
+class ForwardOwnershipReconciliation(
+    ForwardIngestionProvenanceMixin,
+    ForwardPluginModelDocsMixin,
+):
+    """Latest baseline generation reconciled for one ownership domain."""
+
+    class Domain(models.TextChoices):
+        SCOPE_TAGS = "scope_tags", _("Managed scope tags")
+        STATUS_TAGS = "status_tags", _("Scope status tags")
+        VIRTUAL_PARENTS = "virtual_parents", _("Virtual parents")
+
+    class Status(models.TextChoices):
+        PENDING = "pending", _("Pending")
+        COMPLETED = "completed", _("Completed")
+        FAILED = "failed", _("Failed")
+
+    sync = models.ForeignKey(
+        ForwardSync,
+        on_delete=models.PROTECT,
+        related_name="ownership_reconciliations",
+    )
+    domain = models.CharField(max_length=32, choices=Domain.choices)
+    snapshot_id = models.CharField(max_length=100, blank=True, default="")
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.PENDING,
+    )
+    error_type = models.CharField(max_length=100, blank=True, default="")
+    started_at = models.DateTimeField(default=timezone.now)
+    completed_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        ordering = ("sync__name", "domain")
+        verbose_name = _("Forward Ownership Reconciliation")
+        verbose_name_plural = _("Forward Ownership Reconciliations")
+        db_table = "forward_netbox_ownership_reconciliation"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["sync", "domain"],
+                name="forward_ownership_reconciliation_identity",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.sync}: {self.domain} @ {self.generation}"
+
+
 class ForwardDeviceAnalysis(ForwardPluginModelDocsMixin, ChangeLoggedModel):
     """Read-only per-device operational analysis surfaced from Forward.
 
-    Populated out-of-band by the device-analysis refresh job (NQE) and rendered on
-    the device detail panel and a fleet-wide list view, without a live Forward
-    call. Not a Branching-managed sync model.
+    Populated by a snapshot-guarded NetBox JobRunner and rendered on the device
+    detail panel and a fleet-wide list view without a live Forward call. This is
+    an auxiliary plugin read model, not authoritative inventory and not a
+    Branching-managed sync model.
     """
 
     objects = RestrictedQuerySet.as_manager()

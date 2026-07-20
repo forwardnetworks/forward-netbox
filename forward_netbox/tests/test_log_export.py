@@ -14,111 +14,12 @@ from netbox_branching.models import Branch
 from netbox_branching.models import ChangeDiff
 
 from forward_netbox.models import ForwardIngestion
+from forward_netbox.models import ForwardOwnershipReconciliation
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 
 
 class ForwardIngestionLogExportViewTest(TestCase):
-    @classmethod
-    def setUpClass(cls):
-        super().setUpClass()
-        cls._live_diagnostics_patcher = patch(
-            "forward_netbox.utilities.execution_ledger.live_support_diagnostics",
-            return_value={
-                "available": True,
-                "source_health": {
-                    "available": True,
-                    "reachable": True,
-                    "checks": [],
-                },
-                "query_drift": {
-                    "available": True,
-                    "summary": {"status_counts": {"pass": 1}},
-                    "live_summary": {
-                        "total_maps": 1,
-                        "checked_maps": 1,
-                        "warn_count": 0,
-                        "info_count": 0,
-                        "pass_count": 1,
-                        "status_counts": {"live_repository_source_match": 1},
-                        "query_id_total": 1,
-                        "query_id_pass_count": 1,
-                        "query_id_warn_count": 0,
-                        "query_id_info_count": 0,
-                        "query_id_not_found_count": 0,
-                        "query_id_ambiguous_count": 0,
-                        "query_id_modified_count": 0,
-                        "query_id_unavailable_count": 0,
-                        "lookup_error_count": 0,
-                        "remediation_action_counts": {},
-                        "error": "",
-                    },
-                    "results": [],
-                    "error": "",
-                },
-                "data_file_health": {
-                    "enabled_data_file_map_count": 0,
-                    "required_data_files": [],
-                    "snapshot_selector": "latestProcessed",
-                    "checks": [],
-                    "results": [],
-                },
-                "enabled_map_count": 1,
-            },
-        )
-        cls._view_live_diagnostics_patcher = patch(
-            "forward_netbox.views.live_support_diagnostics",
-            return_value={
-                "available": True,
-                "source_health": {
-                    "available": True,
-                    "reachable": True,
-                    "checks": [],
-                },
-                "query_drift": {
-                    "available": True,
-                    "summary": {"status_counts": {"pass": 1}},
-                    "live_summary": {
-                        "total_maps": 1,
-                        "checked_maps": 1,
-                        "warn_count": 0,
-                        "info_count": 0,
-                        "pass_count": 1,
-                        "status_counts": {"live_repository_source_match": 1},
-                        "query_id_total": 1,
-                        "query_id_pass_count": 1,
-                        "query_id_warn_count": 0,
-                        "query_id_info_count": 0,
-                        "query_id_not_found_count": 0,
-                        "query_id_ambiguous_count": 0,
-                        "query_id_modified_count": 0,
-                        "query_id_unavailable_count": 0,
-                        "lookup_error_count": 0,
-                        "remediation_action_counts": {},
-                        "error": "",
-                    },
-                    "results": [],
-                    "error": "",
-                },
-                "data_file_health": {
-                    "enabled_data_file_map_count": 0,
-                    "required_data_files": [],
-                    "snapshot_selector": "latestProcessed",
-                    "checks": [],
-                    "results": [],
-                },
-                "enabled_map_count": 1,
-            },
-        )
-        cls._live_diagnostics_patcher.start()
-        cls._view_live_diagnostics_patcher.start()
-
-    @classmethod
-    def tearDownClass(cls):
-        cls._live_diagnostics_patcher.stop()
-        cls._view_live_diagnostics_patcher.stop()
-        super().tearDownClass()
-
     @classmethod
     def setUpTestData(cls):
         User = get_user_model()
@@ -336,7 +237,7 @@ class ForwardIngestionLogExportViewTest(TestCase):
         self.assertContains(response, "ipam.prefix 1")
         self.assertContains(response, "vrf 1")
 
-    def test_poll_defers_change_explainability_while_running(self):
+    def test_poll_marks_change_explainability_unavailable_while_running(self):
         # Regression (504 fix): while the job is running, the 5s/15s poll must
         # NOT recompute change_explainability — doing so on every poll piles DB
         # load onto the web workers during a long settling merge, which is what
@@ -380,7 +281,7 @@ class ForwardIngestionLogExportViewTest(TestCase):
         mock_ce.assert_not_called()
 
     def test_poll_computes_change_explainability_when_done(self):
-        # The completed ingestion still computes it (the deferral is only while
+        # The completed ingestion still computes it (it is unavailable only while
         # the job runs), so the operator sees the breakdown once it finishes.
         self.client.force_login(self.user)
         with patch(
@@ -396,133 +297,11 @@ class ForwardIngestionLogExportViewTest(TestCase):
             )
         mock_ce.assert_called_once()
 
-    def test_export_logs_compacts_large_execution_plan_items(self):
-        sync = ForwardSync.objects.create(
-            name="sync-log-export-plan-items",
-            source=self.source,
-            parameters={"snapshot_id": "latestProcessed"},
-        )
-        ingestion = ForwardIngestion.objects.create(
-            sync=sync,
-            snapshot_selector="latestProcessed",
-            snapshot_id="snapshot-2",
-        )
-        sync.set_branch_run_state(
-            {
-                "snapshot_id": "snapshot-2",
-                "phase": "planning",
-                "total_plan_items": 99,
-                "plan_items": [
-                    {
-                        "index": index,
-                        "status": "queued",
-                        "model": "dcim.device",
-                    }
-                    for index in range(99)
-                ],
-            }
-        )
-
-        self.client.force_login(self.user)
-
-        response = self.client.get(
-            reverse(
-                "plugins:forward_netbox:forwardingestion_export_logs",
-                kwargs={"pk": ingestion.pk},
-            )
-        )
-
-        self.assertEqual(
-            response.status_code,
-            200,
-            response.content.decode("utf-8", errors="replace"),
-        )
-        data = json.loads(response.content)
-        self.assertEqual(data["execution_plan"]["total_plan_items"], 99)
-        self.assertEqual(data["execution_plan"]["plan_items_count"], 99)
-        self.assertTrue(data["execution_plan"]["plan_items_truncated"])
-        self.assertEqual(len(data["execution_plan"]["plan_items"]), 25)
-        self.assertEqual(
-            data["sync"]["execution_state"]["plan_items_count"],
-            99,
-        )
-        self.assertEqual(
-            len(data["sync"]["execution_state"]["plan_items"]),
-            25,
-        )
-
-    def test_ingestion_views_compact_execution_state_for_large_plan_items(self):
-        legacy_sync = ForwardSync.objects.create(
-            name="sync-log-export-legacy-state",
-            source=self.source,
-            parameters={"snapshot_id": "latestProcessed"},
-        )
-        legacy_ingestion = ForwardIngestion.objects.create(
-            sync=legacy_sync,
-            snapshot_selector="latestProcessed",
-            snapshot_id="snapshot-3",
-        )
-        legacy_sync.set_branch_run_state(
-            {
-                "phase": "planning",
-                "total_plan_items": 99,
-                "next_plan_index": 2,
-                "plan_items": [
-                    {
-                        "index": index,
-                        "status": "queued",
-                        "model": "dcim.device",
-                    }
-                    for index in range(99)
-                ],
-            }
-        )
-
-        self.client.force_login(self.user)
-
-        detail_response = self.client.get(
-            reverse(
-                "plugins:forward_netbox:forwardingestion",
-                kwargs={"pk": legacy_ingestion.pk},
-            )
-        )
-        logs_response = self.client.get(
-            reverse(
-                "plugins:forward_netbox:forwardingestion_logs",
-                kwargs={"pk": legacy_ingestion.pk},
-            )
-        )
-        progress_response = self.client.get(
-            reverse(
-                "plugins:forward_netbox:forwardingestion_progress",
-                kwargs={"pk": legacy_ingestion.pk},
-            )
-        )
-
-        self.assertEqual(detail_response.status_code, 200)
-        self.assertEqual(logs_response.status_code, 200)
-        self.assertEqual(progress_response.status_code, 200)
-
-        for response in [detail_response, logs_response, progress_response]:
-            execution_state = response.context["execution_state"]
-            self.assertEqual(execution_state["plan_items_count"], 99)
-            self.assertTrue(execution_state["plan_items_truncated"])
-            self.assertEqual(len(execution_state["plan_items"]), 25)
-
-    def test_sync_support_bundle_compacts_advisory_workload_preview_plan_items(self):
+    def test_sync_support_bundle_uses_aggregate_upgrade_evidence(self):
         standalone_sync = ForwardSync.objects.create(
             name="sync-support-bundle-compact",
             source=self.source,
             parameters={"snapshot_id": "latestProcessed"},
-        )
-        standalone_sync.set_branch_run_state(
-            {
-                "snapshot_id": "snapshot-state",
-                "phase": "executing",
-                "plan_items": [
-                    {"index": index, "status": "queued"} for index in range(150)
-                ],
-            }
         )
         self.client.force_login(self.user)
 
@@ -535,12 +314,9 @@ class ForwardIngestionLogExportViewTest(TestCase):
 
         self.assertEqual(response.status_code, 200)
         data = json.loads(response.content)
-        advisory = data["sync"]["advisory_summary"]
-        self.assertNotIn("plan_items", advisory["branch_run"])
-        self.assertEqual(advisory["branch_run"]["plan_items_count"], 150)
         reconciliation = data["upgrade_reconciliation"]
         self.assertTrue(reconciliation["read_only"])
-        self.assertNotIn("sample", reconciliation["legacy_endpoint_device_types"])
+        self.assertNotIn("sample", reconciliation["stale_endpoint_device_types"])
         self.assertNotIn(
             "catalog_retained_sample",
             reconciliation["dlm"]["software_versions"],
@@ -550,13 +326,65 @@ class ForwardIngestionLogExportViewTest(TestCase):
             reconciliation["dlm"]["software_versions"],
         )
 
+    def test_sync_support_bundle_includes_redacted_effective_scope_configuration(self):
+        self.source.parameters = {
+            **self.source.parameters,
+            "sync_endpoints": True,
+            "sync_generic_endpoints": False,
+            "scope_endpoints_by_include_tags": True,
+            "apply_device_scope_tags": True,
+            "sync_device_tags": ["private-feature-tag"],
+            "device_tag_include_tags": ["private-include-tag"],
+            "device_tag_exclude_tags": ["private-exclude-tag"],
+            "device_tag_include_match": "all",
+            "device_tag_filter_mode": "local",
+            "device_tag_prune_out_of_scope": True,
+        }
+        self.source.save(update_fields=["parameters"])
+        standalone_sync = ForwardSync.objects.create(
+            name="sync-support-bundle-scope-config",
+            source=self.source,
+            parameters={"snapshot_id": "latestProcessed"},
+        )
+        self.client.force_login(self.user)
+
+        response = self.client.get(
+            reverse(
+                "plugins:forward_netbox:forwardsync_support_bundle",
+                kwargs={"pk": standalone_sync.pk},
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = json.loads(response.content)
+        scope = payload["sync"]["scope_configuration"]
+        self.assertEqual(
+            scope,
+            {
+                "sync_endpoints": True,
+                "sync_generic_endpoints": False,
+                "scope_endpoints_by_include_tags": True,
+                "apply_device_scope_tags": True,
+                "sync_device_tag_count": 1,
+                "include_tag_count": 1,
+                "exclude_tag_count": 1,
+                "include_match": "all",
+                "filter_mode": "local",
+                "prune_out_of_scope": True,
+            },
+        )
+        rendered = response.content.decode()
+        self.assertNotIn("private-feature-tag", rendered)
+        self.assertNotIn("private-include-tag", rendered)
+        self.assertNotIn("private-exclude-tag", rendered)
+
     def test_sync_support_bundle_includes_dependency_preview_convergence_evidence(self):
         standalone_sync = ForwardSync.objects.create(
             name="sync-support-bundle-preview",
             source=self.source,
             parameters={"snapshot_id": "latestProcessed"},
         )
-        ForwardIngestion.objects.create(
+        ingestion = ForwardIngestion.objects.create(
             sync=standalone_sync,
             snapshot_selector="latestProcessed",
             snapshot_id="snapshot-1",
@@ -566,6 +394,25 @@ class ForwardIngestionLogExportViewTest(TestCase):
             created_change_count=2,
             updated_change_count=4,
             deleted_change_count=1,
+        )
+        completed_at = timezone.now()
+        ingestion.job = Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardIngestion),
+            object_id=ingestion.pk,
+            name="completed support-bundle sync",
+            status=JobStatusChoices.STATUS_COMPLETED,
+            job_id="123e4567-e89b-12d3-a456-426614174061",
+            created=completed_at,
+            started=completed_at,
+            completed=completed_at,
+        )
+        ingestion.save(update_fields=["job"])
+        ForwardOwnershipReconciliation.objects.create(
+            sync=standalone_sync,
+            domain=ForwardOwnershipReconciliation.Domain.VIRTUAL_PARENTS,
+            generation=ingestion.pk,
+            snapshot_id=ingestion.snapshot_id,
+            status=ForwardOwnershipReconciliation.Status.COMPLETED,
         )
         Job.objects.create(
             object_type=ContentType.objects.get_for_model(ForwardSync),
@@ -608,6 +455,32 @@ class ForwardIngestionLogExportViewTest(TestCase):
         self.assertNotIn("network_id", preview["context"])
         self.assertEqual(
             preview["latest_sync_evidence"]["status"],
-            "confirmation_required",
+            "ownership_incomplete",
         )
         self.assertEqual(preview["latest_sync_evidence"]["applied"], 7)
+
+    def test_sync_support_bundle_rejects_empty_dependency_preview(self):
+        standalone_sync = ForwardSync.objects.create(
+            name="sync-support-bundle-empty-preview",
+            source=self.source,
+            parameters={"snapshot_id": "latestProcessed"},
+        )
+        Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=standalone_sync.pk,
+            name="dependency preview",
+            status=JobStatusChoices.STATUS_COMPLETED,
+            job_id="123e4567-e89b-12d3-a456-426614174062",
+            data={},
+        )
+        self.client.force_login(self.user)
+
+        response = self.client.get(
+            reverse(
+                "plugins:forward_netbox:forwardsync_support_bundle",
+                kwargs={"pk": standalone_sync.pk},
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(json.loads(response.content)["latest_dependency_preview"])

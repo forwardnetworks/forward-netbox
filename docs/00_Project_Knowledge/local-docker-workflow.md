@@ -29,8 +29,9 @@ invoke restart
 ```
 
 Leave the default autoreload enabled for normal development.
+The release automation forces autoreload off for its isolated gate.
 
-For field-scale runs, treat the local stack as a dedicated ingestion runtime:
+For high-volume runs, treat the local stack as a dedicated ingestion runtime:
 
 - Run `invoke optimize-runtime` before the smoke or scale run.
 - Keep `nqe_page_size` at `10000` unless Forward API or NetBox worker telemetry
@@ -42,26 +43,26 @@ For field-scale runs, treat the local stack as a dedicated ingestion runtime:
   stored setting.
 - `invoke smoke-sync` also enables the safe bulk ORM model set by default; use
   `--enable-bulk-orm=False` only for adapter-only comparison evidence.
-- Enable `Stage next shard during merge` only when auto-merge is enabled and
-  support evidence shows queue/merge wait dominates while the database still
-  has headroom.
-- Put Postgres and fetch artifacts on fast local storage when available.
+- Put Postgres on fast local storage when available.
 
 Do not run Django test tasks against this same shared runtime while a Forward
-execution run is queued, running, or waiting. The test suite can touch RQ
+sync is queued, syncing, or merging. The test suite can touch RQ
 registries and test database state; sharing it with a live ingestion can move a
 real job into failed/abandoned state. `invoke test`, `invoke scenario-test`, and
-`invoke ingestion-delete-regression` fail fast when active execution runs are
+`invoke ingestion-delete-regression` fail fast when active syncs are
 detected. Set `FORWARD_NETBOX_ALLOW_SHARED_RUNTIME_TESTS=1` only when you
 intentionally want to bypass that guard.
 
-CI-style gates such as `invoke test-ci`, `invoke scenario-test-ci`, and
-`invoke scale-chaos-test` use the shared runtime only when the active-run guard
-can inspect it and finds no active run. `invoke playwright-test` uses the same
-guard for the deterministic UI harness. If the guard detects an active run or
-cannot inspect the shared runtime, for example because local Postgres is already
-at its connection limit, the task runs against an isolated compose project
-instead of bypassing the shared-runtime safety check.
+CI-style Django gates such as `invoke test-ci` and `invoke scenario-test-ci`
+always use an isolated compose project. This keeps test-created RQ jobs away
+from workers in the shared runtime even when no production sync is active. All
+alternate test, UI, and artifact projects force a project-scoped named Postgres
+volume; a configured `FORWARD_NETBOX_POSTGRES_DATA_PATH` host bind is never
+inherited. The explicit `FORWARD_NETBOX_ALLOW_SHARED_RUNTIME_TESTS=1` override
+is reserved for intentional operator use. `invoke playwright-test` uses the
+active-sync guard for the deterministic UI harness and moves to an isolated
+compose project when the guard detects an active run or cannot inspect the
+shared runtime.
 
 Use the isolated test runtime when a live ingestion is active or when you want a
 repeatable full regression lane that does not share RQ, Redis, or Postgres with
@@ -78,6 +79,13 @@ touch the primary `forward-netbox` runtime. It keeps the isolated Postgres volum
 by default so later `--keepdb` test runs are faster. Add
 `--no-keep-runtime` to remove the isolated containers and volumes after the
 run.
+
+The Postgres service receives a 1 GiB `/dev/shm` mount by default because
+Branching schema provisioning can require multiple concurrent dynamic
+shared-memory segments. Override it with
+`FORWARD_NETBOX_POSTGRES_SHM_SIZE` only when the host has a different tested
+capacity requirement; Docker's 64 MiB default is not sufficient for the full
+branch-heavy regression suite.
 
 The Docker build context is intentionally pruned by `.dockerignore`. Keep large
 local artifacts such as `development/logs/`, virtualenvs, `site/`, `dist/`,
@@ -120,28 +128,11 @@ root, Postgres data mount, source fetch settings, worker count, and PostgreSQL
 tuning recommendations in a JSON artifact. Use it before long local tests so the
 evidence shows whether the run is using the intended storage and worker profile.
 
-Fetch artifacts are separate from Postgres data. For large local runs, point
-them at fast scratch storage rather than durable shared storage:
-
-```bash
-echo 'FORWARD_NETBOX_FETCH_ARTIFACT_HOST_PATH=/var/lib/container-storage/forward-netbox/fetch-artifacts' >> development/.env
-```
-
-The compose runtime mounts this host path into the NetBox and worker containers
-as `/fetch-artifacts` and sets `FORWARD_NETBOX_FETCH_ARTIFACT_DIR`
-automatically. If no host path is configured, compose uses
-`development/fetch-artifacts`, which is git-ignored.
-
-The artifact directory is runtime scratch space for retry/resume support; do not
-commit it or back it up with customer data. The local compose default allows
-artifacts up to `512 MiB` so large full-model fallback artifacts can be reused
-within a run instead of silently falling back to the smaller library default.
-
 Use `invoke smoke-sync` for a controlled sync smoke test once a source/sync is configured in the local NetBox instance.
 
 ```bash
 invoke smoke-sync --plan-only
-invoke smoke-sync --max-changes-per-branch 1000
+invoke smoke-sync --max-changes-per-staging-item 1000
 ```
 
 Use targeted ingestion/delete regressions to validate native full-import and diff-delete behavior before live customer reruns.
@@ -162,16 +153,14 @@ and writes timestamped evidence to JSON. Use it when two lanes are running in
 parallel (for example, an A/B or recovery replay) and you need continuous proof
 that no blocker/warning/error findings appeared during the soak window.
 
-For release readiness on the release-validation dataset, label and enforce the
-field-scale artifact. The workflow selects an existing configured Forward Source
-without putting credentials or source identifiers in the command or artifact:
+For release readiness, verify the configured validation source, run the exact
+sync, and enforce terminal sync plus ownership state:
 
 ```bash
-export FORWARD_SMOKE_DATASET_LABEL=release-smoke
-invoke release-runtime-preflight --dataset-label=release-smoke
-invoke field-scale-runtime-matrix --resume=False
-invoke release-dataset-gate --dataset-label=release-smoke
-invoke release-readiness-audit --dataset-label=release-smoke
+invoke validation-org-query-audit --source-name '<validation source>' --fail-on-gap
+invoke smoke-sync --plan-only
+invoke smoke-sync
+invoke sync-release-gate --sync-ids '<sync id>'
 ```
 
 Use `invoke playwright-test` for the deterministic UI harness. It applies pending
@@ -180,7 +169,7 @@ logs in through the browser, visits the sync and ingestion workflow pages, and
 writes local screenshots plus a JSON summary under `.playwright-artifacts/`.
 Set `PLAYWRIGHT_SKIP_MIGRATE=true` only when the target database has already been
 migrated by the caller, as in GitHub CI.
-When the shared runtime has an active execution run or cannot be inspected, the
+When the shared runtime has an active sync or cannot be inspected, the
 task brings up the temporary `forward-netbox-ui-test` compose project on port
 `18080`; override the port with `FORWARD_NETBOX_PLAYWRIGHT_HOST_PORT` if needed.
 

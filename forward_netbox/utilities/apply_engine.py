@@ -8,25 +8,21 @@ from .apply_engine_bulk import (
 from .apply_engine_bulk import (
     bulk_orm_apply_tree_models as _bulk_orm_apply_tree_models_impl,
 )
+from .apply_engine_bulk import bulk_orm_delete_prefixes
 from .apply_engine_bulk import lookup_key_from_object as _lookup_key_from_object_impl
 from .apply_engine_bulk import lookup_key_from_values as _lookup_key_from_values_impl
 from .apply_engine_bulk import lookup_key_value as _lookup_key_value_impl
-from .apply_engine_decision import sync_backend as _sync_backend_impl
 
 ADAPTER_MODEL_BLOCKERS = _decision_mod.ADAPTER_MODEL_BLOCKERS
 ADAPTER_MODELS_WITHOUT_BLOCKER = _decision_mod.ADAPTER_MODELS_WITHOUT_BLOCKER
 ADAPTER_REQUIRED_MODELS = _decision_mod.ADAPTER_REQUIRED_MODELS
 APPLY_ENGINE_MODEL_CLASSIFICATIONS = _decision_mod.APPLY_ENGINE_MODEL_CLASSIFICATIONS
-BLOCKER_PROMOTION_LANES = _decision_mod.BLOCKER_PROMOTION_LANES
 BULK_ORM_ENABLED_MODELS = _decision_mod.BULK_ORM_ENABLED_MODELS
 BULK_ORM_ENABLED_MODELS_WITHOUT_SPECS = (
     _decision_mod.BULK_ORM_ENABLED_MODELS_WITHOUT_SPECS
 )
-BULK_ORM_PARITY_GATES = _decision_mod.BULK_ORM_PARITY_GATES
 BULK_ORM_SPEC_MODELS = _decision_mod.BULK_ORM_SPEC_MODELS
-EXPERIMENTAL_BULK_ORM_MODELS = _decision_mod.EXPERIMENTAL_BULK_ORM_MODELS
 ForwardApplyEngineDecision = _decision_mod.ForwardApplyEngineDecision
-SIMPLE_BULK_CANDIDATE_MODELS = _decision_mod.SIMPLE_BULK_CANDIDATE_MODELS
 UNCLASSIFIED_SUPPORTED_MODELS = _decision_mod.UNCLASSIFIED_SUPPORTED_MODELS
 
 
@@ -34,9 +30,8 @@ UNCLASSIFIED_SUPPORTED_MODELS = _decision_mod.UNCLASSIFIED_SUPPORTED_MODELS
 class ForwardApplyEngine:
     """Behavior-preserving apply-engine boundary.
 
-    The adapter engine delegates to the existing per-model row adapters. Future
-    engines can plug in below this boundary without changing execution backend
-    semantics.
+    The adapter engine delegates to the model-specific row adapters; bulk ORM is
+    selected only for the parity-tested model set.
     """
 
     name: str = ForwardApplyEngineChoices.ADAPTER
@@ -44,7 +39,7 @@ class ForwardApplyEngine:
 
     def apply_upserts(self, runner, model_string, rows):
         if self.name == ForwardApplyEngineChoices.BULK_ORM and model_string in (
-            BULK_ORM_ENABLED_MODELS | EXPERIMENTAL_BULK_ORM_MODELS
+            BULK_ORM_ENABLED_MODELS
         ):
             if model_string in BULK_ORM_ENABLED_MODELS_WITHOUT_SPECS:
                 runner._record_issue(
@@ -58,33 +53,26 @@ class ForwardApplyEngine:
         return runner._apply_model_rows(model_string, rows)
 
     def apply_deletes(self, runner, model_string, rows):
+        if (
+            self.name == ForwardApplyEngineChoices.BULK_ORM
+            and model_string == "ipam.prefix"
+            and bulk_orm_delete_prefixes(runner, rows)
+        ):
+            return
         return runner._delete_model_rows(model_string, rows)
 
 
-def select_apply_engine(*, sync, model_string, backend):
-    decision = apply_engine_decision_for(
-        sync=sync,
-        model_string=model_string,
-        backend=backend,
-    )
+def select_apply_engine(*, sync, model_string):
+    decision = apply_engine_decision_for(sync=sync, model_string=model_string)
     return ForwardApplyEngine(name=decision.selected_engine, decision=decision)
 
 
-def apply_engine_name_for(*, sync, model_string, backend):
-    return select_apply_engine(
-        sync=sync,
-        model_string=model_string,
-        backend=backend,
-    ).name
+def apply_engine_name_for(*, sync, model_string):
+    return select_apply_engine(sync=sync, model_string=model_string).name
 
 
-def apply_engine_decision_for(*, sync, model_string, backend):
-    # Compatibility bridge: tests and helpers monkeypatch apply_engine module-level
-    # constants, so propagate those values to the extracted decision module before
-    # evaluating the decision.
+def apply_engine_decision_for(*, sync, model_string):
     _decision_mod.BULK_ORM_ENABLED_MODELS = BULK_ORM_ENABLED_MODELS
-    _decision_mod.EXPERIMENTAL_BULK_ORM_MODELS = EXPERIMENTAL_BULK_ORM_MODELS
-    _decision_mod.SIMPLE_BULK_CANDIDATE_MODELS = SIMPLE_BULK_CANDIDATE_MODELS
     _decision_mod.ADAPTER_REQUIRED_MODELS = ADAPTER_REQUIRED_MODELS
     _decision_mod.ADAPTER_MODEL_BLOCKERS = ADAPTER_MODEL_BLOCKERS
     _decision_mod.BULK_ORM_ENABLED_MODELS_WITHOUT_SPECS = (
@@ -93,24 +81,11 @@ def apply_engine_decision_for(*, sync, model_string, backend):
     return _decision_mod.apply_engine_decision_for(
         sync=sync,
         model_string=model_string,
-        backend=backend,
     )
 
 
-def apply_engine_decision_summary(*, sync, model_string, backend):
-    return apply_engine_decision_for(
-        sync=sync,
-        model_string=model_string,
-        backend=backend,
-    ).as_dict()
-
-
-def bulk_orm_expansion_summary(model_strings=None):
-    return _decision_mod.bulk_orm_expansion_summary(model_strings)
-
-
-def _sync_backend(sync):
-    return _sync_backend_impl(sync)
+def apply_engine_decision_summary(*, sync, model_string):
+    return apply_engine_decision_for(sync=sync, model_string=model_string).as_dict()
 
 
 def _bulk_orm_apply_simple_models(runner, model_string, rows):

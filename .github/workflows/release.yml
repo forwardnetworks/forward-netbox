@@ -1,4 +1,4 @@
-name: Publish to PyPI
+name: Publish release
 # Tag-triggered release pipeline using PyPI Trusted Publishing (OIDC) — no API
 # token is stored anywhere. Publishing v* builds the sdist + wheel and uploads
 # them with PEP 740 provenance attestations.
@@ -10,51 +10,117 @@ name: Publish to PyPI
 #   2. In this repo: Settings -> Environments -> create an environment named
 #      "pypi" (optionally add required reviewers to gate publishes).
 "on":
-  # Trusted Publishing is configured (PyPI publisher + `pypi` environment), so
-  # release tags auto-publish via OIDC. workflow_dispatch also allows a manual
-  # re-publish from the Actions tab.
+  # Trusted Publishing is configured (PyPI publisher + `pypi` environment).
+  # Only a version tag can publish; there is no manual gate-bypass route.
   push:
     tags:
       - "v*"
-  workflow_dispatch:
 permissions:
+  actions: read
   contents: read
+  pull-requests: read
 jobs:
+  validate:
+    name: Validate tagged release
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.14"
+      - name: Verify reviewed main-branch release provenance
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          python scripts/verify_release_provenance.py \
+            --tag "${GITHUB_REF_NAME}" --reviewer brandonheller
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          cache: npm
+      - name: Install pinned UI harness
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Install release validation dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            build \
+            invoke \
+            python-dotenv \
+            pre-commit \
+            mkdocs \
+            mkdocs-material \
+            mkdocs-awesome-pages-plugin \
+            mdx-truly-sane-lists \
+            pymdown-extensions \
+            pip-audit \
+            poetry-core==2.4.1
+      - name: Verify tag equals package version
+        run: |
+          package_version="$(
+            python - <<'PY'
+          import tomllib
+
+          with open("pyproject.toml", "rb") as pyproject:
+              data = tomllib.load(pyproject)
+          print(data["tool"]["poetry"]["version"])
+          PY
+          )"
+          test "${GITHUB_REF_NAME}" = "v${package_version}"
+      - name: Require final-tree release authorization evidence
+        run: |
+          python scripts/check_release_authorization.py \
+            --version "${GITHUB_REF_NAME#v}"
+      - name: Audit pinned runtime dependencies
+        run: pip-audit --progress-spinner off -r constraints.txt
+      - name: Run exact release gate
+        env:
+          FORWARD_SENSITIVE_PATTERNS: ${{ secrets.FORWARD_SENSITIVE_PATTERNS }}
+          FORWARD_SENSITIVE_BINARY_HISTORY_ALLOWLIST: >-
+            ${{ secrets.FORWARD_SENSITIVE_BINARY_HISTORY_ALLOWLIST }}
+          FORWARD_SENSITIVE_HISTORY_BASELINE: >-
+            ${{ vars.FORWARD_SENSITIVE_HISTORY_BASELINE }}
+        run: |
+          python scripts/check_sensitive_content.py --git-files \
+            --protected-history --require-env-patterns --require-baseline-env
+          python -m invoke ci
   build:
     name: Build distribution
+    needs: validate
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
-          python-version: "3.12"
+          python-version: "3.14"
       - name: Build sdist and wheel
         run: |
-          python -m pip install --upgrade pip build
-          python -m build
-      - name: Generate CycloneDX SBOM
-        # Software Bill of Materials over the declared runtime deps, kept OUT of
-        # dist/ (uploaded to PyPI) and published as its own artifact for
-        # supply-chain review. Non-blocking: the SBOM is supplementary and must
-        # never fail the publish (a cyclonedx-py CLI change once did — v2.3.1).
-        continue-on-error: true
-        run: |
-          python -m pip install cyclonedx-bom
-          mkdir -p sbom
-          echo httpx > sbom-reqs.txt
-          echo 'netboxlabs-netbox-branching==1.1.1' >> sbom-reqs.txt
-          echo pyzipper >> sbom-reqs.txt
-          cyclonedx-py requirements sbom-reqs.txt \
-            --output-format JSON --output-file sbom/forward-netbox-sbom.json
+          python -m pip install --upgrade pip build invoke python-dotenv \
+            poetry-core==2.4.1 twine
+          python -m invoke package
+          python -m twine check dist/*
+      - name: Validate installed wheel on exact runtime
+        run: python -m invoke artifact-test
       - name: Upload distribution artifacts
-        uses: actions/upload-artifact@v4
+        # actions/upload-artifact v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: dist
           path: dist/
       - name: Upload SBOM
-        uses: actions/upload-artifact@v4
+        # actions/upload-artifact v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: sbom
           path: sbom/
@@ -69,9 +135,41 @@ jobs:
       id-token: write # OIDC token for PyPI Trusted Publishing
     steps:
       - name: Download distribution artifacts
-        uses: actions/download-artifact@v4
+        # actions/download-artifact v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: dist
           path: dist/
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        # pypa/gh-action-pypi-publish release/v1
+        # yamllint disable rule:line-length
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b
+        # yamllint enable rule:line-length
+  github-release:
+    name: Publish identical GitHub release artifacts
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download tested distribution artifacts
+        # actions/download-artifact v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: dist
+          path: dist/
+      - name: Download installed-runtime SBOM
+        # actions/download-artifact v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: sbom
+          path: sbom/
+      - name: Create immutable GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" dist/* sbom/* \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "${GITHUB_REF_NAME}" \
+            --verify-tag \
+            --generate-notes

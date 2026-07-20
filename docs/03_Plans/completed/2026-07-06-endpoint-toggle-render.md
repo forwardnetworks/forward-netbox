@@ -9,7 +9,7 @@ could not enable endpoint import from the GUI. Add it to both Parameters
 fieldsets and release as the 2.4.0 minor.
 
 ## Constraints
-- No NQE / apply change; forms-only. validation-org org query unchanged (no republish).
+- No NQE / apply change; forms-only. Validation-org query unchanged (no republish).
 
 ## Touched Surfaces
 - `forward_netbox/forms.py` — add `"sync_endpoints"` to both source-form

@@ -1,6 +1,5 @@
 from core.choices import JobStatusChoices
 from core.exceptions import SyncError
-from core.models import Job
 from django.db import transaction as db_transaction
 from django.db.models import Q
 from django.utils.module_loading import import_string
@@ -10,56 +9,41 @@ from netbox.constants import ADVISORY_LOCK_KEYS
 from ..choices import forward_configured_models
 from ..choices import FORWARD_OPTIONAL_MODELS
 from ..choices import ForwardDiffFallbackModeChoices
-from ..choices import ForwardExecutionBackendChoices
 from ..choices import ForwardSyncStatusChoices
 from ..exceptions import ForwardSyncError
-from .branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
+from .branch_budget import DEFAULT_MAX_CHANGES_PER_STAGING_ITEM
 from .forward_api import LATEST_COLLECTED_SNAPSHOT
 from .forward_api import LATEST_PROCESSED_SNAPSHOT
-from .sync_state import get_max_changes_per_branch as get_state_max_changes_per_branch
-
-
-DEFAULT_ENABLE_BULK_ORM_FOR_NEW_SYNCS = True
-SCOPE_ENDPOINTS_BY_INCLUDE_TAGS_CONFIGURED = (
-    "scope_endpoints_by_include_tags_configured"
+from .job_queue import enqueue_forward_job
+from .sync_state import (
+    get_max_changes_per_staging_item as get_state_max_changes_per_staging_item,
 )
 
 
-def effective_scope_endpoints_by_include_tags(source_parameters):
-    """Return the endpoint include-scope setting with a safe legacy default.
+DEFAULT_ENABLE_BULK_ORM_FOR_NEW_SYNCS = True
 
-    Before 2.5.10, existing sources could persist the checkbox as false without
-    recording that an operator had intentionally opted out. When those sources
-    have include tags, treat the missing marker as legacy state and fail closed.
-    A 2.5.10 form save writes the marker, after which false is an explicit opt-out.
-    """
+
+def effective_scope_endpoints_by_include_tags(source_parameters):
+    """Return endpoint include-scope behavior; missing state fails closed."""
     parameters = dict(source_parameters or {})
-    include_tags = parameters.get("device_tag_include_tags") or []
-    if not include_tags and parameters.get("device_tag_include"):
-        include_tags = [parameters.get("device_tag_include")]
-    has_include_scope = any(str(tag).strip() for tag in include_tags)
-    if (
-        has_include_scope
-        and parameters.get(SCOPE_ENDPOINTS_BY_INCLUDE_TAGS_CONFIGURED) is not True
-    ):
-        return True
-    return bool(parameters.get("scope_endpoints_by_include_tags"))
+    return bool(parameters.get("scope_endpoints_by_include_tags", True))
 
 
 def normalize_forward_sync(sync):
     parameters = dict(sync.parameters or {})
-    parameters["execution_backend"] = ForwardExecutionBackendChoices.SINGLE_BRANCH
     parameters["diff_fallback_mode"] = parameters.get(
         "diff_fallback_mode",
         ForwardDiffFallbackModeChoices.ALLOW_FALLBACK,
     )
     if "enable_bulk_orm" not in parameters:
         parameters["enable_bulk_orm"] = DEFAULT_ENABLE_BULK_ORM_FOR_NEW_SYNCS
-    max_changes_per_branch = get_state_max_changes_per_branch(
+    parameters.setdefault("validation_schedule_interval", 0)
+    parameters.setdefault("preview_schedule_interval", 0)
+    max_changes_per_staging_item = get_state_max_changes_per_staging_item(
         sync,
-        DEFAULT_MAX_CHANGES_PER_BRANCH,
+        DEFAULT_MAX_CHANGES_PER_STAGING_ITEM,
     )
-    parameters["max_changes_per_branch"] = max(1, max_changes_per_branch)
+    parameters["max_changes_per_staging_item"] = max(1, max_changes_per_staging_item)
     sync.auto_merge = bool(parameters.get("auto_merge", sync.auto_merge))
     sync.parameters = parameters
 
@@ -73,10 +57,6 @@ def device_tag_scope(sync):
     source_parameters = dict(getattr(sync.source, "parameters", {}) or {})
     include_tags = source_parameters.get("device_tag_include_tags") or []
     exclude_tags = source_parameters.get("device_tag_exclude_tags") or []
-    if not include_tags and source_parameters.get("device_tag_include"):
-        include_tags = [source_parameters.get("device_tag_include")]
-    if not exclude_tags and source_parameters.get("device_tag_exclude"):
-        exclude_tags = [source_parameters.get("device_tag_exclude")]
     include_tags = [str(tag).strip() for tag in include_tags if str(tag).strip()]
     exclude_tags = [str(tag).strip() for tag in exclude_tags if str(tag).strip()]
     include_match = str(
@@ -130,10 +110,6 @@ def get_query_parameters(sync):
         return {}
     include_tags = source_parameters.get("device_tag_include_tags") or []
     exclude_tags = source_parameters.get("device_tag_exclude_tags") or []
-    if not include_tags and source_parameters.get("device_tag_include"):
-        include_tags = [source_parameters.get("device_tag_include")]
-    if not exclude_tags and source_parameters.get("device_tag_exclude"):
-        exclude_tags = [source_parameters.get("device_tag_exclude")]
     include_tags = [str(tag).strip() for tag in include_tags if str(tag).strip()]
     exclude_tags = [str(tag).strip() for tag in exclude_tags if str(tag).strip()]
     include_match = str(
@@ -142,10 +118,6 @@ def get_query_parameters(sync):
     if include_match not in {"any", "all"}:
         include_match = "any"
     query_parameters = {}
-    if len(include_tags) == 1:
-        query_parameters["device_tag_include"] = include_tags[0]
-    if len(exclude_tags) == 1:
-        query_parameters["device_tag_exclude"] = exclude_tags[0]
     if include_tags:
         query_parameters["device_tag_include_tags"] = include_tags
         query_parameters["device_tag_include_match"] = include_match
@@ -184,49 +156,168 @@ def sync_run_job_names(sync):
     return (f"{sync.name} - adhoc", f"{sync.name} - scheduled")
 
 
-def enqueue_sync_job(sync, adhoc=False, user=None):
-    if sync.is_waiting_for_branch_merge:
+def _resolve_enqueue_user(sync, user=None):
+    resolved = user or sync.user
+    if resolved is None:
         raise SyncError(
-            "Forward sync is waiting for the current shard branch to be merged."
+            "Forward sync has no owner. Edit the sync as the intended owner "
+            "before scheduling or running it."
         )
-    if not user:
-        user = sync.user
-    if adhoc or sync.status == ForwardSyncStatusChoices.NEW:
-        sync.status = ForwardSyncStatusChoices.QUEUED
-        sync.__class__.objects.filter(pk=sync.pk).update(status=sync.status)
-    return Job.enqueue(
-        import_string("forward_netbox.jobs.sync_forwardsync"),
-        instance=sync,
-        user=user,
-        name=f"{sync.name} - {'adhoc' if adhoc else 'scheduled'}",
-        adhoc=adhoc,
-        schedule_at=None if adhoc else sync.scheduled,
-        interval=None if adhoc else sync.interval,
-    )
+    if sync.user_id is None:
+        sync.__class__.objects.filter(pk=sync.pk, user__isnull=True).update(
+            user=resolved
+        )
+        sync.refresh_from_db(fields=["user"])
+        resolved = sync.user
+        if resolved is None:
+            raise SyncError(
+                "Forward sync owner adoption did not persist; retry the operation."
+            )
+    return resolved
 
 
-def enqueue_validation_job(
-    sync, adhoc=False, user=None, schedule_at=None, interval=None
+def _enqueue_standing_job(
+    job_class,
+    *,
+    sync,
+    user,
+    schedule_at,
+    interval,
 ):
-    if not user:
-        user = sync.user
-    if schedule_at or interval:
-        # Standing schedule: one per sync (enqueue_once dedup keys on the
-        # ValidationJob fixed name + the sync instance); recurrence is handled
-        # by JobRunner after each run completes. Cancel by deleting the
-        # scheduled job from the Jobs list. Pass schedule_at through untouched:
-        # core dedup keeps the existing row only when schedule_at is falsy or
-        # matches, so defaulting it to now() here would delete + recreate the
-        # schedule on every re-post instead of being idempotent.
-        from ..jobs import ValidationJob
+    """Update one standing chain without deleting its running occurrence."""
+    with advisory_lock(ADVISORY_LOCK_KEYS["job-schedules"]):
+        active_jobs = list(
+            job_class.get_jobs(sync)
+            .filter(status__in=JobStatusChoices.ENQUEUED_STATE_CHOICES)
+            .order_by("pk")
+        )
+        running = next(
+            (
+                job
+                for job in active_jobs
+                if job.status == JobStatusChoices.STATUS_RUNNING
+            ),
+            None,
+        )
+        if running is not None:
+            from ..jobs import terminate_job_once
+            from .job_liveness import job_has_live_execution
 
-        persist_standing_schedule_interval(sync, "validation", interval)
-        return ValidationJob.enqueue_once(
+            if not job_has_live_execution(running):
+                terminate_job_once(
+                    running,
+                    status=JobStatusChoices.STATUS_ERRORED,
+                    error=(
+                        "Standing schedule occurrence has no live RQ execution; "
+                        "reconciliation replaced the interrupted chain."
+                    ),
+                )
+                active_jobs = [job for job in active_jobs if job.pk != running.pk]
+                running = None
+        if running is not None:
+            for job in active_jobs:
+                if job.pk != running.pk and job.status in (
+                    JobStatusChoices.STATUS_PENDING,
+                    JobStatusChoices.STATUS_SCHEDULED,
+                ):
+                    job.delete()
+            return running
+
+        existing = active_jobs[0] if active_jobs else None
+        if existing is not None:
+            if (not schedule_at or existing.scheduled == schedule_at) and (
+                existing.interval == interval
+            ):
+                return existing
+            existing.delete()
+        return job_class.enqueue(
             instance=sync,
             user=user,
             schedule_at=schedule_at,
             interval=interval,
         )
+
+
+def enqueue_sync_job(sync, adhoc=False, user=None, current_job=None):
+    user = _resolve_enqueue_user(sync, user)
+    with advisory_lock(ADVISORY_LOCK_KEYS["job-schedules"]):
+        sync.refresh_from_db(fields=["status", "scheduled", "interval", "user"])
+        if sync.status == ForwardSyncStatusChoices.READY_TO_MERGE:
+            raise SyncError("Forward sync is waiting for its branch to be merged.")
+        active_names = (
+            sync_run_job_names(sync) if adhoc else (f"{sync.name} - scheduled",)
+        )
+        active_statuses = [
+            JobStatusChoices.STATUS_PENDING,
+            JobStatusChoices.STATUS_RUNNING,
+        ]
+        if not adhoc:
+            active_statuses.append(JobStatusChoices.STATUS_SCHEDULED)
+        active_jobs = list(
+            sync.jobs.filter(
+                name__in=active_names,
+                status__in=active_statuses,
+            ).order_by("pk")
+        )
+        current_job_pk = getattr(current_job, "pk", None)
+        running = next(
+            (
+                job
+                for job in active_jobs
+                if job.status == JobStatusChoices.STATUS_RUNNING
+                and job.pk != current_job_pk
+            ),
+            None,
+        )
+        if running is not None:
+            return running
+        existing = next(
+            (job for job in active_jobs if job.pk != current_job_pk),
+            None,
+        )
+        if existing is not None:
+            return existing
+        if sync.status in (
+            ForwardSyncStatusChoices.SYNCING,
+            ForwardSyncStatusChoices.MERGING,
+        ):
+            raise SyncError(
+                "Cannot queue another sync; a Forward ingestion is already in progress."
+            )
+        if adhoc or sync.status == ForwardSyncStatusChoices.NEW:
+            sync.status = ForwardSyncStatusChoices.QUEUED
+            sync.__class__.objects.filter(pk=sync.pk).update(status=sync.status)
+        return enqueue_forward_job(
+            import_string("forward_netbox.jobs.sync_forwardsync"),
+            instance=sync,
+            user=user,
+            name=f"{sync.name} - {'adhoc' if adhoc else 'scheduled'}",
+            adhoc=adhoc,
+            schedule_at=None if adhoc else sync.scheduled,
+            interval=None if adhoc else sync.interval,
+        )
+
+
+def enqueue_validation_job(
+    sync, adhoc=False, user=None, schedule_at=None, interval=None
+):
+    user = _resolve_enqueue_user(sync, user)
+    if schedule_at or interval:
+        # Standing schedule: one per sync, serialized by fixed JobRunner name
+        # and sync instance; recurrence is handled by JobRunner after each run
+        # completes. Pass schedule_at through untouched so defaulting it to
+        # now() cannot churn an otherwise idempotent re-post.
+        from ..jobs import ValidationJob
+
+        with advisory_lock(ADVISORY_LOCK_KEYS["job-schedules"]):
+            persist_standing_schedule_interval(sync, "validation", interval)
+            return _enqueue_standing_job(
+                ValidationJob,
+                sync=sync,
+                user=user,
+                schedule_at=schedule_at,
+                interval=interval,
+            )
     with advisory_lock(ADVISORY_LOCK_KEYS["job-schedules"]):
         active = (
             sync.jobs.filter(
@@ -238,8 +329,9 @@ def enqueue_validation_job(
         )
         if active is not None:
             raise JobAlreadyActive(active)
-        return Job.enqueue(
-            import_string("forward_netbox.jobs.validate_forwardsync"),
+        from ..jobs import ValidationJob
+
+        return ValidationJob.enqueue(
             instance=sync,
             user=user,
             name=f"{sync.name} - validation",
@@ -263,12 +355,10 @@ STANDING_SCHEDULE_JOB_NAMES = {
 
 
 def standing_schedule_intent(parameters):
-    """Comparable snapshot of the schedule-intent keys. Presence matters:
-    absent != (present, 0) — absent means a pre-2.5.7 install whose chains
-    reconcile adopts, stored 0 means an explicit operator cancel."""
+    """Comparable snapshot of canonical standing-schedule intervals."""
     parameters = parameters or {}
     return {
-        key: (key in parameters, int(parameters.get(key) or 0))
+        key: int(parameters.get(key) or 0)
         for key in STANDING_SCHEDULE_PARAM_KEYS.values()
     }
 
@@ -276,11 +366,9 @@ def standing_schedule_intent(parameters):
 def persist_standing_schedule_interval(sync, kind, interval):
     """Record the desired standing-schedule interval on the sync.
 
-    0 is stored explicitly — it means "operator cancelled", which reconcile
-    treats differently from an ABSENT key (absent = pre-2.5.7 install whose
-    schedule rows predate intent storage and must be adopted, not cancelled).
+    0 is stored explicitly and means "operator cancelled".
     Transactional: locks the sync row so concurrent writers (validation vs
-    preview persist, occurrence-guard backfill, form save) cannot clobber
+    preview persist, occurrence re-alignment, form save) cannot clobber
     each other's parameter keys."""
     key = STANDING_SCHEDULE_PARAM_KEYS[kind]
     with db_transaction.atomic():
@@ -304,27 +392,28 @@ def cancel_standing_schedule(sync, kind):
     from in-memory state (schedule resurrection). Instead the occurrence's
     intent guard sees the stored 0 at its next firing and terminates the
     chain itself. Returns the number of rows removed."""
-    persist_standing_schedule_interval(sync, kind, 0)
-    removed = 0
-    for job in sync.jobs.filter(
-        name=STANDING_SCHEDULE_JOB_NAMES[kind],
-        status__in=[
-            JobStatusChoices.STATUS_PENDING,
-            JobStatusChoices.STATUS_SCHEDULED,
-        ],
-    ):
-        job.delete()
-        removed += 1
-    return removed
+    with advisory_lock(ADVISORY_LOCK_KEYS["job-schedules"]):
+        persist_standing_schedule_interval(sync, kind, 0)
+        removed = 0
+        for job in sync.jobs.filter(
+            name=STANDING_SCHEDULE_JOB_NAMES[kind],
+            status__in=[
+                JobStatusChoices.STATUS_PENDING,
+                JobStatusChoices.STATUS_SCHEDULED,
+            ],
+        ):
+            job.delete()
+            removed += 1
+        return removed
 
 
-def reconcile_standing_schedules(sync, user=None):
+def reconcile_standing_schedules(sync, user=None, schedule_at_by_kind=None):
     """Make the enqueued Job rows match the stored schedule intent.
 
-    Called from form save and at the end of each sync run (self-heal: core
-    JobRunner recurrence lives in handle()'s finally, so a hard-killed worker
-    silently drops the chain; enqueue_once here is a no-op while the chain is
-    healthy and recreates it when it vanished)."""
+    Called from form save and at the end of each sync run. Core JobRunner
+    recurrence lives in handle()'s finally, so a hard-killed worker silently
+    drops the chain; this is a no-op while the chain is healthy and recreates
+    it when it vanished."""
     from ..jobs import DependencyPreviewJob
     from ..jobs import ValidationJob
 
@@ -332,70 +421,75 @@ def reconcile_standing_schedules(sync, user=None):
         "validation": ValidationJob,
         "dependency_preview": DependencyPreviewJob,
     }
-    parameters = sync.parameters or {}
-    for kind, key in STANDING_SCHEDULE_PARAM_KEYS.items():
-        name = STANDING_SCHEDULE_JOB_NAMES[kind]
-        if key not in parameters:
-            # Pre-intent install (2.5.6 created schedules via the API without
-            # storing intent): ADOPT an existing chain instead of cancelling
-            # it — backfill the intent from the live row.
-            orphan = (
-                sync.jobs.filter(
-                    name=name,
-                    status__in=JobStatusChoices.ENQUEUED_STATE_CHOICES,
-                    interval__gt=0,
+    schedule_at_by_kind = dict(schedule_at_by_kind or {})
+    with advisory_lock(ADVISORY_LOCK_KEYS["job-schedules"]):
+        try:
+            sync.refresh_from_db(fields=["parameters", "user"])
+        except sync.__class__.DoesNotExist:
+            return
+        parameters = sync.parameters or {}
+        for kind, key in STANDING_SCHEDULE_PARAM_KEYS.items():
+            name = STANDING_SCHEDULE_JOB_NAMES[kind]
+            desired = int(parameters.get(key) or 0)
+            if desired > 0:
+                schedule_at = schedule_at_by_kind.get(kind)
+                if (
+                    schedule_at is not None
+                    and sync.jobs.filter(
+                        name=name,
+                        status__in=[
+                            JobStatusChoices.STATUS_PENDING,
+                            JobStatusChoices.STATUS_SCHEDULED,
+                        ],
+                        interval=desired,
+                    ).exists()
+                ):
+                    schedule_at = None
+                kept = _enqueue_standing_job(
+                    job_classes[kind],
+                    sync=sync,
+                    user=user or sync.user,
+                    schedule_at=schedule_at,
+                    interval=desired,
                 )
-                .order_by("-created")
-                .first()
-            )
-            if orphan is not None:
-                persist_standing_schedule_interval(sync, kind, orphan.interval)
-            continue
-        desired = int(parameters.get(key) or 0)
-        if desired > 0:
-            kept = job_classes[kind].enqueue_once(
-                instance=sync,
-                user=user or sync.user,
-                schedule_at=None,
-                interval=desired,
-            )
-            # Sweep surplus chains (e.g. an interval change that raced a
-            # running occurrence left a second recurrence chain behind).
-            for job in sync.jobs.filter(
-                name=name,
-                status__in=[
-                    JobStatusChoices.STATUS_PENDING,
-                    JobStatusChoices.STATUS_SCHEDULED,
-                ],
-            ).exclude(pk=kept.pk):
-                job.delete()
-        else:
-            for job in sync.jobs.filter(
-                name=name,
-                status__in=[
-                    JobStatusChoices.STATUS_PENDING,
-                    JobStatusChoices.STATUS_SCHEDULED,
-                ],
-            ):
-                job.delete()
+                # Sweep surplus chains (e.g. an interval change that raced a
+                # running occurrence left a second recurrence chain behind).
+                for job in sync.jobs.filter(
+                    name=name,
+                    status__in=[
+                        JobStatusChoices.STATUS_PENDING,
+                        JobStatusChoices.STATUS_SCHEDULED,
+                    ],
+                ).exclude(pk=kept.pk):
+                    job.delete()
+            else:
+                for job in sync.jobs.filter(
+                    name=name,
+                    status__in=[
+                        JobStatusChoices.STATUS_PENDING,
+                        JobStatusChoices.STATUS_SCHEDULED,
+                    ],
+                ):
+                    job.delete()
 
 
 def enqueue_preview_schedule(sync, user=None, schedule_at=None, interval=None):
     """Standing dependency-preview schedule (immediate runs use
-    enqueue_button_job, which keeps the legacy per-sync job name). schedule_at
-    passes through untouched so enqueue_once re-posts stay idempotent (see
-    enqueue_validation_job); interval-only means run now, then recur."""
+    enqueue_button_job, which keeps the sync-qualified one-shot name). schedule_at
+    passes through untouched so re-posts stay idempotent; interval-only means
+    run now, then recur."""
     from ..jobs import DependencyPreviewJob
 
-    if not user:
-        user = sync.user
-    persist_standing_schedule_interval(sync, "dependency_preview", interval)
-    return DependencyPreviewJob.enqueue_once(
-        instance=sync,
-        user=user,
-        schedule_at=schedule_at,
-        interval=interval,
-    )
+    user = _resolve_enqueue_user(sync, user)
+    with advisory_lock(ADVISORY_LOCK_KEYS["job-schedules"]):
+        persist_standing_schedule_interval(sync, "dependency_preview", interval)
+        return _enqueue_standing_job(
+            DependencyPreviewJob,
+            sync=sync,
+            user=user,
+            schedule_at=schedule_at,
+            interval=interval,
+        )
 
 
 class JobAlreadyActive(Exception):
@@ -418,24 +512,19 @@ class JobBlockedBySyncRun(JobAlreadyActive):
 # overlap behavior.
 BUTTON_JOB_SPECS = {
     "dependency_preview": (
-        "forward_netbox.jobs.forward_dependency_preview",
+        "forward_netbox.jobs.DependencyPreviewJob",
         "dependency preview",
         "forward_netbox.run_forwardsync",
     ),
     "prune_orphans": (
-        "forward_netbox.jobs.prune_forward_orphans",
+        "forward_netbox.jobs.PruneOrphansJob",
         "prune orphans",
         "dcim.delete_device",
     ),
     "tag_delete_eligible_ipam": (
-        "forward_netbox.jobs.tag_forward_delete_eligible_ipam",
+        "forward_netbox.jobs.TagDeleteEligibleIpamJob",
         "tag delete-eligible IPAM",
         "ipam.change_prefix",
-    ),
-    "create_module_bays": (
-        "forward_netbox.jobs.create_forward_module_bays",
-        "create module bays",
-        "dcim.add_modulebay",
     ),
 }
 
@@ -449,28 +538,27 @@ def button_job_permission(kind):
     return BUTTON_JOB_SPECS[kind][2]
 
 
-def enqueue_button_job(sync, kind, user, *, name_suffix_extra="", during_sync_ok=False):
+def enqueue_button_job(
+    sync,
+    kind,
+    user,
+    *,
+    job_kwargs=None,
+):
     """Enqueue an operator button job with a shared overlap guard.
 
     Raises ``JobAlreadyActive`` instead of stacking a duplicate when an
-    equivalent job is already pending/running. The guard is a PREFIX match on
-    the job name so variants block each other (a manual "prune orphans" click
-    refuses while "prune orphans (auto)" runs, and vice versa). Pruning also
+    equivalent job is already pending/running. Pruning also
     refuses while the sync itself is queued/running - deleting devices
-    mid-ingest would race the apply. ``during_sync_ok`` skips only that
-    sync-running check: the post-sync auto-prune hook enqueues from INSIDE the
-    still-running sync job, which is safe by construction (the sync's apply
-    work is already complete).
+    mid-ingest would race the apply.
     """
-    dotted_path, suffix, _permission = BUTTON_JOB_SPECS[kind]
+    runner_path, suffix, _permission = BUTTON_JOB_SPECS[kind]
     name = f"{sync.name} - {suffix}"
-    # Same lock core enqueue_once takes: closes the check-then-enqueue race
-    # between two concurrent POSTs (and against the scheduler creating a
-    # standing occurrence at the same moment).
+    # Share the standing-schedule lock to close the check-then-enqueue race
+    # between two concurrent POSTs and against a new standing occurrence.
     with advisory_lock(ADVISORY_LOCK_KEYS["job-schedules"]):
         # Two name shapes count as "the same job already active": the per-sync
-        # immediate names (prefix match so " (auto)" variants block each
-        # other), and the fixed JobRunner name used by standing-schedule
+        # immediate name and the fixed JobRunner name used by standing-schedule
         # occurrences (exact match; the permanently-SCHEDULED schedule row
         # itself must NOT block, so the status filter stays pending/running).
         active = (
@@ -483,7 +571,7 @@ def enqueue_button_job(sync, kind, user, *, name_suffix_extra="", during_sync_ok
         )
         if active is not None:
             raise JobAlreadyActive(active)
-        if kind == "prune_orphans" and not during_sync_ok:
+        if kind == "prune_orphans":
             running_sync = (
                 sync.jobs.filter(
                     name__in=sync_run_job_names(sync),
@@ -494,9 +582,10 @@ def enqueue_button_job(sync, kind, user, *, name_suffix_extra="", during_sync_ok
             )
             if running_sync is not None:
                 raise JobBlockedBySyncRun(running_sync)
-        return Job.enqueue(
-            import_string(dotted_path),
+        runner_class = import_string(runner_path)
+        return runner_class.enqueue(
             instance=sync,
             user=user,
-            name=f"{name}{name_suffix_extra}",
+            name=name,
+            **dict(job_kwargs or {}),
         )

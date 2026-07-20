@@ -8,10 +8,7 @@ from forward_netbox.utilities.sync import ForwardSyncRunner
 
 
 class ModuleReadinessRollupTest(TestCase):
-    """A systemic module-readiness gap (module sync enabled before the device's
-    module bays exist) skips every module row. Those skips must collapse into ONE
-    actionable summary, not a per-row wall — while ordinary per-row skip reasons
-    keep their first-N-then-suppressed behavior."""
+    """Rows without a module-bay identity produce one actionable summary."""
 
     def _runner(self):
         source = ForwardSource.objects.create(
@@ -53,7 +50,7 @@ class ModuleReadinessRollupTest(TestCase):
         self.assertEqual(len(warns), 1)
         summary = warns[0]
         self.assertIn("Skipped 12 dcim.module row(s)", summary)
-        self.assertIn("forward_module_readiness", summary)
+        self.assertIn("did not provide a module-bay name", summary)
         self.assertIn("dev0/module 0", summary)  # an example is shown
         self.assertIn("(+7 more)", summary)  # 12 total - 5 sampled = 7
 

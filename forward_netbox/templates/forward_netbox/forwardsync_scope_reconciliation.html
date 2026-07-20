@@ -132,10 +132,10 @@
             <td>{{ upgrade_reconciliation.platforms.without_manufacturer }}</td>
           </tr>
           <tr>
-            <th scope="row">{% trans "Legacy endpoint DeviceTypes" %}</th>
+            <th scope="row">{% trans "Stale endpoint DeviceTypes" %}</th>
             <td>
-              {% if upgrade_reconciliation.legacy_endpoint_device_types.candidate_count %}
-                <span class="badge text-bg-warning">{{ upgrade_reconciliation.legacy_endpoint_device_types.candidate_count }}</span>
+              {% if upgrade_reconciliation.stale_endpoint_device_types.candidate_count %}
+                <span class="badge text-bg-warning">{{ upgrade_reconciliation.stale_endpoint_device_types.candidate_count }}</span>
               {% else %}
                 <span class="badge text-bg-success">0</span>
               {% endif %}
@@ -193,10 +193,10 @@
     <div class="card">
       <h5 class="card-header">{% trans "Review Candidates" %}</h5>
       <div class="card-body">
-        {% if upgrade_reconciliation.legacy_endpoint_device_types.sample %}
-          <h6>{% trans "Legacy endpoint DeviceTypes" %}</h6>
+        {% if upgrade_reconciliation.stale_endpoint_device_types.sample %}
+          <h6>{% trans "Stale endpoint DeviceTypes" %}</h6>
           <ul>
-            {% for item in upgrade_reconciliation.legacy_endpoint_device_types.sample %}
+            {% for item in upgrade_reconciliation.stale_endpoint_device_types.sample %}
               <li><code>{{ item.manufacturer__name }} / {{ item.model }}</code></li>
             {% endfor %}
           </ul>
@@ -217,7 +217,7 @@
             {% endfor %}
           </ul>
         {% endif %}
-        {% if not upgrade_reconciliation.legacy_endpoint_device_types.sample and not upgrade_reconciliation.dlm.software_versions.unreferenced_sample and not upgrade_reconciliation.dlm.software_versions.catalog_retained_sample %}
+        {% if not upgrade_reconciliation.stale_endpoint_device_types.sample and not upgrade_reconciliation.dlm.software_versions.unreferenced_sample and not upgrade_reconciliation.dlm.software_versions.catalog_retained_sample %}
           <p class="text-muted mb-0">{% trans "No post-upgrade review candidates." %}</p>
         {% endif %}
       </div>

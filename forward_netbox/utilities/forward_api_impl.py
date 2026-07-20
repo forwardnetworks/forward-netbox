@@ -7,20 +7,12 @@ import time
 from urllib.parse import quote
 
 import httpx
+from django.core.cache import cache as django_cache
+from utilities.proxy import resolve_proxies
 
 from ..exceptions import ForwardClientError
 from ..exceptions import ForwardConnectivityError
 from ..exceptions import ForwardFetchBudgetExceededError
-
-try:
-    from utilities.proxy import resolve_proxies
-except ImportError:  # pragma: no cover - NetBox always provides this at runtime.
-    resolve_proxies = None
-
-try:
-    from django.core.cache import cache as django_cache
-except Exception:  # pragma: no cover - Django is always present in NetBox.
-    django_cache = None
 
 LATEST_PROCESSED_SNAPSHOT = "latestProcessed"
 LATEST_COLLECTED_SNAPSHOT = "latestCollected"
@@ -288,11 +280,13 @@ class ForwardClient:
         self.base_url = source.url.rstrip("/")
         self.username = params.get("username")
         # The stored password is encrypted at rest (ForwardSource.save); decrypt it
-        # here, at the one place it is actually used for HTTP auth. A plaintext
-        # value (fresh form input / pre-migration row) passes through unchanged.
+        # here, at the one place it is actually used for HTTP auth.
         from .crypto import decrypt_secret
 
-        self.password = decrypt_secret(params.get("password"))
+        try:
+            self.password = decrypt_secret(params.get("password"))
+        except ValueError as exc:
+            raise ForwardClientError(str(exc)) from exc
         self.api_requests_per_minute = self._coerce_api_requests_per_minute(
             params.get("api_requests_per_minute")
         )
@@ -698,8 +692,6 @@ class ForwardClient:
             self._throttle_in_process(key)
 
     def _proxy_mounts(self, url):
-        if resolve_proxies is None:
-            return None
         proxies = resolve_proxies(
             url=url,
             context={
@@ -1630,11 +1622,8 @@ class ForwardClient:
         query_id=None,
         commit_id=None,
         parameters=None,
-        column_filters=None,
     ):
         payload = {"parameters": parameters or {}}
-        if column_filters:
-            payload["columnFilters"] = column_filters
         if query_id:
             payload["queryId"] = query_id
             execution_commit_id = _commit_id_for_nqe_execution(commit_id)
@@ -1671,14 +1660,12 @@ class ForwardClient:
         network_id,
         snapshot_id,
         parameters=None,
-        column_filters=None,
     ):
         payload = self._nqe_async_execution_payload(
             query=query,
             query_id=query_id,
             commit_id=commit_id,
             parameters=parameters,
-            column_filters=column_filters,
         )
         self._record_api_usage("nqe_async_trigger_calls")
         response = self._request(
@@ -1779,7 +1766,6 @@ class ForwardClient:
         limit=None,
         offset=0,
         item_format="JSON",
-        column_filters=None,
         fetch_all=False,
         deadline=None,
     ):
@@ -1807,7 +1793,6 @@ class ForwardClient:
             parameters=parameters,
             limit=limit,
             offset=offset,
-            column_filters=column_filters,
             fetch_all=fetch_all,
             deadline=deadline,
         )
@@ -1823,7 +1808,6 @@ class ForwardClient:
         parameters=None,
         limit=None,
         offset=0,
-        column_filters=None,
         fetch_all=False,
         deadline=None,
     ):
@@ -1836,7 +1820,6 @@ class ForwardClient:
             network_id=network_id,
             snapshot_id=snapshot_id,
             parameters=parameters,
-            column_filters=column_filters,
         )
         self._wait_for_nqe_async_completion(
             network_id=network_id,
@@ -1938,7 +1921,6 @@ class ForwardClient:
         limit=None,
         offset=0,
         item_format="JSON",
-        column_filters=None,
         fetch_all=False,
         deadline=None,
     ):
@@ -1968,9 +1950,6 @@ class ForwardClient:
                 payload["commitId"] = commit_id
             if parameters:
                 payload["parameters"] = parameters
-            if column_filters:
-                payload["options"]["columnFilters"] = column_filters
-
             response = self._request(
                 "POST",
                 f"/nqe-diffs/{before_snapshot_id}/{after_snapshot_id}",

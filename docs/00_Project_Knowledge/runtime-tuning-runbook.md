@@ -4,6 +4,9 @@ Use this runbook for long-running or slow syncs in any deployment shape (Kuberne
 
 This runbook is intentionally platform-agnostic. It defines what to tune, when to tune, and how to validate safely.
 
+In this runbook, a workload shard is one bounded staging plan item. Every
+workload shard for a sync targets the same single Branching branch.
+
 ## Scope
 
 Use this runbook when any of the following are true:
@@ -33,7 +36,7 @@ Capture and share these five values per hour:
 Also capture correlation identifiers:
 
 - sync ID
-- execution run ID
+- ingestion ID and NetBox job ID
 
 ## Tuning Trigger
 
@@ -128,7 +131,7 @@ When delete/prune phase begins, capture:
 - `failed_change_count`
 - first shard index where deletes are observed
 
-If prune/delete phase starts and delete count remains zero unexpectedly, escalate with sync/run IDs and latest hourly metrics.
+If prune/delete phase starts and delete count remains zero unexpectedly, escalate with the sync, ingestion, and NetBox job IDs plus the latest hourly metrics.
 
 ## Long-Run Stability Check
 
@@ -151,7 +154,7 @@ Please keep the current run active and send hourly updates with:
 - new ingestion issues (last hour)
 - queue backlog depth
 - active worker count
-- sync ID and execution run ID
+- sync ID, ingestion ID, and NetBox job ID
 
 If throughput stays below 5 shards/hour for two hourly checkpoints:
 - increase workers by 50% (round up)

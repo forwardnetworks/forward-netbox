@@ -30,7 +30,7 @@ class EmptySerializer(serializers.Serializer):
 
 class JobScheduleRequestSerializer(serializers.Serializer):
     """Optional standing-schedule parameters for job-enqueue actions. Both
-    fields absent = immediate one-shot run (the legacy behavior)."""
+    fields absent = immediate one-shot run."""
 
     schedule_at = serializers.DateTimeField(required=False, allow_null=True)
     interval = serializers.IntegerField(

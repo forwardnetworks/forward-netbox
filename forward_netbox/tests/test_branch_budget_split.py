@@ -100,6 +100,6 @@ class BranchBudgetSplitTest(SimpleTestCase):
 
         self.assertEqual(
             build_branch_plan(workloads),
-            build_branch_plan(workloads, max_changes_per_branch=None),
+            build_branch_plan(workloads, max_changes_per_staging_item=None),
         )
         self.assertEqual(len(build_branch_plan(workloads)), 1)

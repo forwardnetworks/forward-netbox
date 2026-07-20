@@ -1,10 +1,15 @@
 from core.choices import JobStatusChoices
+from core.models import Job
 from django.contrib.contenttypes.models import ContentType
 from django.db import connection
+from django.db.models import Q
+from django.db.models.deletion import ProtectedError
 from django.db.models.signals import post_migrate
 from django.db.models.signals import pre_delete
 from django.dispatch import receiver
+from netbox.constants import ADVISORY_LOCK_KEYS
 
+from .models import ForwardIngestion
 from .models import ForwardNQEMap
 from .models import ForwardSync
 from .utilities.query_registry import builtin_nqe_map_rows
@@ -85,13 +90,57 @@ def seed_builtin_nqe_maps(sender, **kwargs):
 
 @receiver(pre_delete, sender=ForwardSync)
 def cancel_enqueued_jobs_on_sync_delete(sender, instance, **kwargs):
-    """Cancel enqueued/scheduled jobs before the sync row disappears.
+    """Cancel queued work and reject deletion while a worker is running.
 
     The JobsMixin GenericRelation cascade removes Job rows through the SQL
     collector, which skips Job.delete()'s RQ-cancel override — a standing
     schedule (2.5.6 JobRunner recurrence) would leave a live RQ scheduler
-    entry firing against a deleted sync forever. Deleting each job here goes
-    through the override and cancels the queued/scheduled RQ task.
+    entry firing against a deleted sync forever. A running Job cannot be
+    cancelled safely: deleting it loses terminal diagnostics while its worker
+    continues, so the sync remains protected until that occurrence finishes.
     """
-    for job in instance.jobs.filter(status__in=JobStatusChoices.ENQUEUED_STATE_CHOICES):
+    acquire_job_schedule_transaction_lock()
+    ingestion_rows = list(
+        ForwardIngestion.objects.filter(sync=instance).values_list(
+            "pk", "job_id", "merge_job_id"
+        )
+    )
+    ingestion_ids = [row[0] for row in ingestion_rows]
+    referenced_job_ids = {
+        job_id for row in ingestion_rows for job_id in row[1:] if job_id is not None
+    }
+    sync_type = ContentType.objects.get_for_model(ForwardSync, for_concrete_model=False)
+    ingestion_type = ContentType.objects.get_for_model(
+        ForwardIngestion, for_concrete_model=False
+    )
+    bound_jobs = Job.objects.filter(
+        Q(object_type=sync_type, object_id=instance.pk)
+        | Q(object_type=ingestion_type, object_id__in=ingestion_ids)
+        | Q(pk__in=referenced_job_ids)
+    )
+    running = list(
+        bound_jobs.filter(status=JobStatusChoices.STATUS_RUNNING).order_by("pk")
+    )
+    if running:
+        raise ProtectedError(
+            "Cannot delete a Forward sync while one of its jobs is running.",
+            running,
+        )
+    for job in bound_jobs.filter(
+        status__in=[
+            JobStatusChoices.STATUS_PENDING,
+            JobStatusChoices.STATUS_SCHEDULED,
+        ]
+    ):
         job.delete()
+
+
+def acquire_job_schedule_transaction_lock():
+    """Serialize deletion through the surrounding transaction's commit."""
+    if not connection.in_atomic_block:
+        raise RuntimeError("ForwardSync deletion requires an atomic transaction.")
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT pg_advisory_xact_lock(%s)",
+            [ADVISORY_LOCK_KEYS["job-schedules"]],
+        )

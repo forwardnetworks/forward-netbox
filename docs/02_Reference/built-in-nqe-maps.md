@@ -59,33 +59,28 @@ the source include tags to these rows; exclude tags always apply.
 | Forward ACI Tenants | `netbox_cisco_aci.acitenant` | [`forward_aci_tenants.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_tenants.nqe) |
 | Forward ACI VRFs | `netbox_cisco_aci.acivrf` | [`forward_aci_vrfs.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_vrfs.nqe) |
 | Forward ACI Bridge Domains | `netbox_cisco_aci.acibridgedomain` | [`forward_aci_bridge_domains.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_bridge_domains.nqe) |
-| Forward ACI Application Profiles | `netbox_cisco_aci.aciappprofile` | [`forward_aci_app_profiles.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_app_profiles.nqe) |
-| Forward ACI Endpoint Groups | `netbox_cisco_aci.aciendpointgroup` | [`forward_aci_endpoint_groups.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_endpoint_groups.nqe) |
-| Forward ACI Contracts | `netbox_cisco_aci.acicontract` | [`forward_aci_contracts.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_contracts.nqe) |
 | Forward ACI Filters | `netbox_cisco_aci.acifilter` | [`forward_aci_filters.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_filters.nqe) |
 | Forward ACI L3Outs | `netbox_cisco_aci.acil3out` | [`forward_aci_l3outs.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_l3outs.nqe) |
-| Forward ACI Static Port Bindings | `netbox_cisco_aci.acistaticportbinding` | [`forward_aci_static_port_bindings.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_static_port_bindings.nqe) |
 | Forward ACI Command Inventory | `dcim.device` | [`forward_aci_command_inventory.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_command_inventory.nqe) |
 
 ## Optional Cisco ACI Plugin Maps
 
 The optional ACI maps are disabled by default and require the optional
-`netbox-cisco-aci` plugin. They do not use sync-time Forward column filters.
-All maps declare `forward_netbox_shard_keys`, seed an empty default for UI
-execution, and constrain rows only when shard keys are provided.
+`netbox-cisco-aci` plugin. Every map uses the canonical
+`forward_netbox_shard_keys` query parameter, seeds an empty default for UI
+execution, and constrains rows only when shard keys are provided.
 
-The proven write path covers ACI fabrics, pods, nodes, tenants, VRFs, bridge
+The supported write path covers ACI fabrics, pods, nodes, tenants, VRFs, bridge
 domains, L3Outs, filters, and APIC CIMC inventory items. The CIMC inventory map
 targets native NetBox `dcim.inventoryitem` rows and requires Forward to collect
 the APIC custom command `moquery -c eqptCh -a all`; it joins those chassis rows
 to APIC controller detail output in NQE before emitting normalized inventory
 rows. Tenant and VRF maps parse `moquery -c fvCtx`; bridge domains parse
 `moquery -c fvBD`; and L3Outs parse `moquery -c l3extInstP`. Application
-profiles, EPGs, contracts, and static port bindings are present as disabled
-model/query contracts but remain conservative no-op maps until bounded source
-identity and repeat-sync idempotence are proven. The active maps parse selected
-command output in NQE and emit small normalized rows rather than returning raw
-command responses. The separate `Forward ACI Command Inventory` map is
+profiles, EPGs, contracts, and static port bindings are excluded from 2.6
+because the approved Forward command set does not provide their bounded source
+identity. The supported maps parse selected command output in NQE and emit small
+normalized rows rather than returning raw command responses. The separate `Forward ACI Command Inventory` map is
 discovery-only and reports which bounded ACI/APIC command families are present
 on each device without returning raw response payloads. Exact custom-command
 checks stay inside the maps that consume those commands, so missing input fails
@@ -101,12 +96,8 @@ cleanly there rather than being hidden behind a broad APIC dump.
 | Forward ACI Tenants | `fabric_name`, `name`, `description` |
 | Forward ACI VRFs | `fabric_name`, `tenant_name`, `name`, `policy_enforcement_preference`, `policy_enforcement_direction`, `bd_enforcement_enabled`, `preferred_group_enabled`, `description` |
 | Forward ACI Bridge Domains | `fabric_name`, `tenant_name`, `vrf_tenant_name`, `vrf_name`, `name`, `unicast_routing_enabled`, `arp_flooding_enabled`, `limit_ip_learn_to_subnets`, `l2_unknown_unicast`, `l3_unknown_multicast`, `multi_destination_flooding`, `mac_address`, `description` |
-| Forward ACI Application Profiles | `fabric_name`, `tenant_name`, `name`, `description` |
-| Forward ACI Endpoint Groups | `fabric_name`, `tenant_name`, `app_profile_name`, `bridge_domain_name`, `vrf_name`, `name`, `admin_shutdown`, `is_useg`, `intra_epg_isolation`, `preferred_group_member`, `qos_class`, `description` |
-| Forward ACI Contracts | `fabric_name`, `tenant_name`, `name`, `scope`, `description` |
 | Forward ACI Filters | `fabric_name`, `tenant_name`, `name`, `description` |
 | Forward ACI L3Outs | `fabric_name`, `tenant_name`, `vrf_name`, `name`, `protocol_bgp`, `protocol_ospf`, `protocol_eigrp`, `protocol_static`, `target_dscp`, `description` |
-| Forward ACI Static Port Bindings | `fabric_name`, `tenant_name`, `app_profile_name`, `endpoint_group_name`, `device_name`, `interface_name`, `encap_vlan`, `deployment_immediacy`, `mode`, `binding_type`, `description` |
 
 ## Shared Module
 
@@ -348,6 +339,7 @@ select {
 - Expected fields: `manufacturer`, `manufacturer_slug`, `model`, `part_number`, `slug`
 - Query file: [`forward_device_models.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_device_models.nqe)
 - Default behavior: does not require a Forward data file.
+- Missing or empty Forward model values use `Unknown`/`unknown` for the model and slug, matching the device map instead of dropping the DeviceType row.
 
 ```nqe
 import "netbox_utilities";
@@ -356,8 +348,10 @@ foreach device in network.devices
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
 let vendor = device.platform.vendor
-let model = device.platform.model
-let model_slug = slugifyNetboxModel(toString(model))
+let model_raw = toString(device.platform.model)
+let model = if isPresent(model_raw) && model_raw != "" then model_raw else "Unknown"
+let model_slug_raw = slugifyNetboxModel(model)
+let model_slug = if isPresent(model_slug_raw) && model_slug_raw != "" then model_slug_raw else "unknown"
 let manufacturer_name = canonicalManufacturerName(vendor)
 let manufacturer_slug = slugify(manufacturer_name)
 select distinct {
@@ -379,6 +373,7 @@ select distinct {
 
 Use this map only with `Forward Devices with NetBox Device Type Aliases`, so device type creation and device assignment use the same model and slug mapping.
 The query intentionally starts with `foreach device in network.devices` so Forward can use its automatic per-device execution path where available.
+Missing, empty, or empty alias-derived model values use `Unknown`/`unknown`, preserving parity with the alias-aware device map.
 
 ```nqe
 import "netbox_utilities";
@@ -388,8 +383,10 @@ let aliases = network.extensions.netbox_device_type_aliases
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
 let vendor = device.platform.vendor
-let raw_model = toString(device.platform.model)
-let raw_model_slug = slugifyNetboxModel(raw_model)
+let raw_model_opt = toString(device.platform.model)
+let raw_model = if isPresent(raw_model_opt) && raw_model_opt != "" then raw_model_opt else "Unknown"
+let raw_model_slug_opt = slugifyNetboxModel(raw_model)
+let raw_model_slug = if isPresent(raw_model_slug_opt) && raw_model_slug_opt != "" then raw_model_slug_opt else "unknown"
 let data_manufacturer_name = if isPresent(aliases.value) then max(
     foreach alias in aliases.value
     where alias.record_type == "manufacturer_override"
@@ -422,8 +419,10 @@ let mapped_slug = if isPresent(aliases.value) then max(
     select alias.netbox_slug
   )
   else null : String
-let model = if isPresent(mapped_model) then mapped_model else raw_model
-let model_slug = if isPresent(mapped_slug) then mapped_slug else raw_model_slug
+let model_raw = if isPresent(mapped_model) then mapped_model else raw_model
+let model = if isPresent(model_raw) && model_raw != "" then model_raw else "Unknown"
+let model_slug_raw = if isPresent(mapped_slug) then mapped_slug else raw_model_slug
+let model_slug = if isPresent(model_slug_raw) && model_slug_raw != "" then model_slug_raw else "unknown"
 select distinct {
   manufacturer: manufacturer_name,
   manufacturer_slug: manufacturer_slug,
@@ -464,6 +463,7 @@ The query intentionally starts with `foreach device in network.devices` so Forwa
 - `NetBox Model`: `dcim.virtualchassis`
 - Expected fields: `device`, `vc_name`, `name`, `vc_domain`, `vc_position`
 - Query file: [`forward_virtual_chassis.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_virtual_chassis.nqe)
+- Enabled: disabled; this is a custom-map contract template.
 - Current semantics: conservative no-op. Forward HA peer relationships such
   as vPC, MLAG, and active/standby clusters are separate control-plane
   relationships, not native NetBox virtual chassis membership.
@@ -1176,7 +1176,7 @@ select distinct {
 - Expected fields: `device`, `module_bay`, `manufacturer`, `manufacturer_slug`, `model`, `part_number`, `status`, `serial`, `asset_tag`, `description`
 - Query file: [`forward_modules.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_modules.nqe)
 - Enabled: enabled by default
-- Stability: beta in `v0.6.x`; review staged module and module-bay changes carefully before merging
+- Stability: supported on the exact NetBox 4.6.5 and Branching 1.1.1 matrix
 
 The module map uses the same device-first parallel shape as the inventory-item map, but keeps the target model separate so bay-aware chassis hardware can be modeled without overlapping the generic inventory-item fallback. NQE is the classification layer: this map emits only `LINE_CARD`, `SUPERVISOR`, `FABRIC_MODULE`, and `ROUTING_ENGINE` components. Transceivers, fans, power supplies, chassis records, stack artifacts, and motherboards remain inventory-item candidates; application pseudo-parts are not imported as inventory items by default.
 
@@ -1227,7 +1227,7 @@ select distinct {
 - Enabled: enabled by default
 - Feature flag: enabled unless `PLUGINS_CONFIG["forward_netbox"]["enable_bgp_sync"] = False`
 - Optional dependency: requires the `netbox-routing` NetBox plugin
-- Stability: beta
+- Stability: supported
 
 The BGP peer map uses Forward structured BGP neighbor state, not raw configuration parsing and not BGP RIB data. The query prefers explicit `localAS`, falls back to the BGP process `asNumber`, then uses reciprocal Forward peer evidence or explicit internal-BGP peer AS when those are uniquely available. The adapter creates or reuses native NetBox `RIR`, `ASN`, `VRF`, and peer `IPAddress` records, then creates `netbox-routing` routers, scopes, and peers. Missing optional plugin models are recorded as row failures so the rest of the shard can continue.
 
@@ -1245,7 +1245,7 @@ can depend on peer evidence outside the current shard.
 - Enabled: enabled by default
 - Feature flag: enabled unless `PLUGINS_CONFIG["forward_netbox"]["enable_bgp_sync"] = False`
 - Optional dependency: requires the `netbox-routing` NetBox plugin
-- Stability: beta
+- Stability: supported
 
 The BGP address-family map joins Forward BGP RIB AFI/SAFI state back to structured BGP neighbor rows. It creates native `netbox-routing` address-family objects on the matching BGP scope without importing route-table entries. Forward `L3VPN_*` address-family names are normalized to the native `netbox-routing` `vpnv4-*` and `vpnv6-*` values.
 
@@ -1257,7 +1257,7 @@ The BGP address-family map joins Forward BGP RIB AFI/SAFI state back to structur
 - Enabled: enabled by default
 - Feature flag: enabled unless `PLUGINS_CONFIG["forward_netbox"]["enable_bgp_sync"] = False`
 - Optional dependency: requires the `netbox-routing` NetBox plugin
-- Stability: beta
+- Stability: supported
 
 The BGP peer address-family map links each native BGP peer to the AFI/SAFI rows observed in Forward's BGP RIB metadata. It does not import individual prefixes, AS paths, communities, or route attributes.
 
@@ -1269,7 +1269,7 @@ The BGP peer address-family map links each native BGP peer to the AFI/SAFI rows 
 - Enabled: enabled by default
 - Feature flag: enabled unless `PLUGINS_CONFIG["forward_netbox"]["enable_bgp_sync"] = False`
 - Optional dependency: requires the `netbox-routing` NetBox plugin
-- Stability: beta
+- Stability: supported
 
 The OSPF instance map uses Forward structured OSPF neighbor state and inferred reverse-neighbor relationships to source a unique process-level local router ID. Forward named process IDs are converted to deterministic numeric NetBox process IDs, with the original Forward process label preserved in comments.
 
@@ -1281,7 +1281,7 @@ The OSPF instance map uses Forward structured OSPF neighbor state and inferred r
 - Enabled: enabled by default
 - Feature flag: enabled unless `PLUGINS_CONFIG["forward_netbox"]["enable_bgp_sync"] = False`
 - Optional dependency: requires the `netbox-routing` NetBox plugin
-- Stability: beta
+- Stability: supported
 
 The OSPF area map creates native NetBox routing areas from Forward structured OSPF areas and maps Forward area type values to NetBox routing choices.
 
@@ -1293,7 +1293,7 @@ The OSPF area map creates native NetBox routing areas from Forward structured OS
 - Enabled: enabled by default
 - Feature flag: enabled unless `PLUGINS_CONFIG["forward_netbox"]["enable_bgp_sync"] = False`
 - Optional dependency: requires the `netbox-routing` NetBox plugin
-- Stability: beta
+- Stability: supported
 
 The OSPF interface map binds native OSPF instances and areas to exact NetBox interfaces. It can import local OSPF interface rows even when a specific neighbor lacks remote-peer inference, provided Forward exposes enough reciprocal evidence elsewhere in the same process to infer a unique local router ID. Missing interfaces are recorded as row failures so the rest of the shard can continue.
 
@@ -1305,11 +1305,11 @@ The OSPF interface map binds native OSPF instances and areas to exact NetBox int
 - Enabled: enabled by default
 - Feature flag: enabled unless `PLUGINS_CONFIG["forward_netbox"]["enable_bgp_sync"] = False`
 - Optional dependencies: requires `netbox-routing` and `netbox-peering-manager`
-- Stability: beta
+- Stability: supported
 
-The peering session map is an overlay on top of `netbox-routing`. Applying a peering-session row first ensures the matching BGP peer exists, then links a `netbox-peering-manager` session to it. The shipped query uses Forward peer type only as a simple relationship hint; richer peering policy, prefix-list, and IRR modeling should remain a separate feature.
+The peering session map is an overlay on top of `netbox-routing`. Applying a peering-session row first ensures the matching BGP peer exists, then links a `netbox-peering-manager` session to it. The shipped query uses Forward peer type as the relationship hint. Peering policy, prefix-list, and IRR objects are outside this map's product contract.
 
-When any optional routing map is enabled, the sync also runs an internal read-only diagnostic query that reports routing rows the beta maps cannot import safely, including BGP neighbors without explicit or inferred local AS, unsupported BGP address families, and OSPF neighbor rows that lack unique process-level router ID inference needed for native OSPF objects. This diagnostic query is not seeded as a NetBox import map and does not create, update, or delete NetBox objects. See the query file for the complete diagnostic text:
+When any optional routing map is enabled, the sync also runs an internal read-only diagnostic query that reports rows the supported maps cannot import safely, including BGP neighbors without explicit or inferred local AS, unsupported BGP address families, and OSPF neighbor rows that lack unique process-level router ID inference needed for native OSPF objects. This diagnostic query is not seeded as a NetBox import map and does not create, update, or delete NetBox objects. See the query file for the complete diagnostic text:
 
 ```text
 forward_netbox/queries/forward_routing_import_diagnostics.nqe
@@ -1320,9 +1320,12 @@ For routing maps on large datasets, publish the NQE into the Forward NQE library
 ## Important Caveats
 
 - `dcim.inventoryitem` remains the default best-fit path for generic components.
-- `dcim.module` is enabled by default and remains beta; set the feature flag to `False` only when you want bay-aware hardware kept in inventory items instead of modules.
-- The module path requires module bays to already exist on the target device. Rows whose `module_bay` value is missing in NetBox are skipped with a non-blocking warning instead of creating `dcim.modulebay` side effects during module sync.
-- Before enabling module sync, run `python manage.py forward_module_readiness --sync-name "<sync name>"` to generate a readiness summary and native NetBox module-bay import CSV for missing bays.
+- `dcim.module` is supported and enabled by default; disable the map only when bay-aware hardware should remain in inventory items instead of modules.
+- The module path creates a missing native `dcim.modulebay` in the same branch
+  before applying its `dcim.module`. This requires the supported NetBox 4.6.5
+  and netbox-branching 1.1.1 matrix.
+- `forward_module_readiness` is a read-only plan for operators who want to
+  review the exact bays the branch will create before a large module run.
 - `dcim.module` uses a conservative branch density because module rows still depend on device, module type, and bay readiness.
 - SFP/transceiver rows remain in the inventory-item path by default; do not enable module import expecting optics to become NetBox modules unless the query is customized for device types that expose matching module bays.
 - Optional routing maps are visible unless `enable_bgp_sync` is false, and they still require the target optional NetBox plugins to be installed.

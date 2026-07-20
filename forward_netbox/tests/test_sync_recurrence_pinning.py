@@ -1,10 +1,8 @@
-# Pinning suite for the sync job's bespoke self-reschedule loop
-# (jobs.sync_forwardsync finally block). Backlog recon verdict: do NOT
-# converge this onto core JobRunner recurrence — core cannot replicate the
-# completion-time cadence anchor, the sync.scheduled/interval model-field
-# source of truth, or the name-scoped skip-guard without rebuilding the
-# intent/guard apparatus. These tests lock the load-bearing semantics so a
-# future "simplify onto JobRunner" attempt trips loudly.
+# Architecture contract for the sync job's self-reschedule loop
+# (jobs.sync_forwardsync finally block). Core JobRunner recurrence does not
+# provide the completion-time cadence anchor, sync.scheduled/interval source
+# of truth, or name-scoped overlap guard required here. These tests pin those
+# current production semantics.
 from datetime import datetime
 from datetime import timedelta
 from datetime import timezone as dt_timezone
@@ -21,6 +19,7 @@ from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 
 T_END = datetime(2026, 8, 1, 12, 0, 0, tzinfo=dt_timezone.utc)
+T_STARTED = T_END - timedelta(minutes=45)
 
 
 class SyncRescheduleAnchorTest(TestCase):
@@ -60,13 +59,12 @@ class SyncRescheduleAnchorTest(TestCase):
         sync.jobs.all().delete()
         return sync
 
-    def _job(self, sync, suffix, *, started=None):
+    def _job(self, sync, suffix):
         return Job.objects.create(
             object_type=ContentType.objects.get_for_model(ForwardSync),
             object_id=sync.pk,
             name=f"{sync.name} - scheduled",
-            status=JobStatusChoices.STATUS_RUNNING,
-            started=started or (T_END - timedelta(minutes=45)),
+            status=JobStatusChoices.STATUS_PENDING,
             job_id=f"123e4567-e89b-12d3-a456-4266141770{suffix}",
         )
 
@@ -76,9 +74,13 @@ class SyncRescheduleAnchorTest(TestCase):
         # that runs longer than its interval must not re-fire ~immediately.
         sync = self._sync("pin-anchor", interval=30)
         job = self._job(sync, "01")
-        with patch("forward_netbox.jobs.local_now", return_value=T_END), patch(
-            "forward_netbox.jobs.Job.enqueue"
-        ), patch.object(ForwardSync, "sync", return_value=None):
+        with patch("django.utils.timezone.now", return_value=T_STARTED), patch(
+            "forward_netbox.jobs.local_now", return_value=T_END
+        ), patch(
+            "forward_netbox.utilities.sync_facade.enqueue_forward_job"
+        ), patch.object(
+            ForwardSync, "sync", return_value=None
+        ):
             sync_forwardsync(job)
         sync.refresh_from_db()
         self.assertEqual(sync.scheduled, T_END + timedelta(minutes=30))
@@ -87,9 +89,13 @@ class SyncRescheduleAnchorTest(TestCase):
         sync = self._sync("pin-adhoc", interval=30)
         job = self._job(sync, "02")
         original = sync.scheduled
-        with patch("forward_netbox.jobs.local_now", return_value=T_END), patch(
-            "forward_netbox.jobs.Job.enqueue"
-        ), patch.object(ForwardSync, "sync", return_value=None):
+        with patch("django.utils.timezone.now", return_value=T_STARTED), patch(
+            "forward_netbox.jobs.local_now", return_value=T_END
+        ), patch(
+            "forward_netbox.utilities.sync_facade.enqueue_forward_job"
+        ), patch.object(
+            ForwardSync, "sync", return_value=None
+        ):
             sync_forwardsync(job, adhoc=True)
         sync.refresh_from_db()
         self.assertEqual(sync.scheduled, original)
@@ -100,9 +106,13 @@ class SyncRescheduleAnchorTest(TestCase):
         sync = self._sync("pin-cleared", interval=30)
         job = self._job(sync, "03")
         ForwardSync.objects.filter(pk=sync.pk).update(scheduled=None)
-        with patch("forward_netbox.jobs.local_now", return_value=T_END), patch(
-            "forward_netbox.jobs.Job.enqueue"
-        ), patch.object(ForwardSync, "sync", return_value=None):
+        with patch("django.utils.timezone.now", return_value=T_STARTED), patch(
+            "forward_netbox.jobs.local_now", return_value=T_END
+        ), patch(
+            "forward_netbox.utilities.sync_facade.enqueue_forward_job"
+        ), patch.object(
+            ForwardSync, "sync", return_value=None
+        ):
             sync_forwardsync(job)
         sync.refresh_from_db()
         self.assertIsNone(sync.scheduled)
@@ -121,9 +131,13 @@ class SyncRescheduleAnchorTest(TestCase):
             job_id="123e4567-e89b-12d3-a456-426614177010",
         )
         job = self._job(sync, "04")
-        with patch("forward_netbox.jobs.local_now", return_value=T_END), patch(
-            "forward_netbox.jobs.Job.enqueue"
-        ), patch.object(ForwardSync, "sync", return_value=None):
+        with patch("django.utils.timezone.now", return_value=T_STARTED), patch(
+            "forward_netbox.jobs.local_now", return_value=T_END
+        ), patch(
+            "forward_netbox.utilities.sync_facade.enqueue_forward_job"
+        ), patch.object(
+            ForwardSync, "sync", return_value=None
+        ):
             sync_forwardsync(job)
         sync.refresh_from_db()
         # Rescheduled (standing row did not trip the guard).
@@ -135,9 +149,13 @@ class SyncRescheduleAnchorTest(TestCase):
 
         sync = self._sync("pin-failed", interval=30)
         job = self._job(sync, "05")
-        with patch("forward_netbox.jobs.local_now", return_value=T_END), patch(
-            "forward_netbox.jobs.Job.enqueue"
-        ), patch.object(ForwardSync, "sync", side_effect=ForwardSyncError("boom")):
+        with patch("django.utils.timezone.now", return_value=T_STARTED), patch(
+            "forward_netbox.jobs.local_now", return_value=T_END
+        ), patch(
+            "forward_netbox.utilities.sync_facade.enqueue_forward_job"
+        ), patch.object(
+            ForwardSync, "sync", side_effect=ForwardSyncError("boom")
+        ):
             sync_forwardsync(job)
         sync.refresh_from_db()
         self.assertEqual(sync.status, ForwardSyncStatusChoices.FAILED)

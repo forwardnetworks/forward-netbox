@@ -2,6 +2,7 @@ from unittest.mock import call
 from unittest.mock import Mock
 from unittest.mock import patch
 
+from dcim.models import Cable
 from dcim.models import Device
 from dcim.models import DeviceRole
 from dcim.models import DeviceType
@@ -25,6 +26,7 @@ from forward_netbox.utilities.apply_engine import ADAPTER_REQUIRED_MODELS
 from forward_netbox.utilities.apply_engine import BULK_ORM_ENABLED_MODELS
 from forward_netbox.utilities.apply_engine import BULK_ORM_ENABLED_MODELS_WITHOUT_SPECS
 from forward_netbox.utilities.apply_engine import select_apply_engine
+from forward_netbox.utilities.apply_engine_bulk import _serializer_prefetch_fields
 from forward_netbox.utilities.apply_engine_bulk import bulk_orm_apply_simple_models
 
 
@@ -93,9 +95,14 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
         decision = select_apply_engine(
             sync=self.sync,
             model_string="dcim.site",
-            backend="branching",
         ).decision
         self.assertEqual(decision.selected_engine, "bulk_orm")
+
+    def test_object_change_serializer_prefetches_all_interface_relationships(self):
+        self.assertEqual(
+            set(_serializer_prefetch_fields(Interface)),
+            {"tags", "tagged_vlans", "vdcs", "wireless_lans"},
+        )
 
     def test_bulk_orm_selected_for_platform(self):
         self.sync.parameters["enable_bulk_orm"] = True
@@ -103,28 +110,10 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
         decision = select_apply_engine(
             sync=self.sync,
             model_string="dcim.platform",
-            backend="branching",
         ).decision
 
         self.assertEqual(decision.selected_engine, "bulk_orm")
         self.assertEqual(decision.reason_code, "bulk_orm_enabled_safe_model_set")
-
-    def test_fast_bootstrap_auto_enables_bulk_orm_for_safe_models(self):
-        ForwardSync.objects.filter(pk=self.sync.pk).update(
-            parameters={"snapshot_id": "latestProcessed"}
-        )
-        self.sync.refresh_from_db()
-        decision = select_apply_engine(
-            sync=self.sync,
-            model_string="dcim.site",
-            backend="fast_bootstrap",
-        ).decision
-
-        self.assertEqual(decision.selected_engine, "bulk_orm")
-        self.assertEqual(
-            decision.reason_code,
-            "bulk_orm_auto_enabled_fast_bootstrap",
-        )
 
     def test_branching_auto_enables_bulk_orm_for_safe_models(self):
         ForwardSync.objects.filter(pk=self.sync.pk).update(
@@ -134,7 +123,6 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
         decision = select_apply_engine(
             sync=self.sync,
             model_string="dcim.site",
-            backend="branching",
         ).decision
 
         self.assertEqual(decision.selected_engine, "bulk_orm")
@@ -142,18 +130,6 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
             decision.reason_code,
             "bulk_orm_auto_enabled_safe_model_set",
         )
-
-    def test_fast_bootstrap_honors_explicit_bulk_orm_opt_out(self):
-        self.sync.parameters["enable_bulk_orm"] = False
-        self.sync.save(update_fields=["parameters"])
-        decision = select_apply_engine(
-            sync=self.sync,
-            model_string="dcim.site",
-            backend="fast_bootstrap",
-        ).decision
-
-        self.assertEqual(decision.selected_engine, "adapter")
-        self.assertEqual(decision.reason_code, "bulk_orm_disabled_by_default")
 
     def test_bulk_orm_creates_and_updates_sites(self):
         self.sync.parameters["enable_bulk_orm"] = True
@@ -163,7 +139,6 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
         engine = select_apply_engine(
             sync=self.sync,
             model_string="dcim.site",
-            backend="branching",
         )
 
         engine.apply_upserts(
@@ -204,7 +179,6 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
         engine = select_apply_engine(
             sync=self.sync,
             model_string="dcim.manufacturer",
-            backend="branching",
         )
 
         engine.apply_upserts(
@@ -233,7 +207,6 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
         engine = select_apply_engine(
             sync=self.sync,
             model_string="dcim.devicetype",
-            backend="branching",
         )
 
         engine.apply_upserts(
@@ -282,7 +255,6 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
         engine = select_apply_engine(
             sync=self.sync,
             model_string="dcim.macaddress",
-            backend="branching",
         )
 
         engine.apply_upserts(
@@ -327,9 +299,7 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
         Interface.objects.create(device=device, name="Ethernet1", type="1000base-t")
         Interface.objects.create(device=device, name="Ethernet2", type="1000base-t")
         runner = self._runner()
-        engine = select_apply_engine(
-            sync=self.sync, model_string="dcim.macaddress", backend="branching"
-        )
+        engine = select_apply_engine(sync=self.sync, model_string="dcim.macaddress")
         # Must not raise on the duplicate-MAC second row.
         engine.apply_upserts(
             runner,
@@ -359,7 +329,6 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
         engine = select_apply_engine(
             sync=self.sync,
             model_string="dcim.macaddress",
-            backend="branching",
         )
 
         engine.apply_upserts(
@@ -395,7 +364,6 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
         engine = select_apply_engine(
             sync=self.sync,
             model_string="dcim.macaddress",
-            backend="branching",
         )
 
         engine.apply_upserts(
@@ -426,7 +394,6 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
         decision = select_apply_engine(
             sync=self.sync,
             model_string="dcim.devicerole",
-            backend="branching",
         ).decision
 
         self.assertEqual(decision.selected_engine, "bulk_orm")
@@ -442,7 +409,6 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
                 decision = select_apply_engine(
                     sync=self.sync,
                     model_string=model_string,
-                    backend="branching",
                 ).decision
                 self.assertEqual(decision.selected_engine, "bulk_orm")
                 self.assertEqual(
@@ -463,7 +429,6 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
             engine = select_apply_engine(
                 sync=self.sync,
                 model_string="dcim.site",
-                backend="branching",
             )
             self.assertEqual(engine.decision.selected_engine, "adapter")
             self.assertEqual(
@@ -489,7 +454,6 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
                 decision = select_apply_engine(
                     sync=self.sync,
                     model_string=model_string,
-                    backend="branching",
                 ).decision
                 self.assertEqual(decision.selected_engine, "adapter")
                 self.assertEqual(
@@ -527,19 +491,16 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
         )
         return device, interface
 
-    def test_bulk_orm_ipaddress_requires_allowlist_then_creates_and_updates(self):
+    def test_bulk_orm_ipaddress_creates_and_updates(self):
         device, interface = self._device_with_interface()
         interface_ct = ContentType.objects.get_for_model(Interface)
         # Pre-existing IP to be updated (status + assignment).
         existing = IPAddress.objects.create(address="10.0.0.5/24", status="deprecated")
 
         self.sync.parameters["enable_bulk_orm"] = True
-        self.sync.parameters["bulk_orm_models"] = ["ipam.ipaddress"]
         self.sync.save(update_fields=["parameters"])
 
-        engine = select_apply_engine(
-            sync=self.sync, model_string="ipam.ipaddress", backend="branching"
-        )
+        engine = select_apply_engine(sync=self.sync, model_string="ipam.ipaddress")
         self.assertEqual(engine.decision.selected_engine, "bulk_orm")
 
         runner = self._ipaddress_runner()
@@ -584,11 +545,8 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
         device, _interface = self._device_with_interface()
         Interface.objects.create(device=device, name="Ethernet2", type="1000base-t")
         self.sync.parameters["enable_bulk_orm"] = True
-        self.sync.parameters["bulk_orm_models"] = ["ipam.ipaddress"]
         self.sync.save(update_fields=["parameters"])
-        engine = select_apply_engine(
-            sync=self.sync, model_string="ipam.ipaddress", backend="branching"
-        )
+        engine = select_apply_engine(sync=self.sync, model_string="ipam.ipaddress")
         runner = self._ipaddress_runner()
         # Must not raise on the duplicate (host_ip, vrf) second row.
         engine.apply_upserts(
@@ -618,12 +576,9 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
     def test_bulk_orm_ipaddress_skips_missing_interface(self):
         self._device_with_interface()
         self.sync.parameters["enable_bulk_orm"] = True
-        self.sync.parameters["bulk_orm_models"] = ["ipam.ipaddress"]
         self.sync.save(update_fields=["parameters"])
 
-        engine = select_apply_engine(
-            sync=self.sync, model_string="ipam.ipaddress", backend="branching"
-        )
+        engine = select_apply_engine(sync=self.sync, model_string="ipam.ipaddress")
         runner = self._ipaddress_runner()
         engine.apply_upserts(
             runner,
@@ -655,12 +610,9 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
             device=device, name="Ethernet2", type="1000base-t", description="old"
         )
         self.sync.parameters["enable_bulk_orm"] = True
-        self.sync.parameters["bulk_orm_models"] = ["dcim.interface"]
         self.sync.save(update_fields=["parameters"])
 
-        engine = select_apply_engine(
-            sync=self.sync, model_string="dcim.interface", backend="branching"
-        )
+        engine = select_apply_engine(sync=self.sync, model_string="dcim.interface")
         self.assertEqual(engine.decision.selected_engine, "bulk_orm")
 
         runner = self._interface_runner()
@@ -692,15 +644,12 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
             Interface.objects.get(device=device, name="Ethernet2").description, "new"
         )
 
-    def test_bulk_orm_interface_delegates_lag_rows_to_adapter(self):
+    def test_bulk_orm_interface_batches_lag_membership(self):
         device, _ = self._device_with_interface()
         self.sync.parameters["enable_bulk_orm"] = True
-        self.sync.parameters["bulk_orm_models"] = ["dcim.interface"]
         self.sync.save(update_fields=["parameters"])
 
-        engine = select_apply_engine(
-            sync=self.sync, model_string="dcim.interface", backend="branching"
-        )
+        engine = select_apply_engine(sync=self.sync, model_string="dcim.interface")
         runner = self._interface_runner()
         lag_row = {
             "device": "ip-dev",
@@ -717,15 +666,72 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
         }
 
         with patch(
-            "forward_netbox.utilities.sync_interface.apply_dcim_interface"
+            "forward_netbox.utilities.sync_interface.apply_dcim_interface",
+            side_effect=AssertionError("LAG membership used adapter"),
         ) as mock_adapter:
             engine.apply_upserts(runner, "dcim.interface", [lag_row, plain_row])
 
-        # LAG-membership row delegated to adapter; plain row batched.
-        mock_adapter.assert_called_once_with(runner, lag_row)
+        mock_adapter.assert_not_called()
+        self.assertEqual(
+            Interface.objects.get(device=device, name="Ethernet4").lag.name,
+            "Port-Channel1",
+        )
         self.assertTrue(
             Interface.objects.filter(device=device, name="Ethernet5").exists()
         )
+
+    def test_bulk_orm_interface_converts_indirect_cabled_lag_parent_atomically(self):
+        from forward_netbox.utilities.apply_engine_bulk import (
+            bulk_orm_apply_interface,
+        )
+        from forward_netbox.utilities.sync import ForwardSyncRunner
+
+        device, _ = self._device_with_interface()
+        remote_device = Device.objects.create(
+            name="ip-remote",
+            device_type=device.device_type,
+            role=device.role,
+            site=device.site,
+        )
+        parent = Interface.objects.create(
+            device=device,
+            name="bond0",
+            type="1000base-t",
+        )
+        remote = Interface.objects.create(
+            device=remote_device,
+            name="Ethernet1",
+            type="1000base-t",
+        )
+        Cable.objects.create(a_terminations=[parent], b_terminations=[remote])
+        runner = ForwardSyncRunner(
+            sync=self.sync,
+            ingestion=None,
+            client=None,
+            logger_=Mock(),
+        )
+
+        self.assertTrue(
+            bulk_orm_apply_interface(
+                runner,
+                [
+                    {
+                        "device": device.name,
+                        "name": "Ethernet-member",
+                        "type": "1000base-t",
+                        "enabled": True,
+                        "lag": parent.name,
+                    }
+                ],
+            )
+        )
+
+        parent.refresh_from_db()
+        member = Interface.objects.get(device=device, name="Ethernet-member")
+        self.assertEqual(parent.type, "lag")
+        self.assertIsNone(parent.cable)
+        self.assertEqual(member.lag_id, parent.pk)
+        self.assertFalse(Cable.objects.exists())
 
     def test_bulk_orm_creates_and_updates_vrfs(self):
         self.sync.parameters["enable_bulk_orm"] = True
@@ -735,7 +741,6 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
         engine = select_apply_engine(
             sync=self.sync,
             model_string="ipam.vrf",
-            backend="branching",
         )
 
         engine.apply_upserts(
@@ -772,7 +777,6 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
         engine = select_apply_engine(
             sync=self.sync,
             model_string="ipam.vlan",
-            backend="branching",
         )
 
         engine.apply_upserts(
@@ -815,7 +819,6 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
         engine = select_apply_engine(
             sync=self.sync,
             model_string="dcim.devicerole",
-            backend="branching",
         )
 
         engine.apply_upserts(
@@ -846,7 +849,6 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
         engine = select_apply_engine(
             sync=self.sync,
             model_string="dcim.platform",
-            backend="branching",
         )
 
         engine.apply_upserts(
@@ -886,7 +888,6 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
         engine = select_apply_engine(
             sync=self.sync,
             model_string="dcim.platform",
-            backend="branching",
         )
 
         engine.apply_upserts(
@@ -919,7 +920,6 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
         engine = select_apply_engine(
             sync=self.sync,
             model_string="dcim.site",
-            backend="branching",
         )
 
         engine.apply_upserts(
@@ -950,7 +950,6 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
         engine = select_apply_engine(
             sync=self.sync,
             model_string="dcim.site",
-            backend="branching",
         )
 
         full_clean_calls = []
@@ -1028,6 +1027,84 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
         self.assertEqual(Prefix.objects.get(prefix="10.0.0.0/24").vrf_id, blue.pk)
         self.assertEqual(Prefix.objects.get(prefix="10.1.0.0/24").vrf_id, green.pk)
 
+    def test_bulk_prefix_create_uses_batch_write_and_rebuilds_hierarchy(self):
+        vrf = VRF.objects.create(name="hierarchy-vrf")
+        rows = [
+            {"prefix": "10.0.0.0/16", "vrf": None, "status": "active"},
+            {"prefix": "10.0.1.0/24", "vrf": None, "status": "active"},
+            {"prefix": "192.0.2.0/24", "vrf": vrf.name, "status": "active"},
+            {"prefix": "192.0.2.0/25", "vrf": vrf.name, "status": "active"},
+        ]
+
+        with (
+            patch.object(
+                Prefix.objects,
+                "bulk_create",
+                wraps=Prefix.objects.bulk_create,
+            ) as bulk_create,
+            patch(
+                "ipam.utils.rebuild_prefixes",
+                wraps=__import__(
+                    "ipam.utils", fromlist=["rebuild_prefixes"]
+                ).rebuild_prefixes,
+            ) as rebuild,
+            patch.object(
+                Prefix,
+                "save",
+                side_effect=AssertionError("per-prefix save used"),
+            ),
+            patch.object(
+                Prefix,
+                "refresh_from_db",
+                side_effect=AssertionError("per-prefix refresh used"),
+            ),
+        ):
+            bulk_orm_apply_simple_models(self._runner(), "ipam.prefix", rows)
+
+        self.assertTrue(bulk_create.called)
+        self.assertEqual(
+            {call.args[0] for call in rebuild.call_args_list},
+            {None, vrf.pk},
+        )
+        global_parent = Prefix.objects.get(prefix="10.0.0.0/16")
+        global_child = Prefix.objects.get(prefix="10.0.1.0/24")
+        vrf_parent = Prefix.objects.get(prefix="192.0.2.0/24", vrf=vrf)
+        vrf_child = Prefix.objects.get(prefix="192.0.2.0/25", vrf=vrf)
+        self.assertEqual((global_parent._depth, global_parent._children), (0, 1))
+        self.assertEqual((global_child._depth, global_child._children), (1, 0))
+        self.assertEqual((vrf_parent._depth, vrf_parent._children), (0, 1))
+        self.assertEqual((vrf_child._depth, vrf_child._children), (1, 0))
+
+    def test_bulk_prefix_rebuilds_only_vrf_with_actual_change(self):
+        unchanged_vrf = VRF.objects.create(name="unchanged-vrf")
+        changed_vrf = VRF.objects.create(name="changed-vrf")
+        Prefix.objects.create(prefix="10.10.0.0/24", vrf=unchanged_vrf, status="active")
+        Prefix.objects.create(prefix="10.20.0.0/24", vrf=changed_vrf, status="active")
+        rows = [
+            {
+                "prefix": "10.10.0.0/24",
+                "vrf": unchanged_vrf.name,
+                "status": "active",
+            },
+            {
+                "prefix": "10.20.0.0/24",
+                "vrf": changed_vrf.name,
+                "status": "reserved",
+            },
+        ]
+
+        with patch(
+            "forward_netbox.utilities.apply_engine_bulk._rebuild_prefix_hierarchies",
+            wraps=__import__(
+                "forward_netbox.utilities.apply_engine_bulk",
+                fromlist=["_rebuild_prefix_hierarchies"],
+            )._rebuild_prefix_hierarchies,
+        ) as rebuild:
+            bulk_orm_apply_simple_models(self._runner(), "ipam.prefix", rows)
+
+        rebuild.assert_called_once()
+        self.assertEqual(rebuild.call_args.args[0], {changed_vrf.pk})
+
     def test_bulk_simple_models_reapply_fk_no_churn(self):
         """The bulk simple-models update comparison compares relations by id (via
         the shared value matcher), so re-applying an unchanged row with an FK
@@ -1061,7 +1138,6 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
         engine = select_apply_engine(
             sync=self.sync,
             model_string="dcim.site",
-            backend="branching",
         )
 
         full_clean_calls = []

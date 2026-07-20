@@ -39,7 +39,7 @@ from forward_netbox.utilities.sync_ipam import apply_ipam_vrf
 
 
 class BulkAdapterParityTest(TestCase):
-    """Prove the experimental bulk paths produce the same DB state as the adapter.
+    """Prove the supported bulk paths produce the same DB state as the adapter.
 
     Runs the adapter on a row set, snapshots the resulting state, rolls back to a
     savepoint (leaving only the pre-created fixtures), runs the bulk path on the
@@ -201,9 +201,8 @@ class BulkAdapterParityTest(TestCase):
         self.assertIn("Ethernet2", names)
 
     def test_interface_lag_membership_bulk_matches_adapter(self):
-        # LAG-membership rows are delegated by the bulk path to the adapter; this
-        # proves the hybrid batch+delegate split yields the same state (parent
-        # LAG ensured, member's lag FK set) as running everything via the adapter.
+        # LAG-membership rows use the batched second phase. Prove it yields the
+        # same state as the adapter without invoking the per-row path.
         rows = [
             {
                 "device": "dev-p",
@@ -229,12 +228,16 @@ class BulkAdapterParityTest(TestCase):
             for row in rows:
                 apply_dcim_interface(runner, row)
 
-        state = self._run_both_and_compare(
-            seed=seed,
-            adapter_apply=adapter_apply,
-            bulk_apply=lambda runner: bulk_orm_apply_interface(runner, rows),
-            capture=capture,
-        )
+        with patch(
+            "forward_netbox.utilities.sync_interface.apply_dcim_interface",
+            side_effect=AssertionError("LAG membership used per-row adapter"),
+        ):
+            state = self._run_both_and_compare(
+                seed=seed,
+                adapter_apply=adapter_apply,
+                bulk_apply=lambda runner: bulk_orm_apply_interface(runner, rows),
+                capture=capture,
+            )
         by_name = {row[0]: row for row in state}
         self.assertEqual(by_name["Po1"][1], "lag")
         self.assertEqual(by_name["Ethernet1"][2], "Po1")
@@ -242,12 +245,9 @@ class BulkAdapterParityTest(TestCase):
     def test_interface_lag_parent_and_member_same_batch_no_duplicate(self):
         # Regression: a plain LAG parent (Po9, type=lag) and a member that
         # references it (lag=Po9) arrive in the SAME bulk batch. The parent is
-        # staged in the bulk create dict (uncommitted) while the member is
-        # delegated to the adapter, which would independently create Po9 — and
-        # the trailing bulk_create then violated
-        # ``dcim_interface_unique_device_name`` ("po9 already exists"). Deferring
-        # the member until after the bulk write commits + caches the parent fixes
-        # it: exactly one Po9, member bound to it.
+        # staged in the bulk create dict (uncommitted) while the member resolves
+        # the same pending object through the canonical index. Both rows must be
+        # written in the batched transaction as exactly one parent plus member.
         rows = [
             {"device": "dev-p", "name": "Po9", "type": "lag", "enabled": True},
             {
@@ -401,10 +401,43 @@ class BulkAdapterParityTest(TestCase):
         bulk_orm_apply_interface(self._runner(), rows)  # first apply mutates
 
         runner = self._runner()
-        with patch.object(Interface.objects, "bulk_update") as mock_update:
+        with (
+            patch.object(Interface.objects, "bulk_update") as mock_update,
+            patch.object(Interface, "snapshot") as mock_snapshot,
+        ):
             bulk_orm_apply_interface(runner, rows)
             mock_update.assert_not_called()
+            mock_snapshot.assert_not_called()
         self.assertEqual(self._outcomes(runner, "dcim.interface"), {"unchanged": 1})
+
+    def test_interface_lag_reapply_makes_no_writes(self):
+        rows = [
+            {"device": "dev-p", "name": "Po20", "type": "lag", "enabled": False},
+            {
+                "device": "dev-p",
+                "name": "Ethernet20",
+                "type": "1000base-t",
+                "enabled": True,
+                "lag": "Po20",
+            },
+        ]
+        bulk_orm_apply_interface(self._runner(), rows)
+
+        runner = self._runner()
+        with (
+            patch.object(Interface.objects, "bulk_create") as mock_create,
+            patch.object(Interface.objects, "bulk_update") as mock_update,
+            patch.object(Interface, "snapshot") as mock_snapshot,
+            patch(
+                "forward_netbox.utilities.sync_interface.apply_dcim_interface",
+                side_effect=AssertionError("LAG reapply used per-row adapter"),
+            ),
+        ):
+            bulk_orm_apply_interface(runner, rows)
+            mock_create.assert_not_called()
+            mock_update.assert_not_called()
+            mock_snapshot.assert_not_called()
+        self.assertEqual(self._outcomes(runner, "dcim.interface"), {"unchanged": 2})
 
     def test_macaddress_reapply_makes_no_writes(self):
         rows = [
@@ -575,6 +608,44 @@ class BulkAdapterParityTest(TestCase):
             ],
         )
 
+    def test_devicetype_same_slug_is_scoped_by_manufacturer(self):
+        def seed():
+            juniper = Manufacturer.objects.create(name="Juniper", slug="juniper")
+            DeviceType.objects.create(
+                manufacturer=juniper,
+                model="Juniper old",
+                slug="shared-slug",
+            )
+            cisco = Manufacturer.objects.create(name="Cisco", slug="cisco")
+            DeviceType.objects.create(
+                manufacturer=cisco,
+                model="Cisco unchanged",
+                slug="shared-slug",
+            )
+
+        rows = [
+            {
+                "model": "Juniper updated",
+                "device_type": "Juniper updated",
+                "slug": "shared-slug",
+                "device_type_slug": "shared-slug",
+                "manufacturer": "Juniper",
+                "manufacturer_slug": "juniper",
+            }
+        ]
+        self._assert_simple_parity(
+            model_string="dcim.devicetype",
+            seed=seed,
+            rows=rows,
+            adapter_fn=apply_dcim_devicetype,
+            capture=lambda: [
+                (dt.manufacturer.slug, dt.slug, dt.model)
+                for dt in DeviceType.objects.select_related("manufacturer").order_by(
+                    "manufacturer__slug"
+                )
+            ],
+        )
+
     def test_vlan_bulk_matches_adapter(self):
         def seed():
             Site.objects.create(name="VlanSite", slug="vlan-site")
@@ -627,8 +698,8 @@ class BulkAdapterParityTest(TestCase):
 
     def test_prefix_bulk_matches_adapter(self):
         # Parent + child + a global (null-VRF) prefix. Capturing `_depth` proves
-        # the bulk per-object tree path triggers NetBox's hierarchy signal exactly
-        # like the adapter; the global prefix proves null-VRF identity parity.
+        # the signal-free bulk write plus one aggregate rebuild produces the same
+        # hierarchy as the adapter; the global prefix proves null-VRF parity.
         rows = [
             {"prefix": "10.0.0.0/16", "vrf": None, "status": "active"},
             {"prefix": "10.0.1.0/24", "vrf": None, "status": "active"},

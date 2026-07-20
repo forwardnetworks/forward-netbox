@@ -5,20 +5,18 @@
 # rows, stays idempotent, sub-batches its flushes, and produces timing we can
 # extrapolate to ~1M, when fed a real branch staged at scale.
 #
-# Gated behind FORWARD_SCALE_TEST because it is slow (per-object branch staging
-# of thousands of rows). Run it explicitly:
+# Gated behind FORWARD_SCALE_TEST because staging and merging tens of thousands
+# of real branch changes is intentionally slow. Run it explicitly:
 #   docker exec forward-netbox-netbox-1 bash -lc \
 #     "cd /opt/netbox/netbox && FORWARD_SCALE_TEST=1 FORWARD_SCALE_TEST_ROWS=20000 \
 #      python manage.py test --keepdb --noinput \
 #      forward_netbox.tests.test_bulk_merge_scale"
 #
-# It mirrors what ForwardSingleBranchExecutor produces: every row is staged
-# per-object inside activate_branch + event_tracking, so each save fires the
-# branching post_save -> ObjectChange -> ChangeDiff chain (the forced-adapter
-# staging the executor sets via enable_bulk_orm="false"). The sub-batched
-# bulk_create + chunked existence check + O((V+E) log V) collapse/order in
-# bulk_merge.py are then exercised on a real per-model batch large enough to
-# surface lock/RAM/algorithmic blow-ups that 30 rows hide.
+# It exercises both framework-staged branch rows and the production bulk Prefix
+# apply path. The sub-batched bulk_create, chunked existence check, explicit
+# audit evidence, and O((V+E) log V) collapse/order in bulk_merge.py run on real
+# per-model batches large enough to surface lock/RAM/algorithmic blow-ups that
+# 30 rows hide.
 import logging
 import math
 import os
@@ -43,10 +41,13 @@ from forward_netbox.utilities.bulk_merge import bulk_merge_changes
 from forward_netbox.utilities.bulk_merge import BULK_MERGE_FLUSH_THRESHOLD
 
 SITE_COUNT = int(os.environ.get("FORWARD_SCALE_TEST_ROWS", "20000"))
+PREFIX_COUNT = int(os.environ.get("FORWARD_SCALE_PREFIX_ROWS", str(SITE_COUNT)))
 REGION_COUNT = 5
 # Commit staging in chunks so setup does not hold one giant transaction (setup
 # cost is not the measurement target).
 STAGE_CHUNK = 2_000
+SUPPORTED_RETRY_TIMEOUT_SECONDS = 7_200
+RETRY_TIMEOUT_HEADROOM_RATIO = 1 / 3
 
 
 def provision_branch(*, user, name="Test Branch", **kwargs):
@@ -86,8 +87,17 @@ class BulkMergeScaleTest(TransactionTestCase):
 
     def _real_apply_one(self, branch):
         def apply_one(collapsed):
+            from core.models import ObjectChange
+            from django.db.models.signals import post_save
+            from netbox_branching.utilities import record_applied_change
+
             dummy = collapsed.generate_object_change()
             last = collapsed.last_change
+
+            def handler(instance, **kwargs):
+                record_applied_change(instance, branch)
+
+            post_save.connect(handler, sender=ObjectChange, weak=False)
             try:
                 with transaction.atomic():
                     with event_tracking(self.request):
@@ -97,6 +107,8 @@ class BulkMergeScaleTest(TransactionTestCase):
                 return True
             except Exception:
                 return False
+            finally:
+                post_save.disconnect(handler, sender=ObjectChange)
 
         return Mock(side_effect=apply_one)
 
@@ -205,9 +217,8 @@ class BulkMergeScaleTest(TransactionTestCase):
         )
 
         # --- Re-merge (crash-resume idempotency at scale) -------------------
-        # Scoped to dcim.site to isolate the existence-skip contract from the
-        # framework's non-idempotent MPTT create-on-existing-pk replay.
-        site_ct = ContentType.objects.get_for_model(Site)
+        # Both bulk-safe Site creates and per-object MPTT Region creates must
+        # converge without replaying a duplicate create.
         apply_one2 = self._real_apply_one(branch)
         bulk_create_calls2 = []
 
@@ -218,11 +229,7 @@ class BulkMergeScaleTest(TransactionTestCase):
 
         Site.objects.bulk_create = spy_bulk_create2
         try:
-            changes2 = (
-                branch.get_unmerged_changes()
-                .filter(changed_object_type=site_ct)
-                .order_by("time")
-            )
+            changes2 = branch.get_unmerged_changes().order_by("time")
             t0 = time.monotonic()
             applied2, failed2, _ = bulk_merge_changes(
                 branch,
@@ -237,7 +244,11 @@ class BulkMergeScaleTest(TransactionTestCase):
             Site.objects.bulk_create = original_bulk_create
 
         self.assertEqual(failed2, 0, "re-merge reported failed rows")
-        self.assertEqual(applied2, SITE_COUNT, f"re-merge applied {applied2} sites")
+        self.assertEqual(
+            applied2,
+            total_staged,
+            f"re-merge applied {applied2} of {total_staged} rows",
+        )
         self.assertEqual(
             sum(bulk_create_calls2), 0, "re-merge inserted rows; should skip all"
         )
@@ -246,6 +257,13 @@ class BulkMergeScaleTest(TransactionTestCase):
         )
         self.assertEqual(
             Site.objects.filter(slug__startswith="scale-site-").count(), SITE_COUNT
+        )
+        projected_1m_retry_seconds = remerge_secs * 1_000_000 / total_staged
+        self.assertLess(
+            projected_1m_retry_seconds,
+            SUPPORTED_RETRY_TIMEOUT_SECONDS * RETRY_TIMEOUT_HEADROOM_RATIO,
+            "1M-row crash-resume projection exceeds the supported 7,200-second "
+            "worker timeout after reserving 67% operational headroom",
         )
 
         # --- Timing / extrapolation print -----------------------------------
@@ -262,6 +280,11 @@ class BulkMergeScaleTest(TransactionTestCase):
             f"merge     wall       : {merge_secs:8.2f}s ({merge_per_row_ms:.3f} ms/row)"
         )
         print(f"re-merge  wall       : {remerge_secs:8.2f}s (idempotent skip path)")
+        print(
+            "projected 1M retry: "
+            f"{projected_1m_retry_seconds:8.2f}s "
+            f"(limit {SUPPORTED_RETRY_TIMEOUT_SECONDS * RETRY_TIMEOUT_HEADROOM_RATIO:.0f}s)"
+        )
         print(
             f"flush sub-batches    : {len(bulk_create_calls)} x <= {BULK_MERGE_FLUSH_THRESHOLD}"
         )
@@ -330,3 +353,152 @@ class BulkMergeScaleTest(TransactionTestCase):
         print(f"merge         wall   : {merge_secs:8.2f}s ({merge_ms:.3f} ms/row)")
         print(f"extrapolated 1M stage: {stage_ms * 1_000_000 / 1000.0 / 60.0:8.2f} min")
         print("===================================")
+
+    def test_prefix_create_update_delete_scale_is_audited_and_signal_free(self):
+        from ipaddress import IPv4Address
+
+        from core.models import ObjectChange
+        from django.db.models.signals import post_delete
+        from django.db.models.signals import post_save
+        from django.db.models.signals import pre_delete
+        from django.db.models.signals import pre_save
+        from ipam.models import Prefix
+        from netbox.context import current_request
+
+        from forward_netbox.utilities.apply_engine_bulk import (
+            bulk_orm_apply_simple_models,
+        )
+        from forward_netbox.utilities.apply_engine_bulk import (
+            bulk_orm_delete_prefixes,
+        )
+
+        base = int(IPv4Address("10.64.0.0"))
+        rows = [
+            {
+                "prefix": f"{IPv4Address(base + index)}/32",
+                "vrf": None,
+                "status": "active",
+            }
+            for index in range(PREFIX_COUNT)
+        ]
+        runner = Mock(ingestion=None)
+        prefix_pre_save = Mock()
+        prefix_post_save = Mock()
+        prefix_pre_delete = Mock()
+        prefix_post_delete = Mock()
+        receivers = (
+            (pre_save, prefix_pre_save, "prefix-scale-pre-save"),
+            (post_save, prefix_post_save, "prefix-scale-post-save"),
+            (pre_delete, prefix_pre_delete, "prefix-scale-pre-delete"),
+            (post_delete, prefix_post_delete, "prefix-scale-post-delete"),
+        )
+        for signal, receiver, dispatch_uid in receivers:
+            signal.connect(
+                receiver,
+                sender=Prefix,
+                dispatch_uid=dispatch_uid,
+                weak=False,
+            )
+            self.addCleanup(
+                signal.disconnect,
+                receiver,
+                sender=Prefix,
+                dispatch_uid=dispatch_uid,
+            )
+        create_branch = provision_branch(user=self.user, name="Prefix Create Scale")
+        token = current_request.set(self.request)
+        try:
+            with activate_branch(create_branch), event_tracking(self.request):
+                self.request.id = uuid.uuid4()
+                started = time.monotonic()
+                self.assertTrue(
+                    bulk_orm_apply_simple_models(runner, "ipam.prefix", rows)
+                )
+                create_stage_seconds = time.monotonic() - started
+        finally:
+            current_request.reset(token)
+
+        prefix_type = ContentType.objects.get_for_model(Prefix)
+        create_changes = create_branch.get_unmerged_changes().filter(
+            changed_object_type=prefix_type
+        )
+        self.assertEqual(create_changes.count(), PREFIX_COUNT)
+        create_fallback = Mock()
+        started = time.monotonic()
+        created, failed, _ = bulk_merge_changes(
+            create_branch,
+            create_changes.order_by("time"),
+            self.request,
+            self.user,
+            self.logger,
+            apply_one=create_fallback,
+        )
+        create_merge_seconds = time.monotonic() - started
+        self.assertEqual(
+            (created, failed, create_fallback.call_count), (PREFIX_COUNT, 0, 0)
+        )
+        self.assertEqual(Prefix.objects.count(), PREFIX_COUNT)
+        self.assertEqual(
+            ObjectChange.objects.filter(
+                changed_object_type=prefix_type, action="create"
+            ).count(),
+            PREFIX_COUNT,
+        )
+
+        mutate_branch = provision_branch(user=self.user, name="Prefix Mutate Scale")
+        update_rows = [dict(row, status="reserved") for row in rows[::2]]
+        delete_rows = [{"prefix": row["prefix"], "vrf": None} for row in rows[1::2]]
+        token = current_request.set(self.request)
+        try:
+            with activate_branch(mutate_branch), event_tracking(self.request):
+                self.request.id = uuid.uuid4()
+                started = time.monotonic()
+                self.assertTrue(
+                    bulk_orm_apply_simple_models(runner, "ipam.prefix", update_rows)
+                )
+                self.assertTrue(bulk_orm_delete_prefixes(runner, delete_rows))
+                mutate_stage_seconds = time.monotonic() - started
+        finally:
+            current_request.reset(token)
+
+        mutate_changes = mutate_branch.get_unmerged_changes().filter(
+            changed_object_type=prefix_type
+        )
+        self.assertEqual(mutate_changes.count(), PREFIX_COUNT)
+        mutate_fallback = Mock()
+        started = time.monotonic()
+        mutated, failed, _ = bulk_merge_changes(
+            mutate_branch,
+            mutate_changes.order_by("time"),
+            self.request,
+            self.user,
+            self.logger,
+            apply_one=mutate_fallback,
+        )
+        mutate_merge_seconds = time.monotonic() - started
+        self.assertEqual(
+            (mutated, failed, mutate_fallback.call_count), (PREFIX_COUNT, 0, 0)
+        )
+        self.assertEqual(Prefix.objects.count(), len(update_rows))
+        self.assertEqual(
+            Prefix.objects.filter(status="reserved").count(), len(update_rows)
+        )
+        self.assertEqual(
+            ObjectChange.objects.filter(
+                changed_object_type=prefix_type,
+                action__in=["update", "delete"],
+            ).count(),
+            PREFIX_COUNT,
+        )
+        prefix_pre_save.assert_not_called()
+        prefix_post_save.assert_not_called()
+        prefix_pre_delete.assert_not_called()
+        prefix_post_delete.assert_not_called()
+
+        print("\n==== Prefix CRUD scale timing ====")
+        print(f"rows                 : {PREFIX_COUNT}")
+        print(f"create stage         : {create_stage_seconds:8.2f}s")
+        print(f"create merge         : {create_merge_seconds:8.2f}s")
+        print(f"update/delete stage  : {mutate_stage_seconds:8.2f}s")
+        print(f"update/delete merge  : {mutate_merge_seconds:8.2f}s")
+        print("==================================")

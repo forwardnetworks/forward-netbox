@@ -5,7 +5,6 @@ from django.utils.translation import gettext as _
 from ..choices import forward_configured_models
 from ..choices import FORWARD_SUPPORTED_MODELS
 from ..choices import ForwardDiffFallbackModeChoices
-from ..choices import ForwardExecutionBackendChoices
 from ..choices import ForwardSourceDeploymentChoices
 from ..utilities.forward_api import DEFAULT_FORWARD_SAAS_API_REQUESTS_PER_MINUTE
 from ..utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
@@ -17,13 +16,13 @@ from ..utilities.forward_api import MAX_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT
 from ..utilities.forward_api import MAX_NQE_PAGE_SIZE
 from ..utilities.forward_api import MAX_QUERY_FETCH_CONCURRENCY
 from ..utilities.query_fetch import MAX_PREFLIGHT_ROW_LIMIT
-from .branch_budget import BRANCH_RUN_STATE_PARAMETER
 from .branch_budget import MODEL_CHANGE_DENSITY_PARAMETER
 from .branch_budget import MODEL_CHANGE_DENSITY_PROFILE_PARAMETER
 from .sync_contracts import normalize_coalesce_fields
 from .sync_contracts import validate_query_shape_for_model
 from .sync_facade import DEFAULT_ENABLE_BULK_ORM_FOR_NEW_SYNCS
 from .sync_primitives import DEPENDENCY_PARENT_DEVICE_MODELS
+from .tag_contracts import validate_scope_tag_names
 
 
 def clean_forward_source(source):
@@ -52,8 +51,6 @@ def clean_forward_source(source):
             "pushdown_fallback_warn_rate",
             "pushdown_runtime_fallback_warn_share",
             "pushdown_diff_warn_ratio",
-            "device_tag_include",
-            "device_tag_exclude",
             "device_tag_include_tags",
             "device_tag_exclude_tags",
             "device_tag_include_match",
@@ -64,7 +61,6 @@ def clean_forward_source(source):
             "sync_endpoints",
             "sync_generic_endpoints",
             "scope_endpoints_by_include_tags",
-            "scope_endpoints_by_include_tags_configured",
         }
     )
     if invalid:
@@ -84,21 +80,13 @@ def clean_forward_source(source):
         raise ValidationError(_("`sync_endpoints` must be a boolean."))
     if not isinstance(parameters.get("sync_generic_endpoints", False), bool):
         raise ValidationError(_("`sync_generic_endpoints` must be a boolean."))
-    if not isinstance(parameters.get("scope_endpoints_by_include_tags", False), bool):
+    parameters.setdefault("scope_endpoints_by_include_tags", True)
+    if not isinstance(parameters.get("scope_endpoints_by_include_tags"), bool):
         raise ValidationError(_("`scope_endpoints_by_include_tags` must be a boolean."))
-    if not isinstance(
-        parameters.get("scope_endpoints_by_include_tags_configured", False), bool
-    ):
-        raise ValidationError(
-            _("`scope_endpoints_by_include_tags_configured` must be a boolean.")
-        )
     if parameters.get("network_id") is not None and not isinstance(
         parameters.get("network_id"), str
     ):
         raise ValidationError(_("`network_id` must be a string."))
-    for key in ("device_tag_include", "device_tag_exclude"):
-        if parameters.get(key) is not None and not isinstance(parameters.get(key), str):
-            raise ValidationError(_(f"`{key}` must be a string."))
     for key in (
         "device_tag_include_tags",
         "device_tag_exclude_tags",
@@ -110,6 +98,7 @@ def clean_forward_source(source):
             not isinstance(item, str) for item in parameters.get(key)
         ):
             raise ValidationError(_(f"`{key}` must be a list of strings."))
+    validate_scope_tag_names(parameters.get("device_tag_include_tags") or [])
     include_match = parameters.get("device_tag_include_match")
     if include_match is not None:
         if not isinstance(include_match, str):
@@ -367,29 +356,20 @@ def clean_forward_sync(sync):
         set(parameters.keys())
         - {
             "auto_merge",
-            "execution_backend",
-            "multi_branch",
-            "max_changes_per_branch",
+            "max_changes_per_staging_item",
             "snapshot_id",
             "enable_bulk_orm",
-            "bulk_orm_models",
-            "scheduler_overlap",
             "skip_unchanged_snapshot",
             "set_primary_ip_from_mgmt_tag",
             "diff_fallback_mode",
             "webhook_secret",
             "validation_schedule_interval",
             "preview_schedule_interval",
-            "enable_branch_budget_split",
-            "branch_budget_enforcement",
             "stuck_recovery",
-            # Post-sync overlay toggles (opt-in, except vsys parent-link which is
-            # default-on and opts OUT with auto_link_vsys_parents=False).
-            "auto_tag_backfilled",
+            # Post-sync controls. Device status-tag ownership is mandatory;
+            # vsys parent linking defaults on and can be explicitly disabled.
             "auto_refresh_device_analysis",
             "auto_link_vsys_parents",
-            "auto_prune_orphans",
-            BRANCH_RUN_STATE_PARAMETER,
             MODEL_CHANGE_DENSITY_PARAMETER,
             MODEL_CHANGE_DENSITY_PROFILE_PARAMETER,
             *FORWARD_SUPPORTED_MODELS,
@@ -407,12 +387,7 @@ def clean_forward_sync(sync):
         "validation_schedule_interval",
         "preview_schedule_interval",
     ):
-        # Only normalize when present: an ABSENT key means a pre-2.5.7 sync
-        # whose schedule rows predate intent storage (reconcile adopts them);
-        # writing a default here would read as an explicit cancel.
-        if schedule_key not in parameters:
-            continue
-        value = parameters.get(schedule_key)
+        value = parameters.get(schedule_key, 0)
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             raise ValidationError(
                 _(f"`{schedule_key}` must be a non-negative integer (minutes).")
@@ -425,13 +400,7 @@ def clean_forward_sync(sync):
                 )
             )
         parameters[schedule_key] = value
-    # 2.0: single-branch is the only execution backend. Normalize any value
-    # (including legacy branching / fast_bootstrap) to it.
-    parameters["execution_backend"] = ForwardExecutionBackendChoices.SINGLE_BRANCH
     parameters["auto_merge"] = bool(parameters.get("auto_merge", sync.auto_merge))
-    parameters["scheduler_overlap"] = bool(
-        parameters.get("scheduler_overlap", False) and parameters["auto_merge"]
-    )
     parameters["skip_unchanged_snapshot"] = bool(
         parameters.get("skip_unchanged_snapshot", False)
     )
@@ -469,21 +438,21 @@ def clean_forward_sync(sync):
             DEFAULT_ENABLE_BULK_ORM_FOR_NEW_SYNCS,
         )
     )
-    bulk_orm_models = parameters.get("bulk_orm_models") or []
-    if not isinstance(bulk_orm_models, list) or any(
-        not isinstance(model_string, str) for model_string in bulk_orm_models
-    ):
-        raise ValidationError(_("`bulk_orm_models` must be a list of model strings."))
-    parameters["bulk_orm_models"] = sorted(set(bulk_orm_models))
     try:
-        max_changes_per_branch = int(
-            parameters.get("max_changes_per_branch", sync.get_max_changes_per_branch())
+        max_changes_per_staging_item = int(
+            parameters.get(
+                "max_changes_per_staging_item", sync.get_max_changes_per_staging_item()
+            )
         )
     except (TypeError, ValueError):
-        raise ValidationError(_("`max_changes_per_branch` must be a positive integer."))
-    if max_changes_per_branch < 1:
-        raise ValidationError(_("`max_changes_per_branch` must be a positive integer."))
-    parameters["max_changes_per_branch"] = max_changes_per_branch
+        raise ValidationError(
+            _("`max_changes_per_staging_item` must be a positive integer.")
+        )
+    if max_changes_per_staging_item < 1:
+        raise ValidationError(
+            _("`max_changes_per_staging_item` must be a positive integer.")
+        )
+    parameters["max_changes_per_staging_item"] = max_changes_per_staging_item
     sync.auto_merge = parameters["auto_merge"]
     sync.parameters = parameters
 

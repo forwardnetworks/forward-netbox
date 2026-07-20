@@ -69,9 +69,6 @@ from .tables import ForwardSyncTable
 from .tables import ForwardValidationRunTable
 from .utilities.change_explainability import change_explainability_summary
 from .utilities.direct_changes import object_changes_for_ingestion
-from .utilities.execution_ledger import execution_run_bundle_for_sync
-from .utilities.execution_ledger import live_support_diagnostics
-from .utilities.execution_ledger import pushdown_trend_history_for_sync
 from .utilities.execution_telemetry import build_plan_preview
 from .utilities.health import live_data_file_health_check
 from .utilities.health import live_source_health_check
@@ -83,10 +80,9 @@ from .utilities.query_binding import live_query_binding_drift
 from .utilities.query_binding import publish_builtin_nqe_map_queries
 from .utilities.query_binding import restore_builtin_raw_query_bindings
 from .utilities.support_bundle_archive import support_bundle_zip_response
-from .utilities.sync_state import get_execution_display_state
 
 
-_EXECUTION_PLAN_ITEM_LIMIT = 25
+_PREVIEW_PLAN_ITEM_LIMIT = 25
 
 
 def annotate_statistics(queryset):
@@ -158,25 +154,6 @@ def _job_export_payload(job):
     }
 
 
-def _compact_execution_state_payload(execution_state):
-    state = dict(execution_state or {})
-    plan_items = state.get("plan_items")
-    if isinstance(plan_items, list):
-        state["plan_items_count"] = len(plan_items)
-        if len(plan_items) > _EXECUTION_PLAN_ITEM_LIMIT:
-            state["plan_items"] = plan_items[:_EXECUTION_PLAN_ITEM_LIMIT]
-            state["plan_items_truncated"] = True
-        else:
-            state["plan_items_truncated"] = False
-    else:
-        try:
-            state["plan_items_count"] = int(state.get("total_plan_items") or 0)
-        except (TypeError, ValueError):
-            state["plan_items_count"] = 0
-        state["plan_items_truncated"] = False
-    return state
-
-
 def _latest_dependency_preview_bundle_payload(sync, latest_ingestion):
     """Return aggregate preview evidence without customer inventory rows."""
     from core.choices import JobStatusChoices
@@ -196,7 +173,7 @@ def _latest_dependency_preview_bundle_payload(sync, latest_ingestion):
         .order_by("-created")
         .first()
     )
-    if job is None or not isinstance(job.data, dict):
+    if job is None or not isinstance(job.data, dict) or not job.data:
         return None
 
     data = job.data
@@ -228,12 +205,9 @@ def _latest_dependency_preview_bundle_payload(sync, latest_ingestion):
 
 
 def _ingestion_log_export_payload(ingestion, *, active_stage):
-    execution_state = _compact_execution_state_payload(
-        json_safe_value(get_execution_display_state(ingestion.sync))
-    )
-    execution_state_source = (
-        execution_state.get("state_source") if execution_state else None
-    )
+    from .utilities.ownership import ownership_finalization_summary
+    from .utilities.ownership import ownership_integrity_summary
+
     return {
         "exported_at": timezone.now().isoformat(),
         "active_stage": active_stage,
@@ -254,29 +228,19 @@ def _ingestion_log_export_payload(ingestion, *, active_stage):
             "name": ingestion.sync.name,
             "status": ingestion.sync.status,
             "current_activity": ingestion.sync.get_sync_activity(),
-            "execution_state": execution_state,
-            "execution_state_source": execution_state_source,
             "analysis_summary": ingestion.sync.get_analysis_summary(),
             "workload_summary": ingestion.sync.get_workload_summary(),
             "advisory_summary": ingestion.sync.get_advisory_summary(),
         },
-        "execution_plan": {
-            "next_plan_index": execution_state.get("next_plan_index"),
-            "total_plan_items": execution_state.get("total_plan_items"),
-            "phase": execution_state.get("phase") or "",
-            "phase_message": execution_state.get("phase_message") or "",
-            "current_model_string": execution_state.get("current_model_string") or "",
-            "current_shard_index": execution_state.get("current_shard_index"),
-            "last_stage_job_id": execution_state.get("last_stage_job_id"),
-            "plan_items_count": execution_state.get("plan_items_count", 0),
-            "plan_items_truncated": bool(
-                execution_state.get("plan_items_truncated") or False
-            ),
-            "plan_items": execution_state.get("plan_items") or [],
-        },
-        "execution_run": json_safe_value(execution_run_bundle_for_sync(ingestion.sync)),
         "change_explainability": json_safe_value(
             change_explainability_summary(ingestion)
+        ),
+        "ownership_integrity": json_safe_value(ownership_integrity_summary()),
+        "ownership_finalization": json_safe_value(
+            ownership_finalization_summary(
+                ingestion.sync,
+                generation=ingestion.pk,
+            )
         ),
         "job_results": json_safe_value(ingestion.get_job_logs(ingestion.job)),
         "merge_job_results": json_safe_value(
@@ -286,17 +250,17 @@ def _ingestion_log_export_payload(ingestion, *, active_stage):
 
 
 def _sync_support_bundle_payload(sync):
+    from .utilities.ownership import ownership_finalization_summary
+    from .utilities.ownership import ownership_integrity_summary
+    from .utilities.sync_facade import effective_scope_endpoints_by_include_tags
     from .utilities.upgrade_reconciliation import compute_upgrade_reconciliation
 
     latest_ingestion = sync.last_ingestion
-    execution_state = _compact_execution_state_payload(
-        json_safe_value(get_execution_display_state(sync))
-    )
-    execution_state_source = (
-        execution_state.get("state_source") if execution_state else None
-    )
+    source_parameters = dict(sync.source.parameters or {})
+    include_tags = source_parameters.get("device_tag_include_tags") or []
+    exclude_tags = source_parameters.get("device_tag_exclude_tags") or []
+    sync_device_tags = source_parameters.get("sync_device_tags") or []
     health = sync_health_summary(sync)
-    live_diagnostics = live_support_diagnostics(sync, sync_health=health)
     return {
         "exported_at": timezone.now().isoformat(),
         "sync": {
@@ -304,9 +268,31 @@ def _sync_support_bundle_payload(sync):
             "name": sync.name,
             "status": sync.status,
             "source": sync.source_id,
+            "scope_configuration": {
+                "sync_endpoints": bool(source_parameters.get("sync_endpoints")),
+                "sync_generic_endpoints": bool(
+                    source_parameters.get("sync_generic_endpoints")
+                ),
+                "scope_endpoints_by_include_tags": (
+                    effective_scope_endpoints_by_include_tags(source_parameters)
+                ),
+                "apply_device_scope_tags": bool(
+                    source_parameters.get("apply_device_scope_tags")
+                ),
+                "sync_device_tag_count": len(sync_device_tags),
+                "include_tag_count": len(include_tags),
+                "exclude_tag_count": len(exclude_tags),
+                "include_match": str(
+                    source_parameters.get("device_tag_include_match") or "any"
+                ),
+                "filter_mode": str(
+                    source_parameters.get("device_tag_filter_mode") or "local"
+                ),
+                "prune_out_of_scope": bool(
+                    source_parameters.get("device_tag_prune_out_of_scope")
+                ),
+            },
             "current_activity": sync.get_sync_activity(),
-            "execution_state": execution_state,
-            "execution_state_source": execution_state_source,
             "analysis_summary": sync.get_analysis_summary(),
             "workload_summary": sync.get_workload_summary(),
             "advisory_summary": sync.get_advisory_summary(),
@@ -316,11 +302,17 @@ def _sync_support_bundle_payload(sync):
         "upgrade_reconciliation": json_safe_value(
             compute_upgrade_reconciliation(include_samples=False)
         ),
+        "ownership_integrity": json_safe_value(ownership_integrity_summary()),
+        "ownership_finalization": json_safe_value(
+            ownership_finalization_summary(
+                sync,
+                generation=getattr(latest_ingestion, "pk", None),
+            )
+        ),
         "latest_dependency_preview": _latest_dependency_preview_bundle_payload(
             sync,
             latest_ingestion,
         ),
-        "live_diagnostics": json_safe_value(live_diagnostics),
         "latest_ingestion": (
             {
                 "pk": latest_ingestion.pk,
@@ -348,7 +340,6 @@ def _sync_support_bundle_payload(sync):
             if latest_ingestion is not None
             else None
         ),
-        "execution_run": json_safe_value(execution_run_bundle_for_sync(sync)),
         "health": json_safe_value(health),
     }
 
@@ -383,8 +374,11 @@ def _dependency_model_result_summary(result):
     # ``fetcher.model_results`` are ForwardModelResult dataclasses, not dicts —
     # calling result.get(...) on them raised AttributeError and errored the whole
     # dependency preview (hidden as null-data until 2.2.4 surfaced job errors).
-    # Normalize via as_dict(); tolerate a plain dict too.
-    data = result.as_dict() if hasattr(result, "as_dict") else (result or {})
+    from .utilities.query_fetch_execution import ForwardModelResult
+
+    if not isinstance(result, ForwardModelResult):
+        raise TypeError("Dependency preview results must be ForwardModelResult values.")
+    data = result.as_dict()
     row_count = int(data.get("row_count") or 0)
     delete_count = int(data.get("delete_count") or 0)
     return {
@@ -409,20 +403,13 @@ def _dependency_dry_run_payload(sync):
     fetcher = ForwardQueryFetcher(sync, sync.source.get_client(), sync.logger)
     context = fetcher.resolve_context()
     workloads = fetcher.fetch_workloads(context)
-    if sync.parameters.get("enable_branch_budget_split"):
-        plan = build_branch_plan(
-            workloads,
-            max_changes_per_branch=sync.get_max_changes_per_branch(),
-            oversized_bucket_policy=(
-                "fail"
-                if sync.parameters.get("branch_budget_enforcement") == "strict"
-                else "warn"
-            ),
-        )
-    else:
-        plan = build_branch_plan(workloads)
+    plan = build_branch_plan(
+        workloads,
+        max_changes_per_staging_item=sync.get_max_changes_per_staging_item(),
+        oversized_bucket_policy="warn",
+    )
     plan_preview = build_plan_preview(
-        plan, max_changes_per_branch=sync.get_max_changes_per_branch()
+        plan, max_changes_per_staging_item=sync.get_max_changes_per_staging_item()
     )
     plan_items = [_dependency_plan_item_summary(item) for item in plan]
     context_dict = context.as_dict()
@@ -440,8 +427,8 @@ def _dependency_dry_run_payload(sync):
         },
         "plan_preview": plan_preview,
         "plan_items_count": len(plan_items),
-        "plan_items_truncated": len(plan_items) > _EXECUTION_PLAN_ITEM_LIMIT,
-        "plan_items": plan_items[:_EXECUTION_PLAN_ITEM_LIMIT],
+        "plan_items_truncated": len(plan_items) > _PREVIEW_PLAN_ITEM_LIMIT,
+        "plan_items": plan_items[:_PREVIEW_PLAN_ITEM_LIMIT],
         "change_estimate_kind": "workload_upper_bound",
         "model_results": [
             _dependency_model_result_summary(result) for result in fetcher.model_results
@@ -783,12 +770,10 @@ class ForwardSyncRefreshDeviceAnalysisView(BaseObjectView):
 
     def post(self, request, pk):
         # Live NQE over all devices — runs as a background job.
-        from core.models import Job
-        from django.utils.module_loading import import_string
+        from .jobs import DeviceAnalysisRefreshJob
 
         sync = get_object_or_404(self.queryset, pk=pk)
-        job = Job.enqueue(
-            import_string("forward_netbox.jobs.refresh_forward_device_analysis"),
+        job = DeviceAnalysisRefreshJob.enqueue(
             instance=sync,
             user=request.user,
             name=f"{sync.name} - refresh device analysis",
@@ -969,8 +954,7 @@ class ForwardStartSyncView(BaseObjectView):
         except SyncError as exc:
             messages.error(request, str(exc))
             return redirect(sync.get_absolute_url())
-        action = "continue" if sync.has_pending_execution else "run"
-        messages.success(request, f"Queued job #{job.pk} to {action} {sync}.")
+        messages.success(request, f"Queued job #{job.pk} to run {sync}.")
         return redirect(sync.get_absolute_url())
 
 
@@ -1066,12 +1050,10 @@ class ForwardSyncTagBackfilledView(BaseObjectView):
     def post(self, request, pk):
         # Reconciles plugin-maintained scope tags in the standard device list.
         # Runs as a background job (live Forward query + tag writes).
-        from core.models import Job
-        from django.utils.module_loading import import_string
+        from .jobs import DeviceScopeTagReconciliationJob
 
         sync = get_object_or_404(self.queryset, pk=pk)
-        job = Job.enqueue(
-            import_string("forward_netbox.jobs.tag_forward_backfilled_devices"),
+        job = DeviceScopeTagReconciliationJob.enqueue(
             instance=sync,
             user=request.user,
             name=f"{sync.name} - reconcile device scope tags",
@@ -1208,48 +1190,10 @@ class ForwardSyncModuleReadinessView(BaseObjectView):
             {
                 "object": sync,
                 "payload": report.as_dict(),
+                "module_bay_plan_rows": report.module_bay_plan_rows,
                 "missing_device_names": report.missing_device_names,
             },
         )
-
-
-@register_model_view(ForwardSync, "create_module_bays", path="create-module-bays")
-class ForwardSyncCreateModuleBaysView(BaseObjectView):
-    queryset = ForwardSync.objects.all()
-
-    def get_required_permission(self):
-        return "dcim.add_modulebay"
-
-    def get(self, request, pk):
-        sync = get_object_or_404(self.queryset, pk=pk)
-        return redirect(
-            reverse(
-                "plugins:forward_netbox:forwardsync_module_readiness",
-                kwargs={"pk": sync.pk},
-            )
-        )
-
-    def post(self, request, pk):
-        # Creating many module bays (with full_clean + save per bay) can exceed an
-        # HTTP gateway timeout on large fabrics, so it runs as a background job.
-        from .utilities.sync_facade import enqueue_button_job
-        from .utilities.sync_facade import JobAlreadyActive
-
-        sync = get_object_or_404(self.queryset, pk=pk)
-        try:
-            job = enqueue_button_job(sync, "create_module_bays", request.user)
-        except JobAlreadyActive as exc:
-            messages.warning(request, str(exc))
-            return redirect(sync.get_absolute_url())
-        messages.success(
-            request,
-            _(
-                "Queued job #%(pk)d to create missing module bays. Watch the Jobs "
-                "tab for the result."
-            )
-            % {"pk": job.pk},
-        )
-        return redirect(sync.get_absolute_url())
 
 
 @register_model_view(ForwardSync, "support_bundle", path="support-bundle")
@@ -1303,9 +1247,7 @@ class ForwardSyncHealthView(generic.ObjectView):
     )
 
     def get_extra_context(self, request, instance):
-        health = sync_health_summary(instance)
-        live_diagnostics = live_support_diagnostics(instance, sync_health=health)
-        return {"health": health, "live_diagnostics": json_safe_value(live_diagnostics)}
+        return {"health": sync_health_summary(instance)}
 
 
 @register_model_view(ForwardSync, "query_drift", path="query-drift")
@@ -1458,35 +1400,6 @@ class ForwardSyncDataFileHealthView(BaseObjectView):
         return _download_json_response(json_safe_value(payload), filename)
 
 
-@register_model_view(ForwardSync, "pushdown_trends", path="pushdown-trends")
-class ForwardSyncPushdownTrendsView(BaseObjectView):
-    queryset = ForwardSync.objects.all()
-
-    def get_required_permission(self):
-        return "forward_netbox.view_forwardsync"
-
-    def get(self, request, pk):
-        sync = get_object_or_404(self.queryset, pk=pk)
-        limit_raw = request.GET.get("limit")
-        try:
-            selected_limit = int(limit_raw) if limit_raw not in ("", None) else 180
-        except (TypeError, ValueError):
-            selected_limit = 180
-        selected_limit = max(1, min(1000, selected_limit))
-        history = pushdown_trend_history_for_sync(sync, limit=selected_limit)
-        payload = {
-            "exported_at": timezone.now().isoformat(),
-            "sync": {
-                "pk": sync.pk,
-                "name": sync.name,
-                "source": sync.source_id,
-            },
-            "history": history,
-        }
-        filename = f"forward-sync-{sync.pk}-pushdown-trends.json"
-        return _download_json_response(json_safe_value(payload), filename)
-
-
 @register_model_view(ForwardSync, "delete")
 class ForwardSyncDeleteView(generic.ObjectDeleteView):
     queryset = ForwardSync.objects.all()
@@ -1531,7 +1444,7 @@ class ForwardIngestionListView(generic.ObjectListView):
     queryset = annotate_statistics(ForwardIngestion.objects.all())
     filterset = ForwardIngestionFilterSet
     table = ForwardIngestionTable
-    actions = (BulkExport, BulkDelete)
+    actions = (BulkExport,)
 
 
 @register_model_view(ForwardIngestion, name="logs", path="logs")
@@ -1548,19 +1461,16 @@ class ForwardIngestionLogView(LoginRequiredMixin, View):
         data["merge_job_results"] = ingestion.get_job_logs(ingestion.merge_job)
         data["active_stage"] = active_stage
         data["merge_disabled"] = not ingestion.merge_job
-        data["execution_state"] = _compact_execution_state_payload(
-            json_safe_value(get_execution_display_state(ingestion.sync))
-        )
         sync_running = ingestion.job and not ingestion.job.completed
         merge_running = ingestion.merge_job and not ingestion.merge_job.completed
         job_running = bool(sync_running or merge_running)
-        # Defer the change-explainability recompute while the job is running: it
+        # Keep change explainability unavailable while the job is running: it
         # is only meaningful once staging/merge completes, and recomputing it on
         # every poll piles DB load onto the web workers during a long settling
         # merge (a large platform reclassification can run for minutes) — that
         # contention is what produces the 504 gateway timeouts the customer sees.
         data["change_explainability"] = (
-            {"available": False, "reason": "deferred_while_running"}
+            {"available": False, "reason": "unavailable_while_running"}
             if job_running
             else change_explainability_summary(ingestion)
         )
@@ -1608,9 +1518,6 @@ class ForwardIngestionProgressView(LoginRequiredMixin, View):
         data["merge_job"] = ingestion.merge_job
         data["active_stage"] = active_stage
         data["merge_disabled"] = not ingestion.merge_job
-        data["execution_state"] = _compact_execution_state_payload(
-            json_safe_value(get_execution_display_state(ingestion.sync))
-        )
         return render(request, self.template_name, data)
 
 
@@ -1629,13 +1536,10 @@ class ForwardIngestionView(generic.ObjectView):
         data["merge_job_results"] = instance.get_job_logs(instance.merge_job)
         data["active_stage"] = active_stage
         data["merge_disabled"] = not instance.merge_job
-        data["execution_state"] = _compact_execution_state_payload(
-            json_safe_value(get_execution_display_state(instance.sync))
-        )
-        # Defer change-explainability while the job is running (see
+        # Keep change explainability unavailable while the job is running (see
         # ForwardIngestionLogView): avoids recomputing it under merge contention.
         data["change_explainability"] = (
-            {"available": False, "reason": "deferred_while_running"}
+            {"available": False, "reason": "unavailable_while_running"}
             if data["job_running"]
             else change_explainability_summary(instance)
         )
@@ -1796,17 +1700,6 @@ class ForwardIngestionIssuesView(generic.ObjectChildrenView):
 
     def get_children(self, request, parent):
         return ForwardIngestionIssue.objects.filter(ingestion=parent)
-
-
-@register_model_view(ForwardIngestion, "delete")
-class ForwardIngestionDeleteView(generic.ObjectDeleteView):
-    queryset = ForwardIngestion.objects.all()
-
-
-@register_model_view(ForwardIngestion, "bulk_delete", path="delete", detail=False)
-class ForwardIngestionBulkDeleteView(generic.BulkDeleteView):
-    queryset = ForwardIngestion.objects.all()
-    table = ForwardIngestionTable
 
 
 @register_model_view(ForwardDeviceAnalysis, "list", path="", detail=False)

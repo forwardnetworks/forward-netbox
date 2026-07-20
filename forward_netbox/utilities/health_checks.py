@@ -1,6 +1,5 @@
 from ..choices import ForwardSourceStatusChoices
 from ..choices import ForwardValidationStatusChoices
-from .execution_ledger import execution_run_recovery_recommendation
 from .ingestion_issues import has_blocking_issues
 from .runtime_guidance import configured_rq_default_timeout
 from .runtime_guidance import source_query_fetch_concurrency
@@ -18,14 +17,9 @@ def health_checks(
     data_file_maps,
     validation_run,
     latest_ingestion,
-    execution_run,
-    capacity_summary,
-    query_pushdown,
-    large_run_tuning,
     dependency_preflight,
     delete_wave,
     throughput,
-    compatibility_cache,
     next_run,
     branching_available_fn,
 ):
@@ -133,30 +127,6 @@ def health_checks(
             message=ingestion_check_message(latest_ingestion),
         ),
         check(
-            name="Compatibility cache",
-            status=compatibility_cache_check_status(compatibility_cache),
-            message=compatibility_cache_check_message(compatibility_cache),
-        ),
-        check(
-            name="Pushdown efficiency",
-            status=query_pushdown_check_status(query_pushdown),
-            message=query_pushdown_check_message(query_pushdown),
-        ),
-        check(
-            name="Large-run tuning",
-            status=large_run_tuning_check_status(large_run_tuning),
-            message=large_run_tuning_check_message(large_run_tuning),
-        ),
-        check(
-            name="Adaptive capacity",
-            status=adaptive_capacity_check_status(
-                (large_run_tuning or {}).get("adaptive_capacity")
-            ),
-            message=adaptive_capacity_check_message(
-                (large_run_tuning or {}).get("adaptive_capacity")
-            ),
-        ),
-        check(
             name="Scoped dependency preflight",
             status=dependency_preflight_check_status(dependency_preflight),
             message=dependency_preflight_check_message(dependency_preflight),
@@ -172,18 +142,6 @@ def health_checks(
             message=throughput_check_message(throughput),
         ),
     ]
-    if execution_run is not None:
-        recommendation = execution_run_recovery_recommendation(execution_run)
-        checks.append(
-            check(
-                name="Execution recovery",
-                status=recommendation_status(recommendation),
-                message=recommendation.get("message") or "Monitor the execution run.",
-            )
-        )
-    capacity_check = capacity_check_summary(sync, capacity_summary)
-    if capacity_check is not None:
-        checks.append(capacity_check)
     timeout = timeout_check(sync)
     if timeout is not None:
         checks.append(timeout)
@@ -324,24 +282,6 @@ def dlm_hardware_notice_alias_check(maps):
     )
 
 
-def compatibility_cache_check_status(compatibility_cache):
-    if not compatibility_cache:
-        return "info"
-    if compatibility_cache.get("stale_payload_present"):
-        return "warn"
-    if compatibility_cache.get("ledger_history"):
-        return "pass"
-    if compatibility_cache.get("compatibility_state_present"):
-        return "warn"
-    return "info"
-
-
-def compatibility_cache_check_message(compatibility_cache):
-    if not compatibility_cache:
-        return "Compatibility cache diagnostics are unavailable."
-    return str(compatibility_cache.get("message") or "").strip()
-
-
 def query_fetch_concurrency_check(sync):
     concurrency = source_query_fetch_concurrency(sync)
     if concurrency >= 12:
@@ -368,106 +308,6 @@ def query_fetch_concurrency_check(sync):
         status="pass",
         message=f"Source query fetch concurrency is {concurrency}.",
     )
-
-
-def query_pushdown_check_status(query_pushdown):
-    efficiency = (query_pushdown or {}).get("efficiency") or {}
-    runtime_share = (query_pushdown or {}).get("runtime_share") or {}
-    diff_utilization = (query_pushdown or {}).get("diff_utilization") or {}
-    statuses = [
-        str(efficiency.get("status") or "info").strip().lower(),
-        str(runtime_share.get("status") or "info").strip().lower(),
-        str(diff_utilization.get("status") or "info").strip().lower(),
-    ]
-    if "fail" in statuses:
-        return "fail"
-    if "warn" in statuses:
-        return "warn"
-    if "pass" in statuses:
-        return "pass"
-    return "info"
-
-
-def query_pushdown_check_message(query_pushdown):
-    efficiency = (query_pushdown or {}).get("efficiency") or {}
-    runtime_share = (query_pushdown or {}).get("runtime_share") or {}
-    diff_utilization = (query_pushdown or {}).get("diff_utilization") or {}
-    message = str(efficiency.get("message") or "").strip()
-    hotspot_models = list(efficiency.get("hotspot_models") or [])
-    runtime_message = str(runtime_share.get("message") or "").strip()
-    diff_message = str(diff_utilization.get("message") or "").strip()
-    tuning_guidance = list((query_pushdown or {}).get("tuning_guidance") or [])
-
-    message_parts = []
-    if message:
-        message_parts.append(message)
-    if runtime_message:
-        message_parts.append(runtime_message)
-    if diff_message:
-        message_parts.append(diff_message)
-
-    if not hotspot_models:
-        message = (
-            " ".join(message_parts).strip()
-            or "Pushdown efficiency diagnostics are unavailable."
-        )
-    else:
-        hotspot_labels = ", ".join(
-            item.get("model", "unknown") for item in hotspot_models
-        )
-        if message_parts:
-            message = (
-                f"{' '.join(message_parts).strip()} Hotspot model(s): {hotspot_labels}."
-            )
-        else:
-            message = f"Hotspot model(s): {hotspot_labels}."
-
-    if not tuning_guidance:
-        return message
-    preview = "; ".join(
-        str(item.get("message") or "").strip()
-        for item in tuning_guidance[:2]
-        if str(item.get("message") or "").strip()
-    )
-    if not preview:
-        return message
-    return f"{message} Guidance: {preview}"
-
-
-def large_run_tuning_check_status(large_run_tuning):
-    status = str((large_run_tuning or {}).get("status") or "info").strip().lower()
-    if status in {"fail", "warn", "pass"}:
-        return status
-    return "info"
-
-
-def large_run_tuning_check_message(large_run_tuning):
-    if not large_run_tuning:
-        return "Large-run tuning diagnostics are unavailable."
-    message = str(large_run_tuning.get("message") or "").strip()
-    actions = list(large_run_tuning.get("first_order_actions") or [])
-    preview = "; ".join(
-        str(item.get("message") or "").strip()
-        for item in actions[:2]
-        if str(item.get("message") or "").strip()
-    )
-    if message and preview and preview not in message:
-        return f"{message} Next: {preview}"
-    return message or preview or "Large-run tuning diagnostics are unavailable."
-
-
-def adaptive_capacity_check_status(adaptive_capacity):
-    status = str((adaptive_capacity or {}).get("status") or "info").strip().lower()
-    if status in {"fail", "warn", "pass"}:
-        return status
-    return "info"
-
-
-def adaptive_capacity_check_message(adaptive_capacity):
-    if not adaptive_capacity:
-        return "Adaptive capacity diagnostics are unavailable."
-    message = str(adaptive_capacity.get("message") or "").strip()
-    return message or "Adaptive capacity diagnostics are unavailable."
 
 
 def dependency_preflight_check_status(dependency_preflight):
@@ -534,18 +374,7 @@ def throughput_check_message(throughput):
     if not throughput:
         return "Run-throughput diagnostics are unavailable."
     message = str(throughput.get("message") or "").strip()
-    readiness = throughput.get("scheduler_overlap_readiness") or {}
-    readiness_message = str(readiness.get("message") or "").strip()
-    dominant_wait_component = str(
-        readiness.get("dominant_wait_component") or ""
-    ).strip()
-    if readiness_message and dominant_wait_component:
-        readiness_message = (
-            f"{readiness_message} Dominant wait component: {dominant_wait_component}."
-        )
-    if message and readiness_message:
-        return f"{message} {readiness_message}"
-    return message or readiness_message or "Run-throughput diagnostics are unavailable."
+    return message or "Run-throughput diagnostics are unavailable."
 
 
 def query_drift_check_status(query_drift):
@@ -684,43 +513,6 @@ def timeout_check(sync):
         name="Worker timeout",
         status="pass",
         message=f"RQ_DEFAULT_TIMEOUT is {rq_timeout}s.",
-    )
-
-
-def capacity_check_summary(sync, capacity_summary):
-    if not capacity_summary or not capacity_summary.get("available"):
-        return check(
-            name="Shard capacity",
-            status="info",
-            message="No completed execution-step timing is available yet.",
-        )
-    rq_timeout = configured_rq_default_timeout()
-    max_seconds = capacity_summary.get("max_completed_step_seconds")
-    projected_remaining = capacity_summary.get("projected_remaining_seconds")
-    if rq_timeout and max_seconds and max_seconds >= rq_timeout * 0.8:
-        return check(
-            name="Shard capacity",
-            status="warn",
-            message=(
-                f"Observed shard duration reached {max_seconds}s, close to the "
-                f"configured worker timeout of {rq_timeout}s."
-            ),
-        )
-    if rq_timeout and projected_remaining and projected_remaining >= rq_timeout:
-        return check(
-            name="Shard capacity",
-            status="warn",
-            message=(
-                f"Projected remaining stage runtime is {projected_remaining}s, "
-                f"which exceeds the configured worker timeout of {rq_timeout}s. "
-                "Consider increasing RQ timeout, lowering query fetch concurrency, "
-                "or using fast bootstrap for baseline initialization."
-            ),
-        )
-    return check(
-        name="Shard capacity",
-        status="pass",
-        message=capacity_summary.get("message") or "Shard timing is available.",
     )
 
 

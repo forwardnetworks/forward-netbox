@@ -7,10 +7,24 @@ from ..exceptions import ForwardSyncDataError
 
 def delete_dcim_device(runner, row):
     from dcim.models import Device
+    from dcim.models import Site
+
+    name = str(row.get("name") or "").strip()
+    if not name:
+        return False
+
+    site = None
+    if row.get("site_slug"):
+        site = runner._get_unique_or_raise(Site, {"slug": row["site_slug"]})
+    elif row.get("site"):
+        site = runner._get_unique_or_raise(Site, {"name": row["site"]})
+
+    if (row.get("site_slug") or row.get("site")) and site is None:
+        return False
 
     return runner._delete_by_coalesce(
         Device,
-        [runner._coalesce_lookup(row, "name")],
+        [{"name": name, "site": site} if site is not None else {"name": name}],
     )
 
 
@@ -105,6 +119,13 @@ def _scope_tags_enabled(runner):
     return bool(source_parameters.get("apply_device_scope_tags"))
 
 
+def record_device_identity_candidate(runner, device):
+    candidates = getattr(runner, "_device_identity_candidates", None)
+    if candidates is None:
+        candidates = runner._device_identity_candidates = set()
+    candidates.add((str(device.name or "").strip(), device.pk))
+
+
 def _ensure_scope_tag(runner, name):
     """Resolve (and cache) the NetBox Tag for one include-tag name, ensuring it
     exists. Returns None for an unslugifiable name."""
@@ -129,39 +150,6 @@ def _ensure_scope_tag(runner, name):
     )
     cache[name] = tag
     return tag
-
-
-def _scope_managed_tags(runner):
-    """The NetBox Tags for ALL of this sync's include tags — the bounded universe
-    of scope tags this feature manages. Used to remove a device's stale scope
-    tag when it drops a Forward include tag between syncs (never touches
-    user/feature tags, which are outside this set)."""
-    cached = getattr(runner, "_scope_managed_tags_cache", None)
-    if cached is not None:
-        return cached
-
-    from .sync_facade import device_tag_scope
-
-    include_tags, _exclude_tags, _include_match = device_tag_scope(runner.sync)
-    managed = {
-        tag
-        for tag in (_ensure_scope_tag(runner, name) for name in include_tags)
-        if tag is not None
-    }
-    runner._scope_managed_tags_cache = managed
-    return managed
-
-
-def _clear_stale_out_of_scope_tag(runner, device):
-    """Clear the reconciliation tag after a successful in-scope upsert."""
-    from extras.models import Tag
-
-    from .scope_reconciliation import OUT_OF_SCOPE_TAG_SLUG
-    from .sync_interface import _device_remove_tag
-
-    tag = Tag.objects.filter(slug=OUT_OF_SCOPE_TAG_SLUG).first()
-    if tag is not None:
-        _device_remove_tag(runner, device, tag)
 
 
 def apply_dcim_device(runner, row):
@@ -226,19 +214,17 @@ def apply_dcim_device(runner, row):
         values=defaults,
         coalesce_sets=runner._coalesce_sets_for(
             "dcim.device",
-            [("name",)],
+            [("name", "site")],
         ),
     )
-
-    _clear_stale_out_of_scope_tag(runner, device)
+    record_device_identity_candidate(runner, device)
 
     if _scope_tags_enabled(runner):
         from .sync_interface import _device_add_tag
-        from .sync_interface import _device_remove_tag
 
-        # Apply exactly the include tags THIS device carries (resolved per-device
-        # at fetch time), then remove only this sync's scope tags it no longer
-        # carries. add/remove are no-ops when already (un)set -> 0 churn at rest.
+        # Stage positive assignments in the inventory branch. Removals are
+        # materialized on main after merge from the union of generation-stamped
+        # sync claims, so a stale branch can never remove another sync's tag.
         matched_names = runner._scope_matched_tags.get(row["name"], [])
         wanted = {
             tag
@@ -247,6 +233,4 @@ def apply_dcim_device(runner, row):
         }
         for tag in wanted:
             _device_add_tag(runner, device, tag)
-        for tag in _scope_managed_tags(runner) - wanted:
-            _device_remove_tag(runner, device, tag)
     return True

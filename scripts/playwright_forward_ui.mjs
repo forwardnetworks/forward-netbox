@@ -177,7 +177,7 @@ async function main() {
     await expectVisible(page, "Health");
     await expectVisible(page, "ui-harness-drift-policy");
     await expectVisible(page, "latestProcessed");
-    await expectVisible(page, "max_changes_per_branch");
+    await expectVisible(page, "max_changes_per_staging_item");
     await expectVisible(page, "Current activity");
     await assertNoHorizontalOverflow(page, "desktop sync detail");
     evidence.screenshots.push(await screenshot(page, "desktop-sync-detail.jpg"));
@@ -215,9 +215,10 @@ async function main() {
       (await page.getByText("Refresh Query IDs", { exact: true }).count()) === 0,
       "sync health should not expose the retired Refresh Query IDs action",
     );
-    await expectVisible(page, "Large Run Tuning");
-    await expectVisible(page, "Adaptive capacity");
-    await expectVisible(page, "Next tuning batch");
+    await expectVisible(page, "Forward API Usage");
+    await expectVisible(page, "Dependency Lookup Cache");
+    await expectVisible(page, "Density Learning");
+    await expectVisible(page, "Ownership finalization");
     await expectVisible(page, "Diff-capable maps");
     await expectVisible(page, "Next run");
     await expectVisible(page, "Health Details");

@@ -8,6 +8,7 @@ import httpx
 from forward_netbox.exceptions import ForwardClientError
 from forward_netbox.exceptions import ForwardConnectivityError
 from forward_netbox.utilities import forward_api_impl
+from forward_netbox.utilities.crypto import encrypt_secret
 from forward_netbox.utilities.forward_api import ForwardClient
 
 
@@ -46,7 +47,7 @@ class ForwardClientTest(TestCase):
                 url="https://fwd.app",
                 parameters={
                     "username": "user@example.com",
-                    "password": "secret",
+                    "password": encrypt_secret("secret"),
                     "verify": True,
                     "timeout": 1200,
                 },
@@ -150,7 +151,7 @@ class ForwardClientTest(TestCase):
                 url="https://forward.example.com",
                 parameters={
                     "username": "user@example.com",
-                    "password": "secret",
+                    "password": encrypt_secret("secret"),
                 },
             )
         )
@@ -165,7 +166,7 @@ class ForwardClientTest(TestCase):
                 url="https://fwd.app",
                 parameters={
                     "username": "user@example.com",
-                    "password": "secret",
+                    "password": encrypt_secret("secret"),
                     "api_requests_per_minute": 0,
                 },
             )
@@ -181,7 +182,7 @@ class ForwardClientTest(TestCase):
                 url="https://fwd.app",
                 parameters={
                     "username": "rate-limit@example.com",
-                    "password": "secret",
+                    "password": encrypt_secret("secret"),
                     "api_requests_per_minute": 60,
                 },
             )
@@ -214,7 +215,7 @@ class ForwardClientTest(TestCase):
                 url="https://fwd.app",
                 parameters={
                     "username": "rate-limit@example.com",
-                    "password": "secret",
+                    "password": encrypt_secret("secret"),
                     "api_requests_per_minute": 120,
                 },
             )
@@ -258,7 +259,7 @@ class ForwardClientTest(TestCase):
                 url="https://fwd.app",
                 parameters={
                     "username": "user@example.com",
-                    "password": "secret",
+                    "password": encrypt_secret("secret"),
                     "verify": True,
                     "timeout": 1200,
                 },
@@ -269,7 +270,7 @@ class ForwardClientTest(TestCase):
                 url="https://fwd.app",
                 parameters={
                     "username": "user@example.com",
-                    "password": "secret",
+                    "password": encrypt_secret("secret"),
                     "verify": True,
                     "timeout": 1200,
                 },
@@ -301,7 +302,7 @@ class ForwardClientTest(TestCase):
                 url="https://fwd.app",
                 parameters={
                     "username": "user@example.com",
-                    "password": "secret",
+                    "password": encrypt_secret("secret"),
                     "verify": True,
                     "timeout": 1200,
                 },
@@ -312,7 +313,7 @@ class ForwardClientTest(TestCase):
                 url="https://fwd.app",
                 parameters={
                     "username": "user@example.com",
-                    "password": "secret",
+                    "password": encrypt_secret("secret"),
                     "verify": True,
                     "timeout": 1200,
                 },
@@ -323,7 +324,7 @@ class ForwardClientTest(TestCase):
                 url="https://fwd.app",
                 parameters={
                     "username": "user@example.com",
-                    "password": "secret",
+                    "password": encrypt_secret("secret"),
                     "verify": True,
                     "timeout": 1200,
                 },
@@ -811,7 +812,7 @@ class ForwardClientTest(TestCase):
                 url="https://fwd.app",
                 parameters={
                     "username": "user@example.com",
-                    "password": "secret",
+                    "password": encrypt_secret("secret"),
                     "nqe_async_poll_interval_seconds": 0,
                 },
             )
@@ -839,13 +840,6 @@ class ForwardClientTest(TestCase):
             network_id="network-1",
             snapshot_id="snapshot-1",
             parameters={"forward_netbox_shard_keys": ["device-1"]},
-            column_filters=[
-                {
-                    "columnName": "name",
-                    "operator": "EQUALS_ANY",
-                    "values": ["device-1"],
-                }
-            ],
         )
 
         self.assertEqual(rows, [{"n": 1}, {"n": 2}])
@@ -866,13 +860,6 @@ class ForwardClientTest(TestCase):
                 "queryId": "Q_devices",
                 "commitId": "commit-1",
                 "parameters": {"forward_netbox_shard_keys": ["device-1"]},
-                "columnFilters": [
-                    {
-                        "columnName": "name",
-                        "operator": "EQUALS_ANY",
-                        "values": ["device-1"],
-                    }
-                ],
             },
         )
         result = client._request.call_args_list[-1]
@@ -891,7 +878,7 @@ class ForwardClientTest(TestCase):
                 url="https://fwd.app",
                 parameters={
                     "username": "user@example.com",
-                    "password": "secret",
+                    "password": encrypt_secret("secret"),
                     "nqe_async_poll_interval_seconds": 0,
                 },
             )
@@ -926,7 +913,7 @@ class ForwardClientTest(TestCase):
                 url="https://fwd.app",
                 parameters={
                     "username": "user@example.com",
-                    "password": "secret",
+                    "password": encrypt_secret("secret"),
                 },
             )
         )
@@ -952,7 +939,7 @@ class ForwardClientTest(TestCase):
                 url="https://fwd.app",
                 parameters={
                     "username": "user@example.com",
-                    "password": "secret",
+                    "password": encrypt_secret("secret"),
                     "nqe_async_poll_interval_seconds": 0,
                 },
             )
@@ -1007,7 +994,7 @@ class ForwardClientTest(TestCase):
                 url="https://fwd.app",
                 parameters={
                     "username": "user@example.com",
-                    "password": "secret",
+                    "password": encrypt_secret("secret"),
                     "nqe_async_poll_interval_seconds": 0,
                 },
             )
@@ -1040,7 +1027,7 @@ class ForwardClientTest(TestCase):
                 url="https://fwd.app",
                 parameters={
                     "username": "user@example.com",
-                    "password": "secret",
+                    "password": encrypt_secret("secret"),
                     "nqe_async_poll_interval_seconds": 0,
                     "nqe_async_max_polls": 2,
                 },
@@ -1071,7 +1058,7 @@ class ForwardClientTest(TestCase):
                 url="https://fwd.app",
                 parameters={
                     "username": "user@example.com",
-                    "password": "secret",
+                    "password": encrypt_secret("secret"),
                     "nqe_async_poll_interval_seconds": 1.0,
                     "nqe_async_max_polls": 10,
                 },
@@ -1111,7 +1098,7 @@ class ForwardClientTest(TestCase):
                 url="https://fwd.app",
                 parameters={
                     "username": "user@example.com",
-                    "password": "secret",
+                    "password": encrypt_secret("secret"),
                     "nqe_async_poll_interval_seconds": 0.5,
                     "nqe_async_max_polls": 10,
                 },
@@ -1153,7 +1140,7 @@ class ForwardClientTest(TestCase):
                 url="https://fwd.app",
                 parameters={
                     "username": "user@example.com",
-                    "password": "secret",
+                    "password": encrypt_secret("secret"),
                     "nqe_async_poll_interval_seconds": 0,
                 },
             )
@@ -1170,7 +1157,7 @@ class ForwardClientTest(TestCase):
                 url="https://fwd.app",
                 parameters={
                     "username": "user@example.com",
-                    "password": "secret",
+                    "password": encrypt_secret("secret"),
                     "nqe_async_poll_interval_seconds": 0,
                 },
             )
@@ -1326,55 +1313,6 @@ class ForwardClientTest(TestCase):
                 limit=2,
                 fetch_all=True,
             )
-
-    def test_run_nqe_query_fetch_all_preserves_column_filters(self):
-        self.client._request = Mock(
-            side_effect=[
-                self._response(
-                    {"executionKey": "X_123", "status": "COMPLETED", "outcome": "OK"}
-                ),
-                self._response(
-                    {
-                        "items": [
-                            {"fields": {"n": 1}},
-                        ],
-                        "totalNumItems": 2,
-                    }
-                ),
-                self._response(
-                    {
-                        "items": [
-                            {"fields": {"n": 2}},
-                        ],
-                        "totalNumItems": 2,
-                    }
-                ),
-            ]
-        )
-
-        rows = self.client.run_nqe_query(
-            query_id="Q_devices",
-            column_filters=[{"column": "name", "operator": "contains", "value": "sw"}],
-            network_id="network-1",
-            snapshot_id="snapshot-1",
-            limit=1,
-            fetch_all=True,
-        )
-
-        self.assertEqual(rows, [{"n": 1}, {"n": 2}])
-        self.assertEqual(self.client._request.call_count, 3)
-        self.assertEqual(
-            self.client._request.call_args_list[0].kwargs["json_body"]["queryId"],
-            "Q_devices",
-        )
-        self.assertEqual(
-            self.client._request.call_args_list[0].kwargs["json_body"]["columnFilters"],
-            [{"column": "name", "operator": "contains", "value": "sw"}],
-        )
-        self.assertEqual(
-            [call.kwargs["params"] for call in self.client._request.call_args_list[1:]],
-            [{"offset": 0, "limit": 1}, {"offset": 1, "limit": 1}],
-        )
 
     def test_run_nqe_query_fetch_all_raises_when_page_limit_exceeded(self):
         self.client.nqe_fetch_all_max_pages = 2
@@ -2462,52 +2400,6 @@ class ForwardClientTest(TestCase):
                 fetch_all=True,
             )
 
-    def test_run_nqe_diff_fetch_all_preserves_column_filters(self):
-        self.client._request = Mock(
-            side_effect=[
-                self._response(
-                    {
-                        "rows": [
-                            {"type": "ADDED", "before": None, "after": {"n": 1}},
-                        ],
-                        "totalNumRows": 2,
-                    }
-                ),
-                self._response(
-                    {
-                        "rows": [
-                            {"type": "DELETED", "before": {"n": 2}, "after": None},
-                        ],
-                        "totalNumRows": 2,
-                    }
-                ),
-            ]
-        )
-
-        rows = self.client.run_nqe_diff(
-            query_id="Q_sites",
-            before_snapshot_id="snapshot-before",
-            after_snapshot_id="snapshot-after",
-            column_filters=[{"column": "site", "operator": "eq", "value": "core"}],
-            limit=1,
-            fetch_all=True,
-        )
-
-        self.assertEqual(
-            rows,
-            [
-                {"type": "ADDED", "before": None, "after": {"n": 1}},
-                {"type": "DELETED", "before": {"n": 2}, "after": None},
-            ],
-        )
-        self.assertEqual(self.client._request.call_count, 2)
-        for call in self.client._request.call_args_list:
-            self.assertEqual(call.kwargs["json_body"]["queryId"], "Q_sites")
-            self.assertEqual(
-                call.kwargs["json_body"]["options"]["columnFilters"],
-                [{"column": "site", "operator": "eq", "value": "core"}],
-            )
-
     def test_run_nqe_diff_fetch_all_raises_when_page_limit_exceeded(self):
         self.client.nqe_fetch_all_max_pages = 2
         self.client._request = Mock(
@@ -2629,8 +2521,7 @@ class RetryBackoffHelperTest(TestCase):
 
 
 class WorkloadFetchBudgetTest(TestCase):
-    """Opt-in per-workload wall-clock fetch budget (backlog: a slow shard must
-    not silently hang a multi-hour sync)."""
+    """A slow workload cannot silently hang a multi-hour sync."""
 
     def test_budget_error_is_not_transient(self):
         from forward_netbox.exceptions import ForwardConnectivityError
@@ -2680,7 +2571,7 @@ class WorkloadFetchBudgetTest(TestCase):
                 url="https://fwd.app",
                 parameters={
                     "username": "u@example.com",
-                    "password": "x",
+                    "password": encrypt_secret("x"),
                     "verify": True,
                 },
             )

@@ -1,8 +1,12 @@
 # Usage and Validation
 
-Run a sync from the `Forward Sync` detail page. The plugin executes the enabled NetBox models through the configured NQE maps, records failures as `Forward Ingestion Issues`, and applies the selected execution backend. The default backend stages changes in native NetBox Branching shards for review and merge. The optional fast bootstrap backend writes directly after validation for trusted large baselines.
-
-Version `v0.9.4.1.1` is the point where the architecture is split into explicit execution-ledger, health, and support-reporting surfaces while keeping the shared 4.5/4.6 branch line. In practice, that means the UI still looks like a normal NetBox sync flow, but long runs now have clearer run/step state, better troubleshooting export, and less ambiguity around branch planning and merge progress.
+Run a sync from the `Forward Sync` detail page. The plugin executes the enabled
+NetBox models through the configured NQE maps, records failures as `Forward
+Ingestion Issues`, and stages the complete workload in one native NetBox
+Branching branch for review and merge. Version 2.6 records runtime truth on the
+sync, ingestion, branch, validation, issues, model results, jobs, and ownership
+reconciliation rows; it does not create execution-ledger rows or offer a
+direct-write backend.
 
 ## Self-Test Workflow
 
@@ -52,12 +56,11 @@ Recommended first pass:
 - Select the source you just created.
 - Optionally select a `Drift policy` if you want validation to block unsafe changes before any branch is created.
 - Leave `Snapshot` at `latestProcessed`.
-- Leave `Execution backend` at `Branching` for reviewable syncs.
-- Leave `Max changes per branch` at `10000` unless local Branching guidance says otherwise.
+- Leave `Max changes per staging item` at `10000` unless measured workload
+  density requires a different bound.
 - Keep the default model selection enabled.
-- Leave `Auto merge` enabled to advance through all native Branching shards automatically.
-- Disable `Auto merge` when you want to review and manually merge each shard before clicking `Continue Ingestion`.
-- Select `Fast bootstrap` only for a trusted initial baseline that is too large to stage in Branching. After it completes, edit the sync back to `Branching` for steady-state diff runs.
+- Leave `Auto merge` enabled to merge the native branch automatically after staging.
+- Disable `Auto merge` when you want to review the complete branch before queueing its merge.
 
 See [Initial Baseline Strategy](configuration.md#initial-baseline-strategy) for the decision table.
 
@@ -89,14 +92,12 @@ Expected result:
 
 - A validation run is recorded before branch creation.
 - A new `Forward Ingestion` is created.
-- With the `Branching` backend, the sync status progresses into the branch-backed staging flow.
-- With the `Branching` backend, the sync creates one ingestion per shard, and each shard links to its native NetBox Branching branch.
-- With the `Fast bootstrap` backend, one branchless ingestion is created and rows are written directly after validation.
-- Fast bootstrap statistics and the ingestion `Changes` tab are backed by NetBox `ObjectChange` records for that direct-write request, not by Branching `ChangeDiff` rows.
+- The sync creates one ingestion linked to one native NetBox Branching branch.
+- The sync status progresses through branch-backed staging and then either queues merge or pauses for review.
 - The ingestion records both the selected snapshot mode and the resolved snapshot ID used for NQE execution.
 - The ingestion links to the validation run and persists per-model query execution results.
-- If `Auto merge` is disabled, the sync pauses after the current shard reaches `Ready to merge`.
-- After a successful fast-bootstrap baseline, change `Execution backend` back to `Branching` so later `latestProcessed` runs can use reviewable diffs.
+- If `Auto merge` is disabled, the sync pauses after the branch reaches `Ready to merge`.
+- If any merge row fails, the branch returns to `Ready to merge`, the ingestion remains non-baseline, and retry applies the remaining changes.
 
 ### 6. Review The Ingestion
 
@@ -116,7 +117,7 @@ Expected result:
 - The ingestion detail page loads successfully.
 - The ingestion shows the snapshot actually used for NQE execution.
 - The ingestion shows Forward snapshot metrics for the selected snapshot when Forward returns them.
-- The ingestion shows per-model execution mode, row count, delete count, runtime, and shard metadata when available.
+- The ingestion shows per-model execution mode, row count, delete count, runtime, and workload metadata when available.
 - `Issues` is empty or contains actionable query/persistence errors.
 - The change diff represents the staged NetBox changes for review.
 
@@ -124,13 +125,16 @@ Expected result:
 
 ![Forward Ingestion Detail](../images/forward-ingestion-detail.jpg)
 
-### 7. Confirm The Merged Branches
+### 7. Confirm The Merged Branch
 
-With `Auto merge` enabled, Branching syncs merge each native Branching shard before the next shard runs. With `Auto merge` disabled, review and merge the current shard, then click `Continue Ingestion` on the sync to stage the next shard. Fast bootstrap syncs do not create branches to merge.
+With `Auto merge` enabled, the sync merges its native Branching branch after the
+complete workload is staged. With `Auto merge` disabled, review the branch and
+queue its merge from the ingestion. Do not start another sync while a prior
+branch remains nonterminal.
 
 Expected result:
 
-- Each Branching shard branch is marked merged.
+- The Branching branch is marked merged.
 - The synced objects are visible in standard NetBox object views.
 
 ## What To Check After A Successful Test
@@ -163,27 +167,26 @@ Optional knobs:
 - `FORWARD_SMOKE_MODELS` accepts a comma-separated list of enabled NetBox models
 - `invoke forward_netbox.smoke-sync --validate-only` resolves the source/network/snapshot and executes the selected queries without creating an ingestion
 - `--query-limit` limits rows fetched per query during `--validate-only`; normal syncs page through the full NQE result set
-- `invoke forward_netbox.smoke-sync --plan-only --max-changes-per-branch 10000` builds the single-branch workload plan without creating a branch
-- `invoke forward_netbox.smoke-sync --max-changes-per-branch 10000` sets the workload planning budget
+- `invoke forward_netbox.smoke-sync --plan-only --max-changes-per-staging-item 10000` builds the single-branch workload plan without creating a branch
+- `invoke forward_netbox.smoke-sync --max-changes-per-staging-item 10000` sets the workload planning budget
 - `invoke forward_netbox.smoke-sync --no-auto-merge` stages the one native Branching branch and pauses for review
 - `python manage.py forward_smoke_sync --check-source` verifies stored-source selection and connectivity with redacted output
-- `invoke forward_netbox.smoke-sync --enable-bulk-orm` enables the opt-in bulk ORM apply engine for the parity-tested model set: `dcim.site`, `dcim.manufacturer`, `dcim.devicerole`, `dcim.platform`, `dcim.devicetype`, `ipam.vrf`, and `ipam.vlan`. The adapter path remains the default for all models.
+- `invoke forward_netbox.smoke-sync` uses the parity-tested bulk ORM model set by default. Pass `--enable-bulk-orm=False` only for adapter comparison evidence; models with relationship-specific semantics use their supported adapter path.
 
-The normal UI/API `Run Sync` path uses one native Branching branch per sync. The
-legacy multi-branch and fast-bootstrap backends are not selectable in 2.x. Use
+The normal UI/API `Run Sync` path uses one native Branching branch per sync. Use
 the command-line smoke sync when you need plan-only output, a targeted model
 subset, or a timed local validation run.
 
 ## Optional Module Import Readiness
 
-The built-in `Forward Modules` map is enabled by default. The native `dcim.module` import path is beta in `v0.6.x`: use it when you want chassis modules, line cards, supervisors, fabric modules, or routing engines modeled as native NetBox `dcim.module` objects instead of generic inventory items, and review the staged branch carefully before merging.
+The built-in `Forward Modules` map models chassis modules, line cards,
+supervisors, fabric modules, and routing engines as native `dcim.module`
+objects. NetBox modules require a matching bay. In 2.6, the sync creates a
+missing `dcim.modulebay` in the same branch before it creates the module;
+NetBox 4.6.5 with Branching 1.1.1 merges that MPTT dependency natively.
 
-NetBox modules require matching module bays on the device. When `dcim.module` is enabled, module rows whose bays do not already exist are skipped with a non-blocking warning. This keeps Branching merges deterministic and avoids creating module-bay side effects inside the module shard.
-
-The simplest path is the UI: on the sync detail page click **Module Readiness** to see how many bays are missing, then **Create missing module bays** to create them directly in NetBox (no CSV, no shell). Re-run the sync afterward and the modules land in their bays. The CLI helper below does the same check and emits a CSV for operators who prefer to import it manually. Either way, do this before enabling the model:
-
-!!! note "Why module bays must be imported out-of-band"
-    `dcim.modulebay` is an MPTT (nested) model. NetBox Branching cannot create module bays during a merge — a module bay created inside a branch fails to apply to `main` with `Save with update_fields did not affect any rows`. This is a NetBox limitation, not a data error. So module bays are imported directly into NetBox (out of band) via the readiness CSV below, not synced through a branch. If a sync still creates new devices whose device type defines module-bay templates, NetBox auto-instantiates those bays inside the branch and they cannot merge; the plugin collapses every such failure for an ingestion into a **single** `dcim.modulebay` merge issue (`ModuleBayMergeUnsupported`) that points back to this readiness workflow, rather than one issue per bay. Device and interface sync are unaffected.
+The **Module Readiness** page and CLI are read-only preflight tools. Use them
+to inspect the exact bay creation plan before a large run:
 
 ```bash
 python manage.py forward_module_readiness --sync-name "Forward Sync"
@@ -195,15 +198,17 @@ Local Docker shortcut:
 invoke forward_netbox.module-readiness --sync-name "Forward Sync"
 ```
 
-Expected result:
+The command:
 
 - the helper runs the module NQE map through the normal Forward API path
 - it compares every `(device, module_bay)` result to existing NetBox module bays
-- it writes `summary.json` and `netbox-module-bays.csv`
-- import `netbox-module-bays.csv` through the native NetBox `Module Bays` import UI, then rerun the helper
-- enable `dcim.module` only after the helper reports zero missing devices and zero missing module bays
+- it writes `summary.json` with counts, missing device names, and the exact
+  `(device, bay)` rows that the sync will create in its branch
 
-After the readiness helper reports zero missing devices, enable the `dcim.module` model and the `Forward Modules` NQE map for the sync. SFPs and other optics remain in the inventory-item path by default. When module sync is enabled, matching generic inventory rows for module-native component classes are removed during inventory ingestion so the same hardware is not represented twice.
+Enable the `dcim.module` model and the `Forward Modules` NQE map for the sync.
+SFPs and other optics remain in the inventory-item path by default. Matching
+generic inventory rows for module-native component classes are removed during
+inventory ingestion so the same hardware is not represented twice.
 
 Expected result:
 

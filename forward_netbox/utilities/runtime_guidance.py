@@ -106,15 +106,15 @@ def log_branch_plan_timeout_guidance(sync, logger_, plan):
         return
 
     estimated_changes = sum(int(item.estimated_changes or 0) for item in plan)
-    if len(plan) <= 1 and estimated_changes <= sync.get_max_changes_per_branch():
+    if len(plan) <= 1 and estimated_changes <= sync.get_max_changes_per_staging_item():
         return
 
     logger_.log_warning(
         "Branching plan contains "
-        f"{len(plan)} shard(s) and about {estimated_changes} planned change(s), "
+        f"{len(plan)} staging item(s) and about {estimated_changes} planned change(s), "
         f"but NetBox RQ_DEFAULT_TIMEOUT is only {rq_timeout}s. If this run times "
-        "out, increase the NetBox worker timeout before rerunning; the shard plan "
-        "itself will remain bounded by the configured branch budget.",
+        "out, increase the NetBox worker timeout before rerunning; the staging plan "
+        "itself will remain bounded by the configured staging-item budget.",
         obj=sync,
     )
 

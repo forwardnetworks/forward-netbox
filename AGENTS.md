@@ -13,7 +13,7 @@ This repository is a NetBox plugin that syncs Forward inventory into NetBox thro
 
 - `forward_netbox/models.py` owns persisted plugin state and job entrypoints.
 - `forward_netbox/utilities/forward_api.py` owns Forward API access, proxy handling, pagination, and NQE execution.
-- `forward_netbox/utilities/multi_branch.py` and `branch_budget.py` own branch-native sync planning and execution.
+- `forward_netbox/utilities/single_branch_executor.py`, `branch_lifecycle.py`, and `branch_budget.py` own branch-native sync planning and execution.
 - `forward_netbox/utilities/sync.py` owns NetBox model adapters and row application.
 - `forward_netbox/queries/` contains shipped NQE; keep query changes paired with tests and reference-doc updates.
 
