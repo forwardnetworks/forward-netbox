@@ -5,6 +5,7 @@ import importlib.util
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
 import urllib.parse
 from contextlib import redirect_stdout
@@ -385,6 +386,76 @@ class ReleaseProvenanceTest(unittest.TestCase):
 
         with self.assertRaisesRegex(provenance.ProvenanceError, "ancestor"):
             self._verify(git=git)
+
+    def test_tag_only_push_survives_real_remote_main_advance(self):
+        def run(repository: Path | None, *arguments: str) -> str:
+            command = ["git"]
+            if repository is not None:
+                command.extend(["-C", str(repository)])
+            command.extend(arguments)
+            return subprocess.run(
+                command,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            origin = root / "origin.git"
+            tagger = root / "tagger"
+            advancer = root / "advancer"
+            run(None, "init", "--bare", "--initial-branch=main", str(origin))
+            run(None, "clone", str(origin), str(tagger))
+            run(tagger, "config", "user.name", "Release Tagger")
+            run(tagger, "config", "user.email", "tagger@example.invalid")
+            (tagger / "release.txt").write_text("release\n", encoding="utf-8")
+            run(tagger, "add", "release.txt")
+            run(tagger, "commit", "-m", "release")
+            release_commit = run(tagger, "rev-parse", "HEAD")
+            run(tagger, "push", "-u", "origin", "main")
+
+            run(None, "clone", str(origin), str(advancer))
+            run(advancer, "config", "user.name", "Main Advancer")
+            run(advancer, "config", "user.email", "advancer@example.invalid")
+            (advancer / "next.txt").write_text("next\n", encoding="utf-8")
+            run(advancer, "add", "next.txt")
+            run(advancer, "commit", "-m", "advance main")
+            advanced_main = run(advancer, "rev-parse", "HEAD")
+            run(advancer, "push", "origin", "main")
+
+            run(
+                tagger,
+                "tag",
+                "-a",
+                "v2.6.0",
+                "-m",
+                "Forward NetBox 2.6.0",
+                release_commit,
+            )
+            run(tagger, "push", "origin", "refs/tags/v2.6.0")
+            run(
+                tagger,
+                "fetch",
+                "origin",
+                "main:refs/remotes/origin/main",
+            )
+
+            with patch.object(provenance, "REPO_ROOT", tagger):
+                self.assertEqual(
+                    provenance._require_release_on_main_lineage(release_commit),
+                    advanced_main,
+                )
+            self.assertEqual(
+                run(
+                    None,
+                    "--git-dir",
+                    str(origin),
+                    "rev-parse",
+                    "refs/tags/v2.6.0^{commit}",
+                ),
+                release_commit,
+            )
 
     def test_accepts_reviewed_anchor_candidate_before_tag_creation(self):
         with (

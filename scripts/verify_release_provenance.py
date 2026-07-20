@@ -645,6 +645,17 @@ def _require_trust_files_unchanged(anchor: str, release_commit: str) -> None:
         )
 
 
+def _require_release_on_main_lineage(release_commit: str) -> str:
+    current_main = _git_capture("rev-parse", "refs/remotes/origin/main")
+    try:
+        _git_capture("merge-base", "--is-ancestor", release_commit, current_main)
+    except subprocess.CalledProcessError as exc:
+        raise ProvenanceError(
+            "release commit must be an ancestor of the current origin/main commit"
+        ) from exc
+    return current_main
+
+
 def verify_trusted_anchor_candidate(
     anchor_commit: str,
     reviewer: str,
@@ -674,13 +685,7 @@ def verify_release_commit_provenance(
     reviewer: str,
     token: str,
 ) -> dict:
-    current_main = _git_capture("rev-parse", "refs/remotes/origin/main")
-    try:
-        _git_capture("merge-base", "--is-ancestor", release_commit, current_main)
-    except subprocess.CalledProcessError as exc:
-        raise ProvenanceError(
-            "release commit must be an ancestor of the current origin/main commit"
-        ) from exc
+    _require_release_on_main_lineage(release_commit)
     production_commit = _commit_parent(release_commit)
     plan = _require_release_plan_only(production_commit, release_commit, version)
 
