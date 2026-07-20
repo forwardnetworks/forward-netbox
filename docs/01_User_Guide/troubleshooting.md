@@ -403,8 +403,9 @@ Checks (CLI):
 
 Remediation:
 
-- Upgrade to 2.6.0. If upgrading from 2.5.10 or earlier, run **Publish Bundled
-  Queries** with overwrite enabled; 2.5.11 already has the required query set.
+- Upgrade to 2.6.0, then run **Publish Bundled Queries** with overwrite enabled
+  for every pre-2.6 source. The 2.6 bundle includes changed device-model
+  fallback contracts that are not present in the 2.5.11 package.
   On the Forward source, enable **Scope SNMP Endpoints by Include Tags** and keep
   **Apply Device Scope Tags** enabled when matching Forward tags should be
   visible in NetBox. Run **Preview Dependencies** before the next sync; resolve

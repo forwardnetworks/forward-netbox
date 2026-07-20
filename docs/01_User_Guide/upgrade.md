@@ -44,11 +44,10 @@ After restart:
 - Confirm the plugin version: `pip show forward-netbox`.
 - Confirm NetBox starts cleanly (`python manage.py check`) with no
   `netbox_branching` dependency warnings in the log.
-- When release notes require bundled NQE changes, publish the bundled queries
-  with overwrite enabled before validation.
-- For `2.6.0`, upgrades from `2.5.11` need no query publication. Direct upgrades
-  from `2.5.10` or earlier must run **Publish Bundled Queries** once with
-  overwrite enabled to install the inherited `2.5.11` query fixes.
+- For `2.6.0`, every upgrade from a pre-2.6 release must run **Publish Bundled
+  Queries** once with overwrite enabled before validation. This installs the
+  changed 2.6 device-model fallback contracts in addition to the earlier query
+  fixes.
 - The `2.6.0` data migration removes the legacy `auto_prune_orphans` sync
   parameter and registers existing plugin-managed tags. It deliberately invents
   no source claims and marks no pre-existing Virtual Device Context as owned.

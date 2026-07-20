@@ -149,6 +149,10 @@ REQUIRED_TEXT = {
         "invoke test",
         "invoke docs",
         "scripts/check_sensitive_content.py --protected-history",
+        "EPGs, contracts, and static port bindings are excluded from 2.6",
+    ],
+    "docs/01_User_Guide/upgrade.md": [
+        "every upgrade from a pre-2.6 release must run **Publish Bundled",
     ],
     "docs/00_Project_Knowledge/agent-workflow.md": [
         "Choose The Lane",

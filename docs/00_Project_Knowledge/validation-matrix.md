@@ -61,12 +61,11 @@ plugin-absent startup and the exact installed-plugin matrix. Every declared
 model requires an apply/delete adapter, shipped query contract, migration, and
 repeat-sync test.
 
-The Cisco ACI supported set is:
-
-- fabric, pod, node, tenant, VRF, bridge domain, application profile, endpoint
-  group, contract, filter, L3Out, and static port binding
-- APIC node and CIMC inventory from the current command inventory declared in
-  the integration registry
+The Cisco ACI supported set is fabric, pod, node, tenant, VRF, bridge domain,
+filter, L3Out, APIC node, and native APIC CIMC inventory from the current
+command inventory declared in the integration registry. Application profiles,
+EPGs, contracts, and static port bindings are excluded from 2.6 because the
+approved Forward command set does not provide their bounded identity contracts.
 
 The DLM supported set is software versions, hardware notices, device software,
 CVEs, and per-device vulnerabilities. Acceptance must prove that standalone
