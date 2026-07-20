@@ -1473,6 +1473,70 @@ class BulkMergeIntegrationTest(CleanTransactionTestCase):
         self.assertEqual((applied, failed), (2, 0))
         resumed_apply.assert_not_called()
 
+    def test_create_resume_accepts_branch_owned_module_bay_count_change(self):
+        manufacturer = Manufacturer.objects.create(
+            name="Module Bay Resume Manufacturer",
+            slug="module-bay-resume-manufacturer",
+        )
+        device_type = DeviceType.objects.create(
+            manufacturer=manufacturer,
+            model="Module Bay Resume Device Type",
+            slug="module-bay-resume-device-type",
+        )
+        role = DeviceRole.objects.create(
+            name="Module Bay Resume Role",
+            slug="module-bay-resume-role",
+        )
+        site = Site.objects.create(
+            name="Module Bay Resume Site",
+            slug="module-bay-resume-site",
+        )
+        branch = provision_branch(user=self.user, name="Module Bay Count Resume")
+        with activate_branch(branch), event_tracking(self.request):
+            self.request.id = uuid.uuid4()
+            self.request.user = self.user
+            staged = Device.objects.create(
+                name="module-bay-resume-device",
+                device_type=device_type,
+                role=role,
+                site=site,
+            )
+            ModuleBay.objects.create(
+                device=staged,
+                name="Slot 1",
+                position="1",
+            )
+
+        changes = branch.get_unmerged_changes().order_by("time")
+        applied, failed, _ = bulk_merge_changes(
+            branch,
+            changes,
+            self.request,
+            self.user,
+            self.logger,
+            apply_one=self._real_apply_one(branch),
+        )
+        self.assertEqual((applied, failed), (2, 0))
+        self.assertEqual(
+            Device.objects.get(pk=staged.pk).serialize_object(
+                exclude=["created", "last_updated"]
+            )["module_bay_count"],
+            1,
+        )
+
+        resumed_apply = self._real_apply_one(branch)
+        applied, failed, _ = bulk_merge_changes(
+            branch,
+            changes,
+            self.request,
+            self.user,
+            self.logger,
+            apply_one=resumed_apply,
+        )
+
+        self.assertEqual((applied, failed), (2, 0))
+        resumed_apply.assert_not_called()
+
     def test_create_resume_accepts_branch_owned_cable_termination_change(self):
         manufacturer = Manufacturer.objects.create(
             name="Cable Resume Manufacturer",

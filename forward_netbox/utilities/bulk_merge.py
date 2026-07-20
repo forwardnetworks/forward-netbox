@@ -67,7 +67,7 @@ RELATIONSHIP_LOCK_RETRY_MAX_DELAY_SECONDS = 0.5
 # fail-closed below.
 RESUME_DERIVED_AUDIT_FIELDS = {
     "dcim.cable": frozenset({"a_terminations", "b_terminations"}),
-    "dcim.device": frozenset({"inventory_item_count"}),
+    "dcim.device": frozenset({"inventory_item_count", "module_bay_count"}),
 }
 
 _ACTION_PRIORITY = {
