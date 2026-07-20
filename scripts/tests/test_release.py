@@ -517,6 +517,44 @@ class RequiredReleaseWorkflowTest(unittest.TestCase):
 
         sleep.assert_called_once_with(0)
 
+    @patch("time.sleep")
+    def test_required_workflows_reject_empty_response_immediately(self, sleep):
+        with (
+            patch.object(release, "_capture_required", return_value=""),
+            self.assertRaisesRegex(release.ReleaseError, "empty response"),
+        ):
+            release.wait_for_required_workflows(
+                "f" * 40,
+                expected_branch="release/2.6.0",
+                max_polls=1,
+            )
+
+        sleep.assert_not_called()
+
+    @patch("time.sleep")
+    def test_required_workflows_reject_invalid_json_immediately(self, sleep):
+        with (
+            patch.object(release, "_capture_required", return_value="not-json"),
+            self.assertRaisesRegex(release.ReleaseError, "invalid JSON"),
+        ):
+            release.wait_for_required_workflows(
+                "f" * 40,
+                expected_branch="release/2.6.0",
+                max_polls=1,
+            )
+
+        sleep.assert_not_called()
+
+    def test_workflow_payload_rejects_wrong_schema_without_echoing_response(self):
+        secret = "secret-response-value"
+        raw = json.dumps({"message": secret})
+
+        with self.assertRaises(release.ReleaseError) as error:
+            release._workflow_runs_payload(raw, purpose="GitHub workflow query")
+
+        self.assertNotIn(secret, str(error.exception))
+        self.assertIn("invalid workflow-runs payload", str(error.exception))
+
     def test_release_head_rejects_commit_changed_after_ci(self):
         expected = "a" * 40
         changed = "b" * 40

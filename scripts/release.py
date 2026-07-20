@@ -273,6 +273,24 @@ def _capture_required(cmd: list[str], *, purpose: str) -> str:
     return result.stdout.strip()
 
 
+def _workflow_runs_payload(raw: str, *, purpose: str) -> list[dict]:
+    """Parse the exact Actions runs response or fail without echoing it."""
+    if not raw:
+        raise ReleaseError(f"{purpose} returned an empty response")
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ReleaseError(f"{purpose} returned invalid JSON") from exc
+    if not isinstance(payload, dict) or not isinstance(
+        payload.get("workflow_runs"), list
+    ):
+        raise ReleaseError(f"{purpose} returned an invalid workflow-runs payload")
+    runs = payload["workflow_runs"]
+    if any(not isinstance(run, dict) for run in runs):
+        raise ReleaseError(f"{purpose} returned a malformed workflow run")
+    return runs
+
+
 def _verify_live_release_controls() -> None:
     token = _capture(["gh", "auth", "token"])
     if not token:
@@ -338,6 +356,7 @@ def wait_for_required_workflows(
         incomplete: list[str] = []
         for workflow_path in REQUIRED_RELEASE_WORKFLOWS:
             workflow_identifier = Path(workflow_path).name
+            query_purpose = f"GitHub {workflow_identifier} run query"
             raw = _capture_required(
                 [
                     "gh",
@@ -354,15 +373,11 @@ def wait_for_required_workflows(
                     "-f",
                     "per_page=100",
                 ],
-                purpose=f"GitHub {workflow_identifier} run query",
+                purpose=query_purpose,
             )
-            try:
-                payload = json.loads(raw) if raw else {}
-            except json.JSONDecodeError:
-                payload = {}
             exact = [
                 run
-                for run in payload.get("workflow_runs", [])
+                for run in _workflow_runs_payload(raw, purpose=query_purpose)
                 if run.get("path") == workflow_path
                 and run.get("head_sha") == expected_commit
                 and run.get("head_branch") == expected_branch
@@ -534,7 +549,6 @@ def _open_release_pull_request(version: str, branch: str, *, evidence: bool) -> 
 def wait_for_release_workflow(
     version: str, *, poll_seconds: int = 30, max_polls: int = 80
 ) -> str:
-    import json
     import time
 
     tag = f"v{version}"
@@ -556,13 +570,12 @@ def wait_for_release_workflow(
             ],
             purpose="GitHub release workflow run query",
         )
-        try:
-            payload = json.loads(raw) if raw else {}
-        except json.JSONDecodeError:
-            payload = {}
         runs = [
             run
-            for run in payload.get("workflow_runs", [])
+            for run in _workflow_runs_payload(
+                raw,
+                purpose="GitHub release workflow run query",
+            )
             if run.get("path") == ".github/workflows/release.yml"
             and run.get("head_sha") == commit
             and run.get("event") == "push"
