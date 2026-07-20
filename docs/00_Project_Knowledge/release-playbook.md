@@ -11,7 +11,8 @@ Use this playbook for reviewed production releases.
 - Repository rulesets `main-release-integrity`, `version-tag-integrity`, and the
   version-tag creation restriction are active. Main has no bypass actors and
   requires a current CODEOWNERS approval, resolved conversations, the trusted
-  candidate scan, exact NetBox 4.6.5 CI, and both CodeQL analyses. Version tags
+  candidate scan, exact NetBox 4.6.5 CI, both CodeQL analyses, and the separate
+  GitHub Advanced Security CodeQL result. Version tags
   reject deletion and movement. Human credentials cannot create them; only the
   environment-scoped deploy key used by the frozen protected-main tag workflow
   can create a matching tag.
@@ -21,9 +22,9 @@ Use this playbook for reviewed production releases.
   verifier, reproducible builder, and hashed release-tool lock must be
   byte-identical to that anchor.
 - Environment `release-tag` is restricted to protected `main`, requires the
-  independent reviewer with self-review disabled, and is the only location of
-  `RELEASE_TAG_DEPLOY_KEY`. Environment `pypi` accepts only `v*` tags and has
-  the same independent approval requirement.
+  independent reviewer with self-review and administrator bypass disabled, and
+  is the only location of `RELEASE_TAG_DEPLOY_KEY`. Environment `pypi` accepts
+  only `v*` tags and has the same independent approval and no-bypass controls.
 - `.github/CODEOWNERS` names a valid accountable owner, the repository-level
   `FORWARD_SENSITIVE_PATTERNS` Actions secret contains at least one private
   pattern, and the `FORWARD_SENSITIVE_HISTORY_BASELINE` repository variable
@@ -34,6 +35,16 @@ Use this playbook for reviewed production releases.
   customer-acceptance, and independent-review entries to their canonical gates;
   an unrelated successful command cannot authorize them. Prospective checklist
   language cannot authorize a release.
+- The trusted tag authorizer's live-control preflight passes. It reads the
+  repository settings, required authenticated statuses, all four tag rulesets,
+  both deployment environments and policies, and Actions SHA-pinning setting
+  from GitHub before it authorizes a tag.
+
+For the one-time 2.6 trust bootstrap, merge the bootstrap PR and create
+`security-bootstrap-2.6` while the four public CI/CodeQL statuses are required.
+Immediately afterward, add authenticated `Trusted sensitive-content scan` to
+`main-release-integrity` before opening the production PR. Version-tag
+authorization fails closed until that fifth status is required.
 
 ## Local Gate
 
@@ -117,7 +128,9 @@ invoke scale-soak --runs 3 --max-changes-per-staging-item 10000
    `main` commit. After independent environment approval, that frozen workflow
    re-proves the bootstrap or release lineage and uses the environment-only
    deploy key to create the immutable annotated tag. Human credentials cannot
-   push it. The tag workflow independently proves that both the production and
+   push it. A concurrent protected-main advance does not invalidate an already
+   authorized ancestor tag; divergence still fails closed. The tag workflow
+   independently proves that both the production and
    evidence commits came from approved main PRs. It executes the provenance
    verifier from `security-bootstrap-2.6`, walks every
    first-parent main commit after that anchor, pages every review and status,

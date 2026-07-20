@@ -588,16 +588,25 @@ if: github.ref == 'refs/heads/main'
 environment: release-tag
 secret: secrets.RELEASE_TAG_DEPLOY_KEY
 run: python -m scripts.authorize_trusted_tag
-push: git push --atomic --force-with-lease="refs/heads/main:${EXPECTED_SHA}"
+push: git push "git@github.com:${GITHUB_REPOSITORY}.git" "refs/tags/${TAG_NAME}"
 """
     AUTHORIZER = """\
 os.environ.get("GITHUB_REF") != "refs/heads/main"
+verify_github_release_controls
 verify_trusted_anchor_candidate
 verify_release_commit_provenance
 """
-    RELEASE = "ensure_trusted_tag(tag, head_commit)\n"
+    RELEASE = """\
+ensure_trusted_tag(tag, head_commit)
+_verify_live_release_controls()
+"--controls-only"
+"""
     PROVENANCE = """\
 TRUSTED_TAG_WORKFLOW = ".github/workflows/trusted-tag.yml"
+BASE_REQUIRED_STATUS_CHECKS
+TRUSTED_STATUS_CONTEXT
+operation.add_argument("--controls-only", action="store_true")
+"merge-base", "--is-ancestor", release_commit, current_main
 TRUSTED_RELEASE_FILES = ("scripts/authorize_trusted_tag.py", "scripts/release.py")
 """
 
@@ -637,6 +646,20 @@ TRUSTED_RELEASE_FILES = ("scripts/authorize_trusted_tag.py", "scripts/release.py
         self.assertTrue(
             any(
                 "environment: release-tag" in failure
+                for failure in self._check(workflow=workflow)
+            )
+        )
+
+    def test_no_op_main_ref_lease_fails(self):
+        workflow = self.WORKFLOW + (
+            "\ngit push --atomic "
+            '--force-with-lease="refs/heads/main:${EXPECTED_SHA}" '
+            '"${EXPECTED_SHA}:refs/heads/main"\n'
+        )
+
+        self.assertTrue(
+            any(
+                "must not claim" in failure
                 for failure in self._check(workflow=workflow)
             )
         )

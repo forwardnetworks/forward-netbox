@@ -7,7 +7,7 @@ name: Create trusted release tag
         required: true
         type: string
       expected_sha:
-        description: Exact current protected-main commit
+        description: Exact protected-main commit authorized for this tag
         required: true
         type: string
 permissions:
@@ -73,8 +73,5 @@ jobs:
             "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "${TAG_NAME}" "${EXPECTED_SHA}" \
             -m "Trusted Forward NetBox ${TAG_NAME}"
-          git push --atomic \
-            --force-with-lease="refs/heads/main:${EXPECTED_SHA}" \
-            "git@github.com:${GITHUB_REPOSITORY}.git" \
-            "${EXPECTED_SHA}:refs/heads/main" \
+          git push "git@github.com:${GITHUB_REPOSITORY}.git" \
             "refs/tags/${TAG_NAME}"

@@ -10,6 +10,7 @@ from pathlib import Path
 
 from scripts.verify_release_provenance import GITHUB_REPOSITORY
 from scripts.verify_release_provenance import TRUSTED_ANCHOR_TAG
+from scripts.verify_release_provenance import verify_github_release_controls
 from scripts.verify_release_provenance import verify_release_commit_provenance
 from scripts.verify_release_provenance import verify_trusted_anchor_candidate
 
@@ -56,8 +57,19 @@ def authorize_trusted_tag(
         raise TrustedTagError("requested commit is not the current origin/main")
 
     if tag == TRUSTED_ANCHOR_TAG:
+        controls = verify_github_release_controls(
+            reviewer,
+            token,
+            require_trusted_status=False,
+        )
         evidence = verify_trusted_anchor_candidate(expected_sha, reviewer, token)
-        return {"tag": tag, "target": expected_sha, "kind": "anchor", **evidence}
+        return {
+            "tag": tag,
+            "target": expected_sha,
+            "kind": "anchor",
+            "controls": controls,
+            **evidence,
+        }
 
     match = VERSION_TAG_RE.fullmatch(tag)
     if match is None:
@@ -65,13 +77,24 @@ def authorize_trusted_tag(
     version = match.group("version")
     if _package_version() != version:
         raise TrustedTagError("version tag does not match the package version")
+    controls = verify_github_release_controls(
+        reviewer,
+        token,
+        require_trusted_status=True,
+    )
     evidence = verify_release_commit_provenance(
         expected_sha,
         version,
         reviewer,
         token,
     )
-    return {"tag": tag, "target": expected_sha, "kind": "release", **evidence}
+    return {
+        "tag": tag,
+        "target": expected_sha,
+        "kind": "release",
+        "controls": controls,
+        **evidence,
+    }
 
 
 def main() -> int:

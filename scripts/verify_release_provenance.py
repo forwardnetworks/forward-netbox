@@ -36,6 +36,22 @@ REQUIRED_WORKFLOWS = (
     ".github/workflows/ci.yml",
     ".github/workflows/codeql.yml",
 )
+RELEASE_REVIEWER_ID = 82859
+GITHUB_ACTIONS_APP_ID = 15368
+GITHUB_ADVANCED_SECURITY_APP_ID = 57789
+MAIN_RULESET_NAME = "main-release-integrity"
+VERSION_TAG_CREATION_RULESET = "version-tag-creation"
+VERSION_TAG_INTEGRITY_RULESET = "version-tag-integrity"
+ANCHOR_TAG_CREATION_RULESET = "security-bootstrap-tag-creation"
+ANCHOR_TAG_INTEGRITY_RULESET = "security-bootstrap-tag-integrity"
+RELEASE_TAG_ENVIRONMENT = "release-tag"
+PYPI_ENVIRONMENT = "pypi"
+BASE_REQUIRED_STATUS_CHECKS = {
+    ("Validate NetBox v4.6.5", GITHUB_ACTIONS_APP_ID),
+    ("CodeQL python", GITHUB_ACTIONS_APP_ID),
+    ("CodeQL javascript-typescript", GITHUB_ACTIONS_APP_ID),
+    ("CodeQL", GITHUB_ADVANCED_SECURITY_APP_ID),
+}
 
 
 class ProvenanceError(RuntimeError):
@@ -54,8 +70,11 @@ def _git_capture(*arguments: str) -> str:
 
 
 def _github_json(path: str, token: str) -> object:
+    endpoint = f"{GITHUB_API_URL}/repos/{GITHUB_REPOSITORY}"
+    if path.strip("/"):
+        endpoint = f"{endpoint}/{path.lstrip('/')}"
     request = urllib.request.Request(
-        f"{GITHUB_API_URL}/repos/{GITHUB_REPOSITORY}/{path.lstrip('/')}",
+        endpoint,
         headers={
             "Accept": "application/vnd.github+json",
             "Authorization": f"Bearer {token}",
@@ -80,6 +99,266 @@ def _github_pages(path: str, token: str) -> list[dict]:
         if len(payload) < 100:
             return items
     raise ProvenanceError(f"GitHub pagination exceeded the safety bound for {path}")
+
+
+def _named_ruleset(name: str, token: str) -> dict:
+    matches = [
+        ruleset
+        for ruleset in _github_pages("rulesets", token)
+        if ruleset.get("name") == name
+        and ruleset.get("source_type") == "Repository"
+        and ruleset.get("source") == GITHUB_REPOSITORY
+    ]
+    if len(matches) != 1:
+        raise ProvenanceError(f"required repository ruleset {name!r} is not unique")
+    payload = _github_json(f"rulesets/{matches[0].get('id')}", token)
+    if not isinstance(payload, dict):
+        raise ProvenanceError(f"GitHub returned invalid ruleset data for {name!r}")
+    return payload
+
+
+def _require_ruleset_identity(
+    ruleset: dict,
+    *,
+    name: str,
+    target: str,
+    ref_pattern: str,
+) -> None:
+    if (
+        ruleset.get("name") != name
+        or ruleset.get("target") != target
+        or ruleset.get("enforcement") != "active"
+        or ruleset.get("source_type") != "Repository"
+        or ruleset.get("source") != GITHUB_REPOSITORY
+        or ruleset.get("bypass_actors") is None
+    ):
+        raise ProvenanceError(f"ruleset {name!r} identity or enforcement is invalid")
+    ref_name = (ruleset.get("conditions") or {}).get("ref_name") or {}
+    if ref_name.get("include") != [ref_pattern] or ref_name.get("exclude") != []:
+        raise ProvenanceError(f"ruleset {name!r} has an invalid ref condition")
+
+
+def _rules_by_type(ruleset: dict, expected: set[str]) -> dict[str, dict]:
+    grouped: dict[str, list[dict]] = {}
+    for rule in ruleset.get("rules") or []:
+        grouped.setdefault(str(rule.get("type") or ""), []).append(rule)
+    if set(grouped) != expected or any(len(rules) != 1 for rules in grouped.values()):
+        raise ProvenanceError(f"ruleset {ruleset.get('name')!r} has invalid rules")
+    return {rule_type: rules[0] for rule_type, rules in grouped.items()}
+
+
+def _require_main_ruleset(token: str, *, require_trusted_status: bool) -> list[str]:
+    ruleset = _named_ruleset(MAIN_RULESET_NAME, token)
+    _require_ruleset_identity(
+        ruleset,
+        name=MAIN_RULESET_NAME,
+        target="branch",
+        ref_pattern="refs/heads/main",
+    )
+    if ruleset.get("bypass_actors") != []:
+        raise ProvenanceError("protected main ruleset must not have bypass actors")
+    rules = _rules_by_type(
+        ruleset,
+        {
+            "deletion",
+            "non_fast_forward",
+            "required_linear_history",
+            "pull_request",
+            "required_status_checks",
+        },
+    )
+    pull_parameters = rules["pull_request"].get("parameters") or {}
+    required_pull_parameters = {
+        "required_approving_review_count": 1,
+        "dismiss_stale_reviews_on_push": True,
+        "require_code_owner_review": True,
+        "require_last_push_approval": True,
+        "required_review_thread_resolution": True,
+        "allowed_merge_methods": ["squash"],
+    }
+    if any(
+        pull_parameters.get(key) != value
+        for key, value in required_pull_parameters.items()
+    ):
+        raise ProvenanceError("protected main pull-request controls are incomplete")
+    status_parameters = rules["required_status_checks"].get("parameters") or {}
+    if (
+        status_parameters.get("strict_required_status_checks_policy") is not True
+        or status_parameters.get("do_not_enforce_on_create") is not False
+    ):
+        raise ProvenanceError("protected main status-check policy is not strict")
+    actual_statuses = {
+        (str(status.get("context") or ""), status.get("integration_id"))
+        for status in status_parameters.get("required_status_checks") or []
+    }
+    expected_statuses = set(BASE_REQUIRED_STATUS_CHECKS)
+    if require_trusted_status:
+        expected_statuses.add((TRUSTED_STATUS_CONTEXT, GITHUB_ACTIONS_APP_ID))
+    if not expected_statuses.issubset(actual_statuses):
+        raise ProvenanceError(
+            "protected main is missing a required authenticated status"
+        )
+    return sorted(context for context, _integration_id in expected_statuses)
+
+
+def _require_tag_ruleset(
+    token: str,
+    *,
+    name: str,
+    ref_pattern: str,
+    creation: bool,
+) -> None:
+    ruleset = _named_ruleset(name, token)
+    _require_ruleset_identity(
+        ruleset,
+        name=name,
+        target="tag",
+        ref_pattern=ref_pattern,
+    )
+    if creation:
+        _rules_by_type(ruleset, {"creation"})
+        if ruleset.get("bypass_actors") != [
+            {
+                "actor_id": None,
+                "actor_type": "DeployKey",
+                "bypass_mode": "always",
+            }
+        ]:
+            raise ProvenanceError(f"tag creation ruleset {name!r} has invalid bypass")
+    else:
+        _rules_by_type(ruleset, {"deletion", "non_fast_forward"})
+        if ruleset.get("bypass_actors") != []:
+            raise ProvenanceError(f"tag integrity ruleset {name!r} has a bypass")
+
+
+def _require_environment(
+    token: str,
+    *,
+    name: str,
+    policy_name: str,
+    policy_type: str,
+    reviewer: str,
+) -> None:
+    encoded_name = urllib.parse.quote(name, safe="")
+    environment = _github_json(f"environments/{encoded_name}", token)
+    if not isinstance(environment, dict) or environment.get("name") != name:
+        raise ProvenanceError(f"GitHub returned invalid environment data for {name!r}")
+    if environment.get("can_admins_bypass") is not False:
+        raise ProvenanceError(f"environment {name!r} permits administrator bypass")
+    if environment.get("deployment_branch_policy") != {
+        "protected_branches": False,
+        "custom_branch_policies": True,
+    }:
+        raise ProvenanceError(f"environment {name!r} has an invalid branch policy")
+    reviewer_rules = [
+        rule
+        for rule in environment.get("protection_rules") or []
+        if rule.get("type") == "required_reviewers"
+    ]
+    if (
+        len(reviewer_rules) != 1
+        or reviewer_rules[0].get("prevent_self_review") is not True
+    ):
+        raise ProvenanceError(f"environment {name!r} lacks independent review")
+    reviewers = reviewer_rules[0].get("reviewers") or []
+    if len(reviewers) != 1:
+        raise ProvenanceError(f"environment {name!r} has unexpected reviewers")
+    configured_reviewer = reviewers[0]
+    reviewer_data = configured_reviewer.get("reviewer") or {}
+    if (
+        configured_reviewer.get("type") != "User"
+        or reviewer_data.get("id") != RELEASE_REVIEWER_ID
+        or str(reviewer_data.get("login") or "").lower() != reviewer.lower()
+    ):
+        raise ProvenanceError(f"environment {name!r} reviewer is invalid")
+    policies = _github_json(
+        f"environments/{encoded_name}/deployment-branch-policies",
+        token,
+    )
+    if not isinstance(policies, dict):
+        raise ProvenanceError(f"GitHub returned invalid policies for {name!r}")
+    actual_policies = policies.get("branch_policies") or []
+    if len(actual_policies) != 1 or {
+        "name": actual_policies[0].get("name"),
+        "type": actual_policies[0].get("type"),
+    } != {"name": policy_name, "type": policy_type}:
+        raise ProvenanceError(f"environment {name!r} deployment policy is invalid")
+
+
+def verify_github_release_controls(
+    reviewer: str,
+    token: str,
+    *,
+    require_trusted_status: bool,
+) -> dict:
+    repository = _github_json("", token)
+    if not isinstance(repository, dict):
+        raise ProvenanceError("GitHub returned invalid repository settings")
+    required_repository_settings = {
+        "allow_auto_merge": True,
+        "allow_merge_commit": False,
+        "allow_squash_merge": True,
+        "delete_branch_on_merge": True,
+    }
+    if any(
+        repository.get(key) != value
+        for key, value in required_repository_settings.items()
+    ):
+        raise ProvenanceError("repository merge controls are not release-safe")
+    actions = _github_json("actions/permissions", token)
+    if not isinstance(actions, dict) or actions.get("enabled") is not True:
+        raise ProvenanceError("GitHub Actions is not enabled")
+    if actions.get("sha_pinning_required") is not True:
+        raise ProvenanceError("GitHub Actions SHA pinning is not required")
+
+    required_statuses = _require_main_ruleset(
+        token,
+        require_trusted_status=require_trusted_status,
+    )
+    _require_tag_ruleset(
+        token,
+        name=VERSION_TAG_CREATION_RULESET,
+        ref_pattern="refs/tags/v*",
+        creation=True,
+    )
+    _require_tag_ruleset(
+        token,
+        name=VERSION_TAG_INTEGRITY_RULESET,
+        ref_pattern="refs/tags/v*",
+        creation=False,
+    )
+    _require_tag_ruleset(
+        token,
+        name=ANCHOR_TAG_CREATION_RULESET,
+        ref_pattern=f"refs/tags/{TRUSTED_ANCHOR_TAG}",
+        creation=True,
+    )
+    _require_tag_ruleset(
+        token,
+        name=ANCHOR_TAG_INTEGRITY_RULESET,
+        ref_pattern=f"refs/tags/{TRUSTED_ANCHOR_TAG}",
+        creation=False,
+    )
+    _require_environment(
+        token,
+        name=RELEASE_TAG_ENVIRONMENT,
+        policy_name="main",
+        policy_type="branch",
+        reviewer=reviewer,
+    )
+    _require_environment(
+        token,
+        name=PYPI_ENVIRONMENT,
+        policy_name="v*",
+        policy_type="tag",
+        reviewer=reviewer,
+    )
+    return {
+        "main_ruleset": MAIN_RULESET_NAME,
+        "required_statuses": required_statuses,
+        "release_tag_environment": RELEASE_TAG_ENVIRONMENT,
+        "pypi_environment": PYPI_ENVIRONMENT,
+    }
 
 
 def _require_verified_commit(commit: str, token: str) -> dict:
@@ -395,10 +674,13 @@ def verify_release_commit_provenance(
     reviewer: str,
     token: str,
 ) -> dict:
-    if _git_capture("rev-parse", "refs/remotes/origin/main") != release_commit:
+    current_main = _git_capture("rev-parse", "refs/remotes/origin/main")
+    try:
+        _git_capture("merge-base", "--is-ancestor", release_commit, current_main)
+    except subprocess.CalledProcessError as exc:
         raise ProvenanceError(
-            "release commit must equal the current origin/main commit"
-        )
+            "release commit must be an ancestor of the current origin/main commit"
+        ) from exc
     production_commit = _commit_parent(release_commit)
     plan = _require_release_plan_only(production_commit, release_commit, version)
 
@@ -449,7 +731,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Verify immutable reviewed release provenance."
     )
-    parser.add_argument("--tag", required=True)
+    operation = parser.add_mutually_exclusive_group(required=True)
+    operation.add_argument("--tag")
+    operation.add_argument("--controls-only", action="store_true")
     parser.add_argument("--reviewer", required=True)
     args = parser.parse_args()
     token = os.environ.get("GH_TOKEN", "").strip()
@@ -457,12 +741,16 @@ def main() -> int:
         raise SystemExit("GH_TOKEN is required")
     if os.environ.get("GITHUB_REPOSITORY", GITHUB_REPOSITORY) != GITHUB_REPOSITORY:
         raise SystemExit(f"release must run in {GITHUB_REPOSITORY}")
-    print(
-        json.dumps(
-            verify_release_provenance(args.tag, args.reviewer, token),
-            sort_keys=True,
+    if args.controls_only:
+        verify_github_release_controls(
+            args.reviewer,
+            token,
+            require_trusted_status=True,
         )
-    )
+        print("GitHub release controls verification passed.")
+    else:
+        verify_release_provenance(args.tag, args.reviewer, token)
+        print("Release provenance verification passed.")
     return 0
 
 

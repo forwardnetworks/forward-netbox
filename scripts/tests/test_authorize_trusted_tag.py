@@ -25,6 +25,11 @@ class TrustedTagAuthorizationTest(unittest.TestCase):
             patch.object(trusted_tag, "_git_capture", return_value=self.commit),
             patch.object(
                 trusted_tag,
+                "verify_github_release_controls",
+                return_value={"main_ruleset": "main-release-integrity"},
+            ) as controls,
+            patch.object(
+                trusted_tag,
                 "verify_trusted_anchor_candidate",
                 return_value=evidence,
             ) as verify,
@@ -37,6 +42,11 @@ class TrustedTagAuthorizationTest(unittest.TestCase):
             )
 
         verify.assert_called_once_with(self.commit, "brandonheller", "token")
+        controls.assert_called_once_with(
+            "brandonheller",
+            "token",
+            require_trusted_status=False,
+        )
         self.assertEqual(result["kind"], "anchor")
         self.assertEqual(result["target"], self.commit)
 
@@ -46,6 +56,11 @@ class TrustedTagAuthorizationTest(unittest.TestCase):
             patch.dict(os.environ, self.environment, clear=True),
             patch.object(trusted_tag, "_git_capture", return_value=self.commit),
             patch.object(trusted_tag, "_package_version", return_value="2.6.0"),
+            patch.object(
+                trusted_tag,
+                "verify_github_release_controls",
+                return_value={"main_ruleset": "main-release-integrity"},
+            ) as controls,
             patch.object(
                 trusted_tag,
                 "verify_release_commit_provenance",
@@ -64,6 +79,11 @@ class TrustedTagAuthorizationTest(unittest.TestCase):
             "2.6.0",
             "brandonheller",
             "token",
+        )
+        controls.assert_called_once_with(
+            "brandonheller",
+            "token",
+            require_trusted_status=True,
         )
         self.assertEqual(result["kind"], "release")
 

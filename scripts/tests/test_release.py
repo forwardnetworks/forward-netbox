@@ -138,6 +138,15 @@ class DistributionArtifactTest(unittest.TestCase):
 
 class FinishReleaseTest(unittest.TestCase):
     @patch.object(release, "run")
+    def test_live_release_controls_use_redacted_environment_token(self, run):
+        with patch.object(release, "_capture", return_value="secret-token"):
+            release._verify_live_release_controls()
+
+        command = run.call_args.args[0]
+        self.assertIn("--controls-only", command)
+        self.assertEqual(run.call_args.kwargs["env"]["GH_TOKEN"], "secret-token")
+
+    @patch.object(release, "run")
     @patch.object(release, "_promote_release_candidate", return_value=True)
     def test_first_finish_stops_after_metadata_promotion(self, promote, run):
         with patch.object(

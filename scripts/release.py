@@ -242,6 +242,23 @@ def _capture(cmd: list[str]) -> str:
     return result.stdout.strip()
 
 
+def _verify_live_release_controls() -> None:
+    token = _capture(["gh", "auth", "token"])
+    if not token:
+        raise ReleaseError("GitHub authentication is required for release controls")
+    env = {**os.environ, "GH_TOKEN": token}
+    run(
+        [
+            sys.executable,
+            "scripts/verify_release_provenance.py",
+            "--controls-only",
+            "--reviewer",
+            RELEASE_REVIEWER,
+        ],
+        env=env,
+    )
+
+
 def _assert_branch_head(branch: str, expected_commit: str) -> None:
     current_branch = _capture(["git", "branch", "--show-current"])
     current_commit = _capture(["git", "rev-parse", "HEAD"])
@@ -434,6 +451,7 @@ def _open_reviewed_pull_request(version: str, branch: str, *, evidence: bool) ->
     if pull and pull.get("state") == "MERGED":
         print(f"[finish] reviewed PR already merged: {pull['url']}")
         return
+    _verify_live_release_controls()
     if not pull:
         kind = "release evidence" if evidence else "production release"
         title = f"release: {'authorize' if evidence else 'ship'} v{version}"

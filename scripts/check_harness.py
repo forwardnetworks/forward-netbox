@@ -784,13 +784,14 @@ def _check_trusted_tag_controller(failures: list[str]) -> None:
         "environment: release-tag",
         "secrets.RELEASE_TAG_DEPLOY_KEY",
         "python -m scripts.authorize_trusted_tag",
-        "git push --atomic",
-        '--force-with-lease="refs/heads/main:${EXPECTED_SHA}"',
+        'git push "git@github.com:${GITHUB_REPOSITORY}.git"',
+        '"refs/tags/${TAG_NAME}"',
     ):
         if fragment not in texts["workflow"]:
             failures.append(f"trusted tag workflow must contain: {fragment}")
     for fragment in (
         'os.environ.get("GITHUB_REF") != "refs/heads/main"',
+        "verify_github_release_controls",
         "verify_trusted_anchor_candidate",
         "verify_release_commit_provenance",
     ):
@@ -798,6 +799,9 @@ def _check_trusted_tag_controller(failures: list[str]) -> None:
             failures.append(f"trusted tag authorizer must contain: {fragment}")
     if "ensure_trusted_tag(tag, head_commit)" not in texts["release"]:
         failures.append("release tool must dispatch protected-main tag creation")
+    for fragment in ("_verify_live_release_controls()", '"--controls-only"'):
+        if fragment not in texts["release"]:
+            failures.append(f"release tool must verify live controls: {fragment}")
     for pattern in (
         r'run\(\["git", "tag"',
         r'run\(\["git", "push", "--no-verify", "origin", tag',
@@ -808,11 +812,25 @@ def _check_trusted_tag_controller(failures: list[str]) -> None:
             )
     for fragment in (
         'TRUSTED_TAG_WORKFLOW = ".github/workflows/trusted-tag.yml"',
+        "BASE_REQUIRED_STATUS_CHECKS",
+        "TRUSTED_STATUS_CONTEXT",
+        'operation.add_argument("--controls-only", action="store_true")',
+        '"merge-base", "--is-ancestor", release_commit, current_main',
         '"scripts/authorize_trusted_tag.py"',
         '"scripts/release.py"',
     ):
         if fragment not in texts["provenance"]:
             failures.append(f"release provenance must freeze: {fragment}")
+    for fragment in (
+        "git push --atomic",
+        '--force-with-lease="refs/heads/main:${EXPECTED_SHA}"',
+        '"${EXPECTED_SHA}:refs/heads/main"',
+    ):
+        if fragment in texts["workflow"]:
+            failures.append(
+                "trusted tag workflow must not claim a no-op main-ref lease: "
+                f"{fragment}"
+            )
 
 
 def main() -> int:

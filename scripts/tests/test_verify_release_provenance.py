@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import copy
 import importlib.util
+import os
+import subprocess
+import sys
 import unittest
 import urllib.parse
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
@@ -29,6 +35,12 @@ class ReleaseProvenanceTest(unittest.TestCase):
             ("cat-file", "-t", "refs/tags/v2.6.0"): "tag",
             ("rev-parse", "refs/tags/v2.6.0^{commit}"): self.release_commit,
             ("rev-parse", "refs/remotes/origin/main"): self.release_commit,
+            (
+                "merge-base",
+                "--is-ancestor",
+                self.release_commit,
+                self.release_commit,
+            ): "",
             (
                 "rev-list",
                 "--parents",
@@ -259,9 +271,12 @@ class ReleaseProvenanceTest(unittest.TestCase):
         raise AssertionError(path)
 
     def _verify(self, *, github=None, git=None):
-        with patch.object(
-            provenance, "_git_capture", side_effect=git or self._git
-        ), patch.object(provenance, "_github_json", side_effect=github or self._github):
+        with (
+            patch.object(provenance, "_git_capture", side_effect=git or self._git),
+            patch.object(
+                provenance, "_github_json", side_effect=github or self._github
+            ),
+        ):
             return provenance.verify_release_provenance(
                 "v2.6.0", "brandonheller", "token"
             )
@@ -277,15 +292,112 @@ class ReleaseProvenanceTest(unittest.TestCase):
             [self.anchor_commit, self.production_commit, self.release_commit],
         )
 
+    def test_main_does_not_log_provenance_evidence_or_token(self):
+        secret = "secret-provenance-evidence"
+        output = StringIO()
+        argv = [
+            "verify_release_provenance.py",
+            "--tag",
+            "v2.6.0",
+            "--reviewer",
+            "brandonheller",
+        ]
+        with (
+            patch.dict(os.environ, {"GH_TOKEN": secret}, clear=True),
+            patch.object(sys, "argv", argv),
+            patch.object(
+                provenance,
+                "verify_release_provenance",
+                return_value={"untrusted_evidence": secret},
+            ),
+            redirect_stdout(output),
+        ):
+            self.assertEqual(provenance.main(), 0)
+
+        self.assertEqual(output.getvalue(), "Release provenance verification passed.\n")
+        self.assertNotIn(secret, output.getvalue())
+
+    def test_controls_only_cli_requires_release_status_and_redacts_evidence(self):
+        secret = "secret-control-evidence"
+        output = StringIO()
+        argv = [
+            "verify_release_provenance.py",
+            "--controls-only",
+            "--reviewer",
+            "brandonheller",
+        ]
+        with (
+            patch.dict(os.environ, {"GH_TOKEN": secret}, clear=True),
+            patch.object(sys, "argv", argv),
+            patch.object(
+                provenance,
+                "verify_github_release_controls",
+                return_value={"untrusted_evidence": secret},
+            ) as verify,
+            redirect_stdout(output),
+        ):
+            self.assertEqual(provenance.main(), 0)
+
+        verify.assert_called_once_with(
+            "brandonheller",
+            secret,
+            require_trusted_status=True,
+        )
+        self.assertEqual(
+            output.getvalue(),
+            "GitHub release controls verification passed.\n",
+        )
+        self.assertNotIn(secret, output.getvalue())
+
+    def test_accepts_tagged_release_when_main_advanced(self):
+        advanced_main = "e" * 40
+
+        def git(*arguments):
+            if arguments == ("rev-parse", "refs/remotes/origin/main"):
+                return advanced_main
+            if arguments == (
+                "merge-base",
+                "--is-ancestor",
+                self.release_commit,
+                advanced_main,
+            ):
+                return ""
+            return self._git(*arguments)
+
+        result = self._verify(git=git)
+
+        self.assertEqual(result["release_commit"], self.release_commit)
+
+    def test_rejects_tagged_release_diverged_from_main(self):
+        advanced_main = "e" * 40
+
+        def git(*arguments):
+            if arguments == ("rev-parse", "refs/remotes/origin/main"):
+                return advanced_main
+            if arguments == (
+                "merge-base",
+                "--is-ancestor",
+                self.release_commit,
+                advanced_main,
+            ):
+                raise subprocess.CalledProcessError(1, ["git", *arguments])
+            return self._git(*arguments)
+
+        with self.assertRaisesRegex(provenance.ProvenanceError, "ancestor"):
+            self._verify(git=git)
+
     def test_accepts_reviewed_anchor_candidate_before_tag_creation(self):
-        with patch.object(
-            provenance,
-            "_git_capture",
-            side_effect=self._git,
-        ), patch.object(
-            provenance,
-            "_github_json",
-            side_effect=self._github,
+        with (
+            patch.object(
+                provenance,
+                "_git_capture",
+                side_effect=self._git,
+            ),
+            patch.object(
+                provenance,
+                "_github_json",
+                side_effect=self._github,
+            ),
         ):
             result = provenance.verify_trusted_anchor_candidate(
                 self.anchor_commit,
@@ -406,6 +518,243 @@ class ReleaseProvenanceTest(unittest.TestCase):
 
         with self.assertRaisesRegex(provenance.ProvenanceError, "unexpected path"):
             self._verify(git=git)
+
+
+class GitHubReleaseControlsTest(unittest.TestCase):
+    reviewer = "brandonheller"
+
+    @staticmethod
+    def _ruleset(name, target, pattern, rules, bypass):
+        return {
+            "name": name,
+            "target": target,
+            "source_type": "Repository",
+            "source": provenance.GITHUB_REPOSITORY,
+            "enforcement": "active",
+            "conditions": {"ref_name": {"include": [pattern], "exclude": []}},
+            "rules": rules,
+            "bypass_actors": bypass,
+        }
+
+    def _payloads(self):
+        statuses = [
+            {"context": context, "integration_id": integration_id}
+            for context, integration_id in provenance.BASE_REQUIRED_STATUS_CHECKS
+        ]
+        statuses.append(
+            {
+                "context": provenance.TRUSTED_STATUS_CONTEXT,
+                "integration_id": provenance.GITHUB_ACTIONS_APP_ID,
+            }
+        )
+        main = self._ruleset(
+            provenance.MAIN_RULESET_NAME,
+            "branch",
+            "refs/heads/main",
+            [
+                {"type": "deletion"},
+                {"type": "non_fast_forward"},
+                {"type": "required_linear_history"},
+                {
+                    "type": "pull_request",
+                    "parameters": {
+                        "required_approving_review_count": 1,
+                        "dismiss_stale_reviews_on_push": True,
+                        "require_code_owner_review": True,
+                        "require_last_push_approval": True,
+                        "required_review_thread_resolution": True,
+                        "allowed_merge_methods": ["squash"],
+                    },
+                },
+                {
+                    "type": "required_status_checks",
+                    "parameters": {
+                        "strict_required_status_checks_policy": True,
+                        "do_not_enforce_on_create": False,
+                        "required_status_checks": statuses,
+                    },
+                },
+            ],
+            [],
+        )
+        deploy_key_bypass = [
+            {
+                "actor_id": None,
+                "actor_type": "DeployKey",
+                "bypass_mode": "always",
+            }
+        ]
+        rulesets = {
+            provenance.MAIN_RULESET_NAME: main,
+            provenance.VERSION_TAG_CREATION_RULESET: self._ruleset(
+                provenance.VERSION_TAG_CREATION_RULESET,
+                "tag",
+                "refs/tags/v*",
+                [{"type": "creation"}],
+                deploy_key_bypass,
+            ),
+            provenance.VERSION_TAG_INTEGRITY_RULESET: self._ruleset(
+                provenance.VERSION_TAG_INTEGRITY_RULESET,
+                "tag",
+                "refs/tags/v*",
+                [{"type": "deletion"}, {"type": "non_fast_forward"}],
+                [],
+            ),
+            provenance.ANCHOR_TAG_CREATION_RULESET: self._ruleset(
+                provenance.ANCHOR_TAG_CREATION_RULESET,
+                "tag",
+                f"refs/tags/{provenance.TRUSTED_ANCHOR_TAG}",
+                [{"type": "creation"}],
+                deploy_key_bypass,
+            ),
+            provenance.ANCHOR_TAG_INTEGRITY_RULESET: self._ruleset(
+                provenance.ANCHOR_TAG_INTEGRITY_RULESET,
+                "tag",
+                f"refs/tags/{provenance.TRUSTED_ANCHOR_TAG}",
+                [{"type": "deletion"}, {"type": "non_fast_forward"}],
+                [],
+            ),
+        }
+        for ruleset_id, ruleset in enumerate(rulesets.values(), 1):
+            ruleset["id"] = ruleset_id
+        environment = {
+            "can_admins_bypass": False,
+            "deployment_branch_policy": {
+                "protected_branches": False,
+                "custom_branch_policies": True,
+            },
+            "protection_rules": [
+                {
+                    "type": "required_reviewers",
+                    "prevent_self_review": True,
+                    "reviewers": [
+                        {
+                            "type": "User",
+                            "reviewer": {
+                                "id": provenance.RELEASE_REVIEWER_ID,
+                                "login": self.reviewer,
+                            },
+                        }
+                    ],
+                }
+            ],
+        }
+        return {
+            "repository": {
+                "allow_auto_merge": True,
+                "allow_merge_commit": False,
+                "allow_squash_merge": True,
+                "delete_branch_on_merge": True,
+            },
+            "actions": {"enabled": True, "sha_pinning_required": True},
+            "rulesets": rulesets,
+            "environment": environment,
+        }
+
+    def _github(self, payloads):
+        def github(path, _token):
+            endpoint, page, _query = ReleaseProvenanceTest._path_parts(path)
+            if endpoint == "":
+                return copy.deepcopy(payloads["repository"])
+            if endpoint == "actions/permissions":
+                return copy.deepcopy(payloads["actions"])
+            if endpoint == "rulesets":
+                if page > 1:
+                    return []
+                return [
+                    {
+                        "id": ruleset["id"],
+                        "name": name,
+                        "source_type": "Repository",
+                        "source": provenance.GITHUB_REPOSITORY,
+                    }
+                    for name, ruleset in payloads["rulesets"].items()
+                ]
+            if endpoint.startswith("rulesets/"):
+                ruleset_id = int(endpoint.split("/")[1])
+                return copy.deepcopy(
+                    next(
+                        ruleset
+                        for ruleset in payloads["rulesets"].values()
+                        if ruleset["id"] == ruleset_id
+                    )
+                )
+            if endpoint.startswith("environments/") and endpoint.endswith(
+                "/deployment-branch-policies"
+            ):
+                name = endpoint.split("/")[1]
+                policy = (
+                    {"name": "main", "type": "branch"}
+                    if name == provenance.RELEASE_TAG_ENVIRONMENT
+                    else {"name": "v*", "type": "tag"}
+                )
+                return {"total_count": 1, "branch_policies": [policy]}
+            if endpoint.startswith("environments/"):
+                name = endpoint.split("/")[1]
+                return {"name": name, **copy.deepcopy(payloads["environment"])}
+            raise AssertionError(path)
+
+        return github
+
+    def _verify(self, payloads=None, *, require_trusted_status=True):
+        current = payloads or self._payloads()
+        with patch.object(
+            provenance,
+            "_github_json",
+            side_effect=self._github(current),
+        ):
+            return provenance.verify_github_release_controls(
+                self.reviewer,
+                "token",
+                require_trusted_status=require_trusted_status,
+            )
+
+    def test_accepts_complete_live_release_controls(self):
+        result = self._verify()
+
+        self.assertEqual(result["main_ruleset"], provenance.MAIN_RULESET_NAME)
+        self.assertIn(provenance.TRUSTED_STATUS_CONTEXT, result["required_statuses"])
+
+    def test_anchor_allows_trusted_status_to_be_installed_after_bootstrap(self):
+        payloads = self._payloads()
+        main = payloads["rulesets"][provenance.MAIN_RULESET_NAME]
+        statuses = next(
+            rule for rule in main["rules"] if rule["type"] == "required_status_checks"
+        )["parameters"]["required_status_checks"]
+        statuses[:] = [
+            status
+            for status in statuses
+            if status["context"] != provenance.TRUSTED_STATUS_CONTEXT
+        ]
+
+        result = self._verify(payloads, require_trusted_status=False)
+
+        self.assertNotIn(
+            provenance.TRUSTED_STATUS_CONTEXT,
+            result["required_statuses"],
+        )
+
+    def test_rejects_missing_trusted_status_for_release(self):
+        payloads = self._payloads()
+        main = payloads["rulesets"][provenance.MAIN_RULESET_NAME]
+        statuses = next(
+            rule for rule in main["rules"] if rule["type"] == "required_status_checks"
+        )["parameters"]["required_status_checks"]
+        statuses[:] = [
+            status
+            for status in statuses
+            if status["context"] != provenance.TRUSTED_STATUS_CONTEXT
+        ]
+
+        with self.assertRaisesRegex(provenance.ProvenanceError, "authenticated"):
+            self._verify(payloads)
+
+    def test_rejects_environment_admin_bypass(self):
+        payloads = self._payloads()
+        payloads["environment"]["can_admins_bypass"] = True
+
+        with self.assertRaisesRegex(provenance.ProvenanceError, "administrator"):
+            self._verify(payloads)
 
 
 if __name__ == "__main__":
