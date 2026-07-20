@@ -580,7 +580,7 @@ class EndpointIncludeScopeProbeTest(TestCase):
             network_id="n",
             snapshot_id="s",
             exclude_tags=["Decom"],
-            include_tags=["N.Patel"],
+            include_tags=["scope-a"],
             include_match="any",
             scope_endpoints_by_include_tags=False,
         )
@@ -588,7 +588,7 @@ class EndpointIncludeScopeProbeTest(TestCase):
         self.assertIn('"Decom" in endpoint.tagNames', query)
         # 2.4.4 regression guard: the include tag must NOT gate the probe when
         # the toggle is off.
-        self.assertNotIn("N.Patel", query)
+        self.assertNotIn("scope-a", query)
 
     def test_probe_toggle_on_applies_include_any(self):
         from unittest.mock import Mock
@@ -600,13 +600,13 @@ class EndpointIncludeScopeProbeTest(TestCase):
             network_id="n",
             snapshot_id="s",
             exclude_tags=[],
-            include_tags=["N.Patel", "B.Chalasani"],
+            include_tags=["scope-a", "scope-b"],
             include_match="any",
             scope_endpoints_by_include_tags=True,
         )
         query = client.run_nqe_query.call_args.kwargs["query"]
         self.assertIn(
-            'where ("N.Patel" in endpoint.tagNames || "B.Chalasani" in endpoint.tagNames)',
+            'where ("scope-a" in endpoint.tagNames || "scope-b" in endpoint.tagNames)',
             query,
         )
 
@@ -620,13 +620,13 @@ class EndpointIncludeScopeProbeTest(TestCase):
             network_id="n",
             snapshot_id="s",
             exclude_tags=[],
-            include_tags=["N.Patel", "B.Chalasani"],
+            include_tags=["scope-a", "scope-b"],
             include_match="all",
             scope_endpoints_by_include_tags=True,
         )
         query = client.run_nqe_query.call_args.kwargs["query"]
-        self.assertIn('where "N.Patel" in endpoint.tagNames', query)
-        self.assertIn('where "B.Chalasani" in endpoint.tagNames', query)
+        self.assertIn('where "scope-a" in endpoint.tagNames', query)
+        self.assertIn('where "scope-b" in endpoint.tagNames', query)
 
     def test_probe_excludes_cimc_by_profile_and_sysdescr(self):
         from unittest.mock import Mock
@@ -693,14 +693,14 @@ class EndpointIncludeScopeProbeTest(TestCase):
 
         client = Mock()
         client.run_nqe_query.side_effect = [
-            [{"name": "dev-1", "site": "dc1", "tagNames": ["N.Patel"]}],
+            [{"name": "dev-1", "site": "dc1", "tagNames": ["scope-a"]}],
             [{"name": "avocent-1"}],
         ]
         fetcher = self._fetcher(client)
         names, _sites, _matched, failed = fetcher._resolve_scoped_tag_scope(
             network_id="n",
             snapshot_id="s",
-            include_tags=["N.Patel"],
+            include_tags=["scope-a"],
             exclude_tags=[],
             include_match="any",
             sync_endpoints=True,
@@ -709,7 +709,7 @@ class EndpointIncludeScopeProbeTest(TestCase):
         self.assertEqual(names, {"dev-1", "avocent-1"})
         self.assertFalse(failed)
         endpoint_query = client.run_nqe_query.call_args_list[1].kwargs["query"]
-        self.assertIn('"N.Patel" in endpoint.tagNames', endpoint_query)
+        self.assertIn('"scope-a" in endpoint.tagNames', endpoint_query)
 
 
 class ScopeMaskingWarningTest(TestCase):
@@ -736,7 +736,7 @@ class ScopeMaskingWarningTest(TestCase):
         names, _sites, _matched, failed = fetcher._resolve_scoped_tag_scope(
             network_id="n",
             snapshot_id="s",
-            include_tags=["N.Patel"],
+            include_tags=["scope-a"],
             exclude_tags=[],
             include_match="any",
             sync_endpoints=True,
@@ -760,14 +760,14 @@ class ScopeMaskingWarningTest(TestCase):
 
         client = Mock()
         client.run_nqe_query.side_effect = [
-            [{"name": "dev-1", "site": "dc1", "tagNames": ["N.Patel"]}],
+            [{"name": "dev-1", "site": "dc1", "tagNames": ["scope-a"]}],
             [{"name": "avocent-1"}],
         ]
         fetcher = self._fetcher(client)
         fetcher._resolve_scoped_tag_scope(
             network_id="n",
             snapshot_id="s",
-            include_tags=["N.Patel"],
+            include_tags=["scope-a"],
             exclude_tags=[],
             include_match="any",
             sync_endpoints=True,

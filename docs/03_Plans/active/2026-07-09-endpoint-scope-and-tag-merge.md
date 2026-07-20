@@ -13,7 +13,7 @@ use a device-tag include scope, and stop the merge-phase
   scoped sync.
 - Local scope filtering and out-of-scope prune must not delete imported
   endpoints on later scoped syncs.
-- Never commit the ADP network id / token; validate live via the local source.
+- Never commit the validation-org network id / token; validate live via the local source.
 
 ## Touched Surfaces
 
@@ -52,7 +52,7 @@ same-slug main-side `extras.tag` as already merged (skip, counted as applied).
 
 ## Validation
 
-Live against the ADP demo network, reproducing the design partner's scenario
+Live against the validation-org demo network, reproducing the design partner's scenario
 (include tags endpoints don't carry + `sync_endpoints` on): both device queries
 still emit 355 Avocent/console endpoints with include params unused; the scope
 union adds 688 endpoint names; `_apply_device_tag_scope` keeps an endpoint row

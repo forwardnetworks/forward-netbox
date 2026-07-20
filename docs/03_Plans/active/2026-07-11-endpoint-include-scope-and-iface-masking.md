@@ -35,7 +35,7 @@ import on):
 
 ## Touched Surfaces
 
-- Queries (ADP republish required): `forward_devices.nqe`,
+- Queries (validation-org republish required): `forward_devices.nqe`,
   `forward_devices_with_netbox_aliases.nqe` — new
   `scope_endpoints_by_include_tags: Bool` param + opt-in include gate in the
   endpoint branch (byte-identical in both).
@@ -76,8 +76,8 @@ import on):
 
 ## Validation
 
-- Live ADP oracle (pre-implementation probe, trace D): toggle-on
-  include=[N.Patel] → 526 endpoints; [B.Chalasani] → 5; toggle-off → 685
+- Live validation-org oracle (pre-implementation probe, trace D): toggle-on
+  include=[scope-a] → 526 endpoints; [scope-b] → 5; toggle-off → 685
   (regression gate). Re-verified live post-implementation.
 - CI-safe tests (test_endpoints_import.py): query-shape (toggle param, gated
   include reference, both match modes, both files, byte-identical branch);

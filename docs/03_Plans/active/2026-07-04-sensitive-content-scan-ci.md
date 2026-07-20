@@ -24,7 +24,7 @@ Invoke `python scripts/check_sensitive_content.py --git-files` with
 `FORWARD_SENSITIVE_PATTERNS` in the env. Blocking (exit 1 fails the job) so a
 content leak stops the build. Comment documents that short tokens must use
 word-boundary regex (`re:\bADP\b`) to avoid substring false positives
-(literal patterns match case-insensitively as substrings — e.g. bare `ADP`
+(literal patterns match case-insensitively as substrings — e.g. bare `validation-org`
 matches `ThreadPool`).
 
 ## Validation

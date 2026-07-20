@@ -29,6 +29,8 @@ repository and prevent them from returning.
 7. Resolve the helper relative to `tasks.py` so NetBox tests that import the
    task module by file path use the same secret contract.
 8. Rewrite the affected historical paths only after the protected current-tree fix merges.
+9. Ask GitHub Support to purge the affected read-only pull-request refs and cached
+   views after every writable branch and tag has been verified clean.
 
 ## Validation
 
@@ -37,6 +39,30 @@ repository and prevent them from returning.
 - Independent redacted Gitleaks scan of the staged tree.
 - Fresh isolated Compose migration, NetBox system check, and Redis authentication.
 - Exact GitHub CI and CodeQL checks on the protected pull request.
+
+## Evidence
+
+- Pull request 62 was squash-merged after two independent NetBox 4.6.5 CI runs,
+  all 1,224 plugin tests, scenario tests, release-artifact validation, and all
+  CodeQL checks passed on the exact candidate SHA.
+- A mode-0600 rollback bundle was verified before the rewrite. The targeted
+  `git-filter-repo` rewrite completed with strict Git object validation and no
+  orphaned LFS objects.
+- Every writable branch and all 145 version tags were force-updated during a
+  controlled maintenance window. Actions and both rulesets were restored from
+  exact backups immediately afterward; main again requires all five checks with
+  no bypass actors, and version tags again prohibit deletion and force updates.
+- A fresh normal clone contains 11 branches and 145 tags. Strict Git validation
+  passes, the pre-rewrite and post-rewrite current trees are identical, and a
+  redacted Gitleaks history scan reports zero findings across 797 reachable
+  commits.
+- GitHub reports no forks and no open native secret-scanning alerts. Sixty-one
+  immutable pull-request head refs remain for GitHub Support to dereference and
+  garbage-collect; no client-side push can modify those server-owned refs.
+- The repaired trusted scanner exposed pre-existing customer labels in public
+  plans and endpoint-test fixtures. All matches were replaced with neutral
+  validation labels, and the local private-pattern scan now reports zero
+  findings without weakening or baselining the scanner.
 
 ## Rollback
 

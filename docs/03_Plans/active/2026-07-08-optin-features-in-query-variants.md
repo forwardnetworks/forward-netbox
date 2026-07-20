@@ -14,7 +14,7 @@ this stops being a silent failure.
   `network.devices` reference) and stay union-type-compatible.
 - Publishing writes to the Forward Org NQE library and requires operator write
   permission; the plugin must not assume it.
-- Never commit the ADP network id / token; validate live via the local source.
+- Never commit the validation-org network id / token; validate live via the local source.
 
 ## Touched Surfaces
 
@@ -44,8 +44,8 @@ this stops being a silent failure.
 
 ## Validation
 
-Live against the ADP demo network: alias query `sync_endpoints` off→5021 rows,
-on→5709 (+688; 355 Avocent/Console Server; sample `avocent-ai60 / Avocent /
+Live against the validation-org demo network: alias query `sync_endpoints` off→5021 rows,
+on→5709 (+688; 355 Avocent/Console Server; sample `sample-console / Avocent /
 Console Server`); with-rules query returns rule tags plus the `sync_device_tags`
 branch. Unit tests lock variant feature parity, the single `network.devices`
 reference, the Publish view (+ write-permission error), and the Health check.

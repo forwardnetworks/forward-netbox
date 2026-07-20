@@ -14,7 +14,7 @@ rows failing validation on long/degenerate sysDescr-derived identity fields.
 - Identity clamping must not alter endpoint names (row identity / scope
   keys) and must live in the queries — NQE is the source of truth; the plugin
   must not normalize or mutate rows.
-- Never commit the ADP network id / token.
+- Never commit the validation-org network id / token.
 
 ## Touched Surfaces
 

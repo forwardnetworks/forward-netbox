@@ -16,7 +16,7 @@ Lifecycle Management plugin backed by Forward's end-of-life analysis.
   only schema change; no data migrations.
 - NQE stays the source of truth: field-length clamping and identity shaping
   live in the bundled queries, not the plugin.
-- Never commit the ADP network id / token.
+- Never commit the validation-org network id / token.
 
 ## Touched Surfaces
 
@@ -58,7 +58,7 @@ Lifecycle Management plugin backed by Forward's end-of-life analysis.
 
 ## Validation
 
-Live against the ADP demo network: 35 software-version rows (ISO dates,
+Live against the validation-org demo network: 35 software-version rows (ISO dates,
 announcement URLs), 48 hardware-notice rows, 4960 device-software rows; all
 three bundled queries lint clean and run via raw NQE. Unit tests cover the
 preflight (report, executor SyncError, Health check pass/fail/soft-fail) and

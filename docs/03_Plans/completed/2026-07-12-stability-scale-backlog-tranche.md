@@ -12,7 +12,7 @@ released — held with the CVE tab pending design-partner feedback.
 - No release, no push until feedback lands (standing directive).
 - Stability is paramount: every behavioral change is default-off or
   default-identical; the risky plan/executor changes are opt-in.
-- No NQE query changes anywhere in the tranche (no ADP republish needed).
+- No NQE query changes anywhere in the tranche (no validation-org republish needed).
 
 ## Touched Surfaces
 

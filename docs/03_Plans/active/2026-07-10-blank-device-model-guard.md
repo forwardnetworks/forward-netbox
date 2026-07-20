@@ -42,7 +42,7 @@ Query-only change ⇒ operators Publish Bundled Queries after upgrading.
 ## Validation
 
 NQE lint clean on both queries; structure tests assert the null-safe device
-guard and the empty-sysDescr endpoint guard in both files. Live on the ADP demo
+guard and the empty-sysDescr endpoint guard in both files. Live on the validation-org demo
 network: **0 blank device_type / slug / manufacturer across all 5645 rows** in
 both queries (was 4 blank before the endpoint guard). Full suite + lint +
 harness green. Field-reported: rows rejected on blank model; sync did not crash.

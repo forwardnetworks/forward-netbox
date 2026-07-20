@@ -4,7 +4,7 @@ Status: implemented on `fix/2.5.3-drift-report-clarity`.
 
 ## Goal
 
-Four things (three Python/packaging; one opt-in query variant needing an ADP
+Four things (three Python/packaging; one opt-in query variant needing an validation-org
 republish):
 
 1. **Editions split** — make `forward-netbox` a single package with two install
@@ -23,7 +23,7 @@ republish):
 ## Constraints
 
 - Additive / defensive only — no NQE query change, no data/schema change, no
-  migration, no ADP republish.
+  migration, no validation-org republish.
 - The editions extra must not break existing installs: `pip install forward-netbox`
   stays functionally identical; the optional plugins are pulled only via extras.
 - The routing fix must not change lookup results — only the sort order used for
@@ -89,7 +89,7 @@ affect any sync. Reverting the extras just removes the convenience install path.
   skip (`device type X is not in NetBox yet`) because the notice looked up the
   raw Forward model while the aliased device query created the DeviceType under
   its NetBox-library name. New opt-in **forward_dlm_hardware_notices_with_netbox_aliases**
-  variant applies the same alias mapping (live-verified on ADP: 24 device types
+  variant applies the same alias mapping (live-verified on validation-org: 24 device types
   that skipped now resolve, 0 misses). It is the only query change in the release,
   so operators on pinned org queries need **Publish Bundled Queries** after
   upgrading.
