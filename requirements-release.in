@@ -1,0 +1,14 @@
+# Release and CI controller tooling. Regenerate requirements-release.txt with
+# Python 3.14 and hashes; workflows install it with --require-hashes.
+build
+invoke
+mdx-truly-sane-lists
+mkdocs
+mkdocs-awesome-pages-plugin
+mkdocs-material
+pip-audit
+poetry-core==2.4.1
+pre-commit
+pymdown-extensions
+python-dotenv
+twine
