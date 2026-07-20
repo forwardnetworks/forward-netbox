@@ -14,6 +14,15 @@ import yaml
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+FORBIDDEN_TRACKED_DEVELOPMENT_ENV_FILES = {
+    "development/.env",
+    "development/env/redis.env",
+}
+FORBIDDEN_DEVELOPMENT_SECRET_ASSIGNMENT = re.compile(
+    r"^(?:API_TOKEN_PEPPER_\d+|DB_PASSWORD|POSTGRES_PASSWORD|"
+    r"REDIS(?:_CACHE)?_PASSWORD|SECRET_KEY)\s*=",
+    re.MULTILINE,
+)
 
 REQUIRED_PATHS = [
     ".sensitive-binary-allowlist",

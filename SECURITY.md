@@ -48,6 +48,10 @@ platform baseline.
   through Docker Compose secrets. The generator preserves existing files,
   rejects links and permissive modes, and never prints values. Do not copy this
   directory into build contexts, support bundles, or Git.
+- **History rewrite recovery.** Repository history was rewritten on 2026-07-20
+  to remove sensitive data. Discard and reclone any checkout created before the
+  rewrite. Do not merge or push an old branch into the rewritten history; rebase
+  the intended changes onto a fresh clone so removed objects are not restored.
 - **Forward credential at rest.** The Forward API password is **encrypted at rest**
   with Fernet, using a key derived from Django's `SECRET_KEY`, before it is stored
   in the `ForwardSource` parameters; it is also masked in every UI/API display and
