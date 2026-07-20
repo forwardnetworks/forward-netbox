@@ -8,7 +8,7 @@ Forward 26.6 is the baseline for async NQE.
 
 ## Release Compatibility
 
-The `2.6.0` release candidate requires NetBox `4.6.5` and `netbox-branching` `1.1.1`. Expand for the published release history and candidate notes.
+The `2.6.0` release requires NetBox `4.6.5` and `netbox-branching` `1.1.1`. Expand for the published release history and release notes.
 
 <details>
 <summary>Release compatibility history</summary>

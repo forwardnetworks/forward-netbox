@@ -43,6 +43,12 @@ INSTALL_DOC = REPO_ROOT / "docs/01_User_Guide/README.md"
 CURRENT_RELEASE_RE = re.compile(
     r"^\| `v[0-9][^|]*` \| (?P<support>[^|]*) \| Current release;", re.MULTILINE
 )
+RELEASE_INTRO_RE = re.compile(
+    r"^The `(?P<version>\d+\.\d+\.\d+)` release(?P<candidate> candidate)? "
+    r"requires (?P<requirements>.+)\. Expand for the published release history "
+    r"and (?:candidate|release) notes\.$",
+    re.MULTILINE,
+)
 
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
 GITHUB_REPOSITORY = "forwardnetworks/forward-netbox"
@@ -115,6 +121,23 @@ def promote_release_candidate_text(table_text: str, version: str) -> str:
     return "".join(lines)
 
 
+def set_release_intro_text(text: str, version: str, *, candidate: bool) -> str:
+    """Keep the compatibility introduction aligned with the release table."""
+    matches = list(RELEASE_INTRO_RE.finditer(text))
+    if len(matches) != 1:
+        raise ReleaseError(
+            "expected exactly one canonical release compatibility introduction"
+        )
+    match = matches[0]
+    release_label = "release candidate" if candidate else "release"
+    notes_label = "candidate notes" if candidate else "release notes"
+    replacement = (
+        f"The `{version}` {release_label} requires {match.group('requirements')}. "
+        f"Expand for the published release history and {notes_label}."
+    )
+    return text[: match.start()] + replacement + text[match.end() :]
+
+
 def read_current_version() -> str:
     text = PYPROJECT.read_text(encoding="utf-8")
     match = re.search(r'^version = "([^"]+)"', text, re.MULTILINE)
@@ -149,8 +172,10 @@ def stage_prepare(version: str, summary: str, *, write: bool) -> None:
         ),
     }
     for path in README_TABLES:
-        edits[path] = insert_release_row(
-            path.read_text(encoding="utf-8"), version, summary
+        edits[path] = set_release_intro_text(
+            insert_release_row(path.read_text(encoding="utf-8"), version, summary),
+            version,
+            candidate=True,
         )
     # Install-doc wheel/sdist/pin references.
     install_text = edits.get(INSTALL_DOC, INSTALL_DOC.read_text(encoding="utf-8"))
@@ -385,7 +410,11 @@ def stage_publish(version: str, *, auto_finish: bool = False) -> None:
 def _promote_release_candidate(version: str) -> bool:
     originals = {path: path.read_text(encoding="utf-8") for path in README_TABLES}
     edits = {
-        path: promote_release_candidate_text(text, version)
+        path: set_release_intro_text(
+            promote_release_candidate_text(text, version),
+            version,
+            candidate=False,
+        )
         for path, text in originals.items()
     }
     if edits == originals:

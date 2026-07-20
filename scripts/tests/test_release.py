@@ -96,6 +96,65 @@ class InsertReleaseRowTest(unittest.TestCase):
             release.insert_release_row(candidate, "1.5.12", "second")
 
 
+class ReleaseIntroTest(unittest.TestCase):
+    INTRO = (
+        "The `1.5.10` release requires NetBox `4.6.5`. "
+        "Expand for the published release history and release notes."
+    )
+
+    def test_prepare_sets_candidate_version_and_wording(self):
+        out = release.set_release_intro_text(
+            self.INTRO,
+            "1.5.11",
+            candidate=True,
+        )
+
+        self.assertEqual(
+            out,
+            "The `1.5.11` release candidate requires NetBox `4.6.5`. "
+            "Expand for the published release history and candidate notes.",
+        )
+
+    def test_promotion_sets_published_wording_and_is_idempotent(self):
+        candidate = release.set_release_intro_text(
+            self.INTRO,
+            "1.5.11",
+            candidate=True,
+        )
+
+        out = release.set_release_intro_text(
+            candidate,
+            "1.5.11",
+            candidate=False,
+        )
+
+        self.assertEqual(
+            out,
+            "The `1.5.11` release requires NetBox `4.6.5`. "
+            "Expand for the published release history and release notes.",
+        )
+        self.assertEqual(
+            release.set_release_intro_text(out, "1.5.11", candidate=False),
+            out,
+        )
+
+    def test_rejects_missing_canonical_intro(self):
+        with self.assertRaises(release.ReleaseError):
+            release.set_release_intro_text(
+                "No release compatibility introduction.",
+                "1.5.11",
+                candidate=True,
+            )
+
+    def test_rejects_duplicate_canonical_intro(self):
+        with self.assertRaises(release.ReleaseError):
+            release.set_release_intro_text(
+                f"{self.INTRO}\n\n{self.INTRO}",
+                "1.5.11",
+                candidate=True,
+            )
+
+
 class SemverArgTest(unittest.TestCase):
     def test_semver_regex(self):
         self.assertIsNotNone(release.SEMVER_RE.match("1.5.11"))
