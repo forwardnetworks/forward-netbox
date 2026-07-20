@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import os
+import sys
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from unittest.mock import patch
 
 import scripts.authorize_trusted_tag as trusted_tag
@@ -103,6 +106,33 @@ class TrustedTagAuthorizationTest(unittest.TestCase):
                             "brandonheller",
                             "token",
                         )
+
+    def test_main_does_not_log_authorization_evidence_or_token(self):
+        secret = "secret-from-api-response"
+        output = StringIO()
+        argv = [
+            "authorize_trusted_tag.py",
+            "--tag",
+            "v2.6.0",
+            "--expected-sha",
+            self.commit,
+            "--reviewer",
+            "brandonheller",
+        ]
+        with (
+            patch.dict(os.environ, {"GH_TOKEN": secret}, clear=True),
+            patch.object(sys, "argv", argv),
+            patch.object(
+                trusted_tag,
+                "authorize_trusted_tag",
+                return_value={"untrusted_evidence": secret},
+            ),
+            redirect_stdout(output),
+        ):
+            self.assertEqual(trusted_tag.main(), 0)
+
+        self.assertEqual(output.getvalue(), "Trusted tag authorization passed.\n")
+        self.assertNotIn(secret, output.getvalue())
 
 
 if __name__ == "__main__":

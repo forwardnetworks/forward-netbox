@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import re
 import subprocess
@@ -86,17 +85,13 @@ def main() -> int:
     token = os.environ.get("GH_TOKEN", "").strip()
     if not token:
         raise SystemExit("GH_TOKEN is required")
-    print(
-        json.dumps(
-            authorize_trusted_tag(
-                args.tag,
-                args.expected_sha,
-                args.reviewer,
-                token,
-            ),
-            sort_keys=True,
-        )
+    authorize_trusted_tag(
+        args.tag,
+        args.expected_sha,
+        args.reviewer,
+        token,
     )
+    print("Trusted tag authorization passed.")
     return 0
 
 

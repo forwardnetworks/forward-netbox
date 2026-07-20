@@ -4,6 +4,8 @@ import importlib.util
 import json
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
@@ -12,6 +14,24 @@ _SPEC = importlib.util.spec_from_file_location(
 )
 release = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(release)
+
+
+class RunTest(unittest.TestCase):
+    def test_command_arguments_are_absent_from_logs_and_errors(self):
+        secret = "secret-command-argument"
+        output = StringIO()
+        result = release.subprocess.CompletedProcess([], 7)
+
+        with (
+            patch.object(release.subprocess, "run", return_value=result),
+            redirect_stdout(output),
+            self.assertRaises(release.ReleaseError) as error,
+        ):
+            release.run(["gh", "api", "--field", secret])
+
+        self.assertEqual(output.getvalue(), "  $ [redacted release command]\n")
+        self.assertNotIn(secret, output.getvalue())
+        self.assertNotIn(secret, str(error.exception))
 
 
 class BumpVersionTest(unittest.TestCase):

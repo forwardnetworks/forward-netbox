@@ -132,10 +132,10 @@ def run(
     check: bool = True,
     env: dict[str, str] | None = None,
 ) -> int:
-    print(f"  $ {' '.join(cmd)}")
+    print("  $ [redacted release command]")
     result = subprocess.run(cmd, cwd=cwd, env=env)
     if check and result.returncode != 0:
-        raise ReleaseError(f"command failed ({result.returncode}): {' '.join(cmd)}")
+        raise ReleaseError(f"release command failed with exit code {result.returncode}")
     return result.returncode
 
 
