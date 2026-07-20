@@ -180,31 +180,46 @@ class FinishReleaseTest(unittest.TestCase):
         with patch.object(release, "_capture", side_effect=capture):
             release._assert_release_head("2.6.0", expected)
 
-    @patch.object(release, "wait_for_trusted_tag_workflow", return_value="success")
-    @patch.object(release, "_trusted_tag_workflow_runs", return_value=[])
+    @patch.object(release, "_verify_live_release_controls")
     @patch.object(release, "run")
-    def test_tag_creation_uses_only_protected_main_workflow(
+    def test_tag_creation_uses_standard_annotated_tag_flow(
         self,
         run,
-        workflow_runs,
-        wait,
+        verify_controls,
     ):
         expected = "a" * 40
         with patch.object(
             release,
             "_capture",
-            side_effect=["", expected, "tag"],
+            side_effect=[
+                "",
+                "",
+                (
+                    f"{'f' * 40}\trefs/tags/v2.6.0\n"
+                    f"{expected}\trefs/tags/v2.6.0^{{}}"
+                ),
+            ],
         ):
-            release.ensure_trusted_tag("v2.6.0", expected)
+            release.ensure_release_tag("v2.6.0", expected)
 
-        workflow_runs.assert_called_once_with(expected)
-        wait.assert_called_once_with(expected, set())
+        verify_controls.assert_called_once_with()
         commands = [call.args[0] for call in run.call_args_list]
-        self.assertTrue(
-            any(command[:3] == ["gh", "workflow", "run"] for command in commands)
+        self.assertIn(
+            [
+                "git",
+                "tag",
+                "-a",
+                "v2.6.0",
+                expected,
+                "-m",
+                "Forward NetBox v2.6.0",
+            ],
+            commands,
         )
-        self.assertFalse(any(command[:2] == ["git", "tag"] for command in commands))
-        self.assertFalse(any(command[:2] == ["git", "push"] for command in commands))
+        self.assertIn(
+            ["git", "push", "origin", "refs/tags/v2.6.0"],
+            commands,
+        )
 
     @patch.object(release, "run")
     def test_existing_release_tag_must_be_annotated(self, run):
@@ -212,10 +227,71 @@ class FinishReleaseTest(unittest.TestCase):
         with patch.object(
             release,
             "_capture",
-            side_effect=[expected, "commit"],
+            side_effect=[
+                expected,
+                (
+                    f"{'f' * 40}\trefs/tags/v2.6.0\n"
+                    f"{expected}\trefs/tags/v2.6.0^{{}}"
+                ),
+                "commit",
+            ],
         ):
             with self.assertRaisesRegex(release.ReleaseError, "annotated"):
-                release.ensure_trusted_tag("v2.6.0", expected)
+                release.ensure_release_tag("v2.6.0", expected)
+
+    @patch.object(release, "_verify_live_release_controls")
+    @patch.object(release, "run")
+    def test_remote_release_tag_must_peel_to_expected_commit(
+        self,
+        run,
+        verify_controls,
+    ):
+        expected = "a" * 40
+        with (
+            patch.object(
+                release,
+                "_capture",
+                side_effect=[
+                    "",
+                    "",
+                    (
+                        f"{'f' * 40}\trefs/tags/v2.6.0\n"
+                        f"{'b' * 40}\trefs/tags/v2.6.0^{{}}"
+                    ),
+                ],
+            ),
+            self.assertRaisesRegex(release.ReleaseError, "does not peel"),
+        ):
+            release.ensure_release_tag("v2.6.0", expected)
+
+        verify_controls.assert_called_once_with()
+
+    @patch.object(release, "_verify_live_release_controls")
+    @patch.object(release, "run")
+    def test_local_only_tag_is_pushed_on_retry(self, run, verify_controls):
+        expected = "a" * 40
+        with patch.object(
+            release,
+            "_capture",
+            side_effect=[
+                expected,
+                "",
+                "tag",
+                (
+                    f"{'f' * 40}\trefs/tags/v2.6.0\n"
+                    f"{expected}\trefs/tags/v2.6.0^{{}}"
+                ),
+            ],
+        ):
+            release.ensure_release_tag("v2.6.0", expected)
+
+        verify_controls.assert_called_once_with()
+        commands = [call.args[0] for call in run.call_args_list]
+        self.assertFalse(any(command[:2] == ["git", "tag"] for command in commands))
+        self.assertIn(
+            ["git", "push", "origin", "refs/tags/v2.6.0"],
+            commands,
+        )
 
 
 class RequiredReleaseWorkflowTest(unittest.TestCase):

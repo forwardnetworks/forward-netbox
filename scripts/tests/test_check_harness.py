@@ -361,13 +361,14 @@ class CheckHarnessSensitiveGuardTest(unittest.TestCase):
   actions: read
   contents: read
   pull-requests: read
+  statuses: read
 jobs:
   validate:
     steps:
       - uses: actions/checkout@example
         with:
           fetch-depth: 0
-      - run: git fetch origin refs/tags/security-bootstrap-2.6 && python scripts/verify_release_provenance.py --tag v2.6.0 --reviewer brandonheller
+      - run: git fetch origin refs/tags/v2.5.11 && python scripts/verify_release_provenance.py --tag v2.6.0 --reviewer brandonheller
       - env:
           FORWARD_SENSITIVE_PATTERNS: ${{ secrets.FORWARD_SENSITIVE_PATTERNS }}
           FORWARD_SENSITIVE_HISTORY_BASELINE: ${{ vars.FORWARD_SENSITIVE_HISTORY_BASELINE }}
@@ -581,55 +582,31 @@ pip==26.1.2 \\
         self.assertTrue(any("mutable latest" in failure for failure in failures))
 
 
-class CheckHarnessTrustedTagControllerTest(unittest.TestCase):
-    WORKFLOW = """\
-workflow_dispatch:
-if: github.ref == 'refs/heads/main'
-environment: release-tag
-verify_only:
-uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
-app: secrets.RELEASE_CONTROL_APP_ID
-key: secrets.RELEASE_CONTROL_APP_PRIVATE_KEY
-repositories: ${{ github.event.repository.name }}
-permission-actions: read
-permission-administration: write
-permission-contents: read
-permission-environments: read
-permission-pull-requests: read
-permission-statuses: read
-GH_TOKEN: ${{ steps.release-control-token.outputs.token }}
-secret: secrets.RELEASE_TAG_DEPLOY_KEY
-run: python -m scripts.authorize_trusted_tag
-push: git push "git@github.com:${GITHUB_REPOSITORY}.git" "refs/tags/${TAG_NAME}"
-"""
-    AUTHORIZER = """\
-os.environ.get("GITHUB_REF") != "refs/heads/main"
-verify_github_release_controls
-verify_trusted_anchor_candidate
-verify_release_commit_provenance
-"""
+class CheckHarnessStandardReleaseTagFlowTest(unittest.TestCase):
     RELEASE = """\
-ensure_trusted_tag(tag, head_commit)
+ensure_release_tag(tag, head_commit)
 _verify_live_release_controls()
 "--controls-only"
+"tag",
+"-a",
+"push", "origin", f"refs/tags/{tag}"
+"ls-remote", "--tags", "origin", f"refs/tags/{tag}^{{}}"
 """
     PROVENANCE = """\
-TRUSTED_TAG_WORKFLOW = ".github/workflows/trusted-tag.yml"
+PRIOR_RELEASE_TAG = "v2.5.11"
+BOOTSTRAP_REQUIRED_FILES
 BASE_REQUIRED_STATUS_CHECKS
 TRUSTED_STATUS_CONTEXT
 operation.add_argument("--controls-only", action="store_true")
 "merge-base", "--is-ancestor", release_commit, current_main
-TRUSTED_RELEASE_FILES = ("scripts/authorize_trusted_tag.py", "scripts/release.py")
 """
 
-    def _check(self, *, workflow=None, release=None):
+    def _check(self, *, release=None, provenance=None):
         with tempfile.TemporaryDirectory() as temp_dir:
             repo_root = Path(temp_dir)
             files = {
-                ".github/workflows/trusted-tag.yml": workflow or self.WORKFLOW,
-                "scripts/authorize_trusted_tag.py": self.AUTHORIZER,
                 "scripts/release.py": release or self.RELEASE,
-                "scripts/verify_release_provenance.py": self.PROVENANCE,
+                "scripts/verify_release_provenance.py": (provenance or self.PROVENANCE),
             }
             for relative_path, content in files.items():
                 path = repo_root / relative_path
@@ -637,65 +614,39 @@ TRUSTED_RELEASE_FILES = ("scripts/authorize_trusted_tag.py", "scripts/release.py
                 path.write_text(content, encoding="utf-8")
             failures = []
             with patch.object(check_harness, "REPO_ROOT", repo_root):
-                check_harness._check_trusted_tag_controller(failures)
+                check_harness._check_standard_release_tag_flow(failures)
         return failures
 
-    def test_protected_main_tag_controller_passes(self):
+    def test_standard_release_tag_flow_passes(self):
         self.assertEqual(self._check(), [])
 
-    def test_direct_human_tag_push_fails(self):
-        release = self.RELEASE + 'run(["git", "tag", "-a", tag])\n'
+    def test_missing_remote_target_verification_fails(self):
+        release = self.RELEASE.replace(
+            '"ls-remote", "--tags", "origin", f"refs/tags/{tag}^{{}}"\n',
+            "",
+        )
+
+        self.assertTrue(
+            any("ls-remote" in failure for failure in self._check(release=release))
+        )
+
+    def test_retired_app_controller_fails(self):
+        release = self.RELEASE + "\nRELEASE_CONTROL_APP_ID\n"
 
         self.assertTrue(
             any(
-                "must not create" in failure for failure in self._check(release=release)
+                "retired release controller" in failure
+                for failure in self._check(release=release)
             )
         )
 
-    def test_repository_wide_secret_path_fails(self):
-        workflow = self.WORKFLOW.replace("environment: release-tag\n", "")
+    def test_retired_anchor_fails(self):
+        provenance = self.PROVENANCE + "\nsecurity-bootstrap-2.6\n"
 
         self.assertTrue(
             any(
-                "environment: release-tag" in failure
-                for failure in self._check(workflow=workflow)
-            )
-        )
-
-    def test_automatic_github_token_for_authorizer_fails(self):
-        workflow = self.WORKFLOW.replace(
-            "GH_TOKEN: ${{ steps.release-control-token.outputs.token }}",
-            "GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}",
-        )
-
-        self.assertTrue(
-            any(
-                "release-control-token" in failure
-                for failure in self._check(workflow=workflow)
-            )
-        )
-
-    def test_release_control_contents_write_fails(self):
-        workflow = self.WORKFLOW + "\npermission-contents: write\n"
-
-        self.assertTrue(
-            any(
-                "must not write contents" in failure
-                for failure in self._check(workflow=workflow)
-            )
-        )
-
-    def test_no_op_main_ref_lease_fails(self):
-        workflow = self.WORKFLOW + (
-            "\ngit push --atomic "
-            '--force-with-lease="refs/heads/main:${EXPECTED_SHA}" '
-            '"${EXPECTED_SHA}:refs/heads/main"\n'
-        )
-
-        self.assertTrue(
-            any(
-                "must not claim" in failure
-                for failure in self._check(workflow=workflow)
+                "retired release controller" in failure
+                for failure in self._check(provenance=provenance)
             )
         )
 

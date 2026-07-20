@@ -163,7 +163,7 @@ class ReleaseArtifactTaskTest(unittest.TestCase):
 
         self.assertIn("--require-hashes", workflow)
         self.assertIn("requirements-release.txt", workflow)
-        self.assertIn("security-bootstrap-2.6", workflow)
+        self.assertIn("refs/tags/v2.5.11", workflow)
         self.assertIn("scripts/build_reproducible_distribution.py", workflow)
         self.assertIn("python -m invoke artifact-test", workflow)
         self.assertIn("sbom/", workflow)

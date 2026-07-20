@@ -34,20 +34,17 @@ REQUIRED_PATHS = [
     "docs/03_Plans/plan-template.md",
     "scripts/tests/test_check_harness.py",
     "scripts/check_release_authorization.py",
-    "scripts/authorize_trusted_tag.py",
     "scripts/build_reproducible_distribution.py",
     "scripts/verify_release_provenance.py",
     "scripts/check_sensitive_content.py",
     "scripts/sensitive_content.py",
     "scripts/tests/test_release_authorization.py",
-    "scripts/tests/test_authorize_trusted_tag.py",
     "scripts/tests/test_build_reproducible_distribution.py",
     "scripts/tests/test_verify_release_provenance.py",
     "scripts/tests/test_sensitive_content.py",
     ".github/workflows/harness-gardening.yml",
     ".github/workflows/codeql.yml",
     ".github/workflows/trusted-sensitive-pr.yml",
-    ".github/workflows/trusted-tag.yml",
     "requirements-release.in",
     "requirements-release.txt",
 ]
@@ -205,7 +202,7 @@ REQUIRED_TEXT = {
     ],
     ".github/workflows/release.yml": [
         "fetch-depth: 0",
-        "security-bootstrap-2.6",
+        "refs/tags/v2.5.11",
         "verify_release_provenance.py",
         "--reviewer brandonheller",
         "--git-files",
@@ -579,7 +576,7 @@ def _check_sensitive_guard_wiring(failures: list[str]) -> None:
         if fragment not in ci_commands:
             failures.append(f".github/workflows/ci.yml must execute {fragment}")
     for fragment in (
-        "security-bootstrap-2.6",
+        "refs/tags/v2.5.11",
         "verify_release_provenance.py",
         "--tag",
         "--reviewer brandonheller",
@@ -589,7 +586,7 @@ def _check_sensitive_guard_wiring(failures: list[str]) -> None:
         if fragment not in release_commands:
             failures.append(f".github/workflows/release.yml must execute {fragment}")
     release_permissions = release_workflow.get("permissions", {})
-    for permission in ("actions", "contents", "pull-requests"):
+    for permission in ("actions", "contents", "pull-requests", "statuses"):
         if not isinstance(release_permissions, dict) or (
             release_permissions.get(permission) != "read"
         ):
@@ -768,10 +765,8 @@ def _check_release_toolchain_lock(failures: list[str]) -> None:
         failures.append("CI workflow must install the reviewed hash-locked toolchain")
 
 
-def _check_trusted_tag_controller(failures: list[str]) -> None:
+def _check_standard_release_tag_flow(failures: list[str]) -> None:
     paths = {
-        "workflow": REPO_ROOT / ".github/workflows/trusted-tag.yml",
-        "authorizer": REPO_ROOT / "scripts/authorize_trusted_tag.py",
         "release": REPO_ROOT / "scripts/release.py",
         "provenance": REPO_ROOT / "scripts/verify_release_provenance.py",
     }
@@ -779,72 +774,36 @@ def _check_trusted_tag_controller(failures: list[str]) -> None:
         return
     texts = {name: path.read_text(encoding="utf-8") for name, path in paths.items()}
     for fragment in (
-        "workflow_dispatch:",
-        "github.ref == 'refs/heads/main'",
-        "environment: release-tag",
-        "verify_only:",
-        "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1",
-        "secrets.RELEASE_CONTROL_APP_ID",
-        "secrets.RELEASE_CONTROL_APP_PRIVATE_KEY",
-        "repositories: ${{ github.event.repository.name }}",
-        "permission-actions: read",
-        "permission-administration: write",
-        "permission-contents: read",
-        "permission-environments: read",
-        "permission-pull-requests: read",
-        "permission-statuses: read",
-        "GH_TOKEN: ${{ steps.release-control-token.outputs.token }}",
-        "secrets.RELEASE_TAG_DEPLOY_KEY",
-        "python -m scripts.authorize_trusted_tag",
-        'git push "git@github.com:${GITHUB_REPOSITORY}.git"',
-        '"refs/tags/${TAG_NAME}"',
+        "ensure_release_tag(tag, head_commit)",
+        "_verify_live_release_controls()",
+        '"--controls-only"',
+        '"tag",',
+        '"-a",',
+        '"push", "origin", f"refs/tags/{tag}"',
+        '"ls-remote",',
+        'f"refs/tags/{tag}^{{}}"',
     ):
-        if fragment not in texts["workflow"]:
-            failures.append(f"trusted tag workflow must contain: {fragment}")
-    if "permission-contents: write" in texts["workflow"]:
-        failures.append("release-control GitHub App token must not write contents")
-    for fragment in (
-        'os.environ.get("GITHUB_REF") != "refs/heads/main"',
-        "verify_github_release_controls",
-        "verify_trusted_anchor_candidate",
-        "verify_release_commit_provenance",
-    ):
-        if fragment not in texts["authorizer"]:
-            failures.append(f"trusted tag authorizer must contain: {fragment}")
-    if "ensure_trusted_tag(tag, head_commit)" not in texts["release"]:
-        failures.append("release tool must dispatch protected-main tag creation")
-    for fragment in ("_verify_live_release_controls()", '"--controls-only"'):
         if fragment not in texts["release"]:
-            failures.append(f"release tool must verify live controls: {fragment}")
-    for pattern in (
-        r'run\(\["git", "tag"',
-        r'run\(\["git", "push", "--no-verify", "origin", tag',
-    ):
-        if re.search(pattern, texts["release"]):
-            failures.append(
-                "release tool must not create or push version tags directly"
-            )
+            failures.append(f"standard release tag flow must contain: {fragment}")
     for fragment in (
-        'TRUSTED_TAG_WORKFLOW = ".github/workflows/trusted-tag.yml"',
+        'PRIOR_RELEASE_TAG = "v2.5.11"',
+        "BOOTSTRAP_REQUIRED_FILES",
         "BASE_REQUIRED_STATUS_CHECKS",
         "TRUSTED_STATUS_CONTEXT",
         'operation.add_argument("--controls-only", action="store_true")',
         '"merge-base", "--is-ancestor", release_commit, current_main',
-        '"scripts/authorize_trusted_tag.py"',
-        '"scripts/release.py"',
     ):
         if fragment not in texts["provenance"]:
-            failures.append(f"release provenance must freeze: {fragment}")
+            failures.append(f"release provenance must contain: {fragment}")
     for fragment in (
-        "git push --atomic",
-        '--force-with-lease="refs/heads/main:${EXPECTED_SHA}"',
-        '"${EXPECTED_SHA}:refs/heads/main"',
+        "trusted-tag.yml",
+        "authorize_trusted_tag",
+        "RELEASE_CONTROL_APP",
+        "RELEASE_TAG_DEPLOY_KEY",
+        "security-bootstrap-2.6",
     ):
-        if fragment in texts["workflow"]:
-            failures.append(
-                "trusted tag workflow must not claim a no-op main-ref lease: "
-                f"{fragment}"
-            )
+        if any(fragment in text for text in texts.values()):
+            failures.append(f"retired release controller remains: {fragment}")
 
 
 def main() -> int:
@@ -888,7 +847,7 @@ def main() -> int:
     _check_harness_gardening_dependency(failures)
     _check_sensitive_guard_wiring(failures)
     _check_release_toolchain_lock(failures)
-    _check_trusted_tag_controller(failures)
+    _check_standard_release_tag_flow(failures)
     if args.base:
         _check_per_commit_plan_lifecycle(failures, args.base)
 

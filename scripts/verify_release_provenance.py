@@ -17,20 +17,12 @@ GITHUB_API_URL = "https://api.github.com"
 TRUSTED_STATUS_CONTEXT = "Trusted sensitive-content scan"
 TRUSTED_STATUS_CREATOR = "github-actions[bot]"
 TRUSTED_SCANNER_WORKFLOW = ".github/workflows/trusted-sensitive-pr.yml"
-TRUSTED_TAG_WORKFLOW = ".github/workflows/trusted-tag.yml"
-TRUSTED_ANCHOR_TAG = "security-bootstrap-2.6"
 PRIOR_RELEASE_TAG = "v2.5.11"
 PRIOR_POST_RELEASE_DOC_COMMIT = "df85f2e94b91f5afe3a419c3121aeb189f2b2737"
-TRUSTED_RELEASE_FILES = (
-    ".github/workflows/release.yml",
+BOOTSTRAP_REQUIRED_FILES = (
     TRUSTED_SCANNER_WORKFLOW,
-    TRUSTED_TAG_WORKFLOW,
-    "requirements-release.in",
-    "requirements-release.txt",
-    "scripts/authorize_trusted_tag.py",
-    "scripts/build_reproducible_distribution.py",
-    "scripts/release.py",
-    "scripts/verify_release_provenance.py",
+    "scripts/check_sensitive_content.py",
+    "scripts/sensitive_content.py",
 )
 REQUIRED_WORKFLOWS = (
     ".github/workflows/ci.yml",
@@ -40,17 +32,9 @@ RELEASE_REVIEWER_ID = 82859
 GITHUB_ACTIONS_APP_ID = 15368
 GITHUB_ADVANCED_SECURITY_APP_ID = 57789
 MAIN_RULESET_NAME = "main-release-integrity"
-VERSION_TAG_CREATION_RULESET = "version-tag-creation"
+RETIRED_VERSION_TAG_CREATION_RULESET = "version-tag-creation"
 VERSION_TAG_INTEGRITY_RULESET = "version-tag-integrity"
-ANCHOR_TAG_CREATION_RULESET = "security-bootstrap-tag-creation"
-ANCHOR_TAG_INTEGRITY_RULESET = "security-bootstrap-tag-integrity"
-RELEASE_TAG_ENVIRONMENT = "release-tag"
 PYPI_ENVIRONMENT = "pypi"
-RELEASE_TAG_REQUIRED_SECRETS = {
-    "RELEASE_CONTROL_APP_ID",
-    "RELEASE_CONTROL_APP_PRIVATE_KEY",
-    "RELEASE_TAG_DEPLOY_KEY",
-}
 BASE_REQUIRED_STATUS_CHECKS = {
     ("Validate NetBox v4.6.5", GITHUB_ACTIONS_APP_ID),
     ("CodeQL python", GITHUB_ACTIONS_APP_ID),
@@ -120,6 +104,18 @@ def _named_ruleset(name: str, token: str) -> dict:
     if not isinstance(payload, dict):
         raise ProvenanceError(f"GitHub returned invalid ruleset data for {name!r}")
     return payload
+
+
+def _require_ruleset_absent(name: str, token: str) -> None:
+    matches = [
+        ruleset
+        for ruleset in _github_pages("rulesets", token)
+        if ruleset.get("name") == name
+        and ruleset.get("source_type") == "Repository"
+        and ruleset.get("source") == GITHUB_REPOSITORY
+    ]
+    if matches:
+        raise ProvenanceError(f"retired repository ruleset {name!r} remains active")
 
 
 def _require_ruleset_identity(
@@ -211,7 +207,6 @@ def _require_tag_ruleset(
     *,
     name: str,
     ref_pattern: str,
-    creation: bool,
 ) -> None:
     ruleset = _named_ruleset(name, token)
     _require_ruleset_identity(
@@ -220,20 +215,9 @@ def _require_tag_ruleset(
         target="tag",
         ref_pattern=ref_pattern,
     )
-    if creation:
-        _rules_by_type(ruleset, {"creation"})
-        if ruleset.get("bypass_actors") != [
-            {
-                "actor_id": None,
-                "actor_type": "DeployKey",
-                "bypass_mode": "always",
-            }
-        ]:
-            raise ProvenanceError(f"tag creation ruleset {name!r} has invalid bypass")
-    else:
-        _rules_by_type(ruleset, {"deletion", "non_fast_forward"})
-        if ruleset.get("bypass_actors") != []:
-            raise ProvenanceError(f"tag integrity ruleset {name!r} has a bypass")
+    _rules_by_type(ruleset, {"deletion", "non_fast_forward"})
+    if ruleset.get("bypass_actors") != []:
+        raise ProvenanceError(f"tag integrity ruleset {name!r} has a bypass")
 
 
 def _require_environment(
@@ -243,7 +227,6 @@ def _require_environment(
     policy_name: str,
     policy_type: str,
     reviewer: str,
-    exact_secret_names: set[str] | None = None,
 ) -> None:
     encoded_name = urllib.parse.quote(name, safe="")
     environment = _github_json(f"environments/{encoded_name}", token)
@@ -289,26 +272,9 @@ def _require_environment(
         "type": actual_policies[0].get("type"),
     } != {"name": policy_name, "type": policy_type}:
         raise ProvenanceError(f"environment {name!r} deployment policy is invalid")
-    if exact_secret_names is not None:
-        secrets = _github_json(
-            f"environments/{encoded_name}/secrets?per_page=100",
-            token,
-        )
-        if not isinstance(secrets, dict):
-            raise ProvenanceError(f"GitHub returned invalid secrets for {name!r}")
-        actual_secret_names = {
-            str(secret.get("name") or "") for secret in secrets.get("secrets") or []
-        }
-        if actual_secret_names != exact_secret_names:
-            raise ProvenanceError(f"environment {name!r} secrets are invalid")
 
 
-def verify_github_release_controls(
-    reviewer: str,
-    token: str,
-    *,
-    require_trusted_status: bool,
-) -> dict:
+def verify_github_release_controls(reviewer: str, token: str) -> dict:
     repository = _github_json("", token)
     if not isinstance(repository, dict):
         raise ProvenanceError("GitHub returned invalid repository settings")
@@ -329,41 +295,12 @@ def verify_github_release_controls(
     if actions.get("sha_pinning_required") is not True:
         raise ProvenanceError("GitHub Actions SHA pinning is not required")
 
-    required_statuses = _require_main_ruleset(
-        token,
-        require_trusted_status=require_trusted_status,
-    )
-    _require_tag_ruleset(
-        token,
-        name=VERSION_TAG_CREATION_RULESET,
-        ref_pattern="refs/tags/v*",
-        creation=True,
-    )
+    required_statuses = _require_main_ruleset(token, require_trusted_status=True)
+    _require_ruleset_absent(RETIRED_VERSION_TAG_CREATION_RULESET, token)
     _require_tag_ruleset(
         token,
         name=VERSION_TAG_INTEGRITY_RULESET,
         ref_pattern="refs/tags/v*",
-        creation=False,
-    )
-    _require_tag_ruleset(
-        token,
-        name=ANCHOR_TAG_CREATION_RULESET,
-        ref_pattern=f"refs/tags/{TRUSTED_ANCHOR_TAG}",
-        creation=True,
-    )
-    _require_tag_ruleset(
-        token,
-        name=ANCHOR_TAG_INTEGRITY_RULESET,
-        ref_pattern=f"refs/tags/{TRUSTED_ANCHOR_TAG}",
-        creation=False,
-    )
-    _require_environment(
-        token,
-        name=RELEASE_TAG_ENVIRONMENT,
-        policy_name="main",
-        policy_type="branch",
-        reviewer=reviewer,
-        exact_secret_names=RELEASE_TAG_REQUIRED_SECRETS,
     )
     _require_environment(
         token,
@@ -375,7 +312,6 @@ def verify_github_release_controls(
     return {
         "main_ruleset": MAIN_RULESET_NAME,
         "required_statuses": required_statuses,
-        "release_tag_environment": RELEASE_TAG_ENVIRONMENT,
         "pypi_environment": PYPI_ENVIRONMENT,
     }
 
@@ -614,12 +550,12 @@ def _first_parent_commits(start: str, end: str) -> list[str]:
     ]
 
 
-def _require_prior_release_bridge(anchor: str) -> None:
+def _require_prior_release_bridge(release_commit: str) -> list[str]:
     prior_release = _require_annotated_tag(PRIOR_RELEASE_TAG)
-    bridge = _first_parent_commits(prior_release, anchor)
-    if bridge != [PRIOR_POST_RELEASE_DOC_COMMIT, anchor]:
+    lineage = _first_parent_commits(prior_release, release_commit)
+    if not lineage or lineage[0] != PRIOR_POST_RELEASE_DOC_COMMIT:
         raise ProvenanceError(
-            "trusted bootstrap must directly follow the reviewed post-release bridge"
+            "release lineage must start with the known post-release documentation bridge"
         )
     if _commit_parent(PRIOR_POST_RELEASE_DOC_COMMIT) != prior_release:
         raise ProvenanceError("post-release documentation commit has the wrong parent")
@@ -641,26 +577,32 @@ def _require_prior_release_bridge(anchor: str) -> None:
         raise ProvenanceError(
             f"post-release bridge must be documentation-only; changed={changed}"
         )
-    if _commit_parent(anchor) != PRIOR_POST_RELEASE_DOC_COMMIT:
-        raise ProvenanceError("trusted bootstrap has an unexpected parent")
+    if len(lineage) < 4:
+        raise ProvenanceError(
+            "release lineage must include bootstrap, production, and evidence commits"
+        )
+    return lineage[1:]
 
 
-def _require_trust_files_unchanged(anchor: str, release_commit: str) -> None:
+def _require_security_bootstrap(parent: str, commit: str) -> None:
     changed = [
         line
         for line in _git_capture(
             "diff",
             "--name-only",
-            anchor,
-            release_commit,
-            "--",
-            *TRUSTED_RELEASE_FILES,
+            parent,
+            commit,
         ).splitlines()
         if line
     ]
-    if changed:
+    missing = sorted(set(BOOTSTRAP_REQUIRED_FILES) - set(changed))
+    if missing:
         raise ProvenanceError(
-            f"trusted release controller changed after bootstrap: {changed}"
+            f"security bootstrap is missing required files: {missing}"
+        )
+    if any(path.startswith(("forward_netbox/", "development/")) for path in changed):
+        raise ProvenanceError(
+            "security bootstrap must not contain production runtime changes"
         )
 
 
@@ -675,29 +617,6 @@ def _require_release_on_main_lineage(release_commit: str) -> str:
     return current_main
 
 
-def verify_trusted_anchor_candidate(
-    anchor_commit: str,
-    reviewer: str,
-    token: str,
-) -> dict:
-    _require_prior_release_bridge(anchor_commit)
-    _require_verified_commit(anchor_commit, token)
-    pull = _require_reviewed_main_pr(
-        anchor_commit,
-        reviewer,
-        token,
-        require_trusted_status=False,
-    )
-    for workflow_path in REQUIRED_WORKFLOWS:
-        _require_successful_workflow(anchor_commit, workflow_path, token)
-    return {
-        "trusted_anchor": anchor_commit,
-        "pull_request": pull["number"],
-        "reviewer": reviewer,
-        "workflows": list(REQUIRED_WORKFLOWS),
-    }
-
-
 def verify_release_commit_provenance(
     release_commit: str,
     version: str,
@@ -708,14 +627,12 @@ def verify_release_commit_provenance(
     production_commit = _commit_parent(release_commit)
     plan = _require_release_plan_only(production_commit, release_commit, version)
 
-    anchor = _require_annotated_tag(TRUSTED_ANCHOR_TAG)
-    _require_prior_release_bridge(anchor)
-    _require_trust_files_unchanged(anchor, release_commit)
-    reviewed_commits = [anchor, *_first_parent_commits(anchor, release_commit)]
+    reviewed_commits = _require_prior_release_bridge(release_commit)
     if reviewed_commits[-2:] != [production_commit, release_commit]:
         raise ProvenanceError(
             "release must end with the production and evidence pull requests"
         )
+    _require_security_bootstrap(PRIOR_POST_RELEASE_DOC_COMMIT, reviewed_commits[0])
 
     for index, commit in enumerate(reviewed_commits):
         _require_verified_commit(commit, token)
@@ -731,7 +648,7 @@ def verify_release_commit_provenance(
     return {
         "release_commit": release_commit,
         "production_commit": production_commit,
-        "trusted_anchor": anchor,
+        "security_bootstrap_commit": reviewed_commits[0],
         "reviewed_commits": reviewed_commits,
         "release_plan": plan,
         "reviewer": reviewer,
@@ -766,11 +683,7 @@ def main() -> int:
     if os.environ.get("GITHUB_REPOSITORY", GITHUB_REPOSITORY) != GITHUB_REPOSITORY:
         raise SystemExit(f"release must run in {GITHUB_REPOSITORY}")
     if args.controls_only:
-        verify_github_release_controls(
-            args.reviewer,
-            token,
-            require_trusted_status=True,
-        )
+        verify_github_release_controls(args.reviewer, token)
         print("GitHub release controls verification passed.")
     else:
         verify_release_provenance(args.tag, args.reviewer, token)

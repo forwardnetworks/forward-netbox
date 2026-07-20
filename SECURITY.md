@@ -79,7 +79,7 @@ platform baseline.
   fork PR objects without checking out or executing candidate code, then posts
   an authenticated status on the exact candidate SHA. Release publication
   requires two separately reviewed squash merges: the production tree and an
-  evidence-only child. The tag workflow verifies both GitHub-signed main
+  evidence-only child. The release workflow verifies both GitHub-signed main
   commits, final-SHA approvals by the independent maintainer, authenticated
   trusted-scan statuses, and exact successful CI/CodeQL workflow identities
   before the protected PyPI environment can publish.
