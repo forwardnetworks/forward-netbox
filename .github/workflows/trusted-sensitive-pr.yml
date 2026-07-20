@@ -27,12 +27,20 @@ jobs:
           ref: ${{ github.event.pull_request.base.sha }}
       - name: Fetch candidate objects without checking them out
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          git fetch --no-tags \
+          auth_header="$(
+            printf 'x-access-token:%s' "${GH_TOKEN}" | base64 --wrap=0
+          )"
+          extraheader="http.https://github.com/.extraheader"
+          git -c \
+            "${extraheader}=AUTHORIZATION: basic ${auth_header}" \
+            fetch --no-tags \
             https://github.com/forwardnetworks/forward-netbox.git \
             "pull/${PR_NUMBER}/head"
+          unset auth_header extraheader
           test "$(git rev-parse FETCH_HEAD)" = "${PR_HEAD_SHA}"
       - name: Scan candidate with trusted base code and private patterns
         id: scan

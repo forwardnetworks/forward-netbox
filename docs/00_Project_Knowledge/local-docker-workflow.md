@@ -2,6 +2,20 @@
 
 The development stack runs NetBox, Postgres, Redis, and workers through `development/docker-compose.yml`.
 
+PostgreSQL, Redis, Django, and API token pepper values are unique to each clone.
+The first `invoke` task that uses Docker Compose creates them under the ignored
+`development/secrets/` directory with mode `0600`; existing files are never
+replaced. For direct Docker Compose commands, generate them first:
+
+```bash
+python scripts/generate_development_secrets.py
+```
+
+Never copy these files into Git, logs, support bundles, or CI variables. To
+rotate a development stack, stop it, remove its development-only volumes,
+remove `development/secrets/`, and start it again. Rotation without resetting
+the Postgres volume will make the existing database inaccessible.
+
 ## Common Commands
 
 ```bash
