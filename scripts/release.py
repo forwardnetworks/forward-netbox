@@ -265,6 +265,14 @@ def _capture(cmd: list[str]) -> str:
     return result.stdout.strip()
 
 
+def _capture_required(cmd: list[str], *, purpose: str) -> str:
+    """Capture a required command without exposing arguments or stderr."""
+    result = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise ReleaseError(f"{purpose} failed with exit code {result.returncode}")
+    return result.stdout.strip()
+
+
 def _verify_live_release_controls() -> None:
     token = _capture(["gh", "auth", "token"])
     if not token:
@@ -329,20 +337,24 @@ def wait_for_required_workflows(
     for _ in range(max_polls):
         incomplete: list[str] = []
         for workflow_path in REQUIRED_RELEASE_WORKFLOWS:
-            raw = _capture(
+            workflow_identifier = Path(workflow_path).name
+            raw = _capture_required(
                 [
                     "gh",
                     "api",
                     "--method",
                     "GET",
-                    f"repos/{GITHUB_REPOSITORY}/actions/workflows/{workflow_path}/runs",
+                    "repos/"
+                    f"{GITHUB_REPOSITORY}/actions/workflows/"
+                    f"{workflow_identifier}/runs",
                     "-f",
                     f"head_sha={expected_commit}",
                     "-f",
                     f"event={expected_event}",
                     "-f",
                     "per_page=100",
-                ]
+                ],
+                purpose=f"GitHub {workflow_identifier} run query",
             )
             try:
                 payload = json.loads(raw) if raw else {}
@@ -528,7 +540,7 @@ def wait_for_release_workflow(
     tag = f"v{version}"
     commit = _capture(["git", "rev-list", "-n", "1", tag])
     for _ in range(max_polls):
-        raw = _capture(
+        raw = _capture_required(
             [
                 "gh",
                 "api",
@@ -541,7 +553,8 @@ def wait_for_release_workflow(
                 "event=push",
                 "-f",
                 "per_page=100",
-            ]
+            ],
+            purpose="GitHub release workflow run query",
         )
         try:
             payload = json.loads(raw) if raw else {}

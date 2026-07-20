@@ -33,6 +33,25 @@ class RunTest(unittest.TestCase):
         self.assertNotIn(secret, output.getvalue())
         self.assertNotIn(secret, str(error.exception))
 
+    def test_required_capture_redacts_failed_command(self):
+        secret = "secret-command-argument"
+        result = release.subprocess.CompletedProcess([], 22, stdout="", stderr=secret)
+
+        with (
+            patch.object(release.subprocess, "run", return_value=result),
+            self.assertRaises(release.ReleaseError) as error,
+        ):
+            release._capture_required(
+                ["gh", "api", "--field", secret],
+                purpose="GitHub workflow query",
+            )
+
+        self.assertNotIn(secret, str(error.exception))
+        self.assertEqual(
+            str(error.exception),
+            "GitHub workflow query failed with exit code 22",
+        )
+
 
 class BumpVersionTest(unittest.TestCase):
     def test_bumps_single_assignment(self):
@@ -388,7 +407,9 @@ class RequiredReleaseWorkflowTest(unittest.TestCase):
             )
         ]
 
-        with patch.object(release, "_capture", side_effect=payloads) as capture:
+        with patch.object(
+            release, "_capture_required", side_effect=payloads
+        ) as capture:
             self.assertTrue(
                 release.wait_for_required_workflows(
                     commit,
@@ -399,6 +420,16 @@ class RequiredReleaseWorkflowTest(unittest.TestCase):
 
         sleep.assert_not_called()
         self.assertEqual(capture.call_count, 2)
+        first_command = capture.call_args_list[0].args[0]
+        self.assertIn(
+            "repos/forwardnetworks/forward-netbox/actions/workflows/ci.yml/runs",
+            first_command,
+        )
+        self.assertNotIn(
+            "repos/forwardnetworks/forward-netbox/actions/workflows/"
+            ".github/workflows/ci.yml/runs",
+            first_command,
+        )
 
     @patch("time.sleep")
     def test_required_workflows_wait_for_nonterminal_run(self, sleep):
@@ -418,7 +449,7 @@ class RequiredReleaseWorkflowTest(unittest.TestCase):
 
         with patch.object(
             release,
-            "_capture",
+            "_capture_required",
             side_effect=[
                 ci_pending,
                 codeql_complete,
@@ -451,7 +482,7 @@ class RequiredReleaseWorkflowTest(unittest.TestCase):
             ),
         )
 
-        with patch.object(release, "_capture", return_value=payload):
+        with patch.object(release, "_capture_required", return_value=payload):
             self.assertFalse(
                 release.wait_for_required_workflows(
                     commit,
@@ -474,7 +505,7 @@ class RequiredReleaseWorkflowTest(unittest.TestCase):
             )
         )
 
-        with patch.object(release, "_capture", return_value=payload):
+        with patch.object(release, "_capture_required", return_value=payload):
             self.assertFalse(
                 release.wait_for_required_workflows(
                     commit,
@@ -510,6 +541,43 @@ class RequiredReleaseWorkflowTest(unittest.TestCase):
             self.assertRaisesRegex(release.ReleaseError, "HEAD changed after CI"),
         ):
             release._assert_release_head("2.6.0", expected)
+
+    @patch("time.sleep")
+    def test_release_workflow_waiter_uses_checked_exact_query(self, sleep):
+        commit = "e" * 40
+        payload = self._payload(
+            {
+                "id": 101,
+                "path": ".github/workflows/release.yml",
+                "head_sha": commit,
+                "head_branch": "v2.6.0",
+                "event": "push",
+                "status": "completed",
+                "conclusion": "success",
+            }
+        )
+
+        with (
+            patch.object(release, "_capture", return_value=commit),
+            patch.object(
+                release,
+                "_capture_required",
+                return_value=payload,
+            ) as capture,
+        ):
+            self.assertEqual(
+                release.wait_for_release_workflow("2.6.0", max_polls=1),
+                "success",
+            )
+
+        sleep.assert_not_called()
+        command = capture.call_args.args[0]
+        self.assertIn(
+            "repos/forwardnetworks/forward-netbox/actions/workflows/"
+            "release.yml/runs",
+            command,
+        )
+        self.assertIn(f"head_sha={commit}", command)
 
 
 if __name__ == "__main__":
