@@ -42,6 +42,12 @@ platform baseline.
 
 ## Scope and handling notes
 
+- **Development service credentials.** The repository contains no shared
+  PostgreSQL, Redis, Django, or API token pepper values. Development and CI
+  create unique, ignored files under `development/secrets/` and mount them
+  through Docker Compose secrets. The generator preserves existing files,
+  rejects links and permissive modes, and never prints values. Do not copy this
+  directory into build contexts, support bundles, or Git.
 - **Forward credential at rest.** The Forward API password is **encrypted at rest**
   with Fernet, using a key derived from Django's `SECRET_KEY`, before it is stored
   in the `ForwardSource` parameters; it is also masked in every UI/API display and
