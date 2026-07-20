@@ -586,6 +586,18 @@ class CheckHarnessTrustedTagControllerTest(unittest.TestCase):
 workflow_dispatch:
 if: github.ref == 'refs/heads/main'
 environment: release-tag
+verify_only:
+uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+app: secrets.RELEASE_CONTROL_APP_ID
+key: secrets.RELEASE_CONTROL_APP_PRIVATE_KEY
+repositories: ${{ github.event.repository.name }}
+permission-actions: read
+permission-administration: write
+permission-contents: read
+permission-environments: read
+permission-pull-requests: read
+permission-statuses: read
+GH_TOKEN: ${{ steps.release-control-token.outputs.token }}
 secret: secrets.RELEASE_TAG_DEPLOY_KEY
 run: python -m scripts.authorize_trusted_tag
 push: git push "git@github.com:${GITHUB_REPOSITORY}.git" "refs/tags/${TAG_NAME}"
@@ -646,6 +658,29 @@ TRUSTED_RELEASE_FILES = ("scripts/authorize_trusted_tag.py", "scripts/release.py
         self.assertTrue(
             any(
                 "environment: release-tag" in failure
+                for failure in self._check(workflow=workflow)
+            )
+        )
+
+    def test_automatic_github_token_for_authorizer_fails(self):
+        workflow = self.WORKFLOW.replace(
+            "GH_TOKEN: ${{ steps.release-control-token.outputs.token }}",
+            "GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}",
+        )
+
+        self.assertTrue(
+            any(
+                "release-control-token" in failure
+                for failure in self._check(workflow=workflow)
+            )
+        )
+
+    def test_release_control_contents_write_fails(self):
+        workflow = self.WORKFLOW + "\npermission-contents: write\n"
+
+        self.assertTrue(
+            any(
+                "must not write contents" in failure
                 for failure in self._check(workflow=workflow)
             )
         )

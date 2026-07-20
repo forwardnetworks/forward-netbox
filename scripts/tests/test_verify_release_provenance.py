@@ -720,6 +720,7 @@ class GitHubReleaseControlsTest(unittest.TestCase):
             "actions": {"enabled": True, "sha_pinning_required": True},
             "rulesets": rulesets,
             "environment": environment,
+            "release_tag_secrets": sorted(provenance.RELEASE_TAG_REQUIRED_SECRETS),
         }
 
     def _github(self, payloads):
@@ -760,6 +761,15 @@ class GitHubReleaseControlsTest(unittest.TestCase):
                     else {"name": "v*", "type": "tag"}
                 )
                 return {"total_count": 1, "branch_policies": [policy]}
+            if endpoint == (
+                f"environments/{provenance.RELEASE_TAG_ENVIRONMENT}/secrets"
+            ):
+                return {
+                    "total_count": len(payloads["release_tag_secrets"]),
+                    "secrets": [
+                        {"name": name} for name in payloads["release_tag_secrets"]
+                    ],
+                }
             if endpoint.startswith("environments/"):
                 name = endpoint.split("/")[1]
                 return {"name": name, **copy.deepcopy(payloads["environment"])}
@@ -825,6 +835,20 @@ class GitHubReleaseControlsTest(unittest.TestCase):
         payloads["environment"]["can_admins_bypass"] = True
 
         with self.assertRaisesRegex(provenance.ProvenanceError, "administrator"):
+            self._verify(payloads)
+
+    def test_rejects_missing_release_control_app_secret(self):
+        payloads = self._payloads()
+        payloads["release_tag_secrets"].remove("RELEASE_CONTROL_APP_PRIVATE_KEY")
+
+        with self.assertRaisesRegex(provenance.ProvenanceError, "secrets"):
+            self._verify(payloads)
+
+    def test_rejects_extra_release_tag_environment_secret(self):
+        payloads = self._payloads()
+        payloads["release_tag_secrets"].append("UNUSED_PRIVILEGED_SECRET")
+
+        with self.assertRaisesRegex(provenance.ProvenanceError, "secrets"):
             self._verify(payloads)
 
 

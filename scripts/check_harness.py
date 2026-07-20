@@ -782,6 +782,18 @@ def _check_trusted_tag_controller(failures: list[str]) -> None:
         "workflow_dispatch:",
         "github.ref == 'refs/heads/main'",
         "environment: release-tag",
+        "verify_only:",
+        "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1",
+        "secrets.RELEASE_CONTROL_APP_ID",
+        "secrets.RELEASE_CONTROL_APP_PRIVATE_KEY",
+        "repositories: ${{ github.event.repository.name }}",
+        "permission-actions: read",
+        "permission-administration: write",
+        "permission-contents: read",
+        "permission-environments: read",
+        "permission-pull-requests: read",
+        "permission-statuses: read",
+        "GH_TOKEN: ${{ steps.release-control-token.outputs.token }}",
         "secrets.RELEASE_TAG_DEPLOY_KEY",
         "python -m scripts.authorize_trusted_tag",
         'git push "git@github.com:${GITHUB_REPOSITORY}.git"',
@@ -789,6 +801,8 @@ def _check_trusted_tag_controller(failures: list[str]) -> None:
     ):
         if fragment not in texts["workflow"]:
             failures.append(f"trusted tag workflow must contain: {fragment}")
+    if "permission-contents: write" in texts["workflow"]:
+        failures.append("release-control GitHub App token must not write contents")
     for fragment in (
         'os.environ.get("GITHUB_REF") != "refs/heads/main"',
         "verify_github_release_controls",

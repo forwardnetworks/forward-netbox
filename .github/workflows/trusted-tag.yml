@@ -10,6 +10,11 @@ name: Create trusted release tag
         description: Exact protected-main commit authorized for this tag
         required: true
         type: string
+      verify_only:
+        description: Verify authorization without creating the tag
+        required: false
+        default: false
+        type: boolean
 permissions:
   actions: read
   contents: read
@@ -32,6 +37,22 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
           ref: ${{ github.sha }}
+      - name: Mint repository-scoped release-control token
+        id: release-control-token
+        # yamllint disable rule:line-length
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        # yamllint enable rule:line-length
+        with:
+          app-id: ${{ secrets.RELEASE_CONTROL_APP_ID }}
+          private-key: ${{ secrets.RELEASE_CONTROL_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-actions: read
+          permission-administration: write
+          permission-contents: read
+          permission-environments: read
+          permission-pull-requests: read
+          permission-statuses: read
       - name: Fetch immutable provenance inputs
         run: |
           git fetch --no-tags origin main:refs/remotes/origin/main
@@ -42,16 +63,17 @@ jobs:
           fi
       - name: Authorize exact tag target
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.release-control-token.outputs.token }}
         run: |
           python -m scripts.authorize_trusted_tag \
             --tag "${TAG_NAME}" \
             --expected-sha "${EXPECTED_SHA}" \
             --reviewer brandonheller
       - name: Install environment-scoped tag identity
+        if: ${{ ! inputs.verify_only }}
         env:
           RELEASE_TAG_DEPLOY_KEY: ${{ secrets.RELEASE_TAG_DEPLOY_KEY }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           test -n "${RELEASE_TAG_DEPLOY_KEY}"
           install -d -m 0700 "${HOME}/.ssh"
@@ -67,6 +89,7 @@ jobs:
             > "${HOME}/.ssh/config"
           chmod 0600 "${HOME}/.ssh/config"
       - name: Create immutable annotated tag
+        if: ${{ ! inputs.verify_only }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email \

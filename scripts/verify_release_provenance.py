@@ -46,6 +46,11 @@ ANCHOR_TAG_CREATION_RULESET = "security-bootstrap-tag-creation"
 ANCHOR_TAG_INTEGRITY_RULESET = "security-bootstrap-tag-integrity"
 RELEASE_TAG_ENVIRONMENT = "release-tag"
 PYPI_ENVIRONMENT = "pypi"
+RELEASE_TAG_REQUIRED_SECRETS = {
+    "RELEASE_CONTROL_APP_ID",
+    "RELEASE_CONTROL_APP_PRIVATE_KEY",
+    "RELEASE_TAG_DEPLOY_KEY",
+}
 BASE_REQUIRED_STATUS_CHECKS = {
     ("Validate NetBox v4.6.5", GITHUB_ACTIONS_APP_ID),
     ("CodeQL python", GITHUB_ACTIONS_APP_ID),
@@ -238,6 +243,7 @@ def _require_environment(
     policy_name: str,
     policy_type: str,
     reviewer: str,
+    exact_secret_names: set[str] | None = None,
 ) -> None:
     encoded_name = urllib.parse.quote(name, safe="")
     environment = _github_json(f"environments/{encoded_name}", token)
@@ -283,6 +289,18 @@ def _require_environment(
         "type": actual_policies[0].get("type"),
     } != {"name": policy_name, "type": policy_type}:
         raise ProvenanceError(f"environment {name!r} deployment policy is invalid")
+    if exact_secret_names is not None:
+        secrets = _github_json(
+            f"environments/{encoded_name}/secrets?per_page=100",
+            token,
+        )
+        if not isinstance(secrets, dict):
+            raise ProvenanceError(f"GitHub returned invalid secrets for {name!r}")
+        actual_secret_names = {
+            str(secret.get("name") or "") for secret in secrets.get("secrets") or []
+        }
+        if actual_secret_names != exact_secret_names:
+            raise ProvenanceError(f"environment {name!r} secrets are invalid")
 
 
 def verify_github_release_controls(
@@ -345,6 +363,7 @@ def verify_github_release_controls(
         policy_name="main",
         policy_type="branch",
         reviewer=reviewer,
+        exact_secret_names=RELEASE_TAG_REQUIRED_SECRETS,
     )
     _require_environment(
         token,

@@ -23,8 +23,13 @@ Use this playbook for reviewed production releases.
   byte-identical to that anchor.
 - Environment `release-tag` is restricted to protected `main`, requires the
   independent reviewer with self-review and administrator bypass disabled, and
-  is the only location of `RELEASE_TAG_DEPLOY_KEY`. Environment `pypi` accepts
-  only `v*` tags and has the same independent approval and no-bypass controls.
+  is the only location of `RELEASE_TAG_DEPLOY_KEY`,
+  `RELEASE_CONTROL_APP_ID`, and `RELEASE_CONTROL_APP_PRIVATE_KEY`. The GitHub
+  App is installed only on this repository. Its minted token has Actions,
+  Contents, Environments, pull-request, and status read access plus
+  Administration write solely because GitHub hides ruleset bypass actors from
+  read-only callers. It has no Contents write. Environment `pypi` accepts only
+  `v*` tags and has the same independent approval and no-bypass controls.
 - `.github/CODEOWNERS` names a valid accountable owner, the repository-level
   `FORWARD_SENSITIVE_PATTERNS` Actions secret contains at least one private
   pattern, and the `FORWARD_SENSITIVE_HISTORY_BASELINE` repository variable
@@ -39,6 +44,10 @@ Use this playbook for reviewed production releases.
   repository settings, required authenticated statuses, all four tag rulesets,
   both deployment environments and policies, and Actions SHA-pinning setting
   from GitHub before it authorizes a tag.
+- The frozen workflow mints a short-lived, repository-scoped GitHub App token
+  for that preflight. The automatic Actions token is not accepted because it
+  cannot read repository Actions administration or complete ruleset bypass
+  data. The deploy key remains the only tag-writing identity.
 
 For the one-time 2.6 trust bootstrap, merge the bootstrap PR and create
 `security-bootstrap-2.6` while the four public CI/CodeQL statuses are required.
@@ -126,9 +135,11 @@ invoke scale-soak --runs 3 --max-changes-per-staging-item 10000
    more. It checks the authorization binding and exact main-push workflows,
    then dispatches `.github/workflows/trusted-tag.yml` from the exact protected
    `main` commit. After independent environment approval, that frozen workflow
-   re-proves the bootstrap or release lineage and uses the environment-only
-   deploy key to create the immutable annotated tag. Human credentials cannot
-   push it. A concurrent protected-main advance does not invalidate an already
+   mints the short-lived release-control App token, re-proves the bootstrap or
+   release lineage, and uses the environment-only deploy key to create the
+   immutable annotated tag. The App token cannot write Contents, and human
+   credentials cannot push the tag. A concurrent protected-main advance does
+   not invalidate an already
    authorized ancestor tag; divergence still fails closed. The tag workflow
    independently proves that both the production and
    evidence commits came from approved main PRs. It executes the provenance
