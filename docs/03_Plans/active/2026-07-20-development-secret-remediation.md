@@ -45,6 +45,9 @@ repository and prevent them from returning.
 - Pull request 62 was squash-merged after two independent NetBox 4.6.5 CI runs,
   all 1,224 plugin tests, scenario tests, release-artifact validation, and all
   CodeQL checks passed on the exact candidate SHA.
+- Pull request 63 then proved the repaired trusted scanner, neutralized every
+  current-tree private-pattern finding, and passed the same two independent
+  NetBox 4.6.5 CI runs plus all CodeQL checks before squash merge.
 - A mode-0600 rollback bundle was verified before the rewrite. The targeted
   `git-filter-repo` rewrite completed with strict Git object validation and no
   orphaned LFS objects.
@@ -54,9 +57,10 @@ repository and prevent them from returning.
   no bypass actors, and version tags again prohibit deletion and force updates.
 - A fresh normal clone contains 11 branches and 145 tags. Strict Git validation
   passes, the pre-rewrite and post-rewrite current trees are identical, and a
-  redacted Gitleaks history scan reports zero findings across 797 reachable
-  commits.
-- GitHub reports no forks and no open native secret-scanning alerts. Sixty-one
+  redacted Gitleaks history scan reports zero findings across 798 reachable
+  commits. A separate private-pattern scan reports zero matches across 4,569
+  reachable blobs.
+- GitHub reports no forks and no open native secret-scanning alerts. Sixty-two
   immutable pull-request head refs remain for GitHub Support to dereference and
   garbage-collect; no client-side push can modify those server-owned refs.
 - The repaired trusted scanner exposed pre-existing customer labels in public
