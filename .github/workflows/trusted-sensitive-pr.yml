@@ -1,0 +1,101 @@
+name: Trusted sensitive-content PR scan
+"on":
+  pull_request_target:
+    types:
+      - opened
+      - reopened
+      - synchronize
+permissions:
+  contents: read
+  pull-requests: read
+  statuses: write
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+jobs:
+  sensitive-content:
+    name: Trusted sensitive-content controller
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Check out trusted base revision
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.base.sha }}
+      - name: Fetch candidate objects without checking them out
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          git fetch --no-tags \
+            https://github.com/forwardnetworks/forward-netbox.git \
+            "pull/${PR_NUMBER}/head"
+          test "$(git rev-parse FETCH_HEAD)" = "${PR_HEAD_SHA}"
+      - name: Scan candidate with trusted base code and private patterns
+        id: scan
+        env:
+          FORWARD_SENSITIVE_PATTERNS: ${{ secrets.FORWARD_SENSITIVE_PATTERNS }}
+          FORWARD_SENSITIVE_BINARY_HISTORY_ALLOWLIST: >-
+            ${{ secrets.FORWARD_SENSITIVE_BINARY_HISTORY_ALLOWLIST }}
+          FORWARD_SENSITIVE_HISTORY_BASELINE: >-
+            ${{ vars.FORWARD_SENSITIVE_HISTORY_BASELINE }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          python scripts/check_sensitive_content.py \
+            --rev-list "${PR_BASE_SHA}..${PR_HEAD_SHA}" \
+            --git-tree "${PR_HEAD_SHA}" \
+            --ref-name "${PR_HEAD_REF}" \
+            --require-env-patterns --require-baseline-env
+      - name: Publish trusted candidate status
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_ID: ${{ github.run_id }}
+          SERVER_URL: ${{ github.server_url }}
+          SCAN_OUTCOME: ${{ steps.scan.outcome }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          success = os.environ["SCAN_OUTCOME"] == "success"
+          verb = "accepted" if success else "rejected"
+          payload = json.dumps(
+              {
+                  "state": "success" if success else "failure",
+                  "context": "Trusted sensitive-content scan",
+                  "description": (
+                      f"Trusted scanner {verb} PR #{os.environ['PR_NUMBER']}"
+                  ),
+                  "target_url": (
+                      f"{os.environ['SERVER_URL']}/"
+                      f"{os.environ['GITHUB_REPOSITORY']}/actions/runs/"
+                      f"{os.environ['RUN_ID']}"
+                  ),
+              }
+          ).encode()
+          request = urllib.request.Request(
+              f"{os.environ['GITHUB_API_URL']}/repos/"
+              f"{os.environ['GITHUB_REPOSITORY']}/statuses/"
+              f"{os.environ['PR_HEAD_SHA']}",
+              data=payload,
+              method="POST",
+              headers={
+                  "Accept": "application/vnd.github+json",
+                  "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                  "Content-Type": "application/json",
+                  "X-GitHub-Api-Version": "2022-11-28",
+              },
+          )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              if response.status != 201:
+                  raise SystemExit(
+                      f"unexpected commit-status response: {response.status}"
+                  )
+          PY

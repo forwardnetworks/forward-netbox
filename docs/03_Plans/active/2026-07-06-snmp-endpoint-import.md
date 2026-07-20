@@ -6,13 +6,13 @@
 Let operators import Forward **endpoints** — generic SSH/SNMP devices Forward
 collects but does not model as first-class `network.devices` (e.g. Avocent
 console servers, which carry the same device tags) — into NetBox as devices.
-Reported by the design partner: scope-a-tagged Avocents were not syncing.
+Reported by the design partner: include-tagged console servers were not syncing.
 
 ## Constraints
 - Opt-in (default off); zero change to existing device sync when off.
 - Reuse the existing dcim.device pipeline + device-tag scope (endpoints carry
   `tagNames`, so the same include/exclude/match applies).
-- No new customer data committed; validated against the validation-org demo org only.
+- No new customer data committed; validated against a private demo organization.
 
 ## Touched Surfaces
 - `forward_netbox/queries/forward_devices.nqe` — union a `network.endpoints`
@@ -39,12 +39,14 @@ The endpoint branch is a second `foreach` unioned into the device query with
 `+`; `where sync_endpoints` makes it emit nothing when off (NQE has no empty-list
 literal). SNMP scalars are read with `max(foreach o … where requestedOid == …
 select max(foreach e in o.rawOidEntries select e.rawValue))`. The whole query
-was validated live against the validation-org org (155541): 5123 rows = all devices + 121
+was validated live against a private validation organization: 5123 rows = all
+devices + 121
 Avocent endpoints (manufacturer "Avocent", model "Avocent ACS 8000"/"Cyclades
 ACS 6000", role "Console Server", tag-scoped).
 
 ## Validation
-Live NQE run against validation-org; `test_endpoints_import`; `test_query_registry`,
+Live NQE run against a private demo organization; `test_endpoints_import`;
+`test_query_registry`,
 `test_query_binding`, `test_forms` green; full Django suite; harness + sensitive.
 
 ## Rollback

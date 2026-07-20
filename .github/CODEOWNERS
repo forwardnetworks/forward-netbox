@@ -1,16 +1,14 @@
-# Code owners for forward-netbox. GitHub requests review from the owner(s) below
-# on every pull request touching the matched paths.
-#
-# ACTION REQUIRED: replace the placeholder team slug with the real maintaining
-# GitHub team/user (e.g. @forwardnetworks/<team> or @<username>). An unresolved
-# owner only produces a warning; it does not block, but review will not be
-# auto-requested until it is valid.
+# Code owners for forward-netbox. GitHub requests review from the accountable
+# maintainer on every pull request touching the matched paths.
 
-* @forwardnetworks/forward-netbox-maintainers
+* @captainpacket
 
 # High-risk surfaces — keep owned explicitly even if the global owner changes.
-/forward_netbox/utilities/       @forwardnetworks/forward-netbox-maintainers
-/forward_netbox/migrations/      @forwardnetworks/forward-netbox-maintainers
-/scripts/                        @forwardnetworks/forward-netbox-maintainers
-/.github/                        @forwardnetworks/forward-netbox-maintainers
-/pyproject.toml                  @forwardnetworks/forward-netbox-maintainers
+/forward_netbox/utilities/       @captainpacket
+/forward_netbox/migrations/      @captainpacket
+/scripts/                        @captainpacket
+/.github/                        @captainpacket
+/.sensitive-binary-allowlist     @captainpacket
+/.sensitive-history-baseline     @captainpacket
+/pyproject.toml                  @captainpacket
+/requirements-release.*         @captainpacket
