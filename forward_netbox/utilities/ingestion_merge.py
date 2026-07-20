@@ -20,6 +20,7 @@ from ..choices import ForwardSourceStatusChoices
 from ..choices import ForwardSyncStatusChoices
 from ..exceptions import ForwardPartialMergeError
 from .job_queue import enqueue_forward_job
+from .runtime_guidance import effective_merge_job_timeout
 from .snapshot_freshness import latest_processed_catchup_decision
 
 
@@ -293,6 +294,9 @@ def enqueue_merge_job(
             )
             sync.status = ForwardSyncStatusChoices.QUEUED
             sync.__class__.objects.filter(pk=sync.pk).update(status=sync.status)
+            change_count = (
+                locked.branch.get_unmerged_changes().count() if locked.branch_id else 0
+            )
             job = enqueue_forward_job(
                 import_string("forward_netbox.jobs.merge_forwardingestion"),
                 name=f"{locked.name} Merge",
@@ -300,6 +304,7 @@ def enqueue_merge_job(
                 user=user,
                 remove_branch=remove_branch,
                 recovery_sync_job_pks=list(recovery_sync_job_pks or []),
+                job_timeout=effective_merge_job_timeout(change_count),
             )
             ingestion.__class__.objects.filter(pk=locked.pk).update(merge_job=job)
             ingestion.merge_job = job

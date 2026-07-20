@@ -3,6 +3,7 @@ from typing import Any
 
 from netbox_branching.contextvars import active_branch
 from netbox_branching.models import ChangeDiff
+from rq.timeouts import JobTimeoutException
 
 # Fields the bulk engines must set on CREATE but preserve on UPDATE, matching the
 # adapter's intent. Platform-map manufacturer values are authoritative in this
@@ -60,6 +61,8 @@ def _isolate_bulk_objects(
                     obj.save(force_insert=True)
                 else:
                     obj.save(update_fields=list(fields) if fields else None)
+        except JobTimeoutException:
+            raise
         except Exception as exc:  # noqa: BLE001 - isolate one row, keep the shard
             runner._record_issue(
                 model_string,
@@ -839,6 +842,8 @@ def _canonical_mac(value):
         eui = EUI(str(value))
         eui.dialect = mac_unix_expanded
         return str(eui).upper()
+    except JobTimeoutException:
+        raise
     except Exception:  # noqa: BLE001 - fall back to a stable normalized string
         return str(value).strip().upper()
 
@@ -1216,6 +1221,8 @@ def bulk_orm_apply_interface(runner, rows: list[dict[str, Any]]):
                 context=getattr(exc, "context", None),
                 defaults=getattr(exc, "defaults", None),
             )
+        except JobTimeoutException:
+            raise
         except (ForwardSearchError, Exception) as exc:  # noqa: BLE001
             forget_lookup_object(runner, cabled_interface)
             runner._mark_dependency_failed("dcim.interface", row)
@@ -1591,6 +1598,8 @@ def bulk_orm_apply_device(runner, rows: list[dict[str, Any]]):
                 context=getattr(exc, "context", None),
                 defaults=getattr(exc, "defaults", None),
             )
+        except JobTimeoutException:
+            raise
         except (ForwardSearchError, Exception) as exc:  # noqa: BLE001
             runner._mark_dependency_failed("dcim.device", row)
             runner.logger.increment_statistics("dcim.device", outcome="failed")
@@ -1799,6 +1808,8 @@ def bulk_orm_apply_device(runner, rows: list[dict[str, Any]]):
             outcome = ["applied"]
             row_outcomes.append(outcome)
             row_devices.append((row, existing, outcome))
+        except JobTimeoutException:
+            raise
         except Exception as exc:  # noqa: BLE001 - isolate one device, keep staging
             # e.g. a device deleted in main while the branch modifies it, or any
             # per-row validation conflict: record the issue + mark the dependency
@@ -2350,6 +2361,8 @@ def bulk_orm_apply_virtualchassis(runner, rows: list[dict[str, Any]]):
             vc = VirtualChassis(name=vc_name, domain=domain)
             try:
                 vc.full_clean()
+            except JobTimeoutException:
+                raise
             except Exception as exc:  # noqa: BLE001 - isolate one row
                 runner._record_issue(
                     "dcim.virtualchassis",
@@ -2370,6 +2383,8 @@ def bulk_orm_apply_virtualchassis(runner, rows: list[dict[str, Any]]):
             vc.domain = domain
             try:
                 vc.full_clean()
+            except JobTimeoutException:
+                raise
             except Exception as exc:  # noqa: BLE001 - isolate one row
                 vc.domain = previous_domain
                 if vc in create_vcs:
@@ -2716,6 +2731,8 @@ def bulk_orm_apply_tree_models(
                     with transaction.atomic():
                         obj.full_clean()
                         obj.save()
+                except JobTimeoutException:
+                    raise
                 except Exception as exc:  # noqa: BLE001 - isolate one row
                     runner.events_clearer.restore(pre_row_events)
                     runner._record_issue(
@@ -2759,6 +2776,8 @@ def bulk_orm_apply_tree_models(
                         existing.clean_fields()
                         existing.clean()
                         existing.save()
+            except JobTimeoutException:
+                raise
             except Exception as exc:  # noqa: BLE001 - isolate one row
                 runner.events_clearer.restore(pre_row_events)
                 existing.refresh_from_db()

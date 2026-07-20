@@ -295,6 +295,50 @@ class CheckHarnessComposeHealthProbeTest(unittest.TestCase):
         self.assertIn("no parseable netbox health probe", failures[0])
 
 
+class CheckHarnessWorkerAutoreloadTest(unittest.TestCase):
+    def _check(self, compose_text):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_root = Path(temp_dir)
+            path = repo_root / "development/docker-compose.yml"
+            path.parent.mkdir(parents=True)
+            path.write_text(compose_text, encoding="utf-8")
+            failures = []
+            with patch.object(check_harness, "REPO_ROOT", repo_root):
+                check_harness._check_worker_autoreload_contract(failures)
+        return failures
+
+    def test_container_runtime_expansion_passes(self):
+        failures = self._check(
+            "services:\n"
+            "  netbox-worker:\n"
+            "    environment:\n"
+            "      FORWARD_NETBOX_WORKER_AUTORELOAD: "
+            '"${FORWARD_NETBOX_WORKER_AUTORELOAD:-1}"\n'
+            "    command:\n"
+            "      - sh\n"
+            "      - -lc\n"
+            '      - \'if [ "$${FORWARD_NETBOX_WORKER_AUTORELOAD:-1}" = "1" ]; '
+            "then true; fi'\n"
+        )
+
+        self.assertEqual(failures, [])
+
+    def test_host_expansion_fails(self):
+        failures = self._check(
+            "services:\n"
+            "  netbox-worker:\n"
+            "    environment:\n"
+            "      FORWARD_NETBOX_WORKER_AUTORELOAD: '0'\n"
+            "    command:\n"
+            "      - sh\n"
+            "      - -lc\n"
+            '      - \'if [ "${FORWARD_NETBOX_WORKER_AUTORELOAD:-1}" = "1" ]; '
+            "then true; fi'\n"
+        )
+
+        self.assertEqual(len(failures), 2)
+
+
 class CheckHarnessDevelopmentSecretBoundaryTest(unittest.TestCase):
     def _check(self, files, tracked):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -323,7 +367,9 @@ class CheckHarnessDevelopmentSecretBoundaryTest(unittest.TestCase):
         failures = self._check(
             {
                 "development/.env": "NETBOX_VER=v4.6.5\n",
-                "development/env/netbox.env": "DB_PASSWORD=example\n",
+                "development/env/netbox.env": (
+                    "DB_PASSWORD=example\nRQ_DEFAULT_TIMEOUT=7200\n"
+                ),
             },
             ["development/.env", "development/env/netbox.env"],
         )
@@ -334,7 +380,9 @@ class CheckHarnessDevelopmentSecretBoundaryTest(unittest.TestCase):
 
     def test_generated_secret_compose_contract_passes(self):
         files = {
-            "development/env/netbox.env": "DB_HOST=postgres\n",
+            "development/env/netbox.env": (
+                "DB_HOST=postgres\nRQ_DEFAULT_TIMEOUT=7200\n"
+            ),
             "development/env/postgres.env": "POSTGRES_DB=netbox\n",
             "development/docker-compose.yml": (
                 "services:\n"
@@ -362,6 +410,123 @@ class CheckHarnessDevelopmentSecretBoundaryTest(unittest.TestCase):
         failures = self._check(files, files)
 
         self.assertEqual(failures, [])
+
+    def test_rejects_short_or_duplicate_worker_timeout(self):
+        files = {
+            "development/env/netbox.env": (
+                "RQ_DEFAULT_TIMEOUT=300\nRQ_DEFAULT_TIMEOUT=7200\n"
+            ),
+        }
+
+        failures = self._check(files, files)
+
+        self.assertEqual(len(failures), 1)
+        self.assertIn("RQ_DEFAULT_TIMEOUT=7200", failures[0])
+
+    def test_missing_worker_environment_is_rejected(self):
+        failures = self._check({}, [])
+
+        self.assertEqual(len(failures), 1)
+        self.assertIn("development/env/netbox.env must exist", failures[0])
+
+
+class CheckHarnessDevelopmentLoggingBoundaryTest(unittest.TestCase):
+    def _check(self, files):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_root = Path(temp_dir)
+            for relative_path, content in files.items():
+                path = repo_root / relative_path
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding="utf-8")
+            failures = []
+            with patch.object(check_harness, "REPO_ROOT", repo_root):
+                check_harness._check_development_logging_boundary(failures)
+        return failures
+
+    def test_info_logging_contract_passes(self):
+        failures = self._check(
+            {
+                "development/configuration/logging.py": (
+                    "from os import environ\n"
+                    'LOGLEVEL = environ.get("LOGLEVEL", "INFO")\n'
+                    "LOGGING = {\n"
+                    "    'handlers': {name: {'level': LOGLEVEL} for name in "
+                    "('console', 'netbox_file', 'forward_file')},\n"
+                    "    'loggers': {name: {'level': LOGLEVEL} for name in "
+                    "('django', 'django_auth_ldap', 'netbox', "
+                    "'netbox_branching', 'forward_netbox')},\n"
+                    "}\n"
+                ),
+                "development/docker-compose.override.yml": (
+                    "services:\n"
+                    "  netbox:\n"
+                    "    environment: {LOGLEVEL: INFO}\n"
+                    "  netbox-worker:\n"
+                    "    environment: {LOGLEVEL: INFO}\n"
+                ),
+            }
+        )
+
+        self.assertEqual(failures, [])
+
+    def test_debug_worker_or_handler_is_rejected(self):
+        failures = self._check(
+            {
+                "development/configuration/logging.py": (
+                    "from os import environ\n"
+                    'LOGLEVEL = environ.get("LOGLEVEL", "DEBUG")\n'
+                    "LOGGING = {\n"
+                    "    'handlers': {name: {'level': "
+                    "('DEBUG' if name == 'forward_file' else LOGLEVEL)} for name in "
+                    "('console', 'netbox_file', 'forward_file')},\n"
+                    "    'loggers': {name: {'level': LOGLEVEL} for name in "
+                    "('django', 'django_auth_ldap', 'netbox', "
+                    "'netbox_branching', 'forward_netbox')},\n"
+                    "}\n"
+                ),
+                "development/docker-compose.override.yml": (
+                    "services:\n"
+                    "  netbox:\n"
+                    "    environment: {LOGLEVEL: INFO}\n"
+                    "  netbox-worker:\n"
+                    "    environment: {LOGLEVEL: DEBUG}\n"
+                ),
+            }
+        )
+
+        self.assertEqual(len(failures), 4)
+
+    def test_missing_logging_files_are_rejected(self):
+        failures = self._check({})
+
+        self.assertEqual(len(failures), 2)
+
+    def test_hardcoded_info_levels_are_rejected(self):
+        failures = self._check(
+            {
+                "development/configuration/logging.py": (
+                    "from os import environ\n"
+                    'LOGLEVEL = environ.get("LOGLEVEL", "INFO")\n'
+                    "LOGGING = {\n"
+                    "    'handlers': {name: {'level': 'INFO'} for name in "
+                    "('console', 'netbox_file', 'forward_file')},\n"
+                    "    'loggers': {name: {'level': 'INFO'} for name in "
+                    "('django', 'django_auth_ldap', 'netbox', "
+                    "'netbox_branching', 'forward_netbox')},\n"
+                    "}\n"
+                ),
+                "development/docker-compose.override.yml": (
+                    "services:\n"
+                    "  netbox:\n"
+                    "    environment: {LOGLEVEL: INFO}\n"
+                    "  netbox-worker:\n"
+                    "    environment: {LOGLEVEL: INFO}\n"
+                ),
+            }
+        )
+
+        self.assertEqual(len(failures), 2)
+        self.assertTrue(all("LOGLEVEL=WARNING" in failure for failure in failures))
 
 
 class CheckHarnessGardeningDependencyTest(unittest.TestCase):

@@ -5,6 +5,8 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from rq.timeouts import JobTimeoutException
+
 from ..choices import FORWARD_SUPPORTED_MODELS
 from .model_contracts import architecture_default_coalesce_fields_for_model
 from .model_contracts import architecture_fetch_contract_for_model
@@ -878,6 +880,8 @@ def resolve_query_specs_for_client(specs: list[QuerySpec], client) -> list[Query
                         repository=repository,
                         directory="/",
                     )
+                except JobTimeoutException:
+                    raise
                 except Exception:
                     query_index = {}
                 if not isinstance(query_index, dict):

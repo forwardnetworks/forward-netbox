@@ -11,6 +11,7 @@ from django.db import close_old_connections
 from django.db import connection
 from django.db import connections
 from django.utils.text import slugify
+from rq.timeouts import JobTimeoutException
 
 from ..choices import FORWARD_OPTIONAL_MODELS
 from ..choices import ForwardApplyEngineChoices
@@ -412,6 +413,8 @@ class ForwardQueryFetcher:
         snapshot_metrics = {}
         try:
             snapshot_metrics = self.client.get_snapshot_metrics(snapshot_id)
+        except JobTimeoutException:
+            raise
         except Exception as exc:
             self.logger.log_warning(
                 "Unable to fetch Forward snapshot metrics for the selected snapshot: "
@@ -1164,6 +1167,8 @@ class ForwardQueryFetcher:
             for model_string in unresolved_models:
                 try:
                     resolved = resolve_model_specs(model_string)
+                except JobTimeoutException:
+                    raise
                 except Exception as exc:
                     spec_errors[model_string] = exc
                     continue
@@ -1195,6 +1200,8 @@ class ForwardQueryFetcher:
                 model_string = unresolved_models[index]
                 try:
                     resolved = future.result()
+                except JobTimeoutException:
+                    raise
                 except Exception as exc:
                     indexed_results[index] = (model_string, None, exc)
                     continue

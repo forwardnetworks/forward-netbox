@@ -17,6 +17,7 @@ from ipam.models import IPAddress
 from ipam.models import Prefix
 from ipam.models import VLAN
 from ipam.models import VRF
+from rq.timeouts import JobTimeoutException
 
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
@@ -27,6 +28,8 @@ from forward_netbox.utilities.apply_engine import BULK_ORM_ENABLED_MODELS
 from forward_netbox.utilities.apply_engine import BULK_ORM_ENABLED_MODELS_WITHOUT_SPECS
 from forward_netbox.utilities.apply_engine import select_apply_engine
 from forward_netbox.utilities.apply_engine_bulk import _serializer_prefetch_fields
+from forward_netbox.utilities.apply_engine_bulk import bulk_orm_apply_device
+from forward_netbox.utilities.apply_engine_bulk import bulk_orm_apply_interface
 from forward_netbox.utilities.apply_engine_bulk import bulk_orm_apply_simple_models
 
 
@@ -681,9 +684,6 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
         )
 
     def test_bulk_orm_interface_converts_indirect_cabled_lag_parent_atomically(self):
-        from forward_netbox.utilities.apply_engine_bulk import (
-            bulk_orm_apply_interface,
-        )
         from forward_netbox.utilities.sync import ForwardSyncRunner
 
         device, _ = self._device_with_interface()
@@ -732,6 +732,75 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
         self.assertIsNone(parent.cable)
         self.assertEqual(member.lag_id, parent.pk)
         self.assertFalse(Cable.objects.exists())
+
+    def test_bulk_orm_interface_delegate_propagates_job_timeout(self):
+        from forward_netbox.utilities.sync import ForwardSyncRunner
+
+        device, _ = self._device_with_interface()
+        remote_device = Device.objects.create(
+            name="timeout-remote",
+            device_type=device.device_type,
+            role=device.role,
+            site=device.site,
+        )
+        parent = Interface.objects.create(
+            device=device,
+            name="timeout-bond",
+            type="1000base-t",
+        )
+        remote = Interface.objects.create(
+            device=remote_device,
+            name="Ethernet1",
+            type="1000base-t",
+        )
+        cable = Cable.objects.create(a_terminations=[parent], b_terminations=[remote])
+        runner = ForwardSyncRunner(
+            sync=self.sync,
+            ingestion=None,
+            client=None,
+            logger_=Mock(),
+        )
+
+        with (
+            patch.object(
+                Cable,
+                "delete",
+                side_effect=JobTimeoutException("interface timed out"),
+            ),
+            self.assertRaisesRegex(JobTimeoutException, "interface timed out"),
+        ):
+            bulk_orm_apply_interface(
+                runner,
+                [
+                    {
+                        "device": device.name,
+                        "name": "timeout-member",
+                        "type": "1000base-t",
+                        "enabled": True,
+                        "lag": parent.name,
+                    }
+                ],
+            )
+
+        self.assertTrue(Cable.objects.filter(pk=cable.pk).exists())
+
+    def test_bulk_orm_device_delegate_propagates_job_timeout(self):
+        runner = self._runner()
+        runner._scope_matched_tags = {}
+
+        with (
+            patch(
+                "forward_netbox.utilities.sync_device.apply_dcim_device",
+                side_effect=JobTimeoutException("device timed out"),
+            ),
+            self.assertRaisesRegex(JobTimeoutException, "device timed out"),
+        ):
+            bulk_orm_apply_device(
+                runner,
+                [{"name": "timeout-device", "site": "missing-site"}],
+            )
+
+        runner._record_issue.assert_not_called()
 
     def test_bulk_orm_creates_and_updates_vrfs(self):
         self.sync.parameters["enable_bulk_orm"] = True

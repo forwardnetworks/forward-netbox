@@ -46,6 +46,7 @@ from netbox_branching.models import ChangeDiff
 from netbox_branching.signals import squash_dependency_graph_built
 from netbox_branching.utilities import _FILE_NOT_FOUND_EXCEPTIONS
 from netbox_branching.utilities import deactivate_branch
+from rq.timeouts import JobTimeoutException
 from utilities.serialization import deserialize_object
 
 # SQL chunk size handed to bulk_create (splits the multi-row INSERT).
@@ -901,6 +902,8 @@ def _typed_audit_mismatches(target, prior_applied_data, field_names):
             prior_applied_data,
             pk=target.pk,
         )
+    except JobTimeoutException:
+        raise
     except Exception:  # noqa: BLE001 - ambiguous audit data must fail closed
         return field_names
 
@@ -976,6 +979,8 @@ def _revalidate_resumed_relationships(
                     f"Existing {target._meta.label_lower}:{target.pk} relationship "
                     "state changed during resume."
                 )
+        except JobTimeoutException:
+            raise
         except Exception as exc:  # noqa: BLE001 - preserve per-row isolation
             change_logger.warning(
                 "Bulk merge: relationship revalidation failed for %s:%s: %s",
@@ -1088,6 +1093,8 @@ def _converge_resumed_creates(
                             branch,
                         ):
                             mutated_pks.add(pk)
+            except JobTimeoutException:
+                raise
             except Exception:  # noqa: BLE001 - preserve per-row merge isolation
                 failed.append(collapsed)
             else:
@@ -1515,6 +1522,8 @@ def _bulk_merge_changes_main(
                 _record_success(collapsed_change, model_class)
                 return
             outcome = apply_one(collapsed_change)
+        except JobTimeoutException:
+            raise
         except Exception as exc:  # noqa: BLE001 - isolate one object, keep merging
             change_logger.warning(
                 "Bulk merge: isolating %s change for %s after apply error: %s",
@@ -1668,6 +1677,8 @@ def _bulk_merge_changes_main(
                 deserialized = _deserialize(
                     model_class, collapsed_change, change_logger
                 )
+            except JobTimeoutException:
+                raise
             except Exception as exc:  # noqa: BLE001 - isolate invalid payload
                 if target is not None:
                     _record_failure(collapsed_change, failure=exc)
@@ -1692,6 +1703,8 @@ def _bulk_merge_changes_main(
                         attest_if_unchanged=not alternate_resume,
                         refuse_changes=not alternate_resume,
                     )
+                except JobTimeoutException:
+                    raise
                 except Exception as exc:  # noqa: BLE001 - fail closed on identity
                     _record_failure(collapsed_change, failure=exc)
                     continue
@@ -1749,9 +1762,13 @@ def _bulk_merge_changes_main(
                         request,
                         branch,
                     )
+                except JobTimeoutException:
+                    raise
                 except Exception as exc:  # audit is part of the atomic mutation
                     raise _BulkMergeAuditError from exc
         except _BulkMergeAuditError:
+            raise
+        except JobTimeoutException:
             raise
         except Exception as exc:  # noqa: BLE001 - roll back scalar and M2M state
             # A scalar or relationship write failed and rolled the entire
@@ -1817,6 +1834,8 @@ def _bulk_merge_changes_main(
                     update_fields.add(field.name)
                 _full_clean_fast(target, change_logger)
                 prepared.append((collapsed_change, target))
+            except JobTimeoutException:
+                raise
             except Exception:  # noqa: BLE001 - isolate invalid relationship rows
                 fallback.append(collapsed_change)
 
@@ -1834,6 +1853,8 @@ def _bulk_merge_changes_main(
                         request,
                         branch,
                     )
+            except JobTimeoutException:
+                raise
             except Exception:  # noqa: BLE001 - preserve row-level merge isolation
                 fallback.extend(change for change, _ in prepared)
                 prepared = []
@@ -1897,6 +1918,8 @@ def _bulk_merge_changes_main(
                         validate_constraints=False,
                     )
                     prepared.append((collapsed_change, target))
+                except JobTimeoutException:
+                    raise
                 except Exception:  # noqa: BLE001 - preserve per-row merge isolation
                     fallback.append(collapsed_change)
 
@@ -1972,6 +1995,7 @@ def _bulk_merge_changes_main(
         if collapsed_change.final_action == ActionType.SKIP:
             _record_success(collapsed_change, logical_models[logical_key])
 
+    timed_out = False
     try:
         for collapsed_change in ordered:
             action = collapsed_change.final_action
@@ -2023,10 +2047,16 @@ def _bulk_merge_changes_main(
         _flush()
         _flush_prefix()
         _flush_deferred_fks()
+    except JobTimeoutException:
+        timed_out = True
+        raise
     finally:
         # Every Prefix create batch repairs its own hierarchy before commit. This
-        # final pass also covers update/delete fallback and any interrupted loop.
-        _rebuild_main_prefix_hierarchies(affected_prefix_vrf_ids)
+        # final pass also covers update/delete fallback and non-timeout failures.
+        # RQ timeout control flow must unwind immediately so recovery retains
+        # the original exception and the worker deadline remains enforceable.
+        if not timed_out:
+            _rebuild_main_prefix_hierarchies(affected_prefix_vrf_ids)
     missing_components = set().union(*logical_components.values()) - set(
         component_results
     )

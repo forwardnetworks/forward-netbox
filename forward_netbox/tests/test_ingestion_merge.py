@@ -644,6 +644,41 @@ class ForwardIngestionMergeHelperTest(TestCase):
         mock_enqueue.assert_called_once()
         mock_filter.assert_called()
 
+    @patch("forward_netbox.models.ForwardIngestion.objects.filter")
+    @patch("forward_netbox.utilities.ingestion_merge.enqueue_forward_job")
+    @patch.object(Branch, "get_unmerged_changes")
+    def test_enqueue_merge_job_sizes_timeout_from_unmerged_changes(
+        self,
+        get_unmerged_changes,
+        mock_enqueue,
+        mock_filter,
+    ):
+        branch = Branch.objects.create(
+            name="merge-timeout-sizing",
+            schema_id="merge_timeout_sizing",
+            status=BranchStatusChoices.READY,
+        )
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            branch=branch,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-merge-timeout",
+        )
+        get_unmerged_changes.return_value.count.return_value = 750_000
+        mock_enqueue.return_value = Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardIngestion),
+            object_id=ingestion.pk,
+            name=f"{ingestion.sync.name} Merge",
+            status=JobStatusChoices.STATUS_COMPLETED,
+            job_id=uuid4(),
+            completed=timezone.now(),
+        )
+
+        enqueue_merge_job(ingestion, user=None)
+
+        self.assertEqual(mock_enqueue.call_args.kwargs["job_timeout"], 75_000)
+        mock_filter.assert_called()
+
     def test_record_change_totals_persists_counts(self):
         ingestion = ForwardIngestion.objects.create(
             sync=self.sync,

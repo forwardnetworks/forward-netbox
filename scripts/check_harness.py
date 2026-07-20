@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import runpy
 import subprocess
 import sys
 from datetime import date
@@ -68,15 +69,8 @@ EXPECTED_HARNESS_DEPENDENCY_COMMAND = (
     "python -m pip install --disable-pip-version-check PyYAML==6.0.3"
 )
 EXPECTED_HARNESS_CHECK_COMMAND = "python scripts/check_harness.py"
-FORBIDDEN_TRACKED_DEVELOPMENT_ENV_FILES = {
-    "development/.env",
-    "development/env/redis.env",
-}
-FORBIDDEN_DEVELOPMENT_SECRET_ASSIGNMENT = re.compile(
-    r"^(?:API_TOKEN_PEPPER_\d+|DB_PASSWORD|POSTGRES_PASSWORD|"
-    r"REDIS(?:_CACHE)?_PASSWORD|SECRET_KEY)\s*=",
-    re.MULTILINE,
-)
+EXPECTED_DEVELOPMENT_RQ_DEFAULT_TIMEOUT = "7200"
+EXPECTED_DEVELOPMENT_LOG_LEVEL = "INFO"
 
 RUNTIME_SOURCE_SUFFIXES = {".html", ".js", ".nqe", ".py"}
 RUNTIME_SOURCE_EXCLUDED_DIRECTORIES = {"migrations", "tests"}
@@ -508,6 +502,33 @@ def _check_compose_health_probe(failures: list[str]) -> None:
         )
 
 
+def _check_worker_autoreload_contract(failures: list[str]) -> None:
+    relative_path = "development/docker-compose.yml"
+    path = REPO_ROOT / relative_path
+    if not path.exists():
+        return
+    try:
+        rendered = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        worker = rendered["services"]["netbox-worker"]
+        environment = worker["environment"]
+        command = "\n".join(str(part) for part in worker["command"])
+    except (KeyError, TypeError, yaml.YAMLError) as exc:
+        failures.append(
+            f"{relative_path} has no parseable worker autoreload contract: {exc}"
+        )
+        return
+    expected_environment = "${FORWARD_NETBOX_WORKER_AUTORELOAD:-1}"
+    if environment.get("FORWARD_NETBOX_WORKER_AUTORELOAD") != expected_environment:
+        failures.append(
+            f"{relative_path} must pass the worker autoreload setting into the container"
+        )
+    expected_runtime_expansion = "$${FORWARD_NETBOX_WORKER_AUTORELOAD:-1}"
+    if expected_runtime_expansion not in command:
+        failures.append(
+            f"{relative_path} must defer worker autoreload expansion to the container"
+        )
+
+
 def _check_development_secret_boundary(failures: list[str]) -> None:
     tracked = set(_git_names("ls-files", "--cached")) - set(
         _git_names("ls-files", "--deleted")
@@ -533,6 +554,23 @@ def _check_development_secret_boundary(failures: list[str]) -> None:
             line = path.read_text(encoding="utf-8").count("\n", 0, match.start()) + 1
             failures.append(
                 f"{relative_path}:{line} must not contain a tracked secret assignment"
+            )
+
+    netbox_env_path = REPO_ROOT / "development/env/netbox.env"
+    if not netbox_env_path.is_file():
+        failures.append(
+            "development/env/netbox.env must exist with the release worker timeout"
+        )
+    else:
+        timeout_values = re.findall(
+            r"^RQ_DEFAULT_TIMEOUT=(\d+)\s*$",
+            netbox_env_path.read_text(encoding="utf-8"),
+            re.MULTILINE,
+        )
+        if timeout_values != [EXPECTED_DEVELOPMENT_RQ_DEFAULT_TIMEOUT]:
+            failures.append(
+                "development/env/netbox.env must set exactly one "
+                f"RQ_DEFAULT_TIMEOUT={EXPECTED_DEVELOPMENT_RQ_DEFAULT_TIMEOUT}"
             )
 
     compose_path = REPO_ROOT / "development/docker-compose.yml"
@@ -593,6 +631,81 @@ def _check_development_secret_boundary(failures: list[str]) -> None:
         for line in dockerignore_path.read_text(encoding="utf-8").splitlines()
     }:
         failures.append(".dockerignore must exclude development/secrets")
+
+
+def _check_development_logging_boundary(failures: list[str]) -> None:
+    logging_path = REPO_ROOT / "development/configuration/logging.py"
+    if not logging_path.is_file():
+        failures.append("development/configuration/logging.py must exist")
+    else:
+        logging_text = logging_path.read_text(encoding="utf-8")
+        expected_default = (
+            f'LOGLEVEL = environ.get("LOGLEVEL", "{EXPECTED_DEVELOPMENT_LOG_LEVEL}")'
+        )
+        if logging_text.count(expected_default) != 1:
+            failures.append(
+                "development/configuration/logging.py must default LOGLEVEL to "
+                f"{EXPECTED_DEVELOPMENT_LOG_LEVEL}"
+            )
+        previous_loglevel = os.environ.get("LOGLEVEL")
+        try:
+            for expected_level in (EXPECTED_DEVELOPMENT_LOG_LEVEL, "WARNING"):
+                os.environ["LOGLEVEL"] = expected_level
+                try:
+                    logging_config = runpy.run_path(str(logging_path))["LOGGING"]
+                except Exception as exc:
+                    failures.append(
+                        "development/configuration/logging.py must define a loadable "
+                        f"LOGGING dictionary: {exc}"
+                    )
+                    break
+                for group, names in {
+                    "handlers": ("console", "netbox_file", "forward_file"),
+                    "loggers": (
+                        "django",
+                        "django_auth_ldap",
+                        "netbox",
+                        "netbox_branching",
+                        "forward_netbox",
+                    ),
+                }.items():
+                    configured = logging_config.get(group, {})
+                    if any(
+                        configured.get(name, {}).get("level") != expected_level
+                        for name in names
+                    ):
+                        failures.append(
+                            "development/configuration/logging.py required "
+                            f"{group} must honor LOGLEVEL={expected_level}"
+                        )
+        finally:
+            if previous_loglevel is None:
+                os.environ.pop("LOGLEVEL", None)
+            else:
+                os.environ["LOGLEVEL"] = previous_loglevel
+
+    override_path = REPO_ROOT / "development/docker-compose.override.yml"
+    if not override_path.is_file():
+        failures.append("development/docker-compose.override.yml must exist")
+        return
+    try:
+        override = yaml.safe_load(override_path.read_text(encoding="utf-8")) or {}
+        services = override["services"]
+        levels = {
+            service: services[service]["environment"]["LOGLEVEL"]
+            for service in ("netbox", "netbox-worker")
+        }
+    except (KeyError, TypeError, yaml.YAMLError) as exc:
+        failures.append(
+            "development/docker-compose.override.yml must define parseable "
+            f"NetBox log levels: {exc}"
+        )
+        return
+    if set(levels.values()) != {EXPECTED_DEVELOPMENT_LOG_LEVEL}:
+        failures.append(
+            "development/docker-compose.override.yml must set netbox and "
+            f"netbox-worker LOGLEVEL to {EXPECTED_DEVELOPMENT_LOG_LEVEL}"
+        )
 
 
 def _check_trusted_private_fetch(failures: list[str]) -> None:
@@ -966,7 +1079,9 @@ def main() -> int:
     _check_knowledge_freshness(failures)
     _check_retired_runtime_paths(failures)
     _check_compose_health_probe(failures)
+    _check_worker_autoreload_contract(failures)
     _check_development_secret_boundary(failures)
+    _check_development_logging_boundary(failures)
     _check_trusted_private_fetch(failures)
     _check_harness_gardening_dependency(failures)
     _check_sensitive_guard_wiring(failures)

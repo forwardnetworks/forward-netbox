@@ -36,6 +36,7 @@ from netbox.context_managers import event_tracking
 from netbox_branching.models import Branch
 from netbox_branching.models import ChangeDiff
 from netbox_branching.utilities import activate_branch
+from rq.timeouts import JobTimeoutException
 
 from forward_netbox.exceptions import ForwardPartialMergeError
 from forward_netbox.models import ForwardIngestion
@@ -722,6 +723,86 @@ class BulkMergeIntegrationTest(CleanTransactionTestCase):
             3,
             "relationship query count must scale with batches, not rows",
         )
+
+    def test_bulk_create_resume_propagates_job_timeout(self):
+        from extras.models import Tag
+
+        tag = Tag.objects.create(name="Timeout Tag", slug="timeout-tag")
+        branch = provision_branch(user=self.user, name="Timeout Resume")
+        with activate_branch(branch), event_tracking(self.request):
+            self.request.id = uuid.uuid4()
+            self.request.user = self.user
+            site = Site.objects.create(
+                name="Timeout Resume Site",
+                slug="timeout-resume-site",
+            )
+            site.tags.add(tag)
+
+        changes = branch.get_unmerged_changes().order_by("time")
+        applied, failed, _ = bulk_merge_changes(
+            branch,
+            changes,
+            self.request,
+            self.user,
+            self.logger,
+            apply_one=self._real_apply_one(branch),
+        )
+        self.assertEqual((applied, failed), (1, 0))
+
+        def _break_transaction_then_timeout(*args, **kwargs):
+            transaction.set_rollback(True)
+            raise JobTimeoutException("merge timed out")
+
+        with (
+            patch(
+                "forward_netbox.utilities.bulk_merge."
+                "_assert_existing_create_resume_provenance",
+                side_effect=_break_transaction_then_timeout,
+            ),
+            self.assertRaisesRegex(JobTimeoutException, "merge timed out"),
+        ):
+            bulk_merge_changes(
+                branch,
+                changes,
+                self.request,
+                self.user,
+                self.logger,
+                apply_one=self._real_apply_one(branch),
+            )
+
+        self.assertFalse(connection.needs_rollback)
+        self.assertTrue(Site.objects.filter(pk=site.pk).exists())
+
+    def test_prefix_timeout_skips_final_hierarchy_rebuild(self):
+        branch = provision_branch(user=self.user, name="Prefix Timeout")
+        with activate_branch(branch), event_tracking(self.request):
+            self.request.id = uuid.uuid4()
+            self.request.user = self.user
+            Prefix.objects.create(prefix="192.0.2.0/24", status="active")
+
+        changes = branch.get_unmerged_changes().order_by("time")
+        with (
+            patch(
+                "forward_netbox.utilities.bulk_merge._is_bulk_safe",
+                side_effect=JobTimeoutException("prefix merge timed out"),
+            ),
+            patch(
+                "forward_netbox.utilities.bulk_merge."
+                "_rebuild_main_prefix_hierarchies",
+                side_effect=RuntimeError("must not mask timeout"),
+            ) as rebuild,
+            self.assertRaisesRegex(JobTimeoutException, "prefix merge timed out"),
+        ):
+            bulk_merge_changes(
+                branch,
+                changes,
+                self.request,
+                self.user,
+                self.logger,
+                apply_one=self._real_apply_one(branch),
+            )
+
+        rebuild.assert_not_called()
 
     def test_relationship_write_barrier_serializes_holders_without_deadlock(self):
         from extras.models import Tag

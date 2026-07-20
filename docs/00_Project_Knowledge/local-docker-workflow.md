@@ -44,6 +44,10 @@ invoke restart
 
 Leave the default autoreload enabled for normal development.
 The release automation forces autoreload off for its isolated gate.
+The worker command expands this setting inside the container so a Compose
+service override is authoritative. Isolated Django test projects additionally
+reserve Redis databases 14 and 15, preventing test-enqueued RQ jobs from being
+visible to a shared development worker even if a Redis hostname is misrouted.
 
 For high-volume runs, treat the local stack as a dedicated ingestion runtime:
 

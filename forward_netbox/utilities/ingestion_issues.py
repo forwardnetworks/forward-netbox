@@ -1,3 +1,5 @@
+from rq.timeouts import JobTimeoutException
+
 from ..choices import FORWARD_OPTIONAL_MODELS
 from ..exceptions import ForwardDependencySkipError
 
@@ -13,6 +15,8 @@ def blocking_issues_queryset(ingestion):
 def has_blocking_issues(ingestion):
     try:
         exists_result = blocking_issues_queryset(ingestion).exists()
+    except JobTimeoutException:
+        raise
     except Exception:
         return False
     return exists_result if isinstance(exists_result, bool) else False

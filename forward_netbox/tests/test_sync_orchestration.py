@@ -9,6 +9,7 @@ from django.core.exceptions import ValidationError
 from django.test import override_settings
 from django.test import TestCase
 from django.utils import timezone
+from rq.timeouts import JobTimeoutException
 
 from forward_netbox.choices import ForwardSourceStatusChoices
 from forward_netbox.choices import ForwardSyncStatusChoices
@@ -98,7 +99,7 @@ class ForwardSyncOrchestrationHelperTest(TestCase):
     @patch(
         "forward_netbox.utilities.single_branch_executor.ForwardSingleBranchExecutor"
     )
-    def test_run_forward_sync_warns_when_worker_timeout_is_lower_than_source_timeout(
+    def test_run_forward_sync_uses_effective_forward_job_timeout(
         self,
         mock_executor_class,
         mock_log_warning,
@@ -112,9 +113,23 @@ class ForwardSyncOrchestrationHelperTest(TestCase):
 
         run_forward_sync(self.sync)
 
-        warning_message = mock_log_warning.call_args.args[0]
-        self.assertIn("RQ_DEFAULT_TIMEOUT is 300s", warning_message)
-        self.assertIn("Forward source timeout (1200s)", warning_message)
+        mock_log_warning.assert_not_called()
+
+    @patch(
+        "forward_netbox.utilities.single_branch_executor.ForwardSingleBranchExecutor"
+    )
+    def test_run_forward_sync_propagates_job_timeout(self, mock_executor_class):
+        mock_executor = mock_executor_class.return_value
+        mock_executor.run.side_effect = JobTimeoutException("sync timed out")
+        mock_executor.client = SimpleNamespace(api_usage_summary=Mock(return_value={}))
+
+        with self.assertRaisesRegex(JobTimeoutException, "sync timed out"):
+            run_forward_sync(self.sync)
+
+        self.sync.refresh_from_db()
+        self.source.refresh_from_db()
+        self.assertEqual(self.sync.status, ForwardSyncStatusChoices.TIMEOUT)
+        self.assertEqual(self.source.status, ForwardSourceStatusChoices.FAILED)
 
     def test_latest_processed_catchup_decision_skips_when_snapshot_is_current(self):
         self.sync.status = ForwardSyncStatusChoices.COMPLETED

@@ -38,11 +38,14 @@ services:
       netbox:
         condition: service_healthy
     ports: []
+    environment:
+      FORWARD_NETBOX_WORKER_AUTORELOAD: "${FORWARD_NETBOX_WORKER_AUTORELOAD:-1}"
+      NETBOX_VER: "${NETBOX_VER:-v4.6.5}"
     command:
       - sh
       - -lc
       - |
-        if [ "${FORWARD_NETBOX_WORKER_AUTORELOAD:-1}" = "1" ]; then
+        if [ "$${FORWARD_NETBOX_WORKER_AUTORELOAD:-1}" = "1" ]; then
           exec /opt/netbox/venv/bin/watchmedo auto-restart \
             --directory=/source \
             --pattern='*.py' \

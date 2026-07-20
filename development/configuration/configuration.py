@@ -328,7 +328,7 @@ RELEASE_CHECK_URL = environ.get("RELEASE_CHECK_URL", None)
 # RELEASE_CHECK_URL = 'https://api.github.com/repos/netbox-community/netbox/releases'
 
 # Maximum execution time for background tasks, in seconds.
-RQ_DEFAULT_TIMEOUT = _environ_get_and_map("RQ_DEFAULT_TIMEOUT", 300, _AS_INT)
+RQ_DEFAULT_TIMEOUT = _environ_get_and_map("RQ_DEFAULT_TIMEOUT", 7200, _AS_INT)
 
 # The name to use for the csrf token cookie.
 CSRF_COOKIE_NAME = environ.get("CSRF_COOKIE_NAME", "csrftoken")

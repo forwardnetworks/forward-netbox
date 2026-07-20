@@ -11,8 +11,10 @@ from django_pglocks import advisory_lock
 from netbox.constants import ADVISORY_LOCK_KEYS
 from utilities.rqworker import get_queue_for_model
 
+from .runtime_guidance import effective_forward_job_timeout
 
-def _dispatch_persisted_job(job_pk, func, kwargs):
+
+def _dispatch_persisted_job(job_pk, func, kwargs, job_timeout=None):
     """Dispatch only while the persisted job and its bound object still exist."""
     with advisory_lock(ADVISORY_LOCK_KEYS["job-schedules"]):
         with transaction.atomic():
@@ -31,6 +33,10 @@ def _dispatch_persisted_job(job_pk, func, kwargs):
                 "job_id": str(job.job_id),
                 "job": job,
                 **kwargs,
+                "job_timeout": max(
+                    effective_forward_job_timeout(),
+                    int(job_timeout or 0),
+                ),
             }
             if job.scheduled is not None:
                 return queue.enqueue_at(job.scheduled, func, **enqueue_kwargs)
@@ -47,6 +53,7 @@ def enqueue_forward_job(
     immediate=False,
     queue_name=None,
     notifications=None,
+    job_timeout=None,
     **kwargs,
 ):
     """Persist and dispatch a plugin job under one serialized lifecycle.
@@ -101,6 +108,12 @@ def enqueue_forward_job(
             func(job_id=str(job.job_id), job=job, **kwargs)
         else:
             transaction.on_commit(
-                partial(_dispatch_persisted_job, job.pk, func, dict(kwargs))
+                partial(
+                    _dispatch_persisted_job,
+                    job.pk,
+                    func,
+                    dict(kwargs),
+                    job_timeout,
+                )
             )
         return job

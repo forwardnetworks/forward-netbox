@@ -406,13 +406,15 @@ but all units still land in the same branch and merge once.
 The Forward source `Timeout` controls individual Forward API/NQE calls. In
 current Forward builds, the public NQE API path has a default query-compute
 timeout of 20 minutes; the web response wrapper can wait longer, but it does not
-make a single query compute indefinitely. NetBox worker timeout controls how
-long the NetBox background job is allowed to run. For large baselines, size
-both:
+make a single query compute indefinitely. Forward NetBox queues every plugin
+job with a two-hour minimum timeout and preserves any larger
+`RQ_DEFAULT_TIMEOUT` value. For large baselines, size both:
 
-- Set NetBox `RQ_DEFAULT_TIMEOUT` higher than the Forward source `Timeout`.
-- Use a long enough `RQ_DEFAULT_TIMEOUT` for initial Branching baselines and
-  merge jobs; the default NetBox value can be too short for large imports.
+- Set NetBox `RQ_DEFAULT_TIMEOUT` above 7200 seconds when the Forward source
+  `Timeout` or projected full stage/merge runtime is longer than two hours.
+- Use Sync Health to compare the configured NetBox default with the effective
+  Forward job timeout; a short generic NetBox default cannot reduce Forward
+  jobs below the enforced minimum.
 - Keep `Max changes per staging item` at or below measured worker/database capacity so
   oversized workload warnings remain meaningful.
 - Ensure NetBox workers and Postgres have enough capacity for the selected
@@ -528,11 +530,10 @@ part of the branch, the plugin leaves it `Ready to merge`, withholds baseline
 advancement and ownership finalization, and lets the operator retry the same
 branch after resolving the reported failures.
 
-The plugin logs a non-blocking warning when it can see that
-`RQ_DEFAULT_TIMEOUT` is shorter than the Forward source timeout, or when a large
-Branching plan is being run with a short worker timeout. These warnings do not
-change sync behavior; they are intended to make timeout failures easier to
-avoid before the run has been waiting for a long time.
+The plugin logs a non-blocking warning when the effective Forward job timeout
+is shorter than the Forward source timeout or a projected Branching run
+approaches that effective timeout. Sync Health and support bundles report both
+`RQ_DEFAULT_TIMEOUT` and the effective Forward job timeout.
 
 For command-line validation, run the smoke sync with `--plan-only` first:
 

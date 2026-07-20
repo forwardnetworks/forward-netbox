@@ -1,3 +1,5 @@
+from rq.timeouts import JobTimeoutException
+
 from ..choices import ForwardDiffFallbackModeChoices
 from ..choices import ForwardSyncStatusChoices
 from .branch_budget import branch_budget_density_policy_summary
@@ -535,6 +537,8 @@ def _single_branch_capacity_actions():
 def _has_baseline_ready_ingestion(sync):
     try:
         return sync.latest_baseline_ingestion() is not None
+    except JobTimeoutException:
+        raise
     except Exception:
         return (
             bool(sync.last_ingestion.baseline_ready) if sync.last_ingestion else False

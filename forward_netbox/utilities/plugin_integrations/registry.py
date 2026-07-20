@@ -8,6 +8,7 @@ from django.apps import apps
 from django.contrib.contenttypes.models import ContentType
 from packaging.version import InvalidVersion
 from packaging.version import Version
+from rq.timeouts import JobTimeoutException
 
 
 @dataclass(frozen=True)
@@ -335,6 +336,8 @@ def _integration_adapter_contract_summary(integration: OptionalPluginIntegration
         }
     try:
         module = import_module(integration.adapter_module)
+    except JobTimeoutException:
+        raise
     except Exception as exc:
         return {
             "available": False,

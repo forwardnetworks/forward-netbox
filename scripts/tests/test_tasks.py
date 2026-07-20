@@ -1048,6 +1048,8 @@ class SharedRuntimeTestGuardTaskTest(unittest.TestCase):
         self.assertEqual(compose_calls[4][0], "forward-netbox-test")
         self.assertIn("run --rm -T netbox", compose_calls[4][1])
         self.assertIn("forward_netbox.tests.test_sync", compose_calls[4][1])
+        self.assertIn("REDIS_DATABASE=14", compose_calls[4][1])
+        self.assertIn("REDIS_CACHE_DATABASE=15", compose_calls[4][1])
         self.assertEqual(len(compose_calls), 5)
 
     def test_test_isolated_can_remove_runtime_volume(self):

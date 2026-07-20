@@ -1,3 +1,5 @@
+from rq.timeouts import JobTimeoutException
+
 from ..exceptions import ForwardClientError
 from ..exceptions import ForwardConnectivityError
 from ..exceptions import ForwardQueryError
@@ -68,6 +70,8 @@ def run_sync_stage(runner):
     snapshot_metrics = {}
     try:
         snapshot_metrics = runner.client.get_snapshot_metrics(snapshot_id)
+    except JobTimeoutException:
+        raise
     except Exception as exc:
         runner.logger.log_warning(
             f"Unable to fetch Forward snapshot metrics for `{snapshot_id}`: {exc}",

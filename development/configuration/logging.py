@@ -1,7 +1,7 @@
 from os import environ
 
 # Set LOGLEVEL in netbox.env or docker-compose.override.yml to override the default logging level.
-LOGLEVEL = environ.get("LOGLEVEL", "DEBUG")
+LOGLEVEL = environ.get("LOGLEVEL", "INFO")
 
 LOGGING = {
     "version": 1,
@@ -23,13 +23,13 @@ LOGGING = {
             "formatter": "simple",
         },
         "netbox_file": {
-            "level": "DEBUG",
+            "level": LOGLEVEL,
             "class": "logging.FileHandler",
             "formatter": "simple",
             "filename": "/var/log/netbox/netbox.log",
         },
         "forward_file": {
-            "level": "DEBUG",
+            "level": LOGLEVEL,
             "class": "logging.FileHandler",
             "formatter": "simple",
             "filename": "/var/log/netbox/forward_netbox.log",

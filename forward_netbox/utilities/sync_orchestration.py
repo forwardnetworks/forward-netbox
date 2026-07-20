@@ -5,6 +5,7 @@ from core.exceptions import SyncError
 from core.signals import pre_sync
 from django.core.exceptions import ValidationError
 from django.utils import timezone
+from rq.timeouts import JobTimeoutException
 
 from ..choices import ForwardIngestionPhaseChoices
 from ..choices import ForwardSourceStatusChoices
@@ -132,6 +133,8 @@ def should_skip_unchanged_snapshot(sync, *, adhoc=False, client=None):
         return None
     try:
         current_snapshot = str(sync.resolve_snapshot_id(client) or "").strip()
+    except JobTimeoutException:
+        raise
     except Exception:
         return None
     if current_snapshot and current_snapshot == baseline_snapshot:
@@ -245,6 +248,9 @@ def run_forward_sync(sync, job=None, *, max_changes_per_staging_item=None, adhoc
             obj=sync,
         )
         return
+    except JobTimeoutException:
+        sync.status = ForwardSyncStatusChoices.TIMEOUT
+        raise
     except Exception as exc:
         ingestion = _record_forward_sync_failure(
             sync,

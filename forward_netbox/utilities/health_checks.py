@@ -2,6 +2,7 @@ from ..choices import ForwardSourceStatusChoices
 from ..choices import ForwardValidationStatusChoices
 from .ingestion_issues import has_blocking_issues
 from .runtime_guidance import configured_rq_default_timeout
+from .runtime_guidance import effective_forward_job_timeout
 from .runtime_guidance import source_query_fetch_concurrency
 from .runtime_guidance import source_timeout_seconds
 
@@ -493,26 +494,33 @@ def recommendation_status(recommendation):
 
 def timeout_check(sync):
     rq_timeout = configured_rq_default_timeout()
+    job_timeout = effective_forward_job_timeout()
     source_timeout = source_timeout_seconds(sync)
-    if rq_timeout is None:
-        return check(
-            name="Worker timeout",
-            status="info",
-            message="RQ_DEFAULT_TIMEOUT is not configured explicitly.",
-        )
-    if source_timeout is not None and rq_timeout < source_timeout:
+    if source_timeout is not None and job_timeout < source_timeout:
         return check(
             name="Worker timeout",
             status="warn",
             message=(
-                f"RQ_DEFAULT_TIMEOUT is {rq_timeout}s, below the Forward source "
+                f"Effective Forward job timeout is {job_timeout}s, below the source "
                 f"timeout of {source_timeout}s."
             ),
         )
+    if rq_timeout is None:
+        message = (
+            f"Forward jobs enforce a {job_timeout}s minimum; "
+            "RQ_DEFAULT_TIMEOUT is not configured explicitly."
+        )
+    elif rq_timeout != job_timeout:
+        message = (
+            f"RQ_DEFAULT_TIMEOUT is {rq_timeout}s; Forward jobs enforce an "
+            f"effective {job_timeout}s timeout."
+        )
+    else:
+        message = f"Forward job timeout is {job_timeout}s."
     return check(
         name="Worker timeout",
         status="pass",
-        message=f"RQ_DEFAULT_TIMEOUT is {rq_timeout}s.",
+        message=message,
     )
 
 

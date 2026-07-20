@@ -6,6 +6,7 @@ from core.models import Job
 from django.contrib.contenttypes.models import ContentType
 from django.utils import timezone
 from extras.choices import LogLevelChoices
+from rq.timeouts import JobTimeoutException
 
 
 class SyncLogging:
@@ -42,6 +43,8 @@ class SyncLogging:
         ):
             try:
                 Job.objects.filter(pk=self.job_id).update(data=self.log_data)
+            except JobTimeoutException:
+                raise
             except Exception as exc:
                 self.logger.warning(
                     "Failed to persist core job data for job %s: %s",
@@ -89,6 +92,8 @@ class SyncLogging:
             job = Job.objects.get(pk=self.job_id)
         except Job.DoesNotExist:
             return
+        except JobTimeoutException:
+            raise
         except Exception as exc:
             self.logger.warning(
                 "Failed to load core job %s for log persistence: %s", self.job_id, exc
@@ -112,6 +117,8 @@ class SyncLogging:
         job.log_entries = log_entries
         try:
             job.save(update_fields=["log_entries"])
+        except JobTimeoutException:
+            raise
         except Exception as exc:
             self.logger.warning(
                 "Failed to persist core job log entry for job %s: %s",

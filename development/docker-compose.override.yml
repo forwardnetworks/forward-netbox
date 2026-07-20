@@ -6,4 +6,4 @@ services:
       LOGLEVEL: "INFO"
   netbox-worker:
     environment:
-      LOGLEVEL: "DEBUG"
+      LOGLEVEL: "INFO"

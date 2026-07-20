@@ -23,6 +23,8 @@ ACTIVE_SYNC_STATUSES = ("queued", "syncing", "merging")
 ISOLATED_TEST_PROJECT_NAME = "forward-netbox-test"
 ISOLATED_PLAYWRIGHT_PROJECT_NAME = "forward-netbox-ui-test"
 RELEASE_ARTIFACT_PROJECT_NAME = "forward-netbox-artifact-test"
+ISOLATED_REDIS_DATABASE = 14
+ISOLATED_REDIS_CACHE_DATABASE = 15
 CYCLONEDX_BOM_VERSION = "7.3.0"
 REPO_ROOT = Path(__file__).resolve().parent
 _DEVELOPMENT_SECRETS = runpy.run_path(
@@ -304,9 +306,14 @@ def _run_tests_in_isolated_runtime(
     docker_compose(isolated, "up -d postgres redis")
     try:
         _wait_for_isolated_postgres(isolated)
+        isolated_test_env = {
+            **(test_env or {}),
+            "REDIS_DATABASE": ISOLATED_REDIS_DATABASE,
+            "REDIS_CACHE_DATABASE": ISOLATED_REDIS_CACHE_DATABASE,
+        }
         environment_prefix = " ".join(
             f"{key}={shlex.quote(str(value))}"
-            for key, value in sorted((test_env or {}).items())
+            for key, value in sorted(isolated_test_env.items())
         )
         test_command = (
             "cd /opt/netbox/netbox && "

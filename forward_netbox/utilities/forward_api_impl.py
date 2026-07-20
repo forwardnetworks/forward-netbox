@@ -8,6 +8,7 @@ from urllib.parse import quote
 
 import httpx
 from django.core.cache import cache as django_cache
+from rq.timeouts import JobTimeoutException
 from utilities.proxy import resolve_proxies
 
 from ..exceptions import ForwardClientError
@@ -402,6 +403,8 @@ class ForwardClient:
         key = self._shared_query_read_generation_key()
         try:
             cache.incr(key)
+        except JobTimeoutException:
+            raise
         except Exception:
             try:
                 current = int(cache.get(key) or 0)
@@ -688,6 +691,8 @@ class ForwardClient:
             return
         try:
             self._throttle_with_shared_cache(key, cache)
+        except JobTimeoutException:
+            raise
         except Exception:
             self._throttle_in_process(key)
 
@@ -1302,6 +1307,8 @@ class ForwardClient:
                         repository=repository,
                         directory="/",
                     )
+                except JobTimeoutException:
+                    raise
                 except Exception:
                     query_index = {}
             indexed_query = (query_index.get("by_path") or {}).get(query_path)

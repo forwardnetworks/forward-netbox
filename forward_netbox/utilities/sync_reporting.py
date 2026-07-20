@@ -6,6 +6,7 @@ from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 from django.db import transaction
 from django.db.models import F
+from rq.timeouts import JobTimeoutException
 
 from ..choices import ForwardIngestionPhaseChoices
 from ..exceptions import ForwardDependencySkipError
@@ -467,6 +468,8 @@ def apply_model_rows(runner, model_string, rows):
                 row,
                 exception=exc,
             )
+        except JobTimeoutException:
+            raise
         except Exception as exc:
             runner.events_clearer.restore(pre_row_events)
             logger.exception("Failed applying %s row", model_string)
@@ -668,6 +671,8 @@ def delete_model_rows(runner, model_string, rows):
                 row,
                 exception=exc,
             )
+        except JobTimeoutException:
+            raise
         except Exception as exc:
             runner.events_clearer.restore(pre_row_events)
             logger.exception("Failed deleting %s row", model_string)

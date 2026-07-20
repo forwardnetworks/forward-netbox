@@ -12,6 +12,7 @@ from .execution_telemetry import _build_query_mode_summary
 from .forward_api import DEFAULT_NQE_PAGE_SIZE
 from .model_contracts import architecture_contract_for_model
 from .runtime_guidance import configured_rq_default_timeout
+from .runtime_guidance import effective_forward_job_timeout
 from .runtime_guidance import source_pushdown_alert_thresholds
 from .runtime_guidance import source_query_fetch_concurrency
 from .runtime_guidance import source_timeout_seconds
@@ -122,6 +123,7 @@ def runtime_summary(sync):
         "query_fetch_concurrency": source_query_fetch_concurrency(sync),
         "pushdown_alert_thresholds": source_pushdown_alert_thresholds(sync),
         "rq_default_timeout_seconds": configured_rq_default_timeout(),
+        "forward_job_timeout_seconds": effective_forward_job_timeout(),
         "snapshot_selector": sync.get_snapshot_id(),
     }
 
@@ -387,6 +389,7 @@ def throughput_summary(sync, latest_ingestion):
         "failed_change_count": failed,
         "issue_count": issue_count,
         "worker_timeout_seconds": configured_rq_default_timeout(),
+        "forward_job_timeout_seconds": effective_forward_job_timeout(),
         "query_fetch_concurrency": source_query_fetch_concurrency(sync),
         "nqe_page_size": _source_nqe_page_size(sync),
     }

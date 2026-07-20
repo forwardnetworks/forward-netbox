@@ -28,6 +28,7 @@ from netbox.context_managers import event_tracking
 from netbox_branching.choices import BranchEventTypeChoices
 from netbox_branching.choices import BranchStatusChoices
 from netbox_branching.merge_strategies import get_merge_strategy
+from rq.timeouts import JobTimeoutException
 
 from .bulk_merge import _ApplyOneFailure
 from .bulk_merge import bulk_merge_changes
@@ -301,6 +302,8 @@ def merge_branch(
                     dummy_change.apply(branch, using=DEFAULT_DB_ALIAS, logger=logger)
             models_touched.add(model_class)
             return True
+        except JobTimeoutException:
+            raise
         except Exception as exc:
             if _replication_side_effect_exists(collapsed_change):
                 logger.info(

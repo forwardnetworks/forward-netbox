@@ -134,13 +134,14 @@ Symptoms:
 
 Checks:
 
-- Compare NetBox `RQ_DEFAULT_TIMEOUT` to the Forward source `Timeout`; the
-  worker timeout should be higher than the longest expected Forward API/NQE
-  request plus NetBox staging/merge time. The default Forward source timeout is
-  20 minutes because current Forward public NQE API execution uses a 20-minute
-  default query-compute timeout.
-- Increase the RQ worker timeout in your NetBox deployment before rerunning a
-  large baseline.
+- Forward NetBox enforces a two-hour minimum timeout on every queued plugin job
+  and preserves a larger `RQ_DEFAULT_TIMEOUT`. Compare the effective timeout in
+  Sync Health to the Forward source `Timeout` and projected staging/merge time.
+  The default Forward source timeout is 20 minutes because current Forward
+  public NQE API execution uses a 20-minute default query-compute timeout.
+- Increase `RQ_DEFAULT_TIMEOUT` above 7200 seconds before rerunning only when a
+  trusted query or complete baseline is expected to require more than two
+  hours.
 - Keep `Max changes per staging item` aligned to local capacity guidance so planning
   warnings remain meaningful; version 2.6 still stages exactly one branch.
 - If staging timed out, inspect the branch and ingestion issues before
@@ -163,8 +164,9 @@ Example NetBox configuration:
 RQ_DEFAULT_TIMEOUT = 7200
 ```
 
-Set the final value according to your environment, worker supervision policy,
-and how long a trusted large baseline is allowed to run.
+This matches the plugin-enforced minimum. Set a larger value according to your
+environment, worker supervision policy, and how long a trusted large baseline
+is allowed to run.
 
 ## Sync Is Slow But Still Running
 

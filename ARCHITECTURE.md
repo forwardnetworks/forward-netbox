@@ -50,6 +50,20 @@ those keys if they are submitted again. Runtime truth comes from `ForwardSync`,
 `ForwardIngestion`, its branch and jobs, validation rows, issues, model results,
 device identities, and ownership reconciliation rows.
 
+RQ delivers `JobTimeoutException` asynchronously in the worker process. Every
+broad exception boundary reachable from a Forward job must therefore re-raise
+that exception before fallback, row isolation, exception translation, or
+best-effort logging. The job boundary may persist timeout and recovery state,
+but it must then re-raise so RQ also records the deadline failure. The static
+harness test in `scripts/tests/test_job_timeout_boundaries.py` enforces this
+contract for job, model, and worker utility modules.
+
+Forward jobs retain a 7,200-second minimum deadline. Merge jobs additionally
+derive their RQ deadline from the branch's persisted unmerged change count and
+the conservative runtime estimate used by capacity guidance. Large baselines
+therefore receive their required deadline at dispatch; correctness does not
+depend on an operator noticing a warning and increasing a global timeout.
+
 ## Merge Contract
 
 The custom merge in `utilities/merge.py` and `utilities/bulk_merge.py` collapses
@@ -189,6 +203,9 @@ Recovery uses persisted facts rather than an inferred run ledger:
 - Keep module bays in the branch-native inventory path.
 - Do not add a second execution path or a second runtime state model.
 - Keep normalization in NQE and object mutation in tested NetBox apply paths.
+- Preserve `JobTimeoutException` identity through every worker exception
+  boundary; never convert a worker deadline into an ingestion issue or ordinary
+  fallback result.
 - Never commit credentials, customer identifiers, network IDs, snapshot IDs,
   private communications, or raw support data.
 - Create releases from a normal annotated version tag on validated `main` after

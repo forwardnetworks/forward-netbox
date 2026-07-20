@@ -3,6 +3,8 @@ from dataclasses import replace
 from ipaddress import ip_interface
 from ipaddress import ip_network
 
+from rq.timeouts import JobTimeoutException
+
 from .query_registry import ipaddress_unassignable_diagnostic_query
 from .query_registry import IPADDRESS_UNASSIGNABLE_DIAGNOSTIC_QUERY_NAME
 from .query_registry import routing_import_diagnostic_query
@@ -196,6 +198,8 @@ def run_ipaddress_unassignable_diagnostic(fetcher, context):
             parameters=context.query_parameters,
             fetch_all=True,
         )
+    except JobTimeoutException:
+        raise
     except Exception as exc:
         fetcher.logger.log_warning(
             "Unable to run Forward IP address assignment diagnostics; "
@@ -284,6 +288,8 @@ def run_routing_import_diagnostic(fetcher, context):
             parameters=context.query_parameters,
             fetch_all=True,
         )
+    except JobTimeoutException:
+        raise
     except Exception as exc:
         fetcher.logger.log_warning(
             "Unable to run Forward routing import diagnostics; skipped routing "

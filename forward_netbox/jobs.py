@@ -95,6 +95,8 @@ def safe_save_job_data(job, obj_with_logger):
         job.data = log_data
         job.log_entries = _build_job_log_entries(log_data)
         job.save(update_fields=["data", "log_entries"])
+    except JobTimeoutException:
+        raise
     except Exception as exc:
         logger.warning("Failed to save job data for job %s: %s", job.pk, exc)
 
@@ -299,6 +301,8 @@ def _maybe_enqueue_device_analysis_refresh(
             snapshot_id=snapshot_id,
             ingestion_id=ingestion_id,
         )
+    except JobTimeoutException:
+        raise
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("Auto device-analysis refresh enqueue failed: %s", exc)
 
@@ -426,6 +430,8 @@ def _enqueue_post_sync_overlays(
             "parent_job_id": getattr(parent_job, "pk", None),
             "analysis_job_id": getattr(analysis_job, "pk", None),
         }
+    except JobTimeoutException:
+        raise
     except Exception as exc:
         logger.exception(
             "Durable post-sync ownership dispatch failed for ForwardSync %s.",
@@ -559,6 +565,8 @@ def sync_forwardsync(job, *args, **kwargs):
             status=JobStatusChoices.STATUS_ERRORED,
             error=repr(exc),
         )
+        if timeout:
+            raise
         if not expected_failure:
             raise
     finally:
@@ -633,6 +641,8 @@ def _reconcile_sync_run_schedules(sync, job, *, adhoc):
 
         sync.refresh_from_db(fields=["parameters"])
         reconcile_standing_schedules(sync)
+    except JobTimeoutException:
+        raise
     except Exception:
         logger.warning(
             "Standing-schedule reconcile failed for ForwardSync %s.",
@@ -692,6 +702,8 @@ def _validate_forwardsync_work(job):
         job.save(update_fields=["data"])
         try:
             _trim_validation_runs(sync)
+        except JobTimeoutException:
+            raise
         except Exception:
             # Housekeeping must never mark a successful validation ERRORED.
             logger.warning(
@@ -1050,29 +1062,55 @@ def merge_forwardingestion(
                 if timeout
                 else str(exc)
             )
-            if timeout:
-                record_timeout_issue(
-                    ingestion,
-                    ForwardIngestionPhaseChoices.MERGE,
-                    message,
-                )
-            if _reset_merge_not_ready_branch_state(ingestion):
+            outcome, branch_status, transitioned = _resolve_authoritative_merge_failure(
+                ingestion,
+                retry_interrupted=True,
+            )
+            if outcome == "retryable":
+                if timeout:
+                    record_timeout_issue(
+                        ingestion,
+                        ForwardIngestionPhaseChoices.MERGE,
+                        message,
+                    )
+                if transitioned:
+                    ingestion.sync.logger.log_info(
+                        "Reset the interrupted Branching merge state to ready.",
+                        obj=ingestion,
+                    )
+                if timeout:
+                    ingestion.sync.logger.log_failure(message, obj=ingestion)
+                else:
+                    ingestion.sync.logger.log_info(message, obj=ingestion)
                 ingestion.sync.logger.log_info(
-                    "Reset the interrupted Branching merge state to ready.",
+                    "The same branch remains ready for an operator merge retry.",
                     obj=ingestion,
                 )
-            if timeout:
+            elif outcome == "finalization":
+                message = (
+                    "Forward branch merge was applied while the interrupted job "
+                    "was unwinding; post-merge finalization requires recovery."
+                )
                 ingestion.sync.logger.log_failure(message, obj=ingestion)
-            else:
+            elif outcome == "finalized":
+                message = (
+                    "Forward merge finalization completed while the interrupted "
+                    "job was unwinding; the completed sync state was preserved."
+                )
                 ingestion.sync.logger.log_info(message, obj=ingestion)
-            ingestion.sync.logger.log_info(
-                "The same branch remains ready for an operator merge retry.",
-                obj=ingestion,
-            )
-            ingestion.sync.status = ForwardSyncStatusChoices.READY_TO_MERGE
-            ForwardSync.objects.filter(pk=ingestion.sync.pk).update(
-                status=ForwardSyncStatusChoices.READY_TO_MERGE
-            )
+            else:
+                authoritative = str(branch_status or "missing")
+                message = (
+                    "Forward merge cannot be retried after the interrupted job; "
+                    f"the authoritative branch state is {authoritative}."
+                )
+                if timeout:
+                    record_timeout_issue(
+                        ingestion,
+                        ForwardIngestionPhaseChoices.MERGE,
+                        message,
+                    )
+                ingestion.sync.logger.log_failure(message, obj=ingestion)
             safe_save_job_data(job, ingestion.sync)
             terminate_job_once(
                 job,
@@ -1080,9 +1118,14 @@ def merge_forwardingestion(
                 error=message,
             )
             logger.warning(exc)
+            if timeout:
+                raise
             return
-        ingestion.refresh_from_db(fields=["merge_applied_at", "merge_finalized_at"])
-        if ingestion.merge_applied_at is not None:
+        outcome, branch_status, transitioned = _resolve_authoritative_merge_failure(
+            ingestion,
+            retry_interrupted=False,
+        )
+        if outcome == "finalization":
             message = (
                 "Forward branch merge was applied, but post-merge finalization "
                 f"requires recovery: {exc}"
@@ -1090,10 +1133,6 @@ def merge_forwardingestion(
             if getattr(ingestion.sync, "logger", None) is None:
                 ingestion.sync.logger = SyncLogging(job=job.pk)
             ingestion.sync.logger.log_failure(message, obj=ingestion)
-            ForwardSync.objects.filter(pk=ingestion.sync.pk).update(
-                status=ForwardSyncStatusChoices.MERGING
-            )
-            ingestion.sync.status = ForwardSyncStatusChoices.MERGING
             safe_save_job_data(job, ingestion.sync)
             terminate_job_once(
                 job,
@@ -1102,25 +1141,22 @@ def merge_forwardingestion(
             )
             logger.error(message)
             return
+        if outcome == "finalized":
+            message = (
+                "Forward merge finalization completed before the failed job "
+                f"unwound; the completed sync state was preserved: {exc}"
+            )
         else:
             message = f"Forward merge job failed: {exc}"
-            if getattr(ingestion.sync, "logger", None) is None:
-                ingestion.sync.logger = SyncLogging(job=job.pk)
-            ingestion.sync.logger.log_failure(message, obj=ingestion)
-            _fail_nonretryable_merging_branch(ingestion, message)
-
-        ForwardSync.objects.filter(pk=ingestion.sync.pk).update(
-            status=(
-                ForwardSyncStatusChoices.TIMEOUT
-                if timeout
-                else ForwardSyncStatusChoices.FAILED
-            )
-        )
-        ingestion.sync.status = (
-            ForwardSyncStatusChoices.TIMEOUT
-            if timeout
-            else ForwardSyncStatusChoices.FAILED
-        )
+            if transitioned and branch_status == BranchStatusChoices.FAILED:
+                ingestion.sync.logger.log_failure(
+                    "Marked the authoritative Branching branch failed after a "
+                    "non-retryable merge error.",
+                    obj=ingestion,
+                )
+        if getattr(ingestion.sync, "logger", None) is None:
+            ingestion.sync.logger = SyncLogging(job=job.pk)
+        ingestion.sync.logger.log_failure(message, obj=ingestion)
         safe_save_job_data(job, ingestion.sync)
         terminate_job_once(
             job,
@@ -1165,37 +1201,74 @@ def _is_merge_not_ready_retryable(exc):
     return "not ready to merge" in message and "branch" in message
 
 
-def _reset_merge_not_ready_branch_state(ingestion):
-    branch = getattr(ingestion, "branch", None)
-    if branch is None:
-        return False
-    if str(getattr(branch, "status", "") or "") != BranchStatusChoices.MERGING:
-        return False
-    branch.status = BranchStatusChoices.READY
-    branch.last_updated = local_now()
-    Branch.objects.filter(pk=branch.pk).update(
-        status=branch.status,
-        last_updated=branch.last_updated,
-    )
-    return True
+def _resolve_authoritative_merge_failure(ingestion, *, retry_interrupted):
+    """Commit branch and sync recovery state under one lock order."""
+    with transaction.atomic():
+        locked_ingestion = ForwardIngestion.objects.select_for_update().get(
+            pk=ingestion.pk
+        )
+        locked_sync = ForwardSync.objects.select_for_update().get(
+            pk=locked_ingestion.sync_id
+        )
+        authoritative_branch = (
+            Branch.objects.select_for_update()
+            .filter(pk=locked_ingestion.branch_id)
+            .first()
+            if locked_ingestion.branch_id is not None
+            else None
+        )
+        branch_status = (
+            str(authoritative_branch.status or "")
+            if authoritative_branch is not None
+            else None
+        )
+        if locked_ingestion.merge_finalized_at is not None:
+            outcome = "finalized"
+            sync_status = ForwardSyncStatusChoices.COMPLETED
+            transitioned = False
+        else:
+            transitioned = branch_status == BranchStatusChoices.MERGING
+            if transitioned:
+                target_status = (
+                    BranchStatusChoices.READY
+                    if retry_interrupted
+                    else BranchStatusChoices.FAILED
+                )
+                last_updated = local_now()
+                Branch.objects.filter(pk=authoritative_branch.pk).update(
+                    status=target_status,
+                    last_updated=last_updated,
+                )
+                branch_status = target_status
+                authoritative_branch.status = target_status
+                authoritative_branch.last_updated = last_updated
 
+            if retry_interrupted and branch_status == BranchStatusChoices.READY:
+                outcome = "retryable"
+                sync_status = ForwardSyncStatusChoices.READY_TO_MERGE
+            elif branch_status == BranchStatusChoices.MERGED or (
+                authoritative_branch is None
+                and locked_ingestion.merge_applied_at is not None
+            ):
+                outcome = "finalization"
+                sync_status = ForwardSyncStatusChoices.MERGING
+            else:
+                outcome = "failed"
+                sync_status = ForwardSyncStatusChoices.FAILED
 
-def _fail_nonretryable_merging_branch(ingestion, message):
+        if locked_sync.status != sync_status:
+            ForwardSync.objects.filter(pk=locked_sync.pk).update(status=sync_status)
+            locked_sync.status = sync_status
+
+    ingestion.merge_applied_at = locked_ingestion.merge_applied_at
+    ingestion.merge_finalized_at = locked_ingestion.merge_finalized_at
+    ingestion.sync.status = locked_sync.status
     branch = getattr(ingestion, "branch", None)
-    if branch is None:
-        return False
-    if str(getattr(branch, "status", "") or "") != BranchStatusChoices.MERGING:
-        return False
-    Branch.objects.filter(pk=branch.pk).update(status=BranchStatusChoices.FAILED)
-    branch.status = BranchStatusChoices.FAILED
-    ingestion.sync.logger.log_failure(
-        (
-            "Marked Branching branch failed after non-retryable merge error: "
-            f"{message}"
-        ),
-        obj=ingestion,
-    )
-    return True
+    if branch is not None and branch_status is not None:
+        branch.status = branch_status
+        if authoritative_branch is not None:
+            branch.last_updated = authoritative_branch.last_updated
+    return outcome, branch_status, transitioned
 
 
 def _skip_if_immediate_equivalent_active(job, per_sync_suffix):
@@ -1306,6 +1379,8 @@ def _reconcile_terminal_standing_schedule(job):
             user=job.user,
             schedule_at_by_kind=schedule_at_by_kind,
         )
+    except JobTimeoutException:
+        raise
     except Exception:
         logger.warning(
             "Standing-schedule recovery failed for terminal job %s.",
@@ -1339,6 +1414,19 @@ class ForwardJobRunner(JobRunner):
         except JobFailed:
             logger.warning("Job %s failed", job)
             status = JobStatusChoices.STATUS_FAILED
+        except JobTimeoutException as exc:
+            traceback_record = logging.makeLogRecord(
+                {
+                    "levelno": logging.ERROR,
+                    "levelname": "ERROR",
+                    "msg": traceback.format_exc(),
+                }
+            )
+            job.log(traceback_record)
+            status = JobStatusChoices.STATUS_ERRORED
+            error = repr(exc)
+            logger.error(exc)
+            raise
         except Exception as exc:  # noqa: BLE001 - preserve NetBox JobRunner semantics
             traceback_record = logging.makeLogRecord(
                 {
@@ -1350,8 +1438,6 @@ class ForwardJobRunner(JobRunner):
             job.log(traceback_record)
             status = JobStatusChoices.STATUS_ERRORED
             error = repr(exc)
-            if type(exc) is JobTimeoutException:
-                logger.error(exc)
         finally:
             if standing:
                 # Termination and desired-state reconciliation are one critical

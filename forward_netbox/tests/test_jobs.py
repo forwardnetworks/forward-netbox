@@ -28,6 +28,7 @@ from forward_netbox.choices import ForwardIngestionPhaseChoices
 from forward_netbox.choices import ForwardSyncStatusChoices
 from forward_netbox.exceptions import ForwardOwnershipDispatchError
 from forward_netbox.exceptions import ForwardPartialMergeError
+from forward_netbox.jobs import _resolve_authoritative_merge_failure
 from forward_netbox.jobs import DependencyPreviewJob
 from forward_netbox.jobs import ForwardJobRunner
 from forward_netbox.jobs import merge_forwardingestion
@@ -131,6 +132,27 @@ class ForwardJobsTest(TestCase):
             ).count(),
             1,
         )
+        overlays.assert_not_called()
+
+    def test_sync_job_timeout_persists_state_and_propagates_to_rq(self):
+        job = self._sync_job("sync-timeout")
+
+        with (
+            patch.object(
+                ForwardSync,
+                "sync",
+                side_effect=JobTimeoutException("sync timed out"),
+            ),
+            patch("forward_netbox.jobs._enqueue_post_sync_overlays") as overlays,
+            self.assertRaisesRegex(JobTimeoutException, "sync timed out"),
+        ):
+            sync_forwardsync(job, adhoc=True)
+
+        job.refresh_from_db()
+        self.sync.refresh_from_db()
+        self.assertEqual(job.status, JobStatusChoices.STATUS_ERRORED)
+        self.assertIn("sync timed out", job.error)
+        self.assertEqual(self.sync.status, ForwardSyncStatusChoices.TIMEOUT)
         overlays.assert_not_called()
 
     def test_scope_tag_reconciliation_enqueues_after_completed_sync(self):
@@ -882,6 +904,7 @@ class ForwardJobsTest(TestCase):
                 side_effect=JobTimeoutException("merge timed out"),
             ),
             patch("forward_netbox.jobs._enqueue_post_sync_overlays") as overlays,
+            self.assertRaisesRegex(JobTimeoutException, "merge timed out"),
         ):
             merge_forwardingestion(job)
 
@@ -901,6 +924,298 @@ class ForwardJobsTest(TestCase):
             ).exists()
         )
         overlays.assert_not_called()
+
+    def test_timeout_reset_uses_authoritative_branch_status(self):
+        branch = Branch.objects.create(
+            name=f"merge-timeout-stale-cache-{uuid4().hex[:12]}",
+            schema_id=f"merge_timeout_stale_cache_{uuid4().hex[:12]}",
+            status=BranchStatusChoices.READY,
+        )
+        self.ingestion.branch = branch
+        self.ingestion.save(update_fields=["branch"])
+        self.assertEqual(self.ingestion.branch.status, BranchStatusChoices.READY)
+        Branch.objects.filter(pk=branch.pk).update(status=BranchStatusChoices.MERGING)
+
+        outcome, status, transitioned = _resolve_authoritative_merge_failure(
+            self.ingestion,
+            retry_interrupted=True,
+        )
+
+        branch.refresh_from_db()
+        self.sync.refresh_from_db()
+        self.assertEqual(outcome, "retryable")
+        self.assertEqual(status, BranchStatusChoices.READY)
+        self.assertTrue(transitioned)
+        self.assertEqual(branch.status, BranchStatusChoices.READY)
+        self.assertEqual(self.sync.status, ForwardSyncStatusChoices.READY_TO_MERGE)
+
+    def test_nonretryable_failure_uses_authoritative_branch_status(self):
+        branch = Branch.objects.create(
+            name=f"merge-failure-stale-cache-{uuid4().hex[:12]}",
+            schema_id=f"merge_failure_stale_cache_{uuid4().hex[:12]}",
+            status=BranchStatusChoices.READY,
+        )
+        self.ingestion.branch = branch
+        self.ingestion.save(update_fields=["branch"])
+        self.assertEqual(self.ingestion.branch.status, BranchStatusChoices.READY)
+        Branch.objects.filter(pk=branch.pk).update(status=BranchStatusChoices.MERGING)
+
+        outcome, status, transitioned = _resolve_authoritative_merge_failure(
+            self.ingestion,
+            retry_interrupted=False,
+        )
+
+        branch.refresh_from_db()
+        self.sync.refresh_from_db()
+        self.assertEqual(outcome, "failed")
+        self.assertEqual(status, BranchStatusChoices.FAILED)
+        self.assertTrue(transitioned)
+        self.assertEqual(branch.status, BranchStatusChoices.FAILED)
+        self.assertEqual(self.sync.status, ForwardSyncStatusChoices.FAILED)
+
+    def test_timeout_reset_does_not_overwrite_authoritative_ready_status(self):
+        branch = Branch.objects.create(
+            name=f"merge-timeout-race-{uuid4().hex[:12]}",
+            schema_id=f"merge_timeout_race_{uuid4().hex[:12]}",
+            status=BranchStatusChoices.MERGING,
+        )
+        self.ingestion.branch = branch
+        self.ingestion.save(update_fields=["branch"])
+        Branch.objects.filter(pk=branch.pk).update(status=BranchStatusChoices.READY)
+
+        outcome, status, transitioned = _resolve_authoritative_merge_failure(
+            self.ingestion,
+            retry_interrupted=True,
+        )
+
+        branch.refresh_from_db()
+        self.sync.refresh_from_db()
+        self.assertEqual(outcome, "retryable")
+        self.assertEqual(status, BranchStatusChoices.READY)
+        self.assertFalse(transitioned)
+        self.assertEqual(branch.status, BranchStatusChoices.READY)
+        self.assertEqual(self.sync.status, ForwardSyncStatusChoices.READY_TO_MERGE)
+
+    def test_nonretryable_failure_does_not_overwrite_authoritative_ready_status(self):
+        branch = Branch.objects.create(
+            name=f"merge-failure-race-{uuid4().hex[:12]}",
+            schema_id=f"merge_failure_race_{uuid4().hex[:12]}",
+            status=BranchStatusChoices.MERGING,
+        )
+        self.ingestion.branch = branch
+        self.ingestion.save(update_fields=["branch"])
+        Branch.objects.filter(pk=branch.pk).update(status=BranchStatusChoices.READY)
+
+        outcome, status, transitioned = _resolve_authoritative_merge_failure(
+            self.ingestion,
+            retry_interrupted=False,
+        )
+
+        branch.refresh_from_db()
+        self.sync.refresh_from_db()
+        self.assertEqual(outcome, "failed")
+        self.assertEqual(status, BranchStatusChoices.READY)
+        self.assertFalse(transitioned)
+        self.assertEqual(branch.status, BranchStatusChoices.READY)
+        self.assertEqual(self.sync.status, ForwardSyncStatusChoices.FAILED)
+
+    def test_merge_timeout_does_not_overwrite_concurrent_merged_state(self):
+        branch = Branch.objects.create(
+            name=f"merge-timeout-merged-race-{uuid4().hex[:12]}",
+            schema_id=f"merge_timeout_merged_race_{uuid4().hex[:12]}",
+            status=BranchStatusChoices.MERGING,
+        )
+        self.ingestion.branch = branch
+        self.ingestion.save(update_fields=["branch"])
+        job = Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardIngestion),
+            object_id=self.ingestion.pk,
+            name="merge timeout merged race job",
+            user=None,
+            status=JobStatusChoices.STATUS_PENDING,
+            job_id=uuid4(),
+            created=timezone.now(),
+            data={},
+        )
+
+        def _merge_then_timeout(*args, **kwargs):
+            merged_at = timezone.now()
+            with transaction.atomic():
+                Branch.objects.filter(pk=branch.pk).update(
+                    status=BranchStatusChoices.MERGED
+                )
+                ForwardIngestion.objects.filter(pk=self.ingestion.pk).update(
+                    merge_applied_at=merged_at
+                )
+            raise JobTimeoutException("merge timed out")
+
+        with (
+            patch.object(
+                ForwardIngestion,
+                "sync_merge",
+                side_effect=_merge_then_timeout,
+            ),
+            patch("forward_netbox.jobs._enqueue_post_sync_overlays") as overlays,
+            self.assertRaisesRegex(JobTimeoutException, "merge timed out"),
+        ):
+            merge_forwardingestion(job)
+
+        job.refresh_from_db()
+        branch.refresh_from_db()
+        self.sync.refresh_from_db()
+        self.ingestion.refresh_from_db()
+        self.assertEqual(job.status, JobStatusChoices.STATUS_ERRORED)
+        self.assertIn("finalization requires recovery", job.error)
+        self.assertEqual(branch.status, BranchStatusChoices.MERGED)
+        self.assertEqual(self.sync.status, ForwardSyncStatusChoices.MERGING)
+        self.assertIsNotNone(self.ingestion.merge_applied_at)
+        self.assertFalse(self.ingestion.baseline_ready)
+        overlays.assert_not_called()
+
+    def test_merge_timeout_does_not_overwrite_concurrent_failed_state(self):
+        branch = Branch.objects.create(
+            name=f"merge-timeout-failed-race-{uuid4().hex[:12]}",
+            schema_id=f"merge_timeout_failed_race_{uuid4().hex[:12]}",
+            status=BranchStatusChoices.MERGING,
+        )
+        self.ingestion.branch = branch
+        self.ingestion.save(update_fields=["branch"])
+        job = Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardIngestion),
+            object_id=self.ingestion.pk,
+            name="merge timeout failed race job",
+            user=None,
+            status=JobStatusChoices.STATUS_PENDING,
+            job_id=uuid4(),
+            created=timezone.now(),
+            data={},
+        )
+
+        def _fail_then_timeout(*args, **kwargs):
+            Branch.objects.filter(pk=branch.pk).update(
+                status=BranchStatusChoices.FAILED
+            )
+            raise JobTimeoutException("merge timed out")
+
+        with (
+            patch.object(
+                ForwardIngestion,
+                "sync_merge",
+                side_effect=_fail_then_timeout,
+            ),
+            patch("forward_netbox.jobs._enqueue_post_sync_overlays") as overlays,
+            self.assertRaisesRegex(JobTimeoutException, "merge timed out"),
+        ):
+            merge_forwardingestion(job)
+
+        job.refresh_from_db()
+        branch.refresh_from_db()
+        self.sync.refresh_from_db()
+        self.assertEqual(job.status, JobStatusChoices.STATUS_ERRORED)
+        self.assertIn("authoritative branch state is failed", job.error)
+        self.assertEqual(branch.status, BranchStatusChoices.FAILED)
+        self.assertEqual(self.sync.status, ForwardSyncStatusChoices.FAILED)
+        overlays.assert_not_called()
+
+    def test_merge_timeout_preserves_concurrent_finalized_state(self):
+        branch = Branch.objects.create(
+            name=f"merge-timeout-finalized-race-{uuid4().hex[:12]}",
+            schema_id=f"merge_timeout_finalized_race_{uuid4().hex[:12]}",
+            status=BranchStatusChoices.MERGING,
+        )
+        self.ingestion.branch = branch
+        self.ingestion.save(update_fields=["branch"])
+        job = Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardIngestion),
+            object_id=self.ingestion.pk,
+            name="merge timeout finalized race job",
+            user=None,
+            status=JobStatusChoices.STATUS_PENDING,
+            job_id=uuid4(),
+            created=timezone.now(),
+            data={},
+        )
+
+        def _finalize_then_timeout(*args, **kwargs):
+            finalized_at = timezone.now()
+            with transaction.atomic():
+                Branch.objects.filter(pk=branch.pk).update(
+                    status=BranchStatusChoices.MERGED
+                )
+                ForwardIngestion.objects.filter(pk=self.ingestion.pk).update(
+                    merge_applied_at=finalized_at,
+                    merge_finalized_at=finalized_at,
+                    baseline_ready=True,
+                )
+                ForwardSync.objects.filter(pk=self.sync.pk).update(
+                    status=ForwardSyncStatusChoices.COMPLETED
+                )
+            raise JobTimeoutException("merge timed out")
+
+        with (
+            patch.object(
+                ForwardIngestion,
+                "sync_merge",
+                side_effect=_finalize_then_timeout,
+            ),
+            patch("forward_netbox.jobs._enqueue_post_sync_overlays") as overlays,
+            self.assertRaisesRegex(JobTimeoutException, "merge timed out"),
+        ):
+            merge_forwardingestion(job)
+
+        job.refresh_from_db()
+        branch.refresh_from_db()
+        self.sync.refresh_from_db()
+        self.ingestion.refresh_from_db()
+        self.assertEqual(job.status, JobStatusChoices.STATUS_ERRORED)
+        self.assertIn("completed sync state was preserved", job.error)
+        self.assertEqual(branch.status, BranchStatusChoices.MERGED)
+        self.assertEqual(self.sync.status, ForwardSyncStatusChoices.COMPLETED)
+        self.assertTrue(self.ingestion.baseline_ready)
+        self.assertIsNotNone(self.ingestion.merge_finalized_at)
+        overlays.assert_not_called()
+
+    def test_merge_recovery_preserves_finalization_with_stale_branch_state(self):
+        finalized_at = timezone.now()
+        ForwardIngestion.objects.filter(pk=self.ingestion.pk).update(
+            merge_applied_at=finalized_at,
+            merge_finalized_at=finalized_at,
+            baseline_ready=True,
+        )
+
+        for branch_status in (
+            BranchStatusChoices.MERGING,
+            BranchStatusChoices.READY,
+        ):
+            with self.subTest(branch_status=branch_status):
+                branch = Branch.objects.create(
+                    name=f"finalized-stale-{branch_status}-{uuid4().hex[:12]}",
+                    schema_id=f"finalized_stale_{uuid4().hex[:12]}",
+                    status=branch_status,
+                )
+                ForwardIngestion.objects.filter(pk=self.ingestion.pk).update(
+                    branch=branch
+                )
+                ForwardSync.objects.filter(pk=self.sync.pk).update(
+                    status=ForwardSyncStatusChoices.MERGING
+                )
+                self.ingestion.refresh_from_db()
+
+                outcome, status, transitioned = _resolve_authoritative_merge_failure(
+                    self.ingestion,
+                    retry_interrupted=True,
+                )
+
+                branch.refresh_from_db()
+                self.sync.refresh_from_db()
+                self.assertEqual(outcome, "finalized")
+                self.assertEqual(status, branch_status)
+                self.assertFalse(transitioned)
+                self.assertEqual(branch.status, branch_status)
+                self.assertEqual(
+                    self.sync.status,
+                    ForwardSyncStatusChoices.COMPLETED,
+                )
 
     def test_merge_forwardingestion_readiness_guard_remains_retryable(self):
         branch = Branch.objects.create(
@@ -1003,6 +1318,104 @@ class JobTerminationConcurrencyTest(TransactionTestCase):
             parameters={"snapshot_id": "latestProcessed"},
         )
         self.ingestion = ForwardIngestion.objects.create(sync=self.sync)
+
+    def test_merge_recovery_pairs_branch_and_sync_before_competing_merge(self):
+        branch = Branch.objects.create(
+            name=f"merge-recovery-lock-{uuid4().hex[:12]}",
+            schema_id=f"merge_recovery_lock_{uuid4().hex[:12]}",
+            status=BranchStatusChoices.MERGING,
+        )
+        self.ingestion.branch = branch
+        self.ingestion.save(update_fields=["branch"])
+        ForwardSync.objects.filter(pk=self.sync.pk).update(
+            status=ForwardSyncStatusChoices.MERGING
+        )
+        recovery_holds_locks = threading.Barrier(2)
+        release_recovery = threading.Event()
+        competitor_started = threading.Event()
+        competitor_done = threading.Event()
+        errors = []
+
+        from django.db.models.query import QuerySet
+
+        original_update = QuerySet.update
+
+        def guarded_update(queryset, **kwargs):
+            if (
+                queryset.model is ForwardSync
+                and kwargs.get("status") == ForwardSyncStatusChoices.READY_TO_MERGE
+            ):
+                recovery_holds_locks.wait(timeout=5)
+                if not release_recovery.wait(timeout=5):
+                    raise AssertionError("recovery release barrier timed out")
+            return original_update(queryset, **kwargs)
+
+        def recover():
+            close_old_connections()
+            try:
+                ingestion = ForwardIngestion.objects.get(pk=self.ingestion.pk)
+                with patch.object(QuerySet, "update", new=guarded_update):
+                    _resolve_authoritative_merge_failure(
+                        ingestion,
+                        retry_interrupted=True,
+                    )
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                close_old_connections()
+
+        def complete_competing_merge():
+            close_old_connections()
+            try:
+                competitor_started.set()
+                merged_at = timezone.now()
+                with transaction.atomic():
+                    with connections["default"].cursor() as cursor:
+                        cursor.execute(
+                            f"UPDATE {Branch._meta.db_table} SET status = %s "
+                            "WHERE id = %s",
+                            [BranchStatusChoices.MERGED, branch.pk],
+                        )
+                        cursor.execute(
+                            f"UPDATE {ForwardIngestion._meta.db_table} "
+                            "SET merge_applied_at = %s WHERE id = %s",
+                            [merged_at, self.ingestion.pk],
+                        )
+                        cursor.execute(
+                            f"UPDATE {ForwardSync._meta.db_table} SET status = %s "
+                            "WHERE id = %s",
+                            [ForwardSyncStatusChoices.MERGING, self.sync.pk],
+                        )
+                competitor_done.set()
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                close_old_connections()
+
+        recovery_thread = threading.Thread(target=recover, name="merge-recovery")
+        recovery_thread.start()
+        recovery_holds_locks.wait(timeout=5)
+        competitor_thread = threading.Thread(
+            target=complete_competing_merge,
+            name="competing-merge",
+        )
+        competitor_thread.start()
+        self.assertTrue(competitor_started.wait(timeout=5))
+        self.assertFalse(competitor_done.wait(timeout=0.2))
+
+        release_recovery.set()
+        recovery_thread.join(timeout=10)
+        competitor_thread.join(timeout=10)
+
+        self.assertFalse(recovery_thread.is_alive())
+        self.assertFalse(competitor_thread.is_alive())
+        self.assertEqual(errors, [])
+        branch.refresh_from_db()
+        self.sync.refresh_from_db()
+        self.ingestion.refresh_from_db()
+        self.assertEqual(branch.status, BranchStatusChoices.MERGED)
+        self.assertEqual(self.sync.status, ForwardSyncStatusChoices.MERGING)
+        self.assertIsNotNone(self.ingestion.merge_applied_at)
 
     def _pending_job(
         self,
@@ -1480,6 +1893,22 @@ class JobTerminationConcurrencyTest(TransactionTestCase):
         )
         self.assertTrue(job.log_entries)
         self.assertEqual(Job.objects.count(), job_count)
+
+    def test_runner_handler_rethrows_timeout_after_persisting_terminal_state(self):
+        job = self._pending_job(user=None, name="runner-timeout")
+
+        class TimeoutRunner(ForwardJobRunner):
+            def run(self, *args, **kwargs):
+                raise JobTimeoutException("runner timed out")
+
+        with self.assertRaisesRegex(JobTimeoutException, "runner timed out"):
+            TimeoutRunner.handle(Job.objects.get(pk=job.pk))
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, JobStatusChoices.STATUS_ERRORED)
+        self.assertIsNotNone(job.completed)
+        self.assertIn("runner timed out", job.error)
+        self.assertTrue(job.log_entries)
 
     def test_runner_handler_terminal_state_wins_before_recovery_update(self):
         job = self._pending_job(user=None, name="runner-worker-first")

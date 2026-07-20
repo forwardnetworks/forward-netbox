@@ -19,6 +19,7 @@ from netbox.models import PrimaryModel
 from netbox.models.features import JobsMixin
 from netbox.models.features import TagsMixin
 from netbox_branching.models import Branch
+from rq.timeouts import JobTimeoutException
 from utilities.querysets import RestrictedQuerySet
 
 from .choices import forward_configured_models
@@ -366,6 +367,8 @@ class ForwardSource(ForwardPluginModelDocsMixin, JobsMixin, PrimaryModel):
                 len(total_devices) - len(matched_devices), 0
             )
             return preview
+        except JobTimeoutException:
+            raise
         except (ForwardSyncError, ForwardQueryError, Exception) as exc:
             preview["error"] = str(exc)
             return preview
@@ -547,6 +550,8 @@ class ForwardSync(ForwardPluginModelDocsMixin, JobsMixin, TagsMixin, ChangeLogge
             return False
         try:
             snapshots = client.get_snapshots(network_id)
+        except JobTimeoutException:
+            raise
         except Exception:
             return False
         if not isinstance(snapshots, Iterable) or isinstance(

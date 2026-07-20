@@ -14,6 +14,7 @@ import base64
 import hashlib
 
 from django.conf import settings
+from rq.timeouts import JobTimeoutException
 
 SECRET_PREFIX = "enc:v1:"
 
@@ -35,6 +36,8 @@ def encrypt_secret(value):
         return value
     try:
         token = _fernet().encrypt(value.encode("utf-8")).decode("ascii")
+    except JobTimeoutException:
+        raise
     except Exception as exc:  # pragma: no cover - crypto backend misconfiguration
         raise ValueError("Unable to encrypt the Forward credential at rest.") from exc
     return SECRET_PREFIX + token
@@ -51,6 +54,8 @@ def decrypt_secret(value):
     try:
         raw = _fernet().decrypt(value[len(SECRET_PREFIX) :].encode("ascii"))
         return raw.decode("utf-8")
+    except JobTimeoutException:
+        raise
     except Exception as exc:
         raise ValueError(
             "Forward source credential cannot be decrypted; re-enter it after "

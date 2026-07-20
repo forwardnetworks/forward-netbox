@@ -2,6 +2,7 @@ from dataclasses import dataclass
 
 from django.apps import apps
 from django.db import transaction
+from rq.timeouts import JobTimeoutException
 
 from ..models import ForwardNQEMap
 from .plugin_integrations.registry import optional_integration_for_model
@@ -236,6 +237,8 @@ def live_query_binding_drift(*, client, query_map: ForwardNQEMap) -> dict:
                 query_path=query_path,
                 commit_id=requested_commit_id,
             )
+        except JobTimeoutException:
+            raise
         except Exception as exc:
             return _live_lookup_failed(local_result, exc)
         return _live_drift_result_from_committed_query(
@@ -291,6 +294,8 @@ def _live_drift_for_query_id(
                 repository=repository,
                 directory="/",
             )
+        except JobTimeoutException:
+            raise
         except Exception as exc:
             lookup_errors.append(f"{repository}: {exc}")
             continue
@@ -344,6 +349,8 @@ def _live_drift_for_query_id(
             commit_id=query_map.commit_id or commit_id,
             require_source_code=True,
         )
+    except JobTimeoutException:
+        raise
     except Exception as exc:
         return _live_lookup_failed(local_result, exc)
     return _live_drift_result_from_committed_query(
@@ -609,6 +616,8 @@ def _committed_query_by_path(client, query_path: str, existing_query: dict | Non
     if query_id and not commit_id:
         try:
             history = client.get_nqe_query_history(query_id)
+        except JobTimeoutException:
+            raise
         except Exception:
             history = []
         if history:
@@ -631,6 +640,8 @@ def _committed_query_by_path(client, query_path: str, existing_query: dict | Non
             query_path=query_path,
             commit_id="head",
         )
+    except JobTimeoutException:
+        raise
     except Exception:
         return existing_query or {}
     last_commit = query.get("lastCommit") or {}
@@ -641,6 +652,8 @@ def _committed_query_by_path(client, query_path: str, existing_query: dict | Non
     if resolved_query_id and not resolved_commit_id:
         try:
             history = client.get_nqe_query_history(resolved_query_id)
+        except JobTimeoutException:
+            raise
         except Exception:
             history = []
         if history:
@@ -805,6 +818,8 @@ def builtin_query_repository_sync_summary(
             repository=repository,
             directory=normalized_directory,
         )
+    except JobTimeoutException:
+        raise
     except Exception as exc:
         return {
             "status": "fail",
@@ -903,6 +918,8 @@ def builtin_query_repository_sync_summary(
                 commit_id=requested_commit_id,
                 query_index=query_index,
             )
+        except JobTimeoutException:
+            raise
         except Exception as exc:
             lookup_errors.append(
                 {
