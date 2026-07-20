@@ -58,15 +58,6 @@ class ReleaseProvenanceTest(unittest.TestCase):
             (
                 "cat-file",
                 "-t",
-                f"refs/tags/{provenance.TRUSTED_ANCHOR_TAG}",
-            ): "tag",
-            (
-                "rev-parse",
-                f"refs/tags/{provenance.TRUSTED_ANCHOR_TAG}^{{commit}}",
-            ): self.anchor_commit,
-            (
-                "cat-file",
-                "-t",
                 f"refs/tags/{provenance.PRIOR_RELEASE_TAG}",
             ): "tag",
             (
@@ -77,14 +68,18 @@ class ReleaseProvenanceTest(unittest.TestCase):
                 "merge-base",
                 "--is-ancestor",
                 self.prior_release_commit,
-                self.anchor_commit,
+                self.release_commit,
             ): "",
             (
                 "rev-list",
                 "--first-parent",
                 "--reverse",
-                f"{self.prior_release_commit}..{self.anchor_commit}",
-            ): f"{provenance.PRIOR_POST_RELEASE_DOC_COMMIT}\n{self.anchor_commit}",
+                f"{self.prior_release_commit}..{self.release_commit}",
+            ): (
+                f"{provenance.PRIOR_POST_RELEASE_DOC_COMMIT}\n"
+                f"{self.anchor_commit}\n{self.production_commit}\n"
+                f"{self.release_commit}"
+            ),
             (
                 "rev-list",
                 "--parents",
@@ -111,23 +106,9 @@ class ReleaseProvenanceTest(unittest.TestCase):
             (
                 "diff",
                 "--name-only",
+                provenance.PRIOR_POST_RELEASE_DOC_COMMIT,
                 self.anchor_commit,
-                self.release_commit,
-                "--",
-                *provenance.TRUSTED_RELEASE_FILES,
-            ): "",
-            (
-                "merge-base",
-                "--is-ancestor",
-                self.anchor_commit,
-                self.release_commit,
-            ): "",
-            (
-                "rev-list",
-                "--first-parent",
-                "--reverse",
-                f"{self.anchor_commit}..{self.release_commit}",
-            ): f"{self.production_commit}\n{self.release_commit}",
+            ): "\n".join(provenance.BOOTSTRAP_REQUIRED_FILES),
         }
         return responses[arguments]
 
@@ -287,7 +268,7 @@ class ReleaseProvenanceTest(unittest.TestCase):
 
         self.assertEqual(result["release_commit"], self.release_commit)
         self.assertEqual(result["production_commit"], self.production_commit)
-        self.assertEqual(result["trusted_anchor"], self.anchor_commit)
+        self.assertEqual(result["security_bootstrap_commit"], self.anchor_commit)
         self.assertEqual(
             result["reviewed_commits"],
             [self.anchor_commit, self.production_commit, self.release_commit],
@@ -342,7 +323,6 @@ class ReleaseProvenanceTest(unittest.TestCase):
         verify.assert_called_once_with(
             "brandonheller",
             secret,
-            require_trusted_status=True,
         )
         self.assertEqual(
             output.getvalue(),
@@ -457,28 +437,6 @@ class ReleaseProvenanceTest(unittest.TestCase):
                 release_commit,
             )
 
-    def test_accepts_reviewed_anchor_candidate_before_tag_creation(self):
-        with (
-            patch.object(
-                provenance,
-                "_git_capture",
-                side_effect=self._git,
-            ),
-            patch.object(
-                provenance,
-                "_github_json",
-                side_effect=self._github,
-            ),
-        ):
-            result = provenance.verify_trusted_anchor_candidate(
-                self.anchor_commit,
-                "brandonheller",
-                "token",
-            )
-
-        self.assertEqual(result["trusted_anchor"], self.anchor_commit)
-        self.assertEqual(result["pull_request"], 9)
-
     def test_rejects_stale_review(self):
         def github(path, token):
             payload = self._github(path, token)
@@ -559,20 +517,21 @@ class ReleaseProvenanceTest(unittest.TestCase):
         with self.assertRaisesRegex(provenance.ProvenanceError, "no exact"):
             self._verify(github=github)
 
-    def test_rejects_trusted_controller_change_after_bootstrap(self):
+    def test_rejects_runtime_changes_in_security_bootstrap(self):
         def git(*arguments):
             result = self._git(*arguments)
-            if arguments[:5] == (
+            if arguments == (
                 "diff",
                 "--name-only",
+                provenance.PRIOR_POST_RELEASE_DOC_COMMIT,
                 self.anchor_commit,
-                self.release_commit,
-                "--",
             ):
-                return ".github/workflows/release.yml"
+                return "\n".join(
+                    (*provenance.BOOTSTRAP_REQUIRED_FILES, "forward_netbox/models.py")
+                )
             return result
 
-        with self.assertRaisesRegex(provenance.ProvenanceError, "changed after"):
+        with self.assertRaisesRegex(provenance.ProvenanceError, "runtime changes"):
             self._verify(git=git)
 
     def test_rejects_non_plan_evidence_commit(self):
@@ -648,40 +607,12 @@ class GitHubReleaseControlsTest(unittest.TestCase):
             ],
             [],
         )
-        deploy_key_bypass = [
-            {
-                "actor_id": None,
-                "actor_type": "DeployKey",
-                "bypass_mode": "always",
-            }
-        ]
         rulesets = {
             provenance.MAIN_RULESET_NAME: main,
-            provenance.VERSION_TAG_CREATION_RULESET: self._ruleset(
-                provenance.VERSION_TAG_CREATION_RULESET,
-                "tag",
-                "refs/tags/v*",
-                [{"type": "creation"}],
-                deploy_key_bypass,
-            ),
             provenance.VERSION_TAG_INTEGRITY_RULESET: self._ruleset(
                 provenance.VERSION_TAG_INTEGRITY_RULESET,
                 "tag",
                 "refs/tags/v*",
-                [{"type": "deletion"}, {"type": "non_fast_forward"}],
-                [],
-            ),
-            provenance.ANCHOR_TAG_CREATION_RULESET: self._ruleset(
-                provenance.ANCHOR_TAG_CREATION_RULESET,
-                "tag",
-                f"refs/tags/{provenance.TRUSTED_ANCHOR_TAG}",
-                [{"type": "creation"}],
-                deploy_key_bypass,
-            ),
-            provenance.ANCHOR_TAG_INTEGRITY_RULESET: self._ruleset(
-                provenance.ANCHOR_TAG_INTEGRITY_RULESET,
-                "tag",
-                f"refs/tags/{provenance.TRUSTED_ANCHOR_TAG}",
                 [{"type": "deletion"}, {"type": "non_fast_forward"}],
                 [],
             ),
@@ -720,7 +651,6 @@ class GitHubReleaseControlsTest(unittest.TestCase):
             "actions": {"enabled": True, "sha_pinning_required": True},
             "rulesets": rulesets,
             "environment": environment,
-            "release_tag_secrets": sorted(provenance.RELEASE_TAG_REQUIRED_SECRETS),
         }
 
     def _github(self, payloads):
@@ -754,21 +684,9 @@ class GitHubReleaseControlsTest(unittest.TestCase):
             if endpoint.startswith("environments/") and endpoint.endswith(
                 "/deployment-branch-policies"
             ):
-                name = endpoint.split("/")[1]
-                policy = (
-                    {"name": "main", "type": "branch"}
-                    if name == provenance.RELEASE_TAG_ENVIRONMENT
-                    else {"name": "v*", "type": "tag"}
-                )
-                return {"total_count": 1, "branch_policies": [policy]}
-            if endpoint == (
-                f"environments/{provenance.RELEASE_TAG_ENVIRONMENT}/secrets"
-            ):
                 return {
-                    "total_count": len(payloads["release_tag_secrets"]),
-                    "secrets": [
-                        {"name": name} for name in payloads["release_tag_secrets"]
-                    ],
+                    "total_count": 1,
+                    "branch_policies": [{"name": "v*", "type": "tag"}],
                 }
             if endpoint.startswith("environments/"):
                 name = endpoint.split("/")[1]
@@ -777,7 +695,7 @@ class GitHubReleaseControlsTest(unittest.TestCase):
 
         return github
 
-    def _verify(self, payloads=None, *, require_trusted_status=True):
+    def _verify(self, payloads=None):
         current = payloads or self._payloads()
         with patch.object(
             provenance,
@@ -787,7 +705,6 @@ class GitHubReleaseControlsTest(unittest.TestCase):
             return provenance.verify_github_release_controls(
                 self.reviewer,
                 "token",
-                require_trusted_status=require_trusted_status,
             )
 
     def test_accepts_complete_live_release_controls(self):
@@ -795,25 +712,6 @@ class GitHubReleaseControlsTest(unittest.TestCase):
 
         self.assertEqual(result["main_ruleset"], provenance.MAIN_RULESET_NAME)
         self.assertIn(provenance.TRUSTED_STATUS_CONTEXT, result["required_statuses"])
-
-    def test_anchor_allows_trusted_status_to_be_installed_after_bootstrap(self):
-        payloads = self._payloads()
-        main = payloads["rulesets"][provenance.MAIN_RULESET_NAME]
-        statuses = next(
-            rule for rule in main["rules"] if rule["type"] == "required_status_checks"
-        )["parameters"]["required_status_checks"]
-        statuses[:] = [
-            status
-            for status in statuses
-            if status["context"] != provenance.TRUSTED_STATUS_CONTEXT
-        ]
-
-        result = self._verify(payloads, require_trusted_status=False)
-
-        self.assertNotIn(
-            provenance.TRUSTED_STATUS_CONTEXT,
-            result["required_statuses"],
-        )
 
     def test_rejects_missing_trusted_status_for_release(self):
         payloads = self._payloads()
@@ -837,18 +735,26 @@ class GitHubReleaseControlsTest(unittest.TestCase):
         with self.assertRaisesRegex(provenance.ProvenanceError, "administrator"):
             self._verify(payloads)
 
-    def test_rejects_missing_release_control_app_secret(self):
+    def test_rejects_missing_version_tag_integrity_ruleset(self):
         payloads = self._payloads()
-        payloads["release_tag_secrets"].remove("RELEASE_CONTROL_APP_PRIVATE_KEY")
+        del payloads["rulesets"][provenance.VERSION_TAG_INTEGRITY_RULESET]
 
-        with self.assertRaisesRegex(provenance.ProvenanceError, "secrets"):
+        with self.assertRaisesRegex(provenance.ProvenanceError, "not unique"):
             self._verify(payloads)
 
-    def test_rejects_extra_release_tag_environment_secret(self):
+    def test_rejects_retired_version_tag_creation_ruleset(self):
         payloads = self._payloads()
-        payloads["release_tag_secrets"].append("UNUSED_PRIVILEGED_SECRET")
+        ruleset = self._ruleset(
+            provenance.RETIRED_VERSION_TAG_CREATION_RULESET,
+            "tag",
+            "refs/tags/v*",
+            [{"type": "creation"}],
+            [],
+        )
+        ruleset["id"] = 99
+        payloads["rulesets"][provenance.RETIRED_VERSION_TAG_CREATION_RULESET] = ruleset
 
-        with self.assertRaisesRegex(provenance.ProvenanceError, "secrets"):
+        with self.assertRaisesRegex(provenance.ProvenanceError, "remains active"):
             self._verify(payloads)
 
 

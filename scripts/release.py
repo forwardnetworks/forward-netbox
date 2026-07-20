@@ -50,7 +50,6 @@ REQUIRED_RELEASE_WORKFLOWS = (
     ".github/workflows/ci.yml",
     ".github/workflows/codeql.yml",
 )
-TRUSTED_TAG_WORKFLOW = ".github/workflows/trusted-tag.yml"
 RELEASE_REVIEWER = "brandonheller"
 
 
@@ -556,64 +555,31 @@ def wait_for_release_workflow(
     return ""
 
 
-def _trusted_tag_workflow_runs(expected_commit: str) -> list[dict]:
+def _remote_annotated_tag_target(tag: str) -> str:
     raw = _capture(
         [
-            "gh",
-            "api",
-            "--method",
-            "GET",
-            (f"repos/{GITHUB_REPOSITORY}/actions/workflows/" "trusted-tag.yml/runs"),
-            "-f",
-            f"head_sha={expected_commit}",
-            "-f",
-            "event=workflow_dispatch",
-            "-f",
-            "per_page=100",
+            "git",
+            "ls-remote",
+            "--tags",
+            "origin",
+            f"refs/tags/{tag}",
+            f"refs/tags/{tag}^{{}}",
         ]
     )
-    try:
-        payload = json.loads(raw) if raw else {}
-    except json.JSONDecodeError:
-        payload = {}
-    return [
-        workflow_run
-        for workflow_run in payload.get("workflow_runs", [])
-        if workflow_run.get("path") == TRUSTED_TAG_WORKFLOW
-        and workflow_run.get("head_sha") == expected_commit
-        and workflow_run.get("head_branch") == "main"
-        and workflow_run.get("event") == "workflow_dispatch"
-    ]
+    refs = {
+        fields[1]: fields[0]
+        for line in raw.splitlines()
+        if len(fields := line.split()) == 2
+    }
+    direct_ref = f"refs/tags/{tag}"
+    peeled_ref = f"{direct_ref}^{{}}"
+    if direct_ref in refs and peeled_ref not in refs:
+        raise ReleaseError(f"remote {tag} is not an annotated tag")
+    return refs.get(peeled_ref, "")
 
 
-def wait_for_trusted_tag_workflow(
-    expected_commit: str,
-    prior_run_ids: set[int],
-    *,
-    poll_seconds: int = 15,
-    max_polls: int = 80,
-) -> str:
-    import time
-
-    for _ in range(max_polls):
-        new_runs = [
-            workflow_run
-            for workflow_run in _trusted_tag_workflow_runs(expected_commit)
-            if int(workflow_run.get("id") or 0) not in prior_run_ids
-        ]
-        latest = (
-            max(new_runs, key=lambda workflow_run: int(workflow_run.get("id") or 0))
-            if new_runs
-            else None
-        )
-        if latest and latest.get("status") == "completed":
-            return str(latest.get("conclusion") or "")
-        print("[release] waiting for protected-main tag authorization")
-        time.sleep(poll_seconds)
-    return ""
-
-
-def ensure_trusted_tag(tag: str, expected_commit: str) -> None:
+def ensure_release_tag(tag: str, expected_commit: str) -> None:
+    """Create a normal annotated tag and prove its remote target."""
     run(
         [
             "git",
@@ -625,54 +591,45 @@ def ensure_trusted_tag(tag: str, expected_commit: str) -> None:
         check=False,
     )
     existing_tag_commit = _capture(["git", "rev-list", "-n", "1", tag])
+    remote_tag_commit = _remote_annotated_tag_target(tag)
+    if remote_tag_commit:
+        if remote_tag_commit != expected_commit:
+            raise ReleaseError(
+                f"remote {tag} points to {remote_tag_commit}, not {expected_commit}"
+            )
+        if existing_tag_commit != expected_commit:
+            raise ReleaseError(
+                f"local {tag} points to {existing_tag_commit}, not {expected_commit}"
+            )
+        if _capture(["git", "cat-file", "-t", f"refs/tags/{tag}"]) != "tag":
+            raise ReleaseError(f"local {tag} is not an annotated tag")
+        return
+
+    _verify_live_release_controls()
     if existing_tag_commit:
         if existing_tag_commit != expected_commit:
             raise ReleaseError(
-                f"existing {tag} points to {existing_tag_commit}, not {expected_commit}"
+                f"local {tag} points to {existing_tag_commit}, not {expected_commit}"
             )
         if _capture(["git", "cat-file", "-t", f"refs/tags/{tag}"]) != "tag":
-            raise ReleaseError(f"existing {tag} is not an annotated tag")
-        return
-
-    prior_run_ids = {
-        int(workflow_run.get("id") or 0)
-        for workflow_run in _trusted_tag_workflow_runs(expected_commit)
-    }
-    run(
-        [
-            "gh",
-            "workflow",
-            "run",
-            TRUSTED_TAG_WORKFLOW,
-            "--repo",
-            GITHUB_REPOSITORY,
-            "--ref",
-            "main",
-            "-f",
-            f"tag_name={tag}",
-            "-f",
-            f"expected_sha={expected_commit}",
-        ]
-    )
-    conclusion = wait_for_trusted_tag_workflow(expected_commit, prior_run_ids)
-    if conclusion != "success":
-        raise ReleaseError(
-            "protected-main tag workflow did not authorize the release "
-            f"(conclusion={conclusion!r})"
+            raise ReleaseError(f"local {tag} is not an annotated tag")
+    else:
+        run(
+            [
+                "git",
+                "tag",
+                "-a",
+                tag,
+                expected_commit,
+                "-m",
+                f"Forward NetBox {tag}",
+            ]
         )
-    run(
-        [
-            "git",
-            "fetch",
-            "--force",
-            "origin",
-            f"refs/tags/{tag}:refs/tags/{tag}",
-        ]
-    )
-    if _capture(["git", "rev-list", "-n", "1", tag]) != expected_commit:
-        raise ReleaseError(f"trusted workflow created {tag} at the wrong commit")
-    if _capture(["git", "cat-file", "-t", f"refs/tags/{tag}"]) != "tag":
-        raise ReleaseError(f"trusted workflow did not create annotated tag {tag}")
+    run(["git", "push", "origin", f"refs/tags/{tag}"])
+    if _remote_annotated_tag_target(tag) != expected_commit:
+        raise ReleaseError(
+            f"remote {tag} does not peel to reviewed commit {expected_commit}"
+        )
 
 
 def stage_finish(version: str) -> None:
@@ -750,7 +707,7 @@ def stage_finish(version: str) -> None:
     if not wait_for_required_workflows(head_commit, expected_branch="main"):
         raise ReleaseError("Final main exact workflows did not all succeed")
     tag = f"v{version}"
-    ensure_trusted_tag(tag, head_commit)
+    ensure_release_tag(tag, head_commit)
     conclusion = wait_for_release_workflow(version)
     if conclusion != "success":
         raise ReleaseError(

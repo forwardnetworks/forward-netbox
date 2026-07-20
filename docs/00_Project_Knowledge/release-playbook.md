@@ -8,28 +8,17 @@ Use this playbook for reviewed production releases.
 - Version is updated in `pyproject.toml` and `forward_netbox/__init__.py`.
 - Release notes are updated in `README.md`, `docs/README.md`, and `docs/01_User_Guide/README.md`.
 - No customer identifiers, network IDs, snapshot IDs, credentials, or private screenshots are in tracked content.
-- Repository rulesets `main-release-integrity`, `version-tag-integrity`, and the
-  version-tag creation restriction are active. Main has no bypass actors and
+- Repository rulesets `main-release-integrity` and `version-tag-integrity` are
+  active. Main has no bypass actors and
   requires a current CODEOWNERS approval, resolved conversations, the trusted
   candidate scan, exact NetBox 4.6.5 CI, both CodeQL analyses, and the separate
   GitHub Advanced Security CodeQL result. Version tags
-  reject deletion and movement. Human credentials cannot create them; only the
-  environment-scoped deploy key used by the frozen protected-main tag workflow
-  can create a matching tag.
-- Annotated tag `security-bootstrap-2.6` resolves to the reviewed bootstrap
-  commit and is protected against deletion or movement. The release workflow,
-  trusted PR scanner, protected-main tag workflow and authorizer, provenance
-  verifier, reproducible builder, and hashed release-tool lock must be
-  byte-identical to that anchor.
-- Environment `release-tag` is restricted to protected `main`, requires the
-  independent reviewer with self-review and administrator bypass disabled, and
-  is the only location of `RELEASE_TAG_DEPLOY_KEY`,
-  `RELEASE_CONTROL_APP_ID`, and `RELEASE_CONTROL_APP_PRIVATE_KEY`. The GitHub
-  App is installed only on this repository. Its minted token has Actions,
-  Contents, Environments, pull-request, and status read access plus
-  Administration write solely because GitHub hides ruleset bypass actors from
-  read-only callers. It has no Contents write. Environment `pypi` accepts only
-  `v*` tags and has the same independent approval and no-bypass controls.
+  reject deletion and movement. Releases use a normal annotated tag created by
+  the authenticated maintainer from an exact reviewed `main` commit.
+- Environment `pypi` accepts only `v*` tags, requires the independent reviewer
+  with self-review disabled, and does not permit administrator bypass. PyPI
+  Trusted Publishing uses GitHub OIDC; no repository or environment PyPI token
+  is stored.
 - `.github/CODEOWNERS` names a valid accountable owner, the repository-level
   `FORWARD_SENSITIVE_PATTERNS` Actions secret contains at least one private
   pattern, and the `FORWARD_SENSITIVE_HISTORY_BASELINE` repository variable
@@ -40,20 +29,16 @@ Use this playbook for reviewed production releases.
   customer-acceptance, and independent-review entries to their canonical gates;
   an unrelated successful command cannot authorize them. Prospective checklist
   language cannot authorize a release.
-- The trusted tag authorizer's live-control preflight passes. It reads the
-  repository settings, required authenticated statuses, all four tag rulesets,
-  both deployment environments and policies, and Actions SHA-pinning setting
-  from GitHub before it authorizes a tag.
-- The frozen workflow mints a short-lived, repository-scoped GitHub App token
-  for that preflight. The automatic Actions token is not accepted because it
-  cannot read repository Actions administration or complete ruleset bypass
-  data. The deploy key remains the only tag-writing identity.
+- The local release preflight passes with the maintainer's authenticated GitHub
+  session. It reads repository settings, required authenticated statuses, the
+  version-tag integrity ruleset, the PyPI environment and policy, and the
+  Actions SHA-pinning setting before creating the tag.
 
-For the one-time 2.6 trust bootstrap, merge the bootstrap PR and create
-`security-bootstrap-2.6` while the four public CI/CodeQL statuses are required.
-Immediately afterward, add authenticated `Trusted sensitive-content scan` to
-`main-release-integrity` before opening the production PR. Version-tag
-authorization fails closed until that fifth status is required.
+For the one-time 2.6 security bootstrap, merge the bootstrap PR while the four
+public CI/CodeQL statuses are required. Immediately afterward, add authenticated
+`Trusted sensitive-content scan` to `main-release-integrity` before opening the
+production PR. Version-tag authorization fails closed until that fifth status
+is required.
 
 ## Local Gate
 
@@ -133,24 +118,16 @@ invoke scale-soak --runs 3 --max-changes-per-staging-item 10000
    PR. Its squash merge preserves the evidence-only parent relationship.
 6. Update local `main` to that reviewed evidence commit and run `--finish` once
    more. It checks the authorization binding and exact main-push workflows,
-   then dispatches `.github/workflows/trusted-tag.yml` from the exact protected
-   `main` commit. After independent environment approval, that frozen workflow
-   mints the short-lived release-control App token, re-proves the bootstrap or
-   release lineage, and uses the environment-only deploy key to create the
-   immutable annotated tag. The App token cannot write Contents, and human
-   credentials cannot push the tag. A concurrent protected-main advance does
-   not invalidate an already
-   authorized ancestor tag; divergence still fails closed. The tag workflow
-   independently proves that both the production and
-   evidence commits came from approved main PRs. It executes the provenance
-   verifier from `security-bootstrap-2.6`, walks every
-   first-parent main commit after that anchor, pages every review and status,
-   binds each trusted status to the exact successful `pull_request_target` run,
-   PR number, and candidate SHA, and requires exact CI/CodeQL workflows on every
-   reviewed main commit.
-7. The tag workflow installs only the hashed release-tool lock, builds the
+   verifies live GitHub controls with the maintainer's authenticated session,
+   creates a normal annotated version tag at that reviewed commit, pushes it,
+   and proves that the remote tag peels to the expected commit. The tag-triggered
+   workflow independently walks the first-parent lineage from the prior release,
+   verifies the reviewed security-bootstrap, production, and evidence PRs,
+   binds trusted statuses to their exact successful `pull_request_target` runs,
+   and requires exact CI/CodeQL workflows on every reviewed main commit.
+7. The release workflow installs only the hashed release-tool lock, builds the
    wheel/sdist twice, rejects any byte mismatch, installed-runtime-tests the
    identical pair, generates and validates the full runtime SBOM, publishes the
    pair to PyPI, and creates the GitHub release from the same workflow artifacts.
-8. The release command waits for the tag workflow to finish. Independently
+8. The release command waits for the release workflow to finish. Independently
    verify the tag, `main`, PyPI hashes, GitHub asset hashes, and attached SBOM.

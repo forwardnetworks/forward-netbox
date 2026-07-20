@@ -75,14 +75,11 @@ Revert the bootstrap commit before enabling the dependent main ruleset.
   reviewed 2.6 production PR removes, so the bootstrap does not claim a clean
   full tree. The trusted PR controller scans the complete 2.6 candidate tree
   before it can merge; that candidate then restores the full-tree CI scan.
-- Squash-merge the bootstrap through an independently approved PR, then create
-  the immutable annotated `security-bootstrap-2.6` trust tag through the frozen
-  protected-main workflow at that exact main commit. Release tags use the same
-  environment-only deploy key path, then execute the verifier from this anchor,
-  validate every reviewed first-parent main commit after it, and reject changes
-  to the trusted tag workflow, authorizer, release controller, scanner,
-  reproducible builder, or hashed tool lock. Human credentials cannot create,
-  move, or delete either tag class.
+- Squash-merge the bootstrap through an independently approved PR, then require
+  its authenticated trusted-scan status on later main PRs. Release tags use the
+  standard annotated-tag path from reviewed `main`; the release workflow
+  validates every reviewed first-parent main commit after `v2.5.11`, and the
+  version-tag integrity ruleset prevents movement or deletion.
 
 ## Bundled changes
 CI now scans tracked-file content (not just commit messages) for the

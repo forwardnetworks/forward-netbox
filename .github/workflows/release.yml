@@ -19,6 +19,7 @@ permissions:
   actions: read
   contents: read
   pull-requests: read
+  statuses: read
 jobs:
   validate:
     name: Validate tagged release
@@ -38,12 +39,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git fetch --no-tags origin main:refs/remotes/origin/main
-          git fetch --force origin \
-            refs/tags/security-bootstrap-2.6:refs/tags/security-bootstrap-2.6
-          anchor="$(git rev-parse refs/tags/security-bootstrap-2.6^{commit})"
-          trust_dir=/tmp/forward-netbox-release-trust
-          git worktree add --detach "${trust_dir}" "${anchor}"
-          python "${trust_dir}/scripts/verify_release_provenance.py" \
+          git fetch --force origin refs/tags/v2.5.11:refs/tags/v2.5.11
+          python scripts/verify_release_provenance.py \
             --tag "${GITHUB_REF_NAME}" --reviewer brandonheller
       - name: Set up Node
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
