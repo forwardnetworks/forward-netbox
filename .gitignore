@@ -154,3 +154,4 @@ development/secrets/
 # not source. Keep named summary fixtures (audit/benchmark/matrix JSON) tracked.
 docs/03_Plans/evidence/
 dist_gh/
+sbom/

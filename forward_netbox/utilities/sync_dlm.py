@@ -14,6 +14,7 @@
 from datetime import date
 
 from django.core.exceptions import ObjectDoesNotExist
+from django.db import transaction
 
 from ..exceptions import ForwardDependencySkipError
 
@@ -285,8 +286,8 @@ def apply_netbox_dlm_vulnerability(runner, row):
     )
     # netbox-dlm exposes the catalog-level CVE <-> SoftwareVersion relation
     # separately from device-scoped Vulnerability instances. Forward's finding
-    # supplies direct evidence for both. Keep the catalog relation additive: a
-    # version remains affected after the last currently observed device upgrades.
+    # supplies direct evidence for both; authoritative full workloads remove the
+    # relation when the last in-scope finding disappears.
     cve.affected_software.add(software_version)
     return vulnerability
 
@@ -330,9 +331,17 @@ def delete_netbox_dlm_devicesoftware(runner, row):
 
 def delete_netbox_dlm_cve(runner, row):
     CVE = _dlm_model(runner, "CVE", "netbox_dlm.cve")
-    return runner._delete_by_coalesce(
-        CVE, [{"cve_id": str(row.get("cve_id") or "").strip()}]
-    )
+    cve_id = str(row.get("cve_id") or "").strip()
+    cve = runner._get_unique_or_raise(CVE, {"cve_id": cve_id})
+    if cve is None:
+        return False
+    # Vulnerabilities are authoritative device findings and block deletion.
+    # affected_software is derived from those findings, so it must not preserve
+    # an otherwise orphaned CVE indefinitely.
+    if cve.vulnerabilities.exists():
+        return False
+    cve.affected_software.clear()
+    return runner._delete_by_coalesce(CVE, [{"cve_id": cve_id}])
 
 
 def delete_netbox_dlm_vulnerability(runner, row):
@@ -358,7 +367,17 @@ def delete_netbox_dlm_vulnerability(runner, row):
     device = runner._lookup_device_by_name(row.get("name"))
     if cve is None or software_version is None or device is None:
         return False
-    return runner._delete_by_coalesce(
-        Vulnerability,
-        [{"cve": cve, "software_version": software_version, "device": device}],
-    )
+    with transaction.atomic(using=Vulnerability.objects.db):
+        deleted = runner._delete_by_coalesce(
+            Vulnerability,
+            [{"cve": cve, "software_version": software_version, "device": device}],
+        )
+        if (
+            deleted
+            and not Vulnerability.objects.filter(
+                cve=cve,
+                software_version=software_version,
+            ).exists()
+        ):
+            cve.affected_software.remove(software_version)
+        return deleted

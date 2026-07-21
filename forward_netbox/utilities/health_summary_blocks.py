@@ -173,6 +173,15 @@ def ingestion_summary(ingestion):
         "baseline_ready": bool(ingestion.baseline_ready),
         "snapshot_selector": ingestion.snapshot_selector or "",
         "snapshot_id": ingestion.snapshot_id or "",
+        "catchup_status": ingestion.catchup_status,
+        "catchup_target_snapshot_id": ingestion.catchup_target_snapshot_id or "",
+        "catchup_reason": ingestion.catchup_reason or "",
+        "catchup_error_type": ingestion.catchup_error_type or "",
+        "catchup_checked_at": (
+            ingestion.catchup_checked_at.isoformat()
+            if ingestion.catchup_checked_at
+            else None
+        ),
         "branch": ingestion.branch.name if ingestion.branch else "",
         "branch_status": ingestion.branch.status if ingestion.branch else "",
         "stage_job_status": ingestion.job.status if ingestion.job else "",

@@ -2,6 +2,7 @@
 #
 # Used by both the forward_device_scope_reconciliation_audit management command
 # and the sync-detail UI panel so the CLI and UI always agree.
+import heapq
 import re
 from datetime import datetime
 from datetime import timezone as dt_timezone
@@ -11,6 +12,7 @@ from django.db import transaction
 from django.db.models.deletion import ProtectedError
 from django.utils import timezone
 
+from .bulk_delete import lock_related_writes_for_delete
 from .forward_api import build_device_tag_scope_where
 from .forward_api import build_endpoint_device_eligibility_where
 from .forward_api import build_endpoint_tag_scope_where
@@ -190,6 +192,12 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
     out_of_scope = (previously_managed_names & netbox_names) - tagged_names
     present_backfilled = netbox_names & backfilled_names
     missing_in_netbox = completed_names - netbox_names
+    missing_scope_tag_targets = set(matched_include_tags_by_name) - netbox_names
+    present_scope_tags_by_name = {
+        name: tag_names
+        for name, tag_names in matched_include_tags_by_name.items()
+        if name in netbox_names
+    }
 
     out_of_scope_pks = [
         device_id for device_id, name in previously_managed if name in out_of_scope
@@ -250,12 +258,16 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
         "netbox_out_of_scope": len(out_of_scope),
         "netbox_empty_orphan_site_count": len(empty_orphan_sites),
         "forward_missing_in_netbox": len(missing_in_netbox),
+        "scope_tag_targets_missing_in_netbox": len(missing_scope_tag_targets),
         "backfilled_reason_breakdown": reason_breakdown,
         "out_of_scope_sample": sorted(out_of_scope)[:SAMPLE_LIMIT],
         "empty_orphan_site_sample": empty_orphan_sites[:SAMPLE_LIMIT],
         "present_backfilled_sample": sorted(present_backfilled)[:SAMPLE_LIMIT],
         "present_backfilled_detail_sample": present_backfilled_detail,
         "missing_in_netbox_sample": sorted(missing_in_netbox)[:SAMPLE_LIMIT],
+        "scope_tag_targets_missing_sample": sorted(missing_scope_tag_targets)[
+            :SAMPLE_LIMIT
+        ],
         # Internal sets for prune/tag; not meant for JSON serialization.
         "_tagged_names": tagged_names,
         "_device_tagged_names": device_tagged_names,
@@ -263,7 +275,7 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
         "_out_of_scope": out_of_scope,
         "_out_of_scope_pks": out_of_scope_pks,
         "_present_backfilled": present_backfilled,
-        "_matched_include_tags_by_name": matched_include_tags_by_name,
+        "_matched_include_tags_by_name": present_scope_tags_by_name,
     }
 
 
@@ -344,6 +356,41 @@ def _require_nonempty_forward_scope(report, *, operation):
         )
 
 
+def _prunable_device_order(device_ids):
+    """Return child-before-parent order and fail-closed cyclic identities."""
+    from ..models import ForwardVirtualParentClaim
+
+    candidate_ids = set(device_ids)
+    dependencies = {device_id: set() for device_id in candidate_ids}
+    dependents = {device_id: set() for device_id in candidate_ids}
+    for child_id, parent_id in ForwardVirtualParentClaim.objects.filter(
+        device_id__in=candidate_ids,
+        parent_device_id__in=candidate_ids,
+    ).values_list("device_id", "parent_device_id"):
+        if child_id == parent_id:
+            dependencies[parent_id].add(child_id)
+            continue
+        dependencies[parent_id].add(child_id)
+        dependents[child_id].add(parent_id)
+
+    ready = [
+        device_id
+        for device_id, required_ids in dependencies.items()
+        if not required_ids
+    ]
+    heapq.heapify(ready)
+    ordered = []
+    while ready:
+        device_id = heapq.heappop(ready)
+        ordered.append(device_id)
+        for parent_id in sorted(dependents[device_id]):
+            dependencies[parent_id].discard(device_id)
+            if not dependencies[parent_id]:
+                heapq.heappush(ready, parent_id)
+    cyclic_ids = candidate_ids.difference(ordered)
+    return ordered, cyclic_ids
+
+
 def prune_orphan_devices(sync, *, report=None) -> dict:
     """Delete NetBox devices not present in the sync's Forward scope.
 
@@ -373,27 +420,56 @@ def prune_orphan_devices(sync, *, report=None) -> dict:
             "scope reconciliation report."
         )
     from .ownership import ownership_write_lock
-    from .ownership import release_prunable_device_ownership
+    from .ownership import _release_prunable_device_ownership_locked
 
     deleted_total = 0
     pruned_device_ids = []
     protected_tally = {}
     ownership_blocked_ids = set()
-    with ownership_write_lock():
-        for device_id in sorted(orphan_pks):
+    pending_device_ids = set(orphan_pks)
+    while pending_device_ids:
+        ordered_device_ids, cyclic_device_ids = _prunable_device_order(
+            pending_device_ids
+        )
+        if cyclic_device_ids:
+            ownership_blocked_ids.update(cyclic_device_ids)
+            protected_tally["forward_netbox.forwardvirtualparentclaim"] = (
+                protected_tally.get(
+                    "forward_netbox.forwardvirtualparentclaim",
+                    0,
+                )
+                + len(cyclic_device_ids)
+            )
+        retry_device_ids = set()
+        pass_progress = False
+        for device_id in ordered_device_ids:
             try:
-                with transaction.atomic():
-                    release = release_prunable_device_ownership(sync, [device_id])
+                with ownership_write_lock():
+                    release = _release_prunable_device_ownership_locked(
+                        sync,
+                        [device_id],
+                    )
                     if release["blocked_device_ids"]:
-                        ownership_blocked_ids.add(device_id)
+                        retry_device_ids.add(device_id)
                         continue
+                    lock_related_writes_for_delete(
+                        Device,
+                        using=Device.objects.db,
+                    )
                     deleted, _ = Device.objects.filter(pk=device_id).delete()
                     deleted_total += deleted
                     pruned_device_ids.append(device_id)
+                    pass_progress = True
             except ProtectedError as exc:
                 for obj in exc.protected_objects:
                     label = obj._meta.label_lower
                     protected_tally[label] = protected_tally.get(label, 0) + 1
+        if not retry_device_ids:
+            break
+        if not pass_progress:
+            ownership_blocked_ids.update(retry_device_ids)
+            break
+        pending_device_ids = retry_device_ids
     result = {
         "pruned_device_count": len(pruned_device_ids),
         "pruned_object_count": deleted_total,
@@ -652,8 +728,6 @@ def tag_backfilled_devices(
         "scope_claims_added": managed_scope_cleanup["claims_added"],
         "scope_tags_added": managed_scope_cleanup["assignments_added"],
         "ownership_current": bool(
-            backfilled["current"]
-            and out_of_scope["current"]
-            and managed_scope_cleanup["current"]
+            status_materialized["current"] and managed_scope_cleanup["current"]
         ),
     }

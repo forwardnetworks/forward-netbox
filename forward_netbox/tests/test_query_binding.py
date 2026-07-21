@@ -787,6 +787,51 @@ class NQEMapBindingTest(TestCase):
         )
         self.assertEqual(query_map.commit_id, "commit-pinned")
 
+    def test_publish_builtin_queries_explicit_repin_replaces_existing_pin(self):
+        netbox_model = ContentType.objects.get(app_label="dcim", model="device")
+        query_map = ForwardNQEMap.objects.create(
+            name="Forward Devices",
+            netbox_model=netbox_model,
+            query_id="Q_devices_old",
+            commit_id="commit-pinned",
+        )
+        client = Mock()
+        client.get_nqe_repository_query_index.return_value = {
+            "rows": [
+                {
+                    "queryId": "Q_devices_head",
+                    "path": "/forward_netbox_validation/forward_devices",
+                    "lastCommitId": "commit-head",
+                }
+            ],
+            "by_path": {
+                "/forward_netbox_validation/forward_devices": {
+                    "queryId": "Q_devices_head",
+                    "path": "/forward_netbox_validation/forward_devices",
+                    "lastCommitId": "commit-head",
+                }
+            },
+            "by_query_id": {},
+        }
+
+        results = publish_builtin_nqe_map_queries(
+            client=client,
+            directory="/forward_netbox_validation/",
+            queryset=ForwardNQEMap.objects.filter(pk=query_map.pk),
+            commit_message="Repin Forward NetBox NQE maps",
+            pin_commit=True,
+        )
+
+        self.assertEqual(len(results), 1)
+        self.assertTrue(results[0].matched)
+        query_map.refresh_from_db()
+        self.assertEqual(query_map.query_id, "")
+        self.assertEqual(
+            query_map.query_path,
+            "/forward_netbox_validation/forward_devices",
+        )
+        self.assertEqual(query_map.commit_id, "commit-head")
+
     def test_publish_builtin_queries_resolves_commit_id_for_existing_path(self):
         netbox_model = ContentType.objects.get(app_label="dcim", model="device")
         query_map = ForwardNQEMap.objects.create(

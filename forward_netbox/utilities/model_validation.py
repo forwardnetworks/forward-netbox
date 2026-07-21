@@ -15,7 +15,6 @@ from ..utilities.forward_api import MAX_NQE_FETCH_ALL_MAX_PAGES
 from ..utilities.forward_api import MAX_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT
 from ..utilities.forward_api import MAX_NQE_PAGE_SIZE
 from ..utilities.forward_api import MAX_QUERY_FETCH_CONCURRENCY
-from ..utilities.query_fetch import MAX_PREFLIGHT_ROW_LIMIT
 from .branch_budget import MODEL_CHANGE_DENSITY_PARAMETER
 from .branch_budget import MODEL_CHANGE_DENSITY_PROFILE_PARAMETER
 from .sync_contracts import normalize_coalesce_fields
@@ -45,8 +44,6 @@ def clean_forward_source(source):
             "nqe_async_poll_interval_seconds",
             "nqe_async_max_polls",
             "workload_fetch_timeout_seconds",
-            "query_preflight_enabled",
-            "query_preflight_row_limit",
             "query_diagnostics_enabled",
             "pushdown_fallback_warn_rate",
             "pushdown_runtime_fallback_warn_share",
@@ -224,27 +221,6 @@ def clean_forward_source(source):
         parameters["nqe_identical_full_page_streak_limit"] = (
             nqe_identical_full_page_streak_limit
         )
-    if parameters.get("query_preflight_enabled") is not None and not isinstance(
-        parameters.get("query_preflight_enabled"), bool
-    ):
-        raise ValidationError(_("`query_preflight_enabled` must be a boolean."))
-    if parameters.get("query_preflight_row_limit") is not None:
-        try:
-            query_preflight_row_limit = int(parameters.get("query_preflight_row_limit"))
-        except (TypeError, ValueError) as exc:
-            raise ValidationError(
-                _("`query_preflight_row_limit` must be an integer.")
-            ) from exc
-        if query_preflight_row_limit < 1 or query_preflight_row_limit > int(
-            MAX_PREFLIGHT_ROW_LIMIT
-        ):
-            raise ValidationError(
-                _(
-                    "`query_preflight_row_limit` must be between 1 and "
-                    f"{MAX_PREFLIGHT_ROW_LIMIT}."
-                )
-            )
-        parameters["query_preflight_row_limit"] = query_preflight_row_limit
     if parameters.get("query_diagnostics_enabled") is not None and not isinstance(
         parameters.get("query_diagnostics_enabled"), bool
     ):
@@ -359,7 +335,6 @@ def clean_forward_sync(sync):
             "max_changes_per_staging_item",
             "snapshot_id",
             "enable_bulk_orm",
-            "skip_unchanged_snapshot",
             "set_primary_ip_from_mgmt_tag",
             "diff_fallback_mode",
             "webhook_secret",
@@ -401,9 +376,6 @@ def clean_forward_sync(sync):
             )
         parameters[schedule_key] = value
     parameters["auto_merge"] = bool(parameters.get("auto_merge", sync.auto_merge))
-    parameters["skip_unchanged_snapshot"] = bool(
-        parameters.get("skip_unchanged_snapshot", False)
-    )
     parameters["set_primary_ip_from_mgmt_tag"] = bool(
         parameters.get("set_primary_ip_from_mgmt_tag", False)
     )

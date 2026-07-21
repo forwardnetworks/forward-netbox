@@ -16,13 +16,15 @@ from .primary_ip import apply_primary_ip_from_mgmt_tags
 from .primary_ip import primary_ip_from_mgmt_tag_enabled
 from .query_fetch import ForwardQueryFetcher
 from .validation import ForwardValidationRunner
+from .workload_state import stage_and_promote_noop_workload_states
+from .workload_state import stage_workload_states
 
 
 class ForwardSingleBranchExecutor(ForwardExecutorBase):
     """Stage a whole sync into ONE provisioned branch, then bulk-merge once."""
 
     def run(self):
-        self.logger.log_info("Starting single-branch preflight.", obj=self.sync)
+        self.logger.log_info("Starting single-branch readiness checks.", obj=self.sync)
         # Fail in seconds — before the expensive fetch and before provisioning
         # would die mid-CREATE TABLE on a table that was never migrated.
         missing_tables = missing_branch_table_report()
@@ -39,13 +41,10 @@ class ForwardSingleBranchExecutor(ForwardExecutorBase):
         fetcher = ForwardQueryFetcher(self.sync, self.client, self.logger)
         context = fetcher.resolve_context()
         self.logger.log_info(
-            "Resolving snapshot, running query preflight, and building the "
-            "single-branch workload.",
+            "Resolving snapshot and building the validated single-branch workload.",
             obj=self.sync,
         )
-        if self._query_preflight_enabled():
-            fetcher.run_preflight(context)
-        workloads = fetcher.fetch_workloads(context)
+        workloads = fetcher.fetch_workloads(context, include_diagnostics=False)
         self.last_model_results = [r.as_dict() for r in fetcher.model_results]
         self.logger.log_info(
             "Recording single-branch validation results.",
@@ -59,12 +58,31 @@ class ForwardSingleBranchExecutor(ForwardExecutorBase):
         ).record_plan_validation(context.as_dict(), workloads, self.last_model_results)
         if not workloads:
             self.logger.log_info("No Forward changes were returned for this run.")
-            return [create_noop_ingestion(self, context.as_dict())]
+            ingestion = create_noop_ingestion(self, context.as_dict())
+            promoted = stage_and_promote_noop_workload_states(
+                ingestion,
+                fetcher.pending_workload_states,
+            )
+            if promoted:
+                self.logger.log_info(
+                    f"Promoted {promoted} durable workload state(s) without branch provisioning.",
+                    obj=ingestion,
+                )
+            return [ingestion]
 
         request = build_branch_request(self.user)
         ingestion = self._create_ingestion(
             context.as_dict(), change_request_id=request.id
         )
+        staged_states = stage_workload_states(
+            ingestion,
+            fetcher.pending_workload_states,
+        )
+        if staged_states:
+            self.logger.log_info(
+                f"Staged {staged_states} durable workload state(s) for merge-gated promotion.",
+                obj=ingestion,
+            )
 
         # Provision exactly ONE branch for the whole sync.
         self.logger.log_info("Provisioning single sync branch.", obj=self.sync)

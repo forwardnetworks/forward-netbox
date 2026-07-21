@@ -55,6 +55,12 @@ def evaluate_forward_api_usage(
     http_429_failures = int(_number(payload.get("http_429_failures"), 0))
     nqe_query_calls = int(_number(payload.get("nqe_query_calls"), 0))
     nqe_diff_calls = int(_number(payload.get("nqe_diff_calls"), 0))
+    nqe_execution_signature_count = int(
+        _number(payload.get("nqe_execution_signature_count"), 0)
+    )
+    nqe_repeated_execution_count = int(
+        _number(payload.get("nqe_repeated_execution_count"), 0)
+    )
     nqe_pages = int(_number(payload.get("nqe_pages"), 0))
     throttle_sleep_seconds = float(_number(payload.get("throttle_sleep_seconds"), 0.0))
     read_cache_hits = int(_number(payload.get("read_cache_hits"), 0))
@@ -98,6 +104,9 @@ def evaluate_forward_api_usage(
 
     if http_429_failures > 0:
         warnings.append("forward_api_429_observed")
+
+    if nqe_repeated_execution_count > 0:
+        warnings.append("repeated_nqe_execution_signature_observed")
 
     if uses_saas_budget and observed_rate_sample_complete:
         if observed_http_attempts_per_minute > hard_block_requests_per_minute:
@@ -143,6 +152,8 @@ def evaluate_forward_api_usage(
             "nqe_query_calls": nqe_query_calls,
             "nqe_diff_calls": nqe_diff_calls,
             "nqe_calls": nqe_query_calls + nqe_diff_calls,
+            "nqe_execution_signature_count": nqe_execution_signature_count,
+            "nqe_repeated_execution_count": nqe_repeated_execution_count,
             "nqe_pages": nqe_pages,
             "throttle_sleep_seconds": round(throttle_sleep_seconds, 3),
             "read_cache_hits": read_cache_hits,
@@ -154,3 +165,48 @@ def evaluate_forward_api_usage(
             ),
         },
     }
+
+
+def build_forward_api_usage_summary(client, *, source_type=None) -> dict:
+    summary_method = getattr(client, "api_usage_summary", None)
+    if not callable(summary_method):
+        return {}
+    summary = summary_method()
+    if not isinstance(summary, dict):
+        return {}
+    summary = dict(summary)
+    summary["budget"] = evaluate_forward_api_usage(
+        summary,
+        source_type=source_type,
+    )
+    return summary
+
+
+def record_forward_api_usage(sync, client) -> dict:
+    summary = build_forward_api_usage_summary(
+        client,
+        source_type=getattr(getattr(sync, "source", None), "type", None),
+    )
+    if not summary:
+        return {}
+    budget = summary["budget"]
+    sync.logger.set_api_usage_summary(summary)
+    sync.logger.log_info(
+        "Forward API usage summary: "
+        f"api_usage_status={budget.get('status')} "
+        f"http_attempts={summary.get('http_attempts', 0)} "
+        f"http_retries={summary.get('http_retries', 0)} "
+        f"http_429_failures={summary.get('http_429_failures', 0)} "
+        f"nqe_query_calls={summary.get('nqe_query_calls', 0)} "
+        f"nqe_diff_calls={summary.get('nqe_diff_calls', 0)} "
+        f"nqe_unique_executions={summary.get('nqe_execution_signature_count', 0)} "
+        f"nqe_repeated_executions={summary.get('nqe_repeated_execution_count', 0)} "
+        f"nqe_pages={summary.get('nqe_pages', 0)} "
+        f"read_cache_hits={summary.get('read_cache_hits', 0)} "
+        f"read_cache_hit_rate={summary.get('read_cache_hit_rate')} "
+        f"observed_http_attempts_per_minute="
+        f"{summary.get('observed_http_attempts_per_minute')} "
+        f"throttle_sleep_seconds={summary.get('throttle_sleep_seconds', 0.0)}.",
+        obj=sync,
+    )
+    return summary

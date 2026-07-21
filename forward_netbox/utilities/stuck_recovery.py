@@ -19,6 +19,7 @@ from django_pglocks import advisory_lock
 from netbox.constants import ADVISORY_LOCK_KEYS
 from netbox_branching.choices import BranchStatusChoices
 
+from ..choices import ForwardCatchupStatusChoices
 from ..choices import ForwardIngestionPhaseChoices
 from ..choices import ForwardSyncStatusChoices
 from .job_liveness import job_has_live_execution
@@ -92,10 +93,15 @@ def _producer_jobs(sync):
 
 
 def _standing_jobs(sync):
-    """Return canonical validation and dependency-preview schedule occurrences."""
+    """Return active validation/preview work, scheduled or immediate."""
     return list(
         sync.jobs.filter(
-            name__in=("validation", "dependency preview"),
+            name__in=(
+                "validation",
+                "dependency preview",
+                f"{sync.name} - validation",
+                f"{sync.name} - dependency preview",
+            ),
             status__in=(
                 JobStatusChoices.STATUS_SCHEDULED,
                 JobStatusChoices.STATUS_PENDING,
@@ -203,7 +209,7 @@ def classify_stuck_sync(sync, *, grace_seconds=RECOVERY_GRACE_SECONDS):
         dead_job_pks = [job.pk for job in dead_standing_jobs]
         return {
             "action": "reconcile_standing_schedules",
-            "reason": "dead standing schedule occurrence",
+            "reason": "dead validation or dependency-preview occurrence",
             "dead_job_pks": dead_job_pks,
             "standing_job_pks": dead_job_pks,
             "producer_job_pks": [],
@@ -217,6 +223,15 @@ def classify_stuck_sync(sync, *, grace_seconds=RECOVERY_GRACE_SECONDS):
 
     ingestion = _latest_ingestion(sync)
     merge_applied = bool(getattr(ingestion, "merge_applied_at", None))
+    catchup_incomplete = bool(
+        ingestion
+        and ingestion.catchup_status
+        in {
+            ForwardCatchupStatusChoices.PENDING,
+            ForwardCatchupStatusChoices.CHECKING,
+            ForwardCatchupStatusChoices.FAILED,
+        }
+    )
     if sync.status == ForwardSyncStatusChoices.FAILED and not merge_applied:
         return None
     groups = _candidate_job_groups(sync)
@@ -227,7 +242,7 @@ def classify_stuck_sync(sync, *, grace_seconds=RECOVERY_GRACE_SECONDS):
         from .ownership import ownership_finalization_summary
 
         finalization = ownership_finalization_summary(sync)
-        if finalization["complete"] and not jobs:
+        if finalization["complete"] and not jobs and not catchup_incomplete:
             return None
 
     # Never disturb a branch a live worker is still merging (liveness treats an
@@ -258,6 +273,15 @@ def classify_stuck_sync(sync, *, grace_seconds=RECOVERY_GRACE_SECONDS):
             ).values_list("started_at", flat=True)
             if timestamp is not None
         )
+        if ingestion is not None:
+            timestamps.extend(
+                timestamp
+                for timestamp in (
+                    ingestion.catchup_checked_at,
+                    ingestion.merge_finalized_at,
+                )
+                if timestamp is not None
+            )
     newest = max(timestamps) if timestamps else None
     if newest is not None and (now - newest).total_seconds() < grace_seconds:
         return None
@@ -288,6 +312,14 @@ def classify_stuck_sync(sync, *, grace_seconds=RECOVERY_GRACE_SECONDS):
         }
 
     if sync.status == ForwardSyncStatusChoices.COMPLETED:
+        if finalization["complete"] and catchup_incomplete:
+            return {
+                "action": "retry_catchup",
+                "reason": "finalized ingestion has incomplete snapshot catch-up",
+                "ingestion_id": ingestion_id,
+                "attempts": attempts,
+                **verdict_jobs,
+            }
         if finalization["complete"]:
             return {
                 "action": "finalize_completed_jobs",
@@ -440,6 +472,28 @@ def recover_stuck_sync(sync, verdict, *, user=None):
                 sync.pk,
             )
             return {"action": "finalized_completed_jobs"}
+
+        if action == "retry_catchup":
+            from .ingestion_merge import reconcile_catchup_if_ownership_complete
+            from .logging import SyncLogging
+
+            _completed_mark(verdict.get("dead_job_pks") or [])
+            _reconcile_recovered_producer_schedules(
+                sync,
+                verdict.get("producer_job_pks") or [],
+            )
+            if ingestion.catchup_status == ForwardCatchupStatusChoices.CHECKING:
+                ingestion.catchup_status = ForwardCatchupStatusChoices.FAILED
+                ingestion.catchup_reason = "stale_catchup_claim"
+                ingestion.save(update_fields=["catchup_status", "catchup_reason"])
+            sync.logger = SyncLogging()
+            ingestion.sync = sync
+            result = reconcile_catchup_if_ownership_complete(
+                ingestion,
+                current_job=None,
+            )
+            logger.warning("Retried snapshot catch-up for ForwardSync %s.", sync.pk)
+            return {"action": "retried_catchup", "catchup": result}
 
         if action == "requeue_merge":
             # Keep a dead producer nonterminal until the replacement merge

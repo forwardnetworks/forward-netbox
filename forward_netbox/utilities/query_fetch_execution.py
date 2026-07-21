@@ -5,6 +5,7 @@ from concurrent.futures import as_completed
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from dataclasses import field
+from dataclasses import replace
 from typing import Any
 
 from django.db import close_old_connections
@@ -50,12 +51,15 @@ from .query_diagnostics import (
 from .query_diagnostics import (
     summarize_unassignable_ipaddress_rows as sync_summarize_unassignable_ipaddress_rows,
 )
+from .query_registry import ensure_unique_query_spec_executions
 from .query_registry import get_query_specs
 from .query_registry import optional_builtin_query_names_for_model
 from .query_registry import resolve_query_specs_for_client
 from .sync import ForwardSyncRunner
 from .sync_contracts import validate_row_shape_for_model
 from .sync_facade import effective_scope_endpoints_by_include_tags
+from .workload_normalization import normalize_dependency_workloads
+from .workload_state import apply_durable_workload_deltas
 
 # Models whose NQE query filters `device.name in forward_netbox_shard_keys`, so a
 # device-tag scope can be pushed to the Forward fetch as device-name shard keys
@@ -120,8 +124,7 @@ def _nqe_string_literal(value: str) -> str:
     return json.dumps(value)
 
 
-DEFAULT_PREFLIGHT_ROW_LIMIT = 5
-MAX_PREFLIGHT_ROW_LIMIT = 100
+DEFAULT_SAMPLE_ROW_LIMIT = 5
 
 
 _SENSITIVE_EXCEPTION_PATTERNS = (
@@ -354,6 +357,7 @@ class ForwardQueryFetcher:
         self._incremental_baseline_cache: dict[tuple[Any, ...], Any] = {}
         self._query_path_resolution_cache: dict[str, dict[str, Any]] = {}
         self._resolved_context_cache: dict[tuple[Any, ...], ForwardQueryContext] = {}
+        self.pending_workload_states = []
 
     def resolve_context(self) -> ForwardQueryContext:
         network_id = self.sync.get_network_id()
@@ -787,62 +791,6 @@ class ForwardQueryFetcher:
                 obj=self.sync,
             )
 
-    def run_preflight(
-        self,
-        context: ForwardQueryContext,
-        *,
-        row_limit=None,
-        model_strings=None,
-    ) -> None:
-        if row_limit is None:
-            row_limit = self._preflight_row_limit()
-        self.logger.log_info(
-            "Running Forward query preflight before building the sync workload.",
-            obj=self.sync,
-        )
-        jobs = self._query_jobs(context, model_strings=model_strings)
-        if not jobs:
-            return
-        max_workers = self._query_fetch_worker_count(len(jobs))
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            for model_string, spec, preflight_rows, error in executor.map(
-                self._run_thread_job,
-                ((self._run_preflight_job, (context, row_limit, job)) for job in jobs),
-            ):
-                if error is not None:
-                    self._record_model_failure(
-                        context,
-                        model_string,
-                        spec,
-                        error,
-                        sync_mode="preflight",
-                    )
-                    continue
-                self.logger.log_info(
-                    f"Preflight validated {len(preflight_rows)} rows for {model_string} from {spec.execution_mode} `{spec.execution_value}`.",
-                    obj=self.sync,
-                )
-
-    def _run_preflight_job(self, payload):
-        context, row_limit, job = payload
-        model_string, spec, coalesce_fields = job
-        try:
-            preflight_rows = self._run_nqe_query(
-                spec=spec,
-                context=context,
-                parameters=self._query_parameters_for_scope(spec, context, None),
-                limit=row_limit,
-                fetch_all=False,
-            )
-            preflight_rows, _ = self._apply_device_tag_scope(
-                model_string, preflight_rows, context
-            )
-            for row in preflight_rows:
-                validate_row_shape_for_model(model_string, row, coalesce_fields)
-            return model_string, spec, preflight_rows, None
-        except (ForwardClientError, ForwardConnectivityError, ForwardQueryError) as exc:
-            return model_string, spec, [], exc
-
     def _drop_unavailable_integration_models(self, model_strings):
         """Drop models whose exact optional-plugin contract is unavailable.
 
@@ -893,7 +841,7 @@ class ForwardQueryFetcher:
                     model_string,
                     None,
                     spec_errors[model_string],
-                    sync_mode="preflight",
+                    sync_mode="planning",
                 )
                 continue
             try:
@@ -902,13 +850,27 @@ class ForwardQueryFetcher:
                     raise ForwardQueryError(
                         self._missing_query_specs_message(model_string)
                     )
+                effective_specs = [
+                    replace(
+                        spec,
+                        parameters=self._query_parameters_for_scope(
+                            spec,
+                            context,
+                            None,
+                        ),
+                    )
+                    for spec in specs
+                ]
+                ensure_unique_query_spec_executions(
+                    effective_specs,
+                )
             except ForwardQueryError as exc:
                 self._record_model_failure(
                     context,
                     model_string,
                     None,
                     exc,
-                    sync_mode="preflight",
+                    sync_mode="planning",
                 )
                 continue
             coalesce_fields = self._coalesce_fields(model_string, specs)
@@ -943,7 +905,7 @@ class ForwardQueryFetcher:
         validate_rows=True,
         model_strings=None,
         shard_scope=None,
-        include_diagnostics=True,
+        include_diagnostics,
     ) -> list[BranchWorkload]:
         workloads = []
         self.model_results = list(self._failed_model_results.values())
@@ -991,11 +953,128 @@ class ForwardQueryFetcher:
             self.model_results.append(model_result)
             if workload is not None:
                 workloads.append(workload)
+        existing_cable_ids_by_endpoint = self._existing_cable_ids_by_endpoint(workloads)
+        workloads, normalization_summaries = normalize_dependency_workloads(
+            workloads,
+            existing_cable_ids_by_endpoint=existing_cable_ids_by_endpoint,
+        )
+        self._record_workload_normalization_summaries(normalization_summaries)
         if include_diagnostics and self._query_diagnostics_enabled():
             self._append_ipaddress_diagnostics(context)
             self._append_ipaddress_parent_prefix_diagnostics(workloads)
             self._append_routing_diagnostics(context)
+        workloads, self.pending_workload_states, state_summaries = (
+            apply_durable_workload_deltas(self.sync, workloads)
+        )
+        self._record_durable_workload_state_summaries(state_summaries)
         return workloads
+
+    def _existing_cable_ids_by_endpoint(self, workloads):
+        cable_device_names = {
+            str(row.get(field) or "").strip()
+            for workload in workloads
+            if workload.model_string == "dcim.cable"
+            for row in workload.upsert_rows
+            for field in ("device", "remote_device")
+            if str(row.get(field) or "").strip()
+        }
+        if not cable_device_names:
+            return {}
+        from dcim.models import Interface
+
+        return {
+            (str(device_name), str(interface_name)): int(cable_id)
+            for device_name, interface_name, cable_id in Interface.objects.filter(
+                device__name__in=cable_device_names,
+                cable_id__isnull=False,
+            ).values_list("device__name", "name", "cable_id")
+        }
+
+    def _record_workload_normalization_summaries(self, summaries):
+        if not summaries:
+            return
+        by_identity = {
+            (
+                summary["model"],
+                summary["query_name"],
+                summary["execution_value"],
+            ): summary
+            for summary in summaries
+        }
+        updated_results = []
+        for result in self.model_results:
+            summary = by_identity.get(
+                (result.model_string, result.query_name, result.execution_value)
+            )
+            if summary is None:
+                updated_results.append(result)
+                continue
+            diagnostic = {
+                "type": "dependency_workload_normalization",
+                "excluded_row_count": summary["excluded_row_count"],
+                "reason_counts": summary["reason_counts"],
+                "enrichment_counts": summary.get("enrichment_counts") or {},
+            }
+            updated_results.append(
+                replace(
+                    result,
+                    row_count=summary["kept_row_count"],
+                    diagnostics=[*result.diagnostics, diagnostic],
+                )
+            )
+            if summary["excluded_row_count"]:
+                self.logger.log_info(
+                    f"Excluded {summary['excluded_row_count']} non-representable "
+                    f"{summary['model']} row(s) before branch planning; kept "
+                    f"{summary['kept_row_count']}/{summary['input_row_count']} "
+                    f"({summary['reason_counts']}).",
+                    obj=self.sync,
+                )
+            if summary.get("enrichment_counts"):
+                self.logger.log_info(
+                    f"Enriched {summary['model']} workload before branch planning "
+                    f"({summary['enrichment_counts']}).",
+                    obj=self.sync,
+                )
+        self.model_results = updated_results
+
+    def _record_durable_workload_state_summaries(self, summaries):
+        if not summaries:
+            return
+        by_model = {summary["model"]: summary for summary in summaries}
+        updated_results = []
+        for result in self.model_results:
+            summary = by_model.get(result.model_string)
+            if summary is None:
+                updated_results.append(result)
+                continue
+            diagnostic = {
+                "type": "durable_workload_state",
+                "mode": summary["mode"],
+                "target_row_count": summary["target_rows"],
+                "staged_upsert_count": summary["upsert_rows"],
+                "staged_delete_count": summary["delete_rows"],
+                "bootstrap_delete_count": summary["bootstrap_delete_rows"],
+                "protected_delete_count": summary["protected_delete_rows"],
+                "tombstone_count": summary["tombstone_rows"],
+                "unrepresented_peer": summary["unrepresented_peer"],
+                "compressed_bytes": summary["compressed_bytes"],
+            }
+            updated_results.append(
+                replace(result, diagnostics=[*result.diagnostics, diagnostic])
+            )
+        self.model_results = updated_results
+        for summary in summaries:
+            self.logger.log_info(
+                "Durable workload state for "
+                f"{summary['model']}: mode={summary['mode']} "
+                f"target={summary['target_rows']} "
+                f"upserts={summary['upsert_rows']} "
+                f"deletes={summary['delete_rows']} "
+                f"bootstrap_deletes={summary['bootstrap_delete_rows']} "
+                f"compressed_bytes={summary['compressed_bytes']}.",
+                obj=self.sync,
+            )
 
     def _workload_fetch_retry_config(self):
         """Return ``(attempts, backoff_seconds)`` for transient fetch retries.
@@ -1100,6 +1179,45 @@ class ForwardQueryFetcher:
                     raise ForwardQueryError(
                         self._missing_query_specs_message(model_string)
                     )
+                coalesce_fields = self._coalesce_fields(model_string, specs)
+                baseline = self._incremental_baseline_for_specs(context, specs)
+                scoped_specs = [
+                    (
+                        spec,
+                        self._scope_for_spec(model_string, spec, shard_scope),
+                    )
+                    for spec in specs
+                ]
+                effective_specs = [
+                    replace(
+                        spec,
+                        parameters=self._query_parameters_for_scope(
+                            spec,
+                            context,
+                            scope,
+                        ),
+                    )
+                    for spec, scope in scoped_specs
+                ]
+                ensure_unique_query_spec_executions(effective_specs)
+                has_runtime_parameters = any(
+                    bool(spec.parameters) for spec in effective_specs
+                )
+                if baseline is not None and has_runtime_parameters:
+                    if self._require_diff_execution():
+                        raise ForwardQueryError(
+                            "Diff execution is required, but Forward NQE diffs do "
+                            "not accept runtime query parameters for "
+                            f"{model_string}. Use Allow full fallback for "
+                            "parameterized maps."
+                        )
+                    baseline = None
+                    self.logger.log_info(
+                        f"Using full execution for every {model_string} map because "
+                        "at least one map has runtime parameters and Forward NQE "
+                        "diffs are parameterless.",
+                        obj=self.sync,
+                    )
             except ForwardQueryError as exc:
                 self._record_model_failure(
                     context,
@@ -1109,22 +1227,20 @@ class ForwardQueryFetcher:
                     sync_mode="planning",
                 )
                 continue
-            coalesce_fields = self._coalesce_fields(model_string, specs)
-            baseline = self._incremental_baseline_for_specs(context, specs)
             if baseline is not None:
                 self.logger.log_info(
                     f"Selected Forward diff baseline ingestion `{baseline.pk}` "
                     f"on snapshot `{baseline.snapshot_id}` for {model_string}.",
                     obj=self.sync,
                 )
-            for spec in specs:
+            for spec, scope in scoped_specs:
                 jobs.append(
                     (
                         model_string,
                         spec,
                         baseline,
                         coalesce_fields,
-                        self._scope_for_spec(model_string, spec, shard_scope),
+                        scope,
                     )
                 )
         return jobs
@@ -1366,7 +1482,11 @@ class ForwardQueryFetcher:
             ),
         )
         workload = None
-        if rows or delete_rows:
+        if (
+            rows
+            or delete_rows
+            or (sync_mode == "full" and bool(fetch_meta.get("query_parameters")))
+        ):
             workload = BranchWorkload(
                 model_string=model_string,
                 label=f"{model_string} | {spec.query_name}",
@@ -1534,7 +1654,7 @@ class ForwardQueryFetcher:
         self,
         context: ForwardQueryContext,
         *,
-        row_limit=DEFAULT_PREFLIGHT_ROW_LIMIT,
+        row_limit=DEFAULT_SAMPLE_ROW_LIMIT,
         model_strings=None,
     ) -> list[ForwardModelResult]:
         self.model_results = []
@@ -1727,13 +1847,31 @@ class ForwardQueryFetcher:
                 "to compute out-of-scope deletions.",
                 obj=self.sync,
             )
+        elif baseline is not None and spec.run_query_id and parameters:
+            message = (
+                "Forward NQE diffs do not accept runtime query parameters; "
+                f"{model_string} requires parameterized execution for "
+                f"`{spec.execution_value}`."
+            )
+            if self._require_diff_execution():
+                raise ForwardQueryError(
+                    f"Diff execution is required, but {message} "
+                    "Use Allow full fallback for parameterized maps."
+                )
+            self.logger.log_info(
+                f"{message} Running full async query execution instead.",
+                obj=self.sync,
+            )
+            fallback_parameters = dict(fetch_parameters)
+            fallback_parameters["fallback_reason"] = "parameterized_query"
+            fetch_parameters = fallback_parameters
+            requested_fetch_mode = "diff_fallback"
         elif baseline is not None and spec.run_query_id:
             try:
                 diff_rows = self._run_nqe_diff(
                     spec=spec,
                     context=context,
                     before_snapshot_id=baseline.snapshot_id,
-                    parameters=parameters,
                     deadline=deadline,
                 )
                 rows, delete_rows = runner._split_diff_rows(model_string, diff_rows)
@@ -1993,7 +2131,12 @@ class ForwardQueryFetcher:
                     continue
                 filtered.append(row)
                 continue
-            if row_devices.intersection(scoped_devices):
+            if model_string == "dcim.cable" and row_devices.issubset(scoped_devices):
+                filtered.append(row)
+                continue
+            if model_string != "dcim.cable" and row_devices.intersection(
+                scoped_devices
+            ):
                 filtered.append(row)
                 continue
             removed.append(row)
@@ -2062,17 +2205,6 @@ class ForwardQueryFetcher:
     def _default_query_fetch_concurrency(self) -> int:
         return DEFAULT_QUERY_FETCH_CONCURRENCY
 
-    def _preflight_row_limit(self) -> int:
-        source_parameters = (
-            getattr(getattr(self.sync, "source", None), "parameters", None) or {}
-        )
-        configured = source_parameters.get("query_preflight_row_limit")
-        try:
-            parsed = int(configured)
-        except (TypeError, ValueError):
-            parsed = DEFAULT_PREFLIGHT_ROW_LIMIT
-        return max(1, min(MAX_PREFLIGHT_ROW_LIMIT, parsed))
-
     def _run_nqe_query(
         self,
         *,
@@ -2101,33 +2233,15 @@ class ForwardQueryFetcher:
         spec,
         context: ForwardQueryContext,
         before_snapshot_id: str,
-        parameters: dict[str, Any],
         deadline=None,
     ):
         return self.client.run_nqe_diff(
             query_id=spec.run_query_id,
             commit_id=spec.commit_id,
-            parameters=parameters,
             before_snapshot_id=before_snapshot_id,
             after_snapshot_id=context.snapshot_id,
             fetch_all=True,
             deadline=deadline,
-        )
-
-    def _run_nqe_diff_without_parameters(
-        self,
-        *,
-        spec,
-        context: ForwardQueryContext,
-        before_snapshot_id: str,
-    ):
-        return self.client.run_nqe_diff(
-            query_id=spec.run_query_id,
-            commit_id=spec.commit_id,
-            parameters={},
-            before_snapshot_id=before_snapshot_id,
-            after_snapshot_id=context.snapshot_id,
-            fetch_all=True,
         )
 
 

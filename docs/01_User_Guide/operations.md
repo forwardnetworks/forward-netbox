@@ -141,16 +141,29 @@ It reports:
 - unreferenced Opengear/Avocent DeviceTypes whose model still contains the old
   software-bearing `sysDescr` signature.
 
-The audit does not delete catalog objects. SoftwareVersions, CVEs, Platforms,
-and DeviceTypes are global NetBox records and do not record which Forward source
-created them; another sync or an operator may own them. Review candidates in
-NetBox before deleting them manually. Previously imported standalone CIMCs are
-devices, so the existing source-scoped **Prune orphans** workflow handles them
-after the corrected endpoint query excludes them.
+The audit itself does not delete catalog objects. A complete 2.6 sync does:
+its DeviceSoftware and Vulnerability associations define the authoritative
+SoftwareVersion union, while its full Vulnerability workload defines the CVE
+catalog. A version outside the union is removed only when no DeviceSoftware,
+Vulnerability, SoftwareImageFile, or ValidatedSoftware relation protects it. A
+CVE outside its target is removed only when it has no Vulnerability; its
+affected-software relation is derived exactly from current Vulnerabilities.
+Removing a Vulnerability removes only its now-unrepresented SoftwareVersion
+from that relation, and a guarded CVE delete clears any remainder.
+Durable workload state protects identities asserted by another completed sync
+and blocks deletion while a peer has not established comparable state.
+Platforms and DeviceTypes remain global metadata for manual review.
+
+Previously imported standalone CIMCs with exact, unprotected identities from
+the current sync are removed through its normal branch and merge. The existing
+source-scoped **Prune orphans** workflow remains available for historical or
+operator-owned rows that cannot be proven safe for automatic removal.
 
 A device successfully applied by the current sync automatically loses the
 plugin-maintained `forward-out-of-scope` tag. Other NetBox tags are untouched.
-This self-heals stale visual scope state; it does not delete orphan devices.
+This self-heals stale visual scope state independently of authoritative device
+cleanup; it never treats a tag assignment alone as permission to delete a
+device.
 
 Support bundles include aggregate reconciliation counts but omit the sampled
 Platform/version and DeviceType values.
@@ -182,6 +195,11 @@ scope removes nothing and leaves failed reconciliation evidence. An obsolete
 queued overlay completes without mutation and requests a catch-up for the
 newest completed ingestion. Orphan pruning is never part of this automatic
 path; it remains a reviewed manual job.
+
+Snapshot catch-up waits until every required scope, status-tag, and virtual-
+parent ownership domain for the ingestion is complete. Health reports the
+durable pending or checking state; a failed check remains recoverable without
+replaying the merged branch.
 
 Deleting a source or sync releases only that object's durable tag and virtual
 parent claims. Conflicting parent evidence owned by another source is preserved
@@ -304,20 +322,24 @@ the sync **Health** panel now flags the two common causes:
   overwrite enabled. Vulnerability imports also ensure the same device-software
   association when enabled independently.
 
-- **CVE detail fields and affected versions** - the CVE catalog imports the
-  earliest Forward vendor-advisory date, a deterministic valid HTTP(S)
-  vendor-advisory URL, and the maximum overall/CVSSv2/CVSSv3 scores reported
-  across vendor records. Malformed advisory URLs are omitted instead of
-  rejecting the CVE row. The Vulnerability map also adds its observed
-  SoftwareVersion to the CVE's **Affected software** relation. This is
-  intentionally additive catalog knowledge: upgrading or removing the last
-  current device does not make the historical software release unaffected.
+- **CVE detail fields and affected versions** - the CVE catalog imports only
+  CVEs referenced by vulnerable findings on the same in-scope, completed,
+  versioned devices eligible for the Vulnerability map. It adds the earliest
+  Forward vendor-advisory date, a deterministic valid HTTP(S) vendor-advisory
+  URL, and the maximum overall/CVSSv2/CVSSv3 scores reported across vendor
+  records. Malformed advisory URLs are omitted instead of rejecting the CVE
+  row. The Vulnerability map also adds its observed SoftwareVersion to the CVE's
+  **Affected software** relation.
 
 - **Post-upgrade catalog evidence** - Scope Reconciliation separates
   zero-device SoftwareVersions retained by catalog relations from completely
   unreferenced candidates, and reports CVEs linked to Vulnerabilities or
-  affected software. It is intentionally read-only because these are global
-  NetBox records without Forward-source ownership.
+  affected software. A full sync after upgrading to 2.6 removes versions outside
+  the authoritative DeviceSoftware/Vulnerability union when no local DLM
+  relation protects them, and removes CVEs outside the full Vulnerability target
+  when no Vulnerability protects them. Resulting deletes are recorded as durable
+  tombstones after merge, so forced repeats do not retry already-applied catalog
+  deletes.
 
 - **DLM hardware-notice alias** — warns when the alias-aware device query is
   active but the *base* hardware-notice map is enabled (or vice versa). The
@@ -335,8 +357,8 @@ the sync **Health** panel now flags the two common causes:
 - **DLM dependency readiness** — warns when the last run skipped DLM rows
   because their device types / devices aren't synced. DLM notices and
   vulnerabilities and installed software hang off synced devices, so fix device
-  (and device-type) sync first; the CVE *catalog* is device-independent and
-  populates on its own. A flood of "not in NetBox yet" skips is now collapsed
+  (and device-type) sync first; the CVE catalog is projected from the complete
+  in-scope Vulnerability workload. A flood of "not in NetBox yet" skips is now collapsed
   into capped detail plus one summary issue instead of one row per device type
   or vulnerability.
 
@@ -401,9 +423,9 @@ Behavior:
   response is deliberately identical for all failure causes.
 - `409` — the sync cannot start (e.g. waiting for a branch merge).
 
-Use a long random secret and rotate it from the sync form. Combined with
-**Skip scheduled runs on an unchanged snapshot**, a webhook per Forward
-processing event keeps NetBox current without any polling schedule.
+Use a long random secret and rotate it from the sync form. A webhook per Forward
+processing event keeps NetBox current without polling; delayed duplicate
+deliveries no-op automatically when the baseline already uses that snapshot.
 
 ### Configuring Forward as the sender
 
@@ -441,8 +463,11 @@ Notes: the endpoint is idempotent for Forward's retries (an already-running
 sync is acknowledged, not re-queued). Serve NetBox over HTTPS and remember a
 query-string secret can appear in proxy/access logs — rotate it from the sync
 form if exposed. Forward's delivery retry/timeout behavior is not documented;
-keep a low-frequency scheduled sync with **Skip scheduled runs on an unchanged
-snapshot** as the safety net for missed deliveries.
+keep a low-frequency scheduled sync as the safety net for missed deliveries.
+Scheduled runs automatically no-op while the Forward snapshot remains unchanged;
+the no-op also suppresses post-sync overlay jobs, so the complete occurrence
+issues no NQE calls. A manual force-resync is rejected while another sync job is
+active and can be retried after that job finishes.
 
 ## Automating operator jobs (API + standing schedules)
 

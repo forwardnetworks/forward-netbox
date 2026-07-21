@@ -187,7 +187,8 @@ Checks:
 - In `Query Runtime & Pushdown`, check `Baseline to diff`. This explains
   whether the run is using API diffs, is still creating its first baseline, is
   missing a compatible prior baseline, is using non-diff-capable
-  raw query maps, or requested diffs but fell back to full execution.
+  raw query maps, requires runtime query parameters that Forward's diff endpoint
+  cannot accept, or requested diffs but fell back to full execution.
 - For steady-state diff runs where speed is the priority, set sync `Diff fallback mode` to
   `Require diff` so maps fail fast instead of silently broadening to full-query execution.
 - Export the sync support bundle when asking for help. Its aggregate metrics
@@ -198,6 +199,12 @@ Checks:
   diff path.
 - Verify source runtime knobs:
   `query_fetch_concurrency` and `nqe_page_size` on the active `Forward Source`.
+- Workload messages are emitted in completion order. A slow map is therefore
+  the map whose completion remains outstanding, not the first map listed in
+  configuration order.
+- Parameterized maps always perform a full asynchronous fetch, but after one
+  successful 2.6 baseline their durable local comparison sends only changed
+  rows to Branching. A preview is read-only and cannot advance that state.
 - Verify NetBox worker replica count and Postgres capacity for the same window.
 - Keep `max_changes_per_staging_item` near guidance so oversized workload warnings
   remain actionable. It does not split the sync into multiple branches.
@@ -208,7 +215,7 @@ Large-ingestion triage order:
    Branching baseline; steady-state repository `query_path`/`query_id` maps can
    become diff eligible.
 2. Confirm workers/database are not under-sized relative to host capacity.
-3. Confirm `query_fetch_concurrency` is not too low for preflight volume.
+3. Confirm `query_fetch_concurrency` is not too low for workload volume.
 4. Confirm `max_changes_per_staging_item` remains near local guidance so warnings are useful.
 5. Confirm long-running jobs have sufficient worker timeout (`RQ_DEFAULT_TIMEOUT` > expected stage or merge runtime).
 
@@ -220,7 +227,7 @@ invoke forward_netbox.optimize-runtime --worker-replicas 0 --query-fetch-concurr
 
 Operational notes:
 
-- This improves query fetch/preflight and DB throughput, but the one Branching
+- This improves query fetch and DB throughput, but the one Branching
   branch and merge remain mostly serialized by native NetBox semantics.
 - Use `invoke ingestion-delete-regression` to validate ingest and
   diff-delete behavior in synthetic regression before live reruns.
@@ -296,7 +303,7 @@ Checks:
   sync Health page for its enabled built-in maps, or restore the affected map to
   bundled raw query text.
 - Re-run validation or a sync after the map has been republished. Current plugin
-  versions fail stale or invalid virtual-chassis query output during preflight
+  versions fail stale or invalid virtual-chassis query output during workload validation
   instead of allowing an invalid VC assignment to surface later as a device save
   failure.
 
@@ -357,13 +364,13 @@ Symptoms:
 Cause:
 
 - The device scope is enforced as an allowlist of devices that are **tagged and
-  collected (`completed`)** in the resolved snapshot. Devices imported by an
-  earlier, broader sync are **orphans**: they are no longer in the scoped Forward
-  result at all, so the sync never sees them. `device_tag_prune_out_of_scope`
-  does **not** remove them — it only deletes rows the sync query *returns* that
-  fall outside scope, and orphans are absent from the result. Tagged devices that
-  were backfilled (collection canceled) are also excluded from the current
-  allowlist, so they linger too (but are real, not orphans).
+  collected (`completed`)** in the resolved snapshot. Older releases could
+  leave devices imported by an earlier, broader sync because those rows were
+  absent from the new result. Version 2.6 compares a complete authoritative
+  device target with exact persisted plugin identities and stages deletion only
+  for an absent identity with no current claim, preserved assignment, peer-sync
+  identity, or virtual-parent protection. Backfilled devices and incomplete or
+  incomparable scope evidence fail closed and are retained.
 - SNMP endpoints use the source's explicit **Scope SNMP Endpoints by Include
   Tags** policy. Version 2.6 converts an include-scoped source with no recorded
   decision to enabled (fail closed); only a previously explicit opt-out remains
@@ -414,8 +421,9 @@ Remediation:
   any endpoint-scope bypass warning before applying.
 - Leave **Import Generic SNMP Endpoints as Devices** off unless generic MIB-2
   endpoints are a required inventory source. Re-run Scope Reconciliation after
-  the corrected sync; old generic endpoints and CIMCs are existing NetBox rows
-  and require reviewed orphan pruning.
+  the corrected sync. Old generic endpoints and CIMCs with exact unprotected
+  identities from this sync are removed through the normal branch and merge;
+  historical or operator-owned leftovers still require reviewed orphan pruning.
 - Run **Reconcile device scope tags**. With **Apply Device Scope Tags** enabled,
   it removes stale configured include-tag assignments from the current
   out-of-scope set while preserving unrelated tags; it does not delete devices.
@@ -424,8 +432,9 @@ Remediation:
   current claim is released.
 - Use the **Prune orphans** button on the Scope Reconciliation page, or the CLI:
 
-  In 2.6 this is intentionally manual-only. Upgrade and runtime normalization
-  remove old automatic-prune state.
+  This reviewed workflow handles rows for which the sync cannot prove exact,
+  exclusive ownership. Version 2.6 removes the old automatic-prune setting;
+  authoritative cleanup is part of normal branch planning instead.
 
   ```
   python manage.py forward_device_scope_reconciliation_audit \

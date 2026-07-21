@@ -318,7 +318,7 @@ class ForwardIngestionLogExportViewTest(TestCase):
         self.assertTrue(reconciliation["read_only"])
         self.assertNotIn("sample", reconciliation["stale_endpoint_device_types"])
         self.assertNotIn(
-            "catalog_retained_sample",
+            "protected_sample",
             reconciliation["dlm"]["software_versions"],
         )
         self.assertNotIn(
@@ -428,6 +428,11 @@ class ForwardIngestionLogExportViewTest(TestCase):
                     "snapshot_selector": "latestProcessed",
                 },
                 "change_estimate_kind": "workload_upper_bound",
+                "forward_api_usage": {
+                    "nqe_query_calls": 34,
+                    "nqe_repeated_execution_count": 0,
+                    "http_failures": 0,
+                },
                 "model_results": [
                     {
                         "model": "dcim.device",
@@ -458,6 +463,14 @@ class ForwardIngestionLogExportViewTest(TestCase):
             "ownership_incomplete",
         )
         self.assertEqual(preview["latest_sync_evidence"]["applied"], 7)
+        self.assertEqual(
+            preview["forward_api_usage"],
+            {
+                "nqe_query_calls": 34,
+                "nqe_repeated_execution_count": 0,
+                "http_failures": 0,
+            },
+        )
 
     def test_sync_support_bundle_rejects_empty_dependency_preview(self):
         standalone_sync = ForwardSync.objects.create(

@@ -25,8 +25,7 @@ class ForwardValidationRunner:
         try:
             fetcher = ForwardQueryFetcher(self.sync, self.client, self.logger)
             context = fetcher.resolve_context()
-            fetcher.run_preflight(context)
-            workloads = fetcher.fetch_workloads(context)
+            workloads = fetcher.fetch_workloads(context, include_diagnostics=True)
             return self.record_plan_validation(
                 context.as_dict(),
                 workloads,

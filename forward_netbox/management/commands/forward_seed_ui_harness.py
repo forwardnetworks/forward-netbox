@@ -6,6 +6,7 @@ from core.models import Job
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
 from django.core.management.base import BaseCommand
+from django.core.management.base import CommandError
 from django.utils import timezone
 
 from forward_netbox.choices import forward_configured_models
@@ -55,6 +56,11 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        if os.getenv("FORWARD_UI_HARNESS_ISOLATED", "").lower() != "true":
+            raise CommandError(
+                "Synthetic UI fixtures may only be seeded in the isolated "
+                "`invoke playwright-test` runtime."
+            )
         user = self._ensure_superuser(
             username=options["username"],
             password=options["password"],

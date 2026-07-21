@@ -784,7 +784,7 @@ def publish_builtin_nqe_map_queries(
             queryset=ForwardNQEMap.objects.filter(
                 pk__in=map_query_paths.keys()
             ).select_related("netbox_model"),
-            preserve_existing_commit_pin=True,
+            preserve_existing_commit_pin=not pin_commit,
         ),
     ]
 

@@ -339,6 +339,11 @@ class ForwardIngestionSerializer(NestedGroupModelSerializer):
             "snapshot_info",
             "snapshot_metrics",
             "model_results",
+            "catchup_status",
+            "catchup_target_snapshot_id",
+            "catchup_reason",
+            "catchup_error_type",
+            "catchup_checked_at",
             "created",
         )
         brief_fields = ("id", "display", "name", "branch", "sync", "snapshot_id")

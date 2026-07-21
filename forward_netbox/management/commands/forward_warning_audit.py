@@ -53,7 +53,11 @@ class Command(BaseCommand):
                 if job is not None and job.pk not in seen_job_ids:
                     seen_job_ids.add(job.pk)
                     jobs.append(job)
-        for job in self._sync_jobs(sync, overlays_only=bool(ingestions)):
+        for job in self._sync_jobs(
+            sync,
+            overlays_only=bool(ingestions),
+            ingestions=ingestions,
+        ):
             if job.pk not in seen_job_ids:
                 seen_job_ids.add(job.pk)
                 jobs.append(job)
@@ -112,7 +116,7 @@ class Command(BaseCommand):
             raise CommandError("Forward sync was not found.")
         return sync
 
-    def _sync_jobs(self, sync, *, overlays_only=False):
+    def _sync_jobs(self, sync, *, overlays_only=False, ingestions=None):
         content_type = ContentType.objects.get_for_model(ForwardSync)
         jobs = Job.objects.filter(object_type=content_type, object_id=sync.pk)
         if overlays_only:
@@ -124,4 +128,33 @@ class Command(BaseCommand):
                     f"{sync.name} - link vsys/vdom parents (auto)",
                 ]
             )
+            jobs = self._latest_overlay_attempts(sync, jobs, ingestions or [])
         return list(jobs.order_by("-id"))
+
+    def _latest_overlay_attempts(self, sync, jobs, ingestions):
+        selected_ids = {ingestion.pk for ingestion in ingestions}
+        timeline = list(
+            ForwardIngestion.objects.filter(sync=sync).order_by("created", "id")
+        )
+        latest_by_generation_and_name = {}
+        for job in jobs.order_by("created", "id"):
+            generation = (job.data or {}).get("forward_ingestion_id")
+            if generation is None:
+                generation = self._generation_at_job_time(job, timeline)
+            try:
+                generation = int(generation)
+            except (TypeError, ValueError):
+                continue
+            if generation not in selected_ids:
+                continue
+            latest_by_generation_and_name[(generation, job.name)] = job.pk
+        return Job.objects.filter(pk__in=latest_by_generation_and_name.values())
+
+    @staticmethod
+    def _generation_at_job_time(job, timeline):
+        generation = None
+        for ingestion in timeline:
+            if ingestion.created > job.created:
+                break
+            generation = ingestion.pk
+        return generation

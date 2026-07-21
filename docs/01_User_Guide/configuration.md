@@ -56,18 +56,15 @@ Create a `Forward Source` for each Forward deployment or tenant you want to sync
   - Defaults to `10000`; valid range is `1..10000`.
   - This controls request paging (`queryOptions.offset/limit`) only. It does not change query semantics.
 - `Query Fetch Concurrency`
-  - Maximum concurrent NQE map fetch jobs during preflight/workload fetch.
-  - Defaults to `6`; valid range is `1..16`.
+  - Maximum concurrent NQE map fetch jobs during workload fetch.
+  - Defaults to `10`; valid range is `1..16`.
   - Increase gradually only when NetBox worker and database telemetry show headroom.
-- `Query Preflight`
-  - Runs the sample preflight query phase before full workload fetch.
-  - Defaults to enabled.
-  - Disable on very large runs when you need faster startup and can accept that
-    query issues are first surfaced during workload fetch instead of preflight.
 - `Query Diagnostics`
-  - Runs additional diagnostics queries for importability summaries (IP/routing diagnostics).
+  - Runs additional diagnostics queries for importability summaries during
+    explicit validation and dependency previews.
   - Defaults to enabled.
-  - Disable on very large runs to reduce query overhead during ingestion.
+  - Normal ingestion runs only the enabled import maps and required scope
+    resolution queries, regardless of this setting.
 - `Async NQE`
   - Uses Forward's async NQE execution API when the source is pointed at Forward 26.6 or newer.
   - `nqe_async_poll_interval_seconds` defaults to `1.0`; `nqe_async_max_polls` defaults to `1200`.
@@ -97,9 +94,7 @@ For large first-time imports, start with a conservative, NetBox-native baseline:
 - `api_requests_per_minute`: Forward SaaS sources default to `1800` requests/minute to stay below the SaaS hard-block threshold of `2000` requests/minute per user. Exceeding the SaaS threshold can return HTTP `429 Too Many Requests` and block the user account for 5 minutes. Custom/on-prem sources default to `0` because no SaaS account-level limit can be inferred for those deployments; configure an explicit local limit when required.
 - `nqe_fetch_all_max_pages`: default `5000` (hard stop for runaway paginated NQE fetches where Forward keeps returning full pages)
 - `nqe_identical_full_page_streak_limit`: default `25` (fails fast when fetch-all receives repeated identical full pages with no observed pagination progress)
-- `query_preflight_enabled`: `true` for safer rollout, `false` for faster large-run startup
-- `query_preflight_row_limit`: `5` by default (lower values reduce startup sampling cost; higher values increase preflight coverage at higher query cost)
-- `query_diagnostics_enabled`: `true` for richer diagnostics, `false` for faster large-run execution
+- `query_diagnostics_enabled`: `true` for richer explicit validation/preview diagnostics, `false` to omit those optional NQEs
 - `max_changes_per_staging_item`: keep near measured worker/database capacity (typically `10000`)
 
 Recommended workflow:
@@ -111,7 +106,7 @@ Recommended workflow:
 
 Capacity notes:
 
-- Raising `query_fetch_concurrency` helps preflight/query fetch only; it does not remove Branching merge serialization.
+- Raising `query_fetch_concurrency` helps query fetch only; it does not remove Branching merge serialization.
 - Lower `api_requests_per_minute` before increasing concurrency when the same Forward user is also used by other test jobs or integrations. The cap is a SaaS protection guardrail, not a capacity SLA.
 - Lowering `max_changes_per_staging_item` creates more bounded staging items;
   indivisible identity buckets stay together and emit an explicit warning when
@@ -357,8 +352,7 @@ being guessed.
 This workflow intentionally does not store static query IDs on every map, so
 there is no direct query-ID selector in the native bulk edit form. Repository
 paths are portable across Forward orgs; the plugin resolves each path to the
-correct query ID from the selected `Forward Source` during sync and diff
-execution.
+correct query ID from the selected `Forward Source` during sync execution.
 
 Use `invoke validation-org-query-audit` when you want to verify that the
 bundled query set is still published in the validation org repository folder
@@ -391,11 +385,34 @@ For large datasets, prefer Org Repository-backed `query_path` maps over bundled 
 - Bulk bind `Forward NQE Maps` to the committed repository query paths.
 - Leave the sync `Snapshot` at `latestProcessed`.
 - Run one clean, fully merged baseline ingestion first.
-- Later `latestProcessed` runs can use Forward `nqe-diffs` for eligible repository-path or direct-query-ID maps instead of rerunning every model as a full snapshot sync.
+- Later `latestProcessed` runs can use Forward `nqe-diffs` for eligible,
+  unparameterized repository-path or direct-query-ID maps. Maps that declare
+  runtime parameters use full asynchronous NQE execution because Forward's diff
+  endpoint does not accept a `parameters` payload. After the first successful
+  2.6 ingestion, the plugin compares those full results with its compressed,
+  per-sync durable workload state and stages only changed upserts and deletes.
 
-This keeps NQE as the source of truth, lets Forward own the row-diff computation, and is the recommended operating mode for larger inventories.
+This keeps NQE as the source of truth and lets Forward own row-diff computation
+where its API contract supports it. The plugin never probes the diff endpoint
+with an unsupported parameter payload. `Require diff` therefore blocks a
+parameterized map before branch provisioning; use `Allow full fallback` when
+those maps are enabled.
 
-For very large inventories, expect the first full baseline to remain the slow path even after query optimization because NetBox must still materialize every staged object change. The largest steady-state win comes from switching later `latestProcessed` runs onto Forward `nqe-diffs`.
+All full-query execution uses Forward's asynchronous NQE API. Workload maps run
+concurrently up to `query_fetch_concurrency`, and logs report each completion
+with its elapsed time. A normal ingestion starts one logical NQE execution per
+enabled map; async status polling and result pagination continue that execution
+instead of starting another. Required tag/endpoint scope resolution is counted
+separately. The API usage summary reports unique and repeated hashed execution
+signatures without exposing query or customer data. Two enabled maps for the
+same model may not resolve to the same query, commit, and parameters; the sync
+rejects that configuration before execution instead of issuing duplicate NQE
+calls. Forward's optimizer may compile a declarative device-first query to
+`parallel_foreach`; the bundled source does not contain that internal operator.
+For very large inventories, the first 2.6 baseline remains the slow path because
+NetBox must still materialize every staged object change. A forced steady-state
+run still fetches parameterized full results, but unchanged rows do not reach a
+branch. Automatic unchanged-snapshot producers terminate before NQE execution.
 
 `Max changes per staging item` is a deterministic workload budget in the single-branch
 workflow. Workload partitioning bounds staging units and progress updates,
@@ -509,9 +526,16 @@ An empty or failed Forward scope records failed reconciliation evidence and
 removes nothing. Obsolete overlay jobs mutate nothing and request catch-up for
 the newest merged ingestion.
 
-Automatic orphan deletion is not supported in 2.6. The upgrade migration and
-runtime normalization remove the old automatic-prune parameter. Run **Prune
-orphans** only after reviewing the current Scope Reconciliation report.
+Version 2.6 does not expose an automatic-prune setting. Instead, a complete
+device workload automatically removes only exact plugin-owned device identities
+that disappeared from that sync's authoritative target and have no current
+scope claim, preserved tag assignment, peer-sync identity, or virtual-parent
+relationship. The delete and its related interfaces/inventory items are staged
+in the native branch; merge releases the identity and applies the delete in one
+transaction. Incomplete scope, incomparable peer state, or any ownership
+protection suppresses deletion. Use **Prune orphans** after reviewing Scope
+Reconciliation for historical or operator-owned rows that do not satisfy this
+narrow ownership proof.
 
 `Import SNMP Endpoints as Devices` (`sync_endpoints`) imports recognized
 Avocent/Opengear console servers. `Import Generic SNMP Endpoints as Devices`
@@ -603,11 +627,13 @@ Create a `Forward Sync` to bind a source, a NetBox model selection, and the inge
   - When enabled, the one native Branching branch merges automatically after staging.
   - When disabled, the branch pauses for review and the operator queues its merge.
   - A clean merge is the only path that marks the ingestion as an incremental diff baseline.
-- `Skip scheduled runs on an unchanged snapshot`
-  - Optional Forward API load reduction. Off by default.
-  - When a scheduled run would target the same snapshot as the last successful baseline ingestion, the plugin skips query execution entirely (a no-op completion) instead of re-fetching unchanged data for every model.
-  - Manual/adhoc runs always execute, so you can force a re-sync (for example after editing objects directly in NetBox on the same snapshot).
-  - Best for scheduled syncs on a stable snapshot; pairs well with `latestProcessed`/`latestCollected`, which advance the snapshot when new data is collected.
+- `Unchanged snapshot no-op`
+  - Scheduled, webhook, and catch-up runs automatically skip query execution
+    when the resolved snapshot equals the last successful baseline ingestion.
+  - Manual UI/API runs explicitly force execution, so operators can repair
+    objects edited directly in NetBox against the same snapshot.
+  - This behavior is mandatory in 2.6; the retired
+    `skip_unchanged_snapshot` toggle is removed during migration.
 - `Diff fallback mode`
   - `Allow full fallback` (default) keeps runs moving when a diff-eligible map cannot run as a diff and must temporarily fall back to full query execution.
   - `Require diff` enforces diff-only execution once a baseline exists.

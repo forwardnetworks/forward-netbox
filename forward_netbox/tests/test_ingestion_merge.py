@@ -4,26 +4,35 @@ from unittest.mock import patch
 from uuid import uuid4
 
 from core.choices import JobStatusChoices
+from core.choices import ObjectChangeActionChoices
+from core.exceptions import SyncError
 from core.models import Job
+from core.models import ObjectChange
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
 from django.test import TestCase
 from django.utils import timezone
 from netbox_branching.choices import BranchStatusChoices
+from netbox_branching.models import AppliedChange
 from netbox_branching.models import Branch
 from netbox_branching.models import BranchEvent
+from netbox_branching.models import ChangeDiff
 
+from forward_netbox.choices import ForwardCatchupStatusChoices
 from forward_netbox.choices import ForwardIngestionPhaseChoices
 from forward_netbox.choices import ForwardSyncStatusChoices
 from forward_netbox.exceptions import ForwardPartialMergeError
 from forward_netbox.models import ForwardIngestion
 from forward_netbox.models import ForwardIngestionIssue
+from forward_netbox.models import ForwardOwnershipReconciliation
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
+from forward_netbox.models import ForwardWorkloadState
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from forward_netbox.utilities.ingestion_issues import has_blocking_issues
 from forward_netbox.utilities.ingestion_merge import cleanup_merged_branch
 from forward_netbox.utilities.ingestion_merge import enqueue_merge_job
+from forward_netbox.utilities.ingestion_merge import reconcile_ingestion_catchup
 from forward_netbox.utilities.ingestion_merge import record_change_totals
 from forward_netbox.utilities.ingestion_merge import resume_post_merge_bookkeeping
 from forward_netbox.utilities.ingestion_merge import sync_merge_ingestion
@@ -56,6 +65,15 @@ class ForwardIngestionMergeHelperTest(TestCase):
                 "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
                 "dcim.device": True,
             },
+        )
+
+    def _complete_ownership(self, ingestion):
+        ForwardOwnershipReconciliation.objects.filter(
+            sync=ingestion.sync,
+            ingestion=ingestion,
+        ).update(
+            status=ForwardOwnershipReconciliation.Status.COMPLETED,
+            completed_at=timezone.now(),
         )
 
     @staticmethod
@@ -188,6 +206,54 @@ class ForwardIngestionMergeHelperTest(TestCase):
         self.assertEqual(self.sync.status, ForwardSyncStatusChoices.COMPLETED)
         self.assertTrue(ingestion.baseline_ready)
 
+    def test_successful_merge_promotes_only_its_pending_workload_state(self):
+        previous = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_id="snapshot-previous-state",
+            baseline_ready=True,
+        )
+        old_state = ForwardWorkloadState.objects.create(
+            sync=self.sync,
+            ingestion=previous,
+            model_string="dcim.site",
+            parameter_hash="a" * 64,
+            identity_contract_hash="b" * 64,
+            payload=b"old",
+            payload_checksum="c" * 64,
+            row_count=1,
+            is_current=True,
+        )
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_id="snapshot-new-state",
+        )
+        pending = ForwardWorkloadState.objects.create(
+            sync=self.sync,
+            ingestion=ingestion,
+            model_string="dcim.site",
+            parameter_hash="d" * 64,
+            identity_contract_hash="e" * 64,
+            payload=b"new",
+            payload_checksum="f" * 64,
+            row_count=2,
+        )
+
+        with (
+            patch(
+                "forward_netbox.utilities.merge.merge_branch",
+                side_effect=self._attest_mock_merge,
+            ),
+            patch(
+                "forward_netbox.utilities.ingestion_merge.suppress_branch_merge_side_effect_signals",
+                return_value=nullcontext(),
+            ),
+        ):
+            sync_merge_ingestion(ingestion)
+
+        pending.refresh_from_db()
+        self.assertTrue(pending.is_current)
+        self.assertFalse(ForwardWorkloadState.objects.filter(pk=old_state.pk).exists())
+
     def test_cleanup_merged_branch_refreshes_stale_status_before_delete(self):
         branch = Branch.objects.create(
             name=f"merged-branch-{uuid4().hex[:12]}",
@@ -208,6 +274,150 @@ class ForwardIngestionMergeHelperTest(TestCase):
         self.assertFalse(Branch.objects.filter(pk=branch.pk).exists())
         ingestion.refresh_from_db()
         self.assertIsNone(ingestion.branch)
+
+    def test_cleanup_merged_branch_set_deletes_branch_evidence_only(self):
+        branch = Branch.objects.create(
+            name=f"merged-evidence-{uuid4().hex[:12]}",
+            schema_id=f"merged_evidence_{uuid4().hex[:12]}",
+            status=BranchStatusChoices.MERGED,
+        )
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-merged-evidence",
+            branch=branch,
+        )
+        source_type = ContentType.objects.get_for_model(ForwardSource)
+        change = ObjectChange.objects.create(
+            user=self.user,
+            user_name=self.user.username,
+            request_id=uuid4(),
+            action=ObjectChangeActionChoices.ACTION_UPDATE,
+            changed_object_type=source_type,
+            changed_object_id=self.source.pk,
+            object_repr=str(self.source),
+            message="merged branch audit",
+            prechange_data={"name": self.source.name},
+            postchange_data={"name": self.source.name},
+        )
+        AppliedChange.objects.create(branch=branch, change=change)
+        ChangeDiff.objects.create(
+            branch=branch,
+            object_type=source_type,
+            object_id=self.source.pk,
+            object_repr=str(self.source),
+            action=ObjectChangeActionChoices.ACTION_UPDATE,
+            original={"name": self.source.name},
+            modified={"name": self.source.name},
+            current={"name": self.source.name},
+        )
+        events = []
+        original_raw_delete = AppliedChange.objects.all()._raw_delete.__func__
+        original_branch_delete = Branch.delete
+
+        def record_raw_delete(queryset, *, using):
+            events.append(queryset.model)
+            return original_raw_delete(queryset, using=using)
+
+        def record_branch_delete(instance, *args, **kwargs):
+            events.append(Branch)
+            return original_branch_delete(instance, *args, **kwargs)
+
+        with (
+            patch(
+                "django.db.models.query.QuerySet._raw_delete",
+                autospec=True,
+                side_effect=record_raw_delete,
+            ),
+            patch.object(
+                Branch,
+                "delete",
+                autospec=True,
+                side_effect=record_branch_delete,
+            ),
+        ):
+            cleanup_merged_branch(ingestion)
+
+        self.assertEqual(events[:3], [AppliedChange, ChangeDiff, Branch])
+        self.assertFalse(Branch.objects.filter(pk=branch.pk).exists())
+        self.assertFalse(AppliedChange.objects.filter(branch_id=branch.pk).exists())
+        self.assertFalse(ChangeDiff.objects.filter(branch_id=branch.pk).exists())
+        self.assertTrue(ObjectChange.objects.filter(pk=change.pk).exists())
+        ingestion.refresh_from_db()
+        self.assertIsNone(ingestion.branch)
+
+    def test_cleanup_merged_branch_rolls_back_all_state_when_delete_fails(self):
+        branch = Branch.objects.create(
+            name=f"merged-rollback-{uuid4().hex[:12]}",
+            schema_id=f"merged_rollback_{uuid4().hex[:12]}",
+            status=BranchStatusChoices.MERGED,
+        )
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-merged-rollback",
+            branch=branch,
+        )
+        source_type = ContentType.objects.get_for_model(ForwardSource)
+        change = ObjectChange.objects.create(
+            user=self.user,
+            user_name=self.user.username,
+            request_id=uuid4(),
+            action=ObjectChangeActionChoices.ACTION_UPDATE,
+            changed_object_type=source_type,
+            changed_object_id=self.source.pk,
+            object_repr=str(self.source),
+            message="merged branch rollback audit",
+            prechange_data={"name": self.source.name},
+            postchange_data={"name": self.source.name},
+        )
+        applied_change = AppliedChange.objects.create(branch=branch, change=change)
+        change_diff = ChangeDiff.objects.create(
+            branch=branch,
+            object_type=source_type,
+            object_id=self.source.pk,
+            object_repr=str(self.source),
+            action=ObjectChangeActionChoices.ACTION_UPDATE,
+            original={"name": self.source.name},
+            modified={"name": self.source.name},
+            current={"name": self.source.name},
+        )
+
+        with (
+            patch.object(Branch, "delete", side_effect=RuntimeError("teardown failed")),
+            self.assertRaisesMessage(RuntimeError, "teardown failed"),
+        ):
+            cleanup_merged_branch(ingestion)
+
+        ingestion.refresh_from_db()
+        self.assertEqual(ingestion.branch_id, branch.pk)
+        self.assertTrue(Branch.objects.filter(pk=branch.pk).exists())
+        self.assertTrue(AppliedChange.objects.filter(pk=applied_change.pk).exists())
+        self.assertTrue(ChangeDiff.objects.filter(pk=change_diff.pk).exists())
+        self.assertTrue(ObjectChange.objects.filter(pk=change.pk).exists())
+
+    def test_cleanup_merged_branch_rejects_nonterminal_branch(self):
+        branch = Branch.objects.create(
+            name=f"ready-cleanup-{uuid4().hex[:12]}",
+            schema_id=f"ready_cleanup_{uuid4().hex[:12]}",
+            status=BranchStatusChoices.READY,
+        )
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-ready-cleanup",
+            branch=branch,
+        )
+
+        with self.assertRaisesMessage(
+            SyncError,
+            "Merged branch cleanup requires a persisted merged branch state.",
+        ):
+            cleanup_merged_branch(ingestion)
+
+        ingestion.refresh_from_db()
+        self.assertEqual(ingestion.branch_id, branch.pk)
+        self.assertTrue(Branch.objects.filter(pk=branch.pk).exists())
 
     def test_sync_merge_ingestion_deletes_stale_merged_branch(self):
         branch = Branch.objects.create(
@@ -254,6 +464,16 @@ class ForwardIngestionMergeHelperTest(TestCase):
             snapshot_id="snapshot-partial-merge",
             branch=branch,
         )
+        pending = ForwardWorkloadState.objects.create(
+            sync=self.sync,
+            ingestion=ingestion,
+            model_string="dcim.site",
+            parameter_hash="a" * 64,
+            identity_contract_hash="b" * 64,
+            payload=b"pending",
+            payload_checksum="c" * 64,
+            row_count=1,
+        )
 
         with (
             patch(
@@ -272,6 +492,8 @@ class ForwardIngestionMergeHelperTest(TestCase):
         self.assertEqual(self.sync.status, ForwardSyncStatusChoices.READY_TO_MERGE)
         self.assertEqual(self.source.status, "ready")
         self.assertFalse(ingestion.baseline_ready)
+        pending.refresh_from_db()
+        self.assertFalse(pending.is_current)
 
     def test_merge_branch_partial_attempt_never_emits_merged_event(self):
         branch = Branch.objects.create(
@@ -566,6 +788,12 @@ class ForwardIngestionMergeHelperTest(TestCase):
             ingestion.refresh_from_db()
             self.sync.refresh_from_db()
             first_last_synced = self.sync.last_synced
+            self.assertEqual(
+                ingestion.catchup_status,
+                ForwardCatchupStatusChoices.PENDING,
+            )
+            mock_catchup.assert_not_called()
+            self._complete_ownership(ingestion)
             self.assertTrue(resume_post_merge_bookkeeping(ingestion))
 
         ingestion.refresh_from_db()
@@ -576,6 +804,173 @@ class ForwardIngestionMergeHelperTest(TestCase):
         self.assertIsNone(ingestion.branch)
         self.assertFalse(Branch.objects.filter(pk=branch.pk).exists())
         mock_catchup.assert_called_once()
+        self.assertEqual(
+            ingestion.catchup_status,
+            ForwardCatchupStatusChoices.CURRENT,
+        )
+
+    def test_failed_post_merge_catchup_is_durable_and_resumable(self):
+        branch = Branch.objects.create(
+            name=f"catchup-failure-{uuid4().hex[:12]}",
+            schema_id=f"catchup_failure_{uuid4().hex[:12]}",
+            status=BranchStatusChoices.MERGED,
+            merged_time=timezone.now(),
+        )
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-catchup-failure",
+            branch=branch,
+            merge_applied_at=branch.merged_time,
+        )
+        self.sync.status = ForwardSyncStatusChoices.MERGING
+        self.sync.save(update_fields=["status"])
+
+        self.assertTrue(resume_post_merge_bookkeeping(ingestion))
+        ingestion.refresh_from_db()
+        self.assertEqual(
+            ingestion.catchup_status,
+            ForwardCatchupStatusChoices.PENDING,
+        )
+        self._complete_ownership(ingestion)
+        with (
+            patch(
+                "forward_netbox.utilities.ingestion_merge.latest_processed_catchup_decision",
+                side_effect=RuntimeError("credential unavailable"),
+            ),
+            self.assertRaisesMessage(RuntimeError, "credential unavailable"),
+        ):
+            resume_post_merge_bookkeeping(ingestion)
+
+        ingestion.refresh_from_db()
+        self.sync.refresh_from_db()
+        self.assertEqual(self.sync.status, ForwardSyncStatusChoices.COMPLETED)
+        self.assertTrue(ingestion.baseline_ready)
+        self.assertIsNone(ingestion.branch)
+        self.assertEqual(
+            ingestion.catchup_status,
+            ForwardCatchupStatusChoices.FAILED,
+        )
+        self.assertEqual(ingestion.catchup_reason, "catchup_check_exception")
+        self.assertEqual(ingestion.catchup_error_type, "RuntimeError")
+        self.assertIsNotNone(ingestion.catchup_checked_at)
+
+        with patch(
+            "forward_netbox.utilities.ingestion_merge.latest_processed_catchup_decision",
+            return_value={"should_queue": False, "reason": "already_current"},
+        ) as decision:
+            self.assertTrue(resume_post_merge_bookkeeping(ingestion))
+
+        ingestion.refresh_from_db()
+        self.assertEqual(
+            ingestion.catchup_status,
+            ForwardCatchupStatusChoices.CURRENT,
+        )
+        self.assertEqual(ingestion.catchup_reason, "already_current")
+        self.assertEqual(ingestion.catchup_error_type, "")
+        decision.assert_called_once()
+
+    def test_post_merge_catchup_queue_is_persisted(self):
+        branch = Branch.objects.create(
+            name=f"catchup-queue-{uuid4().hex[:12]}",
+            schema_id=f"catchup_queue_{uuid4().hex[:12]}",
+            status=BranchStatusChoices.MERGED,
+            merged_time=timezone.now(),
+        )
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-catchup-current",
+            branch=branch,
+            merge_applied_at=branch.merged_time,
+        )
+        self.sync.status = ForwardSyncStatusChoices.MERGING
+        self.sync.save(update_fields=["status"])
+        queued_job = MagicMock(pk=991)
+        decision = {
+            "should_queue": True,
+            "reason": "latest_processed_advanced",
+            "snapshot_selector": LATEST_PROCESSED_SNAPSHOT,
+            "current_snapshot_id": ingestion.snapshot_id,
+            "latest_processed_snapshot_id": "snapshot-catchup-target",
+        }
+
+        with (
+            patch(
+                "forward_netbox.utilities.ingestion_merge.latest_processed_catchup_decision",
+                return_value=decision,
+            ),
+            patch.object(
+                ForwardSync,
+                "enqueue_sync_job",
+                return_value=queued_job,
+            ) as enqueue,
+        ):
+            self.assertTrue(resume_post_merge_bookkeeping(ingestion))
+            ingestion.refresh_from_db()
+            self.assertEqual(
+                ingestion.catchup_status,
+                ForwardCatchupStatusChoices.PENDING,
+            )
+            enqueue.assert_not_called()
+            self._complete_ownership(ingestion)
+            self.assertTrue(resume_post_merge_bookkeeping(ingestion))
+
+        ingestion.refresh_from_db()
+        self.assertEqual(
+            ingestion.catchup_status,
+            ForwardCatchupStatusChoices.QUEUED,
+        )
+        self.assertEqual(
+            ingestion.catchup_target_snapshot_id,
+            "snapshot-catchup-target",
+        )
+        self.assertEqual(ingestion.catchup_reason, "latest_processed_advanced")
+        enqueue.assert_called_once()
+
+    def test_catchup_does_not_report_current_while_sync_is_active(self):
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-active",
+        )
+        self.sync.status = ForwardSyncStatusChoices.SYNCING
+        self.sync.save(update_fields=["status"])
+
+        with patch(
+            "forward_netbox.utilities.ingestion_merge.latest_processed_catchup_decision",
+            return_value={"should_queue": False, "reason": "sync_not_completed"},
+        ):
+            reconcile_ingestion_catchup(ingestion)
+
+        ingestion.refresh_from_db()
+        self.assertEqual(
+            ingestion.catchup_status,
+            ForwardCatchupStatusChoices.QUEUED,
+        )
+        self.assertEqual(ingestion.catchup_reason, "sync_not_completed")
+
+    def test_catchup_marks_nonterminal_check_failed_when_sync_is_not_active(self):
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-failed",
+        )
+        self.sync.status = ForwardSyncStatusChoices.FAILED
+        self.sync.save(update_fields=["status"])
+
+        with patch(
+            "forward_netbox.utilities.ingestion_merge.latest_processed_catchup_decision",
+            return_value={"should_queue": False, "reason": "sync_not_completed"},
+        ):
+            reconcile_ingestion_catchup(ingestion)
+
+        ingestion.refresh_from_db()
+        self.assertEqual(
+            ingestion.catchup_status,
+            ForwardCatchupStatusChoices.FAILED,
+        )
+        self.assertEqual(ingestion.catchup_reason, "sync_not_completed")
 
     def test_resume_post_merge_bookkeeping_requires_missing_branch_attestation(self):
         ingestion = ForwardIngestion.objects.create(

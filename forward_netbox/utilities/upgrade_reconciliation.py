@@ -41,7 +41,7 @@ def _empty_dlm_summary(*, status, reason=""):
         "software_versions": {
             "total": None,
             "without_devices": None,
-            "catalog_retained_without_devices": None,
+            "protected_without_devices": None,
             "unreferenced_without_devices": None,
         },
         "cves": {
@@ -109,7 +109,7 @@ def _dlm_summary(*, include_samples, sample_limit):
             "software_versions": {
                 "total": SoftwareVersion.objects.count(),
                 "without_devices": without_devices_count,
-                "catalog_retained_without_devices": (
+                "protected_without_devices": (
                     without_devices_count - unreferenced_count
                 ),
                 "unreferenced_without_devices": unreferenced_count,
@@ -135,14 +135,14 @@ def _dlm_summary(*, include_samples, sample_limit):
                 "_has_image_files",
                 "_has_validated_rules",
             )
-            retained_sample = []
-            retained = classified.exclude(
+            protected_sample = []
+            protected = classified.exclude(
                 _has_cves=False,
                 _has_vulnerabilities=False,
                 _has_image_files=False,
                 _has_validated_rules=False,
             )
-            for row in retained.order_by("platform__name", "version").values(
+            for row in protected.order_by("platform__name", "version").values(
                 *sample_fields
             )[:sample_limit]:
                 reasons = [
@@ -155,9 +155,9 @@ def _dlm_summary(*, include_samples, sample_limit):
                     )
                     if row.pop(field)
                 ]
-                row["retained_by"] = ", ".join(reasons)
-                retained_sample.append(row)
-            dlm["software_versions"]["catalog_retained_sample"] = retained_sample
+                row["protected_by"] = ", ".join(reasons)
+                protected_sample.append(row)
+            dlm["software_versions"]["protected_sample"] = protected_sample
             dlm["software_versions"]["unreferenced_sample"] = list(
                 unreferenced.order_by("platform__name", "version").values(
                     "platform__name", "version"

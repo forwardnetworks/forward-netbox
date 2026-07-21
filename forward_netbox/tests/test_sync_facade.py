@@ -119,6 +119,28 @@ class ForwardSyncFacadeHelperTest(TestCase):
         self.assertEqual(sync.user_id, owner.pk)
         self.assertEqual(enqueue.call_args.kwargs["user"], owner)
 
+    def test_enqueue_persists_explicit_force_unchanged_intent(self):
+        owner = get_user_model().objects.create_user(username="force-sync-owner")
+        sync = ForwardSync.objects.create(
+            name="sync-force-unchanged",
+            source=self.source,
+            user=owner,
+            parameters={"snapshot_id": LATEST_PROCESSED_SNAPSHOT},
+        )
+
+        with patch(
+            "forward_netbox.utilities.sync_facade.enqueue_forward_job",
+            return_value=Mock(pk=1),
+        ) as enqueue:
+            enqueue_sync_job(
+                sync,
+                adhoc=True,
+                user=owner,
+                force_unchanged=True,
+            )
+
+        self.assertTrue(enqueue.call_args.kwargs["force_unchanged"])
+
     def test_first_owner_adoption_uses_database_winner_for_job_attribution(self):
         sync = ForwardSync.objects.create(
             name="sync-owner-adoption-race",
@@ -165,6 +187,46 @@ class ForwardSyncFacadeHelperTest(TestCase):
 
         self.assertEqual(result.pk, pending.pk)
         enqueue.assert_not_called()
+
+    def test_force_enqueue_rejects_active_nonforce_job(self):
+        owner = get_user_model().objects.create_user(username="forced-sync-owner")
+        sync = ForwardSync.objects.create(
+            name="sync-force-active",
+            source=self.source,
+            user=owner,
+            parameters={"snapshot_id": LATEST_PROCESSED_SNAPSHOT},
+        )
+
+        for status in (
+            JobStatusChoices.STATUS_PENDING,
+            JobStatusChoices.STATUS_RUNNING,
+        ):
+            with self.subTest(status=status):
+                active = Job.objects.create(
+                    object_type=ContentType.objects.get_for_model(ForwardSync),
+                    object_id=sync.pk,
+                    name=f"{sync.name} - adhoc",
+                    status=status,
+                    job_id=uuid4(),
+                )
+                with (
+                    patch(
+                        "forward_netbox.utilities.sync_facade.enqueue_forward_job"
+                    ) as enqueue,
+                    self.assertRaisesMessage(
+                        SyncError,
+                        "Cannot force a same-snapshot re-sync while another sync "
+                        "job is active",
+                    ),
+                ):
+                    enqueue_sync_job(
+                        sync,
+                        adhoc=True,
+                        user=owner,
+                        force_unchanged=True,
+                    )
+                enqueue.assert_not_called()
+                active.delete()
 
     def test_manual_enqueue_reuses_running_producer_without_resetting_sync(self):
         owner = get_user_model().objects.create_user(username="running-sync-owner")

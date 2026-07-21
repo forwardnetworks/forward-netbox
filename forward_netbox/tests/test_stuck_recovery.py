@@ -11,6 +11,7 @@ from django.utils import timezone
 from netbox_branching.choices import BranchStatusChoices
 from netbox_branching.models import Branch
 
+from forward_netbox.choices import ForwardCatchupStatusChoices
 from forward_netbox.choices import ForwardSyncStatusChoices
 from forward_netbox.models import ForwardIngestion
 from forward_netbox.models import ForwardOwnershipReconciliation
@@ -116,12 +117,15 @@ class StuckRecoveryTest(TestCase):
             job_id="123e4567-e89b-12d3-a456-426614180096",
         )
 
-        with patch(
-            "forward_netbox.utilities.stuck_recovery.job_has_live_execution",
-            return_value=False,
-        ), patch(
-            "forward_netbox.utilities.sync_facade.reconcile_standing_schedules"
-        ) as reconcile:
+        with (
+            patch(
+                "forward_netbox.utilities.stuck_recovery.job_has_live_execution",
+                return_value=False,
+            ),
+            patch(
+                "forward_netbox.utilities.sync_facade.reconcile_standing_schedules"
+            ) as reconcile,
+        ):
             verdict = classify_stuck_sync(sync, grace_seconds=0)
             self.assertEqual(verdict["action"], "reconcile_standing_schedules")
             result = recover_stuck_sync(sync, verdict, user=self.user)
@@ -130,6 +134,37 @@ class StuckRecoveryTest(TestCase):
         standing.refresh_from_db()
         sync.refresh_from_db()
         self.assertEqual(standing.status, JobStatusChoices.STATUS_FAILED)
+        self.assertEqual(sync.status, ForwardSyncStatusChoices.COMPLETED)
+        reconcile.assert_called_once()
+
+    def test_dead_immediate_preview_is_failed_without_changing_sync_state(self):
+        sync = self._sync("dead-preview", ForwardSyncStatusChoices.COMPLETED)
+        preview = Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=sync.pk,
+            name=f"{sync.name} - dependency preview",
+            status=JobStatusChoices.STATUS_RUNNING,
+            started=timezone.now() - timedelta(hours=1),
+            job_id="123e4567-e89b-12d3-a456-426614180094",
+        )
+
+        with (
+            patch(
+                "forward_netbox.utilities.stuck_recovery.job_has_live_execution",
+                return_value=False,
+            ),
+            patch(
+                "forward_netbox.utilities.sync_facade.reconcile_standing_schedules"
+            ) as reconcile,
+        ):
+            verdict = classify_stuck_sync(sync, grace_seconds=0)
+            self.assertEqual(verdict["action"], "reconcile_standing_schedules")
+            result = recover_stuck_sync(sync, verdict, user=self.user)
+
+        self.assertEqual(result["action"], "reconciled_standing_schedules")
+        preview.refresh_from_db()
+        sync.refresh_from_db()
+        self.assertEqual(preview.status, JobStatusChoices.STATUS_FAILED)
         self.assertEqual(sync.status, ForwardSyncStatusChoices.COMPLETED)
         reconcile.assert_called_once()
 
@@ -314,16 +349,20 @@ class StuckRecoveryTest(TestCase):
             merge_applied_at=branch.merged_time,
         )
 
-        with patch(
-            "forward_netbox.utilities.stuck_recovery.job_has_live_execution",
-            return_value=False,
-        ), patch(
-            "forward_netbox.utilities.ingestion_merge.latest_processed_catchup_decision",
-            return_value={"should_queue": False},
-        ), patch(
-            "forward_netbox.jobs._enqueue_post_sync_overlays",
-            return_value={"scheduled": True},
-        ) as enqueue:
+        with (
+            patch(
+                "forward_netbox.utilities.stuck_recovery.job_has_live_execution",
+                return_value=False,
+            ),
+            patch(
+                "forward_netbox.utilities.ingestion_merge.latest_processed_catchup_decision",
+                return_value={"should_queue": False},
+            ),
+            patch(
+                "forward_netbox.jobs._enqueue_post_sync_overlays",
+                return_value={"scheduled": True},
+            ) as enqueue,
+        ):
             verdict = classify_stuck_sync(sync, grace_seconds=0)
             self.assertEqual(verdict["action"], "finalize_merged_bookkeeping")
             result = recover_stuck_sync(sync, verdict, user=self.user)
@@ -375,6 +414,52 @@ class StuckRecoveryTest(TestCase):
             snapshot_id="snapshot-ownership",
             ingestion_id=ingestion.pk,
         )
+
+    def test_completed_sync_with_failed_catchup_is_retried(self):
+        sync = self._sync("catchup-failed", ForwardSyncStatusChoices.COMPLETED)
+        dead_merge_job = self._merge_job(sync, suffix="8")
+        ingestion = ForwardIngestion.objects.create(
+            sync=sync,
+            merge_job=dead_merge_job,
+            snapshot_id="snapshot-catchup-failed",
+            baseline_ready=True,
+            merge_applied_at=timezone.now() - timedelta(hours=1),
+            merge_finalized_at=timezone.now() - timedelta(hours=1),
+            catchup_status=ForwardCatchupStatusChoices.FAILED,
+            catchup_reason="latest_processed_lookup_failed",
+            catchup_checked_at=timezone.now() - timedelta(hours=1),
+        )
+        for domain in (
+            ForwardOwnershipReconciliation.Domain.VIRTUAL_PARENTS,
+            ForwardOwnershipReconciliation.Domain.STATUS_TAGS,
+        ):
+            ForwardOwnershipReconciliation.objects.create(
+                sync=sync,
+                domain=domain,
+                generation=ingestion.pk,
+                snapshot_id=ingestion.snapshot_id,
+                status=ForwardOwnershipReconciliation.Status.COMPLETED,
+                completed_at=timezone.now(),
+            )
+
+        with (
+            patch(
+                "forward_netbox.utilities.stuck_recovery.job_has_live_execution",
+                return_value=False,
+            ),
+            patch(
+                "forward_netbox.utilities.ingestion_merge.reconcile_ingestion_catchup",
+                return_value={"should_queue": True, "job_id": 992},
+            ) as retry,
+        ):
+            verdict = classify_stuck_sync(sync, grace_seconds=0)
+            self.assertEqual(verdict["action"], "retry_catchup")
+            result = recover_stuck_sync(sync, verdict, user=self.user)
+
+        self.assertEqual(result["action"], "retried_catchup")
+        retry.assert_called_once_with(ingestion, current_job=None, client=None)
+        dead_merge_job.refresh_from_db()
+        self.assertEqual(dead_merge_job.status, JobStatusChoices.STATUS_COMPLETED)
 
     def test_completed_sync_finalizes_dead_producer_after_ownership_converges(self):
         sync = self._sync("producer-pending", ForwardSyncStatusChoices.COMPLETED)
@@ -447,10 +532,10 @@ class StuckRecoveryTest(TestCase):
             started=timezone.now() - timedelta(hours=1),
             job_id="123e4567-e89b-12d3-a456-426614180089",
         )
-        validation = Job.objects.create(
+        operator_job = Job.objects.create(
             object_type=ContentType.objects.get_for_model(ForwardSync),
             object_id=sync.pk,
-            name=f"{sync.name} - validation",
+            name=f"{sync.name} - prune orphans",
             status=JobStatusChoices.STATUS_RUNNING,
             started=timezone.now() - timedelta(hours=1),
             job_id="123e4567-e89b-12d3-a456-426614180090",
@@ -465,9 +550,9 @@ class StuckRecoveryTest(TestCase):
             recover_stuck_sync(sync, verdict, user=self.user)
 
         producer.refresh_from_db()
-        validation.refresh_from_db()
+        operator_job.refresh_from_db()
         self.assertEqual(producer.status, JobStatusChoices.STATUS_COMPLETED)
-        self.assertEqual(validation.status, JobStatusChoices.STATUS_RUNNING)
+        self.assertEqual(operator_job.status, JobStatusChoices.STATUS_RUNNING)
 
     def test_producer_rebound_to_older_ingestion_remains_visible(self):
         sync = self._sync("older-producer", ForwardSyncStatusChoices.SYNCING)
@@ -563,10 +648,13 @@ class StuckRecoveryTest(TestCase):
             job_id="123e4567-e89b-12d3-a456-426614180094",
         )
 
-        with patch(
-            "forward_netbox.utilities.stuck_recovery.job_has_live_execution",
-            return_value=False,
-        ), patch("forward_netbox.jobs._reconcile_sync_run_schedules") as reconcile:
+        with (
+            patch(
+                "forward_netbox.utilities.stuck_recovery.job_has_live_execution",
+                return_value=False,
+            ),
+            patch("forward_netbox.jobs._reconcile_sync_run_schedules") as reconcile,
+        ):
             verdict = classify_stuck_sync(sync, grace_seconds=0)
             recover_stuck_sync(sync, verdict, user=self.user)
 

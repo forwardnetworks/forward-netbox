@@ -545,6 +545,23 @@ class AvocentUnificationTest(SimpleTestCase):
             for sig in ("*avocent*", "*cyclades*", "*alterpath*"):
                 self.assertIn(sig, branch, filename)
 
+    def test_avocent_rows_emit_stable_netbox_identity(self):
+        for filename in (
+            "forward_devices.nqe",
+            "forward_devices_with_netbox_aliases.nqe",
+        ):
+            branch = self._endpoint_branch(filename)
+            self.assertIn('if isAvocent then "Avocent"', branch, filename)
+            self.assertIn(
+                'let ep_role = if isConsoleServer then "Console Server"',
+                branch,
+                filename,
+            )
+            self.assertIn("platform: ep_manuf,", branch, filename)
+            self.assertIn("manufacturer: ep_manuf,", branch, filename)
+            self.assertIn("device_type: ep_model,", branch, filename)
+            self.assertIn("platform_manufacturer_authoritative: true", branch, filename)
+
     def test_multiline_sysdescr_is_collapsed_before_tokenizing(self):
         for filename in (
             "forward_devices.nqe",

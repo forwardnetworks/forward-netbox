@@ -37,7 +37,6 @@ from .utilities.forward_api import DEFAULT_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT
 from .utilities.forward_api import DEFAULT_NQE_PAGE_SIZE
 from .utilities.forward_api import DEFAULT_QUERY_DIAGNOSTICS_ENABLED
 from .utilities.forward_api import DEFAULT_QUERY_FETCH_CONCURRENCY
-from .utilities.forward_api import DEFAULT_QUERY_PREFLIGHT_ENABLED
 from .utilities.forward_api import FORWARD_SAAS_API_HARD_BLOCK_REQUESTS_PER_MINUTE
 from .utilities.forward_api import LATEST_COLLECTED_SNAPSHOT
 from .utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
@@ -48,8 +47,6 @@ from .utilities.forward_api import MAX_NQE_FETCH_ALL_MAX_PAGES
 from .utilities.forward_api import MAX_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT
 from .utilities.forward_api import MAX_NQE_PAGE_SIZE
 from .utilities.forward_api import MAX_QUERY_FETCH_CONCURRENCY
-from .utilities.query_fetch import DEFAULT_PREFLIGHT_ROW_LIMIT
-from .utilities.query_fetch import MAX_PREFLIGHT_ROW_LIMIT
 from .utilities.runtime_guidance import DEFAULT_PUSHDOWN_DIFF_WARN_RATIO
 from .utilities.runtime_guidance import DEFAULT_PUSHDOWN_FALLBACK_WARN_RATE
 from .utilities.runtime_guidance import (
@@ -236,8 +233,8 @@ class ForwardSourceForm(NetBoxModelForm):
             max_value=MAX_QUERY_FETCH_CONCURRENCY,
             label="Query Fetch Concurrency",
             help_text=(
-                "Maximum concurrent NQE map fetch jobs per sync preflight/workload "
-                f"phase. Default: {DEFAULT_QUERY_FETCH_CONCURRENCY}."
+                "Maximum concurrent NQE map fetch jobs per workload phase. "
+                f"Default: {DEFAULT_QUERY_FETCH_CONCURRENCY}."
             ),
             widget=forms.NumberInput(attrs={"class": "form-control"}),
         )
@@ -277,31 +274,12 @@ class ForwardSourceForm(NetBoxModelForm):
             ),
             widget=forms.NumberInput(attrs={"class": "form-control"}),
         )
-        self.fields["query_preflight_enabled"] = forms.BooleanField(
-            required=False,
-            label="Query Preflight",
-            help_text=(
-                "Run the preflight sample query phase before full workload fetch. "
-                "Disable to reduce startup query overhead on large runs."
-            ),
-        )
-        self.fields["query_preflight_row_limit"] = forms.IntegerField(
-            required=False,
-            min_value=1,
-            max_value=MAX_PREFLIGHT_ROW_LIMIT,
-            label="Query Preflight Row Limit",
-            help_text=(
-                "Sample rows fetched per query during preflight validation. "
-                f"Default: {DEFAULT_PREFLIGHT_ROW_LIMIT}."
-            ),
-            widget=forms.NumberInput(attrs={"class": "form-control"}),
-        )
         self.fields["query_diagnostics_enabled"] = forms.BooleanField(
             required=False,
             label="Query Diagnostics",
             help_text=(
-                "Run additional NQE diagnostic queries for importability summaries. "
-                "Disable to reduce query overhead during large ingestion runs."
+                "Run additional NQE diagnostic queries for explicit validation "
+                "and dependency previews. Normal ingestion runs only import maps."
             ),
         )
         self.fields["nqe_async_poll_interval_seconds"] = forms.FloatField(
@@ -570,12 +548,6 @@ class ForwardSourceForm(NetBoxModelForm):
             parameters.get("nqe_identical_full_page_streak_limit")
             or DEFAULT_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT
         )
-        self.fields["query_preflight_enabled"].initial = bool(
-            parameters.get("query_preflight_enabled", DEFAULT_QUERY_PREFLIGHT_ENABLED)
-        )
-        self.fields["query_preflight_row_limit"].initial = (
-            parameters.get("query_preflight_row_limit") or DEFAULT_PREFLIGHT_ROW_LIMIT
-        )
         self.fields["query_diagnostics_enabled"].initial = bool(
             parameters.get(
                 "query_diagnostics_enabled", DEFAULT_QUERY_DIAGNOSTICS_ENABLED
@@ -680,8 +652,6 @@ class ForwardSourceForm(NetBoxModelForm):
                     "api_requests_per_minute",
                     "nqe_fetch_all_max_pages",
                     "nqe_identical_full_page_streak_limit",
-                    "query_preflight_enabled",
-                    "query_preflight_row_limit",
                     "query_diagnostics_enabled",
                     "nqe_async_poll_interval_seconds",
                     "nqe_async_max_polls",
@@ -714,8 +684,6 @@ class ForwardSourceForm(NetBoxModelForm):
                     "api_requests_per_minute",
                     "nqe_fetch_all_max_pages",
                     "nqe_identical_full_page_streak_limit",
-                    "query_preflight_enabled",
-                    "query_preflight_row_limit",
                     "query_diagnostics_enabled",
                     "nqe_async_poll_interval_seconds",
                     "nqe_async_max_polls",
@@ -813,12 +781,6 @@ class ForwardSourceForm(NetBoxModelForm):
             )
             or existing_parameters.get("nqe_identical_full_page_streak_limit")
             or DEFAULT_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT,
-            "query_preflight_enabled": bool(
-                cleaned.get("query_preflight_enabled", DEFAULT_QUERY_PREFLIGHT_ENABLED)
-            ),
-            "query_preflight_row_limit": cleaned.get("query_preflight_row_limit")
-            or existing_parameters.get("query_preflight_row_limit")
-            or DEFAULT_PREFLIGHT_ROW_LIMIT,
             "query_diagnostics_enabled": bool(
                 cleaned.get(
                     "query_diagnostics_enabled", DEFAULT_QUERY_DIAGNOSTICS_ENABLED
@@ -1012,16 +974,6 @@ class ForwardSourceForm(NetBoxModelForm):
             )
             or existing_parameters.get("nqe_identical_full_page_streak_limit")
             or DEFAULT_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT,
-            "query_preflight_enabled": bool(
-                self.cleaned_data.get(
-                    "query_preflight_enabled", DEFAULT_QUERY_PREFLIGHT_ENABLED
-                )
-            ),
-            "query_preflight_row_limit": self.cleaned_data.get(
-                "query_preflight_row_limit"
-            )
-            or existing_parameters.get("query_preflight_row_limit")
-            or DEFAULT_PREFLIGHT_ROW_LIMIT,
             "query_diagnostics_enabled": bool(
                 self.cleaned_data.get(
                     "query_diagnostics_enabled", DEFAULT_QUERY_DIAGNOSTICS_ENABLED
@@ -1158,15 +1110,6 @@ class ForwardSyncForm(NetBoxModelForm):
             "plugin-specific contracts remain on the adapter path."
         ),
     )
-    skip_unchanged_snapshot = forms.BooleanField(
-        required=False,
-        label="Skip scheduled runs on an unchanged snapshot",
-        help_text=(
-            "When a scheduled run would target the same snapshot as the last "
-            "successful baseline, skip query execution entirely (no-op) to reduce "
-            "Forward API load. Manual/adhoc runs always execute. Off by default."
-        ),
-    )
     set_primary_ip_from_mgmt_tag = forms.BooleanField(
         required=False,
         label="Set primary IP from Mgmt_ tag",
@@ -1267,10 +1210,6 @@ class ForwardSyncForm(NetBoxModelForm):
             "enable_bulk_orm",
             DEFAULT_ENABLE_BULK_ORM_FOR_NEW_SYNCS,
         )
-        self.fields["skip_unchanged_snapshot"].initial = parameters.get(
-            "skip_unchanged_snapshot",
-            False,
-        )
         self.fields["set_primary_ip_from_mgmt_tag"].initial = parameters.get(
             "set_primary_ip_from_mgmt_tag",
             False,
@@ -1316,7 +1255,6 @@ class ForwardSyncForm(NetBoxModelForm):
             FieldSet(
                 "auto_merge",
                 "enable_bulk_orm",
-                "skip_unchanged_snapshot",
                 "set_primary_ip_from_mgmt_tag",
                 "diff_fallback_mode",
                 "scheduled",
@@ -1369,9 +1307,6 @@ class ForwardSyncForm(NetBoxModelForm):
             "auto_merge": cleaned.get("auto_merge", False),
             "snapshot_id": snapshot_id,
             "enable_bulk_orm": bool(cleaned.get("enable_bulk_orm", False)),
-            "skip_unchanged_snapshot": bool(
-                cleaned.get("skip_unchanged_snapshot", False)
-            ),
             "set_primary_ip_from_mgmt_tag": bool(
                 cleaned.get("set_primary_ip_from_mgmt_tag", False)
             ),
@@ -1397,9 +1332,6 @@ class ForwardSyncForm(NetBoxModelForm):
             "snapshot_id": self.cleaned_data.get("snapshot_id")
             or LATEST_PROCESSED_SNAPSHOT,
             "enable_bulk_orm": bool(self.cleaned_data.get("enable_bulk_orm", False)),
-            "skip_unchanged_snapshot": bool(
-                self.cleaned_data.get("skip_unchanged_snapshot", False)
-            ),
             "set_primary_ip_from_mgmt_tag": bool(
                 self.cleaned_data.get("set_primary_ip_from_mgmt_tag", False)
             ),

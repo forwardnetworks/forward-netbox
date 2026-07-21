@@ -76,5 +76,5 @@ class UpgradeReconciliationCoreTest(TestCase):
         self.assertNotIn("sample", report["stale_endpoint_device_types"])
         self.assertEqual(report["dlm"]["available"], apps.is_installed("netbox_dlm"))
         software = report["dlm"]["software_versions"]
-        self.assertNotIn("catalog_retained_sample", software)
+        self.assertNotIn("protected_sample", software)
         self.assertNotIn("unreferenced_sample", software)

@@ -1,4 +1,6 @@
 from django.db import connection
+from django.db import IntegrityError
+from django.db import transaction
 from django.db.migrations.executor import MigrationExecutor
 from django.test import TransactionTestCase
 from netbox.context import current_request
@@ -25,6 +27,27 @@ def _migrate_to(target):
     executor = MigrationExecutor(connection)
     executor.migrate([(APP, target)])
     return executor
+
+
+class DeviceGenericRelationGuardMigrationTest(TransactionTestCase):
+    def test_generic_relation_to_missing_device_is_rejected(self):
+        from django.contrib.contenttypes.models import ContentType
+        from dcim.models import Device
+        from extras.models import Tag
+        from extras.models import TaggedItem
+
+        device_type = ContentType.objects.get_for_model(Device)
+        tag = Tag.objects.create(
+            name="Missing Device Guard", slug="missing-device-guard"
+        )
+        missing_device_id = 2_000_000_000
+
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            TaggedItem.objects.create(
+                content_type=device_type,
+                object_id=missing_device_id,
+                tag=tag,
+            )
 
 
 class ForwardUpgradeMigrationTest(TransactionTestCase):
@@ -158,6 +181,8 @@ class Forward26UpgradeMigrationTest(TransactionTestCase):
                 "device_tag_exclude": "Upgrade 26 Excluded",
                 "scope_endpoints_by_include_tags": False,
                 "scope_endpoints_by_include_tags_configured": False,
+                "query_preflight_enabled": True,
+                "query_preflight_row_limit": 5,
             },
         )
         sync = historical_sync.objects.create(
@@ -176,6 +201,7 @@ class Forward26UpgradeMigrationTest(TransactionTestCase):
                 "auto_tag_backfilled": True,
                 "auto_prune_orphans": True,
                 "max_changes_per_branch": 4321,
+                "skip_unchanged_snapshot": False,
             },
         )
         partial_ingestion = historical_ingestion.objects.create(
@@ -264,6 +290,7 @@ class Forward26UpgradeMigrationTest(TransactionTestCase):
         from forward_netbox.models import ForwardSource
         from forward_netbox.models import ForwardSync
         from forward_netbox.models import ForwardVirtualParentClaim
+        from forward_netbox.models import ForwardWorkloadState
         from forward_netbox.utilities.crypto import is_encrypted
 
         upgraded_sync = ForwardSync.objects.get(name=PROBE_26_SYNC_NAME)
@@ -286,6 +313,7 @@ class Forward26UpgradeMigrationTest(TransactionTestCase):
                 "auto_tag_backfilled",
                 "auto_prune_orphans",
                 "max_changes_per_branch",
+                "skip_unchanged_snapshot",
             }.isdisjoint(parameters)
         )
         self.assertTrue(upgraded_source.parameters["scope_endpoints_by_include_tags"])
@@ -305,6 +333,8 @@ class Forward26UpgradeMigrationTest(TransactionTestCase):
             "scope_endpoints_by_include_tags_configured",
             upgraded_source.parameters,
         )
+        self.assertNotIn("query_preflight_enabled", upgraded_source.parameters)
+        self.assertNotIn("query_preflight_row_limit", upgraded_source.parameters)
         self.assertFalse(
             ForwardNQEMap.objects.filter(
                 name="Forward Virtual Chassis",
@@ -329,6 +359,7 @@ class Forward26UpgradeMigrationTest(TransactionTestCase):
         self.assertFalse(ForwardDeviceIdentity.objects.exists())
         self.assertFalse(ForwardDeviceTagClaim.objects.exists())
         self.assertFalse(ForwardVirtualParentClaim.objects.exists())
+        self.assertFalse(ForwardWorkloadState.objects.exists())
         from forward_netbox.models import ForwardIngestion
 
         upgraded_partial = ForwardIngestion.objects.get(pk=partial_ingestion.pk)

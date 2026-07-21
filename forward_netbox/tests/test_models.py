@@ -421,9 +421,9 @@ class ForwardSyncModelTest(TestCase):
             "`pushdown_fallback_warn_rate` must be between 0 and 1", str(ctx.exception)
         )
 
-    def test_source_rejects_non_boolean_query_preflight_enabled(self):
+    def test_source_rejects_retired_query_preflight_settings(self):
         source = ForwardSource(
-            name="source-invalid-preflight-toggle",
+            name="source-retired-preflight-settings",
             type="saas",
             url="https://fwd.app",
             parameters={
@@ -432,27 +432,8 @@ class ForwardSyncModelTest(TestCase):
                 "verify": True,
                 "timeout": 1200,
                 "network_id": "test-network",
-                "query_preflight_enabled": "yes",
-            },
-        )
-
-        with self.assertRaises(ValidationError) as ctx:
-            source.clean()
-
-        self.assertIn("`query_preflight_enabled` must be a boolean", str(ctx.exception))
-
-    def test_source_rejects_invalid_query_preflight_row_limit(self):
-        source = ForwardSource(
-            name="source-invalid-preflight-row-limit",
-            type="saas",
-            url="https://fwd.app",
-            parameters={
-                "username": "user@example.com",
-                "password": "secret",
-                "verify": True,
-                "timeout": 1200,
-                "network_id": "test-network",
-                "query_preflight_row_limit": 0,
+                "query_preflight_enabled": True,
+                "query_preflight_row_limit": 5,
             },
         )
 
@@ -460,9 +441,65 @@ class ForwardSyncModelTest(TestCase):
             source.clean()
 
         self.assertIn(
-            "`query_preflight_row_limit` must be between 1 and 100.",
+            "Unsupported Forward source keys: ['query_preflight_enabled', "
+            "'query_preflight_row_limit']",
             str(ctx.exception),
         )
+
+    def test_explicit_validation_fetches_each_workload_once_with_diagnostics(self):
+        sync = ForwardSync.objects.create(
+            name="sync-single-validation-fetch",
+            source=self.source,
+            user=self.user,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+            },
+        )
+        context = Mock()
+        context.as_dict.return_value = {
+            "snapshot_selector": LATEST_PROCESSED_SNAPSHOT,
+            "snapshot_id": "snapshot-validation",
+        }
+        validation_result = Mock()
+
+        with patch(
+            "forward_netbox.utilities.validation.ForwardQueryFetcher"
+        ) as fetcher_class:
+            fetcher = fetcher_class.return_value
+            fetcher.resolve_context.return_value = context
+            fetcher.fetch_workloads.return_value = []
+            fetcher.model_results = []
+            runner = ForwardValidationRunner(sync, Mock(), Mock())
+            runner.record_plan_validation = Mock(return_value=validation_result)
+
+            result = runner.run_query_validation()
+
+        self.assertEqual(result, validation_result)
+        fetcher.fetch_workloads.assert_called_once_with(
+            context,
+            include_diagnostics=True,
+        )
+        from forward_netbox.utilities.query_fetch import ForwardQueryFetcher
+
+        self.assertFalse(hasattr(ForwardQueryFetcher, "run_preflight"))
+
+    def test_sync_rejects_retired_unchanged_snapshot_toggle(self):
+        sync = ForwardSync(
+            name="sync-retired-unchanged-toggle",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+                "skip_unchanged_snapshot": False,
+            },
+        )
+
+        with self.assertRaisesRegex(
+            ValidationError,
+            "Unsupported Forward sync keys:.*skip_unchanged_snapshot",
+        ):
+            sync.clean()
 
     def test_source_rejects_non_boolean_query_diagnostics_enabled(self):
         source = ForwardSource(

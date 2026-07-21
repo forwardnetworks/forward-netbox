@@ -25,6 +25,7 @@ from utilities.querysets import RestrictedQuerySet
 from .choices import forward_configured_models
 from .choices import FORWARD_OPTIONAL_MODELS
 from .choices import FORWARD_SUPPORTED_MODELS
+from .choices import ForwardCatchupStatusChoices
 from .choices import ForwardDriftPolicyBaselineChoices
 from .choices import ForwardIngestionPhaseChoices
 from .choices import ForwardSourceDeploymentChoices
@@ -232,7 +233,6 @@ class ForwardSource(ForwardPluginModelDocsMixin, JobsMixin, PrimaryModel):
             "nqe_async_max_polls",
             "nqe_fetch_all_max_pages",
             "nqe_identical_full_page_streak_limit",
-            "query_preflight_enabled",
             "query_diagnostics_enabled",
             "pushdown_fallback_warn_rate",
             "pushdown_runtime_fallback_warn_share",
@@ -647,12 +647,19 @@ class ForwardSync(ForwardPluginModelDocsMixin, JobsMixin, TagsMixin, ChangeLogge
     def enabled_models(self):
         return build_enabled_models(self)
 
-    def enqueue_sync_job(self, adhoc=False, user=None, current_job=None):
+    def enqueue_sync_job(
+        self,
+        adhoc=False,
+        user=None,
+        current_job=None,
+        force_unchanged=False,
+    ):
         return enqueue_forward_sync_job(
             self,
             adhoc=adhoc,
             user=user,
             current_job=current_job,
+            force_unchanged=force_unchanged,
         )
 
     def enqueue_validation_job(
@@ -662,14 +669,20 @@ class ForwardSync(ForwardPluginModelDocsMixin, JobsMixin, TagsMixin, ChangeLogge
             self, adhoc=adhoc, user=user, schedule_at=schedule_at, interval=interval
         )
 
-    def sync(self, job=None, *, max_changes_per_staging_item=None, adhoc=False):
+    def sync(
+        self,
+        job=None,
+        *,
+        max_changes_per_staging_item=None,
+        force_unchanged=False,
+    ):
         from .utilities.sync_orchestration import run_forward_sync
 
-        run_forward_sync(
+        return run_forward_sync(
             self,
             job=job,
             max_changes_per_staging_item=max_changes_per_staging_item,
-            adhoc=adhoc,
+            force_unchanged=force_unchanged,
         )
 
 
@@ -809,6 +822,20 @@ class ForwardIngestion(ForwardPluginModelDocsMixin, JobsMixin, models.Model):
     baseline_ready = models.BooleanField(default=False)
     merge_applied_at = models.DateTimeField(blank=True, null=True, db_index=True)
     merge_finalized_at = models.DateTimeField(blank=True, null=True, db_index=True)
+    catchup_status = models.CharField(
+        max_length=20,
+        choices=ForwardCatchupStatusChoices,
+        default=ForwardCatchupStatusChoices.NOT_APPLICABLE,
+        db_index=True,
+    )
+    catchup_target_snapshot_id = models.CharField(
+        max_length=100,
+        blank=True,
+        default="",
+    )
+    catchup_reason = models.CharField(max_length=100, blank=True, default="")
+    catchup_error_type = models.CharField(max_length=255, blank=True, default="")
+    catchup_checked_at = models.DateTimeField(blank=True, null=True)
     applied_change_count = models.PositiveIntegerField(default=0)
     failed_change_count = models.PositiveIntegerField(default=0)
     created_change_count = models.PositiveIntegerField(default=0)
@@ -927,6 +954,51 @@ class ForwardIngestion(ForwardPluginModelDocsMixin, JobsMixin, models.Model):
             remove_branch=remove_branch,
             claimed_job=claimed_job,
         )
+
+
+class ForwardWorkloadState(ForwardPluginModelDocsMixin, models.Model):
+    """Compressed target rows for one sync/model at an exact ingestion."""
+
+    sync = models.ForeignKey(
+        ForwardSync,
+        on_delete=models.CASCADE,
+        related_name="workload_states",
+    )
+    ingestion = models.ForeignKey(
+        ForwardIngestion,
+        on_delete=models.CASCADE,
+        related_name="workload_states",
+    )
+    model_string = models.CharField(max_length=100)
+    parameter_hash = models.CharField(max_length=64)
+    identity_contract_hash = models.CharField(max_length=64)
+    payload = models.BinaryField()
+    payload_checksum = models.CharField(max_length=64)
+    row_count = models.PositiveIntegerField(default=0)
+    snapshot_id = models.CharField(max_length=100, blank=True, default="")
+    is_current = models.BooleanField(default=False, db_index=True)
+    created = models.DateTimeField(default=timezone.now, editable=False)
+
+    class Meta:
+        ordering = ("sync_id", "model_string", "-ingestion_id")
+        verbose_name = _("Forward Workload State")
+        verbose_name_plural = _("Forward Workload States")
+        db_table = "forward_netbox_workload_state"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["ingestion", "model_string"],
+                name="forward_workload_state_ingestion_model",
+            ),
+            models.UniqueConstraint(
+                fields=["sync", "model_string"],
+                condition=Q(is_current=True),
+                name="forward_workload_state_current_model",
+            ),
+        ]
+
+    def __str__(self):
+        status = "current" if self.is_current else "pending"
+        return f"{self.sync}: {self.model_string} ({status})"
 
 
 class ForwardIngestionIssue(ForwardPluginModelDocsMixin, models.Model):

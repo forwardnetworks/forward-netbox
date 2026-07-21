@@ -24,10 +24,12 @@ from netbox_branching.choices import BranchStatusChoices
 from netbox_branching.models import Branch
 from rq.timeouts import JobTimeoutException
 
+from forward_netbox.choices import ForwardCatchupStatusChoices
 from forward_netbox.choices import ForwardIngestionPhaseChoices
 from forward_netbox.choices import ForwardSyncStatusChoices
 from forward_netbox.exceptions import ForwardOwnershipDispatchError
 from forward_netbox.exceptions import ForwardPartialMergeError
+from forward_netbox.jobs import _dependency_preview_work
 from forward_netbox.jobs import _resolve_authoritative_merge_failure
 from forward_netbox.jobs import DependencyPreviewJob
 from forward_netbox.jobs import ForwardJobRunner
@@ -133,6 +135,45 @@ class ForwardJobsTest(TestCase):
             1,
         )
         overlays.assert_not_called()
+
+    def test_unchanged_sync_noop_does_not_dispatch_overlays(self):
+        job = self._sync_job("unchanged-sync-noop")
+
+        with (
+            patch.object(ForwardSync, "sync", return_value=False),
+            patch("forward_netbox.jobs._enqueue_post_sync_overlays") as overlays,
+        ):
+            sync_forwardsync(job, adhoc=True)
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, JobStatusChoices.STATUS_COMPLETED)
+        overlays.assert_not_called()
+
+    def test_failed_dependency_preview_persists_api_usage(self):
+        job = self._sync_job("failed-dependency-preview")
+        client = Mock()
+        client.api_usage_summary.return_value = {
+            "http_attempts": 7,
+            "nqe_query_calls": 3,
+            "nqe_execution_signature_count": 2,
+            "nqe_repeated_execution_count": 1,
+        }
+
+        with (
+            patch.object(ForwardSource, "get_client", return_value=client),
+            patch(
+                "forward_netbox.views._dependency_dry_run_payload",
+                side_effect=RuntimeError("preview failed"),
+            ),
+            self.assertRaisesRegex(RuntimeError, "preview failed"),
+        ):
+            _dependency_preview_work(job)
+
+        job.refresh_from_db()
+        usage = job.data["forward_api_usage"]
+        self.assertEqual(usage["nqe_query_calls"], 3)
+        self.assertEqual(usage["nqe_repeated_execution_count"], 1)
+        self.assertEqual(usage["budget"]["status"], "warning")
 
     def test_sync_job_timeout_persists_state_and_propagates_to_rq(self):
         job = self._sync_job("sync-timeout")
@@ -298,6 +339,85 @@ class ForwardJobsTest(TestCase):
         self.assertEqual(
             reconciliation.status,
             ForwardOwnershipReconciliation.Status.PENDING,
+        )
+
+    def test_snapshot_catchup_waits_for_every_ownership_domain(self):
+        from forward_netbox.jobs import _reconcile_completed_ingestion_catchup
+        from forward_netbox.utilities.ownership import mark_ownership_pending
+
+        self.ingestion.snapshot_id = "snapshot-before"
+        self.ingestion.baseline_ready = True
+        self.ingestion.merge_applied_at = timezone.now()
+        self.ingestion.merge_finalized_at = timezone.now()
+        self.ingestion.catchup_status = ForwardCatchupStatusChoices.PENDING
+        self.ingestion.save(
+            update_fields=[
+                "snapshot_id",
+                "baseline_ready",
+                "merge_applied_at",
+                "merge_finalized_at",
+                "catchup_status",
+            ]
+        )
+        self.sync.status = ForwardSyncStatusChoices.COMPLETED
+        self.sync.save(update_fields=["status"])
+        mark_ownership_pending(
+            self.sync,
+            self.ingestion.pk,
+            self.ingestion.snapshot_id,
+        )
+        decision = {
+            "should_queue": True,
+            "reason": "latest_processed_advanced",
+            "snapshot_selector": "latestProcessed",
+            "current_snapshot_id": "snapshot-before",
+            "latest_processed_snapshot_id": "snapshot-after",
+        }
+
+        with (
+            patch(
+                "forward_netbox.utilities.ingestion_merge.latest_processed_catchup_decision",
+                return_value=decision,
+            ) as catchup,
+            patch.object(ForwardSync, "enqueue_sync_job", return_value=Mock(pk=992)),
+        ):
+            result = _reconcile_completed_ingestion_catchup(
+                self.sync,
+                self.ingestion.pk,
+            )
+            self.assertEqual(result["reason"], "ownership_pending")
+            catchup.assert_not_called()
+            self.sync.refresh_from_db()
+            self.assertEqual(self.sync.status, ForwardSyncStatusChoices.COMPLETED)
+
+            first = ForwardOwnershipReconciliation.objects.filter(
+                sync=self.sync
+            ).first()
+            first.status = ForwardOwnershipReconciliation.Status.COMPLETED
+            first.completed_at = timezone.now()
+            first.save(update_fields=["status", "completed_at"])
+            result = _reconcile_completed_ingestion_catchup(
+                self.sync,
+                self.ingestion.pk,
+            )
+            self.assertEqual(result["reason"], "ownership_pending")
+            catchup.assert_not_called()
+
+            ForwardOwnershipReconciliation.objects.filter(sync=self.sync).update(
+                status=ForwardOwnershipReconciliation.Status.COMPLETED,
+                completed_at=timezone.now(),
+            )
+            result = _reconcile_completed_ingestion_catchup(
+                self.sync,
+                self.ingestion.pk,
+            )
+
+        self.assertTrue(result["should_queue"])
+        catchup.assert_called_once()
+        self.ingestion.refresh_from_db()
+        self.assertEqual(
+            self.ingestion.catchup_status,
+            ForwardCatchupStatusChoices.QUEUED,
         )
 
     def test_required_overlay_enqueue_failure_remains_durable_and_visible(self):

@@ -43,7 +43,7 @@ Branching, optional-plugin, and Forward NetBox migrations without model drift.
 
 The exact-runtime acceptance run must verify:
 
-- preflight and query execution complete on one snapshot
+- each enabled map executes once on one snapshot and validates before provisioning
 - one branch is staged and merged with durable merge attestation
 - the ingestion becomes baseline-ready only after merge finalization
 - device identity and ownership domains finalize for the same ingestion

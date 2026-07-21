@@ -25,6 +25,13 @@ endpoint types and defaults to false. CIMC is excluded by endpoint name,
 profile, or controller description. `scope_endpoints_by_include_tags` applies
 the source include tags to these rows; exclude tags always apply.
 
+When full **Forward Devices** and **Forward Inventory Items** workloads are
+enabled together, the plugin reuses the inventory result to populate
+`Device.serial` when Forward reports exactly one distinct CHASSIS serial. This
+adds no NQE execution. Multi-chassis devices retain their complete serial set on
+the corresponding Inventory Items instead of projecting an arbitrary chassis
+serial onto the device.
+
 ## Summary
 
 | Map | NetBox Model | Query File |
@@ -866,7 +873,12 @@ rows. Prefix maps use live-validated parameterized built-ins for shard keys and
 device tag scope; custom query maps that do not declare these parameters keep
 the existing local enforcement path.
 
-When `ipam.ipaddress` is enabled, the sync also runs an internal read-only diagnostic query that reports how many Forward interface addresses were filtered for this reason and logs capped examples. This diagnostic query is not seeded as a NetBox import map and does not create, update, or delete NetBox objects. See the query file for the complete import text:
+When `ipam.ipaddress` is enabled, explicit validation and dependency previews
+also run an internal read-only diagnostic query that reports how many Forward
+interface addresses were filtered for this reason and logs capped examples.
+Normal ingestion does not run this additional NQE. This diagnostic query is not
+seeded as a NetBox import map and does not create, update, or delete NetBox
+objects. See the query file for the complete import text:
 
 On full baseline runs where both `ipam.prefix` and `ipam.ipaddress` are enabled,
 the sync also records a read-only diagnostic when an imported IP address does
@@ -1309,7 +1321,14 @@ The OSPF interface map binds native OSPF instances and areas to exact NetBox int
 
 The peering session map is an overlay on top of `netbox-routing`. Applying a peering-session row first ensures the matching BGP peer exists, then links a `netbox-peering-manager` session to it. The shipped query uses Forward peer type as the relationship hint. Peering policy, prefix-list, and IRR objects are outside this map's product contract.
 
-When any optional routing map is enabled, the sync also runs an internal read-only diagnostic query that reports rows the supported maps cannot import safely, including BGP neighbors without explicit or inferred local AS, unsupported BGP address families, and OSPF neighbor rows that lack unique process-level router ID inference needed for native OSPF objects. This diagnostic query is not seeded as a NetBox import map and does not create, update, or delete NetBox objects. See the query file for the complete diagnostic text:
+When any optional routing map is enabled, explicit validation and dependency
+previews also run an internal read-only diagnostic query that reports rows the
+supported maps cannot import safely, including BGP neighbors without explicit
+or inferred local AS, unsupported BGP address families, and OSPF neighbor rows
+that lack unique process-level router ID inference needed for native OSPF
+objects. Normal ingestion does not run this additional NQE. This diagnostic
+query is not seeded as a NetBox import map and does not create, update, or
+delete NetBox objects. See the query file for the complete diagnostic text:
 
 ```text
 forward_netbox/queries/forward_routing_import_diagnostics.nqe

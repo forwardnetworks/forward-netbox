@@ -22,10 +22,35 @@ This map assigns production behavior to the modules that implement it in 2.6.
 ## Query Fetch Boundary
 
 - Owner: `forward_netbox/utilities/query_fetch.py` and its focused fetch helpers
-- Responsibilities: exact snapshot context, preflight, full/diff execution,
-  bounded fetch concurrency, fallback, row-shape handoff, and model results.
-- Required tests: preflight fail-fast, full/diff parity, deterministic fallback,
-  schema validation, and persisted fetch evidence.
+- Responsibilities: exact snapshot context, full/diff execution,
+  bounded fetch concurrency, completion-order telemetry, parameterless diff
+  enforcement, fallback, row-shape handoff, and model results.
+- Required tests: one execution per map, full/diff parity, deterministic
+  fallback, schema validation, and persisted fetch evidence.
+
+## Workload Normalization Boundary
+
+- Owner: `forward_netbox/utilities/workload_normalization.py`
+- Responsibilities: use authoritative full device/interface workloads to
+  exclude unrepresentable cable and OSPF-interface dependencies before branch
+  planning, preserve exact existing cables, and select a deterministic
+  one-cable-per-interface candidate graph.
+- Required tests: scope completeness, missing parent coverage, existing cable
+  preservation, deterministic candidate conflicts, routing interface aliases,
+  and no filtering from partial/diff parent evidence.
+
+## Durable Workload State Boundary
+
+- Owner: `forward_netbox/utilities/workload_state.py`
+- Persisted state: `ForwardWorkloadState` in `models.py`
+- Responsibilities: canonical row identity, compressed checksummed full-query
+  state, local upsert/delete derivation, successful-generation promotion,
+  delete tombstones, enrichment-only model policy, and cross-sync/reference
+  delete protection.
+- Required tests: deterministic identity, payload corruption, parameter and
+  contract reset, explicit and derived tombstones, peer/unseeded-peer delete
+  protection, no-op promotion, successful merge promotion, and failed/staged
+  non-promotion.
 
 ## Validation Boundary
 
@@ -54,7 +79,7 @@ This map assigns production behavior to the modules that implement it in 2.6.
 - Responsibilities: provision exactly one branch and one ingestion, stage all
   dependency phases, preserve manual review, and hand auto-merge to the custom
   merge path.
-- Required tests: preflight before provisioning, one-branch identity, phased
+- Required tests: validated workload before provisioning, one-branch identity, phased
   staging, branch-native bulk ObjectChanges, module-bay creation, manual review,
   and auto-merge.
 - Construction and ingestion bookkeeping:

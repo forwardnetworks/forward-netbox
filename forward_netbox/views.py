@@ -195,6 +195,7 @@ def _latest_dependency_preview_bundle_payload(sync, latest_ingestion):
             "change_estimate_kind": data.get("change_estimate_kind") or "",
             "plan_preview": data.get("plan_preview") or {},
             "model_results": data.get("model_results") or [],
+            "forward_api_usage": data.get("forward_api_usage") or {},
             "drift_report": compute_drift_report(data),
             "latest_sync_evidence": build_latest_sync_evidence(
                 latest_ingestion,
@@ -321,6 +322,19 @@ def _sync_support_bundle_payload(sync):
                 "baseline_ready": bool(latest_ingestion.baseline_ready),
                 "snapshot_id": latest_ingestion.snapshot_id or "",
                 "snapshot_selector": latest_ingestion.snapshot_selector or "",
+                "catchup": {
+                    "status": latest_ingestion.catchup_status,
+                    "target_snapshot_id": (
+                        latest_ingestion.catchup_target_snapshot_id or ""
+                    ),
+                    "reason": latest_ingestion.catchup_reason or "",
+                    "error_type": latest_ingestion.catchup_error_type or "",
+                    "checked_at": (
+                        latest_ingestion.catchup_checked_at.isoformat()
+                        if latest_ingestion.catchup_checked_at
+                        else None
+                    ),
+                },
                 "change_counts": {
                     "applied": int(latest_ingestion.applied_change_count or 0),
                     "failed": int(latest_ingestion.failed_change_count or 0),
@@ -381,6 +395,14 @@ def _dependency_model_result_summary(result):
     data = result.as_dict()
     row_count = int(data.get("row_count") or 0)
     delete_count = int(data.get("delete_count") or 0)
+    durable_state = next(
+        (
+            diagnostic
+            for diagnostic in data.get("diagnostics") or []
+            if diagnostic.get("type") == "durable_workload_state"
+        ),
+        None,
+    )
     return {
         "model": data.get("model") or "",
         "query_name": data.get("query_name") or "",
@@ -393,16 +415,21 @@ def _dependency_model_result_summary(result):
         "estimated_changes": row_count + delete_count,
         "change_estimate_kind": "workload_upper_bound",
         "runtime_ms": float(data.get("runtime_ms") or 0.0),
+        # Preserve aggregate state evidence without copying diagnostic samples or
+        # source identifiers into the preview job payload.
+        "durable_workload_state": durable_state,
     }
 
 
-def _dependency_dry_run_payload(sync):
+def _dependency_dry_run_payload(sync, *, client=None):
+    from .utilities.api_usage import record_forward_api_usage
     from .utilities.branch_budget import build_branch_plan
     from .utilities.query_fetch import ForwardQueryFetcher
 
-    fetcher = ForwardQueryFetcher(sync, sync.source.get_client(), sync.logger)
+    client = client or sync.source.get_client()
+    fetcher = ForwardQueryFetcher(sync, client, sync.logger)
     context = fetcher.resolve_context()
-    workloads = fetcher.fetch_workloads(context)
+    workloads = fetcher.fetch_workloads(context, include_diagnostics=True)
     plan = build_branch_plan(
         workloads,
         max_changes_per_staging_item=sync.get_max_changes_per_staging_item(),
@@ -433,6 +460,7 @@ def _dependency_dry_run_payload(sync):
         "model_results": [
             _dependency_model_result_summary(result) for result in fetcher.model_results
         ],
+        "forward_api_usage": record_forward_api_usage(sync, client),
     }
 
 
@@ -950,7 +978,11 @@ class ForwardStartSyncView(BaseObjectView):
     def post(self, request, pk):
         sync = get_object_or_404(self.queryset, pk=pk)
         try:
-            job = sync.enqueue_sync_job(user=request.user, adhoc=True)
+            job = sync.enqueue_sync_job(
+                user=request.user,
+                adhoc=True,
+                force_unchanged=True,
+            )
         except SyncError as exc:
             messages.error(request, str(exc))
             return redirect(sync.get_absolute_url())

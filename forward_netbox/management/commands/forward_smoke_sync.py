@@ -330,8 +330,7 @@ class Command(BaseCommand):
     def _run_plan_only(self, sync, *, max_changes_per_staging_item):
         fetcher = ForwardQueryFetcher(sync, sync.source.get_client(), sync.logger)
         context = fetcher.resolve_context()
-        fetcher.run_preflight(context)
-        workloads = fetcher.fetch_workloads(context)
+        workloads = fetcher.fetch_workloads(context, include_diagnostics=False)
         plan = build_branch_plan(
             workloads,
             max_changes_per_staging_item=max_changes_per_staging_item,

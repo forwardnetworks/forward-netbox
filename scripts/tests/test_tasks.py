@@ -890,22 +890,17 @@ class SharedRuntimeTestGuardTaskTest(unittest.TestCase):
         )
         isolated_run.assert_not_called()
 
-    def test_playwright_test_uses_shared_runtime_when_no_active_runs(self):
+    def test_playwright_test_always_uses_isolated_runtime(self):
         context = self._context()
         with (
-            patch.object(
-                tasks,
-                "_shared_runtime_active_syncs",
-                return_value={"active_count": 0, "syncs": []},
-            ),
             patch.object(tasks, "_run_playwright_ui") as playwright_run,
             patch.object(tasks, "_run_playwright_in_isolated_runtime") as isolated_run,
             patch.dict(os.environ, {}, clear=False),
         ):
             tasks.playwright_test.body(context)
 
-        playwright_run.assert_called_once_with(context)
-        isolated_run.assert_not_called()
+        playwright_run.assert_not_called()
+        isolated_run.assert_called_once_with(context)
 
     def test_playwright_ui_targets_selected_compose_runtime(self):
         context = self._context()
@@ -923,45 +918,6 @@ class SharedRuntimeTestGuardTaskTest(unittest.TestCase):
             playwright_env["PLAYWRIGHT_DOCKER_PROJECT_DIRECTORY"],
             "/tmp/forward-netbox",
         )
-
-    def test_playwright_test_uses_isolated_runtime_when_guard_is_unavailable(self):
-        context = self._context()
-        with (
-            patch.object(
-                tasks,
-                "_shared_runtime_active_syncs",
-                return_value={
-                    "active_count": 0,
-                    "syncs": [],
-                    "guard_available": False,
-                    "reason": "shared_runtime_probe_failed",
-                },
-            ),
-            patch.object(tasks, "_run_playwright_ui") as playwright_run,
-            patch.object(tasks, "_run_playwright_in_isolated_runtime") as isolated_run,
-            patch.dict(os.environ, {}, clear=False),
-        ):
-            tasks.playwright_test.body(context)
-
-        playwright_run.assert_not_called()
-        isolated_run.assert_called_once_with(context)
-
-    def test_playwright_test_uses_isolated_runtime_when_active_runs_exist(self):
-        context = self._context()
-        with (
-            patch.object(
-                tasks,
-                "_shared_runtime_active_syncs",
-                return_value={"active_count": 2, "syncs": [{"id": 1}, {"id": 2}]},
-            ),
-            patch.object(tasks, "_run_playwright_ui") as playwright_run,
-            patch.object(tasks, "_run_playwright_in_isolated_runtime") as isolated_run,
-            patch.dict(os.environ, {}, clear=False),
-        ):
-            tasks.playwright_test.body(context)
-
-        playwright_run.assert_not_called()
-        isolated_run.assert_called_once_with(context)
 
     def test_playwright_isolated_runtime_uses_separate_project_and_port(self):
         context = self._context()
@@ -1007,6 +963,7 @@ class SharedRuntimeTestGuardTaskTest(unittest.TestCase):
         playwright_run.assert_called_once()
         playwright_env = playwright_run.call_args.kwargs["env"]
         self.assertEqual(playwright_env["NETBOX_URL"], "http://127.0.0.1:18081")
+        self.assertEqual(playwright_env["FORWARD_UI_HARNESS_ISOLATED"], "true")
         self.assertEqual(
             playwright_env["PLAYWRIGHT_DOCKER_PROJECT_NAME"],
             "forward-netbox-ui-test",

@@ -2236,8 +2236,12 @@ class ForwardSyncRunnerTest(TestCase):
         )
 
     def test_bgp_peer_adapter_records_failure_when_optional_plugin_is_missing(self):
+        self._create_device("device-1")
         runner = ForwardSyncRunner(
             sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+        runner._optional_model = Mock(
+            side_effect=ForwardQueryError("netbox-routing is unavailable")
         )
 
         with patch(
@@ -3268,7 +3272,7 @@ class ForwardSyncRunnerTest(TestCase):
             sync=self.sync, ingestion=None, client=None, logger_=Mock()
         )
         runner._apply_dcim_interface = Mock()
-        runner._missing_device_by_name_cache = {"missing-device": True}
+        runner._missing_device_by_name_cache = {"missing-device"}
 
         with patch(
             "forward_netbox.utilities.sync_reporting.prime_dependency_lookup_caches",
@@ -4240,7 +4244,7 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertEqual(Cable.objects.count(), 0)
         logger.log_warning.assert_called_once()
 
-    def test_apply_dcim_cable_aggregates_missing_remote_device_warnings(self):
+    def test_apply_dcim_cable_prefilters_missing_remote_devices_once(self):
         device = self._create_device("device-a")
         Interface.objects.create(
             device=device,
@@ -4262,14 +4266,22 @@ class ForwardSyncRunnerTest(TestCase):
             for index in range(ForwardSyncRunner.CONFLICT_WARNING_DETAIL_LIMIT + 4)
         ]
 
-        runner._apply_model_rows("dcim.cable", rows)
+        with patch(
+            "forward_netbox.utilities.sync_reporting.record_issue"
+        ) as record_issue:
+            runner._apply_model_rows("dcim.cable", rows)
 
         warning_messages = [call.args[0] for call in logger.log_warning.call_args_list]
-        self.assertEqual(len(warning_messages), 21)
+        self.assertEqual(warning_messages, [])
+        record_issue.assert_called_once()
         self.assertEqual(
-            warning_messages[-1],
-            "Suppressed 4 additional dcim.cable skip warnings for "
-            "`missing-remote-device` after the first 20.",
+            record_issue.call_args.kwargs["context"]["blocked_row_count"],
+            ForwardSyncRunner.CONFLICT_WARNING_DETAIL_LIMIT + 4,
+        )
+        logger.increment_statistics.assert_any_call(
+            "dcim.cable",
+            outcome="skipped",
+            amount=ForwardSyncRunner.CONFLICT_WARNING_DETAIL_LIMIT + 4,
         )
 
     def test_apply_dcim_cable_aggregates_missing_interface_warnings(self):
@@ -6426,7 +6438,6 @@ class ForwardSyncRunnerTest(TestCase):
         client.run_nqe_diff.assert_called_once_with(
             query_id="Q_sites",
             commit_id=None,
-            parameters={},
             before_snapshot_id=baseline.snapshot_id,
             after_snapshot_id="snapshot-after",
             fetch_all=True,
@@ -6498,7 +6509,6 @@ class ForwardSyncRunnerTest(TestCase):
         client.run_nqe_diff.assert_called_once_with(
             query_id="Q_sites",
             commit_id=None,
-            parameters={},
             before_snapshot_id=baseline.snapshot_id,
             after_snapshot_id="snapshot-after",
             fetch_all=True,
@@ -6567,7 +6577,6 @@ class ForwardSyncRunnerTest(TestCase):
         client.run_nqe_diff.assert_called_once_with(
             query_id="Q_sites",
             commit_id=None,
-            parameters={},
             before_snapshot_id=baseline.snapshot_id,
             after_snapshot_id="snapshot-after",
             fetch_all=True,
@@ -7083,6 +7092,139 @@ class ForwardSyncRunnerTest(TestCase):
                 context=context,
                 coalesce_fields=[["device", "name"]],
             )
+
+    def test_workload_planning_uses_full_for_all_maps_when_one_is_parameterized(self):
+        fetcher = ForwardQueryFetcher(
+            sync=self.sync,
+            client=Mock(),
+            logger_=Mock(),
+        )
+        specs = [
+            QuerySpec(
+                model_string="dcim.interface",
+                query_name="Parameterized Interfaces",
+                query_id="Q_parameterized",
+                parameters={"scope": []},
+            ),
+            QuerySpec(
+                model_string="dcim.interface",
+                query_name="Parameterless Interfaces",
+                query_id="Q_parameterless",
+            ),
+        ]
+        baseline = Mock(pk=7, snapshot_id="snapshot-before")
+        context = ForwardQueryContext(
+            network_id="test-network",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-after",
+        )
+        fetcher._drop_unavailable_integration_models = Mock(
+            return_value=["dcim.interface"]
+        )
+        fetcher._resolve_specs_for_models = Mock(
+            return_value=({"dcim.interface": specs}, {})
+        )
+        fetcher._incremental_baseline_for_specs = Mock(return_value=baseline)
+        fetcher._scope_for_spec = Mock(return_value=None)
+
+        jobs = fetcher._build_workload_jobs(
+            context,
+            model_strings=["dcim.interface"],
+        )
+
+        self.assertEqual(len(jobs), 2)
+        self.assertTrue(all(job[2] is None for job in jobs))
+
+    def test_workload_planning_rejects_mixed_parameterized_model_before_fetch(self):
+        self.sync.parameters["diff_fallback_mode"] = (
+            ForwardDiffFallbackModeChoices.REQUIRE_DIFF
+        )
+        fetcher = ForwardQueryFetcher(
+            sync=self.sync,
+            client=Mock(),
+            logger_=Mock(),
+        )
+        specs = [
+            QuerySpec(
+                model_string="dcim.interface",
+                query_name="Parameterized Interfaces",
+                query_id="Q_parameterized",
+                parameters={"scope": []},
+            ),
+            QuerySpec(
+                model_string="dcim.interface",
+                query_name="Parameterless Interfaces",
+                query_id="Q_parameterless",
+            ),
+        ]
+        context = ForwardQueryContext(
+            network_id="test-network",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-after",
+        )
+        fetcher._drop_unavailable_integration_models = Mock(
+            return_value=["dcim.interface"]
+        )
+        fetcher._resolve_specs_for_models = Mock(
+            return_value=({"dcim.interface": specs}, {})
+        )
+        fetcher._incremental_baseline_for_specs = Mock(
+            return_value=Mock(pk=7, snapshot_id="snapshot-before")
+        )
+        fetcher._scope_for_spec = Mock(return_value=None)
+
+        jobs = fetcher._build_workload_jobs(
+            context,
+            model_strings=["dcim.interface"],
+        )
+
+        self.assertEqual(jobs, [])
+        self.assertIn("dcim.interface", fetcher._failed_model_results)
+        fetcher.client.run_nqe_query.assert_not_called()
+        fetcher.client.run_nqe_diff.assert_not_called()
+
+    def test_workload_planning_rejects_duplicates_after_context_parameters(self):
+        fetcher = ForwardQueryFetcher(
+            sync=self.sync,
+            client=Mock(),
+            logger_=Mock(),
+        )
+        specs = [
+            QuerySpec(
+                model_string="dcim.device",
+                query_name="Forward Devices A",
+                query_id="Q_devices",
+                parameters={"sync_endpoints": False},
+            ),
+            QuerySpec(
+                model_string="dcim.device",
+                query_name="Forward Devices B",
+                query_id="Q_devices",
+                parameters={"sync_endpoints": True},
+            ),
+        ]
+        context = ForwardQueryContext(
+            network_id="test-network",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-after",
+            sync_endpoints=True,
+        )
+        fetcher._drop_unavailable_integration_models = Mock(
+            return_value=["dcim.device"]
+        )
+        fetcher._resolve_specs_for_models = Mock(
+            return_value=({"dcim.device": specs}, {})
+        )
+        fetcher._incremental_baseline_for_specs = Mock(return_value=None)
+        fetcher._scope_for_spec = Mock(return_value=None)
+
+        jobs = fetcher._build_workload_jobs(
+            context,
+            model_strings=["dcim.device"],
+        )
+
+        self.assertEqual(jobs, [])
+        self.assertIn("dcim.device", fetcher._failed_model_results)
 
     def test_resolve_context_applies_source_device_tag_scope(self):
         self.source.parameters["device_tag_include_tags"] = ["DATACENTER", "CORE"]
@@ -8752,57 +8894,6 @@ class QueryParameterContractTest(TestCase):
             },
         )
 
-    def test_preflight_uses_declared_scope_and_endpoint_parameters(self):
-        sync = Mock()
-        fetcher = ForwardQueryFetcher(sync=sync, client=Mock(), logger_=Mock())
-        spec = Mock(
-            model_string="dcim.device",
-            query_name="Forward Devices",
-            parameters={
-                "forward_netbox_shard_keys": [],
-                "sync_endpoints": False,
-                "sync_generic_endpoints": False,
-                "scope_endpoints_by_include_tags": False,
-            },
-            merged_parameters=Mock(
-                return_value={
-                    "forward_netbox_shard_keys": [],
-                    "sync_endpoints": False,
-                    "sync_generic_endpoints": False,
-                    "scope_endpoints_by_include_tags": False,
-                    "device_tag_include_tags": ["Core"],
-                    "device_tag_exclude_tags": ["Branch"],
-                }
-            ),
-        )
-        context = ForwardQueryContext(
-            network_id="n1",
-            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
-            snapshot_id="s1",
-            device_tag_include_tags=["Core"],
-            device_tag_exclude_tags=["Branch"],
-            sync_endpoints=True,
-            sync_generic_endpoints=False,
-            scope_endpoints_by_include_tags=True,
-        )
-        fetcher._run_nqe_query = Mock(return_value=[])
-
-        _, _, rows, error = fetcher._run_preflight_job(
-            (context, 25, ("dcim.device", spec, [["name"]]))
-        )
-
-        self.assertEqual(rows, [])
-        self.assertIsNone(error)
-        self.assertEqual(
-            fetcher._run_nqe_query.call_args.kwargs["parameters"],
-            {
-                "forward_netbox_shard_keys": [],
-                "sync_endpoints": True,
-                "sync_generic_endpoints": False,
-                "scope_endpoints_by_include_tags": True,
-            },
-        )
-
     def test_query_fetch_does_not_push_context_tags_to_unparameterized_specs(self):
         sync = Mock()
         fetcher = ForwardQueryFetcher(sync=sync, client=Mock(), logger_=Mock())
@@ -8843,6 +8934,34 @@ class QueryParameterContractTest(TestCase):
             fetcher._run_nqe_query.call_args.kwargs["parameters"],
             {"forward_netbox_shard_keys": []},
         )
+
+    def test_cable_scope_requires_both_endpoints_to_be_in_scope(self):
+        fetcher = ForwardQueryFetcher(sync=Mock(), client=Mock(), logger_=Mock())
+        context = ForwardQueryContext(
+            network_id="test-network",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-after",
+            scoped_device_names={"device-a", "device-b"},
+        )
+        rows = [
+            {
+                "device": "device-a",
+                "interface": "Ethernet1",
+                "remote_device": "device-b",
+                "remote_interface": "Ethernet2",
+            },
+            {
+                "device": "device-a",
+                "interface": "Ethernet3",
+                "remote_device": "device-out-of-scope",
+                "remote_interface": "Ethernet4",
+            },
+        ]
+
+        kept, removed = fetcher._apply_device_tag_scope("dcim.cable", rows, context)
+
+        self.assertEqual(kept, [rows[0]])
+        self.assertEqual(removed, [rows[1]])
 
     def test_query_fetch_rejects_unsupported_parameters_after_merge(self):
         sync = Mock()
@@ -8971,7 +9090,7 @@ class QueryParameterContractTest(TestCase):
             {"changeType": "ADD", "data": {"name": "device-1"}}
         ]
 
-        rows = fetcher._run_nqe_diff_without_parameters(
+        rows = fetcher._run_nqe_diff(
             spec=spec,
             context=context,
             before_snapshot_id="before-s1",
@@ -8979,9 +9098,85 @@ class QueryParameterContractTest(TestCase):
 
         self.assertEqual(rows, [{"changeType": "ADD", "data": {"name": "device-1"}}])
         self.assertEqual(fetcher.client.run_nqe_diff.call_count, 1)
-        self.assertEqual(
-            fetcher.client.run_nqe_diff.call_args_list[0].kwargs["parameters"], {}
+        self.assertNotIn(
+            "parameters", fetcher.client.run_nqe_diff.call_args_list[0].kwargs
         )
+
+    def test_parameterized_baseline_skips_diff_and_runs_full_async_query(self):
+        logger = Mock()
+        sync = Mock(parameters={}, source=Mock(parameters={}), pk=1)
+        fetcher = ForwardQueryFetcher(sync=sync, client=Mock(), logger_=logger)
+        spec = QuerySpec(
+            model_string="dcim.interface",
+            query_name="Forward Interfaces",
+            query_id="Q_interfaces",
+            parameters={"forward_netbox_shard_keys": []},
+        )
+        context = ForwardQueryContext(
+            network_id="test-network",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-after",
+        )
+        fetcher._run_nqe_diff = Mock()
+        fetcher._run_nqe_query = Mock(return_value=[])
+
+        rows, delete_rows, sync_mode, fetch_meta = fetcher._fetch_spec_rows(
+            "dcim.interface",
+            spec,
+            baseline=Mock(snapshot_id="snapshot-before"),
+            context=context,
+            coalesce_fields=[["device", "name"]],
+            return_fetch_meta=True,
+        )
+
+        self.assertEqual((rows, delete_rows, sync_mode), ([], [], "full"))
+        self.assertEqual(fetch_meta["fetch_mode"], "diff_fallback")
+        fetcher._run_nqe_diff.assert_not_called()
+        fetcher._run_nqe_query.assert_called_once()
+        self.assertTrue(
+            any(
+                "do not accept runtime query parameters" in str(call.args[0])
+                for call in logger.log_info.call_args_list
+            )
+        )
+
+    def test_parameterized_baseline_fails_before_api_call_when_diff_is_required(self):
+        sync = Mock(
+            parameters={
+                "diff_fallback_mode": ForwardDiffFallbackModeChoices.REQUIRE_DIFF
+            },
+            source=Mock(parameters={}),
+            pk=1,
+        )
+        fetcher = ForwardQueryFetcher(sync=sync, client=Mock(), logger_=Mock())
+        spec = QuerySpec(
+            model_string="dcim.interface",
+            query_name="Forward Interfaces",
+            query_id="Q_interfaces",
+            parameters={"forward_netbox_shard_keys": []},
+        )
+        context = ForwardQueryContext(
+            network_id="test-network",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-after",
+        )
+        fetcher._run_nqe_diff = Mock()
+        fetcher._run_nqe_query = Mock()
+
+        with self.assertRaisesRegex(
+            ForwardQueryError,
+            "Diff execution is required.*do not accept runtime query parameters",
+        ):
+            fetcher._fetch_spec_rows(
+                "dcim.interface",
+                spec,
+                baseline=Mock(snapshot_id="snapshot-before"),
+                context=context,
+                coalesce_fields=[["device", "name"]],
+            )
+
+        fetcher._run_nqe_diff.assert_not_called()
+        fetcher._run_nqe_query.assert_not_called()
 
     def test_query_fetch_worker_count_uses_default_without_source_override(self):
         sync = Mock(parameters={}, source=Mock(parameters={}))

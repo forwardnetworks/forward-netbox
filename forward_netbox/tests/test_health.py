@@ -15,6 +15,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 from forward_netbox.choices import forward_configured_models
+from forward_netbox.choices import ForwardCatchupStatusChoices
 from forward_netbox.choices import ForwardSourceStatusChoices
 from forward_netbox.models import ForwardIngestion
 from forward_netbox.models import ForwardNQEMap
@@ -42,6 +43,25 @@ BGP_PLUGIN_CONFIG = {
 
 
 class HealthCheckMessageTest(SimpleTestCase):
+    def test_failed_snapshot_catchup_fails_ingestion_health(self):
+        ingestion = SimpleNamespace(
+            pk=17,
+            catchup_status=ForwardCatchupStatusChoices.FAILED,
+            catchup_reason="latest_processed_lookup_failed",
+        )
+
+        self.assertEqual(ingestion_check_status(ingestion), "fail")
+        self.assertIn("snapshot catch-up failed", ingestion_check_message(ingestion))
+
+    def test_queued_snapshot_catchup_warns_ingestion_health(self):
+        ingestion = SimpleNamespace(
+            pk=18,
+            catchup_status=ForwardCatchupStatusChoices.QUEUED,
+        )
+
+        self.assertEqual(ingestion_check_status(ingestion), "warn")
+        self.assertIn("queued a newer snapshot", ingestion_check_message(ingestion))
+
     def test_direct_query_id_guidance_uses_publish_workflow(self):
         message = query_drift_check_message(
             [{"severity": "info"}],

@@ -51,7 +51,9 @@ After restart:
 - The `2.6.0` data migration removes the legacy `auto_prune_orphans` sync
   parameter and registers existing plugin-managed tags. It deliberately invents
   no source claims and marks no pre-existing Virtual Device Context as owned.
-  Orphan deletion is manual-only after upgrade.
+  Subsequent complete syncs automatically remove only stale devices with an
+  exact plugin-owned identity and no ownership protection. Historical or
+  operator-owned orphan review remains manual.
 - The same migration renames `max_changes_per_branch` to
   `max_changes_per_staging_item`, removes retired execution and automatic-prune
   controls, converts active validation/dependency-preview Job rows into
@@ -85,8 +87,11 @@ After restart:
   ingestion for that same snapshot.
 - Review **Scope Reconciliation**, including the read-only post-upgrade catalog
   counts. Run **Reconcile device scope tags** before reviewing contradictory
-  include/out-of-scope labels. Prune source-scoped device orphans only after
-  review. Global DLM and DeviceType candidates remain manual-review items.
+  include/out-of-scope labels. Review and prune any source-scoped device orphans
+  that are not covered by exact automatic ownership proof. A complete 2.6 DLM
+  sync converges plugin-owned SoftwareVersion and CVE catalogs against their
+  authoritative association workloads; DeviceType candidates remain
+  manual-review items.
 - Run the strict read-only control-plane gate:
 
   ```bash

@@ -32,6 +32,7 @@ from rq.timeouts import JobTimeoutException
 
 from .bulk_merge import _ApplyOneFailure
 from .bulk_merge import bulk_merge_changes
+from .bulk_delete import lock_related_writes_for_delete
 from netbox_branching.models import Branch
 from netbox_branching.models import BranchEvent
 from netbox_branching.signals import post_merge
@@ -298,6 +299,32 @@ def merge_branch(
         dummy_change = collapsed_change.generate_object_change()
         try:
             with transaction.atomic():
+                if (
+                    model_string == "dcim.device"
+                    and getattr(
+                        collapsed_change.final_action,
+                        "value",
+                        collapsed_change.final_action,
+                    )
+                    == "delete"
+                ):
+                    from .ownership import (
+                        release_authoritative_device_delete_ownership,
+                    )
+
+                    release = release_authoritative_device_delete_ownership(
+                        ingestion.sync,
+                        [collapsed_change.key[1]],
+                    )
+                    if release["blocked_device_ids"]:
+                        raise RuntimeError(
+                            "Authoritative device deletion is blocked by current "
+                            "ownership evidence."
+                        )
+                    lock_related_writes_for_delete(
+                        model_class,
+                        using=DEFAULT_DB_ALIAS,
+                    )
                 with event_tracking(request):
                     dummy_change.apply(branch, using=DEFAULT_DB_ALIAS, logger=logger)
             models_touched.add(model_class)

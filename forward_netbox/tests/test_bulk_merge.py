@@ -145,6 +145,63 @@ class BulkMergeIntegrationTest(CleanTransactionTestCase):
             branch=branch,
         )
 
+    def _stage_owned_device_delete(self, suffix):
+        from forward_netbox.models import ForwardDeviceIdentity
+        from forward_netbox.utilities.logging import SyncLogging
+        from forward_netbox.utilities.sync import ForwardSyncRunner
+        from forward_netbox.utilities.sync_device import delete_dcim_device
+
+        manufacturer = Manufacturer.objects.create(
+            name=f"Delete Manufacturer {suffix}",
+            slug=f"delete-manufacturer-{suffix}",
+        )
+        device_type = DeviceType.objects.create(
+            manufacturer=manufacturer,
+            model=f"Delete Device Type {suffix}",
+            slug=f"delete-device-type-{suffix}",
+        )
+        role = DeviceRole.objects.create(
+            name=f"Delete Role {suffix}",
+            slug=f"delete-role-{suffix}",
+        )
+        site = Site.objects.create(
+            name=f"Delete Site {suffix}",
+            slug=f"delete-site-{suffix}",
+        )
+        device = Device.objects.create(
+            name=f"owned-delete-device-{suffix}",
+            device_type=device_type,
+            role=role,
+            site=site,
+        )
+        Interface.objects.create(device=device, name="Ethernet1", type="1000base-t")
+        InventoryItem.objects.create(
+            device=device,
+            name="Chassis",
+            serial="DELETE-PROBE",
+        )
+        branch = provision_branch(
+            user=self.user,
+            name=f"Owned Device Delete {suffix}",
+        )
+        ingestion = self._ingestion_for_branch(branch, suffix)
+        identity = ForwardDeviceIdentity.objects.create(
+            sync=ingestion.sync,
+            ingestion=ingestion,
+            source_device_key=device.name,
+            device=device,
+        )
+        runner = ForwardSyncRunner(
+            ingestion.sync,
+            ingestion,
+            None,
+            SyncLogging(),
+        )
+        with activate_branch(branch), event_tracking(self.request):
+            self.request.id = uuid.uuid4()
+            self.assertTrue(delete_dcim_device(runner, {"name": device.name}))
+        return branch, ingestion, device, identity
+
     def _stage_device_cycle_with_primary_ip(self, branch, suffix):
         from dcim.models import VirtualChassis
         from ipam.models import IPAddress
@@ -341,6 +398,577 @@ class BulkMergeIntegrationTest(CleanTransactionTestCase):
         sync_logger.init_statistics.assert_any_call("dcim.site", total=3)
         sync_logger.init_statistics.assert_any_call("dcim.region", total=2)
         self.assertEqual(sync_logger.init_statistics.call_count, 2)
+
+    def test_owned_device_delete_preserves_provenance_until_atomic_merge(self):
+        from forward_netbox.models import ForwardDeviceIdentity
+
+        branch, ingestion, device, identity = self._stage_owned_device_delete("atomic")
+
+        self.assertTrue(Device.objects.filter(pk=device.pk).exists())
+        self.assertTrue(ForwardDeviceIdentity.objects.filter(pk=identity.pk).exists())
+        self.assertEqual(branch.get_unmerged_changes().count(), 1)
+
+        merge_branch(ingestion, user=self.user)
+
+        self.assertFalse(Device.objects.filter(pk=device.pk).exists())
+        self.assertFalse(ForwardDeviceIdentity.objects.filter(pk=identity.pk).exists())
+
+    def test_device_delete_serializes_concurrent_claim_writer(self):
+        from django.db import IntegrityError
+        from extras.models import Tag
+
+        from forward_netbox.models import ForwardDeviceIdentity
+        from forward_netbox.models import ForwardDeviceTagClaim
+        from forward_netbox.models import ForwardManagedDeviceTag
+        from forward_netbox.utilities import ownership as ownership_module
+
+        _, ingestion, device, identity = self._stage_owned_device_delete("claim-race")
+        tag = Tag.objects.create(name="Claim Race", slug="claim-race")
+        release_checked = threading.Event()
+        allow_delete = threading.Event()
+        writer_started = threading.Event()
+        writer_finished = threading.Event()
+        results = {}
+        merge_errors = []
+        writer_errors = []
+        real_release = ownership_module.release_authoritative_device_delete_ownership
+
+        def hold_after_release(*args, **kwargs):
+            result = real_release(*args, **kwargs)
+            release_checked.set()
+            if not allow_delete.wait(timeout=10):
+                raise RuntimeError("timed out waiting to finish authoritative delete")
+            return result
+
+        def merge_device():
+            close_test_connections()
+            try:
+                thread_ingestion = ForwardIngestion.objects.get(pk=ingestion.pk)
+                user = type(self.user).objects.get(pk=self.user.pk)
+                with patch.object(
+                    ownership_module,
+                    "release_authoritative_device_delete_ownership",
+                    side_effect=hold_after_release,
+                ):
+                    merge_branch(thread_ingestion, user=user)
+            except Exception as exc:  # pragma: no cover - asserted below
+                merge_errors.append(exc)
+            finally:
+                close_test_connections()
+
+        def write_claim():
+            close_test_connections()
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT pg_backend_pid()")
+                    results["writer_pid"] = cursor.fetchone()[0]
+                thread_ingestion = ForwardIngestion.objects.get(pk=ingestion.pk)
+                thread_device = Device.objects.get(pk=device.pk)
+                thread_tag = Tag.objects.get(pk=tag.pk)
+                writer_started.set()
+                ownership_module.ensure_device_tag_claim(
+                    thread_ingestion.sync,
+                    thread_device,
+                    thread_tag,
+                    ForwardDeviceTagClaim.ClaimType.SCOPE,
+                    generation=thread_ingestion.pk,
+                    snapshot_id=thread_ingestion.snapshot_id,
+                )
+            except Exception as exc:
+                writer_errors.append(exc)
+            finally:
+                writer_finished.set()
+                close_test_connections()
+
+        merge_thread = threading.Thread(target=merge_device)
+        writer_thread = threading.Thread(target=write_claim)
+        merge_thread.start()
+        self.assertTrue(release_checked.wait(timeout=10))
+        writer_thread.start()
+        self.assertTrue(writer_started.wait(timeout=10))
+        deadline = time.monotonic() + 10
+        writer_blocked = False
+        while time.monotonic() < deadline:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT cardinality(pg_blocking_pids(%s)) > 0",
+                    [results["writer_pid"]],
+                )
+                writer_blocked = cursor.fetchone()[0]
+            if writer_blocked:
+                break
+            time.sleep(0.05)
+        self.assertTrue(writer_blocked, "claim writer never waited on ownership lock")
+        self.assertFalse(writer_finished.is_set())
+
+        allow_delete.set()
+        merge_thread.join(timeout=10)
+        writer_thread.join(timeout=10)
+
+        self.assertFalse(merge_thread.is_alive())
+        self.assertFalse(writer_thread.is_alive())
+        self.assertEqual(merge_errors, [])
+        self.assertEqual(len(writer_errors), 1)
+        self.assertIsInstance(writer_errors[0], IntegrityError)
+        self.assertFalse(Device.objects.filter(pk=device.pk).exists())
+        self.assertFalse(ForwardDeviceIdentity.objects.filter(pk=identity.pk).exists())
+        self.assertFalse(
+            ForwardDeviceTagClaim.objects.filter(device_id=device.pk).exists()
+        )
+        self.assertFalse(ForwardManagedDeviceTag.objects.filter(tag=tag).exists())
+
+    def test_device_delete_serializes_concurrent_generic_relation_writer(self):
+        from django.contrib.contenttypes.models import ContentType
+        from django.db import IntegrityError
+        from extras.models import Tag
+        from extras.models import TaggedItem
+
+        from forward_netbox.models import ForwardDeviceIdentity
+        from forward_netbox.utilities import merge as merge_module
+
+        branch, ingestion, device, identity = self._stage_owned_device_delete(
+            "relation-race"
+        )
+        tag = Tag.objects.create(name="Relation Race", slug="relation-race")
+        device_type = ContentType.objects.get_for_model(device)
+        barrier_acquired = threading.Event()
+        allow_delete = threading.Event()
+        writer_started = threading.Event()
+        writer_finished = threading.Event()
+        results = {}
+        merge_errors = []
+        writer_errors = []
+        real_lock = merge_module.lock_related_writes_for_delete
+
+        def hold_after_barrier(*args, **kwargs):
+            real_lock(*args, **kwargs)
+            barrier_acquired.set()
+            if not allow_delete.wait(timeout=10):
+                raise RuntimeError("timed out waiting to finish authoritative delete")
+
+        def merge_device():
+            close_test_connections()
+            try:
+                thread_ingestion = ForwardIngestion.objects.get(pk=ingestion.pk)
+                user = type(self.user).objects.get(pk=self.user.pk)
+                with patch.object(
+                    merge_module,
+                    "lock_related_writes_for_delete",
+                    side_effect=hold_after_barrier,
+                ):
+                    merge_branch(thread_ingestion, user=user)
+            except Exception as exc:  # pragma: no cover - asserted below
+                merge_errors.append(exc)
+            finally:
+                close_test_connections()
+
+        def create_generic_relation():
+            close_test_connections()
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT pg_backend_pid()")
+                    results["writer_pid"] = cursor.fetchone()[0]
+                writer_started.set()
+                TaggedItem.objects.create(
+                    content_type_id=device_type.pk,
+                    object_id=device.pk,
+                    tag_id=tag.pk,
+                )
+            except Exception as exc:
+                writer_errors.append(exc)
+            finally:
+                writer_finished.set()
+                close_test_connections()
+
+        merge_thread = threading.Thread(target=merge_device)
+        writer_thread = threading.Thread(target=create_generic_relation)
+        merge_thread.start()
+        self.assertTrue(barrier_acquired.wait(timeout=10))
+        writer_thread.start()
+        self.assertTrue(writer_started.wait(timeout=10))
+        deadline = time.monotonic() + 10
+        writer_blocked = False
+        while time.monotonic() < deadline:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT cardinality(pg_blocking_pids(%s)) > 0",
+                    [results["writer_pid"]],
+                )
+                writer_blocked = cursor.fetchone()[0]
+            if writer_blocked:
+                break
+            time.sleep(0.05)
+        self.assertTrue(writer_blocked, "relation writer never waited on table lock")
+        self.assertFalse(writer_finished.is_set())
+
+        allow_delete.set()
+        merge_thread.join(timeout=10)
+        writer_thread.join(timeout=10)
+
+        self.assertFalse(merge_thread.is_alive())
+        self.assertFalse(writer_thread.is_alive())
+        self.assertEqual(merge_errors, [])
+        self.assertEqual(len(writer_errors), 1)
+        self.assertIsInstance(writer_errors[0], IntegrityError)
+        branch.refresh_from_db()
+        self.assertEqual(branch.status, "merged")
+        self.assertFalse(Device.objects.filter(pk=device.pk).exists())
+        self.assertFalse(ForwardDeviceIdentity.objects.filter(pk=identity.pk).exists())
+        self.assertFalse(
+            TaggedItem.objects.filter(
+                content_type_id=device_type.pk,
+                object_id=device.pk,
+            ).exists()
+        )
+
+    def test_reviewed_prune_serializes_concurrent_generic_relation_writer(self):
+        from django.contrib.contenttypes.models import ContentType
+        from django.db import IntegrityError
+        from extras.models import Tag
+        from extras.models import TaggedItem
+
+        from forward_netbox.utilities import scope_reconciliation
+
+        _, ingestion, device, _ = self._stage_owned_device_delete("prune-race")
+        tag = Tag.objects.create(name="Prune Race", slug="prune-race")
+        device_type = ContentType.objects.get_for_model(device)
+        report = {
+            "_out_of_scope": {device.name},
+            "_out_of_scope_pks": [device.pk],
+            "_tagged_names": {"in-scope-control"},
+            "_device_tagged_names": {"in-scope-control"},
+        }
+        barrier_acquired = threading.Event()
+        allow_delete = threading.Event()
+        writer_started = threading.Event()
+        writer_finished = threading.Event()
+        results = {}
+        prune_results = []
+        prune_errors = []
+        writer_errors = []
+        real_lock = scope_reconciliation.lock_related_writes_for_delete
+
+        def hold_after_barrier(*args, **kwargs):
+            real_lock(*args, **kwargs)
+            barrier_acquired.set()
+            if not allow_delete.wait(timeout=10):
+                raise RuntimeError("timed out waiting to finish reviewed prune")
+
+        def prune_device():
+            close_test_connections()
+            try:
+                thread_sync = ForwardSync.objects.get(pk=ingestion.sync_id)
+                with patch.object(
+                    scope_reconciliation,
+                    "lock_related_writes_for_delete",
+                    side_effect=hold_after_barrier,
+                ):
+                    prune_results.append(
+                        scope_reconciliation.prune_orphan_devices(
+                            thread_sync,
+                            report=report,
+                        )
+                    )
+            except Exception as exc:  # pragma: no cover - asserted below
+                prune_errors.append(exc)
+            finally:
+                close_test_connections()
+
+        def create_generic_relation():
+            close_test_connections()
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT pg_backend_pid()")
+                    results["writer_pid"] = cursor.fetchone()[0]
+                writer_started.set()
+                TaggedItem.objects.create(
+                    content_type_id=device_type.pk,
+                    object_id=device.pk,
+                    tag_id=tag.pk,
+                )
+            except Exception as exc:
+                writer_errors.append(exc)
+            finally:
+                writer_finished.set()
+                close_test_connections()
+
+        prune_thread = threading.Thread(target=prune_device)
+        writer_thread = threading.Thread(target=create_generic_relation)
+        prune_thread.start()
+        self.assertTrue(barrier_acquired.wait(timeout=10))
+        writer_thread.start()
+        self.assertTrue(writer_started.wait(timeout=10))
+        deadline = time.monotonic() + 10
+        writer_blocked = False
+        while time.monotonic() < deadline:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT cardinality(pg_blocking_pids(%s)) > 0",
+                    [results["writer_pid"]],
+                )
+                writer_blocked = cursor.fetchone()[0]
+            if writer_blocked:
+                break
+            time.sleep(0.05)
+        self.assertTrue(writer_blocked, "prune relation writer never waited")
+        self.assertFalse(writer_finished.is_set())
+
+        allow_delete.set()
+        prune_thread.join(timeout=10)
+        writer_thread.join(timeout=10)
+
+        self.assertFalse(prune_thread.is_alive())
+        self.assertFalse(writer_thread.is_alive())
+        self.assertEqual(prune_errors, [])
+        self.assertEqual(len(prune_results), 1)
+        self.assertEqual(prune_results[0]["pruned_device_count"], 1)
+        self.assertEqual(len(writer_errors), 1)
+        self.assertIsInstance(writer_errors[0], IntegrityError)
+        self.assertFalse(Device.objects.filter(pk=device.pk).exists())
+        self.assertFalse(
+            TaggedItem.objects.filter(
+                content_type_id=device_type.pk,
+                object_id=device.pk,
+            ).exists()
+        )
+
+    def test_reviewed_prune_releases_relation_barrier_per_device(self):
+        from contextlib import contextmanager
+
+        from django.contrib.contenttypes.models import ContentType
+        from extras.models import Tag
+        from extras.models import TaggedItem
+
+        from forward_netbox.models import ForwardDeviceIdentity
+        from forward_netbox.utilities import ownership as ownership_module
+        from forward_netbox.utilities import scope_reconciliation
+
+        _, ingestion, first_device, _ = self._stage_owned_device_delete("prune-bounded")
+        second_device = Device.objects.create(
+            name="owned-delete-device-prune-bounded-second",
+            device_type=first_device.device_type,
+            role=first_device.role,
+            site=first_device.site,
+        )
+        ForwardDeviceIdentity.objects.create(
+            sync=ingestion.sync,
+            ingestion=ingestion,
+            source_device_key=second_device.name,
+            device=second_device,
+        )
+        tag = Tag.objects.create(name="Prune Between", slug="prune-between")
+        device_type = ContentType.objects.get_for_model(Device)
+        report = {
+            "_out_of_scope": {first_device.name, second_device.name},
+            "_out_of_scope_pks": [first_device.pk, second_device.pk],
+            "_tagged_names": {"in-scope-control"},
+            "_device_tagged_names": {"in-scope-control"},
+        }
+        first_transaction_committed = threading.Event()
+        allow_second_transaction = threading.Event()
+        writer_finished = threading.Event()
+        prune_results = []
+        errors = []
+        transaction_count = 0
+        real_lock = ownership_module.ownership_write_lock
+
+        @contextmanager
+        def observed_ownership_lock():
+            nonlocal transaction_count
+            with real_lock():
+                yield
+            transaction_count += 1
+            if transaction_count == 1:
+                first_transaction_committed.set()
+                if not allow_second_transaction.wait(timeout=10):
+                    raise RuntimeError("timed out before second prune transaction")
+
+        def prune_devices():
+            close_test_connections()
+            try:
+                thread_sync = ForwardSync.objects.get(pk=ingestion.sync_id)
+                with patch.object(
+                    ownership_module,
+                    "ownership_write_lock",
+                    new=observed_ownership_lock,
+                ):
+                    prune_results.append(
+                        scope_reconciliation.prune_orphan_devices(
+                            thread_sync,
+                            report=report,
+                        )
+                    )
+            except Exception as exc:  # pragma: no cover - asserted below
+                errors.append(exc)
+            finally:
+                close_test_connections()
+
+        def create_relation_between_deletes():
+            close_test_connections()
+            try:
+                TaggedItem.objects.create(
+                    content_type_id=device_type.pk,
+                    object_id=second_device.pk,
+                    tag_id=tag.pk,
+                )
+            except Exception as exc:  # pragma: no cover - asserted below
+                errors.append(exc)
+            finally:
+                writer_finished.set()
+                close_test_connections()
+
+        prune_thread = threading.Thread(target=prune_devices)
+        prune_thread.start()
+        self.assertTrue(first_transaction_committed.wait(timeout=10))
+        writer_thread = threading.Thread(target=create_relation_between_deletes)
+        writer_thread.start()
+        self.assertTrue(
+            writer_finished.wait(timeout=5),
+            "relation writer remained blocked after first Device transaction",
+        )
+        allow_second_transaction.set()
+        prune_thread.join(timeout=10)
+        writer_thread.join(timeout=10)
+
+        self.assertFalse(prune_thread.is_alive())
+        self.assertFalse(writer_thread.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(transaction_count, 2)
+        self.assertEqual(len(prune_results), 1)
+        self.assertEqual(prune_results[0]["pruned_device_count"], 2)
+        self.assertFalse(Device.objects.filter(pk=first_device.pk).exists())
+        self.assertFalse(Device.objects.filter(pk=second_device.pk).exists())
+
+    def test_reviewed_prune_orders_virtual_child_before_lower_pk_parent(self):
+        from forward_netbox.models import ForwardDeviceIdentity
+        from forward_netbox.models import ForwardVirtualParentClaim
+        from forward_netbox.utilities.ownership import reconcile_virtual_parent_claims
+        from forward_netbox.utilities.scope_reconciliation import prune_orphan_devices
+
+        _, ingestion, parent, _ = self._stage_owned_device_delete("prune-parent")
+        child = Device.objects.create(
+            name="owned-delete-device-prune-child",
+            device_type=parent.device_type,
+            role=parent.role,
+            site=parent.site,
+        )
+        ForwardDeviceIdentity.objects.create(
+            sync=ingestion.sync,
+            ingestion=ingestion,
+            source_device_key=child.name,
+            device=child,
+        )
+        reconcile_virtual_parent_claims(
+            ingestion.sync,
+            {child.pk: parent.pk},
+            generation=ingestion.pk,
+            snapshot_id=ingestion.snapshot_id,
+        )
+        self.assertLess(parent.pk, child.pk)
+
+        result = prune_orphan_devices(
+            ingestion.sync,
+            report={
+                "_out_of_scope": {parent.name, child.name},
+                "_out_of_scope_pks": [parent.pk, child.pk],
+                "_tagged_names": {"in-scope-control"},
+                "_device_tagged_names": {"in-scope-control"},
+            },
+        )
+
+        self.assertEqual(result["pruned_device_count"], 2)
+        self.assertEqual(result["ownership_blocked_device_count"], 0)
+        self.assertFalse(Device.objects.filter(pk__in=[parent.pk, child.pk]).exists())
+        self.assertFalse(
+            ForwardDeviceIdentity.objects.filter(
+                device_id__in=[parent.pk, child.pk]
+            ).exists()
+        )
+        self.assertFalse(ForwardVirtualParentClaim.objects.exists())
+
+    def test_dlm_association_and_catalog_deletes_merge_in_one_branch(self):
+        from django.apps import apps
+
+        from forward_netbox.utilities.logging import SyncLogging
+        from forward_netbox.utilities.sync import ForwardSyncRunner
+        from forward_netbox.utilities.sync_dlm import delete_netbox_dlm_cve
+        from forward_netbox.utilities.sync_dlm import delete_netbox_dlm_devicesoftware
+        from forward_netbox.utilities.sync_dlm import delete_netbox_dlm_softwareversion
+        from forward_netbox.utilities.sync_dlm import delete_netbox_dlm_vulnerability
+
+        DeviceSoftware = apps.get_model("netbox_dlm", "DeviceSoftware")
+        SoftwareVersion = apps.get_model("netbox_dlm", "SoftwareVersion")
+        CVE = apps.get_model("netbox_dlm", "CVE")
+        Vulnerability = apps.get_model("netbox_dlm", "Vulnerability")
+        manufacturer = Manufacturer.objects.create(
+            name="DLM Delete Manufacturer",
+            slug="dlm-delete-manufacturer",
+        )
+        device_type = DeviceType.objects.create(
+            manufacturer=manufacturer,
+            model="DLM Delete Device Type",
+            slug="dlm-delete-device-type",
+        )
+        role = DeviceRole.objects.create(name="DLM Delete Role", slug="dlm-delete-role")
+        site = Site.objects.create(name="DLM Delete Site", slug="dlm-delete-site")
+        platform = Platform.objects.create(name="DLM Delete OS", slug="dlm-delete-os")
+        device = Device.objects.create(
+            name="dlm-delete-device",
+            device_type=device_type,
+            role=role,
+            site=site,
+            platform=platform,
+        )
+        software_version = SoftwareVersion.objects.create(
+            platform=platform,
+            version="1.0",
+        )
+        cve = CVE.objects.create(cve_id="CVE-2026-22001")
+        device_software = DeviceSoftware.objects.create(
+            device=device,
+            software_version=software_version,
+        )
+        vulnerability = Vulnerability.objects.create(
+            device=device,
+            software_version=software_version,
+            cve=cve,
+        )
+        cve.affected_software.add(software_version)
+        branch = provision_branch(user=self.user, name="DLM Catalog Delete")
+        ingestion = self._ingestion_for_branch(branch, "dlm-catalog-delete")
+        runner = ForwardSyncRunner(
+            ingestion.sync,
+            ingestion,
+            None,
+            SyncLogging(),
+        )
+        row = {
+            "name": device.name,
+            "cve_id": cve.cve_id,
+            "platform_slug": platform.slug,
+            "version": software_version.version,
+        }
+
+        with activate_branch(branch), event_tracking(self.request):
+            self.request.id = uuid.uuid4()
+            self.assertTrue(delete_netbox_dlm_vulnerability(runner, row))
+            self.assertTrue(delete_netbox_dlm_devicesoftware(runner, row))
+            self.assertTrue(delete_netbox_dlm_cve(runner, row))
+            self.assertTrue(delete_netbox_dlm_softwareversion(runner, row))
+
+        self.assertTrue(Vulnerability.objects.filter(pk=vulnerability.pk).exists())
+        self.assertTrue(DeviceSoftware.objects.filter(pk=device_software.pk).exists())
+        self.assertTrue(CVE.objects.filter(pk=cve.pk).exists())
+        self.assertTrue(SoftwareVersion.objects.filter(pk=software_version.pk).exists())
+
+        merge_branch(ingestion, user=self.user)
+
+        self.assertFalse(Vulnerability.objects.filter(pk=vulnerability.pk).exists())
+        self.assertFalse(DeviceSoftware.objects.filter(pk=device_software.pk).exists())
+        self.assertFalse(CVE.objects.filter(pk=cve.pk).exists())
+        self.assertFalse(
+            SoftwareVersion.objects.filter(pk=software_version.pk).exists()
+        )
 
     def test_bulk_create_resume_does_not_resurrect_deleted_row(self):
         branch = provision_branch(user=self.user, name="Deleted Create Resume")
@@ -2483,10 +3111,11 @@ class SingleBranchExecutorTest(CleanTransactionTestCase):
 
         with (
             patch.object(ForwardQueryFetcher, "resolve_context", return_value=context),
-            patch.object(ForwardQueryFetcher, "run_preflight", return_value=None),
             patch.object(
-                ForwardQueryFetcher, "fetch_workloads", return_value=workloads
-            ),
+                ForwardQueryFetcher,
+                "fetch_workloads",
+                return_value=workloads,
+            ) as fetch_workloads,
             patch.object(
                 ForwardValidationRunner, "record_plan_validation", return_value=None
             ),
@@ -2496,6 +3125,7 @@ class SingleBranchExecutorTest(CleanTransactionTestCase):
                 self.sync, Mock(), logger, user=self.user
             )
             ingestions = executor.run()
+        fetch_workloads.assert_called_once_with(context, include_diagnostics=False)
         return ingestions, provision_calls
 
     def test_single_branch_auto_merge_lands_in_main(self):

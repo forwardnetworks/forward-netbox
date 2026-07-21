@@ -785,9 +785,11 @@ def dependency_parent_coverage_summary(runner, model_string, rows):
             "groups": [],
         }
 
-    missing_device_by_name_cache = getattr(runner, "_missing_device_by_name_cache", {})
-    if not isinstance(missing_device_by_name_cache, dict):
-        missing_device_by_name_cache = {}
+    missing_device_by_name_cache = getattr(
+        runner, "_missing_device_by_name_cache", set()
+    )
+    if not isinstance(missing_device_by_name_cache, (set, dict)):
+        missing_device_by_name_cache = set()
     groups: dict[tuple[str, str], dict] = {}
     for row in rows:
         for field in fields:

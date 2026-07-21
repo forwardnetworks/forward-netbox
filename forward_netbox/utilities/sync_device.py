@@ -22,9 +22,44 @@ def delete_dcim_device(runner, row):
     if (row.get("site_slug") or row.get("site")) and site is None:
         return False
 
+    lookup = {"name": name, "site": site} if site is not None else {"name": name}
+    from netbox_branching.contextvars import active_branch
+
+    branch = active_branch.get()
+    if branch is not None:
+        from django.db import transaction
+        from netbox.context import current_request
+
+        from ..models import ForwardDeviceIdentity
+        from .apply_engine_bulk import emit_branch_object_changes
+        from .bulk_delete import collector_delete_without_model_signals
+
+        device = runner._get_unique_or_raise(Device, lookup)
+        if device is None:
+            return False
+        with transaction.atomic(using=branch.connection_name):
+            if not emit_branch_object_changes((), (), [device]):
+                raise RuntimeError(
+                    "Branch device deletion requires an attributed request context."
+                )
+            request_token = current_request.set(None)
+            try:
+                collector_delete_without_model_signals(
+                    Device.objects.using(branch.connection_name).filter(pk=device.pk),
+                    signal_free_models=frozenset(),
+                    # Identity provenance lives in main until merge finalization.
+                    # Ignore only that sidecar while collecting branch-local
+                    # cascades; every scope, parent, and operator-owned relation
+                    # retains normal PROTECT.
+                    ignored_related_models={ForwardDeviceIdentity},
+                )
+            finally:
+                current_request.reset(request_token)
+        return True
+
     return runner._delete_by_coalesce(
         Device,
-        [{"name": name, "site": site} if site is not None else {"name": name}],
+        [lookup],
     )
 
 

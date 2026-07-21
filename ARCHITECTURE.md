@@ -12,24 +12,35 @@ The supported runtime is NetBox `4.6.5` with `netbox-branching` `1.1.1`.
 1. `ForwardSource` stores the Forward connection and network selection.
 2. `ForwardSync` selects the snapshot policy, enabled maps, validation policy,
    and auto-merge behavior.
-3. The query fetch layer resolves one snapshot, runs preflight, executes the
-   selected NQE maps, and validates their NetBox-shaped rows.
-4. `ForwardValidationRun` records pre-branch policy and drift evidence.
+3. Scheduled, webhook, and catch-up runs no-op before query execution when the
+   resolved snapshot already has an eligible baseline. The producer terminates
+   without redispatching ownership overlays, so the complete job graph issues
+   no NQE calls. Manual UI/API runs carry an explicit force flag for
+   same-snapshot repair; an active sync must finish before that force request is
+   accepted.
+4. The query fetch layer resolves one snapshot, executes each selected NQE map
+   once through Forward's asynchronous execution API, and validates its
+   NetBox-shaped rows. Workload jobs use bounded concurrent workers and report
+   completion in actual completion order. Normal ingestion does not run a
+   separate sample preflight or optional diagnostic NQEs. Duplicate map
+   definitions that resolve to the same query, commit, and parameters fail
+   before any workload future is scheduled.
+5. `ForwardValidationRun` records pre-branch policy and drift evidence.
    Blocking validation stops the run before branch provisioning.
-5. `ForwardSingleBranchExecutor` creates one `ForwardIngestion` and exactly one
+6. `ForwardSingleBranchExecutor` creates one `ForwardIngestion` and exactly one
    native Branching branch for the sync.
-6. Dependency-ordered plan items are applied in that branch through the apply
+7. Dependency-ordered plan items are applied in that branch through the apply
    engine. `apply_engine_bulk.py` owns parity-tested batched mutations and the
    corresponding branch ObjectChanges; model-family adapters own exceptional
    rows and contracts that require row-level side effects.
-7. Manual runs stop with the branch ready for review. Auto-merge runs invoke the
+8. Manual runs stop with the branch ready for review. Auto-merge runs invoke the
    custom bulk merge once for the complete branch.
-8. A successful merge marks the ingestion baseline-ready and may remove the
+9. A successful merge marks the ingestion baseline-ready and may remove the
    merged branch. An incomplete merge does neither.
-9. Required post-merge overlays are recorded as pending before they are queued.
+10. Required post-merge overlays are recorded as pending before they are queued.
    Each overlay re-fetches its exact merged snapshot and reconciles ownership
    only if the ingestion is still the latest completed generation.
-10. Drift, health, audit, ingestion issues, and support bundles report merge and
+11. Drift, health, audit, ingestion issues, and support bundles report merge and
     ownership finalization independently so a staged or partially finalized run
     cannot appear converged.
 
@@ -37,6 +48,71 @@ NQE owns normalization and model-shaped row contracts. Python owns execution,
 NetBox object resolution, branch application, merge, and explicit post-merge
 ownership materialization. New code must not create a second normalization
 contract beside the NQE maps.
+
+NQE source stays declarative. Device-parallel execution is an optimizer result
+visible as `parallel_foreach` in Forward's Query Debug plan, not syntax written
+into the bundled query. Query-debug validation therefore inspects the compiled
+plan for every published map. Queries whose semantics require multiple device
+scans, a global group, an endpoint-first source, or a location-first source are
+recorded as non-device-parallel rather than rewritten into a different result
+contract.
+
+Forward's NQE diff endpoint accepts query identity and options, but not runtime
+query parameters. The API client exposes that exact parameterless contract.
+If any map for one model has effective runtime parameters, every map for that
+model runs through the full asynchronous query endpoint so one authoritative
+model workload cannot mix full and diff evidence. `Require diff` fails the
+whole model during planning before any API request. Unparameterized,
+query-ID-backed models may use server-side diffs when a compatible baseline
+exists. Duplicate execution checks use the final context and scope parameters,
+not only each map's stored defaults.
+
+Full parameterized workloads are compared locally against
+`ForwardWorkloadState`, a compressed, checksummed identity and row-hash baseline
+owned by the sync. The pending generation is written with the ingestion and
+becomes current only in successful post-merge bookkeeping; previews, staged
+branches, and failed merges cannot advance it. Upserts, one-cycle derived-delete
+tombstones, and source-supplied delete tombstones make an unchanged forced run
+produce no branch work. Parameter or identity-contract changes seed a new
+baseline without treating the old scope as deletable. Deletes are suppressed
+for identities asserted by another sync's current state, and fail closed while
+any completed peer lacks comparable state. Model semantics remain explicit:
+the standalone DLM SoftwareVersion workload enriches the authoritative union of
+versions referenced by DeviceSoftware and Vulnerability workloads. Versions
+outside that union are deleted only when no DeviceSoftware, Vulnerability,
+SoftwareImageFile, or ValidatedSoftware relation protects them. The full
+Vulnerability workload similarly defines the CVE catalog; a CVE outside that
+set is deleted only when it has no Vulnerability. Its affected-software relation
+is derived data: deleting a Vulnerability removes only the SoftwareVersion no
+longer represented by another Vulnerability for that CVE, and deleting the CVE
+clears any remaining derived relation as part of the guarded delete.
+
+A complete device workload also reconciles exact `ForwardDeviceIdentity` rows.
+An identity absent from the authoritative target produces a branch-native
+device delete only when no current scope claim, preserved tag assignment, peer
+identity, or virtual-parent relationship protects it. Related interfaces and
+inventory items are collected in the same branch. Merge releases the matching
+identity immediately before the device delete in the same transaction, so a
+failed delete preserves both ownership evidence and inventory for retry. The
+merge then locks every reverse-relation table for that Device before Collector
+discovery, preventing a concurrent relation writer from bypassing on-delete
+semantics between discovery and deletion. Migration-owned PostgreSQL triggers
+on Device GenericRelation tables reject inserts or target changes for a missing
+Device after the barrier releases; the post-migrate hook installs the same
+guard when the optional routing relation appears later. Reviewed orphan prune
+uses the identical ownership-lock then relationship-barrier sequence before its
+direct Device delete, with one outer transaction per Device so relationship
+write interruption is bounded to a single deletion. Current virtual-parent
+claims provide a deterministic child-before-parent order for reviewed sets;
+cycles fail closed. If ownership changes after ordering, prune recomputes only
+the temporarily blocked identities after a pass that made progress.
+
+Before branch planning, full device and interface workloads provide exact
+dependency coverage for cable and OSPF-interface rows. Rows whose parents are
+absent are excluded with aggregate diagnostics. Cable candidates are reduced to
+a deterministic one-cable-per-interface graph, preserving an existing exact
+cable first. This is NetBox representability planning, not an alternate source
+normalization contract.
 
 ## Execution Model
 
@@ -87,6 +163,13 @@ from refusing completion/baseline advancement, retaining evidence, and making
 retry idempotent for already-applied changes. Code that marks an incomplete
 merge as merged or baseline-ready violates the release contract.
 
+Merged-branch cleanup locks the ingestion and branch, requires persisted merge
+completion, and removes Branching-owned `AppliedChange` and `ChangeDiff` rows
+with database set operations before normal Branching schema teardown. All of
+those operations share one transaction: teardown failure preserves the branch,
+its evidence, and the ingestion link for supported recovery. NetBox core
+`ObjectChange` audit rows are retained.
+
 NetBox component replication stays branch-native. Device and module staging
 creates or ensures module bays while the branch is active. During merge, a
 module-bay create already materialized in main by its parent device is treated
@@ -124,12 +207,25 @@ global ownership advisory lock, lock the source and sync, and verify the latest
 completed ingestion before mutation. A stale worker mutates nothing and queues
 catch-up against the current generation.
 
+Snapshot catch-up is claimed only after every required ownership domain for the
+generation is complete. The ingestion moves from pending to checking under the
+ownership lock, performs the Forward snapshot lookup outside that transaction,
+then records current, queued, not-applicable, or failed. This keeps the sync
+completed while overlays still require its pinned generation and prevents two
+finishing workers from queuing duplicate catch-up runs.
+
 Materialized managed tags and virtual parents are computed from the union of
 current per-sync claims. One sync cannot remove a tag or relationship still
 claimed by another. Conflicting parent claims remain durable evidence, preserve
 the current field value, and fail ownership finalization. Sync/source deletion
 releases its claims and rematerializes the surviving union. Pre-existing
 operator virtual contexts are never adopted as plugin-owned.
+
+Scope-tag ownership resolves existing tags by exact name as well as normalized
+slug, preserving operator-defined slugs and assignments. Conflicting name/slug
+identities fail closed. Positive claims are generated only for devices present
+in NetBox; Forward backfilled rows absent from NetBox remain visible as missing
+scope targets and cannot block ownership for the current inventory.
 
 The upgrade migration registers recognizable managed tags but does not invent
 historical per-sync claims or virtual-context ownership. Each relevant sync
@@ -172,7 +268,11 @@ Recovery uses persisted facts rather than an inferred run ledger:
 - Query registry and shipped maps: `forward_netbox/utilities/query_registry.py`,
   `query_binding.py`, and `forward_netbox/queries/`
 - Snapshot/query fetch and row-shape handoff:
-  `forward_netbox/utilities/query_fetch.py`
+  `forward_netbox/utilities/query_fetch.py` and
+  `forward_netbox/utilities/workload_normalization.py`
+- Parameterized full-query delta state and successful-generation promotion:
+  `forward_netbox/utilities/workload_state.py`, `ForwardWorkloadState`, and
+  `ingestion_merge.py`
 - Validation and configuration normalization:
   `forward_netbox/utilities/validation.py` and `model_validation.py`
 - Single-branch planning and execution: `branch_budget.py`,

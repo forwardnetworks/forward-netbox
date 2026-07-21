@@ -103,7 +103,7 @@ def log_worker_timeout_guidance(sync, logger_):
             "Effective Forward job timeout is "
             f"{job_timeout}s, lower than the Forward source timeout "
             f"({source_timeout}s). Increase RQ_DEFAULT_TIMEOUT so long "
-            "NQE/preflight calls can reach the Forward API timeout.",
+            "NQE workload calls can reach the Forward API timeout.",
             obj=sync,
         )
 

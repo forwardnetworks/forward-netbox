@@ -14,14 +14,6 @@ class ForwardExecutorBase:
         self.last_model_results = []
         self.last_validation_run = None
 
-    def _query_preflight_enabled(self) -> bool:
-        source = getattr(self.sync, "source", None)
-        parameters = dict(getattr(source, "parameters", {}) or {})
-        configured = parameters.get("query_preflight_enabled")
-        if configured is None:
-            return True
-        return configured
-
     def _create_ingestion(self, context, *, change_request_id=None):
         from ..models import ForwardIngestion
 

@@ -18,23 +18,21 @@ Three flows are documented:
 ## 1. Sync execution pipeline
 
 A sync is triggered manually, on a schedule/interval, or via the REST API. The
-job runs a preflight, a gating validation run, query fetch, and then stages all
-changes in one native NetBox Branching branch.
+job resolves one snapshot, fetches and validates each enabled map once, records
+the gating validation result, and then stages all changes in one native NetBox
+Branching branch.
 
 ```mermaid
 flowchart TD
     trigger["Trigger\n(manual / scheduled / interval / API)"] --> enqueue["Enqueue sync job"]
-    enqueue --> preflight["Preflight\nresolve network + snapshot,\nresolve query specs,\nbuild workload plan"]
-
-    preflight --> snap{"Resolve snapshot\n(see flow 2)"}
+    enqueue --> snap{"Resolve snapshot\n(see flow 2)"}
     snap -->|"no collected snapshot\n/ no network"| fail["Fail run with\nclear error"]
-    snap --> validate["Validation run\n(query rows + identity checks)"]
+    snap --> fetch["Fetch and validate workloads\none async NQE execution per enabled map\n(see flow 3)"]
+    fetch --> validate["Record validation run\n(query rows + identity checks)"]
 
     validate --> gate{"Foundational models OK?\ndcim.platform, dcim.devicetype\nfailure_count == 0"}
     gate -->|"blocked"| stop["Block device sync\nsurface validation issue"]
-    gate -->|"allowed"| fetch["Fetch workloads\none NQE job per enabled map\n(see flow 3)"]
-
-    fetch --> scope["Apply device tag scope\n(include / exclude / match)"]
+    gate -->|"allowed"| scope["Apply device tag scope\n(include / exclude / match)"]
     scope --> branch["Create one native branch\nfor the complete sync"]
     branch --> apply["Apply dependency-ordered work\nvia bulk ORM or adapters"]
     apply --> merge{"Merge complete\nwith zero failed changes?"}
@@ -121,7 +119,9 @@ flowchart TD
 
     diff -->|"diff fails + Allow fallback"| full
     diff --> split["Split rows into\nupserts and deletes"]
-    full --> rows["All rows are upserts\n(full set defines presence)"]
+    full --> rows["Normalize complete\nauthoritative target"]
+    rows --> local["Compare with promoted\nForwardWorkloadState"]
+    local --> split
 
     split --> stage["Stage model workload"]
     rows --> stage
@@ -137,6 +137,16 @@ Notes:
   fast instead.
 - Org Repository-backed `query_path` and direct `query_id` maps are diff-capable;
   inline `query` text always runs full.
+- Full parameterized workloads use compressed, checksummed local state. Only a
+  successful merge promotes the pending generation, so preview, failure, and an
+  open review branch cannot redefine presence.
+- SoftwareVersion presence is the union referenced by complete DeviceSoftware
+  and Vulnerability workloads; the standalone version map enriches that union.
+  CVE presence is projected from the complete Vulnerability workload.
+- A complete device target may emit a delete only for an exact plugin identity
+  absent from the target and unprotected by claims, preserved assignments, peer
+  identities, or virtual-parent relationships. The delete is branch-native and
+  identity release is atomic with merge.
 
 ---
 
@@ -153,6 +163,7 @@ Notes:
 | Merge completion | Any failed merge row leaves the branch retryable and withholds baseline and ownership completion. |
 | Ownership | Main-schema, generation-stamped per-sync claims with union/last-claim semantics. |
 | Diff vs full | Forward `nqe-diff` on eligible `latestProcessed` runs with a prior baseline; full query otherwise. |
+| Full-workload convergence | Promoted local state derives deterministic upserts/deletes; DLM association unions and exact affected-software derivation constrain catalog deletion; exact ownership, a Collector-complete write barrier, and GenericRelation database guards constrain device deletion. |
 | Device tag scope | Optional include/exclude tag filter on the source narrows every query and the `latestCollected` probe. |
 
 See [Configuration](../01_User_Guide/configuration.md) for the field-level

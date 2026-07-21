@@ -4,8 +4,10 @@ from contextlib import contextmanager
 
 from django.contrib.contenttypes.models import ContentType
 from django.db import connection
+from django.db import IntegrityError
 from django.db import transaction
 from django.db.models import F
+from django.db.models import Q
 from django.db.models.deletion import ProtectedError
 from django.utils import timezone
 from django.utils.text import slugify
@@ -284,6 +286,24 @@ def required_ownership_domains(sync):
     ):
         required.append(ForwardOwnershipReconciliation.Domain.VIRTUAL_PARENTS)
     return required
+
+
+def ownership_generation_complete(sync, generation):
+    """Return whether every required ownership domain completed this generation."""
+    from ..models import ForwardOwnershipReconciliation
+
+    required = set(required_ownership_domains(sync))
+    if not required:
+        return True
+    completed = set(
+        ForwardOwnershipReconciliation.objects.filter(
+            sync=sync,
+            domain__in=required,
+            ingestion_id=int(generation),
+            status=ForwardOwnershipReconciliation.Status.COMPLETED,
+        ).values_list("domain", flat=True)
+    )
+    return completed == required
 
 
 def mark_ownership_pending(sync, generation, snapshot_id, *, domains=None):
@@ -601,6 +621,46 @@ def _materialize_managed_tag(
     }
 
 
+def _locked_scope_tag(name, slug):
+    from extras.models import Tag
+
+    matches = list(
+        Tag.objects.select_for_update()
+        .filter(Q(name=name) | Q(slug=slug))
+        .order_by("pk")
+    )
+    name_match = next((tag for tag in matches if tag.name == name), None)
+    slug_match = next((tag for tag in matches if tag.slug == slug), None)
+    if (
+        name_match is not None
+        and slug_match is not None
+        and name_match.pk != slug_match.pk
+    ):
+        raise OwnershipConflictError(
+            f"Scope tag name `{name}` and normalized slug `{slug}` identify "
+            "different NetBox tags."
+        )
+    return name_match or slug_match
+
+
+def _resolve_or_create_scope_tag(name, slug):
+    from extras.models import Tag
+
+    tag = _locked_scope_tag(name, slug)
+    if tag is not None:
+        return tag
+    try:
+        # The savepoint keeps a concurrent unique-name or unique-slug insert
+        # from breaking the ownership transaction before we resolve its row.
+        with transaction.atomic():
+            return Tag.objects.create(name=name, slug=slug, color="9e9e9e")
+    except IntegrityError:
+        tag = _locked_scope_tag(name, slug)
+        if tag is None:
+            raise
+        return tag
+
+
 def ensure_device_tag_claim(
     sync,
     device,
@@ -890,8 +950,6 @@ def reconcile_sync_scope_tag_claims(
     sync, matched_tags_by_device, *, generation, snapshot_id
 ):
     """Replace every configured managed-scope tag claim for one sync generation."""
-    from extras.models import Tag
-
     from ..models import ForwardDeviceTagClaim
     from ..models import ForwardManagedDeviceTag
     from ..models import ForwardOwnershipReconciliation
@@ -921,13 +979,7 @@ def reconcile_sync_scope_tag_claims(
         tags = {}
         for name in configured_names | set(desired_by_name):
             tag_slug = normalized_slugs[name]
-            tag = Tag.objects.filter(slug=tag_slug).first() if tag_slug else None
-            if tag is None:
-                tag = Tag.objects.create(
-                    name=name,
-                    slug=tag_slug,
-                    color="9e9e9e",
-                )
+            tag = _resolve_or_create_scope_tag(name, tag_slug)
             tags[name] = tag
             managed_tag_ids.add(tag.pk)
 
@@ -1008,8 +1060,8 @@ def _cleanup_managed_virtual_contexts(virtual_context_ids=None):
     return {"vdc_deleted": deleted, "vdc_preserved_in_use": preserved_in_use}
 
 
-def release_prunable_device_ownership(sync, device_ids):
-    """Release only this sync's provenance for explicitly reviewed prune rows."""
+def _release_prunable_device_ownership_locked(sync, device_ids):
+    """Release reviewed-prune provenance inside the caller's ownership lock."""
     from django.db.models import Q
 
     from ..models import ForwardDeviceIdentity
@@ -1020,12 +1072,111 @@ def release_prunable_device_ownership(sync, device_ids):
     candidate_ids = set(device_ids)
     if not candidate_ids:
         return {"released_device_ids": set(), "blocked_device_ids": set()}
+    if not connection.in_atomic_block:
+        raise RuntimeError("Prunable ownership release requires an atomic block.")
+
+    blocked_ids = set(
+        ForwardDeviceTagClaim.objects.filter(device_id__in=candidate_ids)
+        .exclude(sync=sync)
+        .values_list("device_id", flat=True)
+    )
+    blocked_ids.update(
+        ForwardDeviceIdentity.objects.filter(device_id__in=candidate_ids)
+        .exclude(sync=sync)
+        .values_list("device_id", flat=True)
+    )
+    blocked_ids.update(
+        ForwardPreservedDeviceTagAssignment.objects.filter(
+            device_id__in=candidate_ids
+        ).values_list("device_id", flat=True)
+    )
+    parent_claims = list(
+        ForwardVirtualParentClaim.objects.filter(
+            Q(device_id__in=candidate_ids) | Q(parent_device_id__in=candidate_ids)
+        ).values(
+            "pk",
+            "sync_id",
+            "device_id",
+            "parent_device_id",
+            "virtual_context_id",
+        )
+    )
+    for claim in parent_claims:
+        involved = candidate_ids.intersection(
+            {claim["device_id"], claim["parent_device_id"]}
+        )
+        if claim["sync_id"] != sync.pk:
+            blocked_ids.update(involved)
+    changed = True
+    while changed:
+        changed = False
+        released_ids = candidate_ids - blocked_ids
+        for claim in parent_claims:
+            if claim["sync_id"] != sync.pk:
+                continue
+            if (
+                claim["parent_device_id"] in released_ids
+                and claim["device_id"] not in released_ids
+            ):
+                blocked_ids.add(claim["parent_device_id"])
+                changed = True
+
+    released_ids = candidate_ids - blocked_ids
+    ForwardDeviceTagClaim.objects.filter(
+        sync=sync,
+        device_id__in=released_ids,
+    ).delete()
+    ForwardDeviceIdentity.objects.filter(
+        sync=sync,
+        device_id__in=released_ids,
+    ).delete()
+    # A child can be pruned while its physical parent remains. A parent can
+    # only be pruned when every linked child is in the same reviewed set.
+    releasable_parent_claim_ids = {
+        claim["pk"]
+        for claim in parent_claims
+        if claim["sync_id"] == sync.pk and claim["device_id"] in released_ids
+    }
+    cleanup_vdc_ids = {
+        claim["virtual_context_id"]
+        for claim in parent_claims
+        if claim["pk"] in releasable_parent_claim_ids and claim["virtual_context_id"]
+    }
+    if releasable_parent_claim_ids:
+        ForwardVirtualParentClaim.objects.filter(
+            pk__in=releasable_parent_claim_ids
+        ).delete()
+    _cleanup_managed_virtual_contexts(cleanup_vdc_ids)
+    return {
+        "released_device_ids": released_ids,
+        "blocked_device_ids": blocked_ids,
+    }
+
+
+def release_prunable_device_ownership(sync, device_ids):
+    """Release only this sync's provenance for explicitly reviewed prune rows."""
+    with ownership_write_lock():
+        return _release_prunable_device_ownership_locked(sync, device_ids)
+
+
+def release_authoritative_device_delete_ownership(sync, device_ids):
+    """Release identity only when no current ownership assertion protects a device."""
+    from django.db.models import Q
+
+    from ..models import ForwardDeviceIdentity
+    from ..models import ForwardDeviceTagClaim
+    from ..models import ForwardPreservedDeviceTagAssignment
+    from ..models import ForwardVirtualParentClaim
+
+    candidate_ids = set(device_ids)
+    if not candidate_ids:
+        return {"released_device_ids": set(), "blocked_device_ids": set()}
 
     with ownership_write_lock():
         blocked_ids = set(
-            ForwardDeviceTagClaim.objects.filter(device_id__in=candidate_ids)
-            .exclude(sync=sync)
-            .values_list("device_id", flat=True)
+            ForwardDeviceTagClaim.objects.filter(
+                device_id__in=candidate_ids
+            ).values_list("device_id", flat=True)
         )
         blocked_ids.update(
             ForwardDeviceIdentity.objects.filter(device_id__in=candidate_ids)
@@ -1037,64 +1188,18 @@ def release_prunable_device_ownership(sync, device_ids):
                 device_id__in=candidate_ids
             ).values_list("device_id", flat=True)
         )
-        parent_claims = list(
-            ForwardVirtualParentClaim.objects.filter(
-                Q(device_id__in=candidate_ids) | Q(parent_device_id__in=candidate_ids)
-            ).values(
-                "pk",
-                "sync_id",
-                "device_id",
-                "parent_device_id",
-                "virtual_context_id",
+        for device_id, parent_device_id in ForwardVirtualParentClaim.objects.filter(
+            Q(device_id__in=candidate_ids) | Q(parent_device_id__in=candidate_ids)
+        ).values_list("device_id", "parent_device_id"):
+            blocked_ids.update(
+                candidate_ids.intersection({device_id, parent_device_id})
             )
-        )
-        for claim in parent_claims:
-            involved = candidate_ids.intersection(
-                {claim["device_id"], claim["parent_device_id"]}
-            )
-            if claim["sync_id"] != sync.pk:
-                blocked_ids.update(involved)
-        changed = True
-        while changed:
-            changed = False
-            released_ids = candidate_ids - blocked_ids
-            for claim in parent_claims:
-                if claim["sync_id"] != sync.pk:
-                    continue
-                if (
-                    claim["parent_device_id"] in released_ids
-                    and claim["device_id"] not in released_ids
-                ):
-                    blocked_ids.add(claim["parent_device_id"])
-                    changed = True
 
         released_ids = candidate_ids - blocked_ids
-        ForwardDeviceTagClaim.objects.filter(
-            sync=sync,
-            device_id__in=released_ids,
-        ).delete()
         ForwardDeviceIdentity.objects.filter(
             sync=sync,
             device_id__in=released_ids,
         ).delete()
-        # A child can be pruned while its physical parent remains. A parent can
-        # only be pruned when every linked child is in the same reviewed set.
-        releasable_parent_claim_ids = {
-            claim["pk"]
-            for claim in parent_claims
-            if claim["sync_id"] == sync.pk and claim["device_id"] in released_ids
-        }
-        cleanup_vdc_ids = {
-            claim["virtual_context_id"]
-            for claim in parent_claims
-            if claim["pk"] in releasable_parent_claim_ids
-            and claim["virtual_context_id"]
-        }
-        if releasable_parent_claim_ids:
-            ForwardVirtualParentClaim.objects.filter(
-                pk__in=releasable_parent_claim_ids
-            ).delete()
-        _cleanup_managed_virtual_contexts(cleanup_vdc_ids)
         return {
             "released_device_ids": released_ids,
             "blocked_device_ids": blocked_ids,

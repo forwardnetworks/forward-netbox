@@ -661,7 +661,11 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
             )
         sync = self.get_object()
         try:
-            job = sync.enqueue_sync_job(user=request.user, adhoc=True)
+            job = sync.enqueue_sync_job(
+                user=request.user,
+                adhoc=True,
+                force_unchanged=True,
+            )
         except SyncError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
         return Response(

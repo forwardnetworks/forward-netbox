@@ -235,6 +235,51 @@ class ScopeModuleUiTest(TestCase):
                 Device.objects.filter(tags__slug="forward-backfilled").count(), 0
             )
 
+    def test_scope_tag_overlay_skips_absent_backfilled_target(self):
+        from forward_netbox.models import ForwardDeviceTagClaim
+        from forward_netbox.utilities.scope_reconciliation import (
+            tag_backfilled_devices,
+        )
+
+        self.source.parameters = {
+            **self.source.parameters,
+            "apply_device_scope_tags": True,
+        }
+        self.source.save(update_fields=["parameters"])
+        present = self._device("dev-present")
+        fwd_client = Mock()
+        fwd_client.run_nqe_query.return_value = [
+            {
+                "name": present.name,
+                "completed": True,
+                "tagNames": ["Prod_Core"],
+            },
+            {
+                "name": "dev-absent-backfilled",
+                "completed": False,
+                "tagNames": ["Prod_Core"],
+            },
+        ]
+
+        with (
+            patch.object(ForwardSource, "get_client", return_value=fwd_client),
+            patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
+        ):
+            result = tag_backfilled_devices(self.sync)
+
+        self.assertEqual(result["scope_claims_added"], 1)
+        self.assertTrue(result["ownership_current"])
+        self.assertTrue(present.tags.filter(name="Prod_Core").exists())
+        self.assertEqual(
+            set(
+                ForwardDeviceTagClaim.objects.filter(
+                    sync=self.sync,
+                    claim_type="scope",
+                ).values_list("device__name", flat=True)
+            ),
+            {present.name},
+        )
+
     def test_tag_backfilled_devices_also_tags_out_of_scope(self):
         from forward_netbox.utilities.scope_reconciliation import (
             tag_backfilled_devices,

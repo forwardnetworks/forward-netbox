@@ -7,6 +7,7 @@ from dcim.models import Site
 from dcim.models import VirtualChassis
 from dcim.signals import assign_virtualchassis_master
 from dcim.signals import sync_cached_scope_fields
+from django.db import DEFAULT_DB_ALIAS
 from django.db import transaction
 from django.db.models import signals
 from django.utils import timezone
@@ -15,7 +16,11 @@ from django_pglocks import advisory_lock
 from extras.signals import notify_object_changed
 from netbox.constants import ADVISORY_LOCK_KEYS
 from netbox_branching.choices import BranchStatusChoices
+from netbox_branching.models import AppliedChange
+from netbox_branching.models import ChangeDiff
+from rq.timeouts import JobTimeoutException
 
+from ..choices import ForwardCatchupStatusChoices
 from ..choices import ForwardSourceStatusChoices
 from ..choices import ForwardSyncStatusChoices
 from ..exceptions import ForwardPartialMergeError
@@ -81,11 +86,160 @@ def _post_merge_context(ingestion, mark_baseline_ready):
     }
 
 
+def _persist_catchup_state(
+    ingestion,
+    *,
+    status,
+    reason="",
+    target_snapshot_id="",
+    error_type="",
+    checked_at=None,
+):
+    values = {
+        "catchup_status": status,
+        "catchup_reason": str(reason or "")[:100],
+        "catchup_target_snapshot_id": str(target_snapshot_id or "")[:100],
+        "catchup_error_type": str(error_type or "")[:255],
+        "catchup_checked_at": checked_at,
+    }
+    ingestion.__class__.objects.filter(pk=ingestion.pk).update(**values)
+    for field, value in values.items():
+        setattr(ingestion, field, value)
+
+
+def reconcile_ingestion_catchup(ingestion, *, current_job=None, client=None):
+    """Persist and satisfy one finalized ingestion's dynamic-snapshot catch-up."""
+    forwardsync = ingestion.sync
+    try:
+        decision = latest_processed_catchup_decision(
+            forwardsync,
+            current_snapshot_id=getattr(ingestion, "snapshot_id", ""),
+            client=client,
+            current_job=current_job,
+        )
+        reason = decision.get("reason") or ""
+        target_snapshot_id = decision.get("latest_processed_snapshot_id") or ""
+        queued_job = None
+        if decision["should_queue"]:
+            selector = decision.get("snapshot_selector") or "latestProcessed"
+            forwardsync.logger.log_info(
+                f"Forward {selector} advanced from "
+                f"`{decision['current_snapshot_id']}` to "
+                f"`{decision['latest_processed_snapshot_id']}` during the run; "
+                "queuing a catch-up sync.",
+                obj=forwardsync,
+            )
+            queued_job = forwardsync.enqueue_sync_job(
+                adhoc=True,
+                user=getattr(current_job, "user", None),
+                current_job=current_job,
+            )
+
+        failed_reasons = {
+            "latest_processed_lookup_failed",
+            "missing_current_snapshot_id",
+            "missing_latest_processed_snapshot_id",
+            "missing_network_id",
+        }
+        if decision["should_queue"] or reason == "active_job_exists":
+            status = ForwardCatchupStatusChoices.QUEUED
+        elif reason == "sync_not_completed":
+            if forwardsync.status in {
+                ForwardSyncStatusChoices.QUEUED,
+                ForwardSyncStatusChoices.SYNCING,
+                ForwardSyncStatusChoices.MERGING,
+            }:
+                status = ForwardCatchupStatusChoices.QUEUED
+            else:
+                status = ForwardCatchupStatusChoices.FAILED
+        elif reason == "fixed_snapshot_selector":
+            status = ForwardCatchupStatusChoices.NOT_APPLICABLE
+        elif reason in failed_reasons:
+            status = ForwardCatchupStatusChoices.FAILED
+        else:
+            status = ForwardCatchupStatusChoices.CURRENT
+        _persist_catchup_state(
+            ingestion,
+            status=status,
+            reason=reason,
+            target_snapshot_id=target_snapshot_id,
+            checked_at=timezone.now(),
+        )
+        return {**decision, "job_id": getattr(queued_job, "pk", None)}
+    except JobTimeoutException as exc:
+        _persist_catchup_state(
+            ingestion,
+            status=ForwardCatchupStatusChoices.FAILED,
+            reason="catchup_check_exception",
+            error_type=exc.__class__.__name__,
+            checked_at=timezone.now(),
+        )
+        raise
+    except Exception as exc:
+        _persist_catchup_state(
+            ingestion,
+            status=ForwardCatchupStatusChoices.FAILED,
+            reason="catchup_check_exception",
+            error_type=exc.__class__.__name__,
+            checked_at=timezone.now(),
+        )
+        raise
+
+
+def reconcile_catchup_if_ownership_complete(
+    ingestion,
+    *,
+    current_job=None,
+    client=None,
+):
+    """Claim and run catch-up only after this ingestion's ownership converges."""
+    from .logging import SyncLogging
+    from .ownership import ownership_generation_complete
+    from .ownership import ownership_write_lock
+
+    with ownership_write_lock():
+        locked = (
+            ingestion.__class__.objects.select_for_update()
+            .select_related("sync", "sync__source")
+            .get(pk=ingestion.pk)
+        )
+        if not ownership_generation_complete(locked.sync, locked.pk):
+            return {
+                "checked": False,
+                "reason": "ownership_pending",
+                "job_id": None,
+            }
+        if locked.catchup_status not in {
+            ForwardCatchupStatusChoices.PENDING,
+            ForwardCatchupStatusChoices.FAILED,
+        }:
+            return {
+                "checked": False,
+                "reason": "catchup_already_claimed",
+                "job_id": None,
+            }
+        _persist_catchup_state(
+            locked,
+            status=ForwardCatchupStatusChoices.CHECKING,
+            reason="ownership_complete",
+            checked_at=timezone.now(),
+        )
+
+    if getattr(locked.sync, "logger", None) is None:
+        locked.sync.logger = SyncLogging(job=getattr(current_job, "pk", None))
+    return reconcile_ingestion_catchup(
+        locked,
+        current_job=current_job,
+        client=client,
+    )
+
+
 def _complete_post_merge_bookkeeping(ingestion, *, context, remove_branch):
     from .ownership import _mark_ownership_pending_locked
     from .ownership import finalize_device_identities_locked
     from .ownership import ownership_write_lock
     from .ownership import required_ownership_domains
+    from .workload_state import promote_workload_states_locked
 
     with ownership_write_lock():
         locked_ingestion = (
@@ -111,6 +265,7 @@ def _complete_post_merge_bookkeeping(ingestion, *, context, remove_branch):
             parameters.pop("stuck_recovery", None)
 
         finalize_device_identities_locked(locked_ingestion)
+        promote_workload_states_locked(locked_ingestion)
         domains = []
         if forwardsync.status == ForwardSyncStatusChoices.COMPLETED:
             domains = required_ownership_domains(forwardsync)
@@ -122,10 +277,20 @@ def _complete_post_merge_bookkeeping(ingestion, *, context, remove_branch):
             )
         finalized_at = timezone.now()
         locked_ingestion.merge_finalized_at = finalized_at
+        locked_ingestion.catchup_status = ForwardCatchupStatusChoices.PENDING
+        locked_ingestion.catchup_target_snapshot_id = ""
+        locked_ingestion.catchup_reason = ""
+        locked_ingestion.catchup_error_type = ""
+        locked_ingestion.catchup_checked_at = None
         locked_ingestion.save(
             update_fields=[
                 "baseline_ready",
                 "merge_finalized_at",
+                "catchup_status",
+                "catchup_target_snapshot_id",
+                "catchup_reason",
+                "catchup_error_type",
+                "catchup_checked_at",
             ]
         )
         forwardsync.save(update_fields=["parameters", "status", "last_synced"])
@@ -133,30 +298,12 @@ def _complete_post_merge_bookkeeping(ingestion, *, context, remove_branch):
     ingestion.baseline_ready = locked_ingestion.baseline_ready
     ingestion.merge_applied_at = locked_ingestion.merge_applied_at
     ingestion.merge_finalized_at = locked_ingestion.merge_finalized_at
+    ingestion.catchup_status = locked_ingestion.catchup_status
     ingestion.sync = forwardsync
     if remove_branch:
         ingestion._cleanup_merged_branch()
     if forwardsync.status != ForwardSyncStatusChoices.COMPLETED:
         return
-    decision = latest_processed_catchup_decision(
-        forwardsync,
-        current_snapshot_id=getattr(ingestion, "snapshot_id", ""),
-        current_job=ingestion.merge_job,
-    )
-    if decision["should_queue"]:
-        selector = decision.get("snapshot_selector") or "latestProcessed"
-        forwardsync.logger.log_info(
-            f"Forward {selector} advanced from "
-            f"`{decision['current_snapshot_id']}` to "
-            f"`{decision['latest_processed_snapshot_id']}` during the run; "
-            "queuing a catch-up sync.",
-            obj=forwardsync,
-        )
-        forwardsync.enqueue_sync_job(
-            adhoc=True,
-            user=getattr(ingestion.merge_job, "user", None),
-            current_job=ingestion.merge_job,
-        )
 
 
 def resume_post_merge_bookkeeping(
@@ -187,6 +334,14 @@ def resume_post_merge_bookkeeping(
     ):
         if remove_branch and branch is not None:
             ingestion._cleanup_merged_branch()
+        if ingestion.catchup_status in {
+            ForwardCatchupStatusChoices.PENDING,
+            ForwardCatchupStatusChoices.FAILED,
+        }:
+            reconcile_catchup_if_ownership_complete(
+                ingestion,
+                current_job=ingestion.merge_job,
+            )
         return True
 
     context = _post_merge_context(ingestion, mark_baseline_ready)
@@ -335,15 +490,33 @@ def record_change_totals(
 
 
 def cleanup_merged_branch(ingestion):
-    if not ingestion.branch:
-        return
-    branching_branch = ingestion.branch
+    with transaction.atomic(using=DEFAULT_DB_ALIAS):
+        locked_ingestion = ingestion.__class__.objects.select_for_update().get(
+            pk=ingestion.pk
+        )
+        if locked_ingestion.branch_id is None:
+            ingestion.branch = None
+            return
+
+        branching_branch = (
+            locked_ingestion.branch.__class__.objects.select_for_update().get(
+                pk=locked_ingestion.branch_id
+            )
+        )
+        if branching_branch.status != BranchStatusChoices.MERGED:
+            raise SyncError(
+                "Merged branch cleanup requires a persisted merged branch state."
+            )
+
+        # These rows are branch-owned indexes with no delete hooks. Delete them
+        # as sets so Django's Collector does not hydrate millions of rows before
+        # Branch.delete() performs its normal row and schema teardown.
+        AppliedChange.objects.filter(branch_id=branching_branch.pk)._raw_delete(
+            using=DEFAULT_DB_ALIAS
+        )
+        ChangeDiff.objects.filter(branch_id=branching_branch.pk)._raw_delete(
+            using=DEFAULT_DB_ALIAS
+        )
+        branching_branch.delete()
+
     ingestion.branch = None
-    ingestion.__class__.objects.filter(pk=ingestion.pk).update(branch=None)
-    # Branching keeps the in-memory instance stale while the merge completes.
-    # Reload the persisted row before deletion so the Branching delete guard
-    # sees the terminal merged state instead of the old merging status.
-    branching_branch = branching_branch.__class__.objects.get(pk=branching_branch.pk)
-    branching_branch.status = BranchStatusChoices.MERGED
-    branching_branch.save(update_fields=["status"])
-    branching_branch.delete()

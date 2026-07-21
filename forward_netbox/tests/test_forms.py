@@ -461,50 +461,6 @@ class ForwardSyncFormTest(TestCase):
         self.assertEqual(source.parameters["pushdown_diff_warn_ratio"], 0.25)
 
     @patch("forward_netbox.forms.ForwardSource.validate_connection")
-    def test_source_form_persists_query_preflight_toggle(
-        self, _mock_validate_connection
-    ):
-        form = ForwardSourceForm(
-            data={
-                "name": "source-preflight-toggle",
-                "type": ForwardSourceDeploymentChoices.SAAS,
-                "username": "user@example.com",
-                "password": "secret",
-                "network_id": "test-network",
-                "timeout": 1200,
-                "nqe_page_size": 10000,
-                "verify": True,
-                "query_preflight_enabled": "",
-            }
-        )
-
-        self.assertTrue(form.is_valid(), form.errors)
-        source = form.save()
-        self.assertFalse(source.parameters["query_preflight_enabled"])
-
-    @patch("forward_netbox.forms.ForwardSource.validate_connection")
-    def test_source_form_persists_query_preflight_row_limit(
-        self, _mock_validate_connection
-    ):
-        form = ForwardSourceForm(
-            data={
-                "name": "source-preflight-row-limit",
-                "type": ForwardSourceDeploymentChoices.SAAS,
-                "username": "user@example.com",
-                "password": "secret",
-                "network_id": "test-network",
-                "timeout": 1200,
-                "nqe_page_size": 10000,
-                "verify": True,
-                "query_preflight_row_limit": 2,
-            }
-        )
-
-        self.assertTrue(form.is_valid(), form.errors)
-        source = form.save()
-        self.assertEqual(source.parameters["query_preflight_row_limit"], 2)
-
-    @patch("forward_netbox.forms.ForwardSource.validate_connection")
     def test_source_form_persists_query_diagnostics_toggle(
         self, _mock_validate_connection
     ):

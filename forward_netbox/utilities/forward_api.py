@@ -15,7 +15,6 @@ from .forward_api_impl import DEFAULT_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT  # no
 from .forward_api_impl import DEFAULT_NQE_PAGE_SIZE  # noqa: F401
 from .forward_api_impl import DEFAULT_QUERY_DIAGNOSTICS_ENABLED  # noqa: F401
 from .forward_api_impl import DEFAULT_QUERY_FETCH_CONCURRENCY  # noqa: F401
-from .forward_api_impl import DEFAULT_QUERY_PREFLIGHT_ENABLED  # noqa: F401
 from .forward_api_impl import ForwardClient  # noqa: F401
 from .forward_api_impl import LATEST_COLLECTED_SNAPSHOT  # noqa: F401
 from .forward_api_impl import LATEST_PROCESSED_SNAPSHOT  # noqa: F401

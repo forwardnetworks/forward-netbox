@@ -1,32 +1,18 @@
 from rq.timeouts import JobTimeoutException
 
+from ..choices import ForwardDiffFallbackModeChoices
 from ..exceptions import ForwardClientError
 from ..exceptions import ForwardConnectivityError
 from ..exceptions import ForwardQueryError
 from ..exceptions import ForwardSyncDataError
 from .apply_engine import select_apply_engine
+from .delete_policy import should_suppress_aci_deletes
 from .forward_api import LATEST_COLLECTED_SNAPSHOT
 from .ingestion_merge import suppress_ingest_side_effect_signals
 from .model_contracts import architecture_default_coalesce_fields_for_model
 from .query_registry import get_query_specs
 from .query_registry import resolve_query_specs_for_client
 from .sync_contracts import validate_row_shape_for_model
-
-# ACI inventory models. Their NQE maps hard-gate on the parent APIC's
-# `snapshotInfo.result == completed`; when an APIC fails collection the whole
-# fabric query returns empty, so a snapshot-to-snapshot diff emits a DELETE for
-# every bridge domain / L3Out / pod / node that "disappeared". Pruning ACI
-# inventory on a transient APIC collection failure is destructive and hard to
-# rebuild, so ACI deletes are opt-in (set ``aci_allow_deletes``) rather than
-# applied automatically.
-ACI_MODEL_PREFIX = "netbox_cisco_aci."
-
-
-def _should_suppress_aci_deletes(sync, model_string):
-    """True when ACI delete rows must be held back (opt-out via parameter)."""
-    if not model_string.startswith(ACI_MODEL_PREFIX):
-        return False
-    return not bool((sync.parameters or {}).get("aci_allow_deletes"))
 
 
 def run_sync_stage(runner):
@@ -154,35 +140,58 @@ def run_sync_stage(runner):
                 for spec in specs:
                     rows = []
                     delete_rows = []
+                    effective_parameters = spec.merged_parameters(query_parameters)
                     if model_baseline is not None and spec.run_query_id:
-                        try:
+                        if effective_parameters:
+                            if (runner.sync.parameters or {}).get(
+                                "diff_fallback_mode",
+                                ForwardDiffFallbackModeChoices.ALLOW_FALLBACK,
+                            ) == ForwardDiffFallbackModeChoices.REQUIRE_DIFF:
+                                raise ForwardQueryError(
+                                    "Diff execution is required, but Forward NQE diffs "
+                                    "do not accept runtime query parameters for "
+                                    f"{model_string} using `{spec.execution_value}`. "
+                                    "Use Allow full fallback for parameterized maps."
+                                )
                             runner.logger.log_info(
-                                f"Running Forward NQE diff `{spec.execution_value}` for {model_string} "
-                                f"between snapshots `{model_baseline.snapshot_id}` and `{snapshot_id}`.",
-                                obj=runner.sync,
-                            )
-                            diff_rows = runner.client.run_nqe_diff(
-                                query_id=spec.run_query_id,
-                                commit_id=spec.commit_id,
-                                parameters=spec.merged_parameters(query_parameters),
-                                before_snapshot_id=model_baseline.snapshot_id,
-                                after_snapshot_id=snapshot_id,
-                                fetch_all=True,
-                            )
-                            rows, delete_rows = runner._split_diff_rows(
-                                model_string, diff_rows
-                            )
-                            used_diff = True
-                            runner.logger.log_info(
-                                f"Fetched {len(diff_rows)} diff rows for {model_string} from query_id `{spec.execution_value}`.",
-                                obj=runner.sync,
-                            )
-                        except (ForwardClientError, ForwardConnectivityError) as exc:
-                            runner.logger.log_warning(
-                                f"Forward NQE diff failed for {model_string} using `{spec.execution_value}`; falling back to full query execution: {exc}",
+                                "Forward NQE diffs do not accept runtime query "
+                                f"parameters for {model_string} using "
+                                f"`{spec.execution_value}`; running full async "
+                                "query execution instead.",
                                 obj=runner.sync,
                             )
                             model_baseline = None
+                        else:
+                            try:
+                                runner.logger.log_info(
+                                    f"Running Forward NQE diff `{spec.execution_value}` for {model_string} "
+                                    f"between snapshots `{model_baseline.snapshot_id}` and `{snapshot_id}`.",
+                                    obj=runner.sync,
+                                )
+                                diff_rows = runner.client.run_nqe_diff(
+                                    query_id=spec.run_query_id,
+                                    commit_id=spec.commit_id,
+                                    before_snapshot_id=model_baseline.snapshot_id,
+                                    after_snapshot_id=snapshot_id,
+                                    fetch_all=True,
+                                )
+                                rows, delete_rows = runner._split_diff_rows(
+                                    model_string, diff_rows
+                                )
+                                used_diff = True
+                                runner.logger.log_info(
+                                    f"Fetched {len(diff_rows)} diff rows for {model_string} from query_id `{spec.execution_value}`.",
+                                    obj=runner.sync,
+                                )
+                            except (
+                                ForwardClientError,
+                                ForwardConnectivityError,
+                            ) as exc:
+                                runner.logger.log_warning(
+                                    f"Forward NQE diff failed for {model_string} using `{spec.execution_value}`; falling back to full query execution: {exc}",
+                                    obj=runner.sync,
+                                )
+                                model_baseline = None
 
                     if model_baseline is None or not spec.run_query_id:
                         if model_baseline is not None and not spec.run_query_id:
@@ -200,7 +209,7 @@ def run_sync_stage(runner):
                             commit_id=spec.commit_id,
                             network_id=network_id,
                             snapshot_id=snapshot_id,
-                            parameters=spec.merged_parameters(query_parameters),
+                            parameters=effective_parameters,
                             fetch_all=True,
                         )
                         used_full = True
@@ -260,7 +269,7 @@ def run_sync_stage(runner):
             delete_rows = pending_deletes.get(model_string, [])
             if not delete_rows:
                 continue
-            if _should_suppress_aci_deletes(runner.sync, model_string):
+            if should_suppress_aci_deletes(runner.sync, model_string):
                 runner.logger.log_warning(
                     f"Held back {len(delete_rows)} delete(s) for {model_string}: "
                     "ACI inventory is not auto-pruned because a failed APIC "

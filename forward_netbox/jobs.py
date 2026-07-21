@@ -452,7 +452,7 @@ def _finish_completed_job_with_overlays(
 ):
     """Dispatch durable ownership work before making the producer terminal."""
     try:
-        _enqueue_post_sync_overlays(
+        dispatch = _enqueue_post_sync_overlays(
             sync,
             snapshot_id=snapshot_id,
             ingestion_id=ingestion_id,
@@ -468,8 +468,40 @@ def _finish_completed_job_with_overlays(
             error=str(exc),
         )
         return False
+    if not dispatch.get("domains") and dispatch.get("ingestion_id") is not None:
+        _reconcile_completed_ingestion_catchup(
+            sync,
+            dispatch["ingestion_id"],
+            current_job=job,
+        )
     terminate_job_once(job)
     return True
+
+
+def _reconcile_completed_ingestion_catchup(sync, ingestion_id, *, current_job=None):
+    """Attempt catch-up after a worker may have completed the last overlay."""
+    from .utilities.ingestion_merge import reconcile_catchup_if_ownership_complete
+
+    if ingestion_id is None:
+        return {"checked": False, "reason": "missing_ingestion", "job_id": None}
+    try:
+        ingestion = ForwardIngestion.objects.select_related("sync", "sync__source").get(
+            pk=ingestion_id,
+            sync=sync,
+        )
+        return reconcile_catchup_if_ownership_complete(
+            ingestion,
+            current_job=current_job,
+        )
+    except JobTimeoutException:
+        raise
+    except Exception:
+        logger.exception(
+            "Snapshot catch-up check failed after ownership convergence for "
+            "ForwardIngestion %s; durable recovery will retry it.",
+            ingestion_id,
+        )
+        return {"checked": False, "reason": "catchup_failed", "job_id": None}
 
 
 def _mark_overlay_ownership_failed(sync, kwargs, domains, exc):
@@ -482,15 +514,27 @@ def _mark_overlay_ownership_failed(sync, kwargs, domains, exc):
     mark_ownership_failed(sync, generation, domains, exc)
 
 
-def _complete_stale_post_sync_overlay(job, sync):
+def _overlay_job_data(payload, kwargs):
+    """Bind overlay result evidence to the ingestion generation it evaluated."""
+    data = dict(payload or {})
+    generation = kwargs.get("ingestion_id")
+    if generation is not None:
+        data["forward_ingestion_id"] = int(generation)
+    return data
+
+
+def _complete_stale_post_sync_overlay(job, sync, **kwargs):
     """Complete an obsolete overlay and request the latest safe catch-up."""
     baseline = sync.latest_baseline_ingestion()
     latest_snapshot_id = str(getattr(baseline, "snapshot_id", "") or "").strip()
     latest_ingestion_id = getattr(baseline, "pk", None)
-    job.data = {
-        "skipped": "stale_post_sync_snapshot",
-        "catch_up_requested": bool(latest_snapshot_id),
-    }
+    job.data = _overlay_job_data(
+        {
+            "skipped": "stale_post_sync_snapshot",
+            "catch_up_requested": bool(latest_snapshot_id),
+        },
+        kwargs,
+    )
     job.save(update_fields=["data"])
     if latest_snapshot_id:
         try:
@@ -515,7 +559,10 @@ def sync_forwardsync(job, *args, **kwargs):
             return
 
     try:
-        sync.sync(job=job, adhoc=bool(kwargs.get("adhoc")))
+        execution_performed = sync.sync(
+            job=job,
+            force_unchanged=bool(kwargs.get("force_unchanged")),
+        )
         safe_save_job_data(job, sync)
         if sync.status in (
             ForwardSyncStatusChoices.FAILED,
@@ -526,6 +573,9 @@ def sync_forwardsync(job, *args, **kwargs):
                 status=JobStatusChoices.STATUS_ERRORED,
                 error=f"Forward sync ended with status {sync.status}.",
             )
+            return
+        if execution_performed is False:
+            terminate_job_once(job)
             return
         _finish_completed_job_with_overlays(job, sync)
     except Exception as exc:
@@ -683,15 +733,20 @@ def _trim_validation_runs(sync):
 
 def _validate_forwardsync_work(job):
     """Run validation for a JobRunner-managed sync job."""
+    from .utilities.api_usage import record_forward_api_usage
+
     sync = ForwardSync.objects.get(pk=job.object_id)
+    client = None
     try:
         sync.logger = SyncLogging(job=job.pk)
+        client = sync.source.get_client()
         validation_run = ForwardValidationRunner(
             sync,
-            sync.source.get_client(),
+            client,
             sync.logger,
             job=job,
         ).run_query_validation()
+        record_forward_api_usage(sync, client)
         safe_save_job_data(job, sync)
         # Keep the job bound to the SYNC. The pre-2.6 rebind of
         # object_type/object_id to the validation run would make JobRunner
@@ -712,6 +767,8 @@ def _validate_forwardsync_work(job):
                 exc_info=True,
             )
     except Exception as exc:
+        if client is not None:
+            record_forward_api_usage(sync, client)
         safe_save_job_data(job, sync)
         if type(exc) in (SyncError, JobTimeoutException):
             logger.error(exc)
@@ -767,21 +824,27 @@ def _refresh_forward_device_analysis_work(job, *args, **kwargs):
 
     sync = ForwardSync.objects.get(pk=job.object_id)
     try:
-        job.data = refresh_device_analysis(
-            sync,
-            snapshot_id=kwargs.get("snapshot_id"),
-            ingestion_id=kwargs.get("ingestion_id"),
+        job.data = _overlay_job_data(
+            refresh_device_analysis(
+                sync,
+                snapshot_id=kwargs.get("snapshot_id"),
+                ingestion_id=kwargs.get("ingestion_id"),
+            ),
+            kwargs,
         )
         job.save(update_fields=["data"])
     except StalePostSyncSnapshotError:
-        _complete_stale_post_sync_overlay(job, sync)
+        _complete_stale_post_sync_overlay(job, sync, **kwargs)
     except Exception as exc:
         # Record the failure on the job so it is visible in the UI (the Data
         # panel) instead of an empty Error field with null data.
-        job.data = {
-            "error": str(exc) or exc.__class__.__name__,
-            "error_type": exc.__class__.__name__,
-        }
+        job.data = _overlay_job_data(
+            {
+                "error": str(exc) or exc.__class__.__name__,
+                "error_type": exc.__class__.__name__,
+            },
+            kwargs,
+        )
         job.save(update_fields=["data"])
         if type(exc) in (SyncError, JobTimeoutException):
             logger.error(exc)
@@ -799,14 +862,22 @@ def _reconcile_forward_device_scope_tags_work(job, *args, **kwargs):
 
     sync = ForwardSync.objects.get(pk=job.object_id)
     try:
-        job.data = tag_backfilled_devices(
-            sync,
-            snapshot_id=kwargs.get("snapshot_id"),
-            ingestion_id=kwargs.get("ingestion_id"),
+        job.data = _overlay_job_data(
+            tag_backfilled_devices(
+                sync,
+                snapshot_id=kwargs.get("snapshot_id"),
+                ingestion_id=kwargs.get("ingestion_id"),
+            ),
+            kwargs,
         )
         job.save(update_fields=["data"])
+        _reconcile_completed_ingestion_catchup(
+            sync,
+            kwargs.get("ingestion_id"),
+            current_job=job,
+        )
     except StalePostSyncSnapshotError:
-        _complete_stale_post_sync_overlay(job, sync)
+        _complete_stale_post_sync_overlay(job, sync, **kwargs)
     except Exception as exc:
         from .models import ForwardOwnershipReconciliation
 
@@ -821,10 +892,13 @@ def _reconcile_forward_device_scope_tags_work(job, *args, **kwargs):
         )
         # Record the failure on the job so it is visible in the UI (the Data
         # panel) instead of an empty Error field with null data.
-        job.data = {
-            "error": str(exc) or exc.__class__.__name__,
-            "error_type": exc.__class__.__name__,
-        }
+        job.data = _overlay_job_data(
+            {
+                "error": str(exc) or exc.__class__.__name__,
+                "error_type": exc.__class__.__name__,
+            },
+            kwargs,
+        )
         job.save(update_fields=["data"])
         if type(exc) in (SyncError, JobTimeoutException):
             logger.error(exc)
@@ -844,16 +918,24 @@ def _link_forward_vsys_parents_work(job, *args, **kwargs):
     sync = ForwardSync.objects.get(pk=job.object_id)
     try:
         client = sync.source.get_client()
-        job.data = link_vsys_parents(
-            sync,
-            client,
-            SyncLogging(),
-            snapshot_id=kwargs.get("snapshot_id"),
-            ingestion_id=kwargs.get("ingestion_id"),
+        job.data = _overlay_job_data(
+            link_vsys_parents(
+                sync,
+                client,
+                SyncLogging(),
+                snapshot_id=kwargs.get("snapshot_id"),
+                ingestion_id=kwargs.get("ingestion_id"),
+            ),
+            kwargs,
         )
         job.save(update_fields=["data"])
+        _reconcile_completed_ingestion_catchup(
+            sync,
+            kwargs.get("ingestion_id"),
+            current_job=job,
+        )
     except StalePostSyncSnapshotError:
-        _complete_stale_post_sync_overlay(job, sync)
+        _complete_stale_post_sync_overlay(job, sync, **kwargs)
     except Exception as exc:
         from .models import ForwardOwnershipReconciliation
 
@@ -863,10 +945,13 @@ def _link_forward_vsys_parents_work(job, *args, **kwargs):
             [ForwardOwnershipReconciliation.Domain.VIRTUAL_PARENTS],
             exc,
         )
-        job.data = {
-            "error": str(exc) or exc.__class__.__name__,
-            "error_type": exc.__class__.__name__,
-        }
+        job.data = _overlay_job_data(
+            {
+                "error": str(exc) or exc.__class__.__name__,
+                "error_type": exc.__class__.__name__,
+            },
+            kwargs,
+        )
         job.save(update_fields=["data"])
         if type(exc) in (SyncError, JobTimeoutException):
             logger.error(exc)
@@ -901,17 +986,22 @@ def _dependency_preview_work(job):
     from .views import _dependency_dry_run_payload
 
     sync = ForwardSync.objects.get(pk=job.object_id)
+    client = None
     try:
         sync.logger = SyncLogging(job=job.pk)
-        payload = _dependency_dry_run_payload(sync)
+        client = sync.source.get_client()
+        payload = _dependency_dry_run_payload(sync, client=client)
         job.data = json_safe_value(payload)
         job.save(update_fields=["data"])
     except Exception as exc:
+        from .utilities.api_usage import record_forward_api_usage
+
         # Record the failure on the job so it is visible in the UI (the Data
         # panel) instead of an empty Error field with null data.
         job.data = {
             "error": str(exc) or exc.__class__.__name__,
             "error_type": exc.__class__.__name__,
+            "forward_api_usage": record_forward_api_usage(sync, client),
         }
         job.save(update_fields=["data"])
         if type(exc) in (SyncError, JobTimeoutException):

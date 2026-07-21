@@ -16,6 +16,7 @@ from extras.models import Tag
 from netbox_branching.utilities import supports_branching
 
 from forward_netbox.choices import ForwardSyncStatusChoices
+from forward_netbox.models import ForwardDeviceIdentity
 from forward_netbox.models import ForwardDeviceTagClaim
 from forward_netbox.models import ForwardIngestion
 from forward_netbox.models import ForwardManagedDeviceTag
@@ -34,6 +35,9 @@ from forward_netbox.utilities.ownership import OwnershipConflictError
 from forward_netbox.utilities.ownership import reconcile_source_device_tag_claims
 from forward_netbox.utilities.ownership import reconcile_sync_scope_tag_claims
 from forward_netbox.utilities.ownership import reconcile_virtual_parent_claims
+from forward_netbox.utilities.ownership import (
+    release_authoritative_device_delete_ownership,
+)
 
 
 class OwnershipControlPlaneTest(TestCase):
@@ -140,6 +144,49 @@ class OwnershipControlPlaneTest(TestCase):
         self.assertFalse(ForwardDeviceTagClaim.objects.exists())
         self.assertFalse(self.device.tags.filter(name="Claim Tag").exists())
 
+    def test_authoritative_delete_releases_exclusive_unclaimed_identity(self):
+        identity = ForwardDeviceIdentity.objects.create(
+            sync=self.sync,
+            ingestion=self.ingestion,
+            source_device_key=self.device.name,
+            device=self.device,
+        )
+
+        result = release_authoritative_device_delete_ownership(
+            self.sync,
+            [self.device.pk],
+        )
+
+        self.assertEqual(result["released_device_ids"], {self.device.pk})
+        self.assertEqual(result["blocked_device_ids"], set())
+        self.assertFalse(ForwardDeviceIdentity.objects.filter(pk=identity.pk).exists())
+
+    def test_authoritative_delete_preserves_claimed_identity(self):
+        identity = ForwardDeviceIdentity.objects.create(
+            sync=self.sync,
+            ingestion=self.ingestion,
+            source_device_key=self.device.name,
+            device=self.device,
+        )
+        tag = Tag.objects.create(name="Delete Protection", slug="delete-protection")
+        claim = ForwardDeviceTagClaim.objects.create(
+            sync=self.sync,
+            ingestion=self.ingestion,
+            device=self.device,
+            tag=tag,
+            claim_type=ForwardDeviceTagClaim.ClaimType.SCOPE,
+        )
+
+        result = release_authoritative_device_delete_ownership(
+            self.sync,
+            [self.device.pk],
+        )
+
+        self.assertEqual(result["released_device_ids"], set())
+        self.assertEqual(result["blocked_device_ids"], {self.device.pk})
+        self.assertTrue(ForwardDeviceIdentity.objects.filter(pk=identity.pk).exists())
+        self.assertTrue(ForwardDeviceTagClaim.objects.filter(pk=claim.pk).exists())
+
     def test_scope_names_with_same_slug_union_their_device_claims(self):
         self.source.parameters = {
             **self.source.parameters,
@@ -177,6 +224,66 @@ class OwnershipControlPlaneTest(TestCase):
         )
         self.assertTrue(self.device.tags.filter(pk=tag.pk).exists())
         self.assertTrue(second.tags.filter(pk=tag.pk).exists())
+
+    def test_scope_reconciliation_reuses_exact_name_with_legacy_slug(self):
+        legacy_tag = Tag.objects.create(
+            name="Claim Tag",
+            slug="operator-legacy-claim-tag",
+            color="00ff00",
+        )
+        operator_device = Device.objects.create(
+            name="operator-tagged-device",
+            device_type=self.device.device_type,
+            role=self.device.role,
+            site=self.device.site,
+        )
+        operator_device.tags.add(legacy_tag)
+
+        result = reconcile_sync_scope_tag_claims(
+            self.sync,
+            {self.device.name: ["Claim Tag"]},
+            generation=self.ingestion.pk,
+            snapshot_id=self.ingestion.snapshot_id,
+        )
+
+        self.assertEqual(result["claims_added"], 1)
+        self.assertEqual(Tag.objects.filter(name="Claim Tag").count(), 1)
+        self.assertFalse(Tag.objects.filter(slug="claim-tag").exists())
+        self.assertTrue(self.device.tags.filter(pk=legacy_tag.pk).exists())
+        self.assertTrue(operator_device.tags.filter(pk=legacy_tag.pk).exists())
+        self.assertTrue(
+            ForwardPreservedDeviceTagAssignment.objects.filter(
+                device=operator_device,
+                tag=legacy_tag,
+            ).exists()
+        )
+
+    def test_scope_reconciliation_rejects_split_name_and_slug_identity(self):
+        name_tag = Tag.objects.create(
+            name="Claim Tag",
+            slug="operator-legacy-claim-tag",
+        )
+        slug_tag = Tag.objects.create(
+            name="Different Tag",
+            slug="claim-tag",
+        )
+
+        with self.assertRaisesMessage(
+            OwnershipConflictError,
+            "Scope tag name `Claim Tag` and normalized slug `claim-tag` identify "
+            "different NetBox tags.",
+        ):
+            reconcile_sync_scope_tag_claims(
+                self.sync,
+                {self.device.name: ["Claim Tag"]},
+                generation=self.ingestion.pk,
+                snapshot_id=self.ingestion.snapshot_id,
+            )
+
+        self.assertFalse(ForwardDeviceTagClaim.objects.exists())
+        self.assertFalse(ForwardManagedDeviceTag.objects.exists())
+        self.assertTrue(Tag.objects.filter(pk=name_tag.pk).exists())
+        self.assertTrue(Tag.objects.filter(pk=slug_tag.pk).exists())
 
     def test_blank_newer_baseline_does_not_supersede_current_generation(self):
         self._complete_status_reconciliation(self.sync, self.ingestion)

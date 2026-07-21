@@ -9,7 +9,9 @@ from dcim.models import DeviceType
 from dcim.models import Manufacturer
 from dcim.models import Site
 from django.core.management import call_command
+from django.db import connection
 from django.test import TestCase
+from django.test import TransactionTestCase
 from extras.models import Tag
 
 from forward_netbox.models import ForwardDeviceTagClaim
@@ -121,6 +123,47 @@ class ForwardDeviceScopeReconciliationAuditCommandTest(TestCase):
         self.assertEqual(payload["out_of_scope_sample"], ["dev-d"])
         self.assertEqual(payload["present_backfilled_sample"], ["dev-c"])
         self.assertIn("device_tag_prune_out_of_scope", payload["remediation"])
+
+    def test_scope_claim_input_excludes_absent_backfilled_devices(self):
+        self.source.parameters = {
+            **self.source.parameters,
+            "apply_device_scope_tags": True,
+        }
+        self.source.save(update_fields=["parameters"])
+        self._make_devices("dev-present")
+        rows = [
+            {
+                "name": "dev-present",
+                "completed": True,
+                "tagNames": ["Prod_Core"],
+            },
+            {
+                "name": "dev-absent-backfilled",
+                "completed": False,
+                "tagNames": ["Prod_Core"],
+            },
+        ]
+        client = Mock()
+        client.run_nqe_query = Mock(return_value=rows)
+        with (
+            patch.object(ForwardSource, "get_client", return_value=client),
+            patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
+        ):
+            from forward_netbox.utilities.scope_reconciliation import (
+                compute_scope_reconciliation,
+            )
+
+            report = compute_scope_reconciliation(self.sync)
+
+        self.assertEqual(report["scope_tag_targets_missing_in_netbox"], 1)
+        self.assertEqual(
+            report["scope_tag_targets_missing_sample"],
+            ["dev-absent-backfilled"],
+        )
+        self.assertEqual(
+            report["_matched_include_tags_by_name"],
+            {"dev-present": ["Prod_Core"]},
+        )
 
     def test_fail_on_drift_exits_nonzero(self):
         self._make_devices("dev-a", "dev-stale")
@@ -464,7 +507,7 @@ class ForwardDeviceScopeReconciliationAuditCommandTest(TestCase):
         )
 
 
-class RoutingDanglingAuditCommandTest(TestCase):
+class RoutingDanglingAuditCommandTest(TransactionTestCase):
     """Exercise the read-only audit with and without the routing plugin."""
 
     def test_skips_cleanly_without_plugin(self):
@@ -488,17 +531,32 @@ class RoutingDanglingAuditCommandTest(TestCase):
         from dcim.models import Device
         from ipam.models import ASN, RIR
 
+        from forward_netbox.utilities.bulk_delete import (
+            DEVICE_GENERIC_RELATION_GUARD_TRIGGER,
+        )
+
         BGPRouter = django_apps.get_model("netbox_routing", "bgprouter")
         device_ct = ContentType.objects.get_for_model(Device)
         asn = ASN.objects.create(
             asn=64513,
             rir=RIR.objects.create(name="Routing Audit Test"),
         )
-        BGPRouter.objects.create(
-            asn=asn,
-            assigned_object_type=device_ct,
-            assigned_object_id=999999,
-        )
+        table_name = connection.ops.quote_name(BGPRouter._meta.db_table)
+        trigger_name = connection.ops.quote_name(DEVICE_GENERIC_RELATION_GUARD_TRIGGER)
+        with connection.cursor() as cursor:
+            cursor.execute(f"ALTER TABLE {table_name} DISABLE TRIGGER {trigger_name}")
+        try:
+            # Seed a pre-0042 legacy row; current writes are guarded by the trigger.
+            BGPRouter.objects.create(
+                asn=asn,
+                assigned_object_type=device_ct,
+                assigned_object_id=999999,
+            )
+        finally:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"ALTER TABLE {table_name} ENABLE TRIGGER {trigger_name}"
+                )
         out = StringIO()
         call_command("forward_routing_dangling_audit", stdout=out)
         payload = json.loads(out.getvalue())

@@ -77,10 +77,9 @@ from workers in the shared runtime even when no production sync is active. All
 alternate test, UI, and artifact projects force a project-scoped named Postgres
 volume; a configured `FORWARD_NETBOX_POSTGRES_DATA_PATH` host bind is never
 inherited. The explicit `FORWARD_NETBOX_ALLOW_SHARED_RUNTIME_TESTS=1` override
-is reserved for intentional operator use. `invoke playwright-test` uses the
-active-sync guard for the deterministic UI harness and moves to an isolated
-compose project when the guard detects an active run or cannot inspect the
-shared runtime.
+is reserved for intentional operator use. `invoke playwright-test` always uses
+an isolated compose project because its deterministic UI fixtures intentionally
+create sources, syncs, ingestions, issues, and jobs.
 
 Use the isolated test runtime when a live ingestion is active or when you want a
 repeatable full regression lane that does not share RQ, Redis, or Postgres with
@@ -187,9 +186,10 @@ logs in through the browser, visits the sync and ingestion workflow pages, and
 writes local screenshots plus a JSON summary under `.playwright-artifacts/`.
 Set `PLAYWRIGHT_SKIP_MIGRATE=true` only when the target database has already been
 migrated by the caller, as in GitHub CI.
-When the shared runtime has an active sync or cannot be inspected, the
-task brings up the temporary `forward-netbox-ui-test` compose project on port
-`18080`; override the port with `FORWARD_NETBOX_PLAYWRIGHT_HOST_PORT` if needed.
+The task brings up the temporary `forward-netbox-ui-test` compose project on an
+available loopback port; set `FORWARD_NETBOX_PLAYWRIGHT_HOST_PORT` when a fixed
+port is required. The fixture command refuses to run outside this isolated
+runtime.
 
 ```bash
 npm ci

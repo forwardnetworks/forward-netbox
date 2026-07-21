@@ -238,7 +238,13 @@ def _enqueue_standing_job(
         )
 
 
-def enqueue_sync_job(sync, adhoc=False, user=None, current_job=None):
+def enqueue_sync_job(
+    sync,
+    adhoc=False,
+    user=None,
+    current_job=None,
+    force_unchanged=False,
+):
     user = _resolve_enqueue_user(sync, user)
     with advisory_lock(ADVISORY_LOCK_KEYS["job-schedules"]):
         sync.refresh_from_db(fields=["status", "scheduled", "interval", "user"])
@@ -270,12 +276,22 @@ def enqueue_sync_job(sync, adhoc=False, user=None, current_job=None):
             None,
         )
         if running is not None:
+            if force_unchanged:
+                raise SyncError(
+                    "Cannot force a same-snapshot re-sync while another sync "
+                    "job is active; wait for the active job to finish and retry."
+                )
             return running
         existing = next(
             (job for job in active_jobs if job.pk != current_job_pk),
             None,
         )
         if existing is not None:
+            if force_unchanged:
+                raise SyncError(
+                    "Cannot force a same-snapshot re-sync while another sync "
+                    "job is active; wait for the active job to finish and retry."
+                )
             return existing
         if sync.status in (
             ForwardSyncStatusChoices.SYNCING,
@@ -293,6 +309,7 @@ def enqueue_sync_job(sync, adhoc=False, user=None, current_job=None):
             user=user,
             name=f"{sync.name} - {'adhoc' if adhoc else 'scheduled'}",
             adhoc=adhoc,
+            force_unchanged=bool(force_unchanged),
             schedule_at=None if adhoc else sync.scheduled,
             interval=None if adhoc else sync.interval,
         )

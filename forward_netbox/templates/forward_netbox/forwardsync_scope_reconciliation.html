@@ -155,8 +155,8 @@
               <td>{{ upgrade_reconciliation.dlm.software_versions.without_devices }}</td>
             </tr>
             <tr>
-              <th scope="row">{% trans "Catalog-retained versions" %}</th>
-              <td>{{ upgrade_reconciliation.dlm.software_versions.catalog_retained_without_devices }}</td>
+              <th scope="row">{% trans "Protected versions without devices" %}</th>
+              <td>{{ upgrade_reconciliation.dlm.software_versions.protected_without_devices }}</td>
             </tr>
             <tr>
               <th scope="row">{% trans "Unreferenced version candidates" %}</th>
@@ -209,15 +209,15 @@
             {% endfor %}
           </ul>
         {% endif %}
-        {% if upgrade_reconciliation.dlm.software_versions.catalog_retained_sample %}
-          <h6>{% trans "Catalog-retained software versions" %}</h6>
+        {% if upgrade_reconciliation.dlm.software_versions.protected_sample %}
+          <h6>{% trans "Protected software versions without devices" %}</h6>
           <ul>
-            {% for item in upgrade_reconciliation.dlm.software_versions.catalog_retained_sample %}
-              <li><code>{{ item.platform__name }} / {{ item.version }}</code> <span class="text-muted">({{ item.retained_by }})</span></li>
+            {% for item in upgrade_reconciliation.dlm.software_versions.protected_sample %}
+              <li><code>{{ item.platform__name }} / {{ item.version }}</code> <span class="text-muted">({{ item.protected_by }})</span></li>
             {% endfor %}
           </ul>
         {% endif %}
-        {% if not upgrade_reconciliation.stale_endpoint_device_types.sample and not upgrade_reconciliation.dlm.software_versions.unreferenced_sample and not upgrade_reconciliation.dlm.software_versions.catalog_retained_sample %}
+        {% if not upgrade_reconciliation.stale_endpoint_device_types.sample and not upgrade_reconciliation.dlm.software_versions.unreferenced_sample and not upgrade_reconciliation.dlm.software_versions.protected_sample %}
           <p class="text-muted mb-0">{% trans "No post-upgrade review candidates." %}</p>
         {% endif %}
       </div>

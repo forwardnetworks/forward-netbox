@@ -412,6 +412,7 @@ def _run_playwright_in_isolated_runtime(context, *, project_name=None, host_port
             context,
             env={
                 "NETBOX_URL": f"http://127.0.0.1:{host_port}",
+                "FORWARD_UI_HARNESS_ISOLATED": "true",
                 "PLAYWRIGHT_DOCKER_PROJECT_NAME": project_name,
                 "PLAYWRIGHT_DOCKER_PROJECT_DIRECTORY": context.forward_netbox.compose_dir,
                 "PLAYWRIGHT_ARTIFACT_DIR": f".playwright-artifacts/{project_name}",
@@ -419,33 +420,6 @@ def _run_playwright_in_isolated_runtime(context, *, project_name=None, host_port
         )
     finally:
         docker_compose(isolated, "down --remove-orphans -v", env=compose_env)
-
-
-def _run_playwright_with_shared_runtime_fallback(context):
-    if _shared_runtime_test_guard_bypassed():
-        _run_playwright_ui(context)
-        return
-
-    active = _shared_runtime_active_syncs(context)
-    if active.get("guard_available") is False:
-        print(
-            "Shared runtime active-sync guard unavailable; "
-            "running Playwright UI tests in isolated runtime for CI safety. "
-            f"Reason: {active.get('reason') or 'unknown'}."
-        )
-        _run_playwright_in_isolated_runtime(context)
-        return
-
-    active_count = int(active.get("active_count") or 0)
-    if active_count <= 0:
-        _run_playwright_ui(context)
-        return
-
-    print(
-        "Active syncs detected in shared runtime; "
-        "running Playwright UI tests in isolated runtime for CI safety."
-    )
-    _run_playwright_in_isolated_runtime(context)
 
 
 def _host_memory_gib():
@@ -947,7 +921,7 @@ def _runtime_capacity_source_parameters(context, source_name):
 
 @task(name="playwright-test")
 def playwright_test(context):
-    _run_playwright_with_shared_runtime_fallback(context)
+    _run_playwright_in_isolated_runtime(context)
 
 
 @task

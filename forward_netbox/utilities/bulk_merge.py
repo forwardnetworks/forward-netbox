@@ -31,7 +31,6 @@ from collections import defaultdict
 
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
-from django.db import connections
 from django.db import DEFAULT_DB_ALIAS
 from django.db import models
 from django.db import OperationalError
@@ -48,6 +47,8 @@ from netbox_branching.utilities import _FILE_NOT_FOUND_EXCEPTIONS
 from netbox_branching.utilities import deactivate_branch
 from rq.timeouts import JobTimeoutException
 from utilities.serialization import deserialize_object
+
+from .bulk_delete import lock_tables_for_writes
 
 # SQL chunk size handed to bulk_create (splits the multi-row INSERT).
 BULK_MERGE_BATCH_SIZE = 1000
@@ -523,10 +524,6 @@ def _deserialize(model_class, collapsed, change_logger):
     return deserialized
 
 
-class _RelationshipWriteBarrierTimeout(RuntimeError):
-    pass
-
-
 def _is_lock_not_available(exc):
     current = exc
     while current is not None:
@@ -553,34 +550,7 @@ def _lock_relationship_writes(model_class, field_names):
             and getattr(descriptor, "through", None) is not None
         }
     )
-    if not through_tables:
-        return
-    database = connections[DEFAULT_DB_ALIAS]
-    if database.vendor != "postgresql":
-        raise RuntimeError("Relationship write barriers require PostgreSQL.")
-    if not database.in_atomic_block:
-        raise RuntimeError("Relationship write barriers require an atomic block.")
-    quoted_tables = ", ".join(
-        database.ops.quote_name(table_name) for table_name in through_tables
-    )
-    for attempt in range(RELATIONSHIP_LOCK_RETRY_ATTEMPTS):
-        try:
-            with transaction.atomic():
-                with database.cursor() as cursor:
-                    cursor.execute(
-                        "LOCK TABLE "
-                        f"{quoted_tables} IN SHARE ROW EXCLUSIVE MODE NOWAIT"
-                    )
-            return
-        except OperationalError as exc:
-            if not _is_lock_not_available(exc):
-                raise
-            if attempt + 1 == RELATIONSHIP_LOCK_RETRY_ATTEMPTS:
-                raise _RelationshipWriteBarrierTimeout(
-                    "Timed out acquiring relationship write barrier for "
-                    f"{model_class._meta.label_lower}."
-                ) from exc
-            time.sleep(_relationship_lock_retry_delay(attempt))
+    lock_tables_for_writes(through_tables, using=DEFAULT_DB_ALIAS)
 
 
 def _retry_row_lock(operation):

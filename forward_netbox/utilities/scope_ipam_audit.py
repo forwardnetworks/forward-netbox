@@ -162,7 +162,6 @@ def audit_model_rows(model_string, rows, *, sample_limit=20):
 def _default_fetch_rows(sync, client, logger, model_string):
     fetcher = ForwardQueryFetcher(sync, client, logger)
     context = fetcher.resolve_context()
-    fetcher.run_preflight(context, model_strings=[model_string])
     workloads = fetcher.fetch_workloads(
         context,
         model_strings=[model_string],

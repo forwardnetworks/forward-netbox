@@ -17,6 +17,14 @@ const dockerProjectName =
   process.env.PLAYWRIGHT_DOCKER_PROJECT_NAME || "forward-netbox";
 const dockerProjectDirectory =
   process.env.PLAYWRIGHT_DOCKER_PROJECT_DIRECTORY || "development";
+const isolatedHarness = process.env.FORWARD_UI_HARNESS_ISOLATED === "true";
+
+if (!isolatedHarness) {
+  throw new Error(
+    "The Playwright UI harness may only run through the isolated " +
+      "`invoke playwright-test` runtime.",
+  );
+}
 
 const dockerComposeArgs = [
   "--project-name",
@@ -25,6 +33,8 @@ const dockerComposeArgs = [
   dockerProjectDirectory,
   "exec",
   "-T",
+  "--env",
+  "FORWARD_UI_HARNESS_ISOLATED=true",
   "netbox",
   "bash",
   "-lc",

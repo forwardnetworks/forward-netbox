@@ -162,6 +162,24 @@ class ForwardIngestionPhaseChoices(ChoiceSet):
     )
 
 
+class ForwardCatchupStatusChoices(ChoiceSet):
+    NOT_APPLICABLE = "not_applicable"
+    PENDING = "pending"
+    CHECKING = "checking"
+    QUEUED = "queued"
+    CURRENT = "current"
+    FAILED = "failed"
+
+    CHOICES = (
+        (NOT_APPLICABLE, _("Not applicable"), "gray"),
+        (PENDING, _("Pending"), "orange"),
+        (CHECKING, _("Checking"), "blue"),
+        (QUEUED, _("Queued"), "cyan"),
+        (CURRENT, _("Current"), "green"),
+        (FAILED, _("Failed"), "red"),
+    )
+
+
 class ForwardValidationStatusChoices(ChoiceSet):
     QUEUED = "queued"
     RUNNING = "running"

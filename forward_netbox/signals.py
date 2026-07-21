@@ -12,8 +12,16 @@ from netbox.constants import ADVISORY_LOCK_KEYS
 from .models import ForwardIngestion
 from .models import ForwardNQEMap
 from .models import ForwardSync
+from .utilities.bulk_delete import install_device_generic_relation_guards
 from .utilities.query_registry import builtin_nqe_map_rows
 from .utilities.query_registry import BUILTIN_OPTIONAL_QUERY_MAPS
+
+
+@receiver(post_migrate)
+def ensure_device_generic_relation_guards(sender, using, **kwargs):
+    if sender.label not in {"forward_netbox", "netbox_routing"}:
+        return
+    install_device_generic_relation_guards(using=using)
 
 
 @receiver(post_migrate)

@@ -38,6 +38,25 @@ class DependencyModelResultSummaryTest(SimpleTestCase):
         summary = _dependency_model_result_summary(self._result(runtime_ms=None))
         self.assertEqual(summary["runtime_ms"], 0.0)
 
+    def test_summary_preserves_only_aggregate_durable_state_diagnostic(self):
+        durable_state = {
+            "type": "durable_workload_state",
+            "mode": "delta",
+            "target_row_count": 306,
+            "staged_upsert_count": 0,
+            "staged_delete_count": 0,
+        }
+        summary = _dependency_model_result_summary(
+            self._result(
+                diagnostics=[
+                    {"type": "row_sample", "device": "private-device"},
+                    durable_state,
+                ]
+            )
+        )
+        self.assertEqual(summary["durable_workload_state"], durable_state)
+        self.assertNotIn("diagnostics", summary)
+
     def test_summary_rejects_noncanonical_plain_dict(self):
         with self.assertRaisesRegex(TypeError, "must be ForwardModelResult"):
             _dependency_model_result_summary(

@@ -127,7 +127,8 @@ class DlmQueryStructureTest(SimpleTestCase):
 
     def test_cve_query_shape(self):
         src = _read_query("forward_dlm_cves.nqe")
-        # Global catalog off the CVE database, keyed on the unique cve_id.
+        # Global catalog metadata is fetched once, then normalized against the
+        # authoritative Vulnerability workload before branch planning.
         self.assertIn("network.cveDatabase.cves", src)
         # This Forward runtime rejects @primaryKey stacked with a parameterized
         # @query before query execution. NetBox coalesce_fields enforce identity.
@@ -555,16 +556,14 @@ class DlmInstalledPluginAssociationTest(TestCase):
         software = report["dlm"]["software_versions"]
         self.assertEqual(software["total"], 3)
         self.assertEqual(software["without_devices"], 2)
-        self.assertEqual(software["catalog_retained_without_devices"], 1)
+        self.assertEqual(software["protected_without_devices"], 1)
         self.assertEqual(software["unreferenced_without_devices"], 1)
         self.assertEqual(
             software["unreferenced_sample"],
             [{"platform__name": "IOS_XE", "version": unreferenced.version}],
         )
-        self.assertEqual(
-            software["catalog_retained_sample"][0]["version"], retained.version
-        )
-        self.assertEqual(software["catalog_retained_sample"][0]["retained_by"], "CVE")
+        self.assertEqual(software["protected_sample"][0]["version"], retained.version)
+        self.assertEqual(software["protected_sample"][0]["protected_by"], "CVE")
 
         cves = report["dlm"]["cves"]
         self.assertEqual(cves["total"], 3)
@@ -572,7 +571,80 @@ class DlmInstalledPluginAssociationTest(TestCase):
         self.assertEqual(cves["with_affected_software"], 1)
         self.assertEqual(cves["unlinked"], 1)
 
-    def test_seeded_259_state_converges_after_two_corrected_adapter_passes(self):
+    def test_cve_delete_clears_derived_links_but_preserves_findings(self):
+        from forward_netbox.utilities.sync_dlm import delete_netbox_dlm_cve
+
+        CVE = apps.get_model("netbox_dlm", "CVE")
+        SoftwareVersion = apps.get_model("netbox_dlm", "SoftwareVersion")
+        derived_only = CVE.objects.create(cve_id="CVE-2026-11001")
+        software_version = SoftwareVersion.objects.create(
+            platform=self.platform,
+            version="17.12.07b",
+        )
+        derived_only.affected_software.add(software_version)
+        linked = CVE.objects.create(cve_id="CVE-2026-11002")
+        Vulnerability = apps.get_model("netbox_dlm", "Vulnerability")
+        Vulnerability.objects.create(
+            cve=linked,
+            software_version=software_version,
+            device=self.vulnerability_device,
+        )
+        runner = self._runner()
+
+        delete_netbox_dlm_cve(runner, {"cve_id": derived_only.cve_id})
+        self.assertFalse(delete_netbox_dlm_cve(runner, {"cve_id": linked.cve_id}))
+
+        self.assertTrue(CVE.objects.filter(pk=linked.pk).exists())
+        self.assertFalse(CVE.objects.filter(pk=derived_only.pk).exists())
+
+    def test_vulnerability_delete_removes_only_obsolete_affected_version(self):
+        from forward_netbox.utilities.sync_dlm import delete_netbox_dlm_vulnerability
+
+        CVE = apps.get_model("netbox_dlm", "CVE")
+        SoftwareVersion = apps.get_model("netbox_dlm", "SoftwareVersion")
+        Vulnerability = apps.get_model("netbox_dlm", "Vulnerability")
+        old_version = SoftwareVersion.objects.create(
+            platform=self.platform,
+            version="17.09.04",
+        )
+        current_version = SoftwareVersion.objects.create(
+            platform=self.platform,
+            version="17.12.07b",
+        )
+        cve = CVE.objects.create(cve_id="CVE-2026-11003")
+        Vulnerability.objects.create(
+            cve=cve,
+            software_version=old_version,
+            device=self.device,
+        )
+        Vulnerability.objects.create(
+            cve=cve,
+            software_version=current_version,
+            device=self.vulnerability_device,
+        )
+        cve.affected_software.add(old_version, current_version)
+
+        deleted = delete_netbox_dlm_vulnerability(
+            self._runner(),
+            {
+                "name": self.device.name,
+                "cve_id": cve.cve_id,
+                "platform_slug": self.platform.slug,
+                "version": old_version.version,
+            },
+        )
+
+        self.assertTrue(deleted)
+        self.assertFalse(
+            Vulnerability.objects.filter(
+                cve=cve,
+                software_version=old_version,
+            ).exists()
+        )
+        self.assertFalse(cve.affected_software.filter(pk=old_version.pk).exists())
+        self.assertTrue(cve.affected_software.filter(pk=current_version.pk).exists())
+
+    def test_corrected_adapters_are_idempotent_before_authoritative_cleanup(self):
         from forward_netbox.utilities.sync_dlm import apply_netbox_dlm_cve
         from forward_netbox.utilities.sync_dlm import apply_netbox_dlm_devicesoftware
         from forward_netbox.utilities.sync_dlm import apply_netbox_dlm_softwareversion

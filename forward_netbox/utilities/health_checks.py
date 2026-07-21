@@ -1,3 +1,4 @@
+from ..choices import ForwardCatchupStatusChoices
 from ..choices import ForwardSourceStatusChoices
 from ..choices import ForwardValidationStatusChoices
 from .ingestion_issues import has_blocking_issues
@@ -447,6 +448,14 @@ def validation_check_message(validation_run):
 def ingestion_check_status(ingestion):
     if ingestion is None:
         return "warn"
+    if ingestion.catchup_status == ForwardCatchupStatusChoices.FAILED:
+        return "fail"
+    if ingestion.catchup_status in {
+        ForwardCatchupStatusChoices.PENDING,
+        ForwardCatchupStatusChoices.CHECKING,
+        ForwardCatchupStatusChoices.QUEUED,
+    }:
+        return "warn"
     if ingestion.failed_change_count:
         return "fail"
     if has_blocking_issues(ingestion):
@@ -461,6 +470,17 @@ def ingestion_check_status(ingestion):
 def ingestion_check_message(ingestion):
     if ingestion is None:
         return "No ingestion has run for this sync."
+    if ingestion.catchup_status == ForwardCatchupStatusChoices.FAILED:
+        return (
+            f"Latest ingestion {ingestion.pk} snapshot catch-up failed "
+            f"({ingestion.catchup_reason or 'unknown reason'})."
+        )
+    if ingestion.catchup_status == ForwardCatchupStatusChoices.PENDING:
+        return f"Latest ingestion {ingestion.pk} snapshot catch-up is pending."
+    if ingestion.catchup_status == ForwardCatchupStatusChoices.CHECKING:
+        return f"Latest ingestion {ingestion.pk} snapshot catch-up is being checked."
+    if ingestion.catchup_status == ForwardCatchupStatusChoices.QUEUED:
+        return f"Latest ingestion {ingestion.pk} queued a newer snapshot catch-up."
     if ingestion.failed_change_count:
         return (
             f"Latest ingestion {ingestion.pk} has "

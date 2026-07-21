@@ -1,5 +1,8 @@
 import json
+import os
+from datetime import timedelta
 from io import StringIO
+from unittest.mock import patch
 
 from core.choices import JobStatusChoices
 from core.models import Job
@@ -208,8 +211,89 @@ class SingleBranchOperatorCommandTest(TestCase):
                 stdout=StringIO(),
             )
 
+    def test_warning_audit_uses_latest_overlay_attempt_for_generation(self):
+        name = f"{self.sync.name} - reconcile device scope tags (auto)"
+        content_type = ContentType.objects.get_for_model(ForwardSync)
+        failed = Job.objects.create(
+            object_type=content_type,
+            object_id=self.sync.pk,
+            name=name,
+            status=JobStatusChoices.STATUS_ERRORED,
+            job_id="123e4567-e89b-12d3-a456-426614174013",
+            created=timezone.now(),
+            data={
+                "forward_ingestion_id": self.ingestion.pk,
+                "logs": [
+                    [
+                        timezone.now().isoformat(),
+                        "error",
+                        self.sync.name,
+                        "",
+                        "Recovered overlay failure.",
+                    ]
+                ],
+            },
+        )
+        recovered = Job.objects.create(
+            object_type=content_type,
+            object_id=self.sync.pk,
+            name=name,
+            status=JobStatusChoices.STATUS_COMPLETED,
+            job_id="123e4567-e89b-12d3-a456-426614174014",
+            created=timezone.now() + timedelta(seconds=1),
+            data={
+                "forward_ingestion_id": self.ingestion.pk,
+                "logs": [],
+            },
+        )
+        output = StringIO()
+
+        call_command(
+            "forward_warning_audit",
+            "--sync-id",
+            str(self.sync.pk),
+            stdout=output,
+        )
+
+        report = json.loads(output.getvalue())
+        self.assertNotIn(failed.pk, report["job_ids"])
+        self.assertIn(recovered.pk, report["job_ids"])
+        self.assertEqual(report["error_count"], 1)
+
+    def test_warning_audit_ignores_pre_ingestion_overlay_without_metadata(self):
+        old_overlay = Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=self.sync.pk,
+            name=f"{self.sync.name} - link vsys/vdom parents (auto)",
+            status=JobStatusChoices.STATUS_ERRORED,
+            job_id="123e4567-e89b-12d3-a456-426614174015",
+            created=timezone.now(),
+            data={"logs": []},
+        )
+        Job.objects.filter(pk=old_overlay.pk).update(
+            created=self.ingestion.created - timedelta(seconds=1)
+        )
+        output = StringIO()
+
+        call_command(
+            "forward_warning_audit",
+            "--sync-id",
+            str(self.sync.pk),
+            stdout=output,
+        )
+
+        report = json.loads(output.getvalue())
+        self.assertNotIn(old_overlay.pk, report["job_ids"])
+
 
 class UIHarnessCommandTest(TestCase):
+    def test_seed_refuses_shared_runtime(self):
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            self.assertRaisesMessage(CommandError, "isolated"),
+        ):
+            call_command("forward_seed_ui_harness", stdout=StringIO())
+
     def test_seed_is_idempotent_and_creates_completed_ownership_evidence(self):
         options = {
             "username": "ui-command-admin",
@@ -221,8 +305,9 @@ class UIHarnessCommandTest(TestCase):
             "stdout": StringIO(),
         }
 
-        call_command("forward_seed_ui_harness", **options)
-        call_command("forward_seed_ui_harness", **options)
+        with patch.dict(os.environ, {"FORWARD_UI_HARNESS_ISOLATED": "true"}):
+            call_command("forward_seed_ui_harness", **options)
+            call_command("forward_seed_ui_harness", **options)
 
         sync = ForwardSync.objects.get(name="ui-command-sync")
         ingestion = ForwardIngestion.objects.get(sync=sync)
