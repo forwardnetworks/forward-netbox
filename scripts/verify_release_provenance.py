@@ -396,6 +396,7 @@ def _require_merged_main_pr(
     token: str,
     *,
     require_trusted_status: bool = True,
+    allow_direct_control_commit: bool = False,
 ) -> dict:
     pulls = _github_pages(f"commits/{commit}/pulls", token)
     matches = [
@@ -406,6 +407,22 @@ def _require_merged_main_pr(
         and pull.get("merge_commit_sha") == commit
     ]
     if len(matches) != 1:
+        if allow_direct_control_commit:
+            changed = {
+                line
+                for line in _git_capture(
+                    "diff",
+                    "--name-only",
+                    f"{commit}^",
+                    commit,
+                ).splitlines()
+                if line
+            }
+            if any(path.startswith("forward_netbox/") for path in changed):
+                raise ProvenanceError(
+                    f"direct release-control commit {commit} changes production code"
+                )
+            return {}
         raise ProvenanceError(
             f"commit {commit} must map to exactly one merged main pull request"
         )
@@ -594,6 +611,7 @@ def verify_release_commit_provenance(
             commit,
             token,
             require_trusted_status=index != 0,
+            allow_direct_control_commit=index < 3,
         )
         for workflow_path in REQUIRED_WORKFLOWS:
             _require_successful_workflow(commit, workflow_path, token)

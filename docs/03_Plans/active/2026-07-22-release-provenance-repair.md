@@ -40,6 +40,8 @@ repair commit through the protected PR flow.
   validation or bypassing the release workflow.
 - Treat GitHub-merged pull-request lineage and required checks as the release
   trust source; historical commit signatures are not consistently available.
+- Permit only the known pre-PR security-control prefix to use direct commit
+  provenance, and reject it if it changes production plugin code.
 
 ## Completion
 
