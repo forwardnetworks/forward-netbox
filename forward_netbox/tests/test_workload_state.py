@@ -1,12 +1,13 @@
-from django.contrib.auth import get_user_model
-from django.test import TestCase
 import hashlib
 from unittest.mock import patch
 
+from django.contrib.auth import get_user_model
+from django.test import TestCase
+
 from forward_netbox.exceptions import ForwardQueryError
-from forward_netbox.models import ForwardIngestion
 from forward_netbox.models import ForwardDeviceIdentity
 from forward_netbox.models import ForwardDeviceTagClaim
+from forward_netbox.models import ForwardIngestion
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.models import ForwardWorkloadState
@@ -33,9 +34,7 @@ def _workload(
         "dcim.interface": [["device", "name"]],
         "netbox_dlm.devicesoftware": [["name"]],
         "netbox_dlm.softwareversion": [["platform_slug", "version"]],
-        "netbox_dlm.vulnerability": [
-            ["cve_id", "platform_slug", "version", "name"]
-        ],
+        "netbox_dlm.vulnerability": [["cve_id", "platform_slug", "version", "name"]],
         "netbox_cisco_aci.acibridgedomain": [["fabric_name", "name"]],
     }.get(model_string, [["cve_id"]])
     return BranchWorkload(
@@ -88,9 +87,7 @@ class DurableWorkloadStateTest(TestCase):
         payload, checksum = encode_state_entries(entries)
 
         self.assertEqual(decode_state_entries(payload, checksum), entries)
-        with self.assertRaisesMessage(
-            ForwardQueryError, "checksum validation failed"
-        ):
+        with self.assertRaisesMessage(ForwardQueryError, "checksum validation failed"):
             decode_state_entries(payload + b"x", checksum)
         truncated = payload[:-1]
         with self.assertRaisesMessage(ForwardQueryError, "payload is invalid"):
@@ -633,7 +630,9 @@ class DurableWorkloadStateTest(TestCase):
             model="Owned Device Type",
             slug="owned-device-type",
         )
-        role = DeviceRole.objects.create(name="Owned Device Role", slug="owned-device-role")
+        role = DeviceRole.objects.create(
+            name="Owned Device Role", slug="owned-device-role"
+        )
         device = Device.objects.create(
             name="stale-device",
             site=site,
@@ -674,7 +673,9 @@ class DurableWorkloadStateTest(TestCase):
         from dcim.models import Site
         from extras.models import Tag
 
-        site = Site.objects.create(name="Claimed Device Site", slug="claimed-device-site")
+        site = Site.objects.create(
+            name="Claimed Device Site", slug="claimed-device-site"
+        )
         manufacturer = Manufacturer.objects.create(
             name="Claimed Device Vendor", slug="claimed-device-vendor"
         )
@@ -784,9 +785,7 @@ class DurableWorkloadStateTest(TestCase):
             ForwardWorkloadState.objects.get(is_current=True).ingestion,
             first,
         )
-        self.assertFalse(
-            ForwardWorkloadState.objects.get(ingestion=second).is_current
-        )
+        self.assertFalse(ForwardWorkloadState.objects.get(ingestion=second).is_current)
         promote_workload_states_locked(second)
         self.assertEqual(
             ForwardWorkloadState.objects.get(is_current=True).ingestion,

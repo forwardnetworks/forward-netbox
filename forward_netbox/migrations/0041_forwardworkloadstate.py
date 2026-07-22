@@ -1,7 +1,7 @@
-from django.db import migrations
-from django.db import models
 import django.db.models.deletion
 import django.utils.timezone
+from django.db import migrations
+from django.db import models
 
 
 fake_on_branch = True

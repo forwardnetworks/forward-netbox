@@ -24,8 +24,8 @@ def normalize_dependency_workloads(
     chassis_serials_by_device, inventory_authoritative = (
         _full_inventory_chassis_serials(workloads)
     )
-    vulnerability_cve_ids, vulnerabilities_authoritative = (
-        _full_vulnerability_cve_ids(workloads)
+    vulnerability_cve_ids, vulnerabilities_authoritative = _full_vulnerability_cve_ids(
+        workloads
     )
     associated_software_versions, software_associations_authoritative = (
         _full_associated_software_versions(workloads)

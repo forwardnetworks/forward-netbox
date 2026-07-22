@@ -61,9 +61,7 @@ def install_guards(apps, schema_editor):
                 continue
             quoted_table = schema_editor.quote_name(table_name)
             quoted_trigger = schema_editor.quote_name(GUARD_TRIGGER)
-            quoted_content_type_column = schema_editor.quote_name(
-                content_type_column
-            )
+            quoted_content_type_column = schema_editor.quote_name(content_type_column)
             quoted_object_id_column = schema_editor.quote_name(object_id_column)
             content_type_argument = content_type_column.replace("'", "''")
             object_id_argument = object_id_column.replace("'", "''")

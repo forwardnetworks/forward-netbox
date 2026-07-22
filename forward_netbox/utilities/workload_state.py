@@ -16,6 +16,8 @@ from .sync_contracts import row_coalesce_field_is_complete
 
 PAYLOAD_VERSION = 2
 STATE_ACTIONS = frozenset({"upsert", "delete"})
+
+
 @dataclass(frozen=True)
 class PendingWorkloadState:
     model_string: str
@@ -143,7 +145,9 @@ def decode_state_entries(payload, checksum):
 
     try:
         for offset in range(0, len(payload), 64 * 1024):
-            line_buffer.extend(decompressor.decompress(payload[offset : offset + 64 * 1024]))
+            line_buffer.extend(
+                decompressor.decompress(payload[offset : offset + 64 * 1024])
+            )
             while b"\n" in line_buffer:
                 raw_line, _, remainder = line_buffer.partition(b"\n")
                 line_buffer = bytearray(remainder)
@@ -255,9 +259,7 @@ def _peer_delete_protection(sync, model_string, identity_contract_hash):
             if value["action"] == "upsert"
         )
         protected_rows.extend(
-            value["row"]
-            for value in entries.values()
-            if value["action"] == "upsert"
+            value["row"] for value in entries.values() if value["action"] == "upsert"
         )
     return protected_identities, unrepresented_peer, protected_rows
 
@@ -283,8 +285,7 @@ def _active_model_rows(sync, workloads, model_string):
         return None
     coalesce_fields = model_workloads[0].coalesce_fields
     if any(
-        workload.coalesce_fields != coalesce_fields
-        for workload in model_workloads[1:]
+        workload.coalesce_fields != coalesce_fields for workload in model_workloads[1:]
     ):
         raise ForwardQueryError(
             f"Parameterized full maps for `{model_string}` disagree on durable identity."
@@ -351,9 +352,7 @@ def _locally_referenced_delete_identities(
             for value in delete_entries.values()
         }
         if association_protection["vulnerability_authoritative"]:
-            linked_cve_ids = (
-                cve_ids & association_protection["vulnerability_cves"]
-            )
+            linked_cve_ids = cve_ids & association_protection["vulnerability_cves"]
         else:
             CVE = apps.get_model("netbox_dlm", "CVE")
             linked_cve_ids = set(
@@ -381,10 +380,7 @@ def _locally_referenced_delete_identities(
                 platform__slug__in={item[0] for item in row_identities},
                 version__in={item[1] for item in row_identities},
             )
-            .filter(
-                Q(image_files__isnull=False)
-                | Q(validated_rules__isnull=False)
-            )
+            .filter(Q(image_files__isnull=False) | Q(validated_rules__isnull=False))
             .values_list("platform__slug", "version")
             .distinct()
         )
@@ -433,8 +429,7 @@ def _claimed_device_delete_identities(delete_entries):
     from ..models import ForwardVirtualParentClaim
 
     names = {
-        str(value["row"].get("name") or "").strip()
-        for value in delete_entries.values()
+        str(value["row"].get("name") or "").strip() for value in delete_entries.values()
     }
     identity_rows = list(
         ForwardDeviceIdentity.objects.filter(source_device_key__in=names).values(
@@ -609,9 +604,9 @@ def apply_durable_workload_deltas(sync, workloads):
     summaries = []
     for model_string, positions in positions_by_model.items():
         model_workloads = [workloads[position] for position in positions]
-        if not all(workload.sync_mode == "full" for workload in model_workloads) or not any(
-            bool(workload.query_parameters) for workload in model_workloads
-        ):
+        if not all(
+            workload.sync_mode == "full" for workload in model_workloads
+        ) or not any(bool(workload.query_parameters) for workload in model_workloads):
             continue
         coalesce_fields = model_workloads[0].coalesce_fields
         if any(
@@ -657,7 +652,9 @@ def apply_durable_workload_deltas(sync, workloads):
                 if identity not in target_entries
             ]
             ownership_delete_identities = {
-                identity for identity in ownership_entries if identity not in target_entries
+                identity
+                for identity in ownership_entries
+                if identity not in target_entries
             }
             explicit_deletes = _deduplicate_rows(
                 model_string,
@@ -685,7 +682,9 @@ def apply_durable_workload_deltas(sync, workloads):
                 if identity not in target_entries
             ]
             catalog_delete_identities = {
-                identity for identity in catalog_entries if identity not in target_entries
+                identity
+                for identity in catalog_entries
+                if identity not in target_entries
             }
             explicit_deletes = _deduplicate_rows(
                 model_string,
@@ -744,9 +743,7 @@ def apply_durable_workload_deltas(sync, workloads):
             identity in explicit_delete_entries
             for identity in bootstrap_delete_identities
         )
-        explicit_deletes = [
-            value["row"] for value in explicit_delete_entries.values()
-        ]
+        explicit_deletes = [value["row"] for value in explicit_delete_entries.values()]
         if compatible:
             previous_entries = decode_state_entries(
                 current_state.payload,
@@ -905,10 +902,14 @@ def promote_workload_states_locked(ingestion):
         .order_by("model_string")
     )
     for state in pending:
-        old_states = ForwardWorkloadState.objects.select_for_update().filter(
-            sync=ingestion.sync,
-            model_string=state.model_string,
-        ).exclude(pk=state.pk)
+        old_states = (
+            ForwardWorkloadState.objects.select_for_update()
+            .filter(
+                sync=ingestion.sync,
+                model_string=state.model_string,
+            )
+            .exclude(pk=state.pk)
+        )
         old_states.filter(is_current=True).update(is_current=False)
         state.is_current = True
         state.save(update_fields=["is_current"])
