@@ -6037,7 +6037,7 @@ class ForwardSyncRunnerTest(TestCase):
 
         self.assertEqual(
             issue.coalesce_fields,
-            {"type": "mapping", "fields": ["device", "site"]},
+            {"type": "mapping", "fields": ["site"]},
         )
         self.assertEqual(issue.defaults, {"type": "mapping", "fields": ["router"]})
         self.assertEqual(

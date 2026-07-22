@@ -163,6 +163,7 @@ jobs:
             --network-id \"${VAL_NETID}\" \
             --repository org \
             --directory /forward_netbox_validation/ \
+            --repair \
             --fail-on-gap"
       - name: Build release artifacts
         run: python -m build

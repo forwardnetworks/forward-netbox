@@ -307,6 +307,7 @@ def record_issue(
     # device type / device is a unique message, so record_issue's dedup never
     # merges them). Keep the first N as detail, then count the rest into one
     # summary issue emitted by emit_dependency_skip_issue_summary.
+    dependency_skip_detail_number = None
     if exception_name == "ForwardDependencySkipError" and not (context or {}).get(
         "dependency_skip_summary"
     ):
@@ -327,6 +328,9 @@ def record_issue(
                     obj=runner.ingestion,
                 )
             return None
+        # Redacted diagnostics cannot distinguish different dependency rows.
+        # Use the bounded sequence number only for in-memory deduplication.
+        dependency_skip_detail_number = seen
     message = f"{model_string} row processing failed ({exception_name})."
     context_data = diagnostic_shape(dict(context or {}))
     defaults_data = diagnostic_shape(dict(defaults or {}))
@@ -339,6 +343,7 @@ def record_issue(
         str(message),
         str(sorted(context_data.items())),
         str(sorted(defaults_data.items())),
+        dependency_skip_detail_number,
     )
     if issue_key in runner._recorded_issue_ids:
         existing = ForwardIngestionIssue.objects.filter(
