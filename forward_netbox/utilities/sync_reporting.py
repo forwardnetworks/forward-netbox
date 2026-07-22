@@ -333,7 +333,11 @@ def record_issue(
         # Redacted diagnostics cannot distinguish different dependency rows.
         # Use the bounded sequence number only for in-memory deduplication.
         dependency_skip_detail_number = seen
-    message = f"{model_string} row processing failed ({exception_name})."
+    message = (
+        message
+        if is_dependency_skip_summary
+        else f"{model_string} row processing failed ({exception_name})."
+    )
     context_data = (
         json_safe_value(context or {})
         if is_dependency_skip_summary
