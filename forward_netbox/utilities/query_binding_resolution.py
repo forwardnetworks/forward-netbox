@@ -697,6 +697,7 @@ def publish_builtin_nqe_map_queries(
     overwrite: bool = False,
     commit_message: str = "",
     pin_commit: bool = False,
+    publish_all_when_empty: bool = False,
 ) -> list[NQEMapBinding]:
     queryset = (
         queryset
@@ -707,6 +708,11 @@ def publish_builtin_nqe_map_queries(
     map_query_paths = {}
     publish_filenames = []
     results = []
+    if not selected_maps and publish_all_when_empty:
+        publish_filenames = [
+            str(query_default["filename"])
+            for query_default in builtin_query_defaults_for_validation()
+        ]
     for query_map in selected_maps:
         query_default, skipped_reason = builtin_query_default_for_map(query_map)
         if query_default is None:
@@ -727,7 +733,7 @@ def publish_builtin_nqe_map_queries(
         if filename not in publish_filenames:
             publish_filenames.append(filename)
 
-    if not map_query_paths:
+    if not map_query_paths and not publish_filenames:
         return results
 
     query_index = client.get_nqe_repository_query_index(

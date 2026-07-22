@@ -124,6 +124,7 @@ class Command(BaseCommand):
                 overwrite=bool(options.get("overwrite")),
                 commit_message=options["commit_message"],
                 pin_commit=True,
+                publish_all_when_empty=True,
             )
 
         report = builtin_query_repository_sync_summary(

@@ -308,8 +308,10 @@ def record_issue(
     # merges them). Keep the first N as detail, then count the rest into one
     # summary issue emitted by emit_dependency_skip_issue_summary.
     dependency_skip_detail_number = None
-    if exception_name == "ForwardDependencySkipError" and not (context or {}).get(
-        "dependency_skip_summary"
+    is_dependency_skip_summary = bool((context or {}).get("dependency_skip_summary"))
+    if (
+        exception_name == "ForwardDependencySkipError"
+        and not is_dependency_skip_summary
     ):
         seen = runner._dependency_skip_issue_counts.get(model_string, 0) + 1
         runner._dependency_skip_issue_counts[model_string] = seen
@@ -332,7 +334,11 @@ def record_issue(
         # Use the bounded sequence number only for in-memory deduplication.
         dependency_skip_detail_number = seen
     message = f"{model_string} row processing failed ({exception_name})."
-    context_data = diagnostic_shape(dict(context or {}))
+    context_data = (
+        json_safe_value(context or {})
+        if is_dependency_skip_summary
+        else diagnostic_shape(dict(context or {}))
+    )
     defaults_data = diagnostic_shape(dict(defaults or {}))
     raw_data = diagnostic_shape(row or {})
     issue_key = (
