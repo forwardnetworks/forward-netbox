@@ -1182,7 +1182,6 @@ class MergeIssueRecorderTest(TestCase):
         exc = Exception("Save with update_fields did not affect any rows.")
         recorder.record(
             model_string="dcim.modulebay",
-            message="Failed to apply change 1 (create dcim.modulebay: 1)",
             exc=exc,
         )
 
@@ -1191,7 +1190,9 @@ class MergeIssueRecorderTest(TestCase):
         issue = issues[0]
         self.assertEqual(issue.model, "dcim.modulebay")
         self.assertEqual(issue.exception, "Exception")
-        self.assertIn("Failed to apply change 1", issue.message)
+        self.assertEqual(issue.message, "Merge for dcim.modulebay failed (Exception).")
+        self.assertEqual(issue.raw_data, {})
+        self.assertNotIn("Save with update_fields", issue.message)
         self.assertTrue(has_blocking_issues(self.ingestion))
 
     def test_synced_model_failures_recorded_per_change(self):
@@ -1200,12 +1201,10 @@ class MergeIssueRecorderTest(TestCase):
         recorder = _MergeIssueRecorder(self.ingestion, None)
         recorder.record(
             model_string="dcim.device",
-            message="Failed to apply change 1 (create dcim.device: 1)",
             exc=ValueError("boom"),
         )
         recorder.record(
             model_string="dcim.device",
-            message="Failed to apply change 2 (create dcim.device: 2)",
             exc=ValueError("boom2"),
         )
         device_issues = list(self.ingestion.issues.filter(model="dcim.device"))

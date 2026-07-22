@@ -1,5 +1,4 @@
 import logging
-import traceback
 from datetime import datetime
 from datetime import timedelta
 
@@ -27,6 +26,9 @@ from .exceptions import ForwardSyncError
 from .models import ForwardIngestion
 from .models import ForwardIngestionIssue
 from .models import ForwardSync
+from .utilities.diagnostics import exception_type
+from .utilities.diagnostics import REDACTED_DIAGNOSTIC
+from .utilities.diagnostics import safe_operation_failure
 from .utilities.job_queue import enqueue_forward_job
 from .utilities.json_safe import json_safe_value
 from .utilities.logging import SyncLogging
@@ -98,7 +100,11 @@ def safe_save_job_data(job, obj_with_logger):
     except JobTimeoutException:
         raise
     except Exception as exc:
-        logger.warning("Failed to save job data for job %s: %s", job.pk, exc)
+        logger.warning(
+            "Failed to save job data for job %s (%s).",
+            job.pk,
+            exception_type(exc),
+        )
 
 
 def start_job_once(job):
@@ -148,7 +154,7 @@ def _merge_job_runtime_evidence(persisted_job, job, *, worker_error=None):
             )
         merged_data = {
             **merged_data,
-            "worker_terminal_error": str(worker_error),
+            "worker_terminal_error": REDACTED_DIAGNOSTIC,
         }
     if merged_data != persisted_job.data:
         persisted_job.data = merged_data
@@ -433,9 +439,10 @@ def _enqueue_post_sync_overlays(
     except JobTimeoutException:
         raise
     except Exception as exc:
-        logger.exception(
-            "Durable post-sync ownership dispatch failed for ForwardSync %s.",
+        logger.error(
+            "Durable post-sync ownership dispatch failed for ForwardSync %s (%s).",
             sync.pk,
+            exception_type(exc),
         )
         raise ForwardOwnershipDispatchError(
             "Ownership reconciliation is durable but could not be enqueued; "
@@ -458,14 +465,15 @@ def _finish_completed_job_with_overlays(
             ingestion_id=ingestion_id,
         )
     except ForwardOwnershipDispatchError as exc:
+        message = safe_operation_failure("Ownership reconciliation dispatch", exc)
         if getattr(sync, "logger", None) is None:
             sync.logger = SyncLogging(job=job.pk)
-        sync.logger.log_failure(str(exc), obj=sync)
+        sync.logger.log_failure(message, obj=sync)
         safe_save_job_data(job, sync)
         terminate_job_once(
             job,
             status=JobStatusChoices.STATUS_ERRORED,
-            error=str(exc),
+            error=message,
         )
         return False
     if not dispatch.get("domains") and dispatch.get("ingestion_id") is not None:
@@ -495,11 +503,12 @@ def _reconcile_completed_ingestion_catchup(sync, ingestion_id, *, current_job=No
         )
     except JobTimeoutException:
         raise
-    except Exception:
-        logger.exception(
+    except Exception as exc:
+        logger.error(
             "Snapshot catch-up check failed after ownership convergence for "
-            "ForwardIngestion %s; durable recovery will retry it.",
+            "ForwardIngestion %s; durable recovery will retry it (%s).",
             ingestion_id,
+            exception_type(exc),
         )
         return {"checked": False, "reason": "catchup_failed", "job_id": None}
 
@@ -544,10 +553,11 @@ def _complete_stale_post_sync_overlay(job, sync, **kwargs):
                 ingestion_id=latest_ingestion_id,
                 exclude_job_id=job.pk,
             )
-        except ForwardOwnershipDispatchError:
-            logger.exception(
-                "Latest ownership generation remains pending after stale overlay %s.",
+        except ForwardOwnershipDispatchError as exc:
+            logger.error(
+                "Latest ownership generation remains pending after stale overlay %s (%s).",
                 job.pk,
+                exception_type(exc),
             )
             return
 
@@ -608,12 +618,16 @@ def sync_forwardsync(job, *args, **kwargs):
             (ForwardSyncError, SyncError, JobTimeoutException),
         )
         if expected_failure:
-            logger.error(exc)
+            logger.error(
+                "Forward sync failed for ForwardSync %s (%s).",
+                sync.pk,
+                exception_type(exc),
+            )
         safe_save_job_data(job, sync)
         terminate_job_once(
             job,
             status=JobStatusChoices.STATUS_ERRORED,
-            error=repr(exc),
+            error=safe_operation_failure("Forward sync", exc),
         )
         if timeout:
             raise
@@ -693,11 +707,11 @@ def _reconcile_sync_run_schedules(sync, job, *, adhoc):
         reconcile_standing_schedules(sync)
     except JobTimeoutException:
         raise
-    except Exception:
+    except Exception as exc:
         logger.warning(
-            "Standing-schedule reconcile failed for ForwardSync %s.",
+            "Standing-schedule reconcile failed for ForwardSync %s (%s).",
             sync.pk,
-            exc_info=True,
+            exception_type(exc),
         )
 
 
@@ -759,19 +773,23 @@ def _validate_forwardsync_work(job):
             _trim_validation_runs(sync)
         except JobTimeoutException:
             raise
-        except Exception:
+        except Exception as exc:
             # Housekeeping must never mark a successful validation ERRORED.
             logger.warning(
-                "Validation-run retention trim failed for sync %s.",
+                "Validation-run retention trim failed for sync %s (%s).",
                 sync.pk,
-                exc_info=True,
+                exception_type(exc),
             )
     except Exception as exc:
         if client is not None:
             record_forward_api_usage(sync, client)
         safe_save_job_data(job, sync)
         if type(exc) in (SyncError, JobTimeoutException):
-            logger.error(exc)
+            logger.error(
+                "Forward validation failed for sync %s (%s).",
+                sync.pk,
+                exception_type(exc),
+            )
         raise
 
 
@@ -800,20 +818,29 @@ def _prune_forward_orphans_work(job):
         }
         job.save(update_fields=["data"])
     except EmptyForwardScopeError as exc:
-        job.data = {"error": str(exc)}
+        job.data = {
+            "error": safe_operation_failure("Forward orphan pruning", exc),
+            "error_type": exception_type(exc),
+        }
         job.save(update_fields=["data"])
-        logger.error(exc)
+        logger.error(
+            "Forward orphan pruning rejected an empty scope (%s).",
+            exception_type(exc),
+        )
         raise
     except Exception as exc:
         # Record the failure on the job so it is visible in the UI (the Data panel)
         # instead of an empty Error field with null data.
         job.data = {
-            "error": str(exc) or exc.__class__.__name__,
-            "error_type": exc.__class__.__name__,
+            "error": safe_operation_failure("Forward orphan pruning", exc),
+            "error_type": exception_type(exc),
         }
         job.save(update_fields=["data"])
         if type(exc) in (SyncError, JobTimeoutException):
-            logger.error(exc)
+            logger.error(
+                "Forward orphan pruning failed (%s).",
+                exception_type(exc),
+            )
         raise
 
 
@@ -840,14 +867,17 @@ def _refresh_forward_device_analysis_work(job, *args, **kwargs):
         # panel) instead of an empty Error field with null data.
         job.data = _overlay_job_data(
             {
-                "error": str(exc) or exc.__class__.__name__,
-                "error_type": exc.__class__.__name__,
+                "error": safe_operation_failure("Forward device analysis", exc),
+                "error_type": exception_type(exc),
             },
             kwargs,
         )
         job.save(update_fields=["data"])
         if type(exc) in (SyncError, JobTimeoutException):
-            logger.error(exc)
+            logger.error(
+                "Forward device analysis failed (%s).",
+                exception_type(exc),
+            )
         raise
 
 
@@ -894,14 +924,17 @@ def _reconcile_forward_device_scope_tags_work(job, *args, **kwargs):
         # panel) instead of an empty Error field with null data.
         job.data = _overlay_job_data(
             {
-                "error": str(exc) or exc.__class__.__name__,
-                "error_type": exc.__class__.__name__,
+                "error": safe_operation_failure("Forward scope reconciliation", exc),
+                "error_type": exception_type(exc),
             },
             kwargs,
         )
         job.save(update_fields=["data"])
         if type(exc) in (SyncError, JobTimeoutException):
-            logger.error(exc)
+            logger.error(
+                "Forward scope reconciliation failed (%s).",
+                exception_type(exc),
+            )
         raise
 
 
@@ -947,14 +980,17 @@ def _link_forward_vsys_parents_work(job, *args, **kwargs):
         )
         job.data = _overlay_job_data(
             {
-                "error": str(exc) or exc.__class__.__name__,
-                "error_type": exc.__class__.__name__,
+                "error": safe_operation_failure("Forward parent reconciliation", exc),
+                "error_type": exception_type(exc),
             },
             kwargs,
         )
         job.save(update_fields=["data"])
         if type(exc) in (SyncError, JobTimeoutException):
-            logger.error(exc)
+            logger.error(
+                "Forward parent reconciliation failed (%s).",
+                exception_type(exc),
+            )
         raise
 
 
@@ -972,12 +1008,17 @@ def _tag_delete_eligible_ipam_work(job):
         # Record the failure on the job so it is visible in the UI (the Data
         # panel) instead of an empty Error field with null data.
         job.data = {
-            "error": str(exc) or exc.__class__.__name__,
-            "error_type": exc.__class__.__name__,
+            "error": safe_operation_failure(
+                "Forward delete-eligibility reconciliation", exc
+            ),
+            "error_type": exception_type(exc),
         }
         job.save(update_fields=["data"])
         if type(exc) in (SyncError, JobTimeoutException):
-            logger.error(exc)
+            logger.error(
+                "Forward delete-eligibility reconciliation failed (%s).",
+                exception_type(exc),
+            )
         raise
 
 
@@ -999,13 +1040,16 @@ def _dependency_preview_work(job):
         # Record the failure on the job so it is visible in the UI (the Data
         # panel) instead of an empty Error field with null data.
         job.data = {
-            "error": str(exc) or exc.__class__.__name__,
-            "error_type": exc.__class__.__name__,
+            "error": safe_operation_failure("Forward dependency preview", exc),
+            "error_type": exception_type(exc),
             "forward_api_usage": record_forward_api_usage(sync, client),
         }
         job.save(update_fields=["data"])
         if type(exc) in (SyncError, JobTimeoutException):
-            logger.error(exc)
+            logger.error(
+                "Forward dependency preview failed (%s).",
+                exception_type(exc),
+            )
         raise
 
 
@@ -1127,13 +1171,20 @@ def merge_forwardingestion(
         partial_merge = isinstance(exc, ForwardPartialMergeError)
         merge_not_ready_retryable = _is_merge_not_ready_retryable(exc)
         if not (timeout or partial_merge or merge_not_ready_retryable):
-            logger.exception(
-                "Error during merge for ForwardIngestion %s: %s", ingestion.pk, exc
+            logger.error(
+                "Error during merge for ForwardIngestion %s (%s).",
+                ingestion.pk,
+                exception_type(exc),
             )
         if partial_merge:
+            message = (
+                f"Forward merge incomplete: {exc.applied} applied, "
+                f"{exc.failed} failed. The branch remains ready for inspection "
+                "and retry."
+            )
             if getattr(ingestion.sync, "logger", None) is None:
                 ingestion.sync.logger = SyncLogging(job=job.pk)
-            ingestion.sync.logger.log_failure(str(exc), obj=ingestion)
+            ingestion.sync.logger.log_failure(message, obj=ingestion)
             ingestion.sync.status = ForwardSyncStatusChoices.READY_TO_MERGE
             ForwardSync.objects.filter(pk=ingestion.sync.pk).update(
                 status=ForwardSyncStatusChoices.READY_TO_MERGE
@@ -1142,15 +1193,19 @@ def merge_forwardingestion(
             terminate_job_once(
                 job,
                 status=JobStatusChoices.STATUS_ERRORED,
-                error=str(exc),
+                error=message,
             )
-            logger.error(exc)
+            logger.error(
+                "Forward merge remained retryable for ForwardIngestion %s (%s).",
+                ingestion.pk,
+                exception_type(exc),
+            )
             return
         if timeout or merge_not_ready_retryable:
             message = (
                 "Forward merge job timed out. Increase RQ worker timeout and rerun the merge."
                 if timeout
-                else str(exc)
+                else "The Forward branch is not ready to merge."
             )
             outcome, branch_status, transitioned = _resolve_authoritative_merge_failure(
                 ingestion,
@@ -1207,7 +1262,11 @@ def merge_forwardingestion(
                 status=JobStatusChoices.STATUS_ERRORED,
                 error=message,
             )
-            logger.warning(exc)
+            logger.warning(
+                "Forward merge interrupted for ForwardIngestion %s (%s).",
+                ingestion.pk,
+                exception_type(exc),
+            )
             if timeout:
                 raise
             return
@@ -1218,7 +1277,7 @@ def merge_forwardingestion(
         if outcome == "finalization":
             message = (
                 "Forward branch merge was applied, but post-merge finalization "
-                f"requires recovery: {exc}"
+                f"requires recovery ({exception_type(exc)})."
             )
             if getattr(ingestion.sync, "logger", None) is None:
                 ingestion.sync.logger = SyncLogging(job=job.pk)
@@ -1229,15 +1288,19 @@ def merge_forwardingestion(
                 status=JobStatusChoices.STATUS_ERRORED,
                 error=message,
             )
-            logger.error(message)
+            logger.error(
+                "Forward merge requires finalization recovery for ingestion %s (%s).",
+                ingestion.pk,
+                exception_type(exc),
+            )
             return
         if outcome == "finalized":
             message = (
                 "Forward merge finalization completed before the failed job "
-                f"unwound; the completed sync state was preserved: {exc}"
+                f"unwound; the completed sync state was preserved ({exception_type(exc)})."
             )
         else:
-            message = f"Forward merge job failed: {exc}"
+            message = safe_operation_failure("Forward merge job", exc)
             if transitioned and branch_status == BranchStatusChoices.FAILED:
                 ingestion.sync.logger.log_failure(
                     "Marked the authoritative Branching branch failed after a "
@@ -1253,10 +1316,12 @@ def merge_forwardingestion(
             status=JobStatusChoices.STATUS_ERRORED,
             error=message,
         )
-        if type(exc) in (SyncError, JobTimeoutException):
-            logger.error(exc)
-        else:
-            raise
+        logger.error(
+            "Forward merge failed for ForwardIngestion %s (%s).",
+            ingestion.pk,
+            exception_type(exc),
+        )
+        return
 
 
 def _claim_ingestion_merge_job(ingestion, job):
@@ -1471,11 +1536,11 @@ def _reconcile_terminal_standing_schedule(job):
         )
     except JobTimeoutException:
         raise
-    except Exception:
+    except Exception as exc:
         logger.warning(
-            "Standing-schedule recovery failed for terminal job %s.",
+            "Standing-schedule recovery failed for terminal job %s (%s).",
             job.pk,
-            exc_info=True,
+            exception_type(exc),
         )
 
 
@@ -1509,25 +1574,34 @@ class ForwardJobRunner(JobRunner):
                 {
                     "levelno": logging.ERROR,
                     "levelname": "ERROR",
-                    "msg": traceback.format_exc(),
+                    "msg": safe_operation_failure("Forward job", exc),
                 }
             )
             job.log(traceback_record)
             status = JobStatusChoices.STATUS_ERRORED
-            error = repr(exc)
-            logger.error(exc)
+            error = safe_operation_failure("Forward job", exc)
+            logger.error(
+                "Forward job %s timed out (%s).",
+                job.pk,
+                exception_type(exc),
+            )
             raise
         except Exception as exc:  # noqa: BLE001 - preserve NetBox JobRunner semantics
             traceback_record = logging.makeLogRecord(
                 {
                     "levelno": logging.ERROR,
                     "levelname": "ERROR",
-                    "msg": traceback.format_exc(),
+                    "msg": safe_operation_failure("Forward job", exc),
                 }
             )
             job.log(traceback_record)
             status = JobStatusChoices.STATUS_ERRORED
-            error = repr(exc)
+            error = safe_operation_failure("Forward job", exc)
+            logger.error(
+                "Forward job %s failed (%s).",
+                job.pk,
+                exception_type(exc),
+            )
         finally:
             if standing:
                 # Termination and desired-state reconciliation are one critical

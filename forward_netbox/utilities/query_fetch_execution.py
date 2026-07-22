@@ -1,5 +1,4 @@
 import json
-import re
 import time
 from concurrent.futures import as_completed
 from concurrent.futures import ThreadPoolExecutor
@@ -127,47 +126,8 @@ def _nqe_string_literal(value: str) -> str:
 DEFAULT_SAMPLE_ROW_LIMIT = 5
 
 
-_SENSITIVE_EXCEPTION_PATTERNS = (
-    (
-        re.compile(
-            r"([?&](?:networkId|snapshotId|queryId|commitId)=)[^&\s\"']+",
-            re.IGNORECASE,
-        ),
-        r"\1<redacted>",
-    ),
-    (
-        re.compile(
-            r"\b(network(?:[ _-]?id)?|snapshot(?:[ _-]?id)?|query(?:[ _-]?id)?|commit(?:[ _-]?id)?)"
-            r"(\b[\"']?\s*[:=]\s*[\"']?)([^,\s\"'}]+)",
-            re.IGNORECASE,
-        ),
-        r"\1\2<redacted>",
-    ),
-    (
-        re.compile(
-            r"(/(?:networks|snapshots|nqe/queries)/)([^/?#\s\"']+)",
-            re.IGNORECASE,
-        ),
-        r"\1<redacted>",
-    ),
-    (
-        re.compile(
-            r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b",
-            re.IGNORECASE,
-        ),
-        "<redacted-email>",
-    ),
-    (re.compile(r"\b\d{5,}\b"), "<redacted-number>"),
-)
-
-
 def _safe_exception_summary(exc: Exception) -> str:
-    message = str(exc or "").strip()
-    if not message:
-        return exc.__class__.__name__
-    for pattern, replacement in _SENSITIVE_EXCEPTION_PATTERNS:
-        message = pattern.sub(replacement, message)
-    return message
+    return f"{exc.__class__.__name__}."
 
 
 @dataclass(frozen=True)

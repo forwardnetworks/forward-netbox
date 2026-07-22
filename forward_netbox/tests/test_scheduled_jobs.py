@@ -504,7 +504,8 @@ class JobRunnerHandleLifecycleTest(TestCase):
             ValidationJob.handle(job)
         job.refresh_from_db()
         self.assertEqual(job.status, JobStatusChoices.STATUS_ERRORED)
-        self.assertIn("boom", job.error)
+        self.assertIn("ValueError", job.error)
+        self.assertNotIn("boom", job.error)
 
     def test_preview_runner_records_sync_error(self):
         from core.exceptions import SyncError

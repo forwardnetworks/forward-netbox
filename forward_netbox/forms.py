@@ -344,18 +344,25 @@ class ForwardSourceForm(NetBoxModelForm):
             label="Verify",
             help_text="Certificate validation. Uncheck only for custom deployments using self-signed certificates.",
         )
+        source_saved = bool(self.instance.pk)
         self.fields["network_id"] = forms.ChoiceField(
             required=True,
             label="Network",
             choices=(),
-            widget=APISelect(api_url="/api/plugins/forward/source/available-networks/"),
+            widget=(
+                APISelect(api_url="/api/plugins/forward/source/available-networks/")
+                if source_saved
+                else forms.TextInput(attrs={"class": "form-control"})
+            ),
             help_text="Forward network used as the default for syncs using this source.",
         )
         self.fields["device_tag_include_tags"] = FlexibleMultipleChoiceField(
             required=False,
             choices=(),
-            widget=APISelectMultiple(
-                api_url="/api/plugins/forward/source/available-tags/"
+            widget=(
+                APISelectMultiple(api_url="/api/plugins/forward/source/available-tags/")
+                if source_saved
+                else forms.SelectMultiple()
             ),
             label="Device Tags Include",
             help_text=(
@@ -365,8 +372,10 @@ class ForwardSourceForm(NetBoxModelForm):
         self.fields["device_tag_exclude_tags"] = FlexibleMultipleChoiceField(
             required=False,
             choices=(),
-            widget=APISelectMultiple(
-                api_url="/api/plugins/forward/source/available-tags/"
+            widget=(
+                APISelectMultiple(api_url="/api/plugins/forward/source/available-tags/")
+                if source_saved
+                else forms.SelectMultiple()
             ),
             label="Device Tags Exclude",
             help_text=(
@@ -449,8 +458,10 @@ class ForwardSourceForm(NetBoxModelForm):
         self.fields["sync_device_tags"] = FlexibleMultipleChoiceField(
             required=False,
             choices=(),
-            widget=APISelectMultiple(
-                api_url="/api/plugins/forward/source/available-tags/"
+            widget=(
+                APISelectMultiple(api_url="/api/plugins/forward/source/available-tags/")
+                if source_saved
+                else forms.SelectMultiple()
             ),
             label="Sync Device Tags",
             help_text=(
@@ -459,64 +470,25 @@ class ForwardSourceForm(NetBoxModelForm):
                 "Independent of the include/exclude scope filters above."
             ),
         )
-        _configure_api_select(
-            self.fields["network_id"].widget,
-            {
-                "type": "$type",
-                "url": "$url",
-                "username": "$username",
-                "password": "$password",
-                "verify": "$verify",
-            },
-        )
         self.fields["device_tag_include_tags"].widget.attrs["multiple"] = "multiple"
         self.fields["device_tag_exclude_tags"].widget.attrs["multiple"] = "multiple"
         self.fields["sync_device_tags"].widget.attrs["multiple"] = "multiple"
-        _configure_api_select(
-            self.fields["device_tag_include_tags"].widget,
-            {
-                "type": "$type",
-                "url": "$url",
-                "username": "$username",
-                "password": "$password",
-                "verify": "$verify",
-                "network_id": "$network_id",
-            },
-        )
-        _configure_api_select(
-            self.fields["device_tag_exclude_tags"].widget,
-            {
-                "type": "$type",
-                "url": "$url",
-                "username": "$username",
-                "password": "$password",
-                "verify": "$verify",
-                "network_id": "$network_id",
-            },
-        )
-        _configure_api_select(
-            self.fields["sync_device_tags"].widget,
-            {
-                "type": "$type",
-                "url": "$url",
-                "username": "$username",
-                "password": "$password",
-                "verify": "$verify",
-                "network_id": "$network_id",
-            },
-        )
         if self.instance.pk:
-            self.fields["network_id"].widget.add_query_param(
-                "source_id", self.instance.pk
+            _configure_api_select(
+                self.fields["network_id"].widget,
+                {"source_id": self.instance.pk},
             )
-            self.fields["device_tag_include_tags"].widget.add_query_param(
-                "source_id", self.instance.pk
+            _configure_api_select(
+                self.fields["device_tag_include_tags"].widget,
+                {"source_id": self.instance.pk, "network_id": "$network_id"},
             )
-            self.fields["device_tag_exclude_tags"].widget.add_query_param(
-                "source_id", self.instance.pk
+            _configure_api_select(
+                self.fields["device_tag_exclude_tags"].widget,
+                {"source_id": self.instance.pk, "network_id": "$network_id"},
             )
-            self.fields["sync_device_tags"].widget.add_query_param(
-                "source_id", self.instance.pk
+            _configure_api_select(
+                self.fields["sync_device_tags"].widget,
+                {"source_id": self.instance.pk, "network_id": "$network_id"},
             )
 
         parameters = self.instance.parameters or {}

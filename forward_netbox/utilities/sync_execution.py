@@ -7,6 +7,7 @@ from ..exceptions import ForwardQueryError
 from ..exceptions import ForwardSyncDataError
 from .apply_engine import select_apply_engine
 from .delete_policy import should_suppress_aci_deletes
+from .diagnostics import safe_operation_failure
 from .forward_api import LATEST_COLLECTED_SNAPSHOT
 from .ingestion_merge import suppress_ingest_side_effect_signals
 from .model_contracts import architecture_default_coalesce_fields_for_model
@@ -60,7 +61,7 @@ def run_sync_stage(runner):
         raise
     except Exception as exc:
         runner.logger.log_warning(
-            f"Unable to fetch Forward snapshot metrics for `{snapshot_id}`: {exc}",
+            safe_operation_failure("Forward snapshot metrics fetch", exc),
             obj=runner.sync,
         )
 
@@ -188,7 +189,10 @@ def run_sync_stage(runner):
                                 ForwardConnectivityError,
                             ) as exc:
                                 runner.logger.log_warning(
-                                    f"Forward NQE diff failed for {model_string} using `{spec.execution_value}`; falling back to full query execution: {exc}",
+                                    safe_operation_failure(
+                                        f"Forward NQE diff for {model_string}", exc
+                                    )
+                                    + " Falling back to full query execution.",
                                     obj=runner.sync,
                                 )
                                 model_baseline = None
@@ -254,13 +258,13 @@ def run_sync_stage(runner):
                     exception=exc,
                 )
                 runner.logger.log_warning(
-                    f"Aborted {model_string} due to validation failure: {exc}",
+                    safe_operation_failure(f"Validation for {model_string}", exc),
                     obj=runner.sync,
                 )
                 continue
             except ForwardSyncDataError as exc:
                 runner.logger.log_warning(
-                    f"Aborted {model_string} after row failure: {exc}",
+                    safe_operation_failure(f"Row processing for {model_string}", exc),
                     obj=runner.sync,
                 )
                 continue
@@ -287,7 +291,9 @@ def run_sync_stage(runner):
                 engine.apply_deletes(runner, model_string, delete_rows)
             except ForwardSyncDataError as exc:
                 runner.logger.log_warning(
-                    f"Aborted delete phase for {model_string} after row failure: {exc}",
+                    safe_operation_failure(
+                        f"Delete processing for {model_string}", exc
+                    ),
                     obj=runner.sync,
                 )
                 continue

@@ -35,6 +35,7 @@ from .choices import ForwardValidationStatusChoices
 from .exceptions import ForwardQueryError
 from .exceptions import ForwardSyncError
 from .utilities.branch_budget import DEFAULT_MAX_CHANGES_PER_STAGING_ITEM
+from .utilities.diagnostics import safe_operation_failure
 from .utilities.forward_api import ForwardClient
 from .utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from .utilities.ingestion_merge import (
@@ -370,7 +371,7 @@ class ForwardSource(ForwardPluginModelDocsMixin, JobsMixin, PrimaryModel):
         except JobTimeoutException:
             raise
         except (ForwardSyncError, ForwardQueryError, Exception) as exc:
-            preview["error"] = str(exc)
+            preview["error"] = safe_operation_failure("Tag scope preview", exc)
             return preview
 
 

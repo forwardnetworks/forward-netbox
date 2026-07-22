@@ -1,8 +1,9 @@
+import logging
+
 from core.choices import ObjectChangeActionChoices
 from core.exceptions import SyncError
 from core.models import ObjectChange
 from django.contrib import messages
-from django.contrib.auth.mixins import LoginRequiredMixin
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models.functions import Greatest
@@ -14,7 +15,6 @@ from django.shortcuts import render
 from django.urls import reverse
 from django.utils import timezone
 from django.utils.translation import gettext as _
-from django.views.generic import View
 from netbox.object_actions import AddObject
 from netbox.object_actions import BulkDelete
 from netbox.object_actions import BulkEdit
@@ -68,6 +68,7 @@ from .tables import ForwardSourceTable
 from .tables import ForwardSyncTable
 from .tables import ForwardValidationRunTable
 from .utilities.change_explainability import change_explainability_summary
+from .utilities.diagnostics import sanitize_job_diagnostics
 from .utilities.direct_changes import object_changes_for_ingestion
 from .utilities.execution_telemetry import build_plan_preview
 from .utilities.health import live_data_file_health_check
@@ -80,6 +81,9 @@ from .utilities.query_binding import live_query_binding_drift
 from .utilities.query_binding import publish_builtin_nqe_map_queries
 from .utilities.query_binding import restore_builtin_raw_query_bindings
 from .utilities.support_bundle_archive import support_bundle_zip_response
+
+
+logger = logging.getLogger(__name__)
 
 
 _PREVIEW_PLAN_ITEM_LIMIT = 25
@@ -149,8 +153,14 @@ def _job_export_payload(job):
         "started": getattr(job, "started", None),
         "completed": getattr(job, "completed", None),
         "duration": getattr(job, "duration", None),
-        "data": json_safe_value(getattr(job, "data", {}) or {}),
-        "log_entries": json_safe_value(list(getattr(job, "log_entries", []) or [])),
+        "data": json_safe_value(
+            sanitize_job_diagnostics(getattr(job, "data", {}) or {})
+        ),
+        "log_entries": json_safe_value(
+            sanitize_job_diagnostics(
+                {"log_entries": list(getattr(job, "log_entries", []) or [])}
+            )["log_entries"]
+        ),
     }
 
 
@@ -558,8 +568,12 @@ class ForwardNQEMapBulkEditView(generic.BulkEditView):
             try:
                 results = restore_builtin_raw_query_bindings(queryset=selected_queryset)
             except Exception as exc:
+                logger.warning(
+                    "Bundled NQE map restore failed (%s)", type(exc).__name__
+                )
                 raise ValidationError(
-                    f"Unable to restore bundled Forward NQE map queries: {exc}"
+                    "Unable to restore bundled Forward NQE map queries. Review "
+                    "server logs and the selected map configuration."
                 ) from exc
 
             updated_ids = [result.map_id for result in results if result.matched]
@@ -596,8 +610,12 @@ class ForwardNQEMapBulkEditView(generic.BulkEditView):
                     pin_commit=form.cleaned_data.get("bind_pin_commit", False),
                 )
             except Exception as exc:
+                logger.warning(
+                    "Bundled NQE map publication failed (%s)", type(exc).__name__
+                )
                 raise ValidationError(
-                    f"Unable to publish bundled Forward NQE maps: {exc}"
+                    "Unable to publish bundled Forward NQE maps. Review server "
+                    "logs and Forward repository permissions."
                 ) from exc
 
             updated_ids = [result.map_id for result in results if result.matched]
@@ -646,7 +664,11 @@ class ForwardNQEMapBulkEditView(generic.BulkEditView):
                 queryset=selected_queryset,
             )
         except Exception as exc:
-            raise ValidationError(f"Unable to bind Forward NQE maps: {exc}") from exc
+            logger.warning("Forward NQE map binding failed (%s)", type(exc).__name__)
+            raise ValidationError(
+                "Unable to bind Forward NQE maps. Review server logs and the "
+                "selected repository paths."
+            ) from exc
 
         updated_ids = [result.map_id for result in results if result.matched]
         if not updated_ids:
@@ -950,8 +972,10 @@ class ForwardSyncDependencyPreviewView(BaseObjectView):
         sync = get_object_or_404(self.queryset, pk=pk)
         try:
             job = enqueue_button_job(sync, "dependency_preview", request.user)
-        except JobAlreadyActive as exc:
-            messages.warning(request, str(exc))
+        except JobAlreadyActive:
+            messages.warning(
+                request, _("An equivalent dependency preview is already running.")
+            )
             return redirect(sync.get_absolute_url())
         messages.success(
             request,
@@ -984,7 +1008,14 @@ class ForwardStartSyncView(BaseObjectView):
                 force_unchanged=True,
             )
         except SyncError as exc:
-            messages.error(request, str(exc))
+            logger.warning("Forward sync enqueue was rejected (%s)", type(exc).__name__)
+            messages.error(
+                request,
+                _(
+                    "Forward sync could not be queued. Review the current sync and "
+                    "branch state before retrying."
+                ),
+            )
             return redirect(sync.get_absolute_url())
         messages.success(request, f"Queued job #{job.pk} to run {sync}.")
         return redirect(sync.get_absolute_url())
@@ -1007,8 +1038,10 @@ class ForwardStartValidationView(BaseObjectView):
         sync = get_object_or_404(self.queryset, pk=pk)
         try:
             job = sync.enqueue_validation_job(user=request.user, adhoc=True)
-        except JobAlreadyActive as exc:
-            messages.warning(request, str(exc))
+        except JobAlreadyActive:
+            messages.warning(
+                request, _("An equivalent validation job is already running.")
+            )
             return redirect(sync.get_absolute_url())
         messages.success(request, f"Queued job #{job.pk} to validate {sync}.")
         return redirect(sync.get_absolute_url())
@@ -1030,9 +1063,12 @@ class ForwardSyncScopeReconciliationView(BaseObjectView):
         try:
             report = compute_scope_reconciliation(sync)
         except Exception as exc:
+            logger.warning(
+                "Scope reconciliation report failed (%s)", type(exc).__name__
+            )
             messages.error(
                 request,
-                _("Scope reconciliation failed: %(error)s") % {"error": exc},
+                _("Scope reconciliation failed. Review server logs before retrying."),
             )
             return redirect(sync.get_absolute_url())
         from .utilities.scope_reconciliation import BACKFILLED_TAG_SLUG
@@ -1136,8 +1172,11 @@ class ForwardSyncTagDeleteEligibleIpamView(BaseObjectView):
         sync = get_object_or_404(self.queryset, pk=pk)
         try:
             job = enqueue_button_job(sync, "tag_delete_eligible_ipam", request.user)
-        except JobAlreadyActive as exc:
-            messages.warning(request, str(exc))
+        except JobAlreadyActive:
+            messages.warning(
+                request,
+                _("An equivalent delete-eligible IPAM job is already running."),
+            )
             return redirect(sync.get_absolute_url())
         messages.success(
             request,
@@ -1182,8 +1221,10 @@ class ForwardSyncPruneOrphansView(BaseObjectView):
         sync = get_object_or_404(self.queryset, pk=pk)
         try:
             job = enqueue_button_job(sync, "prune_orphans", request.user)
-        except JobAlreadyActive as exc:
-            messages.warning(request, str(exc))
+        except JobAlreadyActive:
+            messages.warning(
+                request, _("An equivalent orphan-prune job is already running.")
+            )
             return redirect(sync.get_absolute_url())
         messages.success(
             request,
@@ -1211,9 +1252,10 @@ class ForwardSyncModuleReadinessView(BaseObjectView):
         try:
             report = compute_module_readiness_for_sync(sync)
         except Exception as exc:
+            logger.warning("Module readiness report failed (%s)", type(exc).__name__)
             messages.error(
                 request,
-                _("Module readiness check failed: %(error)s") % {"error": exc},
+                _("Module readiness check failed. Review server logs before retrying."),
             )
             return redirect(sync.get_absolute_url())
         return render(
@@ -1250,23 +1292,32 @@ class ForwardSyncSupportBundleZipView(BaseObjectView):
 
     def get(self, request, pk):
         sync = get_object_or_404(self.queryset, pk=pk)
-        return self._download(request, sync)
+        if "password" in request.GET:
+            return HttpResponseBadRequest(
+                "Archive passwords must be submitted in a POST request."
+            )
+        return self._download(sync, password="")
 
     def post(self, request, pk):
         sync = get_object_or_404(self.queryset, pk=pk)
-        return self._download(request, sync)
+        return self._download(sync, password=request.POST.get("password") or "")
 
-    def _download(self, request, sync):
+    def _download(self, sync, *, password):
         filename = f"forward-sync-{sync.pk}-support-bundle.zip"
         try:
             return support_bundle_zip_response(
                 _sync_support_bundle_payload(sync),
                 filename=filename,
                 json_filename=f"forward-sync-{sync.pk}-support-bundle.json",
-                password=request.POST.get("password") or request.GET.get("password"),
+                password=password,
             )
         except RuntimeError as exc:
-            return HttpResponseBadRequest(str(exc))
+            logger.warning(
+                "Support-bundle archive creation failed (%s)", type(exc).__name__
+            )
+            return HttpResponseBadRequest(
+                "Support-bundle archive creation failed. Review server logs."
+            )
 
 
 @register_model_view(ForwardSync, "health")
@@ -1344,16 +1395,16 @@ class ForwardSyncPublishBundledQueriesView(BaseObjectView):
                 commit_message="Publish Forward NetBox NQE maps",
                 pin_commit=False,
             )
-        except Exception as exc:  # noqa: BLE001 - surface any publish failure clearly
+        except Exception as exc:  # noqa: BLE001 - emit only a safe error class
+            logger.warning("Bundled query publication failed (%s)", type(exc).__name__)
             messages.error(
                 request,
                 _(
-                    "Unable to publish bundled queries to the Forward org library: "
-                    "%(error)s. Publishing writes to the Forward Org Repository and "
+                    "Unable to publish bundled queries to the Forward org library. "
+                    "Publishing writes to the Forward Org Repository and "
                     "needs a source login with NQE-library write permission "
                     "(Forward Network Operator or equivalent)."
-                )
-                % {"error": str(exc)},
+                ),
             )
             return redirect(
                 reverse(
@@ -1480,11 +1531,15 @@ class ForwardIngestionListView(generic.ObjectListView):
 
 
 @register_model_view(ForwardIngestion, name="logs", path="logs")
-class ForwardIngestionLogView(LoginRequiredMixin, View):
+class ForwardIngestionLogView(BaseObjectView):
+    queryset = annotate_statistics(ForwardIngestion.objects.all())
     template_name = "forward_netbox/partials/ingestion_all.html"
 
+    def get_required_permission(self):
+        return "forward_netbox.view_forwardingestion"
+
     def get(self, request, **kwargs):
-        ingestion = annotate_statistics(ForwardIngestion.objects).get(pk=kwargs["pk"])
+        ingestion = get_object_or_404(self.queryset, pk=kwargs["pk"])
         active_stage = request.GET.get("stage", "sync")
         data = ingestion.get_statistics(stage=active_stage)
         data["object"] = ingestion
@@ -1537,11 +1592,15 @@ class ForwardIngestionLogExportView(BaseObjectView):
 
 
 @register_model_view(ForwardIngestion, name="progress", path="progress")
-class ForwardIngestionProgressView(LoginRequiredMixin, View):
+class ForwardIngestionProgressView(BaseObjectView):
+    queryset = annotate_statistics(ForwardIngestion.objects.all())
     template_name = "forward_netbox/partials/ingestion_progress.html"
 
+    def get_required_permission(self):
+        return "forward_netbox.view_forwardingestion"
+
     def get(self, request, **kwargs):
-        ingestion = annotate_statistics(ForwardIngestion.objects).get(pk=kwargs["pk"])
+        ingestion = get_object_or_404(self.queryset, pk=kwargs["pk"])
         active_stage = request.GET.get("stage", "sync")
         if active_stage not in ("sync", "merge"):
             active_stage = "sync"
@@ -1636,10 +1695,15 @@ class ForwardIngestionMergeView(BaseObjectView):
     path="change/<int:change_pk>",
     kwargs={"model": ForwardIngestion},
 )
-class ForwardIngestionChangesDiffView(LoginRequiredMixin, View):
+class ForwardIngestionChangesDiffView(BaseObjectView):
+    queryset = ForwardIngestion.objects.all()
     template_name = "forward_netbox/inc/diff.html"
 
+    def get_required_permission(self):
+        return "forward_netbox.view_forwardingestion"
+
     def get(self, request, **kwargs):
+        ingestion = get_object_or_404(self.queryset, pk=kwargs["pk"])
         change_id = kwargs.get("change_pk")
         if not request.htmx or not change_id:
             return render(
@@ -1655,7 +1719,11 @@ class ForwardIngestionChangesDiffView(LoginRequiredMixin, View):
                 },
             )
 
-        change = ChangeDiff.objects.get(pk=change_id)
+        change = get_object_or_404(
+            ChangeDiff,
+            pk=change_id,
+            branch_id=ingestion.branch_id,
+        )
         if change.original and change.modified:
             diff_added = shallow_compare_dict(
                 change.original or {},

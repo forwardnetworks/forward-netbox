@@ -20,6 +20,7 @@ from forward_netbox.choices import ForwardDriftPolicyBaselineChoices
 from forward_netbox.choices import ForwardSourceStatusChoices
 from forward_netbox.choices import ForwardSyncStatusChoices
 from forward_netbox.choices import ForwardValidationStatusChoices
+from forward_netbox.exceptions import ForwardQueryError
 from forward_netbox.jobs import sync_forwardsync
 from forward_netbox.models import ForwardDriftPolicy
 from forward_netbox.models import ForwardIngestion
@@ -484,6 +485,35 @@ class ForwardSyncModelTest(TestCase):
 
         self.assertFalse(hasattr(ForwardQueryFetcher, "run_preflight"))
 
+    def test_validation_failure_persists_exception_type_without_exception_detail(self):
+        sync = ForwardSync.objects.create(
+            name="sync-validation-safe-failure",
+            source=self.source,
+            user=self.user,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+            },
+        )
+
+        with patch(
+            "forward_netbox.utilities.validation.ForwardQueryFetcher"
+        ) as fetcher_class:
+            fetcher_class.return_value.resolve_context.side_effect = ValueError(
+                "sentinel-private-detail"
+            )
+            with self.assertRaisesRegex(ValueError, "sentinel-private-detail"):
+                ForwardValidationRunner(sync, Mock(), Mock()).run_query_validation()
+
+        validation_run = ForwardValidationRun.objects.get(sync=sync)
+        self.assertEqual(
+            validation_run.blocking_reasons,
+            ["Forward validation failed (ValueError)."],
+        )
+        self.assertNotIn(
+            "sentinel-private-detail", str(validation_run.blocking_reasons)
+        )
+
     def test_sync_rejects_retired_unchanged_snapshot_toggle(self):
         sync = ForwardSync(
             name="sync-retired-unchanged-toggle",
@@ -591,6 +621,23 @@ class ForwardSyncModelTest(TestCase):
         preview = self.source.get_tag_scope_preview()
         self.assertTrue(preview["enabled"])
         self.assertIn("No processed snapshot", preview["error"])
+
+    @patch("forward_netbox.models.ForwardSource.get_client")
+    def test_source_tag_scope_preview_redacts_forward_error(self, mock_get_client):
+        self.source.parameters.update({"device_tag_include_tags": ["scope-alpha"]})
+        self.source.save(update_fields=["parameters"])
+        client = Mock()
+        client.get_latest_processed_snapshot.side_effect = ForwardQueryError(
+            "sentinel-private-detail"
+        )
+        mock_get_client.return_value = client
+
+        preview = self.source.get_tag_scope_preview()
+
+        self.assertEqual(
+            preview["error"], "Tag scope preview failed (ForwardQueryError)."
+        )
+        self.assertNotIn("sentinel-private-detail", preview["error"])
 
     def test_sync_rejects_query_overrides_parameter(self):
         sync = ForwardSync(
@@ -1762,7 +1809,10 @@ class ForwardSyncModelTest(TestCase):
         self.assertEqual(ForwardIngestion.objects.filter(sync=sync).count(), 1)
         self.assertEqual(sync.status, ForwardSyncStatusChoices.FAILED)
         self.assertEqual(self.source.status, ForwardSourceStatusChoices.FAILED)
-        self.assertTrue(ingestion.issues.filter(message="boom").exists())
+        issue = ingestion.issues.get()
+        self.assertEqual(issue.message, "Forward ingestion failed (RuntimeError).")
+        self.assertEqual(issue.raw_data, {})
+        self.assertNotIn("boom", issue.message)
 
     def test_latest_baseline_ingestion_returns_latest_ready_snapshot(self):
         sync = ForwardSync.objects.create(

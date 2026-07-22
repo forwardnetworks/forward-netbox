@@ -7,11 +7,13 @@ from core.models import Job
 from core.models import ObjectType
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
+from django.http import HttpResponse
 from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 from netbox_branching.models import Branch
 from netbox_branching.models import ChangeDiff
+from users.models import ObjectPermission
 
 from forward_netbox.models import ForwardIngestion
 from forward_netbox.models import ForwardOwnershipReconciliation
@@ -181,7 +183,7 @@ class ForwardIngestionLogExportViewTest(TestCase):
         cls.ingestion.branch = cls.branch
         cls.ingestion.save(update_fields=["job", "merge_job", "branch"])
         prefix_type = ObjectType.objects.get(app_label="ipam", model="prefix")
-        ChangeDiff.objects.create(
+        cls.change_diff = ChangeDiff.objects.create(
             branch=cls.branch,
             object_type=prefix_type,
             object_id=1001,
@@ -202,6 +204,148 @@ class ForwardIngestionLogExportViewTest(TestCase):
             current={},
             conflicts=[],
         )
+
+    def test_ingestion_diagnostic_routes_require_object_view_permission(self):
+        user = get_user_model().objects.create_user(username="ingestion-log-user")
+        self.client.force_login(user)
+        urls = (
+            reverse(
+                "plugins:forward_netbox:forwardingestion_logs",
+                kwargs={"pk": self.ingestion.pk},
+            ),
+            reverse(
+                "plugins:forward_netbox:forwardingestion_progress",
+                kwargs={"pk": self.ingestion.pk},
+            ),
+            reverse(
+                "plugins:forward_netbox:forwardingestion_change_diff",
+                kwargs={"pk": self.ingestion.pk, "change_pk": self.change_diff.pk},
+            ),
+        )
+
+        for url in urls:
+            with self.subTest(url=url):
+                response = self.client.get(url, headers={"HX-Request": "true"})
+                self.assertEqual(response.status_code, 403)
+
+        permission = ObjectPermission.objects.create(
+            name="View Forward ingestion diagnostics",
+            actions=["view"],
+        )
+        permission.object_types.add(ObjectType.objects.get_for_model(ForwardIngestion))
+        permission.users.add(user)
+        for url in urls:
+            with self.subTest(url=url):
+                response = self.client.get(url, headers={"HX-Request": "true"})
+                self.assertEqual(response.status_code, 200)
+
+    def test_ingestion_diagnostics_redact_historical_exception_content(self):
+        sentinel = "sentinel-private-detail"
+        self.merge_job.data = {
+            "error": sentinel,
+            "traceback": sentinel,
+            "worker_terminal_error": sentinel,
+            "error_type": "RuntimeError",
+            "logs": [
+                [
+                    timezone.now().isoformat(),
+                    "warning",
+                    "sync-log-export",
+                    "",
+                    sentinel,
+                ]
+            ],
+        }
+        self.merge_job.log_entries = [
+            {
+                "timestamp": timezone.now(),
+                "level": "error",
+                "message": sentinel,
+            }
+        ]
+        self.merge_job.save(update_fields=["data", "log_entries"])
+        self.client.force_login(self.user)
+
+        log_response = self.client.get(
+            reverse(
+                "plugins:forward_netbox:forwardingestion_logs",
+                kwargs={"pk": self.ingestion.pk},
+            ),
+            {"stage": "merge"},
+            headers={"HX-Request": "true"},
+        )
+        export_response = self.client.get(
+            reverse(
+                "plugins:forward_netbox:forwardingestion_export_logs",
+                kwargs={"pk": self.ingestion.pk},
+            ),
+            {"stage": "merge"},
+        )
+
+        self.assertEqual(log_response.status_code, 200)
+        self.assertEqual(export_response.status_code, 200)
+        self.assertNotIn(sentinel, log_response.content.decode())
+        self.assertNotIn(sentinel, export_response.content.decode())
+        self.assertContains(log_response, "The operation failed")
+
+    def test_support_bundle_password_is_post_only(self):
+        url = reverse(
+            "plugins:forward_netbox:forwardsync_support_bundle_zip",
+            kwargs={"pk": self.sync.pk},
+        )
+        self.client.force_login(self.user)
+        sentinel = "sentinel-private-detail"
+
+        with patch("forward_netbox.views.support_bundle_zip_response") as archive:
+            get_response = self.client.get(url, {"password": sentinel})
+            archive.assert_not_called()
+
+            archive.return_value = HttpResponse(
+                b"archive",
+                content_type="application/zip",
+            )
+            post_response = self.client.post(url, {"password": sentinel})
+
+        self.assertEqual(get_response.status_code, 400)
+        self.assertNotIn(sentinel, get_response.content.decode())
+        self.assertEqual(post_response.status_code, 200)
+        self.assertEqual(archive.call_args.kwargs["password"], sentinel)
+
+    def test_change_diff_route_rejects_change_from_another_ingestion(self):
+        other_branch = Branch.objects.create(
+            name="log-export-other-branch",
+            schema_id="log_export_other_branch",
+        )
+        other_ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            branch=other_branch,
+        )
+        other_change = ChangeDiff.objects.create(
+            branch=other_branch,
+            object_type=ObjectType.objects.get(app_label="ipam", model="prefix"),
+            object_id=2002,
+            object_repr="198.51.100.0/27",
+            action=ObjectChangeActionChoices.ACTION_UPDATE,
+            original={"prefix": "198.51.100.0/27", "status": "active"},
+            modified={"prefix": "198.51.100.0/27", "status": "reserved"},
+            current={},
+            conflicts=[],
+        )
+        self.client.force_login(self.user)
+
+        response = self.client.get(
+            reverse(
+                "plugins:forward_netbox:forwardingestion_change_diff",
+                kwargs={
+                    "pk": self.ingestion.pk,
+                    "change_pk": other_change.pk,
+                },
+            ),
+            headers={"HX-Request": "true"},
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertNotEqual(other_ingestion.pk, self.ingestion.pk)
 
     def test_ingestion_detail_renders_change_explainability(self):
         self.client.force_login(self.user)

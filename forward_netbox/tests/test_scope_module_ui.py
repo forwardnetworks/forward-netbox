@@ -9,6 +9,7 @@ from dcim.models import Manufacturer
 from dcim.models import Rack
 from dcim.models import Site
 from django.contrib.auth import get_user_model
+from django.contrib.messages import get_messages
 from django.test import Client
 from django.test import TestCase
 from django.urls import NoReverseMatch
@@ -743,3 +744,27 @@ class ScopeModuleUiTest(TestCase):
             self.assertEqual(resp.status_code, 200)
             self.assertContains(resp, "Missing bays")
             self.assertContains(resp, "created inside the sync branch")
+
+    def test_module_readiness_view_does_not_expose_exception_details(self):
+        client = self._superuser_client()
+        with (
+            self.assertLogs("forward_netbox.views", level="WARNING") as logs,
+            patch(
+                "forward_netbox.utilities.module_readiness.compute_module_readiness_for_sync",
+                side_effect=RuntimeError("sentinel-private-detail"),
+            ),
+        ):
+            response = client.get(
+                reverse(
+                    "plugins:forward_netbox:forwardsync_module_readiness",
+                    kwargs={"pk": self.sync.pk},
+                )
+            )
+
+        rendered_messages = " ".join(
+            str(message) for message in get_messages(response.wsgi_request)
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertNotIn("sentinel-private-detail", rendered_messages)
+        self.assertNotIn("sentinel-private-detail", " ".join(logs.output))
+        self.assertIn("Review server logs", rendered_messages)

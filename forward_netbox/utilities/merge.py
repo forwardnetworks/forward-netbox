@@ -10,7 +10,6 @@ This preserves the branch-backed merge lifecycle while scaling its apply path:
 
 import logging
 import time
-import traceback
 import uuid
 from functools import partial
 from typing import TYPE_CHECKING
@@ -41,6 +40,8 @@ from netbox_branching.utilities import record_applied_change
 from ..choices import ForwardIngestionPhaseChoices
 from ..exceptions import ForwardPartialMergeError
 from ..models import ForwardIngestionIssue
+from .diagnostics import exception_type
+from .diagnostics import safe_operation_failure
 
 if TYPE_CHECKING:
     from ..models import ForwardIngestion
@@ -80,9 +81,13 @@ class _MergeIssueRecorder:
         self._ingestion = ingestion
         self._sync_logger = sync_logger
 
-    def record(self, *, model_string, message, exc):
-        exception_info = (type(exc), exc, exc.__traceback__)
-        logger.error(message, exc_info=exception_info)
+    def record(self, *, model_string, exc):
+        message = safe_operation_failure(f"Merge for {model_string}", exc)
+        logger.error(
+            "Merge row failed for %s (%s).",
+            model_string,
+            exception_type(exc),
+        )
         if self._sync_logger:
             self._sync_logger.log_failure(message)
         ForwardIngestionIssue.objects.create(
@@ -91,9 +96,7 @@ class _MergeIssueRecorder:
             model=model_string,
             message=message,
             exception=exc.__class__.__name__,
-            raw_data={
-                "traceback": "".join(traceback.format_exception(*exception_info))
-            },
+            raw_data={},
         )
 
 
@@ -346,11 +349,6 @@ def merge_branch(
         model_string = _model_string(collapsed_change.model_class)
         issue_recorder.record(
             model_string=model_string,
-            message=(
-                "Failed to apply collapsed change "
-                f"({collapsed_change.final_action} {model_string}: "
-                f"{collapsed_change.key[1]}): {exc}"
-            ),
             exc=exc,
         )
 

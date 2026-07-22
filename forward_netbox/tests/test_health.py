@@ -627,6 +627,22 @@ class ForwardSyncHealthTest(TestCase):
         self.assertNotIn("test-network", json.dumps(result))
         self.assertNotIn("snapshot-1", json.dumps(result))
 
+    def test_live_source_health_check_does_not_export_exception_details(self):
+        client = Mock()
+        client.get_networks.side_effect = RuntimeError("sentinel-private-detail")
+
+        with (
+            self.assertLogs("forward_netbox.utilities.health", level="WARNING") as logs,
+            patch.object(ForwardSource, "get_client", return_value=client),
+        ):
+            result = live_source_health_check(self.sync)
+
+        rendered = json.dumps(result)
+        self.assertFalse(result["reachable"])
+        self.assertNotIn("sentinel-private-detail", rendered)
+        self.assertNotIn("sentinel-private-detail", " ".join(logs.output))
+        self.assertIn("Review server logs", rendered)
+
     def test_sync_live_source_health_downloads_reachability_diagnostics(self):
         self.client.force_login(self.user)
         client = Mock()
@@ -692,6 +708,23 @@ class ForwardSyncHealthTest(TestCase):
 
         self.assertEqual(result["results"][0]["status"], "not_captured")
         self.assertEqual(result["checks"][0]["status"], "warn")
+
+    def test_live_data_file_health_check_does_not_export_exception_details(self):
+        client = Mock()
+        client.get_latest_processed_snapshot_id.return_value = "snapshot-1"
+        client.run_nqe_query.side_effect = RuntimeError("sentinel-private-detail")
+
+        with (
+            self.assertLogs("forward_netbox.utilities.health", level="WARNING") as logs,
+            patch.object(ForwardSource, "get_client", return_value=client),
+        ):
+            result = live_data_file_health_check(self.sync)
+
+        rendered = json.dumps(result)
+        self.assertEqual(result["results"][0]["status"], "lookup_failed")
+        self.assertNotIn("sentinel-private-detail", rendered)
+        self.assertNotIn("sentinel-private-detail", " ".join(logs.output))
+        self.assertIn("Review server logs", rendered)
 
     def test_sync_live_data_file_health_downloads_freshness_diagnostics(self):
         self.client.force_login(self.user)
@@ -770,10 +803,13 @@ class ForwardSyncHealthTest(TestCase):
         self.client.force_login(self.user)
         result = Mock(matched=True)
         client = Mock()
-        with patch.object(ForwardSource, "get_client", return_value=client), patch(
-            "forward_netbox.views.publish_builtin_nqe_map_queries",
-            return_value=[result],
-        ) as publish:
+        with (
+            patch.object(ForwardSource, "get_client", return_value=client),
+            patch(
+                "forward_netbox.views.publish_builtin_nqe_map_queries",
+                return_value=[result],
+            ) as publish,
+        ):
             response = self.client.post(
                 reverse(
                     "plugins:forward_netbox:forwardsync_publish_bundled_queries",
@@ -798,9 +834,12 @@ class ForwardSyncHealthTest(TestCase):
 
     def test_sync_publish_bundled_queries_surfaces_write_permission_error(self):
         self.client.force_login(self.user)
-        with patch.object(ForwardSource, "get_client", return_value=Mock()), patch(
-            "forward_netbox.views.publish_builtin_nqe_map_queries",
-            side_effect=Exception("403 Forbidden"),
+        with (
+            patch.object(ForwardSource, "get_client", return_value=Mock()),
+            patch(
+                "forward_netbox.views.publish_builtin_nqe_map_queries",
+                side_effect=Exception("403 Forbidden"),
+            ),
         ):
             response = self.client.post(
                 reverse(

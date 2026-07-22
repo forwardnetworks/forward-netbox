@@ -6036,15 +6036,14 @@ class ForwardSyncRunnerTest(TestCase):
         )
 
         self.assertEqual(
-            issue.coalesce_fields["site"],
-            {
-                "model": "dcim.site",
-                "pk": site.pk,
-                "display": str(site),
-            },
+            issue.coalesce_fields,
+            {"type": "mapping", "fields": ["device", "site"]},
         )
-        self.assertEqual(issue.defaults["router"]["model"], "dcim.site")
-        self.assertEqual(issue.raw_data["site"]["pk"], site.pk)
+        self.assertEqual(issue.defaults, {"type": "mapping", "fields": ["router"]})
+        self.assertEqual(
+            issue.raw_data, {"type": "mapping", "fields": ["device", "site"]}
+        )
+        self.assertNotIn("site-1", str(issue.coalesce_fields))
 
     def test_record_issue_supports_info_log_level(self):
         ingestion = ForwardIngestion.objects.create(sync=self.sync)
@@ -6144,7 +6143,7 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertEqual(ingestion.snapshot_id, "snapshot-before")
         self.assertEqual(ingestion.snapshot_metrics, {})
         logger.log_warning.assert_any_call(
-            "Unable to fetch Forward snapshot metrics for `snapshot-before`: metrics unavailable",
+            "Forward snapshot metrics fetch failed (RuntimeError).",
             obj=self.sync,
         )
         client.get_snapshot_metrics.assert_called_once_with("snapshot-before")
@@ -7485,10 +7484,49 @@ class ForwardSyncRunnerTest(TestCase):
             runner.run()
 
         self.assertEqual(ingestion.issues.count(), 1)
-        self.assertIn(
-            "missing required fields",
+        self.assertEqual(
             ingestion.issues.first().message,
+            "dcim.device row processing failed (ForwardQueryError).",
         )
+
+    def test_record_issue_redacts_unexpected_failure_content(self):
+        ingestion = ForwardIngestion.objects.create(sync=self.sync)
+        logger = Mock()
+        runner = ForwardSyncRunner(
+            sync=self.sync,
+            ingestion=ingestion,
+            client=None,
+            logger_=logger,
+        )
+        sentinel = "sentinel-private-detail"
+
+        issue = runner._record_issue(
+            "dcim.device",
+            sentinel,
+            {"name": sentinel, "serial": sentinel},
+            exception=RuntimeError(sentinel),
+            defaults={"device_type": sentinel},
+            context={"site": sentinel},
+        )
+
+        self.assertEqual(
+            issue.message,
+            "dcim.device row processing failed (RuntimeError).",
+        )
+        self.assertEqual(
+            issue.raw_data,
+            {"type": "mapping", "fields": ["name", "serial"]},
+        )
+        self.assertEqual(
+            issue.coalesce_fields,
+            {"type": "mapping", "fields": ["site"]},
+        )
+        self.assertEqual(
+            issue.defaults,
+            {"type": "mapping", "fields": ["device_type"]},
+        )
+        self.assertNotIn(sentinel, str(issue.__dict__))
+        self.assertNotIn(sentinel, str(logger.mock_calls))
 
     def test_run_continues_with_next_model_after_model_abort(self):
         ingestion = ForwardIngestion.objects.create(sync=self.sync)
@@ -8392,7 +8430,10 @@ class ForwardApplyEngineParityTest(TestCase):
 
         issue = ForwardIngestionIssue.objects.get(ingestion=ingestion)
         self.assertEqual(issue.exception, "ForwardSyncDataError")
-        self.assertIn("already has device `device-conflict-1`", issue.message)
+        self.assertEqual(
+            issue.message,
+            "dcim.virtualchassis row processing failed (ForwardSyncDataError).",
+        )
         device_2.refresh_from_db()
         self.assertIsNone(device_2.virtual_chassis)
         self.assertIsNone(device_2.vc_position)
@@ -8417,7 +8458,10 @@ class ForwardApplyEngineParityTest(TestCase):
         issue = ForwardIngestionIssue.objects.get(ingestion=ingestion)
         self.assertEqual(issue.model, "dcim.virtualchassis")
         self.assertEqual(issue.exception, "ForwardSearchError")
-        self.assertIn("Unable to find device", issue.message)
+        self.assertEqual(
+            issue.message,
+            "dcim.virtualchassis row processing failed (ForwardSearchError).",
+        )
         runner.logger.increment_statistics.assert_any_call(
             "dcim.virtualchassis",
             outcome="failed",
@@ -8445,7 +8489,10 @@ class ForwardApplyEngineParityTest(TestCase):
 
         issue = ForwardIngestionIssue.objects.get(ingestion=ingestion)
         self.assertEqual(issue.exception, "ForwardDependencySkipError")
-        self.assertIn("dependency `dcim.device` failed", issue.message)
+        self.assertEqual(
+            issue.message,
+            "dcim.virtualchassis row processing failed (ForwardDependencySkipError).",
+        )
         runner.logger.increment_statistics.assert_any_call(
             "dcim.virtualchassis",
             outcome="skipped",

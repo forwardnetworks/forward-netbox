@@ -158,7 +158,9 @@ def apply_primary_ip_from_mgmt_tags(executor, branch, *, snapshot_id):
     except JobTimeoutException:
         raise
     except Exception as error:  # never break the ingest on the tag fetch
-        logger.log_warning(f"primary_ip-from-tag: tag fetch failed: {error}")
+        logger.log_warning(
+            "primary_ip-from-tag: tag fetch failed " f"({error.__class__.__name__})."
+        )
         return 0
 
     current_branch = active_branch.get()

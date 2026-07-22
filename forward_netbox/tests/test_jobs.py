@@ -192,7 +192,8 @@ class ForwardJobsTest(TestCase):
         job.refresh_from_db()
         self.sync.refresh_from_db()
         self.assertEqual(job.status, JobStatusChoices.STATUS_ERRORED)
-        self.assertIn("sync timed out", job.error)
+        self.assertIn("JobTimeoutException", job.error)
+        self.assertNotIn("sync timed out", job.error)
         self.assertEqual(self.sync.status, ForwardSyncStatusChoices.TIMEOUT)
         overlays.assert_not_called()
 
@@ -933,13 +934,10 @@ class ForwardJobsTest(TestCase):
             data={},
         )
 
-        with (
-            patch.object(
-                ForwardIngestion,
-                "sync_merge",
-                side_effect=RuntimeError("post merge bookkeeping failed"),
-            ),
-            self.assertRaisesRegex(RuntimeError, "post merge bookkeeping failed"),
+        with patch.object(
+            ForwardIngestion,
+            "sync_merge",
+            side_effect=RuntimeError("sentinel-private-detail"),
         ):
             merge_forwardingestion(job)
 
@@ -948,11 +946,13 @@ class ForwardJobsTest(TestCase):
         self.sync.refresh_from_db()
         messages = [entry[4] for entry in (job.data or {}).get("logs", [])]
         self.assertEqual(job.status, JobStatusChoices.STATUS_ERRORED)
-        self.assertIn("post merge bookkeeping failed", job.error)
+        self.assertIn("RuntimeError", job.error)
+        self.assertNotIn("sentinel-private-detail", job.error)
         self.assertEqual(branch.status, BranchStatusChoices.FAILED)
         self.assertEqual(self.sync.status, ForwardSyncStatusChoices.FAILED)
-        self.assertTrue(
-            any("post merge bookkeeping failed" in message for message in messages)
+        self.assertTrue(any("RuntimeError" in message for message in messages))
+        self.assertFalse(
+            any("sentinel-private-detail" in message for message in messages)
         )
 
     def test_merge_forwardingestion_partial_error_remains_retryable(self):
@@ -976,7 +976,9 @@ class ForwardJobsTest(TestCase):
 
         def _partial_merge(*args, **kwargs):
             Branch.objects.filter(pk=branch.pk).update(status=BranchStatusChoices.READY)
-            raise ForwardPartialMergeError("one merge row failed", applied=4, failed=1)
+            raise ForwardPartialMergeError(
+                "sentinel-private-detail", applied=4, failed=1
+            )
 
         with (
             patch.object(
@@ -992,7 +994,8 @@ class ForwardJobsTest(TestCase):
         branch.refresh_from_db()
         self.sync.refresh_from_db()
         self.assertEqual(job.status, JobStatusChoices.STATUS_ERRORED)
-        self.assertIn("one merge row failed", job.error)
+        self.assertIn("4 applied, 1 failed", job.error)
+        self.assertNotIn("sentinel-private-detail", job.error)
         self.assertEqual(branch.status, BranchStatusChoices.READY)
         self.assertEqual(self.sync.status, ForwardSyncStatusChoices.READY_TO_MERGE)
         self.assertTrue(self.ingestion.can_queue_merge)
@@ -2008,9 +2011,7 @@ class JobTerminationConcurrencyTest(TransactionTestCase):
         self.assertEqual(job.status, JobStatusChoices.STATUS_FAILED)
         self.assertEqual(job.completed, recovery_completed)
         self.assertEqual(job.error, recovery_error)
-        self.assertIn(
-            "runner exploded after recovery", job.data["worker_terminal_error"]
-        )
+        self.assertEqual(job.data["worker_terminal_error"], "<redacted diagnostic>")
         self.assertTrue(job.log_entries)
         self.assertEqual(Job.objects.count(), job_count)
 
@@ -2027,8 +2028,10 @@ class JobTerminationConcurrencyTest(TransactionTestCase):
         job.refresh_from_db()
         self.assertEqual(job.status, JobStatusChoices.STATUS_ERRORED)
         self.assertIsNotNone(job.completed)
-        self.assertIn("runner timed out", job.error)
+        self.assertIn("JobTimeoutException", job.error)
+        self.assertNotIn("runner timed out", job.error)
         self.assertTrue(job.log_entries)
+        self.assertNotIn("runner timed out", str(job.log_entries))
 
     def test_runner_handler_terminal_state_wins_before_recovery_update(self):
         job = self._pending_job(user=None, name="runner-worker-first")

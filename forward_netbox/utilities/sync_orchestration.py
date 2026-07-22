@@ -1,5 +1,4 @@
 import logging
-import traceback
 
 from core.exceptions import SyncError
 from core.signals import pre_sync
@@ -17,6 +16,8 @@ from ..models import ForwardSync
 from ..models import ForwardValidationRun
 from ..utilities.logging import SyncLogging
 from .api_usage import record_forward_api_usage
+from .diagnostics import exception_type
+from .diagnostics import safe_operation_failure
 from .runtime_guidance import log_worker_timeout_guidance
 
 logger = logging.getLogger("forward_netbox.models")
@@ -55,7 +56,7 @@ def _build_forward_ingestion(sync, job, executor):
 
 
 def _record_forward_sync_failure(sync, job, executor, ingestion, exc):
-    logger.exception("Forward sync failed")
+    logger.error("Forward sync failed (%s).", exception_type(exc))
     sync.status = ForwardSyncStatusChoices.FAILED
     if ingestion is None:
         ingestion = getattr(executor, "current_ingestion", None)
@@ -69,13 +70,14 @@ def _record_forward_sync_failure(sync, job, executor, ingestion, exc):
         ):
             ingestion.validation_run = validation_run
             ingestion.save(update_fields=["validation_run"])
-    sync.logger.log_failure(f"Forward ingestion failed: {exc}", obj=ingestion)
+    message = safe_operation_failure("Forward ingestion", exc)
+    sync.logger.log_failure(message, obj=ingestion)
     ForwardIngestionIssue.objects.create(
         ingestion=ingestion,
         phase=ForwardIngestionPhaseChoices.SYNC,
-        message=str(exc),
+        message=message,
         exception=exc.__class__.__name__,
-        raw_data={"traceback": traceback.format_exc()},
+        raw_data={},
     )
     return ingestion
 
@@ -156,7 +158,7 @@ def run_forward_sync(
         sync.full_clean()
     except ValidationError as exc:
         sync.logger.log_failure(
-            f"Forward sync configuration is invalid: {exc}",
+            safe_operation_failure("Forward sync configuration validation", exc),
             obj=sync,
         )
         raise

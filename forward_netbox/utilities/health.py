@@ -1,3 +1,4 @@
+import logging
 from collections import Counter
 
 from .branching import missing_branch_table_report
@@ -40,6 +41,9 @@ from .query_binding_resolution import _QUERY_DRIFT_STATUS_LABELS
 from .query_binding_resolution import builtin_query_default_for_map
 from .query_registry import _default_query_parameters
 from .sync_facade import resolve_snapshot_id
+
+
+logger = logging.getLogger(__name__)
 
 
 DATA_FILE_HINTS = (
@@ -458,11 +462,12 @@ def live_source_health_check(sync):
         client = source.get_client()
         networks = client.get_networks()
     except Exception as exc:
+        logger.warning("Forward API health lookup failed (%s)", type(exc).__name__)
         result["checks"].append(
             _check(
                 name="Forward API reachability",
                 status="fail",
-                message=f"Forward API lookup failed: {exc}",
+                message="Forward API lookup failed. Review server logs and source connectivity.",
             )
         )
         return result
@@ -507,12 +512,19 @@ def live_source_health_check(sync):
     try:
         client.get_latest_processed_snapshot_id(configured_network_id)
     except Exception as exc:
+        logger.warning(
+            "Latest processed snapshot health lookup failed (%s)",
+            type(exc).__name__,
+        )
         result["latest_processed_snapshot_available"] = False
         result["checks"].append(
             _check(
                 name="Latest processed snapshot",
                 status="fail",
-                message=f"latestProcessed snapshot lookup failed: {exc}",
+                message=(
+                    "latestProcessed snapshot lookup failed. Review server logs and "
+                    "the configured network."
+                ),
             )
         )
         return result
@@ -569,11 +581,17 @@ def live_data_file_health_check(sync):
     try:
         resolved_snapshot_id = resolve_snapshot_id(sync, client=client)
     except Exception as exc:
+        logger.warning(
+            "Selected snapshot health resolution failed (%s)", type(exc).__name__
+        )
         result["checks"].append(
             _check(
                 name="Data-file freshness",
                 status="fail",
-                message=f"Could not resolve selected Forward snapshot: {exc}",
+                message=(
+                    "Could not resolve the selected Forward snapshot. Review server "
+                    "logs and source connectivity."
+                ),
             )
         )
         return result
@@ -639,6 +657,11 @@ def _probe_data_file(
             limit=1,
         )
     except Exception as exc:
+        logger.warning(
+            "Forward NQE data-file health probe failed for %s (%s)",
+            data_file_name,
+            type(exc).__name__,
+        )
         return {
             "data_file": data_file_name,
             "label": label,
@@ -647,7 +670,7 @@ def _probe_data_file(
             "row_count": None,
             "message": (
                 "Forward NQE could not read this data-file extension from the "
-                f"selected snapshot: {exc}"
+                "selected snapshot. Review server logs and source connectivity."
             ),
         }
 

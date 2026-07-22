@@ -10,6 +10,7 @@ from .branch_budget import MODEL_CHANGE_DENSITY_PROFILE_PARAMETER
 from .density_learning import density_profile_summary
 from .density_learning import normalize_density_map
 from .density_learning import normalize_density_profile
+from .diagnostics import sanitize_job_diagnostics
 from .execution_telemetry import build_sync_execution_summary
 
 INITIAL_BASELINE_LARGE_SHARD_THRESHOLD = 10
@@ -594,4 +595,4 @@ def get_sync_activity(sync):
 def get_job_logs(job):
     if not job:
         return {}
-    return job.data or {}
+    return sanitize_job_diagnostics(job.data or {})

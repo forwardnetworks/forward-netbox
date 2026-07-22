@@ -1040,7 +1040,8 @@ class BulkMergeIntegrationTest(CleanTransactionTestCase):
         issue = ForwardIngestionIssue.objects.get(ingestion=ingestion)
         self.assertEqual(issue.phase, "merge")
         self.assertEqual(issue.model, "dcim.site")
-        self.assertIn("Refusing to recreate deleted branch-owned", issue.message)
+        self.assertIn("_ExistingCreateResumeConflict", issue.message)
+        self.assertNotIn("Refusing to recreate deleted branch-owned", issue.message)
 
     def test_diverged_resume_persists_issue_without_invoking_apply(self):
         branch = provision_branch(user=self.user, name="Diverged Resume Issue")
@@ -1074,7 +1075,8 @@ class BulkMergeIntegrationTest(CleanTransactionTestCase):
         issue = ForwardIngestionIssue.objects.get(ingestion=ingestion)
         self.assertEqual(issue.phase, "merge")
         self.assertEqual(issue.model, "dcim.site")
-        self.assertIn(
+        self.assertIn("_ExistingCreateResumeConflict", issue.message)
+        self.assertNotIn(
             "no longer matches its latest branch-applied audit", issue.message
         )
 

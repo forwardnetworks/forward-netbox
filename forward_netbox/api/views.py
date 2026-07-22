@@ -1,4 +1,5 @@
 import hmac
+import logging
 
 from core.api.serializers_.jobs import JobSerializer
 from core.exceptions import SyncError
@@ -43,6 +44,9 @@ from forward_netbox.utilities.forward_api import LATEST_COLLECTED_SNAPSHOT
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from forward_netbox.utilities.query_binding import builtin_filename_to_query_default
 from forward_netbox.utilities.query_binding import query_filename_from_path
+
+
+logger = logging.getLogger(__name__)
 
 
 NQE_REPOSITORY_LABELS = {
@@ -107,52 +111,29 @@ class ForwardSourceViewSet(NetBoxModelViewSet):
 
     @action(detail=False, methods=["get"], url_path="available-networks")
     def available_networks(self, request):
-        source = None
-        source_id = request.GET.get("source_id")
-        if source_id:
-            try:
-                source = ForwardSource.objects.get(pk=source_id)
-            except (ForwardSource.DoesNotExist, TypeError, ValueError):
-                source = None
-
-        if source is None:
-            source_type = (
-                request.GET.get("type") or ForwardSource._meta.get_field("type").default
+        if "username" in request.GET or "password" in request.GET:
+            return Response(
+                {"detail": "Forward credentials are not accepted in query strings."},
+                status=status.HTTP_400_BAD_REQUEST,
             )
-            url = request.GET.get("url") or "https://fwd.app"
-            if source_type == "saas":
-                url = "https://fwd.app"
-                verify = True
-            else:
-                verify = str(request.GET.get("verify", "true")).lower() in {
-                    "1",
-                    "true",
-                    "yes",
-                    "on",
+        source_id = request.GET.get("source_id")
+        if not source_id:
+            return Response(
+                {
+                    "count": 0,
+                    "results": [],
+                    "detail": "A saved Forward source is required to load networks.",
                 }
-            username = request.GET.get("username") or ""
-            password = request.GET.get("password") or ""
-            if username and password:
-                source = ForwardSource(
-                    type=source_type,
-                    url=url,
-                    parameters={
-                        "username": username,
-                        "password": password,
-                        "verify": verify,
-                    },
-                )
-            else:
-                return Response(
-                    {
-                        "count": 0,
-                        "results": [],
-                        "detail": (
-                            "Enter Forward username and password so the plugin can "
-                            "load networks."
-                        ),
-                    }
-                )
+            )
+        try:
+            source = (
+                self.get_queryset().restrict(request.user, "view").get(pk=source_id)
+            )
+        except (ForwardSource.DoesNotExist, TypeError, ValueError):
+            return Response(
+                {"detail": "Forward source was not found or is not permitted."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
 
         q = (request.GET.get("q") or "").strip().lower()
         results = []
@@ -224,55 +205,31 @@ class ForwardSourceViewSet(NetBoxModelViewSet):
 
     @action(detail=False, methods=["get"], url_path="available-tags")
     def available_tags(self, request):
-        source = None
+        if "username" in request.GET or "password" in request.GET:
+            return Response(
+                {"detail": "Forward credentials are not accepted in query strings."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         source_id = request.GET.get("source_id")
         network_id = (request.GET.get("network_id") or "").strip()
-        if source_id:
-            try:
-                source = ForwardSource.objects.get(pk=source_id)
-            except (ForwardSource.DoesNotExist, TypeError, ValueError):
-                source = None
-
-        if source is None:
-            source_type = (
-                request.GET.get("type") or ForwardSource._meta.get_field("type").default
-            )
-            url = request.GET.get("url") or "https://fwd.app"
-            if source_type == "saas":
-                url = "https://fwd.app"
-                verify = True
-            else:
-                verify = str(request.GET.get("verify", "true")).lower() in {
-                    "1",
-                    "true",
-                    "yes",
-                    "on",
+        if not source_id:
+            return Response(
+                {
+                    "count": 0,
+                    "results": [],
+                    "detail": "A saved Forward source is required to load device tags.",
                 }
-            username = request.GET.get("username") or ""
-            password = request.GET.get("password") or ""
-            if username and password:
-                source = ForwardSource(
-                    type=source_type,
-                    url=url,
-                    parameters={
-                        "username": username,
-                        "password": password,
-                        "verify": verify,
-                        "network_id": network_id,
-                    },
-                )
-            else:
-                return Response(
-                    {
-                        "count": 0,
-                        "results": [],
-                        "detail": (
-                            "Enter Forward username and password so the plugin can "
-                            "load device tags."
-                        ),
-                    }
-                )
-        elif not network_id:
+            )
+        try:
+            source = (
+                self.get_queryset().restrict(request.user, "view").get(pk=source_id)
+            )
+        except (ForwardSource.DoesNotExist, TypeError, ValueError):
+            return Response(
+                {"detail": "Forward source was not found or is not permitted."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        if not network_id:
             network_id = str((source.parameters or {}).get("network_id") or "").strip()
 
         if not network_id:
@@ -667,7 +624,16 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
                 force_unchanged=True,
             )
         except SyncError as exc:
-            return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
+            logger.warning("Forward sync enqueue was rejected (%s)", type(exc).__name__)
+            return Response(
+                {
+                    "detail": (
+                        "Forward sync could not be queued. Review the current sync "
+                        "and branch state before retrying."
+                    )
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
         return Response(
             JobSerializer(job, context={"request": request}).data, status=201
         )
@@ -718,7 +684,16 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
             # configured sync user rather than an anonymous request.
             job = sync.enqueue_sync_job(adhoc=True)
         except SyncError as exc:
-            return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
+            logger.warning("Webhook sync enqueue was rejected (%s)", type(exc).__name__)
+            return Response(
+                {
+                    "detail": (
+                        "Forward sync could not be queued. Review the current sync "
+                        "and branch state before retrying."
+                    )
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
         return Response(
             {"status": "queued", "job_id": job.pk},
             status=status.HTTP_202_ACCEPTED,
@@ -794,11 +769,12 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
                 interval=interval,
             )
         except JobAlreadyActive as exc:
+            logger.info("Validation enqueue found an active equivalent job")
             return Response(
                 {
                     "status": "already_running",
                     "job_id": exc.job.pk,
-                    "detail": str(exc),
+                    "detail": "An equivalent validation job is already queued or running.",
                 },
                 status=status.HTTP_202_ACCEPTED,
             )
@@ -850,7 +826,9 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
                 {
                     "status": "blocked_by_sync_run",
                     "job_id": exc.job.pk,
-                    "detail": str(exc),
+                    "detail": (
+                        "This operation is blocked while a Forward sync job is active."
+                    ),
                 },
                 status=status.HTTP_202_ACCEPTED,
             )
@@ -859,7 +837,7 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
                 {
                     "status": "already_running",
                     "job_id": exc.job.pk,
-                    "detail": str(exc),
+                    "detail": "An equivalent job is already queued or running.",
                 },
                 status=status.HTTP_202_ACCEPTED,
             )

@@ -639,21 +639,47 @@ jobs:
     context.run(f\"python scripts/check_sensitive_content.py --protected-history\")
 """
 
-    def _check(self, *, ci=None, release=None, tasks=None):
+    def _check(self, *, ci=None, release=None, trusted=None, tasks=None):
         with tempfile.TemporaryDirectory() as temp_dir:
             repo_root = Path(temp_dir)
-            files = {
+            workflow_text = {
                 ".github/workflows/ci.yml": ci or self.CI_WORKFLOW,
                 ".github/workflows/release.yml": release or self.RELEASE_WORKFLOW,
-                ".github/workflows/trusted-sensitive-pr.yml": self.TRUSTED_WORKFLOW,
-                "tasks.py": tasks or self.TASKS,
+                ".github/workflows/trusted-sensitive-pr.yml": (
+                    trusted or self.TRUSTED_WORKFLOW
+                ),
             }
-            for relative_path, content in files.items():
-                path = repo_root / relative_path
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(content, encoding="utf-8")
+            workflows = {
+                path: check_harness.yaml.safe_load(content) or {}
+                for path, content in workflow_text.items()
+            }
+            (repo_root / "tasks.py").write_text(
+                tasks or self.TASKS,
+                encoding="utf-8",
+            )
+
+            def workflow(relative_path):
+                return workflows.get(relative_path, {})
+
+            def workflow_steps(relative_path, job_name):
+                steps = (
+                    workflow(relative_path)
+                    .get("jobs", {})
+                    .get(job_name, {})
+                    .get("steps", [])
+                )
+                return [step for step in steps if isinstance(step, dict)]
+
             failures = []
-            with patch.object(check_harness, "REPO_ROOT", repo_root):
+            with (
+                patch.object(check_harness, "REPO_ROOT", repo_root),
+                patch.object(check_harness, "_workflow", side_effect=workflow),
+                patch.object(
+                    check_harness,
+                    "_workflow_steps",
+                    side_effect=workflow_steps,
+                ),
+            ):
                 check_harness._check_sensitive_guard_wiring(failures)
         return failures
 
@@ -714,41 +740,13 @@ jobs:
 
     def test_missing_candidate_status_permission_fails(self):
         trusted = self.TRUSTED_WORKFLOW.replace("  statuses: write\n", "")
-        with tempfile.TemporaryDirectory() as temp_dir:
-            repo_root = Path(temp_dir)
-            files = {
-                ".github/workflows/ci.yml": self.CI_WORKFLOW,
-                ".github/workflows/release.yml": self.RELEASE_WORKFLOW,
-                ".github/workflows/trusted-sensitive-pr.yml": trusted,
-                "tasks.py": self.TASKS,
-            }
-            for relative_path, content in files.items():
-                path = repo_root / relative_path
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(content, encoding="utf-8")
-            failures = []
-            with patch.object(check_harness, "REPO_ROOT", repo_root):
-                check_harness._check_sensitive_guard_wiring(failures)
+        failures = self._check(trusted=trusted)
 
         self.assertTrue(any("statuses: write" in failure for failure in failures))
 
     def test_conditional_candidate_status_fails(self):
         trusted = self.TRUSTED_WORKFLOW.replace("if: always()", "if: success()")
-        with tempfile.TemporaryDirectory() as temp_dir:
-            repo_root = Path(temp_dir)
-            files = {
-                ".github/workflows/ci.yml": self.CI_WORKFLOW,
-                ".github/workflows/release.yml": self.RELEASE_WORKFLOW,
-                ".github/workflows/trusted-sensitive-pr.yml": trusted,
-                "tasks.py": self.TASKS,
-            }
-            for relative_path, content in files.items():
-                path = repo_root / relative_path
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(content, encoding="utf-8")
-            failures = []
-            with patch.object(check_harness, "REPO_ROOT", repo_root):
-                check_harness._check_sensitive_guard_wiring(failures)
+        failures = self._check(trusted=trusted)
 
         self.assertTrue(any("if: always()" in failure for failure in failures))
 

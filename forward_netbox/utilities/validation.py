@@ -4,6 +4,7 @@ from django.utils import timezone
 from ..choices import ForwardDriftPolicyBaselineChoices
 from ..choices import ForwardValidationStatusChoices
 from ..exceptions import ForwardSyncError
+from .diagnostics import safe_operation_failure
 from .query_fetch import ForwardQueryFetcher
 from .sync_primitives import DEPENDENCY_PARENT_DEVICE_MODELS
 
@@ -38,7 +39,7 @@ class ForwardValidationRunner:
                 status=ForwardValidationStatusChoices.FAILED,
                 allowed=False,
                 completed=timezone.now(),
-                blocking_reasons=[str(exc)],
+                blocking_reasons=[safe_operation_failure("Forward validation", exc)],
             )
             raise
 

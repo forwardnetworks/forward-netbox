@@ -1,5 +1,6 @@
 from unittest.mock import patch
 
+from django import forms
 from django.conf import settings
 from django.contrib.contenttypes.models import ContentType
 from django.http import QueryDict
@@ -143,6 +144,43 @@ class ForwardSourceFormTest(TestCase):
             form.fields["sync_device_tags"].widget.allow_multiple_selected,
             "sync_device_tags must use a multiple-select widget",
         )
+
+    def test_unsaved_source_form_does_not_construct_credential_query_widgets(self):
+        form = ForwardSourceForm()
+
+        self.assertIsInstance(form.fields["network_id"].widget, forms.TextInput)
+        for field_name in (
+            "device_tag_include_tags",
+            "device_tag_exclude_tags",
+            "sync_device_tags",
+        ):
+            widget = form.fields[field_name].widget
+            self.assertNotIn("password", str(widget.attrs).lower())
+            self.assertNotIn("username", str(widget.attrs).lower())
+
+    def test_saved_source_form_uses_source_id_without_credentials_in_query(self):
+        source = ForwardSource.objects.create(
+            name="saved-source-widgets",
+            type="saas",
+            url="https://forward.example.test",
+            parameters={
+                "username": "user@example.com",
+                "password": "secret",
+                "network_id": "net-1",
+            },
+        )
+        form = ForwardSourceForm(instance=source)
+
+        for field_name in (
+            "network_id",
+            "device_tag_include_tags",
+            "device_tag_exclude_tags",
+            "sync_device_tags",
+        ):
+            attrs = form.fields[field_name].widget.attrs
+            self.assertNotIn("password", str(attrs).lower())
+            self.assertNotIn("username", str(attrs).lower())
+        self.assertIn(str(source.pk), str(form.fields["network_id"].widget.attrs))
 
     @patch("forward_netbox.forms.ForwardSource.validate_connection")
     def test_sync_device_tags_persist_to_parameters(self, _mock_validate):
