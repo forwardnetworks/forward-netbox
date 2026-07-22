@@ -1,7 +1,4 @@
-try:  # pragma: no cover - core is always present inside NetBox
-    from core.exceptions import SyncError as _CoreSyncError
-except ModuleNotFoundError:  # pragma: no cover - tooling imports outside NetBox
-    _CoreSyncError = Exception
+from core.exceptions import SyncError as _CoreSyncError
 
 
 class ForwardSyncError(Exception):
@@ -16,6 +13,23 @@ class ForwardShardResolutionError(_CoreSyncError):
     catches it, while letting the stage-job runner distinguish a (bounded,
     retryable) resume-time plan desync from a genuine, terminal sync failure.
     """
+
+
+class ForwardPartialMergeError(_CoreSyncError):
+    """Raised when a branch merge applies only part of its change set.
+
+    The branch remains ready so the failed rows can be inspected and retried;
+    callers must not mark the ingestion complete or run post-sync overlays.
+    """
+
+    def __init__(self, message, *, applied, failed):
+        super().__init__(message)
+        self.applied = max(0, int(applied))
+        self.failed = max(0, int(failed))
+
+
+class ForwardOwnershipDispatchError(_CoreSyncError):
+    """Durable ownership work was recorded but could not be enqueued."""
 
 
 class ForwardClientError(ForwardSyncError):

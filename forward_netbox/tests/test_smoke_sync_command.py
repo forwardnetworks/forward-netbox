@@ -8,7 +8,6 @@ from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import TestCase
 
-from forward_netbox.choices import ForwardExecutionBackendChoices
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 
@@ -89,10 +88,7 @@ class ForwardSmokeSyncCommandTest(TestCase):
             )
 
         sync = ForwardSync.objects.get(name="redacted-smoke-sync")
-        self.assertEqual(
-            sync.parameters["execution_backend"],
-            ForwardExecutionBackendChoices.SINGLE_BRANCH,
-        )
+        self.assertNotIn("execution_backend", sync.parameters)
         self.assertEqual(sync.source, self.source)
         output = stdout.getvalue()
         self.assertIn("dcim.device | rows=2 | runtime_ms=12.5", output)

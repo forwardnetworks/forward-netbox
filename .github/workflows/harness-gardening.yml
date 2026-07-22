@@ -1,0 +1,32 @@
+name: Harness Gardening
+"on":
+  schedule:
+    - cron: "17 14 * * 1"
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+jobs:
+  audit:
+    name: Audit repository knowledge
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.14"
+      - name: Install harness dependencies
+        run: python -m pip install --disable-pip-version-check PyYAML==6.0.3
+      - name: Check harness structure and freshness
+        run: python scripts/check_harness.py
+      - name: Run harness regression tests
+        run: |
+          python -m unittest discover \
+            -s scripts/tests \
+            -p 'test_check_harness.py'

@@ -60,7 +60,7 @@ def _build_query_mode_summary(model_results):
     }
 
 
-def build_plan_preview(plan, *, max_changes_per_branch):
+def build_plan_preview(plan, *, max_changes_per_staging_item):
     if not plan:
         return {
             "planned_shards": 0,
@@ -90,7 +90,7 @@ def build_plan_preview(plan, *, max_changes_per_branch):
                 "estimated_changes": 0,
                 "shard_count": 0,
                 "max_shard_changes": 0,
-                "budget": max_changes_per_branch,
+                "budget": max_changes_per_staging_item,
             },
         )
         model_entry["estimated_changes"] += item.estimated_changes
@@ -105,9 +105,9 @@ def build_plan_preview(plan, *, max_changes_per_branch):
     )
     max_shard_changes = max(item.estimated_changes for item in plan)
     retry_risk = "low"
-    if any(item.estimated_changes >= max_changes_per_branch for item in plan):
+    if any(item.estimated_changes >= max_changes_per_staging_item for item in plan):
         retry_risk = "high"
-    elif max_shard_changes >= int(max_changes_per_branch * 0.8):
+    elif max_shard_changes >= int(max_changes_per_staging_item * 0.8):
         retry_risk = "medium"
     elif len(plan) > 1:
         retry_risk = "medium"
@@ -118,7 +118,7 @@ def build_plan_preview(plan, *, max_changes_per_branch):
         "model_count": len(model_totals),
         "delete_dependency_plan": delete_dependency_plan_summary(
             plan,
-            max_changes_per_branch=max_changes_per_branch,
+            max_changes_per_staging_item=max_changes_per_staging_item,
         ),
         "retry_risk": retry_risk,
         "slowest_model": {
@@ -209,9 +209,7 @@ def build_ingestion_execution_summary(
 
 def _build_query_path_resolution_summary(model_results):
     total_specs = 0
-    artifact_hits = 0
-    client_resolves = 0
-    repository_index_reads = 0
+    resolved_specs = 0
     model_items = []
 
     for result in model_results or []:
@@ -220,28 +218,16 @@ def _build_query_path_resolution_summary(model_results):
             continue
         model = str(result.get("model") or "").strip() or "unknown"
         query_path_spec_count = _coerce_int(resolution.get("query_path_spec_count"))
-        artifact_hit_count = _coerce_int(resolution.get("artifact_hit_count"))
-        client_resolve_count = _coerce_int(resolution.get("client_resolve_count"))
-        repository_index_count = _coerce_int(resolution.get("repository_index_count"))
-        if (
-            not query_path_spec_count
-            and not artifact_hit_count
-            and not client_resolve_count
-            and not repository_index_count
-        ):
+        resolved_spec_count = _coerce_int(resolution.get("resolved_spec_count"))
+        if not query_path_spec_count and not resolved_spec_count:
             continue
         total_specs += query_path_spec_count
-        artifact_hits += artifact_hit_count
-        client_resolves += client_resolve_count
-        repository_index_reads += repository_index_count
+        resolved_specs += resolved_spec_count
         model_items.append(
             {
                 "model": model,
                 "query_path_spec_count": query_path_spec_count,
-                "artifact_hit_count": artifact_hit_count,
-                "client_resolve_count": client_resolve_count,
-                "repository_index_count": repository_index_count,
-                "cache_hit_rate": resolution.get("cache_hit_rate"),
+                "resolved_spec_count": resolved_spec_count,
             }
         )
 
@@ -249,61 +235,28 @@ def _build_query_path_resolution_summary(model_results):
         model_items,
         key=lambda item: (
             -int(item["query_path_spec_count"]),
-            -int(item["artifact_hit_count"]),
+            -int(item["resolved_spec_count"]),
             str(item["model"]),
         ),
     )[:10]
-    total_lookups = artifact_hits + client_resolves
     return {
         "available": bool(total_specs),
         "total_query_path_specs": total_specs,
-        "artifact_hit_count": artifact_hits,
-        "client_resolve_count": client_resolves,
-        "repository_index_count": repository_index_reads,
-        "cache_hit_rate": (
-            round(artifact_hits / float(total_lookups), 4) if total_lookups else None
-        ),
+        "resolved_spec_count": resolved_specs,
         "top_models": model_items,
     }
-
-
-def build_branch_run_summary(branch_run_state):
-    state = dict(branch_run_state or {})
-    summary = {
-        "snapshot_id": state.get("snapshot_id") or "",
-        "next_plan_index": state.get("next_plan_index"),
-        "total_plan_items": state.get("total_plan_items"),
-        "awaiting_merge": bool(state.get("awaiting_merge")),
-        "validation_run_id": state.get("validation_run_id"),
-        "phase": state.get("phase") or "",
-        "phase_message": state.get("phase_message") or "",
-        "phase_started": state.get("phase_started") or "",
-        "last_progress_message": state.get("last_progress_message") or "",
-        "last_progress_at": state.get("last_progress_at") or "",
-        "current_model_string": state.get("current_model_string") or "",
-        "current_shard_index": state.get("current_shard_index"),
-        "current_row_count": state.get("current_row_count"),
-        "current_row_total": state.get("current_row_total"),
-        "plan_preview": state.get("plan_preview") or {},
-        "plan_items": state.get("plan_items") or [],
-        "last_stage_job_id": state.get("last_stage_job_id"),
-        "last_error": state.get("last_error") or "",
-        "model_change_density": state.get("model_change_density") or {},
-    }
-    return summary
 
 
 def build_sync_execution_summary(
     *,
     enabled_models,
-    max_changes_per_branch,
+    max_changes_per_staging_item,
     model_change_density,
     model_change_density_profile,
-    branch_run_state,
     latest_ingestion_summary,
 ):
     summary = {
-        "max_changes_per_branch": max_changes_per_branch,
+        "max_changes_per_staging_item": max_changes_per_staging_item,
         "model_change_density": dict(model_change_density or {}),
         "model_change_density_profile": density_profile_summary(
             density_map=model_change_density,
@@ -314,7 +267,7 @@ def build_sync_execution_summary(
     }
     summary["branch_budget_hints"] = build_branch_budget_hints(
         summary["enabled_models"],
-        max_changes_per_branch=max_changes_per_branch,
+        max_changes_per_staging_item=max_changes_per_staging_item,
         model_change_density=model_change_density,
         model_change_density_profile=model_change_density_profile,
     )
@@ -323,10 +276,6 @@ def build_sync_execution_summary(
         model_change_density=model_change_density,
         model_change_density_profile=model_change_density_profile,
     )
-    if branch_run_state:
-        summary["branch_run"] = build_branch_run_summary(branch_run_state)
-        if branch_run_state.get("plan_preview"):
-            summary["pre_run_estimate"] = branch_run_state["plan_preview"]
     if latest_ingestion_summary:
         summary["latest_ingestion"] = latest_ingestion_summary
     return summary

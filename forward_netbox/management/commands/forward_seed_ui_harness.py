@@ -6,6 +6,7 @@ from core.models import Job
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
 from django.core.management.base import BaseCommand
+from django.core.management.base import CommandError
 from django.utils import timezone
 
 from forward_netbox.choices import forward_configured_models
@@ -17,11 +18,12 @@ from forward_netbox.models import ForwardDriftPolicy
 from forward_netbox.models import ForwardIngestion
 from forward_netbox.models import ForwardIngestionIssue
 from forward_netbox.models import ForwardNQEMap
+from forward_netbox.models import ForwardOwnershipReconciliation
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.models import ForwardValidationRun
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
-from forward_netbox.utilities.job_compat import ensure_core_job_compat_defaults
+from forward_netbox.utilities.ownership import required_ownership_domains
 
 
 class Command(BaseCommand):
@@ -54,6 +56,11 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        if os.getenv("FORWARD_UI_HARNESS_ISOLATED", "").lower() != "true":
+            raise CommandError(
+                "Synthetic UI fixtures may only be seeded in the isolated "
+                "`invoke playwright-test` runtime."
+            )
         user = self._ensure_superuser(
             username=options["username"],
             password=options["password"],
@@ -80,6 +87,12 @@ class Command(BaseCommand):
             user=user,
             snapshot_id=options["snapshot_id"],
             validation_run=validation_run,
+        )
+        self._ensure_ownership_reconciliation(ingestion)
+        self._ensure_dependency_preview(
+            sync=sync,
+            user=user,
+            snapshot_id=options["snapshot_id"],
         )
 
         self.stdout.write(self.style.SUCCESS("Seeded Forward UI harness fixture."))
@@ -244,6 +257,7 @@ class Command(BaseCommand):
         )
 
     def _ensure_ingestion(self, *, sync, user, snapshot_id, validation_run):
+        ForwardOwnershipReconciliation.objects.filter(sync=sync).delete()
         old_job_ids = {
             job_id
             for job_ids in ForwardIngestion.objects.filter(sync=sync).values_list(
@@ -262,6 +276,11 @@ class Command(BaseCommand):
             snapshot_id=snapshot_id,
             sync_mode="full",
             baseline_ready=True,
+            applied_change_count=7,
+            failed_change_count=0,
+            created_change_count=2,
+            updated_change_count=4,
+            deleted_change_count=1,
             validation_run=validation_run,
             snapshot_info={
                 "state": "PROCESSED",
@@ -294,8 +313,72 @@ class Command(BaseCommand):
         )
         return ingestion
 
+    def _ensure_ownership_reconciliation(self, ingestion):
+        now = timezone.now()
+        for domain in required_ownership_domains(ingestion.sync):
+            ForwardOwnershipReconciliation.objects.update_or_create(
+                sync=ingestion.sync,
+                domain=domain,
+                defaults={
+                    "ingestion": ingestion,
+                    "snapshot_id": ingestion.snapshot_id,
+                    "status": ForwardOwnershipReconciliation.Status.COMPLETED,
+                    "error_type": "",
+                    "started_at": now,
+                    "completed_at": now,
+                },
+            )
+
+    def _ensure_dependency_preview(self, *, sync, user, snapshot_id):
+        content_type = ContentType.objects.get_for_model(ForwardSync)
+        Job.objects.filter(
+            object_type=content_type,
+            object_id=sync.pk,
+            name__icontains="dependency preview",
+        ).delete()
+        now = timezone.now()
+        values = {
+            "object_type": content_type,
+            "object_id": sync.pk,
+            "name": f"{sync.name} - dependency preview",
+            "user": user,
+            "status": JobStatusChoices.STATUS_COMPLETED,
+            "job_id": uuid.uuid4(),
+            "created": now,
+            "started": now,
+            "completed": now,
+            "data": {
+                "generated_at": now.isoformat(),
+                "context": {
+                    "snapshot_id": snapshot_id,
+                    "snapshot_selector": LATEST_PROCESSED_SNAPSHOT,
+                },
+                "change_estimate_kind": "workload_upper_bound",
+                "model_results": [
+                    {
+                        "model": "dcim.device",
+                        "row_count": 2,
+                        "estimated_changes": 2,
+                        "delete_count": 0,
+                        "failure_count": 0,
+                        "change_estimate_kind": "workload_upper_bound",
+                    },
+                    {
+                        "model": "dcim.interface",
+                        "row_count": 4,
+                        "estimated_changes": 4,
+                        "delete_count": 0,
+                        "failure_count": 0,
+                        "change_estimate_kind": "workload_upper_bound",
+                    },
+                ],
+            },
+        }
+        if any(field.name == "notifications" for field in Job._meta.fields):
+            values["notifications"] = []
+        return Job.objects.create(**values)
+
     def _ensure_job(self, *, ingestion, user):
-        ensure_core_job_compat_defaults()
         content_type = ContentType.objects.get_for_model(ForwardIngestion)
         now = timezone.now()
         values = {

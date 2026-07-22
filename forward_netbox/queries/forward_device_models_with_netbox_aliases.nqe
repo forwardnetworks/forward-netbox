@@ -15,8 +15,10 @@ let aliases = network.extensions.netbox_device_type_aliases
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
 let vendor = device.platform.vendor
-let raw_model = toString(device.platform.model)
-let raw_model_slug = slugifyNetboxModel(raw_model)
+let raw_model_opt = toString(device.platform.model)
+let raw_model = if isPresent(raw_model_opt) && raw_model_opt != "" then raw_model_opt else "Unknown"
+let raw_model_slug_opt = slugifyNetboxModel(raw_model)
+let raw_model_slug = if isPresent(raw_model_slug_opt) && raw_model_slug_opt != "" then raw_model_slug_opt else "unknown"
 let data_manufacturer_name = if isPresent(aliases.value) then max(
     foreach alias in aliases.value
     where alias.record_type == "manufacturer_override"
@@ -49,8 +51,10 @@ let mapped_slug = if isPresent(aliases.value) then max(
     select alias.netbox_slug
   )
   else null : String
-let model = if isPresent(mapped_model) then mapped_model else raw_model
-let model_slug = if isPresent(mapped_slug) then mapped_slug else raw_model_slug
+let model_raw = if isPresent(mapped_model) then mapped_model else raw_model
+let model = if isPresent(model_raw) && model_raw != "" then model_raw else "Unknown"
+let model_slug_raw = if isPresent(mapped_slug) then mapped_slug else raw_model_slug
+let model_slug = if isPresent(model_slug_raw) && model_slug_raw != "" then model_slug_raw else "unknown"
 where isEmpty(forward_netbox_shard_keys)
   || model_slug in forward_netbox_shard_keys
   || model in forward_netbox_shard_keys

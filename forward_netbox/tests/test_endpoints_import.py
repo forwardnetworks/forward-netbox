@@ -168,7 +168,6 @@ class EndpointFormRenderTest(TestCase):
             parameters={
                 "device_tag_include_tags": ["Prod"],
                 "scope_endpoints_by_include_tags": False,
-                "scope_endpoints_by_include_tags_configured": True,
             },
         )
 
@@ -179,13 +178,12 @@ class EndpointFormRenderTest(TestCase):
             False,
         )
 
-    def test_legacy_sources_with_include_tags_fail_closed(self):
+    def test_missing_endpoint_scope_setting_fails_closed(self):
         source = ForwardSource.objects.create(
-            name="legacy-source",
+            name="default-scope-source",
             url="https://forward.example.invalid",
             parameters={
                 "device_tag_include_tags": ["Prod"],
-                "scope_endpoints_by_include_tags": False,
             },
         )
 
@@ -488,6 +486,23 @@ class BlankDeviceTypeGuardTest(SimpleTestCase):
             # null-safe guard, not just == "" (model stringifies to null).
             self.assertIn("isPresent(", device_branch, filename)
 
+    def test_device_type_map_guards_empty_or_null_model(self):
+        for filename in (
+            "forward_device_models.nqe",
+            "forward_device_models_with_netbox_aliases.nqe",
+        ):
+            query = _read_query(filename)
+            self.assertIn(
+                'if isPresent(model_raw) && model_raw != "" then model_raw else "Unknown"',
+                query,
+                filename,
+            )
+            self.assertIn(
+                'if isPresent(model_slug_raw) && model_slug_raw != "" then model_slug_raw else "unknown"',
+                query,
+                filename,
+            )
+
     def test_endpoint_branch_guards_empty_sysdescr(self):
         for filename in (
             "forward_devices.nqe",
@@ -529,6 +544,23 @@ class AvocentUnificationTest(SimpleTestCase):
             self.assertIn("1.3.6.1.4.1.2925.*", branch, filename)
             for sig in ("*avocent*", "*cyclades*", "*alterpath*"):
                 self.assertIn(sig, branch, filename)
+
+    def test_avocent_rows_emit_stable_netbox_identity(self):
+        for filename in (
+            "forward_devices.nqe",
+            "forward_devices_with_netbox_aliases.nqe",
+        ):
+            branch = self._endpoint_branch(filename)
+            self.assertIn('if isAvocent then "Avocent"', branch, filename)
+            self.assertIn(
+                'let ep_role = if isConsoleServer then "Console Server"',
+                branch,
+                filename,
+            )
+            self.assertIn("platform: ep_manuf,", branch, filename)
+            self.assertIn("manufacturer: ep_manuf,", branch, filename)
+            self.assertIn("device_type: ep_model,", branch, filename)
+            self.assertIn("platform_manufacturer_authoritative: true", branch, filename)
 
     def test_multiline_sysdescr_is_collapsed_before_tokenizing(self):
         for filename in (
@@ -580,7 +612,7 @@ class EndpointIncludeScopeProbeTest(TestCase):
             network_id="n",
             snapshot_id="s",
             exclude_tags=["Decom"],
-            include_tags=["scope-a"],
+            include_tags=["Scope-A"],
             include_match="any",
             scope_endpoints_by_include_tags=False,
         )
@@ -588,7 +620,7 @@ class EndpointIncludeScopeProbeTest(TestCase):
         self.assertIn('"Decom" in endpoint.tagNames', query)
         # 2.4.4 regression guard: the include tag must NOT gate the probe when
         # the toggle is off.
-        self.assertNotIn("scope-a", query)
+        self.assertNotIn("Scope-A", query)
 
     def test_probe_toggle_on_applies_include_any(self):
         from unittest.mock import Mock
@@ -600,13 +632,13 @@ class EndpointIncludeScopeProbeTest(TestCase):
             network_id="n",
             snapshot_id="s",
             exclude_tags=[],
-            include_tags=["scope-a", "scope-b"],
+            include_tags=["Scope-A", "Scope-B"],
             include_match="any",
             scope_endpoints_by_include_tags=True,
         )
         query = client.run_nqe_query.call_args.kwargs["query"]
         self.assertIn(
-            'where ("scope-a" in endpoint.tagNames || "scope-b" in endpoint.tagNames)',
+            'where ("Scope-A" in endpoint.tagNames || "Scope-B" in endpoint.tagNames)',
             query,
         )
 
@@ -620,13 +652,13 @@ class EndpointIncludeScopeProbeTest(TestCase):
             network_id="n",
             snapshot_id="s",
             exclude_tags=[],
-            include_tags=["scope-a", "scope-b"],
+            include_tags=["Scope-A", "Scope-B"],
             include_match="all",
             scope_endpoints_by_include_tags=True,
         )
         query = client.run_nqe_query.call_args.kwargs["query"]
-        self.assertIn('where "scope-a" in endpoint.tagNames', query)
-        self.assertIn('where "scope-b" in endpoint.tagNames', query)
+        self.assertIn('where "Scope-A" in endpoint.tagNames', query)
+        self.assertIn('where "Scope-B" in endpoint.tagNames', query)
 
     def test_probe_excludes_cimc_by_profile_and_sysdescr(self):
         from unittest.mock import Mock
@@ -693,14 +725,14 @@ class EndpointIncludeScopeProbeTest(TestCase):
 
         client = Mock()
         client.run_nqe_query.side_effect = [
-            [{"name": "dev-1", "site": "dc1", "tagNames": ["scope-a"]}],
+            [{"name": "dev-1", "site": "dc1", "tagNames": ["Scope-A"]}],
             [{"name": "avocent-1"}],
         ]
         fetcher = self._fetcher(client)
         names, _sites, _matched, failed = fetcher._resolve_scoped_tag_scope(
             network_id="n",
             snapshot_id="s",
-            include_tags=["scope-a"],
+            include_tags=["Scope-A"],
             exclude_tags=[],
             include_match="any",
             sync_endpoints=True,
@@ -709,7 +741,7 @@ class EndpointIncludeScopeProbeTest(TestCase):
         self.assertEqual(names, {"dev-1", "avocent-1"})
         self.assertFalse(failed)
         endpoint_query = client.run_nqe_query.call_args_list[1].kwargs["query"]
-        self.assertIn('"scope-a" in endpoint.tagNames', endpoint_query)
+        self.assertIn('"Scope-A" in endpoint.tagNames', endpoint_query)
 
 
 class ScopeMaskingWarningTest(TestCase):
@@ -736,7 +768,7 @@ class ScopeMaskingWarningTest(TestCase):
         names, _sites, _matched, failed = fetcher._resolve_scoped_tag_scope(
             network_id="n",
             snapshot_id="s",
-            include_tags=["scope-a"],
+            include_tags=["Scope-A"],
             exclude_tags=[],
             include_match="any",
             sync_endpoints=True,
@@ -760,14 +792,14 @@ class ScopeMaskingWarningTest(TestCase):
 
         client = Mock()
         client.run_nqe_query.side_effect = [
-            [{"name": "dev-1", "site": "dc1", "tagNames": ["scope-a"]}],
+            [{"name": "dev-1", "site": "dc1", "tagNames": ["Scope-A"]}],
             [{"name": "avocent-1"}],
         ]
         fetcher = self._fetcher(client)
         fetcher._resolve_scoped_tag_scope(
             network_id="n",
             snapshot_id="s",
-            include_tags=["scope-a"],
+            include_tags=["Scope-A"],
             exclude_tags=[],
             include_match="any",
             sync_endpoints=True,
@@ -858,13 +890,6 @@ class ScopeEndpointsAllowlistTest(TestCase):
 
         clean_forward_source(self._source(sync_generic_endpoints=True))
 
-    def test_configured_marker_bool_is_accepted(self):
-        from forward_netbox.utilities.model_validation import clean_forward_source
-
-        clean_forward_source(
-            self._source(scope_endpoints_by_include_tags_configured=True)
-        )
-
     def test_non_bool_value_is_rejected(self):
         from django.core.exceptions import ValidationError
 
@@ -880,16 +905,6 @@ class ScopeEndpointsAllowlistTest(TestCase):
 
         with self.assertRaises(ValidationError):
             clean_forward_source(self._source(sync_generic_endpoints="yes"))
-
-    def test_non_bool_configured_marker_is_rejected(self):
-        from django.core.exceptions import ValidationError
-
-        from forward_netbox.utilities.model_validation import clean_forward_source
-
-        with self.assertRaises(ValidationError):
-            clean_forward_source(
-                self._source(scope_endpoints_by_include_tags_configured="yes")
-            )
 
 
 class DuplicateDeviceNameLookupTest(TestCase):

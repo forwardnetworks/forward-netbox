@@ -9,9 +9,13 @@ plugin version supports your NetBox version before upgrading.
 1. **Back up the NetBox database.** The plugin's sync engine performs
    inventory-wide writes, and an upgrade applies schema migrations. A restorable
    database backup is the supported rollback path (see [Rollback](#rollback)).
-2. **Quiesce syncs.** Let in-flight Forward syncs finish and avoid starting new
-   ones during the upgrade (check the Sync and Ingestion pages, and the RQ queues).
-3. **Read the release notes** for the target version (the README compatibility
+2. **Quiesce syncs and branches.** Let in-flight Forward syncs finish, then merge
+   or discard every nonterminal Branching branch. Version 2.6 ownership tables
+   exist only in the main schema; do not install or migrate while a review,
+   ready, failed, merging, or pending-migrations branch remains.
+3. **Verify the exact runtime target.** Version 2.6 requires NetBox 4.6.5 and
+   `netboxlabs-netbox-branching` 1.1.1 on web and every worker.
+4. **Read the release notes** for the target version (the README compatibility
    table and `CHANGELOG.md`) for any migration or configuration notes.
 
 ## Upgrade
@@ -40,21 +44,69 @@ After restart:
 - Confirm the plugin version: `pip show forward-netbox`.
 - Confirm NetBox starts cleanly (`python manage.py check`) with no
   `netbox_branching` dependency warnings in the log.
-- When release notes require bundled NQE changes, publish the bundled queries
-  with overwrite enabled before validation.
+- For `2.6.0`, every upgrade from a pre-2.6 release must run **Publish Bundled
+  Queries** once with overwrite enabled before validation. This installs the
+  changed 2.6 device-model fallback contracts in addition to the earlier query
+  fixes.
+- The `2.6.0` data migration removes the legacy `auto_prune_orphans` sync
+  parameter and registers existing plugin-managed tags. It deliberately invents
+  no source claims and marks no pre-existing Virtual Device Context as owned.
+  Subsequent complete syncs automatically remove only stale devices with an
+  exact plugin-owned identity and no ownership protection. Historical or
+  operator-owned orphan review remains manual.
+- The same migration renames `max_changes_per_branch` to
+  `max_changes_per_staging_item`, removes retired execution and automatic-prune
+  controls, converts active validation/dependency-preview Job rows into
+  canonical stored schedule intent, and disables the bundled no-op Virtual
+  Chassis map. Customer-authored maps are unchanged.
+- Existing sources with include tags and no explicit endpoint-scope decision
+  are converted to `scope_endpoints_by_include_tags=true`. An explicit opt-out
+  previously saved by the UI remains false. The transitional configured marker
+  is removed.
+- Ownerless syncs adopt the user from their latest attributable NetBox job when
+  one exists. Before running an ownerless sync with no attributable history,
+  edit it while signed in as the intended owner. Version 2.6 refuses execution
+  without an invoking user or stored owner; it never falls back to an arbitrary
+  superuser for ObjectChange attribution.
 - Re-open each source after an endpoint-query upgrade. Keep **Import Generic
   SNMP Endpoints as Devices** off unless broad, sparse endpoint inventory is
   intentional; the normal endpoint toggle imports recognized console servers.
-- Run **Preview Dependencies**, then one sync against a known source and confirm
-  it completes and the Sync health panel is green.
-- Run **Preview Dependencies** a second time. Treat unexpected repeated apply
-  work as a convergence failure; do not accept the new baseline until it is
-  explained.
+- Run **Preview Dependencies**, then run every relevant sync against a known
+  snapshot so each one establishes generation-stamped scope/status/parent
+  claims. When sources share a managed tag, run all of them before expecting a
+  last-claim removal.
+- Confirm each merge has zero failed changes. A partial merge remains open and
+  retryable; it is not a baseline and does not enqueue ownership overlays.
+- Wait for every required post-sync ownership job to complete. Pending, failed,
+  stale, conflicting, or missing materialization evidence keeps Sync Health and
+  Drift non-converged.
+- Open the **Drift Report**. Dependency preview is a workload estimate and does
+  not perform an object-level comparison. If the completed sync applied any
+  changes, run the sync again against the same resolved snapshot. Accept
+  convergence only when the report shows a merged, zero-change, zero-failure
+  ingestion for that same snapshot.
 - Review **Scope Reconciliation**, including the read-only post-upgrade catalog
-  counts. Prune source-scoped device orphans only after review. Global DLM and
-  DeviceType candidates remain manual-review items.
+  counts. Run **Reconcile device scope tags** before reviewing contradictory
+  include/out-of-scope labels. Review and prune any source-scoped device orphans
+  that are not covered by exact automatic ownership proof. A complete 2.6 DLM
+  sync converges plugin-owned SoftwareVersion and CVE catalogs against their
+  authoritative association workloads; DeviceType candidates remain
+  manual-review items.
+- Run the strict read-only control-plane gate:
+
+  ```bash
+  python manage.py forward_ownership_audit \
+    --fail-on-inconsistent --require-no-open-branches
+  ```
+
+  Accept the upgrade only when `consistent` and `release_ready` are both true.
+  A stale overlay reports a skip and requests catch-up against the newest
+  completed ingestion.
+- Module sync no longer requires an out-of-band bay import. Missing bays are
+  created in the branch before their modules under the required 4.6.5/1.1.1
+  matrix; Module Readiness remains an optional preflight.
 - Export a support bundle. It carries aggregate post-upgrade DLM, CVE, Platform,
-  and legacy endpoint DeviceType counts without sampled inventory values.
+  and stale endpoint DeviceType counts without sampled inventory values.
 
 ## Rollback
 
@@ -67,7 +119,11 @@ If an upgrade misbehaves, roll back to the previously installed version.
 > migrations. Reverse-migration is safe only for releases with no migration or
 > with reversible migrations.
 
-Restore-from-backup rollback (recommended):
+Version 2.6 adds the ownership control-plane schema and uses a one-way
+initialization migration. Restoring the pre-upgrade database backup is the only
+supported rollback from 2.6.
+
+Restore-from-backup rollback:
 
 ```bash
 # 1. Stop NetBox web + workers.
@@ -77,8 +133,7 @@ pip install forward-netbox==<previous-version>
 # 4. Start NetBox web + workers.
 ```
 
-Reverse-migration rollback (only when the intervening release added no migration,
-or only reversible ones — check `forward_netbox/migrations/` for the delta):
+Reverse-migration rollback for releases that do not cross 2.6:
 
 ```bash
 cd /opt/netbox/netbox
@@ -87,6 +142,7 @@ pip install forward-netbox==<previous-version>
 # then restart web + workers
 ```
 
-The stored Forward source parameters are forward- and backward-compatible across
-recent releases (unknown keys are accepted and ignored), so a downgrade does not
-invalidate existing sources.
+Version 2.6 validates source and sync parameter schemas strictly; unknown or
+retired keys are rejected instead of ignored. Do not use parameter compatibility
+as a rollback mechanism. A rollback across 2.6 requires the pre-upgrade database
+backup described above.

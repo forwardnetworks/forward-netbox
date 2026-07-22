@@ -6,6 +6,7 @@ from unittest.mock import Mock
 from django.contrib.contenttypes.models import ContentType
 from django.test import TestCase
 
+from forward_netbox.exceptions import ForwardQueryError
 from forward_netbox.models import ForwardNQEMap
 from forward_netbox.signals import seed_builtin_nqe_maps
 from forward_netbox.utilities.query_registry import _collapse_alias_variant_duplicates
@@ -15,6 +16,7 @@ from forward_netbox.utilities.query_registry import BUILTIN_OPTIONAL_QUERY_MAPS
 from forward_netbox.utilities.query_registry import builtin_query_contract_summary
 from forward_netbox.utilities.query_registry import BUILTIN_QUERY_MAPS
 from forward_netbox.utilities.query_registry import BUILTIN_QUERY_SPECS
+from forward_netbox.utilities.query_registry import ensure_unique_query_spec_executions
 from forward_netbox.utilities.query_registry import get_query_specs
 from forward_netbox.utilities.query_registry import get_seeded_builtin_query_spec
 from forward_netbox.utilities.query_registry import (
@@ -434,7 +436,7 @@ class QueryRegistryTest(TestCase):
             query_index={"by_path": {}},
         )
 
-    def test_resolve_query_specs_for_client_dedupes_identical_head_misses(self):
+    def test_duplicate_head_paths_share_lookup_then_fail_before_execution(self):
         client = Mock()
         client.get_nqe_repository_query_index.return_value = {"by_path": {}}
         client.get_committed_nqe_query.return_value = {
@@ -457,10 +459,12 @@ class QueryRegistryTest(TestCase):
             ),
         ]
 
-        resolved = resolve_query_specs_for_client(specs, client)
+        with self.assertRaisesRegex(
+            ForwardQueryError,
+            "Duplicate logical NQE execution.*Disable or consolidate one map",
+        ):
+            resolve_query_specs_for_client(specs, client)
 
-        self.assertEqual(resolved[0].run_query_id, "Q_devices")
-        self.assertEqual(resolved[1].run_query_id, "Q_devices")
         self.assertEqual(client.get_nqe_repository_query_index.call_count, 1)
         self.assertEqual(client.get_committed_nqe_query.call_count, 1)
 
@@ -504,6 +508,31 @@ class QueryRegistryTest(TestCase):
                 "forward_netbox_shard_keys": ["core-1"],
             },
         )
+
+    def test_duplicate_detection_uses_effective_runtime_parameters(self):
+        specs = [
+            QuerySpec(
+                model_string="dcim.device",
+                query_name="Forward Devices A",
+                query_id="Q_devices",
+                parameters={"scope": "a"},
+            ),
+            QuerySpec(
+                model_string="dcim.device",
+                query_name="Forward Devices B",
+                query_id="Q_devices",
+                parameters={"scope": "b"},
+            ),
+        ]
+
+        with self.assertRaisesRegex(
+            ForwardQueryError,
+            "Duplicate logical NQE execution",
+        ):
+            ensure_unique_query_spec_executions(
+                specs,
+                extra_parameters={"scope": "same"},
+            )
 
     def test_builtin_queries_expose_required_output_fields(self):
         for query_default in BUILTIN_QUERY_MAPS:
@@ -843,10 +872,8 @@ class QueryRegistryTest(TestCase):
         )
 
     def test_virtual_chassis_query_does_not_map_ha_peers_by_default(self):
-        spec = next(
-            spec
-            for spec in BUILTIN_QUERY_SPECS["dcim.virtualchassis"]
-            if spec.query_name == "Forward Virtual Chassis"
+        spec = get_seeded_builtin_query_spec(
+            "dcim.virtualchassis", "Forward Virtual Chassis"
         )
 
         self.assertIn("foreach device in network.devices", spec.query)
@@ -858,6 +885,23 @@ class QueryRegistryTest(TestCase):
         self.assertNotIn("device.ha.vpc", spec.query)
         self.assertNotIn("device.ha.mlagPeer", spec.query)
         self.assertNotIn("clusterHa", spec.query)
+
+    def test_virtual_chassis_contract_map_is_optional_and_disabled(self):
+        rows = {
+            (row["model_string"], row["name"]): row for row in builtin_nqe_map_rows()
+        }
+
+        row = rows[("dcim.virtualchassis", "Forward Virtual Chassis")]
+        self.assertFalse(row["enabled"])
+        self.assertEqual(BUILTIN_QUERY_SPECS["dcim.virtualchassis"], [])
+        self.assertNotIn(
+            "Forward Virtual Chassis",
+            {query_default["name"] for query_default in BUILTIN_QUERY_MAPS},
+        )
+        self.assertIn(
+            "Forward Virtual Chassis",
+            {query_default["name"] for query_default in BUILTIN_OPTIONAL_QUERY_MAPS},
+        )
 
     def test_wrapped_device_queries_keep_device_first_parallel_shape(self):
         rows = {row["name"]: row for row in builtin_nqe_map_rows()}
@@ -1060,10 +1104,7 @@ class QueryRegistryTest(TestCase):
         self.assertTrue(cimc_queries[0]["seeds_empty_shard_parameter"])
         self.assertTrue(cimc_queries[0]["has_empty_shard_guard"])
         self.assertTrue(cimc_queries[0]["has_positive_shard_predicate"])
-        self.assertEqual(
-            aci_summary["models"]["netbox_cisco_aci.acicontract"]["query_count"],
-            1,
-        )
+        self.assertNotIn("netbox_cisco_aci.acicontract", aci_summary["models"])
         self.assertIn("routing.netbox_routing", summary)
         routing_summary = summary["routing.netbox_routing"]
         self.assertEqual(routing_summary["status"], "pass")
@@ -1150,6 +1191,64 @@ class QueryRegistryTest(TestCase):
         self.assertEqual(len(specs), 1)
         self.assertEqual(specs[0].query_id, "FQ_custom_devices")
         self.assertEqual(specs[0].query, None)
+
+    def test_duplicate_custom_map_execution_is_rejected_before_fetch(self):
+        netbox_model = ContentType.objects.get(app_label="dcim", model="device")
+        first = ForwardNQEMap.objects.create(
+            name="Custom Devices First",
+            netbox_model=netbox_model,
+            query_id="FQ_duplicate_devices",
+            parameters={"forward_netbox_shard_keys": []},
+            built_in=False,
+            enabled=True,
+            weight=50,
+        )
+        second = ForwardNQEMap.objects.create(
+            name="Custom Devices Second",
+            netbox_model=netbox_model,
+            query_id="FQ_duplicate_devices",
+            parameters={"forward_netbox_shard_keys": []},
+            built_in=False,
+            enabled=True,
+            weight=51,
+        )
+
+        with self.assertRaisesRegex(
+            ForwardQueryError,
+            "Duplicate logical NQE execution.*Disable or consolidate one map",
+        ):
+            get_query_specs("dcim.device", maps=[first, second])
+
+    def test_distinct_paths_resolving_to_same_query_are_rejected(self):
+        specs = [
+            QuerySpec(
+                model_string="dcim.device",
+                query_name=name,
+                query_repository="org",
+                query_path=path,
+                parameters={"forward_netbox_shard_keys": []},
+            )
+            for name, path in (
+                ("Custom Devices First", "/queries/devices-first"),
+                ("Custom Devices Second", "/queries/devices-second"),
+            )
+        ]
+        client = Mock()
+        client.get_nqe_repository_query_index.return_value = {
+            "by_path": {
+                spec.query_path: {
+                    "queryId": "FQ_duplicate_devices",
+                    "lastCommitId": "commit-1",
+                }
+                for spec in specs
+            }
+        }
+
+        with self.assertRaisesRegex(
+            ForwardQueryError,
+            "Duplicate logical NQE execution.*Disable or consolidate one map",
+        ):
+            resolve_query_specs_for_client(specs, client)
 
     def test_resolve_map_specs_collapses_alias_variant_duplicates(self):
         # Base device query + its NetBox-alias variant both enabled for the same
@@ -1352,21 +1451,8 @@ class QueryRegistryTest(TestCase):
         bd_row = rows[
             ("netbox_cisco_aci.acibridgedomain", "Forward ACI Bridge Domains")
         ]
-        app_profile_row = rows[
-            ("netbox_cisco_aci.aciappprofile", "Forward ACI Application Profiles")
-        ]
-        epg_row = rows[
-            ("netbox_cisco_aci.aciendpointgroup", "Forward ACI Endpoint Groups")
-        ]
-        contract_row = rows[("netbox_cisco_aci.acicontract", "Forward ACI Contracts")]
         filter_row = rows[("netbox_cisco_aci.acifilter", "Forward ACI Filters")]
         l3out_row = rows[("netbox_cisco_aci.acil3out", "Forward ACI L3Outs")]
-        static_binding_row = rows[
-            (
-                "netbox_cisco_aci.acistaticportbinding",
-                "Forward ACI Static Port Bindings",
-            )
-        ]
 
         aci_rows = (
             fabric_row,
@@ -1377,12 +1463,8 @@ class QueryRegistryTest(TestCase):
             tenant_row,
             vrf_row,
             bd_row,
-            app_profile_row,
-            epg_row,
-            contract_row,
             filter_row,
             l3out_row,
-            static_binding_row,
         )
         for row in aci_rows:
             self.assertFalse(row["enabled"])
@@ -1431,9 +1513,6 @@ class QueryRegistryTest(TestCase):
         self.assertIn("unicast_routing_enabled:", bd_row["query"])
         self.assertIn("limit_ip_learn_to_subnets:", bd_row["query"])
         self.assertIn("mac_address:", bd_row["query"])
-        self.assertIn("where false", app_profile_row["query"])
-        self.assertIn("where false", epg_row["query"])
-        self.assertIn("where false", contract_row["query"])
         self.assertIn("CISCO_ACI_ZONING_FILTER", filter_row["query"])
         self.assertIn(
             'matches(toLowerCase(command.commandText), "moquery -c l3extinstp*")',
@@ -1443,14 +1522,19 @@ class QueryRegistryTest(TestCase):
         self.assertIn("(?<pcEnfPref>", l3out_row["query"])
         self.assertIn("(?<prefGrMemb>", l3out_row["query"])
         self.assertIn("(?<target_dscp>", l3out_row["query"])
-        self.assertIn("where false", static_binding_row["query"])
         self.assertNotIn(
             "Forward ACI Nodes",
             {query_default["name"] for query_default in BUILTIN_QUERY_MAPS},
         )
-        self.assertIn(
-            "Forward ACI Static Port Bindings",
-            {query_default["name"] for query_default in BUILTIN_OPTIONAL_QUERY_MAPS},
+        self.assertTrue(
+            {
+                "Forward ACI Application Profiles",
+                "Forward ACI Endpoint Groups",
+                "Forward ACI Contracts",
+                "Forward ACI Static Port Bindings",
+            }.isdisjoint(
+                {query_default["name"] for query_default in BUILTIN_OPTIONAL_QUERY_MAPS}
+            )
         )
 
     def test_seeded_builtin_query_spec_resolves_optional_module_query(self):
@@ -1620,18 +1704,15 @@ class QueryRegistryTest(TestCase):
         )
         self.assertFalse(dlm_maps.filter(enabled=True).exists())
 
-    def test_seed_builtin_maps_skips_aci_maps_when_plugin_contenttypes_are_absent(self):
-        self.assertFalse(
-            ContentType.objects.filter(app_label="netbox_cisco_aci").exists()
-        )
-
+    def test_seed_builtin_maps_includes_installed_aci_models(self):
         seed_builtin_nqe_maps(type("Sender", (), {"label": "forward_netbox"}))
 
         aci_maps = ForwardNQEMap.objects.filter(
             netbox_model__app_label="netbox_cisco_aci",
             built_in=True,
         )
-        self.assertEqual(aci_maps.count(), 0)
+        self.assertGreater(aci_maps.count(), 0)
+        self.assertFalse(aci_maps.filter(enabled=True).exists())
 
     def test_builtin_map_query_id_overrides_bundled_query_for_diff_support(self):
         content_type = ContentType.objects.get(app_label="dcim", model="site")
@@ -1681,12 +1762,12 @@ class QueryRegistryTest(TestCase):
                 msg=f"{query_name} should not bind extensions before devices.",
             )
 
-    def test_alias_device_query_wraps_endpoint_union_and_stays_device_parallel(self):
+    def test_alias_device_query_wraps_endpoint_union_with_one_device_scan(self):
         # The alias-aware device query gains the SNMP-endpoint branch, so (like
         # the base forward_devices query) it wraps a `foreach row in ((devices)
-        # + (endpoints))` union. Device-parallel is preserved because it still
-        # references network.devices exactly once (endpoints are a separate
-        # collection).
+        # + (endpoints))` union. One network.devices reference proves a bounded
+        # source shape, not optimizer parallelism; only Forward Query Debug can
+        # establish whether the compiled plan contains parallel_foreach.
         rows = {row["name"]: row for row in builtin_nqe_map_rows()}
         query = re.sub(
             r"/\*.*?\*/",
@@ -1699,7 +1780,7 @@ class QueryRegistryTest(TestCase):
         self.assertEqual(
             query.count("network.devices"),
             1,
-            msg="alias device query must reference network.devices exactly once.",
+            msg="alias device query must keep one modeled-device scan.",
         )
 
     def test_interface_query_includes_loopbacks_for_ip_bearing_logical_interfaces(self):

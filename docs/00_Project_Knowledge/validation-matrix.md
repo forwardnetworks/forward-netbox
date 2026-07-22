@@ -1,25 +1,19 @@
 # Validation Matrix
 
-Run the smallest gate that proves the change, then run the release gate before publishing.
+Run the smallest gate that proves a change, then run the complete release gate
+before publishing.
 
 | Change type | Required validation |
 | --- | --- |
 | Documentation only | `invoke harness-check`, `invoke harness-test`, `invoke docs` |
-| Query map or NQE helper change | `invoke harness-check`, `invoke harness-test`, `invoke lint`, `invoke test`, update built-in NQE reference; verify bundled query publication/binding still matches the validation org folder when shipped paths change with `invoke validation-org-query-audit` or the matching management command |
-| Forward API client change | `invoke lint`, `invoke check`, `invoke test`; update API usage budget evaluation coverage when counters, pacing, retry, NQE pagination, or 429 handling change |
-| Sync planning or branch budget change | `invoke lint`, `invoke check`, `invoke scenario-test`, `invoke test`, local Docker sync smoke test |
-| Branching ledger, recovery, or scale behavior change | `invoke lint`, `invoke check`, `invoke scenario-test`, `invoke scale-chaos-test`, `invoke test`, `invoke playwright-test` when UI/API surfaces change; `scale-chaos-test` includes focused recovery and support-bundle export coverage, and `invoke scale-benchmark` should be run against the relevant execution run when runtime evidence exists |
-| Validation or drift policy change | `invoke lint`, `invoke check`, `invoke scenario-test`, `invoke test`, `invoke playwright-test`, validation-only smoke test, force-allow override smoke test when the change adds a break-glass path |
-| NetBox model adapter change | `invoke lint`, `invoke check`, `invoke scenario-test`, `invoke test`, targeted local Docker sync; add or update repeat-sync no-op coverage when identity, coalesce, nullable scope, or field normalization changes |
-| Optional plugin integration change | `invoke harness-check`, `invoke lint`, `invoke check`, `invoke test`, `invoke architecture-audit-check`; verify no-plugin startup/seed fallback, installed-plugin ContentType seeding, disabled-by-default behavior, live NQE row shape, and repeat-sync idempotence for enabled plugin maps |
-| UI/API workflow change | `invoke lint`, `invoke check`, `invoke test`, `invoke playwright-test`, browser/UI verification when visible behavior changes |
-| Release | `invoke ci`, GitHub CI success on `main` and tag |
-
-Adapter releases should preserve the idempotence invariant: applying the same
-Forward-shaped rows to an unchanged NetBox state must not produce unexpected
-updates, `ObjectChange` rows, or branch diffs. For model families with nullable
-scope, such as VRF/global IPAM rows, assert the exact model-specific identity
-contract rather than relying on generic coalesce fallback behavior.
+| Query map or NQE helper | Harness, lint, full Django tests, built-in NQE reference, and validation-org publication audit |
+| Forward API client | Lint, Django check, full tests, retry/rate/pagination coverage, and stored API-budget evidence |
+| Planning, branch, merge, or recovery | Lint, check, scenario tests, full tests, exact-version smoke, and Playwright for changed UI/API paths |
+| Validation, scope, drift, or ownership | Lint, check, scenarios, full tests, Playwright, ownership audit, and customer-equivalent sync evidence |
+| NetBox model adapter | Lint, check, scenarios, full tests, repeat-sync no-op coverage, and targeted exact-version sync |
+| Optional plugin integration | Harness, lint, check, full tests, architecture audit, no-plugin startup, exact installed-plugin migration, live row shape, and repeat-sync idempotence |
+| UI/API workflow | Lint, check, full tests, Playwright, and browser verification |
+| Release | Every core command below, fresh migration/install, customer-equivalent acceptance, and GitHub CI on the release commit and tag |
 
 ## Core Commands
 
@@ -29,280 +23,95 @@ invoke harness-test
 invoke lint
 invoke check
 invoke scenario-test
-invoke scale-chaos-test
 invoke test
 invoke playwright-test
-invoke release-dataset-gate --dataset-label=release-smoke
 invoke docs
 invoke package
 invoke ci
 ```
 
-Do not run Django test tasks against the shared local Docker runtime while a
-Forward execution run is active. `invoke test`, `invoke scenario-test`, and
-`invoke ingestion-delete-regression` fail fast when a queued/running/waiting
-execution run exists because shared RQ registries can disturb live ingestion
-jobs. Use an isolated stack for tests, finish or stop the ingestion first, or
-set `FORWARD_NETBOX_ALLOW_SHARED_RUNTIME_TESTS=1` only for an intentional
-bypass.
+Do not run Django or Playwright tests against the shared local runtime while a
+Forward sync is queued, syncing, or merging. The test tasks inspect current
+`ForwardSync` state and use an isolated Compose project when the shared runtime
+is active or cannot be inspected.
 
-CI-style tasks such as `invoke test-ci`, `invoke scenario-test-ci`, and
-`invoke scale-chaos-test` run against the shared runtime only when the active-run
-guard can inspect it and finds no active execution runs. `invoke playwright-test`
-uses the same guard for the deterministic UI harness. If the guard detects an
-active run or cannot inspect the shared runtime, for example because local
-Postgres is saturated, these tasks run against an isolated compose project
-instead of bypassing the shared-runtime safety check.
+## Exact Runtime
 
-Use `invoke test-isolated` directly when a live ingestion is active or when you
-want the full Django regression suite in the separate `forward-netbox-test`
-compose project. It preserves that project's Postgres volume by default for
-faster repeat `--keepdb` runs.
+Release evidence must use NetBox `4.6.5`, Branching `1.1.1`, Python `3.14`, and
+the wheel built from the release commit. A fresh database must apply all NetBox,
+Branching, optional-plugin, and Forward NetBox migrations without model drift.
 
-## Destructive Chaos Harness (Opt-In)
+The exact-runtime acceptance run must verify:
 
-Use the destructive worker-kill harness only for deferred-risk recovery proof.
-It is intentionally excluded from `invoke ci`.
+- each enabled map executes once on one snapshot and validates before provisioning
+- one branch is staged and merged with durable merge attestation
+- the ingestion becomes baseline-ready only after merge finalization
+- device identity and ownership domains finalize for the same ingestion
+- an unchanged repeat sync is a no-op
+- failed rows, stale generations, ambiguous identities, and protected deletes
+  fail closed with persisted evidence
+- `forward_ownership_audit --fail-on-inconsistent --require-no-open-branches`
+  passes after completion
 
-```bash
-invoke docker-chaos-kill --scenario=stage-before-branch --confirm
-invoke docker-chaos-kill --scenario=stage-after-branch --confirm
-invoke docker-chaos-kill --scenario=stage-during-apply --confirm
-invoke docker-chaos-kill --scenario=merge-during-exec --confirm
-```
+## Optional Plugins
 
-Optional scenario-aware controls:
-- `FORWARD_CHAOS_SYNC_NAME=<sync-name>` waits for scenario readiness on the active execution run.
-- `FORWARD_CHAOS_OUTPUT_DIR=/tmp/chaos` exports execution-run support bundles for post-kill evidence.
-  The chaos task now also validates that the newest exported bundle contains run metadata,
-  at least one step, and a recognized recovery action aligned to the requested scenario.
-  It also verifies scenario-specific step-state evidence (for example branch linkage for
-  `stage-after-branch`, row-progress counters for `stage-during-apply`, and merge-job linkage for
-  `merge-during-exec`).
-  The same output directory also receives `chaos-<scenario>-metadata-*.json`
-  with the killed worker/container ID, restored worker count, execution run ID,
-  active step ID, active step job ID, branch ID/name when present, recovery
-  action, and whether support-bundle recovery validation passed.
-- `FORWARD_CHAOS_WAIT_SECONDS` / `FORWARD_CHAOS_POLL_SECONDS` tune readiness polling.
+Routing, Peering Manager, Cisco ACI, and DLM are supported only for the model
+sets declared in `plugin_integrations/registry.py`. Acceptance must test both
+plugin-absent startup and the exact installed-plugin matrix. Every declared
+model requires an apply/delete adapter, shipped query contract, migration, and
+repeat-sync test.
 
-## Live Pushdown Proof (Opt-In)
+The Cisco ACI supported set is fabric, pod, node, tenant, VRF, bridge domain,
+filter, L3Out, APIC node, and native APIC CIMC inventory from the current
+command inventory declared in the integration registry. Application profiles,
+EPGs, contracts, and static port bindings are excluded from 2.6 because the
+approved Forward command set does not provide their bounded identity contracts.
 
-Use this command to gather live runtime/parity evidence for shard pushdown on a
-specific model using an existing sync configuration:
+The DLM supported set is software versions, hardware notices, device software,
+CVEs, and per-device vulnerabilities. Acceptance must prove that standalone
+software versions without a device association are not created and that CVE
+details retain their software-version and device associations.
+
+## Live Evidence
+
+Use a configured validation source and sanitized evidence:
 
 ```bash
-invoke pushdown-profile --sync-name "ui-harness-sync" --model "dcim.interface"
+invoke validation-org-query-audit --source-name '<validation source>' --fail-on-gap
+invoke smoke-sync --plan-only
+invoke smoke-sync
+invoke sync-release-gate --sync-ids '<sync id>'
+invoke runtime-capacity-review --source-name '<validation source>'
 ```
 
-## Optional Cisco ACI Plugin Proof
-
-For `netbox-cisco-aci` integration work, keep acceptance tied to the proven
-write path and do not promote additional policy rows until parser identity and
-repeat-sync behavior are proven:
-
-- `netbox_cisco_aci.acifabric`
-- `netbox_cisco_aci.acipod`
-- `netbox_cisco_aci.acinode`
-- `netbox_cisco_aci.acitenant`
-- `netbox_cisco_aci.acivrf`
-- `netbox_cisco_aci.acifilter`
-
-The following maps must remain disabled/conservative no-op contracts until
-their source identity is bounded and repeat-sync safe:
-
-- `netbox_cisco_aci.acibridgedomain`
-- `netbox_cisco_aci.aciappprofile`
-- `netbox_cisco_aci.aciendpointgroup`
-- `netbox_cisco_aci.acicontract`
-- `netbox_cisco_aci.acil3out`
-- `netbox_cisco_aci.acistaticportbinding`
-
-Required proof:
-
-- The active ACI maps execute against an approved field dataset with no
-  sync-time column filters and no per-value NQE execution.
-- NQE emits normalized fields only; support bundles and artifacts must not store
-  raw ACI command responses.
-- The plugin is absent: NetBox starts, non-ACI maps seed normally, and ACI maps
-  are skipped because their ContentTypes do not exist.
-- The plugin is installed: ACI maps seed disabled by default, can be enabled
-  explicitly, and missing plugin dependencies are reported as row issues rather
-  than hard sync crashes.
-- A first enabled sync creates/updates only expected proven-path ACI rows.
-- Conservative contract maps execute as zero-row maps until promoted.
-- An immediate repeat sync is a no-op for unchanged ACI data.
-- The validation org query folder stays in sync with the bundled shipped maps;
-  any shipped query path missing from `/forward_netbox_validation`, or any
-  stale binding that no longer resolves to the committed query shape, fails the
-  gate before merge.
-
-Optional flags:
-- `--query-name "Forward Interfaces"` when multiple maps are bound to the model.
-- `--sample-shard-keys 500` to widen shard sample size.
-- `--output-json /tmp/pushdown-profile.json` to persist the report artifact.
-
-### Architecture Contract Gate
-
-`architecture-audit-check` runs the focused supported-model classification,
-shard-fetch coverage, and built-in/optional query-contract tests. It uses the
-same isolated-runtime fallback as the CI Django tasks when the shared runtime
-has active work. The retired pre-2.0 JSON architecture-audit management command
-is not part of the current single-branch architecture.
+For repeated operational soak runs:
 
 ```bash
-invoke architecture-audit-check
-invoke architecture-runtime-evidence
-invoke architecture-completion-audit --output-json /tmp/architecture-completion-audit.json
-invoke release-runtime-preflight --dataset-label=release-smoke
-invoke field-scale-runtime-matrix --resume=False
-invoke release-dataset-gate --dataset-label=release-smoke
-invoke release-readiness-audit --dataset-label=release-smoke
-invoke execution-run-recovery --sync-name "ui-harness-sync" --skip-reconcile=True
-invoke prune-compat-cache --dry-run=True --output-json docs/03_Plans/evidence/compat-cache-prune.json
-invoke runtime-capacity-review --source-name "ui-harness-source"
-invoke scale-benchmark --sync-name "ui-harness-sync" --output-json docs/03_Plans/evidence/scale-benchmark.json
-invoke sync-health-gate --sync-id 50 --max-polls 180 --interval-seconds 30
-invoke sync-health-gate --sync-id 50 --max-polls 10 --interval-seconds 30 --allow-nonterminal
-invoke sync-health-monitor --sync-ids 50,51 --max-polls 6 --interval-seconds 30 --allow-nonterminal --output-json docs/03_Plans/evidence/sync-health-monitor.json
-invoke sync-autorecover-monitor --sync-ids 50,51 --max-polls 6 --interval-seconds 30 --allow-nonterminal --include-all-ingestions --fail-on-recovery --output-json docs/03_Plans/evidence/sync-autorecover-monitor.json
-```
-- `invoke architecture-runtime-evidence` writes
-  `docs/03_Plans/evidence/architecture-runtime-evidence.json`. Completion audit
-  consumes it via `--runtime-evidence` (default path) and marks runtime checks
-  complete when the evidence is fresh and passed.
-  Runtime evidence now also records a compatibility-cache retirement dry-run
-  report at `docs/03_Plans/evidence/compat-cache-prune-runtime.json`.
-- Use `invoke architecture-runtime-evidence --run-field-scale` to execute the
-  approved field-scale runtime matrix. It automatically selects and validates
-  an existing configured Forward Source; no credential values or source name
-  are placed in the shell command or evidence artifact.
-  The same matrix can be run independently with
-  `invoke field-scale-runtime-matrix --resume=False` for release proof. Use
-  `--step <matrix-step-name>` to run one long step at a time; the artifact is
-  marked `partial` until every required step has passed.
-  The matrix records per-step timeout evidence instead of dropping the whole
-  runtime artifact; tune with `FORWARD_SMOKE_STEP_TIMEOUT_SECONDS` when the
-  approved dataset legitimately needs longer query planning time.
-  It also writes incremental sanitized step evidence to
-  `docs/03_Plans/evidence/field-scale-runtime-matrix.json` by default. Override
-  with `FORWARD_FIELD_SCALE_EVIDENCE_PATH` for local scratch runs.
-  Set `FORWARD_SMOKE_DATASET_LABEL=release-smoke` before `field-scale-runtime-matrix`
-  when capturing `1.1.x` release evidence so the dataset gate can enforce the
-  expected dataset lineage.
-  When `--run-field-scale` is omitted, runtime evidence reuses this artifact if
-  it exists and is fresh, so a completed field-scale matrix can be folded into
-  the completion audit without rerunning the matrix.
-  Scope exploratory evidence with `FORWARD_SMOKE_MODELS` only when the reduced
-  model set is called out in the evidence notes; do not use a narrow model set
-  to claim full field-scale completion.
-  Set `FORWARD_SMOKE_FOCUS_MODELS` to choose the models in the third bounded
-  validation step. It defaults to `dcim.device,dcim.inventoryitem`; a DLM
-  release can add the installed DLM models without narrowing the first two
-  full required-model steps.
-- Add `--scale-sync-name <sync-name>` when the field-scale benchmark should use
-  a large sync other than the local chaos probe sync. The default
-  `ui-harness-sync` path is useful for wiring checks but is intentionally too
-  small to close the fallback or scheduler runtime-evidence gates.
-- Add `--capacity-source-name <source-name>` when runtime evidence should record
-  the source's current query-fetch/page-size settings alongside local worker,
-  host, and PostgreSQL tuning guidance. The same review can be generated
-  directly with `invoke runtime-capacity-review`.
-- Add `--capacity-query-fetch-concurrency <count>` and
-  `--capacity-nqe-page-size <count>` with `--capacity-source-name` when runtime
-  evidence should reapply source fetch tuning after harness seed/reset before
-  capacity review. This keeps source tuning evidence aligned with the measured
-  run profile.
-- Add `--capacity-worker-replicas <count>` when runtime evidence should scale
-  and preserve a non-default `netbox-worker` count through chaos probes and
-  capacity review. This prevents `docker compose up` or chaos restore from
-  silently testing the compose default worker count after local tuning.
-- Use `--scale-input-json /path/to/sanitized-support-bundle.json` when support
-  is validating an exported large-run support bundle offline. Use
-  `--scale-run-id <execution-run-id>` when the large run exists in the local
-  NetBox database.
-- Add `--scale-reconcile` with `--scale-run-id` or `--scale-sync-name` when a
-  live run should be reconciled before benchmark export. Do not use it with
-  `--scale-input-json`; offline bundles are read-only evidence.
-- Add `--skip-chaos` when refreshing large-run scale/capacity evidence while a
-  live ingestion is active. This reuses fresh prior destructive runtime
-  evidence from the existing architecture evidence artifact and avoids compose
-  reconciliation, harness reseeding, worker scaling, and worker-kill probes
-  mid-run.
-- Offline support-bundle evidence must pass configured sensitive-content
-  scanning before it is accepted by `forward_scale_benchmark --input-json`.
-  Put customer-local names, tenant labels, network IDs, and snapshot IDs in
-  `.sensitive-patterns.local.txt` before evaluating field evidence.
-- `--top-slow-models 5` to automatically profile the slowest recent models from execution-step history.
-- `invoke scale-benchmark` evaluates the latest execution-run support bundle
-  for a sync and emits a sanitized pass/warn/fail report for fallback rate,
-  diff utilization, row failures, partition retries, throughput wait, and
-  apply-engine evidence. It also checks `api_usage` evidence when present in the
-  support bundle and reports Forward SaaS pacing or 429 budget warnings/failures
-  as structured benchmark checks. Use `--run-id` for a specific run or
-  `--input-json` to evaluate an exported support bundle offline. Use
-  `--reconcile` only for live `--sync-name` or `--run-id` selectors when support
-  intentionally wants to repair stale ledger state before benchmarking. Scale
-  evidence is rejected when a run is marked completed but still contains
-  non-terminal steps, because that cannot prove fallback or scheduler readiness.
-- `invoke execution-run-recovery` reports the latest execution-run recovery
-  recommendation for a sync or run ID. Add `--enqueue-next=True` only when
-  support intentionally wants to resume the next eligible Branching shard
-  through the native NetBox job queue after reconciliation.
-- `invoke sync-health-gate` runs `forward_watch_sync`,
-  `forward_blocker_audit`, and `forward_warning_audit` in one loop and fails
-  immediately when blockers/warnings/errors appear. Use
-  `--allow-nonterminal` for mid-run health checks on long field-scale syncs.
-- `invoke sync-health-monitor` extends the same checks across multiple sync IDs
-  and writes polling evidence to JSON. Use it for long customer-dataset soaks
-  where support needs continuous proof that no blocker/warning/error regressions
-  appeared between spot checks.
-- `invoke sync-autorecover-monitor --fail-on-recovery` is the strict burn-in
-  gate for release readiness: it fails when any auto-recovery action was
-  required, even if blocker/warning/error counts stayed at zero.
-- `invoke release-dataset-gate --dataset-label=release-smoke` is the strict `1.1.x`
-  dataset gate: it fails when field-scale evidence is stale, not `passed`, not
-  labeled with the release-validation dataset, missing required matrix steps, or generated
-  with `resume=True` (unless explicitly overridden with
-  `--allow-resumed-artifact=True`).
-- `invoke release-runtime-preflight --dataset-label=release-smoke` checks runtime
-  prerequisites before the matrix starts: required smoke env vars, expected
-  dataset label, and Docker reachability.
-- `invoke release-readiness-audit --dataset-label=release-smoke` aggregates preflight,
-  dataset gate, validation-org query audit when credentials are available, and
-  architecture-completion gate in one JSON artifact for release sign-off
-  evidence.
-  Failed run entries now include `failure_code` / `failure_hint` so environment
-  gates such as `docker_api_unreachable` are explicit instead of buried in raw
-  command logs.
-
-Operational default:
-- keep source `query_fetch_concurrency` at `6` initially and raise only with
-  observed DB/worker headroom.
-- keep Forward SaaS `api_requests_per_minute` below the 2,000/minute hard block.
-  Syncs persist a `forward_api_usage.budget` evaluation with the configured rate,
-  observed HTTP attempt rate when enough request-window evidence exists, 429
-  count, NQE call/page counts, and pass/warning/fail status; release/support
-  checks and the Sync Health API usage card should use that structured payload
-  instead of parsing log text.
-
-For repeated operational soak runs (manual, opt-in):
-
-```bash
-invoke scale-soak --runs 3 --execution-backend single_branch --max-changes-per-branch 10000
+invoke scale-soak --runs 3 --max-changes-per-staging-item 10000
 ```
 
-## Sensitive-Content Gate
+Keep source query concurrency within measured worker, PostgreSQL, and Forward
+API capacity. Use the structured Health and support-bundle evidence instead of
+inferring readiness from fetched row counts.
 
-The sensitive-content guard must stay in local and CI validation:
+## Sensitive Content
 
 ```bash
 python scripts/generate_development_secrets.py
 python scripts/check_sensitive_content.py
-python scripts/check_sensitive_content.py --all-history
+python scripts/check_sensitive_content.py --protected-history
+python scripts/check_sensitive_content.py --git-files --protected-history \
+  --require-env-patterns --require-baseline-env
 ```
 
 `invoke harness-check` additionally rejects tracked development credential
 files or secret assignments and requires CI/Compose to use the generated
 file-backed secret contract.
 
-Use `.sensitive-patterns.local.txt` for local-only customer names, tenant labels, network IDs, or other identifiers that should never be committed.
+Use `.sensitive-patterns.local.txt` for customer-local identifiers that must not
+enter tracked files. Release CI additionally requires a nonempty secret-backed
+pattern feed and an external baseline trust anchor supplied independently of
+the tracked files; never derive the trust-anchor environment variable from the
+candidate baseline. Exact current hashes approve reviewed binary documentation
+assets. Historical binary exceptions require externally supplied
+commit/path/digest approval.

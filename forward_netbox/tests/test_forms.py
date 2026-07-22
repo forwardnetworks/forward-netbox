@@ -1,5 +1,6 @@
 from unittest.mock import patch
 
+from django import forms
 from django.conf import settings
 from django.contrib.contenttypes.models import ContentType
 from django.http import QueryDict
@@ -8,7 +9,6 @@ from django.test import TestCase
 
 from forward_netbox.choices import FORWARD_BGP_MODELS
 from forward_netbox.choices import ForwardDiffFallbackModeChoices
-from forward_netbox.choices import ForwardExecutionBackendChoices
 from forward_netbox.choices import ForwardSourceDeploymentChoices
 from forward_netbox.exceptions import ForwardConnectivityError
 from forward_netbox.exceptions import ForwardSyncError
@@ -20,6 +20,8 @@ from forward_netbox.forms import ForwardSyncForm
 from forward_netbox.models import ForwardNQEMap
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
+from forward_netbox.utilities.crypto import decrypt_secret
+from forward_netbox.utilities.crypto import is_encrypted
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 
 
@@ -53,6 +55,21 @@ class ForwardSourceFormTest(TestCase):
             "nqe_page_size": 10000,
             "verify": True,
         }
+
+    @patch(
+        "forward_netbox.utilities.forward_api_impl.ForwardClient.get_networks",
+        return_value=[{"id": "test-network"}],
+    )
+    def test_plaintext_form_credential_validates_then_persists_encrypted(
+        self, _get_networks
+    ):
+        form = ForwardSourceForm(data=self._base_form_data())
+
+        self.assertTrue(form.is_valid(), form.errors)
+        source = form.save()
+
+        self.assertTrue(is_encrypted(source.parameters["password"]))
+        self.assertEqual(decrypt_secret(source.parameters["password"]), "secret")
 
     @patch("forward_netbox.forms.ForwardSource.validate_connection")
     def test_requires_network_id(self, mock_validate_connection):
@@ -127,6 +144,43 @@ class ForwardSourceFormTest(TestCase):
             form.fields["sync_device_tags"].widget.allow_multiple_selected,
             "sync_device_tags must use a multiple-select widget",
         )
+
+    def test_unsaved_source_form_does_not_construct_credential_query_widgets(self):
+        form = ForwardSourceForm()
+
+        self.assertIsInstance(form.fields["network_id"].widget, forms.TextInput)
+        for field_name in (
+            "device_tag_include_tags",
+            "device_tag_exclude_tags",
+            "sync_device_tags",
+        ):
+            widget = form.fields[field_name].widget
+            self.assertNotIn("password", str(widget.attrs).lower())
+            self.assertNotIn("username", str(widget.attrs).lower())
+
+    def test_saved_source_form_uses_source_id_without_credentials_in_query(self):
+        source = ForwardSource.objects.create(
+            name="saved-source-widgets",
+            type="saas",
+            url="https://forward.example.test",
+            parameters={
+                "username": "user@example.com",
+                "password": "secret",
+                "network_id": "net-1",
+            },
+        )
+        form = ForwardSourceForm(instance=source)
+
+        for field_name in (
+            "network_id",
+            "device_tag_include_tags",
+            "device_tag_exclude_tags",
+            "sync_device_tags",
+        ):
+            attrs = form.fields[field_name].widget.attrs
+            self.assertNotIn("password", str(attrs).lower())
+            self.assertNotIn("username", str(attrs).lower())
+        self.assertIn(str(source.pk), str(form.fields["network_id"].widget.attrs))
 
     @patch("forward_netbox.forms.ForwardSource.validate_connection")
     def test_sync_device_tags_persist_to_parameters(self, _mock_validate):
@@ -209,11 +263,10 @@ class ForwardSyncFormTest(TestCase):
                 "name": "sync-bulk-orm",
                 "source": self.source.pk,
                 "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
-                "execution_backend": ForwardExecutionBackendChoices.BRANCHING,
                 "dcim.device": "on",
                 "auto_merge": "on",
                 "enable_bulk_orm": "on",
-                "max_changes_per_branch": "10000",
+                "max_changes_per_staging_item": "10000",
             }
         )
 
@@ -226,10 +279,9 @@ class ForwardSyncFormTest(TestCase):
                 "name": "sync-diff-fallback-default",
                 "source": self.source.pk,
                 "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
-                "execution_backend": ForwardExecutionBackendChoices.BRANCHING,
                 "dcim.device": "on",
                 "auto_merge": "on",
-                "max_changes_per_branch": "10000",
+                "max_changes_per_staging_item": "10000",
             }
         )
 
@@ -245,11 +297,10 @@ class ForwardSyncFormTest(TestCase):
                 "name": "sync-diff-required",
                 "source": self.source.pk,
                 "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
-                "execution_backend": ForwardExecutionBackendChoices.BRANCHING,
                 "dcim.device": "on",
                 "auto_merge": "on",
                 "diff_fallback_mode": ForwardDiffFallbackModeChoices.REQUIRE_DIFF,
-                "max_changes_per_branch": "10000",
+                "max_changes_per_staging_item": "10000",
             }
         )
 
@@ -446,50 +497,6 @@ class ForwardSyncFormTest(TestCase):
             0.65,
         )
         self.assertEqual(source.parameters["pushdown_diff_warn_ratio"], 0.25)
-
-    @patch("forward_netbox.forms.ForwardSource.validate_connection")
-    def test_source_form_persists_query_preflight_toggle(
-        self, _mock_validate_connection
-    ):
-        form = ForwardSourceForm(
-            data={
-                "name": "source-preflight-toggle",
-                "type": ForwardSourceDeploymentChoices.SAAS,
-                "username": "user@example.com",
-                "password": "secret",
-                "network_id": "test-network",
-                "timeout": 1200,
-                "nqe_page_size": 10000,
-                "verify": True,
-                "query_preflight_enabled": "",
-            }
-        )
-
-        self.assertTrue(form.is_valid(), form.errors)
-        source = form.save()
-        self.assertFalse(source.parameters["query_preflight_enabled"])
-
-    @patch("forward_netbox.forms.ForwardSource.validate_connection")
-    def test_source_form_persists_query_preflight_row_limit(
-        self, _mock_validate_connection
-    ):
-        form = ForwardSourceForm(
-            data={
-                "name": "source-preflight-row-limit",
-                "type": ForwardSourceDeploymentChoices.SAAS,
-                "username": "user@example.com",
-                "password": "secret",
-                "network_id": "test-network",
-                "timeout": 1200,
-                "nqe_page_size": 10000,
-                "verify": True,
-                "query_preflight_row_limit": 2,
-            }
-        )
-
-        self.assertTrue(form.is_valid(), form.errors)
-        source = form.save()
-        self.assertEqual(source.parameters["query_preflight_row_limit"], 2)
 
     @patch("forward_netbox.forms.ForwardSource.validate_connection")
     def test_source_form_persists_query_diagnostics_toggle(

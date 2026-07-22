@@ -6,33 +6,31 @@ import shlex
 import socket
 import sys
 import time
+import tomllib
 from datetime import datetime
-from datetime import timedelta
 from datetime import timezone
 from pathlib import Path
 from types import SimpleNamespace
 
 from dotenv import load_dotenv
 from invoke.collection import Collection
-from invoke.exceptions import CommandTimedOut
 from invoke.exceptions import Exit
 from invoke.tasks import task as invoke_task
 
-
+INIT_FILE = "forward_netbox/__init__.py"
+ALLOW_SHARED_RUNTIME_TESTS_ENV = "FORWARD_NETBOX_ALLOW_SHARED_RUNTIME_TESTS"
+ACTIVE_SYNC_STATUSES = ("queued", "syncing", "merging")
+ISOLATED_TEST_PROJECT_NAME = "forward-netbox-test"
+ISOLATED_PLAYWRIGHT_PROJECT_NAME = "forward-netbox-ui-test"
+RELEASE_ARTIFACT_PROJECT_NAME = "forward-netbox-artifact-test"
+ISOLATED_REDIS_DATABASE = 14
+ISOLATED_REDIS_CACHE_DATABASE = 15
+CYCLONEDX_BOM_VERSION = "7.3.0"
 REPO_ROOT = Path(__file__).resolve().parent
 _DEVELOPMENT_SECRETS = runpy.run_path(
     str(REPO_ROOT / "scripts" / "development_secrets.py")
 )
 ensure_development_secrets = _DEVELOPMENT_SECRETS["ensure_development_secrets"]
-
-
-INIT_FILE = "forward_netbox/__init__.py"
-ALLOW_SHARED_RUNTIME_TESTS_ENV = "FORWARD_NETBOX_ALLOW_SHARED_RUNTIME_TESTS"
-# 2.0 single-branch model: the legacy ForwardExecutionRun table was removed, so
-# "active run" is now an in-progress ForwardSync.
-ACTIVE_SYNC_STATUSES = ("queued", "syncing", "merging")
-ISOLATED_TEST_PROJECT_NAME = "forward-netbox-test"
-ISOLATED_PLAYWRIGHT_PROJECT_NAME = "forward-netbox-ui-test"
 SCENARIO_TEST_LABELS = " ".join(
     (
         "forward_netbox.tests.test_bulk_merge.BulkMergeIntegrationTest",
@@ -56,8 +54,6 @@ ARCHITECTURE_AUDIT_TEST_LABELS = " ".join(
         "test_apply_engine_classifies_all_supported_models",
         "forward_netbox.tests.test_sync.ForwardSyncRunnerTest."
         "test_apply_engine_classifies_all_supported_models_when_bulk_orm_enabled",
-        "forward_netbox.tests.test_sync.ForwardSyncRunnerTest."
-        "test_bulk_orm_expansion_summary_requires_parity_for_blocked_models",
         "forward_netbox.tests.test_query_registry.QueryRegistryTest."
         "test_builtin_query_contract_summary_passes_for_parameterized_maps",
         "forward_netbox.tests.test_query_registry.QueryRegistryTest."
@@ -72,7 +68,10 @@ namespace.configure(
     {
         "forward_netbox": {
             "netbox_ver": os.environ.get("NETBOX_VER", "v4.6.5"),
-            "project_name": "forward-netbox",
+            "project_name": os.environ.get(
+                "FORWARD_NETBOX_DOCKER_PROJECT",
+                "forward-netbox",
+            ),
             "compose_dir": os.path.join(os.path.dirname(__file__), "development"),
         }
     }
@@ -97,13 +96,12 @@ def docker_compose(context, command, **kwargs):
     ensure_development_secrets()
     build_env = {
         "NETBOX_VER": context.forward_netbox.netbox_ver,
-        "ACI_PLUGIN_PACKAGE": os.environ.get("ACI_PLUGIN_PACKAGE", ""),
-        "FORWARD_NETBOX_ENABLE_ACI_PLUGIN": os.environ.get(
-            "FORWARD_NETBOX_ENABLE_ACI_PLUGIN",
-            "",
-        ),
         **kwargs.pop("env", {}),
     }
+    if getattr(context.forward_netbox, "isolated_runtime", False):
+        # Never let a host bind-path override leak into an alternate project.
+        # The declared volume is namespaced by the Compose project.
+        build_env["FORWARD_NETBOX_POSTGRES_DATA_PATH"] = "netbox-postgres-data"
     compose_command_tokens = [
         "docker compose",
         f"--project-name {context.forward_netbox.project_name}",
@@ -115,12 +113,21 @@ def docker_compose(context, command, **kwargs):
 
 
 def _compose_project_context(context, project_name):
+    requested_project = str(project_name or "").strip()
+    shared_project = str(context.forward_netbox.project_name or "").strip()
+    if not requested_project or requested_project == shared_project:
+        raise Exit(
+            "An isolated Compose project name must be non-empty and different "
+            "from the shared runtime project.",
+            code=2,
+        )
     return SimpleNamespace(
         run=context.run,
         forward_netbox=SimpleNamespace(
             netbox_ver=context.forward_netbox.netbox_ver,
-            project_name=str(project_name or context.forward_netbox.project_name),
+            project_name=requested_project,
             compose_dir=context.forward_netbox.compose_dir,
+            isolated_runtime=True,
         ),
     )
 
@@ -137,21 +144,6 @@ def _truthy_env(value):
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def manage_py_one_off(context, command, **kwargs):
-    bash_command = f"cd /opt/netbox/netbox && python manage.py {command}"
-    return docker_compose(
-        context,
-        f"run --rm --no-deps netbox bash -lc {shlex.quote(bash_command)}",
-        **kwargs,
-    )
-
-
-def _field_scale_manage_py(context, command, **kwargs):
-    if _truthy_env(os.getenv("FORWARD_FIELD_SCALE_USE_SERVICE", "")):
-        return manage_py(context, command, **kwargs)
-    return manage_py_one_off(context, command, **kwargs)
-
-
 def _truthy_arg(value):
     if isinstance(value, bool):
         return value
@@ -162,7 +154,7 @@ def _shared_runtime_test_guard_bypassed():
     return _truthy_env(os.environ.get(ALLOW_SHARED_RUNTIME_TESTS_ENV))
 
 
-def _shared_runtime_active_execution_runs(context):
+def _shared_runtime_active_syncs(context):
     statuses = json.dumps(list(ACTIVE_SYNC_STATUSES))
     python_code = (
         "import json; "
@@ -171,7 +163,7 @@ def _shared_runtime_active_execution_runs(context):
         "qs=ForwardSync.objects.filter(status__in=statuses).order_by('-id'); "
         "print(json.dumps({"
         '"active_count": qs.count(), '
-        '"runs": list(qs.values("id", "name", "status")[:5])'
+        '"syncs": list(qs.values("id", "name", "status")[:5])'
         "}, sort_keys=True))"
     )
     try:
@@ -187,7 +179,7 @@ def _shared_runtime_active_execution_runs(context):
     except Exception as exc:
         return {
             "active_count": 0,
-            "runs": [],
+            "syncs": [],
             "guard_available": False,
             "reason": f"shared_runtime_probe_failed: {exc}",
         }
@@ -199,7 +191,7 @@ def _shared_runtime_active_execution_runs(context):
         reason = detail[-1] if detail else f"exit {exited}"
         return {
             "active_count": 0,
-            "runs": [],
+            "syncs": [],
             "guard_available": False,
             "reason": f"shared_runtime_probe_failed: {reason}",
         }
@@ -215,7 +207,7 @@ def _shared_runtime_active_execution_runs(context):
             continue
     return {
         "active_count": 0,
-        "runs": [],
+        "syncs": [],
         "guard_available": False,
         "reason": "shared_runtime_probe_missing_json",
     }
@@ -266,12 +258,12 @@ def _manage_py_json_retry(context, command, *, attempts=3, delay_seconds=1):
 def _guard_shared_runtime_tests(context):
     if _shared_runtime_test_guard_bypassed():
         return
-    active = _shared_runtime_active_execution_runs(context)
+    active = _shared_runtime_active_syncs(context)
     if active.get("guard_available") is False:
         raise Exit(
             (
                 "Could not inspect the shared local NetBox runtime for active "
-                "Forward execution runs. Run tests with `invoke test-isolated`, "
+                "Forward syncs. Run tests with `invoke test-isolated`, "
                 "fix the shared runtime, or set "
                 f"{ALLOW_SHARED_RUNTIME_TESTS_ENV}=1 to bypass intentionally. "
                 f"Reason: {active.get('reason') or 'unknown'}."
@@ -281,19 +273,19 @@ def _guard_shared_runtime_tests(context):
     active_count = int(active.get("active_count") or 0)
     if active_count <= 0:
         return
-    runs = active.get("runs") or []
+    syncs = active.get("syncs") or []
     examples = ", ".join(
-        f"run {item.get('id')} {item.get('sync__name') or ''} {item.get('status')}"
-        for item in runs
+        f"sync {item.get('id')} {item.get('name') or ''} {item.get('status')}"
+        for item in syncs
     )
     raise Exit(
         (
-            "Active Forward execution run(s) detected in the shared local NetBox "
+            "Active Forward sync(s) detected in the shared local NetBox "
             "runtime. Running Django tests against this runtime can move live RQ "
             "jobs to failed/abandoned state. Stop or finish the ingestion, run "
             "tests in an isolated stack, or set "
             f"{ALLOW_SHARED_RUNTIME_TESTS_ENV}=1 to bypass intentionally. "
-            f"Detected {active_count} active run(s)"
+            f"Detected {active_count} active sync(s)"
             + (f": {examples}" if examples else ".")
         ),
         code=2,
@@ -306,6 +298,7 @@ def _run_tests_in_isolated_runtime(
     test_label,
     project_name=f"{ISOLATED_TEST_PROJECT_NAME}-ci",
     keep_runtime=False,
+    test_env=None,
 ):
     isolated = _compose_project_context(context, project_name)
     docker_compose(isolated, "down --remove-orphans -v")
@@ -313,12 +306,23 @@ def _run_tests_in_isolated_runtime(
     docker_compose(isolated, "up -d postgres redis")
     try:
         _wait_for_isolated_postgres(isolated)
+        isolated_test_env = {
+            **(test_env or {}),
+            "REDIS_DATABASE": ISOLATED_REDIS_DATABASE,
+            "REDIS_CACHE_DATABASE": ISOLATED_REDIS_CACHE_DATABASE,
+        }
+        environment_prefix = " ".join(
+            f"{key}={shlex.quote(str(value))}"
+            for key, value in sorted(isolated_test_env.items())
+        )
+        test_command = (
+            "cd /opt/netbox/netbox && "
+            + (f"{environment_prefix} " if environment_prefix else "")
+            + f"python manage.py test --keepdb --noinput {test_label}"
+        )
         docker_compose(
             isolated,
-            (
-                "run --rm -T netbox bash -lc "
-                f"{shlex.quote('cd /opt/netbox/netbox && python manage.py test --keepdb --noinput ' + str(test_label))}"
-            ),
+            ("run --rm -T netbox bash -lc " f"{shlex.quote(test_command)}"),
         )
     finally:
         if not _truthy_arg(keep_runtime):
@@ -345,34 +349,12 @@ def _wait_for_isolated_postgres(context, *, timeout_seconds=120):
     )
 
 
-def _run_tests_with_shared_runtime_fallback(context, *, test_label):
+def _run_ci_tests_in_isolated_runtime(context, *, test_label):
     if _shared_runtime_test_guard_bypassed():
         manage_py(context, f"test --keepdb --noinput {test_label}")
         return
 
-    active = _shared_runtime_active_execution_runs(context)
-    if active.get("guard_available") is False:
-        print(
-            "Shared runtime active-run guard unavailable; "
-            "running Django tests in isolated runtime for CI safety. "
-            f"Reason: {active.get('reason') or 'unknown'}."
-        )
-        _run_tests_in_isolated_runtime(
-            context,
-            test_label=test_label,
-            project_name=f"{ISOLATED_TEST_PROJECT_NAME}-ci",
-            keep_runtime=False,
-        )
-        return
-    active_count = int(active.get("active_count") or 0)
-    if active_count <= 0:
-        manage_py(context, f"test --keepdb --noinput {test_label}")
-        return
-
-    print(
-        "Active execution runs detected in shared runtime; "
-        "running Django tests in isolated runtime for CI safety."
-    )
+    print("Running Django CI tests in an isolated runtime.")
     _run_tests_in_isolated_runtime(
         context,
         test_label=test_label,
@@ -382,7 +364,28 @@ def _run_tests_with_shared_runtime_fallback(context, *, test_label):
 
 
 def _run_playwright_ui(context, *, env=None):
-    context.run("npm run test:ui", env={**(env or {})})
+    playwright_env = {**(env or {})}
+    playwright_env.setdefault(
+        "PLAYWRIGHT_DOCKER_PROJECT_NAME",
+        context.forward_netbox.project_name,
+    )
+    playwright_env.setdefault(
+        "PLAYWRIGHT_DOCKER_PROJECT_DIRECTORY",
+        context.forward_netbox.compose_dir,
+    )
+    if not (
+        playwright_env.get("PLAYWRIGHT_EXECUTABLE_PATH")
+        or os.environ.get("PLAYWRIGHT_EXECUTABLE_PATH")
+    ):
+        for candidate in (
+            "/usr/bin/chromium",
+            "/usr/bin/chromium-browser",
+            "/usr/bin/google-chrome",
+        ):
+            if Path(candidate).is_file():
+                playwright_env["PLAYWRIGHT_EXECUTABLE_PATH"] = candidate
+                break
+    context.run("npm run test:ui", env=playwright_env)
 
 
 def _available_loopback_port():
@@ -402,13 +405,14 @@ def _run_playwright_in_isolated_runtime(context, *, project_name=None, host_port
     try:
         docker_compose(
             isolated,
-            "up -d --build --wait --wait-timeout 300 netbox",
+            "up -d --build --wait --wait-timeout 600 netbox",
             env=compose_env,
         )
         _run_playwright_ui(
             context,
             env={
                 "NETBOX_URL": f"http://127.0.0.1:{host_port}",
+                "FORWARD_UI_HARNESS_ISOLATED": "true",
                 "PLAYWRIGHT_DOCKER_PROJECT_NAME": project_name,
                 "PLAYWRIGHT_DOCKER_PROJECT_DIRECTORY": context.forward_netbox.compose_dir,
                 "PLAYWRIGHT_ARTIFACT_DIR": f".playwright-artifacts/{project_name}",
@@ -416,33 +420,6 @@ def _run_playwright_in_isolated_runtime(context, *, project_name=None, host_port
         )
     finally:
         docker_compose(isolated, "down --remove-orphans -v", env=compose_env)
-
-
-def _run_playwright_with_shared_runtime_fallback(context):
-    if _shared_runtime_test_guard_bypassed():
-        _run_playwright_ui(context)
-        return
-
-    active = _shared_runtime_active_execution_runs(context)
-    if active.get("guard_available") is False:
-        print(
-            "Shared runtime active-run guard unavailable; "
-            "running Playwright UI tests in isolated runtime for CI safety. "
-            f"Reason: {active.get('reason') or 'unknown'}."
-        )
-        _run_playwright_in_isolated_runtime(context)
-        return
-
-    active_count = int(active.get("active_count") or 0)
-    if active_count <= 0:
-        _run_playwright_ui(context)
-        return
-
-    print(
-        "Active execution runs detected in shared runtime; "
-        "running Playwright UI tests in isolated runtime for CI safety."
-    )
-    _run_playwright_in_isolated_runtime(context)
 
 
 def _host_memory_gib():
@@ -543,7 +520,7 @@ def lint(context):
 def sensitive_check(context):
     context.run(f"{shlex.quote(sys.executable)} scripts/check_sensitive_content.py")
     context.run(
-        f"{shlex.quote(sys.executable)} scripts/check_sensitive_content.py --all-history"
+        f"{shlex.quote(sys.executable)} scripts/check_sensitive_content.py --protected-history"
     )
 
 
@@ -552,21 +529,27 @@ def harness_check(context):
     context.run(f"{shlex.quote(sys.executable)} scripts/check_harness.py")
 
 
+@task(name="release-authorization-check")
+def release_authorization_check(context, version="2.6.0"):
+    context.run(
+        f"{shlex.quote(sys.executable)} scripts/check_release_authorization.py "
+        f"--version {shlex.quote(str(version))}"
+    )
+
+
 @task(
     help={
         "version": "Target version, e.g. 1.5.11",
         "summary": "One-line release summary for the compatibility tables",
-        "notes_file": "Path to the GitHub release body",
         "write": "Write the prepare edits and run the local CI mirror",
         "publish": "Branch + push (rollout). Off by default.",
-        "finish": "After CI is green: FF main, tag, GitHub release (rollout)",
+        "finish": "After CI is green: promote, tag, and publish (rollout)",
     }
 )
 def release(
     context,
     version,
     summary="",
-    notes_file="",
     write=False,
     publish=False,
     finish=False,
@@ -576,8 +559,6 @@ def release(
     args = [shlex.quote(sys.executable), "scripts/release.py", shlex.quote(version)]
     if summary:
         args += ["--summary", shlex.quote(summary)]
-    if notes_file:
-        args += ["--notes-file", shlex.quote(notes_file)]
     if write:
         args.append("--write")
     if publish:
@@ -641,7 +622,7 @@ def ingestion_delete_regression(context):
 
 @task(name="test-ci")
 def test_ci(context):
-    _run_tests_with_shared_runtime_fallback(
+    _run_ci_tests_in_isolated_runtime(
         context,
         test_label="forward_netbox.tests",
     )
@@ -649,15 +630,33 @@ def test_ci(context):
 
 @task(name="scenario-test-ci")
 def scenario_test_ci(context):
-    _run_tests_with_shared_runtime_fallback(
+    _run_ci_tests_in_isolated_runtime(
         context,
         test_label=SCENARIO_TEST_LABELS,
     )
 
 
+@task(name="bulk-merge-retry-scale-test")
+def bulk_merge_retry_scale_test(context):
+    """Enforce the 1M-row crash-resume timeout projection on 20,005 rows."""
+    _run_tests_in_isolated_runtime(
+        context,
+        test_label=(
+            "forward_netbox.tests.test_bulk_merge_scale.BulkMergeScaleTest."
+            "test_scale_merge_no_silent_loss_and_idempotent"
+        ),
+        project_name=f"{ISOLATED_TEST_PROJECT_NAME}-retry-scale",
+        keep_runtime=False,
+        test_env={
+            "FORWARD_SCALE_TEST": "1",
+            "FORWARD_SCALE_TEST_ROWS": "20000",
+        },
+    )
+
+
 @task(name="ingestion-delete-regression-ci")
 def ingestion_delete_regression_ci(context):
-    _run_tests_with_shared_runtime_fallback(
+    _run_ci_tests_in_isolated_runtime(
         context,
         test_label=INGESTION_DELETE_REGRESSION_LABELS,
     )
@@ -793,32 +792,18 @@ def _runtime_capacity_review(context, *, source_name=""):
         },
         "storage": _runtime_capacity_storage(context),
         "source": source_parameters,
-        "scheduler_overlap_capacity_review": {
-            "status": worker_status,
-            "message": (
-                "Capacity review is present; scheduler overlap still requires a completed large-run benchmark."
-                if worker_status == "pass"
-                else "Review worker/database capacity before enabling scheduler overlap."
-            ),
-            "required_before_scheduler_overlap": [
-                "Run a completed field-scale benchmark.",
-                "Keep branch budget and dependency order enforced by the execution ledger.",
-                "Confirm worker and database headroom under load.",
-            ],
-        },
+        "status": worker_status,
     }
 
 
 def _runtime_capacity_storage(context):
     docker_root = _docker_root_dir(context)
     postgres_mount = _postgres_data_mount(context)
-    fetch_artifact_dir = os.environ.get("FORWARD_NETBOX_FETCH_ARTIFACT_DIR", "")
     storage = {
         "docker_root_dir": docker_root,
         "postgres_data_source": postgres_mount.get("source", ""),
         "postgres_data_type": postgres_mount.get("type", ""),
         "postgres_data_destination": postgres_mount.get("destination", ""),
-        "fetch_artifact_dir": fetch_artifact_dir,
     }
     fast_local_paths = tuple(
         path
@@ -934,1874 +919,188 @@ def _runtime_capacity_source_parameters(context, source_name):
     }
 
 
-@task(name="scale-chaos-test")
-def scale_chaos_test(context):
-    _run_tests_with_shared_runtime_fallback(
-        context,
-        test_label=(
-            "forward_netbox.tests.test_jobs "
-            "forward_netbox.tests.test_api_views "
-            "forward_netbox.tests.test_log_export "
-            f"{SCENARIO_TEST_LABELS} "
-            "forward_netbox.tests.test_sync_state"
-        ),
-    )
-
-
-@task(name="docker-chaos-kill")
-def docker_chaos_kill(context, scenario="stage-after-branch", confirm=False):
-    """
-    Run an opt-in destructive worker kill scenario against the local Docker stack.
-
-    This task is intentionally excluded from `invoke ci`.
-    """
-    if not confirm:
-        raise Exit(
-            "Refusing to run destructive Docker chaos task without --confirm=True",
-            code=2,
-        )
-
-    allowed_scenarios = {
-        "stage-before-branch",
-        "stage-after-branch",
-        "stage-during-apply",
-        "merge-during-exec",
-    }
-    if scenario not in allowed_scenarios:
-        raise Exit(f"Unsupported scenario `{scenario}`.", code=2)
-
-    desired_workers = int(os.environ.get("FORWARD_CHAOS_WORKER_REPLICAS") or 0)
-    if desired_workers <= 0:
-        desired_workers = _current_worker_replicas(context)
-
-    # Ensure worker containers are up before starting a destructive action.
-    restored_workers = _ensure_worker_replicas(context, desired_workers)
-    docker_compose(
-        context,
-        "ps netbox-worker",
-    )
-
-    # Kill one worker container to simulate real process interruption.
-    # Scenario-aware readiness is validated before kill when a target sync is set.
-    sync_name = os.environ.get("FORWARD_CHAOS_SYNC_NAME", "").strip()
-    timeout_seconds = int(os.environ.get("FORWARD_CHAOS_WAIT_SECONDS", "600"))
-    poll_seconds = int(os.environ.get("FORWARD_CHAOS_POLL_SECONDS", "5"))
-    output_dir = os.environ.get("FORWARD_CHAOS_OUTPUT_DIR", "").strip()
-    support_bundle_path = None
-    support_bundle_verified = False
-    if sync_name:
-        _wait_for_chaos_scenario_ready(
-            context,
-            sync_name=sync_name,
-            scenario=scenario,
-            timeout_seconds=timeout_seconds,
-            poll_seconds=poll_seconds,
-        )
-
-    worker_ids = (
-        docker_compose(
-            context,
-            "ps -q netbox-worker",
-            hide=True,
-        )
-        .stdout.strip()
-        .splitlines()
-    )
-    if not worker_ids:
-        raise Exit("No netbox-worker containers found to kill.", code=1)
-    worker_id = worker_ids[0]
-    context.run(f"docker kill {worker_id}")
-
-    # Restore workers after the kill so local environment returns to steady state.
-    _ensure_worker_replicas(context, restored_workers)
-    docker_compose(context, "ps netbox-worker")
-
-    # Optional support-bundle capture for run evidence after kill.
-    if output_dir:
-        os.makedirs(output_dir, exist_ok=True)
-    if sync_name and output_dir:
-        _export_chaos_bundle(
-            context,
-            sync_name=sync_name,
-            scenario=scenario,
-            output_dir=output_dir,
-        )
-        support_bundle_path = _assert_chaos_bundle_recovery(
-            output_dir=output_dir,
-            scenario=scenario,
-        )
-        support_bundle_verified = True
-    if output_dir:
-        _write_chaos_kill_metadata(
-            output_dir=output_dir,
-            scenario=scenario,
-            sync_name=sync_name,
-            killed_worker_id=worker_id,
-            restored_worker_replicas=restored_workers,
-            support_bundle_path=support_bundle_path,
-            support_bundle_recovery_verified=support_bundle_verified,
-        )
-
-
-@task(name="architecture-runtime-evidence")
-def architecture_runtime_evidence(
-    context,
-    output_path="docs/03_Plans/evidence/architecture-runtime-evidence.json",
-    sync_name="ui-harness-sync",
-    capacity_source_name="",
-    capacity_worker_replicas=0,
-    capacity_query_fetch_concurrency=0,
-    capacity_nqe_page_size=0,
-    scale_sync_name="",
-    scale_run_id="",
-    scale_input_json="",
-    scale_reconcile=False,
-    run_field_scale=False,
-    skip_chaos=False,
-):
-    """Collect runtime evidence artifacts for architecture completion audit."""
-    repo_root = Path(__file__).resolve().parent
-    evidence_path = repo_root / output_path
-    evidence_path.parent.mkdir(parents=True, exist_ok=True)
-    chaos_dir = repo_root / "docs/03_Plans/evidence/chaos"
-    chaos_dir.mkdir(parents=True, exist_ok=True)
-
-    if not bool(skip_chaos):
-        docker_compose(context, "up -d")
-    if not bool(skip_chaos) and int(capacity_worker_replicas or 0) > 0:
-        _ensure_worker_replicas(context, int(capacity_worker_replicas))
-
-    # Ensure synthetic sync exists for local non-customer chaos probes. Skip this
-    # during non-disruptive refreshes so active field-scale runs are not touched.
-    if not bool(skip_chaos):
-        manage_py(context, "forward_seed_ui_harness")
-    source_tuning_applied = False
-    if (
-        (capacity_source_name or "").strip()
-        and int(capacity_query_fetch_concurrency or 0) > 0
-        and int(capacity_nqe_page_size or 0) > 0
-    ):
-        source_tuning_applied = _apply_source_fetch_tuning(
-            context,
-            source_name=capacity_source_name,
-            query_fetch_concurrency=capacity_query_fetch_concurrency,
-            nqe_page_size=capacity_nqe_page_size,
-        )
-
-    if bool(skip_chaos):
-        chaos_evidence = _reuse_runtime_check(
-            evidence_path,
-            "destructive_runtime_worker_kill_evidence_verified",
-            fallback_reason=(
-                "skip-chaos requested but no fresh prior destructive runtime "
-                "evidence was available"
-            ),
-        )
-    else:
-        chaos_evidence = _collect_destructive_runtime_evidence(
-            context=context,
-            repo_root=repo_root,
-            chaos_dir=chaos_dir,
-            sync_name=sync_name,
-            capacity_worker_replicas=capacity_worker_replicas,
-        )
-
-    field_scale_status = "not-run"
-    field_scale_evidence = {
-        "status": "failed",
-        "evidence": (
-            "Field-scale runtime matrix not executed in this local evidence run. "
-            "Run with --run-field-scale=True in an environment with approved "
-            "Forward smoke credentials and export artifacts to satisfy this check."
-        ),
-    }
-    if run_field_scale:
-        field_scale_evidence, field_scale_status = _run_field_scale_runtime_matrix(
-            context
-        )
-    else:
-        artifact_evidence, artifact_status = _field_scale_evidence_from_artifact()
-        if artifact_evidence:
-            field_scale_evidence = artifact_evidence
-            field_scale_status = artifact_status
-    if (scale_run_id or "").strip() or (scale_input_json or "").strip():
-        scale_evidence_sync_name = ""
-    else:
-        scale_evidence_sync_name = (
-            (scale_sync_name or "").strip()
-            or (
-                os.getenv("FORWARD_SMOKE_SYNC_NAME", "").strip()
-                if run_field_scale
-                else ""
-            )
-            or sync_name
-        )
-
-    capacity_review = _collect_runtime_capacity_review(
-        context=context,
-        repo_root=repo_root,
-        source_name=capacity_source_name,
-    )
-    payload = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "source": "invoke architecture-runtime-evidence",
-        "checks": {
-            "destructive_runtime_worker_kill_evidence_verified": chaos_evidence,
-            "field_scale_runtime_matrix_verified": field_scale_evidence,
-            "compatibility_cache_retirement_verified": _collect_compatibility_cache_evidence(
-                context=context,
-                repo_root=repo_root,
-                sync_name=sync_name,
-            ),
-            "runtime_capacity_review_present": capacity_review,
-            **_collect_scale_runtime_evidence(
-                context=context,
-                repo_root=repo_root,
-                sync_name=scale_evidence_sync_name,
-                run_id=scale_run_id,
-                input_json=scale_input_json,
-                reconcile=scale_reconcile,
-                capacity_review=capacity_review,
-            ),
-        },
-        "notes": {
-            "field_scale_status": field_scale_status,
-            "capacity_nqe_page_size": int(capacity_nqe_page_size or 0),
-            "capacity_query_fetch_concurrency": int(
-                capacity_query_fetch_concurrency or 0
-            ),
-            "capacity_source_name": (capacity_source_name or "").strip(),
-            "capacity_source_tuning_applied": bool(source_tuning_applied),
-            "capacity_worker_replicas": int(capacity_worker_replicas or 0),
-            "scale_input_json": (scale_input_json or "").strip(),
-            "scale_reconcile": bool(scale_reconcile),
-            "scale_run_id": (scale_run_id or "").strip(),
-            "scale_sync_name": scale_evidence_sync_name,
-            "skip_chaos": bool(skip_chaos),
-            "sync_name": sync_name,
-        },
-    }
-    evidence_path.write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
-    print(f"Wrote runtime evidence: {evidence_path}")
-
-
-def _collect_destructive_runtime_evidence(
-    *, context, repo_root, chaos_dir, sync_name, capacity_worker_replicas=0
-):
-    chaos_scenarios = [
-        "stage-before-branch",
-        "stage-after-branch",
-        "stage-during-apply",
-        "merge-during-exec",
-    ]
-    chaos_results = []
-    for scenario in chaos_scenarios:
-        scenario_started_at = time.time()
-        manage_py(
-            context,
-            (
-                f'forward_chaos_probe --sync-name "{sync_name}" '
-                f'--scenario "{scenario}" --prepare-fixture'
-            ),
-            hide=True,
-        )
-        env = {
-            "FORWARD_CHAOS_OUTPUT_DIR": str(chaos_dir),
-            # Scenario state is prepared by forward_chaos_probe above; this kill
-            # only needs to exercise Docker worker loss and restoration.
-            "FORWARD_CHAOS_SYNC_NAME": "",
-            "FORWARD_CHAOS_WORKER_REPLICAS": str(int(capacity_worker_replicas or 0)),
-        }
-        result = context.run(
-            f"invoke docker-chaos-kill --scenario={scenario} --confirm",
-            env=env,
-            warn=True,
-            hide=True,
-        )
-        manage_py(
-            context,
-            (
-                f'forward_chaos_probe --sync-name "{sync_name}" '
-                f'--scenario "{scenario}" '
-                f'--export-dir "{_container_export_dir(chaos_dir, repo_root=repo_root)}"'
-            ),
-            warn=True,
-            hide=True,
-        )
-        bundle = None
-        metadata = None
-        recovery_verified = False
-        recovery_error = ""
-        candidates = [
-            path
-            for path in sorted(chaos_dir.glob(f"chaos-{scenario}-run-*.json"))
-            if path.stat().st_mtime >= scenario_started_at - 1
-        ]
-        if candidates:
-            bundle_path = candidates[-1]
-            bundle = str(bundle_path.relative_to(repo_root))
-            try:
-                verified_bundle_path = _assert_chaos_bundle_recovery(
-                    output_dir=chaos_dir,
-                    scenario=scenario,
-                )
-                recovery_verified = True
-            except Exit as exc:
-                verified_bundle_path = bundle_path
-                recovery_error = str(exc)
-            kill_metadata = _latest_chaos_kill_metadata(
-                output_dir=chaos_dir,
-                scenario=scenario,
-            )
-            metadata_path = _write_chaos_kill_metadata(
-                output_dir=chaos_dir,
-                scenario=scenario,
-                sync_name=sync_name,
-                killed_worker_id=str(kill_metadata.get("killed_worker_id") or ""),
-                restored_worker_replicas=int(
-                    kill_metadata.get("restored_worker_replicas") or 0
-                ),
-                support_bundle_path=verified_bundle_path,
-                support_bundle_recovery_verified=recovery_verified,
-            )
-            metadata = str(metadata_path.relative_to(repo_root))
-        chaos_results.append(
-            {
-                "scenario": scenario,
-                "exit_code": result.exited,
-                "ok": bool(result.ok and recovery_verified),
-                "bundle": bundle,
-                "metadata": metadata,
-                "support_bundle_recovery_verified": recovery_verified,
-                "recovery_validation_error": recovery_error,
-            }
-        )
-
-    chaos_passed = all(item["ok"] for item in chaos_results)
-    return {
-        "status": "passed" if chaos_passed else "failed",
-        "evidence": {
-            "scenarios": chaos_results,
-            "output_dir": str(chaos_dir.relative_to(repo_root)),
-        },
-    }
-
-
-def _reuse_runtime_check(evidence_path, check_name, *, fallback_reason):
-    existing = _read_existing_runtime_evidence(evidence_path)
-    check = ((existing or {}).get("checks") or {}).get(check_name) or {}
-    if (
-        _runtime_evidence_fresh(existing)
-        and check.get("status") == "passed"
-        and check.get("evidence") is not None
-    ):
-        evidence = dict(check.get("evidence") or {})
-        evidence["reused_from_generated_at"] = existing.get("generated_at")
-        return {
-            "status": "passed",
-            "evidence": evidence,
-        }
-    return {
-        "status": "failed",
-        "evidence": {
-            "reason": fallback_reason,
-            "existing_generated_at": (existing or {}).get("generated_at"),
-        },
-    }
-
-
-def _read_existing_runtime_evidence(evidence_path):
-    try:
-        return json.loads(Path(evidence_path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-
-
-def _runtime_evidence_fresh(payload, *, max_age_days=7):
-    generated_at = (payload or {}).get("generated_at")
-    if not generated_at:
-        return False
-    try:
-        parsed = datetime.fromisoformat(str(generated_at).replace("Z", "+00:00"))
-    except ValueError:
-        return False
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return datetime.now(timezone.utc) - parsed <= timedelta(days=max_age_days)
-
-
-def _collect_runtime_capacity_review(*, context, repo_root, source_name=""):
-    report_rel = "docs/03_Plans/evidence/runtime-capacity-review.json"
-    report_path = repo_root / report_rel
-    try:
-        report = _runtime_capacity_review(context, source_name=source_name)
-        report_path.parent.mkdir(parents=True, exist_ok=True)
-        report_path.write_text(
-            json.dumps(report, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        report_path.chmod(0o666)
-    except Exception as exc:
-        return {
-            "status": "failed",
-            "evidence": {
-                "path": report_rel,
-                "reason": f"runtime capacity review failed: {exc}",
-            },
-        }
-
-    status = (
-        "passed"
-        if (report.get("scheduler_overlap_capacity_review") or {}).get("status")
-        == "pass"
-        else "failed"
-    )
-    return {
-        "status": status,
-        "evidence": {
-            "path": report_rel,
-            "workers": report.get("workers") or {},
-            "host": report.get("host") or {},
-            "source": report.get("source") or {},
-            "scheduler_overlap_capacity_review": report.get(
-                "scheduler_overlap_capacity_review"
-            )
-            or {},
-        },
-    }
-
-
-def _collect_compatibility_cache_evidence(*, context, repo_root, sync_name):
-    report_rel = "docs/03_Plans/evidence/compat-cache-prune-runtime.json"
-    report_path = repo_root / report_rel
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-
-    flags = ["--dry-run", f'--output-json "{report_rel}"']
-    if sync_name:
-        flags.append(f'--sync-name "{sync_name}"')
-    manage_py(
-        context,
-        f"forward_prune_compatibility_cache {' '.join(flags)}",
-        warn=True,
-        hide=True,
-    )
-    if not report_path.exists():
-        return {
-            "status": "failed",
-            "evidence": {
-                "path": report_rel,
-                "reason": "compatibility cache report was not generated",
-            },
-        }
-    try:
-        report = json.loads(report_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return {
-            "status": "failed",
-            "evidence": {
-                "path": report_rel,
-                "reason": "compatibility cache report is not valid JSON",
-            },
-        }
-
-    stale_payload_syncs = int(report.get("stale_payload_syncs") or 0)
-    status = "passed" if stale_payload_syncs == 0 else "failed"
-    return {
-        "status": status,
-        "evidence": {
-            "path": report_rel,
-            "inspected_syncs": int(report.get("inspected_syncs") or 0),
-            "stale_payload_syncs": stale_payload_syncs,
-            "pruned_syncs": int(report.get("pruned_syncs") or 0),
-            "sync_name_filter": str(report.get("sync_name_filter") or ""),
-        },
-    }
-
-
-def _collect_scale_runtime_evidence(
-    *,
-    context,
-    repo_root,
-    sync_name="",
-    run_id="",
-    input_json="",
-    reconcile=False,
-    capacity_review=None,
-):
-    report_rel = "docs/03_Plans/evidence/scale-runtime-evidence.json"
-    report_path = repo_root / report_rel
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    min_runtime_steps = int(os.environ.get("FORWARD_ARCH_RUNTIME_MIN_STEPS", "4"))
-    selector_values = [
-        value for value in (sync_name, run_id, input_json) if str(value).strip()
-    ]
-
-    if len(selector_values) != 1:
-        evidence = {
-            "path": report_rel,
-            "reason": (
-                "exactly one scale evidence selector is required "
-                "(scale_sync_name, scale_run_id, or scale_input_json)"
-            ),
-        }
-        return {
-            "runtime_fallback_reduction_verified": {
-                "status": "failed",
-                "evidence": evidence,
-            },
-            "scheduler_overlap_readiness_verified": {
-                "status": "failed",
-                "evidence": evidence,
-            },
-        }
-
-    flags = []
-    if sync_name:
-        flags.append(f'--sync-name "{sync_name}"')
-    if run_id:
-        flags.append(f"--run-id {int(run_id)}")
-    if input_json:
-        flags.append(f'--input-json "{input_json}"')
-    if reconcile:
-        flags.append("--reconcile")
-    flags.append(f'--output-json "{report_rel}"')
-    manage_py(
-        context,
-        f"forward_scale_benchmark {' '.join(flags)}",
-        warn=True,
-        hide=True,
-    )
-    if not report_path.exists():
-        evidence = {
-            "path": report_rel,
-            "reason": "scale benchmark report was not generated",
-        }
-        return {
-            "runtime_fallback_reduction_verified": {
-                "status": "failed",
-                "evidence": evidence,
-            },
-            "scheduler_overlap_readiness_verified": {
-                "status": "failed",
-                "evidence": evidence,
-            },
-        }
-    try:
-        report = json.loads(report_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        evidence = {
-            "path": report_rel,
-            "reason": "scale benchmark report is not valid JSON",
-        }
-        return {
-            "runtime_fallback_reduction_verified": {
-                "status": "failed",
-                "evidence": evidence,
-            },
-            "scheduler_overlap_readiness_verified": {
-                "status": "failed",
-                "evidence": evidence,
-            },
-        }
-
-    checks = {item.get("code"): item for item in report.get("checks") or []}
-    summary = report.get("summary") or {}
-    step_count = int(summary.get("step_count") or 0)
-    enough_runtime_steps = step_count >= min_runtime_steps
-    core_checks = [
-        checks.get("support_bundle_shape") or {},
-        checks.get("run_completion") or {},
-        checks.get("row_failures") or {},
-    ]
-    core_checks_ok = all(
-        (item.get("status") or "fail") in {"pass", "info"} for item in core_checks
-    )
-    fallback_checks = [
-        checks.get("pushdown_efficiency") or {},
-        checks.get("pushdown_runtime") or {},
-        checks.get("partition_retry_pressure") or {},
-    ]
-    scheduler_check = checks.get("throughput_smoothing") or {}
-    fallback_status = (
-        "passed"
-        if enough_runtime_steps
-        and core_checks_ok
-        and all(
-            (item.get("status") or "fail") in {"pass", "info"}
-            for item in fallback_checks
-        )
-        else "failed"
-    )
-    readiness = (scheduler_check.get("evidence") or {}).get(
-        "scheduler_overlap_readiness"
-    ) or {}
-    readiness_status = str(readiness.get("status") or "").strip()
-    capacity_ok = bool((capacity_review or {}).get("status") == "passed")
-    scheduler_check_status = scheduler_check.get("status") or "fail"
-    scheduler_status = "failed"
-    if enough_runtime_steps and core_checks_ok:
-        if readiness_status == "not_warranted" and scheduler_check_status in {
-            "pass",
-            "info",
-        }:
-            scheduler_status = "passed"
-        elif readiness_status == "candidate" and capacity_ok:
-            scheduler_status = "passed"
-        elif readiness_status == "blocked" and capacity_ok:
-            blocking_reasons = set(readiness.get("blocking_reasons") or [])
-            if blocking_reasons == {"capacity_evidence_missing"}:
-                scheduler_status = "passed"
-
-    return {
-        "runtime_fallback_reduction_verified": {
-            "status": fallback_status,
-            "evidence": {
-                "path": report_rel,
-                "report_status": report.get("status"),
-                "core_checks": core_checks,
-                "fallback_checks": fallback_checks,
-                "summary": summary,
-                "step_count": step_count,
-                "min_runtime_steps": min_runtime_steps,
-                "enough_runtime_steps": enough_runtime_steps,
-            },
-        },
-        "scheduler_overlap_readiness_verified": {
-            "status": scheduler_status,
-            "evidence": {
-                "path": report_rel,
-                "report_status": report.get("status"),
-                "core_checks": core_checks,
-                "throughput_smoothing": scheduler_check,
-                "scheduler_overlap_readiness": readiness,
-                "capacity_review": capacity_review or {},
-                "step_count": step_count,
-                "min_runtime_steps": min_runtime_steps,
-                "enough_runtime_steps": enough_runtime_steps,
-            },
-        },
-    }
-
-
-@task(name="field-scale-runtime-matrix")
-def field_scale_runtime_matrix(context, step="", resume=True, fail_on_error=True):
-    """Run or resume the sanitized field-scale smoke matrix artifact."""
-    evidence, status = _run_field_scale_runtime_matrix(
-        context,
-        step=step,
-        resume=resume,
-    )
-    print(json.dumps(evidence, indent=2, sort_keys=True))
-    if fail_on_error and evidence.get("status") != "passed":
-        raise Exit(f"Field-scale runtime matrix did not pass: {status}", code=1)
-
-
-@task(name="release-dataset-gate")
-def release_dataset_gate(
-    context,
-    dataset_label="release-smoke",
-    max_age_days=7,
-    artifact_path="",
-    allow_resumed_artifact=False,
-):
-    """Fail unless fresh full-matrix field-scale evidence matches the dataset label."""
-    evidence = _collect_release_dataset_gate_evidence(
-        dataset_label=dataset_label,
-        max_age_days=max_age_days,
-        artifact_path=artifact_path,
-        allow_resumed_artifact=allow_resumed_artifact,
-    )
-    print(json.dumps(evidence, indent=2, sort_keys=True))
-    if evidence.get("status") != "passed":
-        raise Exit(
-            "Release dataset gate failed: regenerate field-scale evidence with the "
-            f"required dataset label `{dataset_label}`.",
-            code=1,
-        )
-
-
-@task(name="release-runtime-preflight")
-def release_runtime_preflight(context, dataset_label="release-smoke"):
-    """Fail fast when runtime prerequisites for release evidence are missing."""
-    evidence = _collect_release_runtime_preflight_evidence(
-        context=context,
-        dataset_label=dataset_label,
-    )
-    print(json.dumps(evidence, indent=2, sort_keys=True))
-    if evidence.get("status") != "passed":
-        raise Exit(
-            "Release runtime preflight failed: resolve runtime prerequisites before "
-            "running field-scale matrix evidence.",
-            code=1,
-        )
-
-
-@task(name="release-readiness-audit")
-def release_readiness_audit(
-    context,
-    dataset_label="release-smoke",
-    max_age_days=7,
-    artifact_path="",
-    output_json="docs/03_Plans/evidence/release-readiness-audit.json",
-    validation_source_name="",
-    fail_on_error=True,
-):
-    """Aggregate 1.1 release readiness checks into one JSON report."""
-    evidence = _collect_release_readiness_audit(
-        context=context,
-        dataset_label=dataset_label,
-        max_age_days=max_age_days,
-        artifact_path=artifact_path,
-        validation_source_name=validation_source_name,
-    )
-    rendered = json.dumps(evidence, indent=2, sort_keys=True)
-    print(rendered)
-    if str(output_json or "").strip():
-        output_path = Path(str(output_json).strip())
-        if not output_path.is_absolute():
-            output_path = Path(__file__).resolve().parent / output_path
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(rendered + "\n", encoding="utf-8")
-        print(f"Wrote release readiness audit: {output_path}")
-    if bool(fail_on_error) and evidence.get("status") != "passed":
-        raise Exit(
-            "Release readiness audit failed: resolve failed checks before release.",
-            code=1,
-        )
-
-
-def _collect_release_readiness_audit(
-    *,
-    context,
-    dataset_label="release-smoke",
-    max_age_days=7,
-    artifact_path="",
-    validation_source_name="",
-):
-    preflight = _collect_release_runtime_preflight_evidence(
-        context=context,
-        dataset_label=dataset_label,
-    )
-    dataset_gate = _collect_release_dataset_gate_evidence(
-        dataset_label=dataset_label,
-        max_age_days=max_age_days,
-        artifact_path=artifact_path,
-    )
-    validation_org_gate = _collect_validation_org_query_audit_evidence(
-        context,
-        source_name=validation_source_name,
-    )
-    architecture_gate = _collect_architecture_completion_gate(context)
-    checks = {
-        "release_runtime_preflight": preflight,
-        "release_dataset_gate": dataset_gate,
-        "validation_org_query_audit": validation_org_gate,
-        "architecture_completion_gate": architecture_gate,
-    }
-    failed_checks = [
-        name
-        for name, payload in checks.items()
-        if payload.get("status") not in {"passed", "skipped"}
-    ]
-    return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "status": "passed" if not failed_checks else "failed",
-        "dataset_label": str(dataset_label or "").strip(),
-        "failed_checks": failed_checks,
-        "checks": checks,
-    }
-
-
-def _collect_validation_org_query_audit_evidence(context, source_name=""):
-    source_name = str(
-        source_name or os.getenv("FORWARD_VALIDATION_SOURCE_NAME", "")
-    ).strip()
-    command = "forward_validation_org_query_audit --fail-on-gap --summary-only"
-    if source_name:
-        command = f"{command} --source-name {shlex.quote(source_name)}"
-    result = _field_scale_manage_py(context, command, warn=True, hide=True)
-    stdout = getattr(result, "stdout", "")
-    parse_error = ""
-    payload = {}
-    try:
-        payload = _parse_json_from_manage_output(stdout)
-    except (ValueError, json.JSONDecodeError) as exc:
-        parse_error = str(exc)
-
-    evidence = {
-        "command": (
-            "forward_validation_org_query_audit --fail-on-gap --summary-only "
-            "--source-name <redacted>"
-            if source_name
-            else command
-        ),
-        "source_selection": (
-            "explicit_existing" if source_name else "automatic_existing"
-        ),
-        "parse_error": parse_error,
-    }
-    if not bool(getattr(result, "ok", False)):
-        failure_code, failure_hint = _classify_field_scale_step_failure(result)
-        return {
-            "status": "failed",
-            "evidence": {
-                **evidence,
-                "exit_code": int(getattr(result, "exited", 1) or 1),
-                "failure_code": str(failure_code or "command_failed"),
-                "failure_hint": str(
-                    failure_hint or "validation org query audit failed"
-                ),
-                "report": payload,
-            },
-        }
-
-    report_status = str(payload.get("status") or "").strip()
-    return {
-        "status": "passed" if report_status == "pass" else "failed",
-        "evidence": {
-            **evidence,
-            "report": payload,
-            "reason": (
-                ""
-                if report_status == "pass"
-                else "validation org query audit reported gaps"
-            ),
-        },
-    }
-
-
-def _collect_architecture_completion_gate(context):
-    command = "architecture-audit-check"
-    try:
-        _run_tests_with_shared_runtime_fallback(
-            context,
-            test_label=ARCHITECTURE_AUDIT_TEST_LABELS,
-        )
-    except Exception as exc:
-        return {
-            "status": "failed",
-            "evidence": {
-                "command": command,
-                "failure_code": "architecture_contract_failed",
-                "failure_hint": f"architecture contract tests raised {exc.__class__.__name__}",
-            },
-        }
-    return {
-        "status": "passed",
-        "evidence": {
-            "command": command,
-            "test_labels": ARCHITECTURE_AUDIT_TEST_LABELS,
-            "reason": "",
-        },
-    }
-
-
-def _collect_release_runtime_preflight_evidence(
-    *, context, dataset_label="release-smoke"
-):
-    missing_env = []
-    if not os.getenv("FORWARD_SMOKE_DATASET_LABEL", "").strip():
-        missing_env.append("FORWARD_SMOKE_DATASET_LABEL")
-    required_label = str(dataset_label or "").strip()
-    current_label = str(os.getenv("FORWARD_SMOKE_DATASET_LABEL", "") or "").strip()
-    dataset_label_matches = bool(
-        current_label and current_label.lower() == required_label.lower()
-    )
-    docker_preflight = _field_scale_runtime_preflight(context)
-    docker_ok = bool(docker_preflight.get("ok"))
-    source_preflight = (
-        _field_scale_source_preflight(context)
-        if docker_ok
-        else {
-            "ok": False,
-            "failure_code": "docker_runtime_not_ready",
-            "failure_hint": "source preflight skipped because Docker is not ready",
-        }
-    )
-    source_ok = bool(source_preflight.get("ok"))
-
-    reasons = []
-    if missing_env:
-        reasons.append("missing required env: " + ", ".join(missing_env))
-    if not dataset_label_matches:
-        reasons.append(
-            "FORWARD_SMOKE_DATASET_LABEL does not match required dataset label"
-        )
-    if not docker_ok:
-        reasons.append(
-            "docker preflight failed: "
-            + str(docker_preflight.get("failure_code") or "docker_preflight_failed")
-        )
-    if docker_ok and not source_ok:
-        reasons.append(
-            "source preflight failed: "
-            + str(source_preflight.get("failure_code") or "source_preflight_failed")
-        )
-
-    return {
-        "status": "passed" if not reasons else "failed",
-        "evidence": {
-            "required_dataset_label": required_label,
-            "dataset_label": current_label,
-            "dataset_label_matches": dataset_label_matches,
-            "required_env": ["FORWARD_SMOKE_DATASET_LABEL"],
-            "source_selection": "automatic_existing",
-            "source_backed": source_ok,
-            "missing_env": missing_env,
-            "docker_preflight": docker_preflight,
-            "source_preflight": source_preflight,
-            "reason": "; ".join(reasons) if reasons else "",
-        },
-    }
-
-
-def _collect_release_dataset_gate_evidence(
-    *,
-    dataset_label="release-smoke",
-    max_age_days=7,
-    artifact_path="",
-    allow_resumed_artifact=False,
-):
-    repo_root = Path(__file__).resolve().parent
-    if str(artifact_path or "").strip():
-        candidate = Path(str(artifact_path).strip())
-        if not candidate.is_absolute():
-            candidate = repo_root / candidate
-        evidence_path = candidate
-    else:
-        evidence_path, _ = _field_scale_matrix_artifact_path()
-    try:
-        evidence_rel = str(evidence_path.relative_to(repo_root))
-    except ValueError:
-        evidence_rel = str(evidence_path)
-
-    if not evidence_path.exists():
-        return {
-            "status": "failed",
-            "evidence": {
-                "artifact_path": evidence_rel,
-                "reason": "field-scale artifact does not exist",
-                "required_dataset_label": str(dataset_label or "").strip(),
-            },
-        }
-
-    try:
-        payload = json.loads(evidence_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        return {
-            "status": "failed",
-            "evidence": {
-                "artifact_path": evidence_rel,
-                "reason": f"field-scale artifact is unreadable: {exc}",
-                "required_dataset_label": str(dataset_label or "").strip(),
-            },
-        }
-
-    generated_at = payload.get("generated_at")
-    created = _parse_iso_datetime(generated_at)
-    freshness_days = max(1, int(max_age_days or 7))
-    is_fresh = bool(
-        created
-        and datetime.now(timezone.utc) - created <= timedelta(days=freshness_days)
-    )
-    artifact_status = str(payload.get("status") or "").strip()
-    metadata = (
-        payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
-    )
-    runs = payload.get("runs") if isinstance(payload.get("runs"), list) else []
-    required_label = str(dataset_label or "").strip()
-    found_label = str(metadata.get("dataset_label") or "").strip()
-    resumed = _truthy_arg(metadata.get("resume"))
-    allow_resumed = _truthy_arg(allow_resumed_artifact)
-    required_run_names = (
-        "run_a_single_branch_validate_only",
-        "run_b_single_branch_plan_only",
-        "run_c_focused_validate_only",
-    )
-    run_by_name = {
-        str(run.get("name")): run
-        for run in runs
-        if isinstance(run, dict) and run.get("name")
-    }
-    missing_steps = [name for name in required_run_names if name not in run_by_name]
-    failed_steps = [
-        name
-        for name in required_run_names
-        if name in run_by_name
-        and (
-            run_by_name[name].get("ok") is not True
-            or _truthy_arg(run_by_name[name].get("timed_out"))
-        )
-    ]
-    failed_step_codes = {
-        name: str((run_by_name.get(name) or {}).get("failure_code") or "").strip()
-        for name in failed_steps
-    }
-    distinct_failed_codes = sorted(
-        {code for code in failed_step_codes.values() if str(code or "").strip()}
-    )
-
-    reasons = []
-    if artifact_status != "passed":
-        reasons.append(f"artifact status is `{artifact_status or 'unknown'}`")
-    if not is_fresh:
-        reasons.append(
-            f"artifact missing timestamp or older than {freshness_days} days"
-        )
-    if not found_label:
-        reasons.append("dataset label is missing from artifact metadata")
-    elif found_label.lower() != required_label.lower():
-        reasons.append(
-            f"dataset label `{found_label}` does not match required `{required_label}`"
-        )
-    if resumed and not allow_resumed:
-        reasons.append("artifact was produced with resume=true")
-    if missing_steps:
-        reasons.append(
-            "artifact is missing required matrix steps: " + ", ".join(missing_steps)
-        )
-    if failed_steps:
-        reasons.append(
-            "artifact has failing required matrix steps: " + ", ".join(failed_steps)
-        )
-    if distinct_failed_codes:
-        reasons.append("failure codes: " + ", ".join(distinct_failed_codes))
-
-    return {
-        "status": "passed" if not reasons else "failed",
-        "evidence": {
-            "artifact_path": evidence_rel,
-            "artifact_status": artifact_status or "unknown",
-            "generated_at": generated_at,
-            "fresh": is_fresh,
-            "max_age_days": freshness_days,
-            "required_dataset_label": required_label,
-            "dataset_label": found_label,
-            "allow_resumed_artifact": allow_resumed,
-            "resumed": resumed,
-            "required_steps": list(required_run_names),
-            "missing_steps": missing_steps,
-            "failed_steps": failed_steps,
-            "failed_step_codes": failed_step_codes,
-            "metadata": metadata,
-            "reason": "; ".join(reasons) if reasons else "",
-        },
-    }
-
-
-def _run_field_scale_runtime_matrix(context, *, step="", resume=False):
-    artifact_path, artifact_rel = _field_scale_matrix_artifact_path()
-    command_env = {
-        "FORWARD_SMOKE_MODELS": os.getenv("FORWARD_SMOKE_MODELS", ""),
-        "FORWARD_SMOKE_FOCUS_MODELS": os.getenv(
-            "FORWARD_SMOKE_FOCUS_MODELS", "dcim.device,dcim.inventoryitem"
-        ),
-        "FORWARD_SMOKE_QUERY_LIMIT": os.getenv("FORWARD_SMOKE_QUERY_LIMIT", "10"),
-        "FORWARD_SMOKE_MAX_CHANGES_PER_BRANCH": os.getenv(
-            "FORWARD_SMOKE_MAX_CHANGES_PER_BRANCH", "10000"
-        ),
-        "FORWARD_SMOKE_DATASET_LABEL": os.getenv("FORWARD_SMOKE_DATASET_LABEL", ""),
-    }
-
-    smoke_models = command_env["FORWARD_SMOKE_MODELS"].strip()
-    smoke_focus_models = command_env["FORWARD_SMOKE_FOCUS_MODELS"].strip()
-    smoke_dataset_label = command_env["FORWARD_SMOKE_DATASET_LABEL"].strip()
-    smoke_query_limit = max(1, int(command_env["FORWARD_SMOKE_QUERY_LIMIT"] or 10))
-    smoke_max_changes_per_branch = max(
-        1,
-        int(command_env["FORWARD_SMOKE_MAX_CHANGES_PER_BRANCH"] or 10000),
-    )
-    step_timeout_seconds = max(
-        1,
-        int(os.getenv("FORWARD_SMOKE_STEP_TIMEOUT_SECONDS", "1200") or 1200),
-    )
-
-    common_manage_flags = ""
-    if smoke_models:
-        common_manage_flags = f" --models {shlex.quote(smoke_models)}"
-
-    matrix = [
-        {
-            "name": "run_a_single_branch_validate_only",
-            "execute": (
-                f"forward_smoke_sync --validate-only --query-limit {smoke_query_limit} "
-                f"{common_manage_flags}"
-            ),
-            "evidence_command": (
-                f"forward_smoke_sync --validate-only --query-limit {smoke_query_limit}"
-            ),
-        },
-        {
-            "name": "run_b_single_branch_plan_only",
-            "execute": (
-                "forward_smoke_sync --plan-only "
-                f"--max-changes-per-branch {smoke_max_changes_per_branch} "
-                f"{common_manage_flags}"
-            ),
-            "evidence_command": (
-                "forward_smoke_sync --plan-only "
-                f"--max-changes-per-branch {smoke_max_changes_per_branch}"
-            ),
-        },
-        {
-            "name": "run_c_focused_validate_only",
-            "execute": (
-                "forward_smoke_sync --validate-only --query-limit 100 "
-                f"--models {shlex.quote(smoke_focus_models)}"
-            ),
-            "evidence_command": (
-                "forward_smoke_sync --validate-only --query-limit 100 "
-                f"--models {shlex.quote(smoke_focus_models)}"
-            ),
-        },
-    ]
-    matrix_names = {item["name"] for item in matrix}
-    selected_step = str(step or "").strip()
-    if selected_step and selected_step not in matrix_names:
-        _write_field_scale_matrix_artifact(
-            artifact_path=artifact_path,
-            status="failed",
-            runs=[],
-            metadata={
-                "reason": "unsupported_step",
-                "step": selected_step,
-                "available_steps": sorted(matrix_names),
-            },
-        )
-        return (
-            {
-                "status": "failed",
-                "evidence": {
-                    "reason": "unsupported_step",
-                    "step": selected_step,
-                    "available_steps": sorted(matrix_names),
-                    "artifact_path": artifact_rel,
-                },
-            },
-            "unsupported-step",
-        )
-
-    result_by_name = {}
-    if resume:
-        result_by_name.update(_field_scale_existing_run_results(artifact_path))
-    selected_names = {selected_step} if selected_step else matrix_names
-    matrix_metadata = {
-        "dataset_label": smoke_dataset_label,
-        "models": smoke_models or "default_required_models",
-        "focus_models": smoke_focus_models,
-        "max_changes_per_branch": smoke_max_changes_per_branch,
-        "query_limit": smoke_query_limit,
-        "resume": bool(resume),
-        "selected_step": selected_step,
-        "step_timeout_seconds": step_timeout_seconds,
-        "step_count": len(matrix),
-    }
-    preflight = _field_scale_runtime_preflight(context)
-    if not preflight.get("ok"):
-        preflight_runs = [
-            {
-                "name": item["name"],
-                "command": item["evidence_command"],
-                "ok": False,
-                "exit_code": preflight.get("exit_code"),
-                "elapsed_ms": 0,
-                "timed_out": False,
-                "timeout_seconds": step_timeout_seconds,
-                "failure_code": str(preflight.get("failure_code") or "command_failed"),
-                "failure_hint": str(
-                    preflight.get("failure_hint") or "runtime preflight failed"
-                ),
-            }
-            for item in matrix
-            if item["name"] in selected_names
-        ]
-        _write_field_scale_matrix_artifact(
-            artifact_path=artifact_path,
-            status="failed",
-            runs=preflight_runs,
-            metadata={
-                **matrix_metadata,
-                "preflight_failure_code": preflight.get("failure_code"),
-                "preflight_failure_hint": preflight.get("failure_hint"),
-            },
-        )
-        return (
-            {
-                "status": "failed",
-                "evidence": {
-                    "runs": preflight_runs,
-                    "artifact_path": artifact_rel,
-                    "note": (
-                        "Output is intentionally redacted to avoid storing customer "
-                        "identifiers. Use job logs and support bundles for deep triage."
-                    ),
-                    "preflight_failure_code": preflight.get("failure_code"),
-                    "preflight_failure_hint": preflight.get("failure_hint"),
-                },
-            },
-            "failed",
-        )
-    _write_field_scale_matrix_artifact(
-        artifact_path=artifact_path,
-        status="running",
-        runs=_ordered_field_scale_runs(matrix, result_by_name),
-        metadata=matrix_metadata,
-    )
-    for item in matrix:
-        if item["name"] not in selected_names:
-            continue
-        previous = result_by_name.get(item["name"]) or {}
-        if resume and previous.get("ok") is True and not previous.get("timed_out"):
-            continue
-        started = time.time()
-        try:
-            result = _field_scale_manage_py(
-                context,
-                item["execute"],
-                env=command_env,
-                warn=True,
-                hide=True,
-                timeout=step_timeout_seconds,
-            )
-        except CommandTimedOut:
-            elapsed_ms = int((time.time() - started) * 1000)
-            result_by_name[item["name"]] = {
-                "name": item["name"],
-                "command": item["evidence_command"],
-                "ok": False,
-                "exit_code": None,
-                "elapsed_ms": elapsed_ms,
-                "timed_out": True,
-                "timeout_seconds": step_timeout_seconds,
-                "failure_code": "step_timeout",
-                "failure_hint": "step exceeded timeout",
-            }
-            _write_field_scale_matrix_artifact(
-                artifact_path=artifact_path,
-                status="running",
-                runs=_ordered_field_scale_runs(matrix, result_by_name),
-                metadata=matrix_metadata,
-            )
-            continue
-        elapsed_ms = int((time.time() - started) * 1000)
-        failure_code, failure_hint = _classify_field_scale_step_failure(result)
-        result_by_name[item["name"]] = {
-            "name": item["name"],
-            "command": item["evidence_command"],
-            "ok": bool(result.ok),
-            "exit_code": int(result.exited),
-            "elapsed_ms": elapsed_ms,
-            "timed_out": False,
-            "timeout_seconds": step_timeout_seconds,
-            "failure_code": failure_code,
-            "failure_hint": failure_hint,
-        }
-        _write_field_scale_matrix_artifact(
-            artifact_path=artifact_path,
-            status="running",
-            runs=_ordered_field_scale_runs(matrix, result_by_name),
-            metadata=matrix_metadata,
-        )
-
-    run_results = _ordered_field_scale_runs(matrix, result_by_name)
-    completed_names = {run.get("name") for run in run_results}
-    all_matrix_steps_passed = all(
-        (
-            item["name"] in completed_names
-            and (result_by_name.get(item["name"]) or {}).get("ok") is True
-            and not (result_by_name.get(item["name"]) or {}).get("timed_out")
-        )
-        for item in matrix
-    )
-    selected_failed = any(
-        (result_by_name.get(name) or {}).get("ok") is False
-        or (result_by_name.get(name) or {}).get("timed_out") is True
-        for name in selected_names
-        if name in result_by_name
-    )
-    if all_matrix_steps_passed:
-        final_status = "passed"
-    elif selected_failed:
-        final_status = "failed"
-    else:
-        final_status = "partial"
-    _write_field_scale_matrix_artifact(
-        artifact_path=artifact_path,
-        status=final_status,
-        runs=run_results,
-        metadata=matrix_metadata,
-    )
-    return (
-        {
-            "status": final_status,
-            "evidence": {
-                "runs": run_results,
-                "artifact_path": artifact_rel,
-                "note": (
-                    "Output is intentionally redacted to avoid storing customer "
-                    "identifiers. Use job logs and support bundles for deep triage."
-                ),
-            },
-        },
-        "completed" if final_status == "passed" else final_status,
-    )
-
-
-def _field_scale_existing_run_results(artifact_path):
-    try:
-        payload = json.loads(artifact_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    runs = payload.get("runs") if isinstance(payload.get("runs"), list) else []
-    return {
-        str(run.get("name")): dict(run)
-        for run in runs
-        if isinstance(run, dict) and run.get("name")
-    }
-
-
-def _ordered_field_scale_runs(matrix, result_by_name):
-    return [
-        result_by_name[item["name"]]
-        for item in matrix
-        if item["name"] in result_by_name
-    ]
-
-
-def _field_scale_runtime_preflight(context):
-    try:
-        result = docker_compose(
-            context,
-            "ps --status running --services",
-            warn=True,
-            hide=True,
-        )
-    except Exception as exc:  # pragma: no cover - defensive fallback
-        return {
-            "ok": False,
-            "exit_code": None,
-            "failure_code": "docker_preflight_exception",
-            "failure_hint": f"docker preflight raised {exc.__class__.__name__}",
-        }
-    failure_code, failure_hint = _classify_field_scale_step_failure(result)
-    running_services = {
-        line.strip()
-        for line in str(getattr(result, "stdout", "") or "").splitlines()
-        if line.strip()
-    }
-    missing_services = sorted({"postgres", "redis"} - running_services)
-    if bool(getattr(result, "ok", False)) and not missing_services:
-        return {"ok": True}
-    if missing_services:
-        failure_code = "docker_runtime_not_ready"
-        failure_hint = "required service(s) not running: " + ", ".join(missing_services)
-    return {
-        "ok": False,
-        "exit_code": int(getattr(result, "exited", 1) or 1),
-        "failure_code": str(failure_code or "docker_preflight_failed"),
-        "failure_hint": str(failure_hint or "docker preflight failed"),
-    }
-
-
-def _field_scale_source_preflight(context):
-    try:
-        result = _field_scale_manage_py(
-            context,
-            "forward_smoke_sync --check-source",
-            warn=True,
-            hide=True,
-        )
-    except Exception as exc:  # pragma: no cover - defensive fallback
-        return {
-            "ok": False,
-            "exit_code": None,
-            "failure_code": "source_preflight_exception",
-            "failure_hint": f"source preflight raised {exc.__class__.__name__}",
-        }
-    failure_code, failure_hint = _classify_field_scale_step_failure(result)
-    if bool(getattr(result, "ok", False)):
-        return {"ok": True, "selection": "automatic_existing"}
-    return {
-        "ok": False,
-        "exit_code": int(getattr(result, "exited", 1) or 1),
-        "failure_code": str(failure_code or "source_preflight_failed"),
-        "failure_hint": str(failure_hint or "configured source is unavailable"),
-    }
-
-
-def _classify_field_scale_step_failure(result):
-    if bool(getattr(result, "ok", False)):
-        return "", ""
-    text_parts = [
-        str(getattr(result, "stderr", "") or ""),
-        str(getattr(result, "stdout", "") or ""),
-    ]
-    message = "\n".join(text_parts).lower()
-    if "permission denied while trying to connect to the docker api" in message:
-        return (
-            "docker_api_unreachable",
-            "cannot connect to local Docker API",
-        )
-    if "docker.sock" in message and "permission denied" in message:
-        return (
-            "docker_socket_permission_denied",
-            "local Docker socket permission denied",
-        )
-    if "python: command not found" in message:
-        return (
-            "python_not_found",
-            "python executable missing in runtime shell",
-        )
-    return ("command_failed", "step command exited non-zero")
-
-
-def _field_scale_matrix_artifact_path():
-    repo_root = Path(__file__).resolve().parent
-    configured = os.getenv(
-        "FORWARD_FIELD_SCALE_EVIDENCE_PATH",
-        "docs/03_Plans/evidence/field-scale-runtime-matrix.json",
-    ).strip()
-    path = Path(configured)
-    if not path.is_absolute():
-        path = repo_root / path
-    try:
-        rel = str(path.relative_to(repo_root))
-    except ValueError:
-        rel = str(path)
-    return path, rel
-
-
-def _field_scale_evidence_from_artifact():
-    artifact_path, artifact_rel = _field_scale_matrix_artifact_path()
-    if not artifact_path.exists():
-        return None, "not-run"
-    try:
-        payload = json.loads(artifact_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        return (
-            {
-                "status": "failed",
-                "evidence": {
-                    "artifact_path": artifact_rel,
-                    "reason": f"field scale artifact is unreadable: {exc}",
-                },
-            },
-            "artifact-unreadable",
-        )
-
-    generated_at = payload.get("generated_at")
-    created = _parse_iso_datetime(generated_at)
-    is_fresh = bool(
-        created and datetime.now(timezone.utc) - created <= timedelta(days=7)
-    )
-    runs = payload.get("runs") if isinstance(payload.get("runs"), list) else []
-    artifact_status = str(payload.get("status") or "").strip()
-    status = "passed" if artifact_status == "passed" and is_fresh else "failed"
-    reason = None
-    if not is_fresh:
-        reason = "field scale artifact missing timestamp or older than 7 days"
-    elif artifact_status != "passed":
-        reason = f"field scale artifact status is `{artifact_status or 'unknown'}`"
-    evidence = {
-        "artifact_path": artifact_rel,
-        "artifact_status": artifact_status or "unknown",
-        "generated_at": generated_at,
-        "fresh": is_fresh,
-        "metadata": payload.get("metadata") or {},
-        "runs": runs,
-        "note": (
-            "Reused sanitized field-scale runtime matrix artifact. "
-            "Run architecture-runtime-evidence --run-field-scale to refresh it."
-        ),
-    }
-    if reason:
-        evidence["reason"] = reason
-    return {"status": status, "evidence": evidence}, (
-        "artifact-passed" if status == "passed" else "artifact-failed"
-    )
-
-
-def _parse_iso_datetime(value):
-    if not value or not isinstance(value, str):
-        return None
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
-
-
-def _write_field_scale_matrix_artifact(*, artifact_path, status, runs, metadata):
-    artifact_path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "status": status,
-        "metadata": metadata,
-        "runs": list(runs),
-        "note": (
-            "Sanitized field-scale smoke evidence. Commands intentionally omit "
-            "credentials, network IDs, snapshot IDs, and raw command output."
-        ),
-    }
-    artifact_path.write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    artifact_path.chmod(0o666)
-
-
-def _wait_for_chaos_scenario_ready(
-    context,
-    *,
-    sync_name,
-    scenario,
-    timeout_seconds,
-    poll_seconds,
-):
-    started = time.time()
-    while True:
-        if _is_chaos_scenario_ready(context, sync_name=sync_name, scenario=scenario):
-            return
-        if time.time() - started >= timeout_seconds:
-            raise Exit(
-                f"Timed out waiting for scenario `{scenario}` readiness on sync `{sync_name}`.",
-                code=1,
-            )
-        time.sleep(max(1, poll_seconds))
-
-
-def _is_chaos_scenario_ready(context, *, sync_name, scenario):
-    output = manage_py(
-        context,
-        f'forward_chaos_probe --sync-name "{sync_name}" --scenario "{scenario}"',
-        hide=True,
-        warn=True,
-    ).stdout.strip()
-    return output.endswith("1")
-
-
-def _export_chaos_bundle(context, *, sync_name, scenario, output_dir):
-    output_path = Path(output_dir)
-    result = manage_py(
-        context,
-        (
-            f'forward_chaos_probe --sync-name "{sync_name}" '
-            f'--scenario "{scenario}" '
-            f'--export-dir "{_container_export_dir(output_path)}"'
-        ),
-    )
-    stdout = str(getattr(result, "stdout", "") or "")
-    for line in reversed(stdout.splitlines()):
-        candidate = Path(line.strip())
-        if candidate.exists():
-            return candidate
-    candidates = sorted(output_path.glob(f"chaos-{scenario}-run-*.json"))
-    return candidates[-1] if candidates else None
-
-
-def _container_export_dir(output_dir, *, repo_root=None):
-    repo_root = Path(repo_root or Path(__file__).resolve().parent).resolve()
-    output_path = Path(output_dir)
-    if output_path.is_absolute():
-        try:
-            relative_path = output_path.resolve().relative_to(repo_root)
-        except ValueError:
-            return str(output_path)
-    else:
-        relative_path = output_path
-    return f"/source/{relative_path.as_posix()}"
-
-
-def _assert_chaos_bundle_recovery(*, output_dir, scenario):
-    target_dir = Path(output_dir)
-    candidates = sorted(target_dir.glob(f"chaos-{scenario}-run-*.json"))
-    if not candidates:
-        raise Exit(
-            f"Chaos support bundle export missing for scenario `{scenario}`.",
-            code=1,
-        )
-    bundle_path = candidates[-1]
-    try:
-        payload = json.loads(bundle_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise Exit(
-            f"Chaos support bundle `{bundle_path}` is unreadable: {exc}",
-            code=1,
-        ) from exc
-
-    run = payload.get("run") or {}
-    steps = payload.get("steps") or []
-    recommendation = payload.get("recovery_recommendation") or {}
-    action = str(recommendation.get("action") or "").strip()
-    allowed_actions = {
-        "none",
-        "wait",
-        "wait_for_review",
-        "retry_current_step",
-        "requeue_merge",
-        "discard_branch_retry",
-        "complete",
-        "reconcile",
-        "monitor",
-    }
-    expected_actions = _chaos_expected_actions_for_scenario(scenario)
-    if not run.get("id"):
-        raise Exit(
-            f"Chaos support bundle `{bundle_path}` is missing run metadata.",
-            code=1,
-        )
-    if not isinstance(steps, list) or not steps:
-        raise Exit(
-            f"Chaos support bundle `{bundle_path}` has no execution steps.",
-            code=1,
-        )
-    if action not in allowed_actions:
-        raise Exit(
-            (
-                f"Chaos support bundle `{bundle_path}` has unsupported recovery "
-                f"action `{action}`."
-            ),
-            code=1,
-        )
-    if expected_actions and action not in expected_actions:
-        raise Exit(
-            (
-                f"Chaos support bundle `{bundle_path}` recovery action `{action}` "
-                f"does not match scenario `{scenario}` expectations."
-            ),
-            code=1,
-        )
-    _assert_chaos_scenario_step_state(
-        steps=steps,
-        scenario=scenario,
-        bundle_path=str(bundle_path),
-    )
-    return bundle_path
-
-
-def _write_chaos_kill_metadata(
-    *,
-    output_dir,
-    scenario,
-    sync_name="",
-    killed_worker_id="",
-    restored_worker_replicas=0,
-    support_bundle_path=None,
-    support_bundle_recovery_verified=False,
-):
-    target_dir = Path(output_dir)
-    target_dir.mkdir(parents=True, exist_ok=True)
-    support_bundle = Path(support_bundle_path) if support_bundle_path else None
-    bundle_payload = _read_chaos_json(support_bundle) if support_bundle else {}
-    run = bundle_payload.get("run") or {}
-    steps = bundle_payload.get("steps") or []
-    recommendation = bundle_payload.get("recovery_recommendation") or {}
-    active_step = _chaos_representative_step(
-        steps=steps,
-        scenario=scenario,
-        recommendation=recommendation,
-    )
-    support_bundle_value = str(support_bundle) if support_bundle else ""
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    metadata = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "scenario": str(scenario or ""),
-        "sync_name": str(sync_name or ""),
-        "killed_worker_id": str(killed_worker_id or ""),
-        "restored_worker_replicas": int(restored_worker_replicas or 0),
-        "support_bundle": support_bundle_value,
-        "support_bundle_recovery_verified": bool(support_bundle_recovery_verified),
-        "execution_run_id": run.get("id"),
-        "active_step_id": active_step.get("id"),
-        "active_step_index": active_step.get("index"),
-        "active_step_kind": active_step.get("kind"),
-        "active_step_status": active_step.get("status"),
-        "active_step_job_id": _chaos_step_job_id(active_step, scenario),
-        "branch_id": active_step.get("branch"),
-        "branch_name": active_step.get("branch_name") or "",
-        "recovery_action": recommendation.get("action") or "",
-        "recovery_severity": recommendation.get("severity") or "",
-        "recovery_step_index": recommendation.get("step_index"),
-    }
-    metadata_path = target_dir / f"chaos-{scenario}-metadata-{timestamp}.json"
-    metadata_path.write_text(
-        json.dumps(metadata, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    return metadata_path
-
-
-def _latest_chaos_kill_metadata(*, output_dir, scenario):
-    candidates = sorted(Path(output_dir).glob(f"chaos-{scenario}-metadata-*.json"))
-    for candidate in reversed(candidates):
-        payload = _read_chaos_json(candidate)
-        if payload:
-            return payload
-    return {}
-
-
-def _read_chaos_json(path):
-    if path is None:
-        return {}
-    try:
-        return json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-
-
-def _chaos_representative_step(*, steps, scenario, recommendation=None):
-    step_list = [step for step in steps if isinstance(step, dict)]
-    recommendation = recommendation or {}
-    recommended_index = recommendation.get("step_index")
-    if recommended_index is not None:
-        for step in step_list:
-            if step.get("kind") == "stage" and step.get("index") == recommended_index:
-                return step
-
-    scenario_value = str(scenario or "").strip()
-    stage_steps = [step for step in step_list if step.get("kind") == "stage"]
-    if scenario_value == "stage-before-branch":
-        for step in stage_steps:
-            if not step.get("branch") and not step.get("branch_name"):
-                return step
-    if scenario_value == "stage-after-branch":
-        for step in stage_steps:
-            if step.get("branch") or step.get("branch_name"):
-                return step
-    if scenario_value == "stage-during-apply":
-        for step in stage_steps:
-            if (
-                int(step.get("attempted_row_count") or 0) > 0
-                or int(step.get("applied_row_count") or 0) > 0
-                or int(step.get("fetched_row_count") or 0) > 0
-            ):
-                return step
-    if scenario_value == "merge-during-exec":
-        for step in stage_steps:
-            if step.get("merge_job") or (step.get("merge_job_detail") or {}).get("pk"):
-                return step
-    return stage_steps[0] if stage_steps else {}
-
-
-def _chaos_step_job_id(step, scenario):
-    if not step:
-        return None
-    if str(scenario or "").strip() == "merge-during-exec":
-        return step.get("merge_job") or (step.get("merge_job_detail") or {}).get("pk")
-    return step.get("job") or (step.get("job_detail") or {}).get("pk")
-
-
-def _chaos_expected_actions_for_scenario(scenario):
-    defaults = {"wait", "monitor", "reconcile"}
-    mapping = {
-        "stage-before-branch": {
-            *defaults,
-            "retry_current_step",
-        },
-        "stage-after-branch": {
-            *defaults,
-            "discard_branch_retry",
-            "retry_current_step",
-        },
-        "stage-during-apply": {
-            *defaults,
-            "discard_branch_retry",
-            "retry_current_step",
-        },
-        "merge-during-exec": {
-            *defaults,
-            "requeue_merge",
-            "retry_current_step",
-        },
-    }
-    return mapping.get(str(scenario or "").strip(), defaults)
-
-
-def _assert_chaos_scenario_step_state(*, steps, scenario, bundle_path):
-    stage_steps = [step for step in steps if step.get("kind") == "stage"]
-    if not stage_steps:
-        raise Exit(
-            f"Chaos support bundle `{bundle_path}` has no stage steps.",
-            code=1,
-        )
-
-    scenario_value = str(scenario or "").strip()
-    if scenario_value == "stage-before-branch":
-        if not any(
-            not step.get("branch")
-            and not step.get("branch_name")
-            and not step.get("ingestion")
-            for step in stage_steps
-        ):
-            raise Exit(
-                (
-                    f"Chaos support bundle `{bundle_path}` is missing a pre-branch "
-                    "stage step (no branch/ingestion linkage)."
-                ),
-                code=1,
-            )
-        return
-
-    if scenario_value == "stage-after-branch":
-        if not any(
-            step.get("branch") or step.get("branch_name") for step in stage_steps
-        ):
-            raise Exit(
-                (
-                    f"Chaos support bundle `{bundle_path}` is missing a stage step "
-                    "with branch linkage."
-                ),
-                code=1,
-            )
-        return
-
-    if scenario_value == "stage-during-apply":
-        if not any(
-            int(step.get("attempted_row_count") or 0) > 0
-            or int(step.get("applied_row_count") or 0) > 0
-            or int(step.get("fetched_row_count") or 0) > 0
-            for step in stage_steps
-        ):
-            raise Exit(
-                (
-                    f"Chaos support bundle `{bundle_path}` is missing row-progress "
-                    "evidence for stage-during-apply."
-                ),
-                code=1,
-            )
-        return
-
-    if scenario_value == "merge-during-exec":
-        merge_steps = [
-            step
-            for step in stage_steps
-            if step.get("status") in {"merge_queued", "merge_timeout", "merged"}
-            and (
-                step.get("merge_job") or (step.get("merge_job_detail") or {}).get("pk")
-            )
-        ]
-        if not merge_steps:
-            raise Exit(
-                (
-                    f"Chaos support bundle `{bundle_path}` is missing merge-stage "
-                    "job evidence for merge-during-exec."
-                ),
-                code=1,
-            )
-
-
 @task(name="playwright-test")
 def playwright_test(context):
-    _run_playwright_with_shared_runtime_fallback(context)
+    _run_playwright_in_isolated_runtime(context)
 
 
 @task
 def package(context):
-    context.run(f"{shlex.quote(sys.executable)} -m build --wheel")
+    context.run(
+        f"{shlex.quote(sys.executable)} scripts/build_reproducible_distribution.py"
+    )
+
+
+def _release_artifact_inputs():
+    with (REPO_ROOT / "pyproject.toml").open("rb") as pyproject:
+        version = tomllib.load(pyproject)["tool"]["poetry"]["version"]
+    wheels = sorted((REPO_ROOT / "dist").glob(f"forward_netbox-{version}-*.whl"))
+    if len(wheels) != 1:
+        raise Exit(
+            "Expected exactly one wheel for the current package version; "
+            "run `invoke package` first.",
+            code=2,
+        )
+    return version, wheels[0]
+
+
+def _prepare_sbom_output(version):
+    sbom_dir = REPO_ROOT / "sbom"
+    sbom_dir.mkdir(exist_ok=True)
+    sbom_path = sbom_dir / f"forward-netbox-{version}-runtime.cdx.json"
+    sbom_path.unlink(missing_ok=True)
+    return sbom_path
+
+
+@task(name="artifact-test")
+def artifact_test(context):
+    """Install the built wheel into the exact runtime and validate it."""
+    version, wheel = _release_artifact_inputs()
+    sbom_path = _prepare_sbom_output(version)
+    netbox_version = str(context.forward_netbox.netbox_ver or "").strip()
+    if netbox_version != "v4.6.5":
+        raise Exit(
+            "Release artifact validation requires NETBOX_VER=v4.6.5.",
+            code=2,
+        )
+
+    image_tag = f"forward-netbox-artifact:{version}"
+    package_path = f"/source/dist/{wheel.name}"
+    netbox_package_version = netbox_version.removeprefix("v")
+    context.run(
+        " ".join(
+            (
+                "docker build",
+                f"--file {shlex.quote(str(REPO_ROOT / 'development/Dockerfile'))}",
+                f"--build-arg NETBOX_VER={shlex.quote(netbox_version)}",
+                f"--build-arg PACKAGE={shlex.quote(package_path)}",
+                f"--tag {shlex.quote(image_tag)}",
+                shlex.quote(str(REPO_ROOT)),
+            )
+        )
+    )
+
+    artifact_context = _compose_project_context(
+        context,
+        RELEASE_ARTIFACT_PROJECT_NAME,
+    )
+    validation_script = "\n".join(
+        (
+            "set -eu",
+            "rm -rf /source/forward_netbox",
+            "python /source/scripts/validate_installed_artifact.py "
+            f"--expected-version {shlex.quote(version)}",
+            "python - <<'PY'",
+            "import socket",
+            "import time",
+            "for host, port in (('postgres', 5432), ('redis', 6379)):",
+            "    for attempt in range(30):",
+            "        try:",
+            "            with socket.create_connection((host, port), timeout=1):",
+            "                break",
+            "        except OSError:",
+            "            if attempt == 29:",
+            "                raise",
+            "            time.sleep(1)",
+            "PY",
+            "python manage.py migrate --noinput",
+            "python manage.py check",
+            "python manage.py makemigrations --check --dry-run forward_netbox",
+        )
+    )
+    run_command = " ".join(
+        (
+            "docker run --rm",
+            f"--network {shlex.quote(RELEASE_ARTIFACT_PROJECT_NAME + '_default')}",
+            f"--env-file {shlex.quote(str(REPO_ROOT / 'development/env/netbox.env'))}",
+            "--volume "
+            + shlex.quote(
+                f"{REPO_ROOT / 'development/secrets/api_token_pepper_1'}:"
+                "/run/secrets/api_token_pepper_1:ro"
+            ),
+            "--volume "
+            + shlex.quote(
+                f"{REPO_ROOT / 'development/secrets/db_password'}:"
+                "/run/secrets/db_password:ro"
+            ),
+            "--volume "
+            + shlex.quote(
+                f"{REPO_ROOT / 'development/secrets/redis_password'}:"
+                "/run/secrets/redis_password:ro"
+            ),
+            "--volume "
+            + shlex.quote(
+                f"{REPO_ROOT / 'development/secrets/redis_password'}:"
+                "/run/secrets/redis_cache_password:ro"
+            ),
+            "--volume "
+            + shlex.quote(
+                f"{REPO_ROOT / 'development/secrets/secret_key'}:"
+                "/run/secrets/secret_key:ro"
+            ),
+            "--env LOGLEVEL=WARNING",
+            "--volume "
+            + shlex.quote(
+                f"{REPO_ROOT / 'development/configuration'}:/etc/netbox/config:ro"
+            ),
+            "--tmpfs /var/log/netbox:rw,mode=1777",
+            "--entrypoint /bin/bash",
+            shlex.quote(image_tag),
+            f"-lc {shlex.quote(validation_script)}",
+        )
+    )
+    sbom_script = "\n".join(
+        (
+            "set -eu",
+            "printf '%s\\n' '[project]' 'name = \"netbox\"' "
+            f"'version = \"{netbox_package_version}\"' "
+            "'description = \"NetBox runtime host for Forward NetBox\"' "
+            "'requires-python = \">=3.14,<3.15\"' "
+            "'dependencies = [' "
+            f"'  \"forward-netbox=={version}\",' "
+            "'  \"netbox-cisco-aci==0.4.0\",' "
+            "'  \"netbox-dlm==0.4.1\",' "
+            "'  \"netbox-peering-manager==0.3.0\",' "
+            "'  \"netbox-routing==0.4.3\",' "
+            "']' "
+            "> /tmp/netbox-runtime-pyproject.toml",
+            "UV_CACHE_DIR=/tmp/uv-cache uv tool run --isolated "
+            f"--from cyclonedx-bom=={CYCLONEDX_BOM_VERSION} "
+            "cyclonedx-py environment "
+            "--pyproject /tmp/netbox-runtime-pyproject.toml "
+            "--output-reproducible --output-format JSON --spec-version 1.6 "
+            f"--output-file /sbom/{shlex.quote(sbom_path.name)} "
+            "/opt/netbox/venv/bin/python",
+        )
+    )
+    sbom_command = " ".join(
+        (
+            "docker run --rm",
+            f"--user {os.getuid()}:{os.getgid()}",
+            f"--volume {shlex.quote(str(sbom_path.parent))}:/sbom",
+            "--entrypoint /bin/bash",
+            shlex.quote(image_tag),
+            f"-lc {shlex.quote(sbom_script)}",
+        )
+    )
+
+    try:
+        docker_compose(artifact_context, "up -d postgres redis")
+        context.run(run_command)
+        context.run(sbom_command)
+        context.run(
+            f"{shlex.quote(sys.executable)} "
+            f"{shlex.quote(str(REPO_ROOT / 'scripts/validate_sbom.py'))} "
+            f"--sbom {shlex.quote(str(sbom_path))} "
+            f"--expected-version {shlex.quote(version)}"
+        )
+    finally:
+        docker_compose(
+            artifact_context,
+            "down --volumes --remove-orphans",
+            warn=True,
+        )
+        context.run(f"docker image rm {shlex.quote(image_tag)}", warn=True)
 
 
 @task
@@ -2816,8 +1115,7 @@ def smoke_sync(
     query_limit=5,
     plan_only=False,
     no_auto_merge=False,
-    execution_backend="single_branch",
-    max_changes_per_branch=10000,
+    max_changes_per_staging_item=10000,
     enable_bulk_orm=True,
 ):
     flags = []
@@ -2829,12 +1127,12 @@ def smoke_sync(
         flags.append("--no-auto-merge")
     if not bool(enable_bulk_orm):
         flags.append("--disable-bulk-orm")
-    if execution_backend != "single_branch":
-        flags.append(f"--execution-backend {execution_backend}")
     if query_limit != 5:
         flags.append(f"--query-limit {int(query_limit)}")
-    if max_changes_per_branch != 10000:
-        flags.append(f"--max-changes-per-branch {int(max_changes_per_branch)}")
+    if max_changes_per_staging_item != 10000:
+        flags.append(
+            f"--max-changes-per-staging-item {int(max_changes_per_staging_item)}"
+        )
     flag_string = f" {' '.join(flags)}" if flags else ""
     manage_py(context, f"forward_smoke_sync{flag_string}")
 
@@ -2843,8 +1141,7 @@ def smoke_sync(
 def scale_soak(
     context,
     runs=3,
-    execution_backend="single_branch",
-    max_changes_per_branch=10000,
+    max_changes_per_staging_item=10000,
     pause_seconds=30,
 ):
     run_count = int(runs)
@@ -2853,8 +1150,7 @@ def scale_soak(
     for index in range(run_count):
         smoke_sync(
             context,
-            execution_backend=execution_backend,
-            max_changes_per_branch=int(max_changes_per_branch),
+            max_changes_per_staging_item=int(max_changes_per_staging_item),
         )
         if index < run_count - 1:
             time.sleep(max(0, int(pause_seconds)))
@@ -2912,7 +1208,7 @@ def pushdown_profile(
 @task(name="architecture-audit-check")
 def architecture_audit_check(context):
     """Run the focused model, fetch, and query architecture contract gate."""
-    _run_tests_with_shared_runtime_fallback(
+    _run_ci_tests_in_isolated_runtime(
         context,
         test_label=ARCHITECTURE_AUDIT_TEST_LABELS,
     )
@@ -2999,68 +1295,28 @@ def architecture_completion_audit(context, output_json=""):
         raise Exit("Architecture completion audit failed.", code=1)
 
 
-@task(name="scale-benchmark")
-def scale_benchmark(
-    context,
-    sync_name="",
-    run_id="",
-    input_json="",
-    output_json="docs/03_Plans/evidence/scale-benchmark.json",
-    reconcile=False,
-    fail_on_warn=False,
-    fail_on_fail=False,
-):
-    """Evaluate scale-readiness from execution-run support-bundle metrics."""
-    selectors = [value for value in (sync_name, run_id, input_json) if value]
-    if len(selectors) != 1:
-        raise Exit(
-            "Provide exactly one of --sync-name, --run-id, or --input-json.", code=2
+def _collect_architecture_completion_gate(context):
+    try:
+        _run_ci_tests_in_isolated_runtime(
+            context,
+            test_label=ARCHITECTURE_AUDIT_TEST_LABELS,
         )
-    if input_json and reconcile:
-        raise Exit("--reconcile can only be used with --sync-name or --run-id.", code=2)
-    flags = []
-    if sync_name:
-        flags.append(f'--sync-name "{sync_name}"')
-    if run_id:
-        flags.append(f"--run-id {int(run_id)}")
-    if input_json:
-        flags.append(f'--input-json "{input_json}"')
-    if reconcile:
-        flags.append("--reconcile")
-    if output_json:
-        flags.append(f'--output-json "{output_json}"')
-    if fail_on_warn:
-        flags.append("--fail-on-warn")
-    if fail_on_fail:
-        flags.append("--fail-on-fail")
-    manage_py(context, f"forward_scale_benchmark {' '.join(flags)}")
-
-
-@task(name="execution-run-recovery")
-def execution_run_recovery(
-    context,
-    run_id="",
-    sync_name="",
-    skip_reconcile=False,
-    enqueue_next=False,
-    output_json="",
-):
-    """Inspect/reconcile/resume a ledger execution run through native NetBox jobs."""
-    selectors = [value for value in (sync_name, run_id) if value]
-    if len(selectors) != 1:
-        raise Exit("Provide exactly one of --sync-name or --run-id.", code=2)
-    flags = []
-    if sync_name:
-        flags.append(f'--sync-name "{sync_name}"')
-    if run_id:
-        flags.append(f"--run-id {int(run_id)}")
-    if skip_reconcile:
-        flags.append("--skip-reconcile")
-    if enqueue_next:
-        flags.append("--enqueue-next")
-    if output_json:
-        flags.append(f'--output-json "{output_json}"')
-    manage_py(context, f"forward_execution_run_recovery {' '.join(flags)}")
+    except Exception as exc:
+        return {
+            "status": "failed",
+            "evidence": {
+                "command": "architecture-audit-check",
+                "failure_code": "architecture_contract_failed",
+                "failure_hint": f"architecture contract tests raised {exc.__class__.__name__}",
+            },
+        }
+    return {
+        "status": "passed",
+        "evidence": {
+            "command": "architecture-audit-check",
+            "test_labels": ARCHITECTURE_AUDIT_TEST_LABELS,
+        },
+    }
 
 
 @task(name="sync-health-gate")
@@ -3090,19 +1346,12 @@ def sync_health_gate(
 
     failed_threshold = max(1, int(failed_status_threshold))
     failed_streak = 0
-    terminal_run_failures = {"failed", "timeout", "cancelled"}
-    inflight_run_statuses = {"running", "queued", "waiting"}
     for poll in range(1, int(max_polls) + 1):
         watch_payload = _manage_py_json_retry(
             context, f"forward_watch_sync {' '.join(watch_flags)}"
         )
         resolved_sync_id = int(watch_payload.get("sync_id") or 0)
         sync_status = str(watch_payload.get("sync_status") or "").strip().lower()
-        run_status = (
-            str(((watch_payload.get("execution_run") or {}).get("status") or ""))
-            .strip()
-            .lower()
-        )
 
         blocker_payload = _manage_py_json_retry(
             context, f"forward_blocker_audit --sync-id {resolved_sync_id}"
@@ -3119,7 +1368,6 @@ def sync_health_gate(
         print(
             "sync-health-gate poll "
             f"{poll}/{int(max_polls)} sync_id={resolved_sync_id} status={sync_status} "
-            f"run_status={run_status or 'n/a'} "
             f"blocking={blocking} warnings={warnings} "
             f"suppressed_warnings={suppressed_warnings} errors={errors}"
         )
@@ -3146,14 +1394,11 @@ def sync_health_gate(
                 code=3,
             )
 
-        sync_failed = sync_status == "failed"
-        run_failed = run_status in terminal_run_failures
-        run_inflight = run_status in inflight_run_statuses
-        if run_failed or (sync_failed and not run_inflight):
+        if sync_status in {"failed", "timeout"}:
             failed_streak += 1
             if failed_streak >= failed_threshold:
                 raise Exit(
-                    "sync-health-gate failed: sync/execution run reached failed status.",
+                    f"sync-health-gate failed: sync reached {sync_status} status.",
                     code=3,
                 )
             if poll < int(max_polls):
@@ -3162,7 +1407,7 @@ def sync_health_gate(
         else:
             failed_streak = 0
 
-        if sync_status in {"completed", "failed"}:
+        if sync_status == "completed":
             print("sync-health-gate passed: sync completed with clean audits.")
             return
 
@@ -3212,8 +1457,6 @@ def sync_health_monitor(
 
     failed_threshold = max(1, int(failed_status_threshold))
     failed_streak = {sync_id: 0 for sync_id in parsed_sync_ids}
-    terminal_run_failures = {"failed", "timeout", "cancelled"}
-    inflight_run_statuses = {"running", "queued", "waiting"}
     samples = []
     all_terminal = False
     output_path = Path(output_json).expanduser() if output_json else None
@@ -3256,11 +1499,6 @@ def sync_health_monitor(
             warning_payload = _manage_py_json_retry(context, warning_command)
 
             sync_status = str(watch_payload.get("sync_status") or "").strip().lower()
-            run_status = (
-                str(((watch_payload.get("execution_run") or {}).get("status") or ""))
-                .strip()
-                .lower()
-            )
             blocking = int(((blocker_payload.get("counts") or {}).get("blocking") or 0))
             warnings = int(warning_payload.get("warning_count") or 0)
             suppressed_warnings = int(
@@ -3271,7 +1509,6 @@ def sync_health_monitor(
             print(
                 "sync-health-monitor poll "
                 f"{poll}/{int(max_polls)} sync_id={sync_id} status={sync_status} "
-                f"run_status={run_status or 'n/a'} "
                 f"blocking={blocking} warnings={warnings} "
                 f"suppressed_warnings={suppressed_warnings} errors={errors}"
             )
@@ -3281,7 +1518,6 @@ def sync_health_monitor(
                 "poll": poll,
                 "sync_id": sync_id,
                 "sync_status": sync_status,
-                "execution_run_status": run_status,
                 "blocking": blocking,
                 "warnings": warnings,
                 "suppressed_warnings": suppressed_warnings,
@@ -3312,24 +1548,21 @@ def sync_health_monitor(
                     code=3,
                 )
 
-            sync_failed = sync_status == "failed"
-            run_failed = run_status in terminal_run_failures
-            run_inflight = run_status in inflight_run_statuses
-            if run_failed or (sync_failed and not run_inflight):
+            if sync_status in {"failed", "timeout"}:
                 failed_streak[sync_id] += 1
                 if failed_streak[sync_id] >= failed_threshold:
                     raise Exit(
                         (
                             "sync-health-monitor failed: sync "
                             f"{sync_id} reached failed status threshold "
-                            f"(sync_status={sync_status}, run_status={run_status or 'n/a'})."
+                            f"(sync_status={sync_status})."
                         ),
                         code=3,
                     )
             else:
                 failed_streak[sync_id] = 0
 
-            if sync_status not in {"completed", "failed"}:
+            if sync_status != "completed":
                 all_terminal = False
 
         if all_terminal:
@@ -3351,583 +1584,6 @@ def sync_health_monitor(
         (
             "sync-health-monitor timed out before all syncs reached terminal status. "
             "Increase --max-polls/--interval-seconds or allow non-terminal runs."
-        ),
-        code=4,
-    )
-
-
-@task(name="sync-autorecover-monitor")
-def sync_autorecover_monitor(
-    context,
-    sync_ids="",
-    max_polls=120,
-    interval_seconds=60,
-    allow_nonterminal=True,
-    include_all_ingestions=False,
-    fail_on_suppressed_warning=False,
-    output_json="",
-    failed_status_threshold=2,
-    orphan_pending_min_seconds=120,
-    stalled_inflight_min_seconds=900,
-    fail_on_recovery=False,
-):
-    """Monitor sync health and auto-recover dead in-flight execution steps."""
-    parsed_sync_ids = []
-    for token in str(sync_ids or "").split(","):
-        token = token.strip()
-        if not token:
-            continue
-        try:
-            parsed_sync_ids.append(int(token))
-        except ValueError as exc:
-            raise Exit(
-                f"Invalid sync id `{token}` in --sync-ids list.", code=2
-            ) from exc
-    if not parsed_sync_ids:
-        raise Exit("Provide at least one sync id via --sync-ids.", code=2)
-
-    failed_threshold = max(1, int(failed_status_threshold))
-    terminal_run_failures = {"failed", "timeout", "cancelled"}
-    inflight_run_statuses = {"running", "queued", "waiting"}
-    failed_streak = {sync_id: 0 for sync_id in parsed_sync_ids}
-    orphan_pending_streak = {}
-    stalled_inflight_streak = {}
-    staged_waiting_streak = {}
-    actionable_step_failure_streak = {}
-    stalled_inflight_threshold = 4
-    orphan_pending_min_seconds = max(1, int(orphan_pending_min_seconds))
-    stalled_inflight_min_seconds = max(1, int(stalled_inflight_min_seconds))
-    samples = []
-    recovery_actions = []
-    all_terminal = False
-    output_path = Path(output_json).expanduser() if output_json else None
-    if output_path is not None:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    def _flush_autorecover_output(*, completed: bool):
-        if output_path is None:
-            return
-        output_payload = {
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-            "sync_ids": parsed_sync_ids,
-            "max_polls": int(max_polls),
-            "interval_seconds": int(interval_seconds),
-            "allow_nonterminal": bool(allow_nonterminal),
-            "include_all_ingestions": bool(include_all_ingestions),
-            "completed": bool(completed),
-            "samples": samples,
-            "recovery_actions": recovery_actions,
-        }
-        output_path.write_text(json.dumps(output_payload, indent=2), encoding="utf-8")
-
-    for poll in range(1, int(max_polls) + 1):
-        all_terminal = True
-        sampled_at = datetime.now(timezone.utc).isoformat()
-        for sync_id in parsed_sync_ids:
-            watch_payload = _manage_py_json_retry(
-                context,
-                (
-                    "forward_watch_sync "
-                    f"--sync-id {sync_id} --interval-seconds 1 --max-polls 1 "
-                    "--allow-nonterminal"
-                ),
-            )
-            blocker_payload = _manage_py_json_retry(
-                context, f"forward_blocker_audit --sync-id {sync_id}"
-            )
-            warning_command = f"forward_warning_audit --sync-id {sync_id}"
-            if bool(include_all_ingestions):
-                warning_command += " --all-ingestions"
-            warning_payload = _manage_py_json_retry(context, warning_command)
-
-            sync_name = str(watch_payload.get("sync_name") or "").strip()
-            sync_status = str(watch_payload.get("sync_status") or "").strip().lower()
-            execution_run = watch_payload.get("execution_run") or {}
-            run_status = str(execution_run.get("status") or "").strip().lower()
-            run_heartbeat_age_seconds = execution_run.get(
-                "latest_heartbeat_age_seconds"
-            )
-            try:
-                run_heartbeat_age_seconds = (
-                    float(run_heartbeat_age_seconds)
-                    if run_heartbeat_age_seconds is not None
-                    else None
-                )
-            except (TypeError, ValueError):
-                run_heartbeat_age_seconds = None
-            active_step = execution_run.get("active_step") or {}
-            step_id = active_step.get("id")
-            step_status = str(active_step.get("status") or "").strip().lower()
-            step_job_live = active_step.get("job_live")
-            step_job_id = active_step.get("job_id")
-            step_attempted = int(active_step.get("attempted_row_count") or 0)
-            step_applied = int(active_step.get("applied_row_count") or 0)
-            step_fetched = int(active_step.get("fetched_row_count") or 0)
-            step_created_age_seconds = active_step.get("created_age_seconds")
-            try:
-                step_created_age_seconds = (
-                    float(step_created_age_seconds)
-                    if step_created_age_seconds is not None
-                    else None
-                )
-            except (TypeError, ValueError):
-                step_created_age_seconds = None
-            step_heartbeat_age_seconds = active_step.get("heartbeat_age_seconds")
-            try:
-                step_heartbeat_age_seconds = (
-                    float(step_heartbeat_age_seconds)
-                    if step_heartbeat_age_seconds is not None
-                    else None
-                )
-            except (TypeError, ValueError):
-                step_heartbeat_age_seconds = None
-
-            blocking = int(((blocker_payload.get("counts") or {}).get("blocking") or 0))
-            warnings = int(warning_payload.get("warning_count") or 0)
-            suppressed_warnings = int(
-                warning_payload.get("suppressed_warning_count") or 0
-            )
-            errors = int(warning_payload.get("error_count") or 0)
-
-            print(
-                "sync-autorecover-monitor poll "
-                f"{poll}/{int(max_polls)} sync_id={sync_id} status={sync_status} "
-                f"run_status={run_status or 'n/a'} step_status={step_status or 'n/a'} "
-                f"job_live={step_job_live} blocking={blocking} warnings={warnings} "
-                f"suppressed_warnings={suppressed_warnings} errors={errors}"
-            )
-
-            sample = {
-                "sampled_at": sampled_at,
-                "poll": poll,
-                "sync_id": sync_id,
-                "sync_name": sync_name,
-                "sync_status": sync_status,
-                "execution_run_status": run_status,
-                "execution_run_heartbeat_age_seconds": run_heartbeat_age_seconds,
-                "active_step_status": step_status,
-                "active_step_id": step_id,
-                "active_step_job_live": step_job_live,
-                "active_step_job_id": step_job_id,
-                "active_step_attempted_row_count": step_attempted,
-                "active_step_applied_row_count": step_applied,
-                "active_step_fetched_row_count": step_fetched,
-                "active_step_created_age_seconds": step_created_age_seconds,
-                "active_step_heartbeat_age_seconds": step_heartbeat_age_seconds,
-                "blocking": blocking,
-                "warnings": warnings,
-                "suppressed_warnings": suppressed_warnings,
-                "errors": errors,
-            }
-            samples.append(sample)
-            _flush_autorecover_output(completed=False)
-
-            if blocking > 0:
-                raise Exit(
-                    f"sync-autorecover-monitor failed: blocking issues detected for sync {sync_id} (count={blocking}).",
-                    code=3,
-                )
-            if warnings > 0:
-                raise Exit(
-                    f"sync-autorecover-monitor failed: warning issues detected for sync {sync_id} (count={warnings}).",
-                    code=3,
-                )
-            if bool(fail_on_suppressed_warning) and suppressed_warnings > 0:
-                raise Exit(
-                    "sync-autorecover-monitor failed: suppressed warning issues "
-                    f"detected for sync {sync_id} (count={suppressed_warnings}).",
-                    code=3,
-                )
-            if errors > 0:
-                raise Exit(
-                    f"sync-autorecover-monitor failed: error issues detected for sync {sync_id} (count={errors}).",
-                    code=3,
-                )
-
-            dead_inflight_job = (
-                step_job_live is False
-                and step_job_id is not None
-                and step_status in {"queued", "running", "merge_queued"}
-            )
-            actionable_step_failure = step_status in {
-                "failed",
-                "timeout",
-                "merge_timeout",
-            }
-            actionable_failure_identity = (
-                step_id,
-                execution_run.get("next_step_index"),
-                execution_run.get("id"),
-                step_status,
-            )
-            if actionable_step_failure:
-                previous = actionable_step_failure_streak.get(sync_id)
-                if previous and previous.get("identity") == actionable_failure_identity:
-                    actionable_step_failure_streak[sync_id] = {
-                        "identity": actionable_failure_identity,
-                        "count": int(previous.get("count", 0)) + 1,
-                    }
-                else:
-                    actionable_step_failure_streak[sync_id] = {
-                        "identity": actionable_failure_identity,
-                        "count": 1,
-                    }
-            else:
-                actionable_step_failure_streak.pop(sync_id, None)
-            actionable_step_failure_count = int(
-                (actionable_step_failure_streak.get(sync_id) or {}).get("count", 0)
-            )
-            orphan_pending_stale_heartbeat = (
-                step_heartbeat_age_seconds is None
-                or step_heartbeat_age_seconds >= orphan_pending_min_seconds
-            )
-            orphan_pending_step = (
-                step_status == "pending"
-                and step_job_id is None
-                and run_status == "running"
-                and (
-                    run_heartbeat_age_seconds is None
-                    or run_heartbeat_age_seconds >= orphan_pending_min_seconds
-                )
-                and step_attempted == 0
-                and step_applied == 0
-                and step_created_age_seconds is not None
-                and step_created_age_seconds >= orphan_pending_min_seconds
-            )
-            orphan_pending_identity = (
-                step_id,
-                execution_run.get("next_step_index"),
-                execution_run.get("id"),
-            )
-            if orphan_pending_step:
-                previous = orphan_pending_streak.get(sync_id)
-                if previous and previous.get("identity") == orphan_pending_identity:
-                    orphan_pending_streak[sync_id] = {
-                        "identity": orphan_pending_identity,
-                        "count": int(previous.get("count", 0)) + 1,
-                    }
-                else:
-                    orphan_pending_streak[sync_id] = {
-                        "identity": orphan_pending_identity,
-                        "count": 1,
-                    }
-            else:
-                orphan_pending_streak.pop(sync_id, None)
-            orphan_pending_count = int(
-                (orphan_pending_streak.get(sync_id) or {}).get("count", 0)
-            )
-            stalled_inflight_candidate = (
-                run_status == "running"
-                and step_status == "running"
-                and step_job_live is True
-                and step_job_id is not None
-                and step_heartbeat_age_seconds is not None
-                and step_heartbeat_age_seconds >= stalled_inflight_min_seconds
-            )
-            stalled_inflight_identity = (
-                step_id,
-                execution_run.get("next_step_index"),
-                execution_run.get("id"),
-                step_job_id,
-            )
-            stalled_inflight_progress = (step_attempted, step_applied, step_fetched)
-            if stalled_inflight_candidate:
-                previous = stalled_inflight_streak.get(sync_id)
-                if previous and previous.get("identity") == stalled_inflight_identity:
-                    if previous.get("progress") == stalled_inflight_progress:
-                        stalled_inflight_streak[sync_id] = {
-                            "identity": stalled_inflight_identity,
-                            "progress": stalled_inflight_progress,
-                            "count": int(previous.get("count", 0)) + 1,
-                        }
-                    else:
-                        stalled_inflight_streak[sync_id] = {
-                            "identity": stalled_inflight_identity,
-                            "progress": stalled_inflight_progress,
-                            "count": 1,
-                        }
-                else:
-                    stalled_inflight_streak[sync_id] = {
-                        "identity": stalled_inflight_identity,
-                        "progress": stalled_inflight_progress,
-                        "count": 1,
-                    }
-            else:
-                stalled_inflight_streak.pop(sync_id, None)
-            stalled_inflight_count = int(
-                (stalled_inflight_streak.get(sync_id) or {}).get("count", 0)
-            )
-            staged_waiting_candidate = (
-                run_status in {"running", "waiting"}
-                and step_status == "staged"
-                and step_job_id is not None
-                and step_job_live is False
-                and (
-                    step_heartbeat_age_seconds is None
-                    or step_heartbeat_age_seconds >= orphan_pending_min_seconds
-                )
-            )
-            staged_waiting_identity = (
-                step_id,
-                execution_run.get("next_step_index"),
-                execution_run.get("id"),
-                step_job_id,
-            )
-            if staged_waiting_candidate:
-                previous = staged_waiting_streak.get(sync_id)
-                if previous and previous.get("identity") == staged_waiting_identity:
-                    staged_waiting_streak[sync_id] = {
-                        "identity": staged_waiting_identity,
-                        "count": int(previous.get("count", 0)) + 1,
-                    }
-                else:
-                    staged_waiting_streak[sync_id] = {
-                        "identity": staged_waiting_identity,
-                        "count": 1,
-                    }
-            else:
-                staged_waiting_streak.pop(sync_id, None)
-            staged_waiting_count = int(
-                (staged_waiting_streak.get(sync_id) or {}).get("count", 0)
-            )
-            recovered_this_poll = False
-            if dead_inflight_job and sync_name:
-                recovery_payload = _manage_py_json_retry(
-                    context,
-                    (
-                        "forward_execution_run_recovery "
-                        f'--sync-name "{sync_name}" --enqueue-next'
-                    ),
-                )
-                recovery_actions.append(
-                    {
-                        "sampled_at": sampled_at,
-                        "poll": poll,
-                        "sync_id": sync_id,
-                        "sync_name": sync_name,
-                        "reason": "dead_inflight_job",
-                        "recovery_payload": recovery_payload,
-                    }
-                )
-                recovered_this_poll = True
-                _flush_autorecover_output(completed=False)
-                print(
-                    "sync-autorecover-monitor recovery "
-                    f"sync_id={sync_id} reason=dead_inflight_job"
-                )
-            if (
-                actionable_step_failure
-                and actionable_step_failure_count >= 2
-                and sync_name
-            ):
-                recovery_payload = _manage_py_json_retry(
-                    context,
-                    (
-                        "forward_execution_run_recovery "
-                        f'--sync-name "{sync_name}" --enqueue-next'
-                    ),
-                )
-                recovery_actions.append(
-                    {
-                        "sampled_at": sampled_at,
-                        "poll": poll,
-                        "sync_id": sync_id,
-                        "sync_name": sync_name,
-                        "reason": "actionable_step_failure",
-                        "actionable_step_failure_count": actionable_step_failure_count,
-                        "step_status": step_status,
-                        "recovery_payload": recovery_payload,
-                    }
-                )
-                recovered_this_poll = True
-                _flush_autorecover_output(completed=False)
-                print(
-                    "sync-autorecover-monitor recovery "
-                    f"sync_id={sync_id} reason=actionable_step_failure step_status={step_status}"
-                )
-            orphan_pending_threshold = 2 if orphan_pending_stale_heartbeat else 6
-            if (
-                orphan_pending_step
-                and orphan_pending_count >= orphan_pending_threshold
-                and sync_name
-            ):
-                recovery_payload = _manage_py_json_retry(
-                    context,
-                    (
-                        "forward_execution_run_recovery "
-                        f'--sync-name "{sync_name}" --enqueue-next'
-                    ),
-                )
-                recovery_actions.append(
-                    {
-                        "sampled_at": sampled_at,
-                        "poll": poll,
-                        "sync_id": sync_id,
-                        "sync_name": sync_name,
-                        "reason": "orphan_pending_step",
-                        "orphan_pending_count": orphan_pending_count,
-                        "orphan_pending_threshold": orphan_pending_threshold,
-                        "step_created_age_seconds": step_created_age_seconds,
-                        "orphan_pending_min_seconds": orphan_pending_min_seconds,
-                        "run_heartbeat_age_seconds": run_heartbeat_age_seconds,
-                        "orphan_pending_stale_heartbeat": orphan_pending_stale_heartbeat,
-                        "step_status": step_status,
-                        "recovery_payload": recovery_payload,
-                    }
-                )
-                recovered_this_poll = True
-                _flush_autorecover_output(completed=False)
-                print(
-                    "sync-autorecover-monitor recovery "
-                    f"sync_id={sync_id} reason=orphan_pending_step"
-                )
-            if (
-                stalled_inflight_candidate
-                and stalled_inflight_count >= stalled_inflight_threshold
-                and sync_name
-            ):
-                recovery_payload = _manage_py_json_retry(
-                    context,
-                    (
-                        "forward_execution_run_recovery "
-                        f'--sync-name "{sync_name}" --enqueue-next'
-                    ),
-                )
-                recovery_actions.append(
-                    {
-                        "sampled_at": sampled_at,
-                        "poll": poll,
-                        "sync_id": sync_id,
-                        "sync_name": sync_name,
-                        "reason": "stalled_inflight_progress",
-                        "stalled_inflight_count": stalled_inflight_count,
-                        "step_status": step_status,
-                        "step_job_id": step_job_id,
-                        "attempted_row_count": step_attempted,
-                        "applied_row_count": step_applied,
-                        "fetched_row_count": step_fetched,
-                        "step_heartbeat_age_seconds": step_heartbeat_age_seconds,
-                        "stalled_inflight_min_seconds": stalled_inflight_min_seconds,
-                        "recovery_payload": recovery_payload,
-                    }
-                )
-                recovered_this_poll = True
-                _flush_autorecover_output(completed=False)
-                print(
-                    "sync-autorecover-monitor recovery "
-                    f"sync_id={sync_id} reason=stalled_inflight_progress "
-                    f"count={stalled_inflight_count}"
-                )
-            if staged_waiting_candidate and staged_waiting_count >= 2 and sync_name:
-                recovery_payload = _manage_py_json_retry(
-                    context,
-                    (
-                        "forward_execution_run_recovery "
-                        f'--sync-name "{sync_name}" --enqueue-next'
-                    ),
-                )
-                recovery_actions.append(
-                    {
-                        "sampled_at": sampled_at,
-                        "poll": poll,
-                        "sync_id": sync_id,
-                        "sync_name": sync_name,
-                        "reason": "staged_waiting_merge",
-                        "staged_waiting_count": staged_waiting_count,
-                        "step_status": step_status,
-                        "step_job_id": step_job_id,
-                        "step_heartbeat_age_seconds": step_heartbeat_age_seconds,
-                        "orphan_pending_min_seconds": orphan_pending_min_seconds,
-                        "recovery_payload": recovery_payload,
-                    }
-                )
-                recovered_this_poll = True
-                _flush_autorecover_output(completed=False)
-                print(
-                    "sync-autorecover-monitor recovery "
-                    f"sync_id={sync_id} reason=staged_waiting_merge "
-                    f"count={staged_waiting_count}"
-                )
-
-            sync_failed = sync_status == "failed"
-            run_failed = run_status in terminal_run_failures
-            run_inflight = run_status in inflight_run_statuses
-            if run_failed and sync_name:
-                recovery_payload = _manage_py_json_retry(
-                    context,
-                    (
-                        "forward_execution_run_recovery "
-                        f'--sync-name "{sync_name}" --enqueue-next'
-                    ),
-                )
-                recovery_actions.append(
-                    {
-                        "sampled_at": sampled_at,
-                        "poll": poll,
-                        "sync_id": sync_id,
-                        "sync_name": sync_name,
-                        "reason": "terminal_run_status",
-                        "run_status": run_status,
-                        "recovery_payload": recovery_payload,
-                    }
-                )
-                recovered_this_poll = True
-                _flush_autorecover_output(completed=False)
-                print(
-                    "sync-autorecover-monitor recovery "
-                    f"sync_id={sync_id} reason=terminal_run_status run_status={run_status}"
-                )
-            if run_failed or (sync_failed and not run_inflight):
-                failed_streak[sync_id] += 1
-                if failed_streak[sync_id] >= failed_threshold:
-                    raise Exit(
-                        (
-                            "sync-autorecover-monitor failed: sync "
-                            f"{sync_id} reached failed status threshold "
-                            f"(sync_status={sync_status}, run_status={run_status or 'n/a'})."
-                        ),
-                        code=3,
-                    )
-                if recovered_this_poll and poll < int(max_polls):
-                    continue
-            else:
-                failed_streak[sync_id] = 0
-
-            if sync_status not in {"completed", "failed"}:
-                all_terminal = False
-
-        if all_terminal:
-            break
-        if poll < int(max_polls):
-            time.sleep(max(1, int(interval_seconds)))
-
-    if output_path is not None:
-        _flush_autorecover_output(completed=True)
-        print(f"Wrote sync auto-recover monitor evidence: {output_path}")
-
-    if bool(fail_on_recovery) and recovery_actions:
-        raise Exit(
-            (
-                "sync-autorecover-monitor failed: recovery actions were required "
-                f"(count={len(recovery_actions)})."
-            ),
-            code=3,
-        )
-
-    if all_terminal:
-        print(
-            "sync-autorecover-monitor passed: all syncs reached terminal status cleanly."
-        )
-        return
-    if bool(allow_nonterminal):
-        print(
-            "sync-autorecover-monitor passed: audits are clean on non-terminal run state."
-        )
-        return
-    raise Exit(
-        (
-            "sync-autorecover-monitor timed out before all syncs reached terminal "
-            "status. Increase --max-polls/--interval-seconds or allow non-terminal runs."
         ),
         code=4,
     )
@@ -3964,32 +1620,26 @@ def sync_release_gate(
         f"sync-release-gate-{'-'.join(str(v) for v in parsed_sync_ids)}-{stamp}"
     )
     prefix = str(output_prefix or "").strip() or default_prefix
-    autorecover_output = evidence_dir / f"{prefix}-autorecover.json"
     health_output = evidence_dir / f"{prefix}-health.json"
     summary_output = evidence_dir / f"{prefix}-summary.json"
 
     sync_ids_csv = ",".join(str(v) for v in parsed_sync_ids)
-    sync_autorecover_monitor.body(
-        context,
-        sync_ids=sync_ids_csv,
-        max_polls=int(max_polls),
-        interval_seconds=int(interval_seconds),
-        allow_nonterminal=True,
-        include_all_ingestions=bool(include_all_ingestions),
-        fail_on_suppressed_warning=True,
-        output_json=str(autorecover_output),
-        fail_on_recovery=True,
-    )
     sync_health_monitor.body(
         context,
         sync_ids=sync_ids_csv,
         max_polls=int(max_polls),
         interval_seconds=int(interval_seconds),
-        allow_nonterminal=True,
+        allow_nonterminal=False,
         include_all_ingestions=bool(include_all_ingestions),
         fail_on_suppressed_warning=True,
         output_json=str(health_output),
     )
+    ownership_payload = _manage_py_json_retry(context, "forward_ownership_audit")
+    if not bool(ownership_payload.get("release_ready")):
+        raise Exit(
+            "sync-release-gate failed: ownership is inconsistent or branches remain open.",
+            code=3,
+        )
 
     sync_results = []
     for sync_id in parsed_sync_ids:
@@ -4045,26 +1695,13 @@ def sync_release_gate(
         "max_polls": int(max_polls),
         "interval_seconds": int(interval_seconds),
         "include_all_ingestions": bool(include_all_ingestions),
-        "autorecover_output": str(autorecover_output),
         "health_output": str(health_output),
+        "ownership": ownership_payload,
         "sync_results": sync_results,
     }
     summary_output.write_text(json.dumps(summary_payload, indent=2), encoding="utf-8")
     print(f"Wrote sync release gate summary: {summary_output}")
     print("sync-release-gate passed: strict release checks are clean.")
-
-
-@task(name="prune-compat-cache")
-def prune_compat_cache(context, sync_name="", dry_run=True, output_json=""):
-    """Prune stale legacy `_branch_run` payloads once execution-ledger history exists."""
-    flags = []
-    if sync_name:
-        flags.append(f'--sync-name "{sync_name}"')
-    if output_json:
-        flags.append(f'--output-json "{output_json}"')
-    if bool(dry_run):
-        flags.append("--dry-run")
-    manage_py(context, f"forward_prune_compatibility_cache {' '.join(flags)}")
 
 
 @task(
@@ -4078,6 +1715,7 @@ def prune_compat_cache(context, sync_name="", dry_run=True, output_json=""):
         check,
         scenario_test_ci,
         test_ci,
+        bulk_merge_retry_scale_test,
         validation_org_query_audit_ci,
         playwright_test,
         docs,

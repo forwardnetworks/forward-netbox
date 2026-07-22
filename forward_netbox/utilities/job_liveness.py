@@ -3,6 +3,7 @@ from datetime import timedelta
 
 from core.choices import JobStatusChoices
 from django.utils import timezone
+from rq.timeouts import JobTimeoutException
 
 
 STARTED_JOB_HEARTBEAT_STALE_SECONDS = 180
@@ -40,6 +41,8 @@ def _rq_job_is_active(job) -> bool | None:
         from rq.registry import DeferredJobRegistry
         from rq.registry import ScheduledJobRegistry
         from rq.registry import StartedJobRegistry
+    except JobTimeoutException:
+        raise
     except Exception:
         return None
 
@@ -64,6 +67,8 @@ def _rq_job_is_active(job) -> bool | None:
             if stale is True:
                 return False
         return True
+    except JobTimeoutException:
+        raise
     except Exception:
         return None
 
@@ -77,6 +82,8 @@ def _string_ids(values):
 def _rq_started_job_is_stale(queue, rq_job_id):
     try:
         from rq.job import Job as RQJob
+    except JobTimeoutException:
+        raise
     except Exception:
         return None
     try:
@@ -87,6 +94,8 @@ def _rq_started_job_is_stale(queue, rq_job_id):
             last_heartbeat=getattr(rq_job, "last_heartbeat", None),
             started_at=getattr(rq_job, "started_at", None),
         )
+    except JobTimeoutException:
+        raise
     except Exception:
         return None
 

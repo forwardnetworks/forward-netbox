@@ -2,7 +2,7 @@
 {% load helpers %}
 {% load i18n %}
 
-{% block title %}{{ object }} - {% trans "Module Readiness" %}{% endblock %}
+{% block title %}{{ object }} - {% trans "Module Bay Plan" %}{% endblock %}
 
 {% block extra_controls %}
   <a class="btn btn-outline-secondary" href="{{ object.get_absolute_url }}">
@@ -14,7 +14,7 @@
 <div class="row mb-3">
   <div class="col col-md-6">
     <div class="card">
-      <h5 class="card-header">{% trans "Module Bay Readiness" %}</h5>
+      <h5 class="card-header">{% trans "Module Bay Plan" %}</h5>
       <div class="card-body">
         <table class="table table-hover attr-table">
           <tr>
@@ -36,30 +36,19 @@
             </td>
           </tr>
           <tr>
-            <th scope="row">{% trans "Rows skipped (no device in NetBox)" %}</th>
+            <th scope="row">{% trans "Rows whose device is not yet in NetBox" %}</th>
             <td>{{ payload.missing_device_rows }}</td>
           </tr>
-          <tr>
-            <th scope="row">{% trans "Ready" %}</th>
-            <td>
-              {% if payload.ready %}
-                <span class="badge text-bg-success">{% trans "Yes" %}</span>
-              {% else %}
-                <span class="badge text-bg-warning">{% trans "No" %}</span>
-              {% endif %}
-            </td>
-          </tr>
         </table>
-      </div>
-      <div class="card-footer text-end">
-        <form method="post"
-              action="{% url 'plugins:forward_netbox:forwardsync_create_module_bays' pk=object.pk %}"
-              onsubmit="return confirm('{% blocktrans with count=payload.unique_missing_bays %}Create {{ count }} module bay(s) in NetBox?{% endblocktrans %}');">
-          {% csrf_token %}
-          <button type="submit" class="btn btn-primary"{% if not payload.unique_missing_bays %} disabled{% endif %}>
-            <i class="mdi mdi-plus-box-outline" aria-hidden="true"></i>&nbsp;{% trans "Create missing module bays" %}
-          </button>
-        </form>
+        <p class="text-muted mb-0">{% trans "Missing bays are created inside the sync branch before module rows are applied." %}</p>
+        {% if module_bay_plan_rows %}
+          <h6 class="mt-3">{% trans "Planned Bays" %}</h6>
+          <ul class="mb-0">
+            {% for row in module_bay_plan_rows|slice:":25" %}
+              <li><code>{{ row.device }}</code> / <code>{{ row.name }}</code></li>
+            {% endfor %}
+          </ul>
+        {% endif %}
       </div>
     </div>
   </div>
@@ -68,7 +57,7 @@
       <h5 class="card-header">{% trans "Devices Not Yet in NetBox" %}</h5>
       <div class="card-body">
         {% if missing_device_names %}
-          <p class="text-muted">{% trans "These devices have module rows but are not in NetBox yet; sync devices first." %}</p>
+          <p class="text-muted">{% trans "These devices have module rows but are not in NetBox yet. The sync resolves device ordering before module creation." %}</p>
           <ul class="mb-0">
             {% for name in missing_device_names|slice:":25" %}<li><code>{{ name }}</code></li>{% endfor %}
           </ul>

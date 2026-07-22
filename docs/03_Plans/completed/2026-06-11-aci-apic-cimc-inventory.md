@@ -56,7 +56,7 @@ custom-command parsing or additional per-device API calls.
   - `ForwardClientTest.test_run_nqe_query_omits_head_commit_id`
   - `QueryRegistryTest.test_aci_discovery_queries_match_fixture_contract`
   - `QueryRegistryTest.test_optional_aci_maps_are_seeded_disabled`
-- Live ORG validation against a private Forward SaaS network and its latest
+- Live validation against the approved Forward SaaS environment and its latest
   processed snapshot:
   - Raw local NQE execution returned 3 CIMC inventory rows.
   - Parameterized shard-key execution returned exactly 1 matching row for a

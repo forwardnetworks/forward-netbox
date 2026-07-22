@@ -57,8 +57,8 @@ MODEL_SYNC_CONTRACTS: dict[str, ModelSyncContract] = {
             "role_color",
             "status",
         ),
-        allowed_coalesce_fields=("name",),
-        default_coalesce_fields=(("name",),),
+        allowed_coalesce_fields=("name", "site"),
+        default_coalesce_fields=(("name", "site"),),
         preserve_existing_on_blank_fields=("serial",),
     ),
     "dcim.virtualchassis": ModelSyncContract(
@@ -336,34 +336,6 @@ MODEL_SYNC_CONTRACTS: dict[str, ModelSyncContract] = {
         allowed_coalesce_fields=("fabric_name", "tenant_name", "name"),
         default_coalesce_fields=(("fabric_name", "tenant_name", "name"),),
     ),
-    "netbox_cisco_aci.aciappprofile": ModelSyncContract(
-        required_fields=("fabric_name", "tenant_name", "name"),
-        allowed_coalesce_fields=("fabric_name", "tenant_name", "name"),
-        default_coalesce_fields=(("fabric_name", "tenant_name", "name"),),
-    ),
-    "netbox_cisco_aci.aciendpointgroup": ModelSyncContract(
-        required_fields=(
-            "fabric_name",
-            "tenant_name",
-            "app_profile_name",
-            "bridge_domain_name",
-            "name",
-        ),
-        allowed_coalesce_fields=(
-            "fabric_name",
-            "tenant_name",
-            "app_profile_name",
-            "name",
-        ),
-        default_coalesce_fields=(
-            ("fabric_name", "tenant_name", "app_profile_name", "name"),
-        ),
-    ),
-    "netbox_cisco_aci.acicontract": ModelSyncContract(
-        required_fields=("fabric_name", "tenant_name", "name"),
-        allowed_coalesce_fields=("fabric_name", "tenant_name", "name"),
-        default_coalesce_fields=(("fabric_name", "tenant_name", "name"),),
-    ),
     "netbox_cisco_aci.acifilter": ModelSyncContract(
         required_fields=("fabric_name", "tenant_name", "name"),
         allowed_coalesce_fields=("fabric_name", "tenant_name", "name"),
@@ -373,37 +345,6 @@ MODEL_SYNC_CONTRACTS: dict[str, ModelSyncContract] = {
         required_fields=("fabric_name", "tenant_name", "vrf_name", "name"),
         allowed_coalesce_fields=("fabric_name", "tenant_name", "name"),
         default_coalesce_fields=(("fabric_name", "tenant_name", "name"),),
-    ),
-    "netbox_cisco_aci.acistaticportbinding": ModelSyncContract(
-        required_fields=(
-            "fabric_name",
-            "tenant_name",
-            "app_profile_name",
-            "endpoint_group_name",
-            "device",
-            "interface",
-            "encap_vlan",
-        ),
-        allowed_coalesce_fields=(
-            "fabric_name",
-            "tenant_name",
-            "app_profile_name",
-            "endpoint_group_name",
-            "device",
-            "interface",
-            "encap_vlan",
-        ),
-        default_coalesce_fields=(
-            (
-                "fabric_name",
-                "tenant_name",
-                "app_profile_name",
-                "endpoint_group_name",
-                "device",
-                "interface",
-                "encap_vlan",
-            ),
-        ),
     ),
 }
 

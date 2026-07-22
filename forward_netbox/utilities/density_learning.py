@@ -176,11 +176,13 @@ def density_budget_policy(
     if not profile_entry:
         return {
             "model": str(model_string or ""),
-            "density": _safe_density(learned),
-            "policy": "legacy_learned_density",
+            "density": _safe_density(
+                default if default is not None else DENSITY_POLICY_FALLBACK_BASELINE
+            ),
+            "policy": "unprofiled_baseline_density",
             "reason": (
-                "Learned density has no confidence profile yet; preserving "
-                "legacy budget behavior."
+                "Learned density has no confidence profile; using the "
+                "conservative baseline until observations establish confidence."
             ),
             "confidence": "",
             "confidence_score": None,
@@ -196,7 +198,7 @@ def density_budget_policy(
     if confidence == "high":
         density = learned
         policy = "high_confidence_learned_density"
-        reason = "High-confidence learned density is used for branch budget shaping."
+        reason = "High-confidence learned density is used for staging-item shaping."
     elif confidence == "medium":
         density = (baseline * (1.0 - DENSITY_POLICY_MEDIUM_CONFIDENCE_WEIGHT)) + (
             learned * DENSITY_POLICY_MEDIUM_CONFIDENCE_WEIGHT
@@ -204,7 +206,7 @@ def density_budget_policy(
         policy = "medium_confidence_blended_density"
         reason = (
             "Medium-confidence learned density is blended with the conservative "
-            "baseline before branch budget shaping."
+            "baseline before staging-item shaping."
         )
     else:
         density = baseline

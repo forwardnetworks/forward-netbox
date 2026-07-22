@@ -8,6 +8,7 @@ from django.apps import apps
 from django.contrib.contenttypes.models import ContentType
 from packaging.version import InvalidVersion
 from packaging.version import Version
+from rq.timeouts import JobTimeoutException
 
 
 @dataclass(frozen=True)
@@ -18,15 +19,13 @@ class OptionalPluginIntegration:
     required_models: tuple[str, ...]
     supported_models: tuple[str, ...]
     native_models: tuple[str, ...] = ()
-    discovery_models: tuple[str, ...] = ()
-    future_models: tuple[str, ...] = ()
     query_maps: tuple[str, ...] = ()
     command_inventory: tuple[dict, ...] = ()
-    package_names: tuple[str, ...] = ()
+    package_name: str = ""
     adapter_module: str = ""
-    minimum_package_version: str | None = None
+    required_package_version: str = ""
     enabled_by_default: bool = False
-    status: str = "candidate"
+    status: str = "supported"
     notes: tuple[str, ...] = field(default_factory=tuple)
 
     def as_dict(self):
@@ -45,12 +44,8 @@ ACI_INTEGRATION = OptionalPluginIntegration(
         "netbox_cisco_aci.acitenant",
         "netbox_cisco_aci.acivrf",
         "netbox_cisco_aci.acibridgedomain",
-        "netbox_cisco_aci.aciappprofile",
-        "netbox_cisco_aci.aciendpointgroup",
-        "netbox_cisco_aci.acicontract",
         "netbox_cisco_aci.acifilter",
         "netbox_cisco_aci.acil3out",
-        "netbox_cisco_aci.acistaticportbinding",
     ),
     supported_models=(
         "netbox_cisco_aci.acifabric",
@@ -59,33 +54,10 @@ ACI_INTEGRATION = OptionalPluginIntegration(
         "netbox_cisco_aci.acitenant",
         "netbox_cisco_aci.acivrf",
         "netbox_cisco_aci.acibridgedomain",
-        "netbox_cisco_aci.aciappprofile",
-        "netbox_cisco_aci.aciendpointgroup",
-        "netbox_cisco_aci.acicontract",
         "netbox_cisco_aci.acifilter",
         "netbox_cisco_aci.acil3out",
-        "netbox_cisco_aci.acistaticportbinding",
     ),
     native_models=("dcim.inventoryitem",),
-    discovery_models=(
-        "netbox_cisco_aci.acibridgedomainsubnet",
-        "netbox_cisco_aci.aciendpointsecuritygroup",
-        "netbox_cisco_aci.acifilterentry",
-        "netbox_cisco_aci.acisubject",
-        "netbox_cisco_aci.acisubjectfilter",
-        "netbox_cisco_aci.acicontractrelation",
-        "netbox_cisco_aci.acilogicalnodeprofile",
-        "netbox_cisco_aci.acilogicalnode",
-        "netbox_cisco_aci.acilogicalinterfaceprofile",
-        "netbox_cisco_aci.acil3outinterface",
-    ),
-    future_models=(
-        "netbox_cisco_aci.aciinterfacefabricmembership",
-        "netbox_cisco_aci.acivpcbindingpair",
-        "netbox_cisco_aci.acidomain",
-        "netbox_cisco_aci.acivlanpool",
-        "netbox_cisco_aci.aciaaep",
-    ),
     query_maps=(
         "Forward ACI Fabrics",
         "Forward ACI Pods",
@@ -95,21 +67,12 @@ ACI_INTEGRATION = OptionalPluginIntegration(
         "Forward ACI Tenants",
         "Forward ACI VRFs",
         "Forward ACI Bridge Domains",
-        "Forward ACI Application Profiles",
-        "Forward ACI Endpoint Groups",
-        "Forward ACI Contracts",
         "Forward ACI Filters",
         "Forward ACI L3Outs",
-        "Forward ACI Static Port Bindings",
     ),
-    package_names=(
-        "netbox-cisco-aci",
-        "netbox_aci_plugin",
-        "netbox-aci-plugin",
-        "netbox-aci",
-    ),
+    package_name="netbox-cisco-aci",
     adapter_module="forward_netbox.utilities.sync_aci",
-    minimum_package_version="0.2.2",
+    required_package_version="0.4.0",
     command_inventory=(
         {
             "command_type": "CISCO_APIC_SWITCH",
@@ -144,46 +107,6 @@ ACI_INTEGRATION = OptionalPluginIntegration(
             "notes": ("Feeds current ACI tenant and VRF discovery maps.",),
         },
         {
-            "command_type": "CISCO_ACI_NODE_TYPE",
-            "source": "ACI node type detail",
-            "status": "future",
-            "notes": ("Discovery candidate for leaf/spine role classification."),
-        },
-        {
-            "command_type": "CISCO_ACI_SPINE_INTERFACE_MODE",
-            "source": "ACI spine interface mode detail",
-            "status": "future",
-            "notes": ("Discovery candidate for spine interface role inference."),
-        },
-        {
-            "command_type": "CISCO_ACI_SPINE_IP_ENDPOINTS",
-            "source": "ACI spine IP endpoint detail",
-            "status": "future",
-            "notes": ("Discovery candidate for spine endpoint presence and addresses."),
-        },
-        {
-            "command_type": "CISCO_ACI_SPINE_TUNNELS_NEXTHOP",
-            "source": "ACI spine tunnel nexthop detail",
-            "status": "future",
-            "notes": (
-                "Discovery candidate for tunnel nexthop presence and reachability."
-            ),
-        },
-        {
-            "command_type": "CISCO_ACI_TUNNELS_ENDPOINTS",
-            "source": "ACI tunnel endpoint detail",
-            "status": "future",
-            "notes": (
-                "Discovery candidate for tunnel endpoint inventory and presence."
-            ),
-        },
-        {
-            "command_type": "CISCO_ACI_ZONING_RULE",
-            "source": "ACI zoning rule detail",
-            "status": "future",
-            "notes": ("Discovery candidate for policy observation and parser proof.",),
-        },
-        {
             "command_type": "CISCO_ACI_ZONING_FILTER",
             "source": "ACI zoning filter detail",
             "status": "current",
@@ -191,44 +114,11 @@ ACI_INTEGRATION = OptionalPluginIntegration(
                 "Feeds current ACI filter discovery and anchors filter identity.",
             ),
         },
-        {
-            "command_type": "CISCO_ACI_EPM_ENDPOINTS",
-            "source": "ACI endpoint table detail",
-            "status": "future",
-            "notes": ("Discovery candidate for endpoint and EPG-related inventory."),
-        },
-        {
-            "command_type": "CISCO_APIC_VLAN_LEAF",
-            "source": "APIC VLAN leaf detail",
-            "status": "future",
-            "notes": ("Discovery candidate for VLAN / bridge-domain / EPG inventory.",),
-        },
-        {
-            "command_type": "CISCO_APIC_EXT_L3OUT_INTERFACES",
-            "source": "APIC external L3Out interface detail",
-            "status": "future",
-            "notes": ("Discovery candidate for external L3Out interface inventory."),
-        },
-        {
-            "command_type": "CISCO_APIC_VLAN_STATUS_LEAF",
-            "source": "APIC VLAN status detail",
-            "status": "future",
-            "notes": ("Discovery candidate for VLAN state and presence reporting.",),
-        },
-        {
-            "command_type": "CISCO_APIC_VPC_MAP",
-            "source": "APIC vPC map detail",
-            "status": "future",
-            "notes": (
-                "Discovery candidate for vPC topology presence and node mapping."
-            ),
-        },
     ),
     enabled_by_default=False,
-    status="policy_write_path",
+    status="supported",
     notes=(
-        "Writes proven fabric, pod, node, tenant, VRF, bridge domain, filter, and L3Out rows in 1.3.2.",
-        "Contract, BD, EPG, L3Out, and static binding maps are present but conservative until bounded source identity is proven.",
+        "Writes the declared ACI model set through tested adapters and exact query contracts.",
     ),
 )
 
@@ -263,15 +153,12 @@ ROUTING_INTEGRATION = OptionalPluginIntegration(
         "Forward OSPF Areas",
         "Forward OSPF Interfaces",
     ),
-    package_names=("netbox-routing", "netbox_routing"),
+    package_name="netbox-routing",
     adapter_module="forward_netbox.utilities.sync_routing_impl",
+    required_package_version="0.4.3",
     enabled_by_default=False,
-    status="beta_surface",
-    notes=(
-        "Beta routing import surface backed by optional NetBox routing models.",
-        "The registry reports capability and query-contract coverage only; routing "
-        "behavior continues to live in the dedicated sync adapters.",
-    ),
+    status="supported",
+    notes=("Supported routing import backed by optional NetBox routing models.",),
 )
 
 
@@ -285,15 +172,12 @@ PEERING_INTEGRATION = OptionalPluginIntegration(
     ),
     supported_models=("netbox_peering_manager.peeringsession",),
     query_maps=("Forward Peering Sessions",),
-    package_names=("netbox-peering-manager", "netbox_peering_manager"),
+    package_name="netbox-peering-manager",
     adapter_module="forward_netbox.utilities.sync_routing_impl",
+    required_package_version="0.3.0",
     enabled_by_default=False,
-    status="beta_surface",
-    notes=(
-        "Optional peering overlay backed by netbox-routing.",
-        "The registry reports capability and query-contract coverage only; the "
-        "session adapter remains in the routing sync path.",
-    ),
+    status="supported",
+    notes=("Supported peering-session import backed by NetBox Peering Manager.",),
 )
 
 
@@ -323,19 +207,18 @@ DLM_INTEGRATION = OptionalPluginIntegration(
         "Forward DLM CVEs",
         "Forward DLM Vulnerabilities",
     ),
-    package_names=("netbox-dlm", "netbox_dlm"),
+    package_name="netbox-dlm",
     adapter_module="forward_netbox.utilities.sync_dlm",
+    required_package_version="0.4.1",
     enabled_by_default=False,
-    status="beta_surface",
+    status="supported",
     notes=(
-        "Beta lifecycle import surface backed by the optional netbox-dlm "
+        "Supported lifecycle import backed by the optional netbox-dlm "
         "plugin: OS end-of-life dates per (platform, version), hardware "
         "end-of-life notices per device type, each device's running "
         "software version, the CVE catalog, and per-device CVE "
         "vulnerabilities from Forward's support and security analysis.",
-        "netbox-dlm 0.2.0+ ships migrations — run `manage.py migrate` after "
-        "installing it. (0.1.0 shipped none: run `manage.py makemigrations "
-        "netbox_dlm && manage.py migrate`.)",
+        "Run `manage.py migrate` after installing or upgrading netbox-dlm.",
     ),
 )
 
@@ -374,6 +257,11 @@ def integration_capability_summary():
     }
 
 
+def integration_capability(integration: OptionalPluginIntegration):
+    """Return the authoritative runtime availability contract for one plugin."""
+    return _integration_capability_summary(integration)
+
+
 def integration_adapter_contract_summary():
     return {
         integration.key: _integration_adapter_contract_summary(integration)
@@ -382,25 +270,18 @@ def integration_adapter_contract_summary():
 
 
 def _integration_capability_summary(integration: OptionalPluginIntegration):
-    detected_package_name, installed_version = _integration_package_version(
-        integration.package_names
-    )
+    installed_version = _integration_package_version(integration.package_name)
     required_models_present = _present_models(integration.required_models)
     required_models_missing = _missing_models(integration.required_models)
     supported_models_present = _present_models(integration.supported_models)
     supported_models_missing = _missing_models(integration.supported_models)
-    discovery_models_present = _present_models(integration.discovery_models)
-    discovery_models_missing = _missing_models(integration.discovery_models)
-    future_models_present = _present_models(integration.future_models)
-    future_models_missing = _missing_models(integration.future_models)
-    missing_optional = sorted(
-        set(discovery_models_missing).union(future_models_missing)
-    )
     availability_status = _integration_availability_status(
         installed=apps.is_installed(integration.app_label),
         missing_required=required_models_missing,
-        unsupported_version=_is_unsupported_version(
-            installed_version, integration.minimum_package_version
+        package_metadata_available=installed_version is not None,
+        version_matches=_version_matches(
+            installed_version,
+            integration.required_package_version,
         ),
     )
     return {
@@ -410,20 +291,20 @@ def _integration_capability_summary(integration: OptionalPluginIntegration):
         "available": availability_status == "available",
         "availability_status": availability_status,
         "availability_reason": _integration_availability_reason(
-            availability_status, integration.minimum_package_version
+            availability_status,
+            integration.package_name,
+            integration.required_package_version,
         ),
-        "package_names": integration.package_names,
-        "installed_package_name": detected_package_name,
+        "package_name": integration.package_name,
         "version": installed_version,
-        "minimum_version": integration.minimum_package_version,
-        "unsupported_version": _is_unsupported_version(
-            installed_version, integration.minimum_package_version
+        "required_version": integration.required_package_version,
+        "version_matches": _version_matches(
+            installed_version,
+            integration.required_package_version,
         ),
         "required_model_count": len(integration.required_models),
         "supported_model_count": len(integration.supported_models),
         "native_model_count": len(integration.native_models),
-        "discovery_model_count": len(integration.discovery_models),
-        "future_model_count": len(integration.future_models),
         "query_map_count": len(integration.query_maps),
         "command_inventory_count": len(integration.command_inventory),
         "command_inventory": list(integration.command_inventory),
@@ -433,12 +314,7 @@ def _integration_capability_summary(integration: OptionalPluginIntegration):
         "supported_models_present": supported_models_present,
         "supported_models_missing": supported_models_missing,
         "native_models": sorted(integration.native_models),
-        "discovery_models_present": discovery_models_present,
-        "discovery_models_missing": discovery_models_missing,
-        "future_models_present": future_models_present,
-        "future_models_missing": future_models_missing,
         "missing_required": required_models_missing,
-        "missing_optional": missing_optional,
     }
 
 
@@ -460,6 +336,8 @@ def _integration_adapter_contract_summary(integration: OptionalPluginIntegration
         }
     try:
         module = import_module(integration.adapter_module)
+    except JobTimeoutException:
+        raise
     except Exception as exc:
         return {
             "available": False,
@@ -520,52 +398,56 @@ def _integration_adapter_contract_summary(integration: OptionalPluginIntegration
     }
 
 
-def _integration_package_version(
-    package_names: tuple[str, ...],
-) -> tuple[str | None, str | None]:
-    for package_name in package_names:
-        try:
-            return package_name, metadata.version(package_name)
-        except metadata.PackageNotFoundError:
-            continue
-    return None, None
+def _integration_package_version(package_name: str) -> str | None:
+    try:
+        return metadata.version(package_name)
+    except metadata.PackageNotFoundError:
+        return None
 
 
-def _is_unsupported_version(
+def _version_matches(
     installed_version: str | None,
-    minimum_version: str | None,
+    required_version: str,
 ) -> bool:
-    if not installed_version or not minimum_version:
+    if not installed_version or not required_version:
         return False
     try:
-        return Version(installed_version) < Version(minimum_version)
+        return Version(installed_version) == Version(required_version)
     except InvalidVersion:
         return False
 
 
 def _integration_availability_status(
-    *, installed: bool, missing_required: list[str], unsupported_version: bool
+    *,
+    installed: bool,
+    missing_required: list[str],
+    package_metadata_available: bool,
+    version_matches: bool,
 ) -> str:
     if not installed:
         return "not_installed"
     if missing_required:
         return "missing_required_models"
-    if unsupported_version:
+    if not package_metadata_available:
+        return "package_metadata_unavailable"
+    if not version_matches:
         return "unsupported_version"
     return "available"
 
 
 def _integration_availability_reason(
-    availability_status: str, minimum_version: str | None
+    availability_status: str,
+    package_name: str,
+    required_version: str,
 ) -> str:
     if availability_status == "not_installed":
         return "Target plugin app is not installed."
     if availability_status == "missing_required_models":
         return "One or more required plugin models are missing."
+    if availability_status == "package_metadata_unavailable":
+        return f"Canonical package metadata is unavailable for {package_name}."
     if availability_status == "unsupported_version":
-        if minimum_version:
-            return f"Installed plugin version is below the supported minimum {minimum_version}."
-        return "Installed plugin version is below the supported minimum."
+        return f"Installed plugin version must equal {required_version}."
     return "Plugin capability is available."
 
 

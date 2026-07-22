@@ -71,7 +71,7 @@ class Command(BaseCommand):
             )
         )
 
-        if options["prune_orphans"] and out_of_scope:
+        if options["prune_orphans"]:
             payload["prune_requested"] = True
             payload["prune_applied"] = False
             payload["prune_candidate_count"] = len(out_of_scope)
@@ -84,14 +84,14 @@ class Command(BaseCommand):
                 )
                 self.stdout.write(json.dumps(payload, indent=2, default=str))
                 raise SystemExit(2)
-            if options["apply"]:
+            if options["apply"] and out_of_scope:
                 result = prune_orphan_devices(sync, report=report)
                 payload["prune_applied"] = True
                 payload["pruned_object_count"] = result["pruned_object_count"]
                 payload["pruned_device_count"] = result["pruned_device_count"]
                 if result.get("pruned_dependent_rows"):
                     payload["pruned_dependent_rows"] = result["pruned_dependent_rows"]
-            else:
+            elif out_of_scope:
                 payload["prune_dry_run_note"] = (
                     "Dry run: re-run with --apply to delete these devices."
                 )

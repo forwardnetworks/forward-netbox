@@ -18,7 +18,6 @@ from utilities.forms.widgets import NumberWithOptions
 from .choices import forward_configured_models
 from .choices import FORWARD_OPTIONAL_MODELS
 from .choices import ForwardDiffFallbackModeChoices
-from .choices import ForwardExecutionBackendChoices
 from .choices import ForwardSourceDeploymentChoices
 from .choices import ForwardSourceStatusChoices
 from .choices import ForwardSyncStatusChoices
@@ -38,7 +37,6 @@ from .utilities.forward_api import DEFAULT_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT
 from .utilities.forward_api import DEFAULT_NQE_PAGE_SIZE
 from .utilities.forward_api import DEFAULT_QUERY_DIAGNOSTICS_ENABLED
 from .utilities.forward_api import DEFAULT_QUERY_FETCH_CONCURRENCY
-from .utilities.forward_api import DEFAULT_QUERY_PREFLIGHT_ENABLED
 from .utilities.forward_api import FORWARD_SAAS_API_HARD_BLOCK_REQUESTS_PER_MINUTE
 from .utilities.forward_api import LATEST_COLLECTED_SNAPSHOT
 from .utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
@@ -49,8 +47,6 @@ from .utilities.forward_api import MAX_NQE_FETCH_ALL_MAX_PAGES
 from .utilities.forward_api import MAX_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT
 from .utilities.forward_api import MAX_NQE_PAGE_SIZE
 from .utilities.forward_api import MAX_QUERY_FETCH_CONCURRENCY
-from .utilities.query_fetch import DEFAULT_PREFLIGHT_ROW_LIMIT
-from .utilities.query_fetch import MAX_PREFLIGHT_ROW_LIMIT
 from .utilities.runtime_guidance import DEFAULT_PUSHDOWN_DIFF_WARN_RATIO
 from .utilities.runtime_guidance import DEFAULT_PUSHDOWN_FALLBACK_WARN_RATE
 from .utilities.runtime_guidance import (
@@ -58,7 +54,6 @@ from .utilities.runtime_guidance import (
 )
 from .utilities.sync_facade import DEFAULT_ENABLE_BULK_ORM_FOR_NEW_SYNCS
 from .utilities.sync_facade import effective_scope_endpoints_by_include_tags
-from .utilities.sync_facade import SCOPE_ENDPOINTS_BY_INCLUDE_TAGS_CONFIGURED
 
 
 def _configure_api_select(widget, query_params=None):
@@ -238,8 +233,8 @@ class ForwardSourceForm(NetBoxModelForm):
             max_value=MAX_QUERY_FETCH_CONCURRENCY,
             label="Query Fetch Concurrency",
             help_text=(
-                "Maximum concurrent NQE map fetch jobs per sync preflight/workload "
-                f"phase. Default: {DEFAULT_QUERY_FETCH_CONCURRENCY}."
+                "Maximum concurrent NQE map fetch jobs per workload phase. "
+                f"Default: {DEFAULT_QUERY_FETCH_CONCURRENCY}."
             ),
             widget=forms.NumberInput(attrs={"class": "form-control"}),
         )
@@ -279,31 +274,12 @@ class ForwardSourceForm(NetBoxModelForm):
             ),
             widget=forms.NumberInput(attrs={"class": "form-control"}),
         )
-        self.fields["query_preflight_enabled"] = forms.BooleanField(
-            required=False,
-            label="Query Preflight",
-            help_text=(
-                "Run the preflight sample query phase before full workload fetch. "
-                "Disable to reduce startup query overhead on large runs."
-            ),
-        )
-        self.fields["query_preflight_row_limit"] = forms.IntegerField(
-            required=False,
-            min_value=1,
-            max_value=MAX_PREFLIGHT_ROW_LIMIT,
-            label="Query Preflight Row Limit",
-            help_text=(
-                "Sample rows fetched per query during preflight validation. "
-                f"Default: {DEFAULT_PREFLIGHT_ROW_LIMIT}."
-            ),
-            widget=forms.NumberInput(attrs={"class": "form-control"}),
-        )
         self.fields["query_diagnostics_enabled"] = forms.BooleanField(
             required=False,
             label="Query Diagnostics",
             help_text=(
-                "Run additional NQE diagnostic queries for importability summaries. "
-                "Disable to reduce query overhead during large ingestion runs."
+                "Run additional NQE diagnostic queries for explicit validation "
+                "and dependency previews. Normal ingestion runs only import maps."
             ),
         )
         self.fields["nqe_async_poll_interval_seconds"] = forms.FloatField(
@@ -368,18 +344,25 @@ class ForwardSourceForm(NetBoxModelForm):
             label="Verify",
             help_text="Certificate validation. Uncheck only for custom deployments using self-signed certificates.",
         )
+        source_saved = bool(self.instance.pk)
         self.fields["network_id"] = forms.ChoiceField(
             required=True,
             label="Network",
             choices=(),
-            widget=APISelect(api_url="/api/plugins/forward/source/available-networks/"),
+            widget=(
+                APISelect(api_url="/api/plugins/forward/source/available-networks/")
+                if source_saved
+                else forms.TextInput(attrs={"class": "form-control"})
+            ),
             help_text="Forward network used as the default for syncs using this source.",
         )
         self.fields["device_tag_include_tags"] = FlexibleMultipleChoiceField(
             required=False,
             choices=(),
-            widget=APISelectMultiple(
-                api_url="/api/plugins/forward/source/available-tags/"
+            widget=(
+                APISelectMultiple(api_url="/api/plugins/forward/source/available-tags/")
+                if source_saved
+                else forms.SelectMultiple()
             ),
             label="Device Tags Include",
             help_text=(
@@ -389,8 +372,10 @@ class ForwardSourceForm(NetBoxModelForm):
         self.fields["device_tag_exclude_tags"] = FlexibleMultipleChoiceField(
             required=False,
             choices=(),
-            widget=APISelectMultiple(
-                api_url="/api/plugins/forward/source/available-tags/"
+            widget=(
+                APISelectMultiple(api_url="/api/plugins/forward/source/available-tags/")
+                if source_saved
+                else forms.SelectMultiple()
             ),
             label="Device Tags Exclude",
             help_text=(
@@ -413,12 +398,12 @@ class ForwardSourceForm(NetBoxModelForm):
                 ("local", "Plugin Local Filter (default)"),
                 (
                     "query_parameters",
-                    "Forward Query Parameters (query_id/query compatible only)",
+                    "Forward Query Parameters",
                 ),
             ),
             help_text=(
-                "Use Local Filter for maximum compatibility. Use Query Parameters only when "
-                "your Forward query IDs support device_tag_include/device_tag_exclude."
+                "Use Local Filter to filter rows after retrieval. Use Query Parameters "
+                "when the selected Forward queries declare the plural device-tag parameters."
             ),
         )
         self.fields["device_tag_prune_out_of_scope"] = forms.BooleanField(
@@ -473,8 +458,10 @@ class ForwardSourceForm(NetBoxModelForm):
         self.fields["sync_device_tags"] = FlexibleMultipleChoiceField(
             required=False,
             choices=(),
-            widget=APISelectMultiple(
-                api_url="/api/plugins/forward/source/available-tags/"
+            widget=(
+                APISelectMultiple(api_url="/api/plugins/forward/source/available-tags/")
+                if source_saved
+                else forms.SelectMultiple()
             ),
             label="Sync Device Tags",
             help_text=(
@@ -483,64 +470,25 @@ class ForwardSourceForm(NetBoxModelForm):
                 "Independent of the include/exclude scope filters above."
             ),
         )
-        _configure_api_select(
-            self.fields["network_id"].widget,
-            {
-                "type": "$type",
-                "url": "$url",
-                "username": "$username",
-                "password": "$password",
-                "verify": "$verify",
-            },
-        )
         self.fields["device_tag_include_tags"].widget.attrs["multiple"] = "multiple"
         self.fields["device_tag_exclude_tags"].widget.attrs["multiple"] = "multiple"
         self.fields["sync_device_tags"].widget.attrs["multiple"] = "multiple"
-        _configure_api_select(
-            self.fields["device_tag_include_tags"].widget,
-            {
-                "type": "$type",
-                "url": "$url",
-                "username": "$username",
-                "password": "$password",
-                "verify": "$verify",
-                "network_id": "$network_id",
-            },
-        )
-        _configure_api_select(
-            self.fields["device_tag_exclude_tags"].widget,
-            {
-                "type": "$type",
-                "url": "$url",
-                "username": "$username",
-                "password": "$password",
-                "verify": "$verify",
-                "network_id": "$network_id",
-            },
-        )
-        _configure_api_select(
-            self.fields["sync_device_tags"].widget,
-            {
-                "type": "$type",
-                "url": "$url",
-                "username": "$username",
-                "password": "$password",
-                "verify": "$verify",
-                "network_id": "$network_id",
-            },
-        )
         if self.instance.pk:
-            self.fields["network_id"].widget.add_query_param(
-                "source_id", self.instance.pk
+            _configure_api_select(
+                self.fields["network_id"].widget,
+                {"source_id": self.instance.pk},
             )
-            self.fields["device_tag_include_tags"].widget.add_query_param(
-                "source_id", self.instance.pk
+            _configure_api_select(
+                self.fields["device_tag_include_tags"].widget,
+                {"source_id": self.instance.pk, "network_id": "$network_id"},
             )
-            self.fields["device_tag_exclude_tags"].widget.add_query_param(
-                "source_id", self.instance.pk
+            _configure_api_select(
+                self.fields["device_tag_exclude_tags"].widget,
+                {"source_id": self.instance.pk, "network_id": "$network_id"},
             )
-            self.fields["sync_device_tags"].widget.add_query_param(
-                "source_id", self.instance.pk
+            _configure_api_select(
+                self.fields["sync_device_tags"].widget,
+                {"source_id": self.instance.pk, "network_id": "$network_id"},
             )
 
         parameters = self.instance.parameters or {}
@@ -571,12 +519,6 @@ class ForwardSourceForm(NetBoxModelForm):
         self.fields["nqe_identical_full_page_streak_limit"].initial = (
             parameters.get("nqe_identical_full_page_streak_limit")
             or DEFAULT_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT
-        )
-        self.fields["query_preflight_enabled"].initial = bool(
-            parameters.get("query_preflight_enabled", DEFAULT_QUERY_PREFLIGHT_ENABLED)
-        )
-        self.fields["query_preflight_row_limit"].initial = (
-            parameters.get("query_preflight_row_limit") or DEFAULT_PREFLIGHT_ROW_LIMIT
         )
         self.fields["query_diagnostics_enabled"].initial = bool(
             parameters.get(
@@ -621,16 +563,12 @@ class ForwardSourceForm(NetBoxModelForm):
             if self.is_bound
             else parameters.get("device_tag_include_tags")
         )
-        if include_initial is None and parameters.get("device_tag_include"):
-            include_initial = [parameters.get("device_tag_include")]
         include_initial = self._normalize_tag_values(include_initial)
         exclude_initial = (
             exclude_bound
             if self.is_bound
             else parameters.get("device_tag_exclude_tags")
         )
-        if exclude_initial is None and parameters.get("device_tag_exclude"):
-            exclude_initial = [parameters.get("device_tag_exclude")]
         exclude_initial = self._normalize_tag_values(exclude_initial)
         sync_tags_initial = (
             sync_tags_bound if self.is_bound else parameters.get("sync_device_tags")
@@ -686,8 +624,6 @@ class ForwardSourceForm(NetBoxModelForm):
                     "api_requests_per_minute",
                     "nqe_fetch_all_max_pages",
                     "nqe_identical_full_page_streak_limit",
-                    "query_preflight_enabled",
-                    "query_preflight_row_limit",
                     "query_diagnostics_enabled",
                     "nqe_async_poll_interval_seconds",
                     "nqe_async_max_polls",
@@ -720,8 +656,6 @@ class ForwardSourceForm(NetBoxModelForm):
                     "api_requests_per_minute",
                     "nqe_fetch_all_max_pages",
                     "nqe_identical_full_page_streak_limit",
-                    "query_preflight_enabled",
-                    "query_preflight_row_limit",
                     "query_diagnostics_enabled",
                     "nqe_async_poll_interval_seconds",
                     "nqe_async_max_polls",
@@ -819,12 +753,6 @@ class ForwardSourceForm(NetBoxModelForm):
             )
             or existing_parameters.get("nqe_identical_full_page_streak_limit")
             or DEFAULT_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT,
-            "query_preflight_enabled": bool(
-                cleaned.get("query_preflight_enabled", DEFAULT_QUERY_PREFLIGHT_ENABLED)
-            ),
-            "query_preflight_row_limit": cleaned.get("query_preflight_row_limit")
-            or existing_parameters.get("query_preflight_row_limit")
-            or DEFAULT_PREFLIGHT_ROW_LIMIT,
             "query_diagnostics_enabled": bool(
                 cleaned.get(
                     "query_diagnostics_enabled", DEFAULT_QUERY_DIAGNOSTICS_ENABLED
@@ -879,8 +807,6 @@ class ForwardSourceForm(NetBoxModelForm):
             "device_tag_include_match": (
                 cleaned.get("device_tag_include_match") or "any"
             ),
-            "device_tag_include": include_tags[0] if len(include_tags) == 1 else "",
-            "device_tag_exclude": exclude_tags[0] if len(exclude_tags) == 1 else "",
             "device_tag_filter_mode": (
                 cleaned.get("device_tag_filter_mode") or "local"
             ),
@@ -894,7 +820,6 @@ class ForwardSourceForm(NetBoxModelForm):
             "scope_endpoints_by_include_tags": bool(
                 cleaned.get("scope_endpoints_by_include_tags")
             ),
-            SCOPE_ENDPOINTS_BY_INCLUDE_TAGS_CONFIGURED: True,
         }
         self.instance.type = source_type
         self.instance.url = (
@@ -904,10 +829,20 @@ class ForwardSourceForm(NetBoxModelForm):
         )
         self.instance.parameters = candidate_parameters
         super().clean()
+        # Runtime API clients accept only encrypted credentials. The form is the
+        # plaintext input boundary, so validate with an encrypted, unsaved copy
+        # while leaving ``self.instance`` for ``ForwardSource.save()`` to persist.
+        from .utilities.crypto import encrypt_secret
+
+        candidate_validation_parameters = dict(candidate_parameters)
+        try:
+            candidate_validation_parameters["password"] = encrypt_secret(password)
+        except ValueError as error:
+            raise forms.ValidationError(str(error)) from error
         candidate_source = ForwardSource(
             type=source_type,
             url=cleaned.get("url") or "",
-            parameters=candidate_parameters,
+            parameters=candidate_validation_parameters,
         )
         try:
             candidate_source.validate_connection()
@@ -1011,16 +946,6 @@ class ForwardSourceForm(NetBoxModelForm):
             )
             or existing_parameters.get("nqe_identical_full_page_streak_limit")
             or DEFAULT_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT,
-            "query_preflight_enabled": bool(
-                self.cleaned_data.get(
-                    "query_preflight_enabled", DEFAULT_QUERY_PREFLIGHT_ENABLED
-                )
-            ),
-            "query_preflight_row_limit": self.cleaned_data.get(
-                "query_preflight_row_limit"
-            )
-            or existing_parameters.get("query_preflight_row_limit")
-            or DEFAULT_PREFLIGHT_ROW_LIMIT,
             "query_diagnostics_enabled": bool(
                 self.cleaned_data.get(
                     "query_diagnostics_enabled", DEFAULT_QUERY_DIAGNOSTICS_ENABLED
@@ -1076,8 +1001,6 @@ class ForwardSourceForm(NetBoxModelForm):
             "device_tag_include_match": (
                 self.cleaned_data.get("device_tag_include_match") or "any"
             ),
-            "device_tag_include": include_tags[0] if len(include_tags) == 1 else "",
-            "device_tag_exclude": exclude_tags[0] if len(exclude_tags) == 1 else "",
             "device_tag_filter_mode": (
                 self.cleaned_data.get("device_tag_filter_mode") or "local"
             ),
@@ -1095,7 +1018,6 @@ class ForwardSourceForm(NetBoxModelForm):
             "scope_endpoints_by_include_tags": bool(
                 self.cleaned_data.get("scope_endpoints_by_include_tags")
             ),
-            SCOPE_ENDPOINTS_BY_INCLUDE_TAGS_CONFIGURED: True,
         }
         self.instance.status = ForwardSourceStatusChoices.NEW
         return super().save(*args, **kwargs)
@@ -1147,8 +1069,8 @@ class ForwardSyncForm(NetBoxModelForm):
         label="Auto merge",
         initial=True,
         help_text=(
-            "Automatically merge each native Branching shard and continue to the next shard. "
-            "Leave unchecked to pause for review after each shard."
+            "Automatically merge the native sync branch after staging. "
+            "Leave unchecked to pause for review before the merge."
         ),
     )
     enable_bulk_orm = forms.BooleanField(
@@ -1158,15 +1080,6 @@ class ForwardSyncForm(NetBoxModelForm):
             "Use the parity-tested bulk ORM apply engine for eligible low-risk "
             "models. Models with dependency, relationship, IPAM hierarchy, or "
             "plugin-specific contracts remain on the adapter path."
-        ),
-    )
-    skip_unchanged_snapshot = forms.BooleanField(
-        required=False,
-        label="Skip scheduled runs on an unchanged snapshot",
-        help_text=(
-            "When a scheduled run would target the same snapshot as the last "
-            "successful baseline, skip query execution entirely (no-op) to reduce "
-            "Forward API load. Manual/adhoc runs always execute. Off by default."
         ),
     )
     set_primary_ip_from_mgmt_tag = forms.BooleanField(
@@ -1269,10 +1182,6 @@ class ForwardSyncForm(NetBoxModelForm):
             "enable_bulk_orm",
             DEFAULT_ENABLE_BULK_ORM_FOR_NEW_SYNCS,
         )
-        self.fields["skip_unchanged_snapshot"].initial = parameters.get(
-            "skip_unchanged_snapshot",
-            False,
-        )
         self.fields["set_primary_ip_from_mgmt_tag"].initial = parameters.get(
             "set_primary_ip_from_mgmt_tag",
             False,
@@ -1318,7 +1227,6 @@ class ForwardSyncForm(NetBoxModelForm):
             FieldSet(
                 "auto_merge",
                 "enable_bulk_orm",
-                "skip_unchanged_snapshot",
                 "set_primary_ip_from_mgmt_tag",
                 "diff_fallback_mode",
                 "scheduled",
@@ -1368,16 +1276,9 @@ class ForwardSyncForm(NetBoxModelForm):
         ):
             raise forms.ValidationError("Select at least one NetBox model to sync.")
         parameters = {
-            "execution_backend": ForwardExecutionBackendChoices.SINGLE_BRANCH,
             "auto_merge": cleaned.get("auto_merge", False),
             "snapshot_id": snapshot_id,
             "enable_bulk_orm": bool(cleaned.get("enable_bulk_orm", False)),
-            "bulk_orm_models": list(
-                (self.instance.parameters or {}).get("bulk_orm_models") or []
-            ),
-            "skip_unchanged_snapshot": bool(
-                cleaned.get("skip_unchanged_snapshot", False)
-            ),
             "set_primary_ip_from_mgmt_tag": bool(
                 cleaned.get("set_primary_ip_from_mgmt_tag", False)
             ),
@@ -1399,17 +1300,10 @@ class ForwardSyncForm(NetBoxModelForm):
 
     def save(self, *args, **kwargs):
         parameters = {
-            "execution_backend": ForwardExecutionBackendChoices.SINGLE_BRANCH,
             "auto_merge": self.cleaned_data.get("auto_merge", False),
             "snapshot_id": self.cleaned_data.get("snapshot_id")
             or LATEST_PROCESSED_SNAPSHOT,
             "enable_bulk_orm": bool(self.cleaned_data.get("enable_bulk_orm", False)),
-            "bulk_orm_models": list(
-                (self.instance.parameters or {}).get("bulk_orm_models") or []
-            ),
-            "skip_unchanged_snapshot": bool(
-                self.cleaned_data.get("skip_unchanged_snapshot", False)
-            ),
             "set_primary_ip_from_mgmt_tag": bool(
                 self.cleaned_data.get("set_primary_ip_from_mgmt_tag", False)
             ),

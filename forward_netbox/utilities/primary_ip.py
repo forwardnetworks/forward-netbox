@@ -8,6 +8,8 @@
 from ipaddress import ip_address
 from ipaddress import ip_interface
 
+from rq.timeouts import JobTimeoutException
+
 from .interface_naming import parse_mgmt_tag
 from .interface_naming import resolve_mgmt_interface_name
 
@@ -153,8 +155,12 @@ def apply_primary_ip_from_mgmt_tags(executor, branch, *, snapshot_id):
         if not device_mgmt_tags:
             logger.log_info("primary_ip-from-tag: no Mgmt_ device tags found.")
             return 0
+    except JobTimeoutException:
+        raise
     except Exception as error:  # never break the ingest on the tag fetch
-        logger.log_warning(f"primary_ip-from-tag: tag fetch failed: {error}")
+        logger.log_warning(
+            "primary_ip-from-tag: tag fetch failed " f"({error.__class__.__name__})."
+        )
         return 0
 
     current_branch = active_branch.get()

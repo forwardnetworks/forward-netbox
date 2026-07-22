@@ -1,3 +1,5 @@
+import math
+
 from django.conf import settings
 
 from .forward_api import DEFAULT_FORWARD_API_TIMEOUT_SECONDS
@@ -5,7 +7,7 @@ from .forward_api import DEFAULT_QUERY_FETCH_CONCURRENCY
 from .forward_api import MAX_QUERY_FETCH_CONCURRENCY
 
 
-MIN_LARGE_BRANCH_RQ_TIMEOUT_SECONDS = 1800
+MINIMUM_FORWARD_JOB_TIMEOUT_SECONDS = 7200
 DEFAULT_ESTIMATED_SECONDS_PER_CHANGE = 0.08
 BRANCH_TIMEOUT_RISK_RATIO = 0.8
 DEFAULT_PUSHDOWN_FALLBACK_WARN_RATE = 0.5
@@ -21,6 +23,24 @@ def configured_rq_default_timeout():
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def effective_forward_job_timeout():
+    configured = configured_rq_default_timeout()
+    if configured is None:
+        return MINIMUM_FORWARD_JOB_TIMEOUT_SECONDS
+    return max(configured, MINIMUM_FORWARD_JOB_TIMEOUT_SECONDS)
+
+
+def effective_merge_job_timeout(change_count):
+    """Size a merge deadline from its persisted branch workload."""
+    try:
+        changes = max(0, int(change_count or 0))
+    except (TypeError, ValueError):
+        changes = 0
+    projected_seconds = changes * DEFAULT_ESTIMATED_SECONDS_PER_CHANGE
+    workload_timeout = math.ceil(projected_seconds / BRANCH_TIMEOUT_RISK_RATIO)
+    return max(effective_forward_job_timeout(), workload_timeout)
 
 
 def source_timeout_seconds(sync):
@@ -76,67 +96,35 @@ def _bounded_ratio(value, default):
 
 
 def log_worker_timeout_guidance(sync, logger_):
-    rq_timeout = configured_rq_default_timeout()
-    if rq_timeout is None:
-        return
-
+    job_timeout = effective_forward_job_timeout()
     source_timeout = source_timeout_seconds(sync)
-    if source_timeout is not None and rq_timeout < source_timeout:
+    if source_timeout is not None and job_timeout < source_timeout:
         logger_.log_warning(
-            "NetBox RQ_DEFAULT_TIMEOUT is "
-            f"{rq_timeout}s, lower than the Forward source timeout "
-            f"({source_timeout}s). Long NQE/preflight calls can be killed by the "
-            "NetBox worker before the Forward API timeout is reached.",
+            "Effective Forward job timeout is "
+            f"{job_timeout}s, lower than the Forward source timeout "
+            f"({source_timeout}s). Increase RQ_DEFAULT_TIMEOUT so long "
+            "NQE workload calls can reach the Forward API timeout.",
             obj=sync,
         )
-        return
-
-    if rq_timeout < MIN_LARGE_BRANCH_RQ_TIMEOUT_SECONDS:
-        logger_.log_warning(
-            "NetBox RQ_DEFAULT_TIMEOUT is "
-            f"{rq_timeout}s. Large single-branch baselines can exceed this; "
-            "increase the worker timeout for large initial syncs.",
-            obj=sync,
-        )
-
-
-def log_branch_plan_timeout_guidance(sync, logger_, plan):
-    rq_timeout = configured_rq_default_timeout()
-    if rq_timeout is None or rq_timeout >= MIN_LARGE_BRANCH_RQ_TIMEOUT_SECONDS:
-        return
-
-    estimated_changes = sum(int(item.estimated_changes or 0) for item in plan)
-    if len(plan) <= 1 and estimated_changes <= sync.get_max_changes_per_branch():
-        return
-
-    logger_.log_warning(
-        "Branching plan contains "
-        f"{len(plan)} shard(s) and about {estimated_changes} planned change(s), "
-        f"but NetBox RQ_DEFAULT_TIMEOUT is only {rq_timeout}s. If this run times "
-        "out, increase the NetBox worker timeout before rerunning; the shard plan "
-        "itself will remain bounded by the configured branch budget.",
-        obj=sync,
-    )
 
 
 def log_branch_plan_capacity_guidance(sync, logger_, plan):
-    rq_timeout = configured_rq_default_timeout()
-    if rq_timeout is None:
-        return
+    job_timeout = effective_forward_job_timeout()
     if not plan:
         return
 
     projected = _projected_plan_runtime_seconds(sync, plan)
     if projected is None:
         return
-    threshold = int(rq_timeout * BRANCH_TIMEOUT_RISK_RATIO)
+    threshold = int(job_timeout * BRANCH_TIMEOUT_RISK_RATIO)
     if projected < threshold:
         return
 
     logger_.log_warning(
         "Projected Branching stage runtime is "
-        f"{projected}s based on recent shard history, with RQ_DEFAULT_TIMEOUT at "
-        f"{rq_timeout}s. This run is at elevated timeout risk; consider reducing "
+        f"{projected}s based on recent shard history, with the effective Forward "
+        f"job timeout at {job_timeout}s. This run is at elevated timeout risk; "
+        "consider reducing "
         "query fetch concurrency, increasing worker timeout, or using Fast "
         "bootstrap for the initial baseline.",
         obj=sync,

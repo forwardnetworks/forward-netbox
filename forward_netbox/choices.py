@@ -30,12 +30,8 @@ FORWARD_ACI_MODELS = (
     "netbox_cisco_aci.acitenant",
     "netbox_cisco_aci.acivrf",
     "netbox_cisco_aci.acibridgedomain",
-    "netbox_cisco_aci.aciappprofile",
-    "netbox_cisco_aci.aciendpointgroup",
-    "netbox_cisco_aci.acicontract",
     "netbox_cisco_aci.acifilter",
     "netbox_cisco_aci.acil3out",
-    "netbox_cisco_aci.acistaticportbinding",
 )
 
 FORWARD_SUPPORTED_MODELS = (
@@ -65,6 +61,7 @@ FORWARD_SUPPORTED_MODELS = (
 FORWARD_OPTIONAL_MODELS = {
     "ipam.fhrpgroup",
     "dcim.module",
+    "dcim.virtualchassis",
     *FORWARD_BGP_MODELS,
     *FORWARD_ACI_MODELS,
     *FORWARD_DLM_MODELS,
@@ -135,17 +132,6 @@ class ForwardSyncStatusChoices(ChoiceSet):
     )
 
 
-class ForwardExecutionBackendChoices(ChoiceSet):
-    # 2.0: single-branch is the only execution path. BRANCHING / FAST_BOOTSTRAP
-    # are retained as internal constants (legacy ForwardExecutionRun rows may
-    # still carry them) but are no longer user-selectable.
-    SINGLE_BRANCH = "single_branch"
-    BRANCHING = "branching"
-    FAST_BOOTSTRAP = "fast_bootstrap"
-
-    CHOICES = ((SINGLE_BRANCH, _("Single branch"), "green"),)
-
-
 class ForwardDiffFallbackModeChoices(ChoiceSet):
     ALLOW_FALLBACK = "allow_fallback"
     REQUIRE_DIFF = "require_diff"
@@ -159,76 +145,10 @@ class ForwardDiffFallbackModeChoices(ChoiceSet):
 class ForwardApplyEngineChoices(ChoiceSet):
     ADAPTER = "adapter"
     BULK_ORM = "bulk_orm"
-    TURBOBULK = "turbobulk"
-    PARQUET_BULK = "parquet_bulk"
 
     CHOICES = (
         (ADAPTER, _("Adapter"), "blue"),
         (BULK_ORM, _("Bulk ORM"), "cyan"),
-        (TURBOBULK, _("TurboBulk"), "purple"),
-        (PARQUET_BULK, _("Parquet bulk"), "green"),
-    )
-
-
-class ForwardExecutionRunStatusChoices(ChoiceSet):
-    QUEUED = "queued"
-    RUNNING = "running"
-    WAITING = "waiting"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    TIMEOUT = "timeout"
-    CANCELLED = "cancelled"
-
-    CHOICES = (
-        (QUEUED, _("Queued"), "orange"),
-        (RUNNING, _("Running"), "cyan"),
-        (WAITING, _("Waiting"), "purple"),
-        (COMPLETED, _("Completed"), "green"),
-        (FAILED, _("Failed"), "red"),
-        (TIMEOUT, _("Timeout"), "pink"),
-        (CANCELLED, _("Cancelled"), "gray"),
-    )
-
-
-class ForwardExecutionStepKindChoices(ChoiceSet):
-    COORDINATOR = "coordinator"
-    STAGE = "stage"
-    MERGE = "merge"
-    FINALIZE = "finalize"
-
-    CHOICES = (
-        (COORDINATOR, _("Coordinator"), "blue"),
-        (STAGE, _("Stage"), "cyan"),
-        (MERGE, _("Merge"), "purple"),
-        (FINALIZE, _("Finalize"), "green"),
-    )
-
-
-class ForwardExecutionStepStatusChoices(ChoiceSet):
-    PENDING = "pending"
-    QUEUED = "queued"
-    RUNNING = "running"
-    STAGED = "staged"
-    MERGE_QUEUED = "merge_queued"
-    MERGED = "merged"
-    FAILED = "failed"
-    TIMEOUT = "timeout"
-    MERGE_TIMEOUT = "merge_timeout"
-    SKIPPED = "skipped"
-    CANCELLED = "cancelled"
-
-    CHOICES = (
-        (PENDING, _("Pending"), "gray"),
-        (QUEUED, _("Queued"), "orange"),
-        (RUNNING, _("Running"), "cyan"),
-        (STAGED, _("Staged"), "blue"),
-        (MERGE_QUEUED, _("Merge queued"), "purple"),
-        (MERGED, _("Merged"), "green"),
-        (FAILED, _("Failed"), "red"),
-        (TIMEOUT, _("Timeout"), "pink"),
-        (MERGE_TIMEOUT, _("Merge timeout"), "pink"),
-        (SKIPPED, _("Skipped"), "gray"),
-        (CANCELLED, _("Cancelled"), "gray"),
     )
 
 
@@ -239,6 +159,24 @@ class ForwardIngestionPhaseChoices(ChoiceSet):
     CHOICES = (
         (SYNC, _("Sync"), "blue"),
         (MERGE, _("Merge"), "purple"),
+    )
+
+
+class ForwardCatchupStatusChoices(ChoiceSet):
+    NOT_APPLICABLE = "not_applicable"
+    PENDING = "pending"
+    CHECKING = "checking"
+    QUEUED = "queued"
+    CURRENT = "current"
+    FAILED = "failed"
+
+    CHOICES = (
+        (NOT_APPLICABLE, _("Not applicable"), "gray"),
+        (PENDING, _("Pending"), "orange"),
+        (CHECKING, _("Checking"), "blue"),
+        (QUEUED, _("Queued"), "cyan"),
+        (CURRENT, _("Current"), "green"),
+        (FAILED, _("Failed"), "red"),
     )
 
 

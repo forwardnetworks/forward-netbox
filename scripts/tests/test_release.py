@@ -33,6 +33,25 @@ class RunTest(unittest.TestCase):
         self.assertNotIn(secret, output.getvalue())
         self.assertNotIn(secret, str(error.exception))
 
+    def test_required_capture_redacts_failed_command(self):
+        secret = "secret-command-argument"
+        result = release.subprocess.CompletedProcess([], 22, stdout="", stderr=secret)
+
+        with (
+            patch.object(release.subprocess, "run", return_value=result),
+            self.assertRaises(release.ReleaseError) as error,
+        ):
+            release._capture_required(
+                ["gh", "api", "--field", secret],
+                purpose="GitHub workflow query",
+            )
+
+        self.assertNotIn(secret, str(error.exception))
+        self.assertEqual(
+            str(error.exception),
+            "GitHub workflow query failed with exit code 22",
+        )
+
 
 class BumpVersionTest(unittest.TestCase):
     def test_bumps_single_assignment(self):
@@ -94,6 +113,65 @@ class InsertReleaseRowTest(unittest.TestCase):
 
         with self.assertRaises(release.ReleaseError):
             release.insert_release_row(candidate, "1.5.12", "second")
+
+
+class ReleaseIntroTest(unittest.TestCase):
+    INTRO = (
+        "The `1.5.10` release requires NetBox `4.6.5`. "
+        "Expand for the published release history and release notes."
+    )
+
+    def test_prepare_sets_candidate_version_and_wording(self):
+        out = release.set_release_intro_text(
+            self.INTRO,
+            "1.5.11",
+            candidate=True,
+        )
+
+        self.assertEqual(
+            out,
+            "The `1.5.11` release candidate requires NetBox `4.6.5`. "
+            "Expand for the published release history and candidate notes.",
+        )
+
+    def test_promotion_sets_published_wording_and_is_idempotent(self):
+        candidate = release.set_release_intro_text(
+            self.INTRO,
+            "1.5.11",
+            candidate=True,
+        )
+
+        out = release.set_release_intro_text(
+            candidate,
+            "1.5.11",
+            candidate=False,
+        )
+
+        self.assertEqual(
+            out,
+            "The `1.5.11` release requires NetBox `4.6.5`. "
+            "Expand for the published release history and release notes.",
+        )
+        self.assertEqual(
+            release.set_release_intro_text(out, "1.5.11", candidate=False),
+            out,
+        )
+
+    def test_rejects_missing_canonical_intro(self):
+        with self.assertRaises(release.ReleaseError):
+            release.set_release_intro_text(
+                "No release compatibility introduction.",
+                "1.5.11",
+                candidate=True,
+            )
+
+    def test_rejects_duplicate_canonical_intro(self):
+        with self.assertRaises(release.ReleaseError):
+            release.set_release_intro_text(
+                f"{self.INTRO}\n\n{self.INTRO}",
+                "1.5.11",
+                candidate=True,
+            )
 
 
 class SemverArgTest(unittest.TestCase):
@@ -318,6 +396,16 @@ class RequiredReleaseWorkflowTest(unittest.TestCase):
     def _payload(self, *runs):
         return json.dumps({"workflow_runs": list(runs)})
 
+    def test_wait_bounds_cover_full_ci_and_publication(self):
+        self.assertEqual(
+            release.wait_for_required_workflows.__kwdefaults__["max_polls"],
+            160,
+        )
+        self.assertEqual(
+            release.wait_for_release_workflow.__kwdefaults__["max_polls"],
+            240,
+        )
+
     @patch("time.sleep")
     def test_required_workflows_pass_only_for_exact_runs(self, sleep):
         commit = "a" * 40
@@ -329,7 +417,9 @@ class RequiredReleaseWorkflowTest(unittest.TestCase):
             )
         ]
 
-        with patch.object(release, "_capture", side_effect=payloads) as capture:
+        with patch.object(
+            release, "_capture_required", side_effect=payloads
+        ) as capture:
             self.assertTrue(
                 release.wait_for_required_workflows(
                     commit,
@@ -340,6 +430,16 @@ class RequiredReleaseWorkflowTest(unittest.TestCase):
 
         sleep.assert_not_called()
         self.assertEqual(capture.call_count, 2)
+        first_command = capture.call_args_list[0].args[0]
+        self.assertIn(
+            "repos/forwardnetworks/forward-netbox/actions/workflows/ci.yml/runs",
+            first_command,
+        )
+        self.assertNotIn(
+            "repos/forwardnetworks/forward-netbox/actions/workflows/"
+            ".github/workflows/ci.yml/runs",
+            first_command,
+        )
 
     @patch("time.sleep")
     def test_required_workflows_wait_for_nonterminal_run(self, sleep):
@@ -359,7 +459,7 @@ class RequiredReleaseWorkflowTest(unittest.TestCase):
 
         with patch.object(
             release,
-            "_capture",
+            "_capture_required",
             side_effect=[
                 ci_pending,
                 codeql_complete,
@@ -392,7 +492,7 @@ class RequiredReleaseWorkflowTest(unittest.TestCase):
             ),
         )
 
-        with patch.object(release, "_capture", return_value=payload):
+        with patch.object(release, "_capture_required", return_value=payload):
             self.assertFalse(
                 release.wait_for_required_workflows(
                     commit,
@@ -415,7 +515,7 @@ class RequiredReleaseWorkflowTest(unittest.TestCase):
             )
         )
 
-        with patch.object(release, "_capture", return_value=payload):
+        with patch.object(release, "_capture_required", return_value=payload):
             self.assertFalse(
                 release.wait_for_required_workflows(
                     commit,
@@ -426,6 +526,44 @@ class RequiredReleaseWorkflowTest(unittest.TestCase):
             )
 
         sleep.assert_called_once_with(0)
+
+    @patch("time.sleep")
+    def test_required_workflows_reject_empty_response_immediately(self, sleep):
+        with (
+            patch.object(release, "_capture_required", return_value=""),
+            self.assertRaisesRegex(release.ReleaseError, "empty response"),
+        ):
+            release.wait_for_required_workflows(
+                "f" * 40,
+                expected_branch="release/2.6.0",
+                max_polls=1,
+            )
+
+        sleep.assert_not_called()
+
+    @patch("time.sleep")
+    def test_required_workflows_reject_invalid_json_immediately(self, sleep):
+        with (
+            patch.object(release, "_capture_required", return_value="not-json"),
+            self.assertRaisesRegex(release.ReleaseError, "invalid JSON"),
+        ):
+            release.wait_for_required_workflows(
+                "f" * 40,
+                expected_branch="release/2.6.0",
+                max_polls=1,
+            )
+
+        sleep.assert_not_called()
+
+    def test_workflow_payload_rejects_wrong_schema_without_echoing_response(self):
+        secret = "secret-response-value"
+        raw = json.dumps({"message": secret})
+
+        with self.assertRaises(release.ReleaseError) as error:
+            release._workflow_runs_payload(raw, purpose="GitHub workflow query")
+
+        self.assertNotIn(secret, str(error.exception))
+        self.assertIn("invalid workflow-runs payload", str(error.exception))
 
     def test_release_head_rejects_commit_changed_after_ci(self):
         expected = "a" * 40
@@ -451,6 +589,43 @@ class RequiredReleaseWorkflowTest(unittest.TestCase):
             self.assertRaisesRegex(release.ReleaseError, "HEAD changed after CI"),
         ):
             release._assert_release_head("2.6.0", expected)
+
+    @patch("time.sleep")
+    def test_release_workflow_waiter_uses_checked_exact_query(self, sleep):
+        commit = "e" * 40
+        payload = self._payload(
+            {
+                "id": 101,
+                "path": ".github/workflows/release.yml",
+                "head_sha": commit,
+                "head_branch": "v2.6.0",
+                "event": "push",
+                "status": "completed",
+                "conclusion": "success",
+            }
+        )
+
+        with (
+            patch.object(release, "_capture", return_value=commit),
+            patch.object(
+                release,
+                "_capture_required",
+                return_value=payload,
+            ) as capture,
+        ):
+            self.assertEqual(
+                release.wait_for_release_workflow("2.6.0", max_polls=1),
+                "success",
+            )
+
+        sleep.assert_not_called()
+        command = capture.call_args.args[0]
+        self.assertIn(
+            "repos/forwardnetworks/forward-netbox/actions/workflows/"
+            "release.yml/runs",
+            command,
+        )
+        self.assertIn(f"head_sha={commit}", command)
 
 
 if __name__ == "__main__":

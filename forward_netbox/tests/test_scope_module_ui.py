@@ -8,19 +8,21 @@ from dcim.models import DeviceType
 from dcim.models import Manufacturer
 from dcim.models import Rack
 from dcim.models import Site
-from dcim.models.device_components import ModuleBay
 from django.contrib.auth import get_user_model
+from django.contrib.messages import get_messages
 from django.test import Client
 from django.test import TestCase
+from django.urls import NoReverseMatch
 from django.urls import reverse
 
-from forward_netbox.jobs import create_forward_module_bays
-from forward_netbox.jobs import prune_forward_orphans
-from forward_netbox.jobs import tag_forward_backfilled_devices
+from forward_netbox.choices import ForwardSyncStatusChoices
+from forward_netbox.jobs import DeviceScopeTagReconciliationJob
+from forward_netbox.jobs import PruneOrphansJob
+from forward_netbox.models import ForwardIngestion
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.utilities.module_readiness import compute_module_readiness_for_sync
-from forward_netbox.utilities.module_readiness import create_missing_module_bays
+from forward_netbox.utilities.ownership import reconcile_sync_scope_tag_claims
 
 
 class ScopeModuleUiTest(TestCase):
@@ -42,7 +44,13 @@ class ScopeModuleUiTest(TestCase):
         self.sync = ForwardSync.objects.create(
             name="ui-sync",
             source=self.source,
+            status=ForwardSyncStatusChoices.COMPLETED,
             parameters={"snapshot_id": "latestProcessed"},
+        )
+        self.ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_id="snap-1",
+            baseline_ready=True,
         )
         mfr = Manufacturer.objects.create(name="MfrU", slug="mfr-u")
         self.dt = DeviceType.objects.create(manufacturer=mfr, model="dt-u", slug="dt-u")
@@ -54,11 +62,19 @@ class ScopeModuleUiTest(TestCase):
             name=name, device_type=self.dt, role=self.role, site=self.site
         )
 
+    def _claim_scope(self, *device_names):
+        reconcile_sync_scope_tag_claims(
+            self.sync,
+            {name: ["Prod_Core"] for name in device_names},
+            generation=self.ingestion.pk,
+            snapshot_id=self.ingestion.snapshot_id,
+        )
+
     # --- module readiness utilities -----------------------------------------
 
     @patch("forward_netbox.utilities.module_readiness.fetch_module_rows_for_sync")
-    def test_module_readiness_and_create_is_idempotent(self, mock_fetch):
-        dev = self._device("dev-m")
+    def test_module_readiness_reports_branch_creation_plan(self, mock_fetch):
+        self._device("dev-m")
         mock_fetch.return_value = [
             {"device": "dev-m", "module_bay": "Slot 1"},
             {"device": "dev-m", "module_bay": "Slot 2"},
@@ -67,15 +83,10 @@ class ScopeModuleUiTest(TestCase):
         report = compute_module_readiness_for_sync(self.sync)
         self.assertEqual(report.unique_missing_bays, 2)
         self.assertEqual(report.missing_device_rows, 1)
-
-        result = create_missing_module_bays(report)
-        self.assertEqual(result["created"], 2)
-        self.assertEqual(ModuleBay.objects.filter(device=dev).count(), 2)
-
-        # Re-running creates nothing (bays already exist).
-        result2 = create_missing_module_bays(report)
-        self.assertEqual(result2["created"], 0)
-        self.assertEqual(ModuleBay.objects.filter(device=dev).count(), 2)
+        self.assertEqual(
+            [row["name"] for row in report.module_bay_plan_rows],
+            ["Slot 1", "Slot 2"],
+        )
 
     # --- view smoke tests ----------------------------------------------------
 
@@ -88,14 +99,29 @@ class ScopeModuleUiTest(TestCase):
         client.force_login(user)
         return client
 
+    def test_ingestion_evidence_has_no_delete_controls(self):
+        from netbox.object_actions import BulkDelete
+
+        from forward_netbox.views import ForwardIngestionListView
+
+        self.assertNotIn(BulkDelete, ForwardIngestionListView.actions)
+        with self.assertRaises(NoReverseMatch):
+            reverse(
+                "plugins:forward_netbox:forwardingestion_delete",
+                kwargs={"pk": self.ingestion.pk},
+            )
+        with self.assertRaises(NoReverseMatch):
+            reverse("plugins:forward_netbox:forwardingestion_bulk_delete")
+
     def test_scope_reconciliation_view_and_prune(self):
         self._device("dev-a")
         self._device("dev-stale")
+        self._claim_scope("dev-stale")
         opengear = Manufacturer.objects.create(name="Opengear", slug="opengear")
         DeviceType.objects.create(
             manufacturer=opengear,
-            model="Opengear ACM7008-2-M, Linux 5.17 OpenGear Version 5.3",
-            slug="opengear-acm7008-legacy",
+            model="Opengear Console-Example, Linux 6.0 OpenGear Version 9.9",
+            slug="opengear-console-example-legacy",
         )
         fwd_client = Mock()
         fwd_client.run_nqe_query = Mock(
@@ -115,9 +141,15 @@ class ScopeModuleUiTest(TestCase):
             )
             self.assertEqual(resp.status_code, 200)
             self.assertContains(resp, "Post-Upgrade Catalog Reconciliation")
-            self.assertContains(resp, "Legacy endpoint DeviceTypes")
+            self.assertContains(resp, "Stale endpoint DeviceTypes")
+            self.assertContains(resp, "Reconcile device scope tags")
+            self.assertNotContains(
+                resp,
+                'class="btn btn-outline-warning" disabled',
+                html=False,
+            )
             self.assertEqual(
-                resp.context["upgrade_reconciliation"]["legacy_endpoint_device_types"][
+                resp.context["upgrade_reconciliation"]["stale_endpoint_device_types"][
                     "candidate_count"
                 ],
                 1,
@@ -135,7 +167,7 @@ class ScopeModuleUiTest(TestCase):
             # Devices are still present until the job runs.
             self.assertTrue(Device.objects.filter(name="dev-stale").exists())
             # Run the job: the orphan is pruned, the in-scope device kept.
-            prune_forward_orphans(job)
+            PruneOrphansJob.handle(job)
         self.assertTrue(Device.objects.filter(name="dev-a").exists())
         self.assertFalse(Device.objects.filter(name="dev-stale").exists())
 
@@ -204,6 +236,51 @@ class ScopeModuleUiTest(TestCase):
                 Device.objects.filter(tags__slug="forward-backfilled").count(), 0
             )
 
+    def test_scope_tag_overlay_skips_absent_backfilled_target(self):
+        from forward_netbox.models import ForwardDeviceTagClaim
+        from forward_netbox.utilities.scope_reconciliation import (
+            tag_backfilled_devices,
+        )
+
+        self.source.parameters = {
+            **self.source.parameters,
+            "apply_device_scope_tags": True,
+        }
+        self.source.save(update_fields=["parameters"])
+        present = self._device("dev-present")
+        fwd_client = Mock()
+        fwd_client.run_nqe_query.return_value = [
+            {
+                "name": present.name,
+                "completed": True,
+                "tagNames": ["Prod_Core"],
+            },
+            {
+                "name": "dev-absent-backfilled",
+                "completed": False,
+                "tagNames": ["Prod_Core"],
+            },
+        ]
+
+        with (
+            patch.object(ForwardSource, "get_client", return_value=fwd_client),
+            patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
+        ):
+            result = tag_backfilled_devices(self.sync)
+
+        self.assertEqual(result["scope_claims_added"], 1)
+        self.assertTrue(result["ownership_current"])
+        self.assertTrue(present.tags.filter(name="Prod_Core").exists())
+        self.assertEqual(
+            set(
+                ForwardDeviceTagClaim.objects.filter(
+                    sync=self.sync,
+                    claim_type="scope",
+                ).values_list("device__name", flat=True)
+            ),
+            {present.name},
+        )
+
     def test_tag_backfilled_devices_also_tags_out_of_scope(self):
         from forward_netbox.utilities.scope_reconciliation import (
             tag_backfilled_devices,
@@ -211,6 +288,7 @@ class ScopeModuleUiTest(TestCase):
 
         self._device("dev-collected")
         self._device("dev-orphan")  # in NetBox, not returned by the Forward scope
+        self._claim_scope("dev-orphan")
         fwd_client = Mock()
         fwd_client.run_nqe_query = Mock(
             return_value=[{"name": "dev-collected", "completed": True}]
@@ -228,6 +306,137 @@ class ScopeModuleUiTest(TestCase):
                 )
             ),
             {"dev-orphan"},
+        )
+
+    def test_out_of_scope_cleanup_removes_only_managed_include_tags(self):
+        from django.utils.text import slugify
+        from extras.models import Tag
+
+        from forward_netbox.models import ForwardDeviceTagClaim
+        from forward_netbox.utilities.ownership import ensure_device_tag_claim
+        from forward_netbox.utilities.scope_reconciliation import (
+            tag_backfilled_devices,
+        )
+
+        self.source.parameters["apply_device_scope_tags"] = True
+        self.source.save(update_fields=["parameters"])
+        orphan = self._device("dev-orphan")
+        managed = Tag.objects.create(name="Prod_Core", slug=slugify("Prod_Core"))
+        operator = Tag.objects.create(name="operator-owned", slug="operator-owned")
+        orphan.tags.add(operator)
+        ensure_device_tag_claim(
+            self.sync,
+            orphan,
+            managed,
+            ForwardDeviceTagClaim.ClaimType.SCOPE,
+        )
+        fwd_client = Mock()
+        fwd_client.run_nqe_query = Mock(
+            return_value=[{"name": "dev-collected", "completed": True}]
+        )
+
+        with (
+            patch.object(ForwardSource, "get_client", return_value=fwd_client),
+            patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
+        ):
+            result = tag_backfilled_devices(self.sync)
+
+        self.assertEqual(result["out_of_scope_scope_tags_removed"], 1)
+        self.assertEqual(
+            set(orphan.tags.values_list("slug", flat=True)),
+            {"forward-out-of-scope", "operator-owned"},
+        )
+
+    def test_out_of_scope_cleanup_preserves_include_tags_when_disabled(self):
+        from django.utils.text import slugify
+        from extras.models import Tag
+
+        from forward_netbox.utilities.scope_reconciliation import (
+            tag_backfilled_devices,
+        )
+
+        orphan = self._device("dev-orphan")
+        managed = Tag.objects.create(name="Prod_Core", slug=slugify("Prod_Core"))
+        orphan.tags.add(managed)
+        fwd_client = Mock()
+        fwd_client.run_nqe_query = Mock(
+            return_value=[{"name": "dev-collected", "completed": True}]
+        )
+
+        with (
+            patch.object(ForwardSource, "get_client", return_value=fwd_client),
+            patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
+        ):
+            result = tag_backfilled_devices(self.sync)
+
+        self.assertEqual(result["out_of_scope_scope_tags_removed"], 0)
+        self.assertEqual(
+            set(orphan.tags.values_list("slug", flat=True)), {managed.slug}
+        )
+
+    def test_scope_reconciliation_uses_pinned_snapshot(self):
+        from forward_netbox.utilities.scope_reconciliation import (
+            compute_scope_reconciliation,
+        )
+
+        self._device("dev-pinned")
+        fwd_client = Mock()
+        fwd_client.run_nqe_query.return_value = [
+            {"name": "dev-pinned", "completed": True}
+        ]
+
+        with (
+            patch.object(ForwardSource, "get_client", return_value=fwd_client),
+            patch.object(ForwardSync, "resolve_snapshot_id") as resolve_snapshot,
+        ):
+            compute_scope_reconciliation(self.sync, snapshot_id="snapshot-pinned")
+
+        resolve_snapshot.assert_not_called()
+        self.assertEqual(
+            fwd_client.run_nqe_query.call_args.kwargs["snapshot_id"],
+            "snapshot-pinned",
+        )
+
+    def test_stale_snapshot_reconciliation_does_not_mutate_tags(self):
+        from extras.models import Tag
+
+        from forward_netbox.choices import ForwardSyncStatusChoices
+        from forward_netbox.models import ForwardIngestion
+        from forward_netbox.utilities.post_sync import StalePostSyncSnapshotError
+        from forward_netbox.utilities.scope_reconciliation import (
+            tag_backfilled_devices,
+        )
+
+        device = self._device("dev-stale-overlay")
+        operator = Tag.objects.create(name="Operator stale", slug="operator-stale")
+        device.tags.add(operator)
+        self.sync.status = ForwardSyncStatusChoices.COMPLETED
+        self.sync.save(update_fields=["status"])
+        ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_id="snapshot-old",
+            baseline_ready=True,
+        )
+        ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_id="snapshot-new",
+            baseline_ready=True,
+        )
+
+        with self.assertRaises(StalePostSyncSnapshotError):
+            tag_backfilled_devices(
+                self.sync,
+                snapshot_id="snapshot-old",
+                report={
+                    "_present_backfilled": {device.name},
+                    "_out_of_scope": set(),
+                    "_tagged_names": {device.name},
+                },
+            )
+
+        self.assertEqual(
+            set(device.tags.values_list("slug", flat=True)),
+            {operator.slug},
         )
 
     def test_prune_also_removes_empty_orphan_sites(self):
@@ -248,6 +457,7 @@ class ScopeModuleUiTest(TestCase):
             role=self.role,
             site=site_stale,
         )
+        self._claim_scope("dev-site-stale")
         fwd_client = Mock()
         # Forward only knows site-active; dev-site-stale (and site-stale) are orphans.
         fwd_client.run_nqe_query = Mock(
@@ -268,7 +478,7 @@ class ScopeModuleUiTest(TestCase):
             )
             self.assertEqual(resp.status_code, 302)
             job = Job.objects.filter(name__icontains="prune orphans").latest("pk")
-            prune_forward_orphans(job)
+            PruneOrphansJob.handle(job)
         # In-scope device + its site kept.
         self.assertTrue(Device.objects.filter(name="dev-site-a").exists())
         self.assertTrue(Site.objects.filter(slug="site-active").exists())
@@ -366,8 +576,10 @@ class ScopeModuleUiTest(TestCase):
                 )
             )
             self.assertEqual(resp.status_code, 302)
-            job = Job.objects.filter(name__icontains="tag backfilled").latest("pk")
-            tag_forward_backfilled_devices(job)
+            job = Job.objects.filter(name__icontains="reconcile device scope").latest(
+                "pk"
+            )
+            DeviceScopeTagReconciliationJob.handle(job)
         self.assertTrue(
             Device.objects.filter(
                 name="dev-backfilled", tags__slug="forward-backfilled"
@@ -375,7 +587,7 @@ class ScopeModuleUiTest(TestCase):
         )
 
     def test_tag_delete_eligible_ipam_view_enqueues_and_runs_job(self):
-        from forward_netbox.jobs import tag_forward_delete_eligible_ipam
+        from forward_netbox.jobs import TagDeleteEligibleIpamJob
 
         fwd_client = Mock()
         stub_result = {
@@ -404,13 +616,13 @@ class ScopeModuleUiTest(TestCase):
                 "pk"
             )
             self.assertEqual(job.object_id, self.sync.pk)
-            tag_forward_delete_eligible_ipam(job)
+            TagDeleteEligibleIpamJob.handle(job)
             mock_tag.assert_called_once()
         job.refresh_from_db()
         self.assertEqual(job.data["total_eligible"], 3)
 
     def test_refresh_device_analysis_job(self):
-        from forward_netbox.jobs import refresh_forward_device_analysis
+        from forward_netbox.jobs import DeviceAnalysisRefreshJob
         from forward_netbox.models import ForwardDeviceAnalysis
 
         self._device("dev-an")
@@ -454,7 +666,7 @@ class ScopeModuleUiTest(TestCase):
             job = Job.objects.filter(name__icontains="refresh device analysis").latest(
                 "pk"
             )
-            refresh_forward_device_analysis(job)
+            DeviceAnalysisRefreshJob.handle(job)
 
         rows = ForwardDeviceAnalysis.objects.filter(sync=self.sync)
         self.assertEqual(rows.count(), 2)
@@ -492,7 +704,31 @@ class ScopeModuleUiTest(TestCase):
         self.assertIn("Open in Forward", rendered)
         self.assertIn("https://fwd.app", rendered)
 
-    def test_module_readiness_view_and_create(self):
+    def test_device_analysis_fetch_uses_pinned_snapshot(self):
+        from forward_netbox.utilities.device_analysis import (
+            fetch_device_analysis_rows,
+        )
+
+        fwd_client = Mock()
+        fwd_client.run_nqe_query.return_value = []
+        with (
+            patch.object(ForwardSource, "get_client", return_value=fwd_client),
+            patch.object(ForwardSync, "resolve_snapshot_id") as resolve_snapshot,
+        ):
+            rows, snapshot_id = fetch_device_analysis_rows(
+                self.sync,
+                snapshot_id="snapshot-pinned",
+            )
+
+        self.assertEqual(rows, [])
+        self.assertEqual(snapshot_id, "snapshot-pinned")
+        resolve_snapshot.assert_not_called()
+        self.assertEqual(
+            fwd_client.run_nqe_query.call_args.kwargs["snapshot_id"],
+            "snapshot-pinned",
+        )
+
+    def test_module_readiness_view_reports_branch_plan(self):
         self._device("dev-m")
         client = self._superuser_client()
         with patch(
@@ -506,18 +742,29 @@ class ScopeModuleUiTest(TestCase):
                 )
             )
             self.assertEqual(resp.status_code, 200)
-            # POST enqueues a background create-bays job.
-            resp = client.post(
+            self.assertContains(resp, "Missing bays")
+            self.assertContains(resp, "created inside the sync branch")
+
+    def test_module_readiness_view_does_not_expose_exception_details(self):
+        client = self._superuser_client()
+        with (
+            self.assertLogs("forward_netbox.views", level="WARNING") as logs,
+            patch(
+                "forward_netbox.utilities.module_readiness.compute_module_readiness_for_sync",
+                side_effect=RuntimeError("sentinel-private-detail"),
+            ),
+        ):
+            response = client.get(
                 reverse(
-                    "plugins:forward_netbox:forwardsync_create_module_bays",
+                    "plugins:forward_netbox:forwardsync_module_readiness",
                     kwargs={"pk": self.sync.pk},
                 )
             )
-            self.assertEqual(resp.status_code, 302)
-            job = Job.objects.filter(name__icontains="create module bays").latest("pk")
-            self.assertEqual(job.object_id, self.sync.pk)
-            # Bays are created when the job runs.
-            create_forward_module_bays(job)
-        self.assertEqual(
-            ModuleBay.objects.filter(device__name="dev-m", name="Slot 1").count(), 1
+
+        rendered_messages = " ".join(
+            str(message) for message in get_messages(response.wsgi_request)
         )
+        self.assertEqual(response.status_code, 302)
+        self.assertNotIn("sentinel-private-detail", rendered_messages)
+        self.assertNotIn("sentinel-private-detail", " ".join(logs.output))
+        self.assertIn("Review server logs", rendered_messages)

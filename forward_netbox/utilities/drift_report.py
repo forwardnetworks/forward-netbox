@@ -23,6 +23,81 @@ def _estimate_kind(result, *, row_count, estimated_changes, delete_count):
     return EXACT_COMPARISON
 
 
+def build_latest_sync_evidence(ingestion, preview_payload=None):
+    """Summarize persisted sync counters without treating preview rows as drift."""
+    if ingestion is None:
+        return None
+
+    payload = preview_payload if isinstance(preview_payload, dict) else {}
+    context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+    preview_snapshot_id = str(
+        context.get("snapshot_id") or payload.get("snapshot_id") or ""
+    )
+    sync_snapshot_id = str(getattr(ingestion, "snapshot_id", "") or "")
+    same_snapshot = (
+        sync_snapshot_id == preview_snapshot_id
+        if sync_snapshot_id and preview_snapshot_id
+        else None
+    )
+    counters = {
+        "applied": _count(getattr(ingestion, "applied_change_count", 0)),
+        "failed": _count(getattr(ingestion, "failed_change_count", 0)),
+        "created": _count(getattr(ingestion, "created_change_count", 0)),
+        "updated": _count(getattr(ingestion, "updated_change_count", 0)),
+        "deleted": _count(getattr(ingestion, "deleted_change_count", 0)),
+    }
+    has_changes = any(
+        counters[key] > 0 for key in ("applied", "created", "updated", "deleted")
+    )
+    baseline_ready = bool(getattr(ingestion, "baseline_ready", False))
+    merge_job = getattr(ingestion, "merge_job", None)
+    execution_job = merge_job or getattr(ingestion, "job", None)
+    job_status = str(getattr(execution_job, "status", "") or "").lower()
+    completed_at = getattr(execution_job, "completed", None)
+    execution_completed = job_status == "completed" and completed_at is not None
+    execution_failed = job_status in {"errored", "failed"}
+    ownership = {"complete": True, "required_domains": [], "pending_domains": []}
+    sync = getattr(ingestion, "sync", None)
+    if sync is not None:
+        from .ownership import ownership_finalization_summary
+
+        ownership = ownership_finalization_summary(
+            sync,
+            generation=getattr(ingestion, "pk", None),
+        )
+    if counters["failed"] or execution_failed:
+        status = "failed"
+    elif not execution_completed or not baseline_ready:
+        status = "incomplete"
+    elif not ownership["complete"]:
+        status = "ownership_incomplete"
+    elif has_changes:
+        status = "confirmation_required"
+    elif same_snapshot is False:
+        status = "snapshot_mismatch"
+    elif same_snapshot is None:
+        status = "snapshot_unknown"
+    else:
+        status = "converged"
+
+    return {
+        "ingestion_id": getattr(ingestion, "pk", None),
+        "ingestion_created_at": getattr(ingestion, "created", None),
+        "completed_at": completed_at,
+        "job_status": job_status,
+        "execution_completed": execution_completed,
+        "snapshot_id": sync_snapshot_id,
+        "preview_snapshot_id": preview_snapshot_id,
+        "same_snapshot": same_snapshot,
+        "snapshot_comparison_available": same_snapshot is not None,
+        "baseline_ready": baseline_ready,
+        "status": status,
+        "convergence_confirmed": status == "converged",
+        "ownership": ownership,
+        **counters,
+    }
+
+
 def compute_drift_report(payload):
     """Build a per-model drift summary from a dependency dry-run payload.
 
@@ -89,7 +164,9 @@ def compute_drift_report(payload):
         ),
         reverse=True,
     )
-    comparison_available = all(row["comparison_available"] for row in rows)
+    comparison_available = bool(rows) and all(
+        row["comparison_available"] for row in rows
+    )
     # Fingerprint of a preview taken against an empty/unmerged NetBox: several
     # models, every one of them fully pending, zero removals. That is "here is
     # everything Forward has," not real per-row drift — flag it so the operator

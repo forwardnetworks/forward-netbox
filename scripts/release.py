@@ -43,6 +43,12 @@ INSTALL_DOC = REPO_ROOT / "docs/01_User_Guide/README.md"
 CURRENT_RELEASE_RE = re.compile(
     r"^\| `v[0-9][^|]*` \| (?P<support>[^|]*) \| Current release;", re.MULTILINE
 )
+RELEASE_INTRO_RE = re.compile(
+    r"^The `(?P<version>\d+\.\d+\.\d+)` release(?P<candidate> candidate)? "
+    r"requires (?P<requirements>.+)\. Expand for the published release history "
+    r"and (?:candidate|release) notes\.$",
+    re.MULTILINE,
+)
 
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
 GITHUB_REPOSITORY = "forwardnetworks/forward-netbox"
@@ -115,6 +121,23 @@ def promote_release_candidate_text(table_text: str, version: str) -> str:
     return "".join(lines)
 
 
+def set_release_intro_text(text: str, version: str, *, candidate: bool) -> str:
+    """Keep the compatibility introduction aligned with the release table."""
+    matches = list(RELEASE_INTRO_RE.finditer(text))
+    if len(matches) != 1:
+        raise ReleaseError(
+            "expected exactly one canonical release compatibility introduction"
+        )
+    match = matches[0]
+    release_label = "release candidate" if candidate else "release"
+    notes_label = "candidate notes" if candidate else "release notes"
+    replacement = (
+        f"The `{version}` {release_label} requires {match.group('requirements')}. "
+        f"Expand for the published release history and {notes_label}."
+    )
+    return text[: match.start()] + replacement + text[match.end() :]
+
+
 def read_current_version() -> str:
     text = PYPROJECT.read_text(encoding="utf-8")
     match = re.search(r'^version = "([^"]+)"', text, re.MULTILINE)
@@ -149,8 +172,10 @@ def stage_prepare(version: str, summary: str, *, write: bool) -> None:
         ),
     }
     for path in README_TABLES:
-        edits[path] = insert_release_row(
-            path.read_text(encoding="utf-8"), version, summary
+        edits[path] = set_release_intro_text(
+            insert_release_row(path.read_text(encoding="utf-8"), version, summary),
+            version,
+            candidate=True,
         )
     # Install-doc wheel/sdist/pin references.
     install_text = edits.get(INSTALL_DOC, INSTALL_DOC.read_text(encoding="utf-8"))
@@ -240,6 +265,32 @@ def _capture(cmd: list[str]) -> str:
     return result.stdout.strip()
 
 
+def _capture_required(cmd: list[str], *, purpose: str) -> str:
+    """Capture a required command without exposing arguments or stderr."""
+    result = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise ReleaseError(f"{purpose} failed with exit code {result.returncode}")
+    return result.stdout.strip()
+
+
+def _workflow_runs_payload(raw: str, *, purpose: str) -> list[dict]:
+    """Parse the exact Actions runs response or fail without echoing it."""
+    if not raw:
+        raise ReleaseError(f"{purpose} returned an empty response")
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ReleaseError(f"{purpose} returned invalid JSON") from exc
+    if not isinstance(payload, dict) or not isinstance(
+        payload.get("workflow_runs"), list
+    ):
+        raise ReleaseError(f"{purpose} returned an invalid workflow-runs payload")
+    runs = payload["workflow_runs"]
+    if any(not isinstance(run, dict) for run in runs):
+        raise ReleaseError(f"{purpose} returned a malformed workflow run")
+    return runs
+
+
 def _verify_live_release_controls() -> None:
     token = _capture(["gh", "auth", "token"])
     if not token:
@@ -296,7 +347,7 @@ def wait_for_required_workflows(
     expected_branch: str,
     expected_event: str = "push",
     poll_seconds: int = 30,
-    max_polls: int = 80,
+    max_polls: int = 160,
 ) -> bool:
     """Require successful runs from exact workflow identities on one commit."""
     import time
@@ -304,28 +355,29 @@ def wait_for_required_workflows(
     for _ in range(max_polls):
         incomplete: list[str] = []
         for workflow_path in REQUIRED_RELEASE_WORKFLOWS:
-            raw = _capture(
+            workflow_identifier = Path(workflow_path).name
+            query_purpose = f"GitHub {workflow_identifier} run query"
+            raw = _capture_required(
                 [
                     "gh",
                     "api",
                     "--method",
                     "GET",
-                    f"repos/{GITHUB_REPOSITORY}/actions/workflows/{workflow_path}/runs",
+                    "repos/"
+                    f"{GITHUB_REPOSITORY}/actions/workflows/"
+                    f"{workflow_identifier}/runs",
                     "-f",
                     f"head_sha={expected_commit}",
                     "-f",
                     f"event={expected_event}",
                     "-f",
                     "per_page=100",
-                ]
+                ],
+                purpose=query_purpose,
             )
-            try:
-                payload = json.loads(raw) if raw else {}
-            except json.JSONDecodeError:
-                payload = {}
             exact = [
                 run
-                for run in payload.get("workflow_runs", [])
+                for run in _workflow_runs_payload(raw, purpose=query_purpose)
                 if run.get("path") == workflow_path
                 and run.get("head_sha") == expected_commit
                 and run.get("head_branch") == expected_branch
@@ -385,7 +437,11 @@ def stage_publish(version: str, *, auto_finish: bool = False) -> None:
 def _promote_release_candidate(version: str) -> bool:
     originals = {path: path.read_text(encoding="utf-8") for path in README_TABLES}
     edits = {
-        path: promote_release_candidate_text(text, version)
+        path: set_release_intro_text(
+            promote_release_candidate_text(text, version),
+            version,
+            candidate=False,
+        )
         for path, text in originals.items()
     }
     if edits == originals:
@@ -491,15 +547,14 @@ def _open_release_pull_request(version: str, branch: str, *, evidence: bool) -> 
 
 
 def wait_for_release_workflow(
-    version: str, *, poll_seconds: int = 30, max_polls: int = 80
+    version: str, *, poll_seconds: int = 30, max_polls: int = 240
 ) -> str:
-    import json
     import time
 
     tag = f"v{version}"
     commit = _capture(["git", "rev-list", "-n", "1", tag])
     for _ in range(max_polls):
-        raw = _capture(
+        raw = _capture_required(
             [
                 "gh",
                 "api",
@@ -512,15 +567,15 @@ def wait_for_release_workflow(
                 "event=push",
                 "-f",
                 "per_page=100",
-            ]
+            ],
+            purpose="GitHub release workflow run query",
         )
-        try:
-            payload = json.loads(raw) if raw else {}
-        except json.JSONDecodeError:
-            payload = {}
         runs = [
             run
-            for run in payload.get("workflow_runs", [])
+            for run in _workflow_runs_payload(
+                raw,
+                purpose="GitHub release workflow run query",
+            )
             if run.get("path") == ".github/workflows/release.yml"
             and run.get("head_sha") == commit
             and run.get("event") == "push"

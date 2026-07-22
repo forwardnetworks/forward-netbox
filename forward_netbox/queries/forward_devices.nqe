@@ -112,7 +112,7 @@ foreach row in (
     let ep_manuf_slug_raw = slugify(ep_manuf)
     let ep_manuf_slug = if ep_manuf_slug_raw == "" then "unknown" else ep_manuf_slug_raw
     // Keep hardware identity stable. Opengear's comma starts kernel/build data;
-    // newer compact descriptions instead append a dotted firmware token. Legacy
+    // newer compact descriptions instead append a dotted firmware token. Long-form
     // AlterPath descriptions append " - version: ...". Generic endpoints get a
     // manufacturer-scoped type instead of arbitrary free-form sysDescr text.
     let opengear_model = replaceRegexMatches(

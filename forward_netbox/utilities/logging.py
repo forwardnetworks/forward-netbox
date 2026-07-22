@@ -1,22 +1,24 @@
 import logging
 import threading
+from time import monotonic
 
 from core.models import Job
 from django.contrib.contenttypes.models import ContentType
-from django.core.cache import cache
 from django.utils import timezone
 from extras.choices import LogLevelChoices
+from rq.timeouts import JobTimeoutException
 
 
 class SyncLogging:
-    def __init__(self, key_prefix="forward_sync", job=None, cache_timeout=3600):
-        self.key_prefix = key_prefix
+    STATISTICS_PERSIST_INTERVAL_SECONDS = 1.0
+
+    def __init__(self, job=None):
         self.job_id = job
-        self.cache_key = f"{self.key_prefix}_{job}"
-        self.cache_timeout = cache_timeout
         self.log_data = {"logs": [], "statistics": {}}
         self.logger = logging.getLogger("forward_netbox.sync")
         self._lock = threading.RLock()
+        self._statistics_persist_dirty = False
+        self._last_statistics_persist_write = monotonic()
 
     def __getstate__(self):
         state = self.__dict__.copy()
@@ -26,6 +28,36 @@ class SyncLogging:
     def __setstate__(self, state):
         self.__dict__.update(state)
         self._lock = threading.RLock()
+        self._statistics_persist_dirty = False
+        self._last_statistics_persist_write = monotonic()
+
+    def _persist_job_data_locked(self, *, force=False):
+        if not self.job_id:
+            return
+        now = monotonic()
+        if (
+            force
+            or not self._statistics_persist_dirty
+            or now - self._last_statistics_persist_write
+            >= self.STATISTICS_PERSIST_INTERVAL_SECONDS
+        ):
+            try:
+                Job.objects.filter(pk=self.job_id).update(data=self.log_data)
+            except JobTimeoutException:
+                raise
+            except Exception as exc:
+                self.logger.warning(
+                    "Failed to persist core job data for job %s: %s",
+                    self.job_id,
+                    exc,
+                )
+                return
+            self._statistics_persist_dirty = False
+            self._last_statistics_persist_write = now
+
+    def flush(self):
+        with self._lock:
+            self._persist_job_data_locked(force=True)
 
     def _log(self, obj, message, level=LogLevelChoices.LOG_INFO):
         timestamp = timezone.now()
@@ -43,7 +75,7 @@ class SyncLogging:
         }
         with self._lock:
             self.log_data["logs"].append(entry)
-            cache.set(self.cache_key, self.log_data, self.cache_timeout)
+            self._persist_job_data_locked(force=True)
             self._persist_core_job_entry(job_entry)
 
     @staticmethod
@@ -60,6 +92,8 @@ class SyncLogging:
             job = Job.objects.get(pk=self.job_id)
         except Job.DoesNotExist:
             return
+        except JobTimeoutException:
+            raise
         except Exception as exc:
             self.logger.warning(
                 "Failed to load core job %s for log persistence: %s", self.job_id, exc
@@ -83,6 +117,8 @@ class SyncLogging:
         job.log_entries = log_entries
         try:
             job.save(update_fields=["log_entries"])
+        except JobTimeoutException:
+            raise
         except Exception as exc:
             self.logger.warning(
                 "Failed to persist core job log entry for job %s: %s",
@@ -116,7 +152,7 @@ class SyncLogging:
                 "skipped": 0,
                 "unchanged": 0,
             }
-            cache.set(self.cache_key, self.log_data, self.cache_timeout)
+            self._persist_job_data_locked(force=True)
 
     def increment_statistics(
         self, model_string: str, *, outcome: str = "applied", amount: int = 1
@@ -139,7 +175,8 @@ class SyncLogging:
             stats["current"] += amount
             if outcome in {"applied", "failed", "skipped", "unchanged"}:
                 stats[outcome] += amount
-            cache.set(self.cache_key, self.log_data, self.cache_timeout)
+            self._statistics_persist_dirty = True
+            self._persist_job_data_locked(force=amount > 1)
 
     def add_statistics_total(self, model_string: str, amount: int) -> None:
         if amount <= 0:
@@ -157,12 +194,12 @@ class SyncLogging:
                 },
             )
             stats["total"] += amount
-            cache.set(self.cache_key, self.log_data, self.cache_timeout)
+            self._persist_job_data_locked(force=True)
 
     def set_api_usage_summary(self, summary: dict) -> None:
         with self._lock:
             self.log_data["forward_api_usage"] = dict(summary or {})
-            cache.set(self.cache_key, self.log_data, self.cache_timeout)
+            self._persist_job_data_locked(force=True)
 
     def add_dependency_lookup_summary(self, summary: dict) -> None:
         summary = dict(summary or {})
@@ -227,7 +264,7 @@ class SyncLogging:
                     str(item.get("model") or ""),
                 ),
             )[:10]
-            cache.set(self.cache_key, self.log_data, self.cache_timeout)
+            self._persist_job_data_locked(force=True)
 
     def add_dependency_parent_coverage_summary(self, summary: dict) -> None:
         summary = dict(summary or {})
@@ -294,4 +331,4 @@ class SyncLogging:
                     str(item.get("model") or ""),
                 ),
             )[:10]
-            cache.set(self.cache_key, self.log_data, self.cache_timeout)
+            self._persist_job_data_locked(force=True)

@@ -29,6 +29,16 @@ class ForwardSourceAPIViewTest(TestCase):
             password="TestPassword123!",
             email="admin@example.com",
         )
+        cls.source = ForwardSource.objects.create(
+            name="api-source",
+            type="saas",
+            url="https://forward.example.test",
+            parameters={
+                "username": "user@example.com",
+                "password": "secret",
+                "network_id": "net-1",
+            },
+        )
 
     @staticmethod
     def _invoke(request_user, params):
@@ -52,12 +62,29 @@ class ForwardSourceAPIViewTest(TestCase):
         view = ForwardSourceViewSet.as_view({"get": "available_tags"})
         return view(request)
 
-    def test_available_networks_requires_forward_credentials(self):
-        response = self._invoke(self.user, {"type": "saas"})
+    def test_available_networks_requires_saved_source(self):
+        response = self._invoke(self.user, {})
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["count"], 0)
-        self.assertIn("Enter Forward username and password", response.data["detail"])
+        self.assertIn("saved Forward source is required", response.data["detail"])
+
+    @patch("forward_netbox.api.views.ForwardSource.get_client")
+    def test_available_networks_rejects_credentials_in_query_string(
+        self, mock_get_client
+    ):
+        response = self._invoke(
+            self.user,
+            {
+                "source_id": self.source.pk,
+                "username": "user@example.com",
+                "password": "sentinel-private-detail",
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertNotIn("sentinel-private-detail", str(response.data))
+        mock_get_client.assert_not_called()
 
     @patch("forward_netbox.api.views.ForwardSource.get_client")
     def test_available_networks_shows_auth_message_on_401(self, mock_get_client):
@@ -70,9 +97,7 @@ class ForwardSourceAPIViewTest(TestCase):
         response = self._invoke(
             self.user,
             {
-                "type": "saas",
-                "username": "user@example.com",
-                "password": "secret",
+                "source_id": self.source.pk,
             },
         )
 
@@ -96,9 +121,7 @@ class ForwardSourceAPIViewTest(TestCase):
         response = self._invoke(
             self.user,
             {
-                "type": "saas",
-                "username": "user@example.com",
-                "password": "secret",
+                "source_id": self.source.pk,
             },
         )
 
@@ -109,12 +132,12 @@ class ForwardSourceAPIViewTest(TestCase):
             response.data["detail"],
         )
 
-    def test_available_tags_requires_forward_credentials(self):
-        response = self._invoke_tags(self.user, {"type": "saas"})
+    def test_available_tags_requires_saved_source(self):
+        response = self._invoke_tags(self.user, {})
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["count"], 0)
-        self.assertIn("Enter Forward username and password", response.data["detail"])
+        self.assertIn("saved Forward source is required", response.data["detail"])
 
     @patch("forward_netbox.api.views.ForwardSource.get_client")
     def test_available_tags_returns_distinct_tags(self, mock_get_client):
@@ -128,9 +151,7 @@ class ForwardSourceAPIViewTest(TestCase):
         response = self._invoke_tags(
             self.user,
             {
-                "type": "saas",
-                "username": "user@example.com",
-                "password": "secret",
+                "source_id": self.source.pk,
                 "network_id": "net-1",
             },
         )
@@ -673,6 +694,7 @@ class ForwardSyncWebhookAPITest(TestCase):
         from core.exceptions import SyncError
 
         with (
+            self.assertLogs("forward_netbox.api.views", level="WARNING") as logs,
             patch("forward_netbox.jobs._sync_has_active_job", return_value=False),
             patch.object(
                 ForwardSync,
@@ -682,3 +704,12 @@ class ForwardSyncWebhookAPITest(TestCase):
         ):
             response = self._post(self.sync.pk, header="s3cret-value")
         self.assertEqual(response.status_code, 409)
+        self.assertEqual(
+            response.json()["detail"],
+            (
+                "Forward sync could not be queued. Review the current sync and "
+                "branch state before retrying."
+            ),
+        )
+        self.assertNotIn("waiting for merge", response.content.decode())
+        self.assertNotIn("waiting for merge", " ".join(logs.output))

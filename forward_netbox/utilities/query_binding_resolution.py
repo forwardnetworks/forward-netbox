@@ -1,7 +1,9 @@
+import logging
 from dataclasses import dataclass
 
 from django.apps import apps
 from django.db import transaction
+from rq.timeouts import JobTimeoutException
 
 from ..models import ForwardNQEMap
 from .plugin_integrations.registry import optional_integration_for_model
@@ -9,6 +11,9 @@ from .query_registry import BUILTIN_SEEDED_QUERY_MAPS
 from .query_registry import query_contract_summary_for_maps
 from .query_registry import read_builtin_query_source
 from .query_registry import read_compiled_builtin_query_source
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -236,6 +241,8 @@ def live_query_binding_drift(*, client, query_map: ForwardNQEMap) -> dict:
                 query_path=query_path,
                 commit_id=requested_commit_id,
             )
+        except JobTimeoutException:
+            raise
         except Exception as exc:
             return _live_lookup_failed(local_result, exc)
         return _live_drift_result_from_committed_query(
@@ -263,12 +270,16 @@ def live_query_binding_drift(*, client, query_map: ForwardNQEMap) -> dict:
 
 
 def _live_lookup_failed(local_result: dict, exc: Exception) -> dict:
+    logger.warning("Forward query repository lookup failed (%s)", type(exc).__name__)
     return {
         **local_result,
         "severity": "warn",
         "live_checked": True,
         "live_status": "live_lookup_failed",
-        "live_message": f"Forward query repository lookup failed: {exc}",
+        "live_message": (
+            "Forward query repository lookup failed. Review server logs and "
+            "repository connectivity."
+        ),
         "remediation": (
             "Retry after fixing Forward repository connectivity, or switch the map "
             "to a repository path if you need deterministic drift checks."
@@ -291,8 +302,15 @@ def _live_drift_for_query_id(
                 repository=repository,
                 directory="/",
             )
+        except JobTimeoutException:
+            raise
         except Exception as exc:
-            lookup_errors.append(f"{repository}: {exc}")
+            logger.warning(
+                "Forward query ID lookup failed in %s repository (%s)",
+                repository,
+                type(exc).__name__,
+            )
+            lookup_errors.append(repository)
             continue
         for query in query_index.get("by_query_id", {}).get(query_map.query_id, []):
             matches.append((repository, query))
@@ -302,7 +320,10 @@ def _live_drift_for_query_id(
             "Direct query ID was not found in the visible Forward query repositories."
         )
         if lookup_errors:
-            message = f"{message} Lookup errors: {'; '.join(lookup_errors)}"
+            message = (
+                f"{message} Repository lookup failed for: "
+                f"{', '.join(sorted(lookup_errors))}. Review server logs."
+            )
         return {
             **local_result,
             "severity": "warn",
@@ -344,6 +365,8 @@ def _live_drift_for_query_id(
             commit_id=query_map.commit_id or commit_id,
             require_source_code=True,
         )
+    except JobTimeoutException:
+        raise
     except Exception as exc:
         return _live_lookup_failed(local_result, exc)
     return _live_drift_result_from_committed_query(
@@ -609,6 +632,8 @@ def _committed_query_by_path(client, query_path: str, existing_query: dict | Non
     if query_id and not commit_id:
         try:
             history = client.get_nqe_query_history(query_id)
+        except JobTimeoutException:
+            raise
         except Exception:
             history = []
         if history:
@@ -631,6 +656,8 @@ def _committed_query_by_path(client, query_path: str, existing_query: dict | Non
             query_path=query_path,
             commit_id="head",
         )
+    except JobTimeoutException:
+        raise
     except Exception:
         return existing_query or {}
     last_commit = query.get("lastCommit") or {}
@@ -641,6 +668,8 @@ def _committed_query_by_path(client, query_path: str, existing_query: dict | Non
     if resolved_query_id and not resolved_commit_id:
         try:
             history = client.get_nqe_query_history(resolved_query_id)
+        except JobTimeoutException:
+            raise
         except Exception:
             history = []
         if history:
@@ -668,6 +697,7 @@ def publish_builtin_nqe_map_queries(
     overwrite: bool = False,
     commit_message: str = "",
     pin_commit: bool = False,
+    publish_all_when_empty: bool = False,
 ) -> list[NQEMapBinding]:
     queryset = (
         queryset
@@ -678,6 +708,11 @@ def publish_builtin_nqe_map_queries(
     map_query_paths = {}
     publish_filenames = []
     results = []
+    if not selected_maps and publish_all_when_empty:
+        publish_filenames = [
+            str(query_default["filename"])
+            for query_default in builtin_query_defaults_for_validation()
+        ]
     for query_map in selected_maps:
         query_default, skipped_reason = builtin_query_default_for_map(query_map)
         if query_default is None:
@@ -698,7 +733,7 @@ def publish_builtin_nqe_map_queries(
         if filename not in publish_filenames:
             publish_filenames.append(filename)
 
-    if not map_query_paths:
+    if not map_query_paths and not publish_filenames:
         return results
 
     query_index = client.get_nqe_repository_query_index(
@@ -771,7 +806,7 @@ def publish_builtin_nqe_map_queries(
             queryset=ForwardNQEMap.objects.filter(
                 pk__in=map_query_paths.keys()
             ).select_related("netbox_model"),
-            preserve_existing_commit_pin=True,
+            preserve_existing_commit_pin=not pin_commit,
         ),
     ]
 
@@ -805,7 +840,10 @@ def builtin_query_repository_sync_summary(
             repository=repository,
             directory=normalized_directory,
         )
+    except JobTimeoutException:
+        raise
     except Exception as exc:
+        logger.warning("Validation query index lookup failed (%s)", type(exc).__name__)
         return {
             "status": "fail",
             "gate_status": "unproved",
@@ -830,7 +868,10 @@ def builtin_query_repository_sync_summary(
             "lookup_errors": [
                 {
                     "code": "query_index_lookup_failed",
-                    "message": f"Forward repository query index lookup failed: {exc}",
+                    "message": (
+                        "Forward repository query index lookup failed. Review server "
+                        "logs and repository connectivity."
+                    ),
                     "repository": repository,
                     "directory": normalized_directory,
                 }
@@ -838,7 +879,10 @@ def builtin_query_repository_sync_summary(
             "gaps": [
                 {
                     "code": "query_index_lookup_failed",
-                    "message": f"Forward repository query index lookup failed: {exc}",
+                    "message": (
+                        "Forward repository query index lookup failed. Review server "
+                        "logs and repository connectivity."
+                    ),
                     "repository": repository,
                     "directory": normalized_directory,
                     "remediation": (
@@ -903,7 +947,14 @@ def builtin_query_repository_sync_summary(
                 commit_id=requested_commit_id,
                 query_index=query_index,
             )
+        except JobTimeoutException:
+            raise
         except Exception as exc:
+            logger.warning(
+                "Published Forward query lookup failed for %s (%s)",
+                expected_path,
+                type(exc).__name__,
+            )
             lookup_errors.append(
                 {
                     "code": "published_query_lookup_failed",
@@ -911,7 +962,8 @@ def builtin_query_repository_sync_summary(
                     "filename": filename,
                     "expected_path": expected_path,
                     "message": (
-                        f"Forward repository lookup failed for `{expected_path}`: {exc}"
+                        f"Forward repository lookup failed for `{expected_path}`. "
+                        "Review server logs and repository connectivity."
                     ),
                     "remediation": (
                         "Fix Forward repository connectivity or republish the "

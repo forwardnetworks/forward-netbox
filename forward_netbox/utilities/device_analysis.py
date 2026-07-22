@@ -6,6 +6,7 @@
 # APIs (not device NQE); see forward_netbox/queries/forward_device_analysis.nqe.
 from pathlib import Path
 
+from .post_sync import current_post_sync_snapshot
 from .scope_reconciliation import _collection_failure_reason
 
 ANALYSIS_QUERY_NAME = "Forward Device Analysis"
@@ -18,7 +19,7 @@ def _analysis_query_text():
     return ANALYSIS_QUERY_PATH.read_text(encoding="utf-8")
 
 
-def fetch_device_analysis_rows(sync):
+def fetch_device_analysis_rows(sync, *, snapshot_id=None):
     """Run the device-analysis NQE for the sync and return (rows, snapshot_id).
 
     Runs the bundled .nqe text directly — this is a NetBox-side read-only overlay,
@@ -26,7 +27,7 @@ def fetch_device_analysis_rows(sync):
     """
     client = sync.source.get_client()
     network_id = sync.get_network_id()
-    snapshot_id = sync.resolve_snapshot_id(client)
+    snapshot_id = str(snapshot_id or "").strip() or sync.resolve_snapshot_id(client)
     rows = client.run_nqe_query(
         query=_analysis_query_text(),
         network_id=network_id,
@@ -60,7 +61,7 @@ def _coerce_cve_ids(value):
     return seen[:_CVE_IDS_LIMIT]
 
 
-def refresh_device_analysis(sync) -> dict:
+def refresh_device_analysis(sync, *, snapshot_id=None, ingestion_id=None) -> dict:
     """Upsert ForwardDeviceAnalysis rows from the device-analysis NQE.
 
     Only updates devices that exist in NetBox (analysis is a NetBox-side overlay),
@@ -71,7 +72,10 @@ def refresh_device_analysis(sync) -> dict:
 
     from forward_netbox.models import ForwardDeviceAnalysis
 
-    rows, snapshot_id = fetch_device_analysis_rows(sync)
+    rows, snapshot_id = fetch_device_analysis_rows(
+        sync,
+        snapshot_id=snapshot_id,
+    )
     device_by_name = {
         device.name: device
         for device in Device.objects.all()
@@ -80,7 +84,11 @@ def refresh_device_analysis(sync) -> dict:
 
     seen_device_ids = set()
     upserted = 0
-    with transaction.atomic():
+    with transaction.atomic(), current_post_sync_snapshot(
+        sync,
+        snapshot_id,
+        ingestion_id=ingestion_id,
+    ):
         for row in rows:
             name = str(row.get("name") or "").strip()
             device = device_by_name.get(name)

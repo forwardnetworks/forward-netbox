@@ -7,20 +7,13 @@ import time
 from urllib.parse import quote
 
 import httpx
+from django.core.cache import cache as django_cache
+from rq.timeouts import JobTimeoutException
+from utilities.proxy import resolve_proxies
 
 from ..exceptions import ForwardClientError
 from ..exceptions import ForwardConnectivityError
 from ..exceptions import ForwardFetchBudgetExceededError
-
-try:
-    from utilities.proxy import resolve_proxies
-except ImportError:  # pragma: no cover - NetBox always provides this at runtime.
-    resolve_proxies = None
-
-try:
-    from django.core.cache import cache as django_cache
-except Exception:  # pragma: no cover - Django is always present in NetBox.
-    django_cache = None
 
 LATEST_PROCESSED_SNAPSHOT = "latestProcessed"
 LATEST_COLLECTED_SNAPSHOT = "latestCollected"
@@ -53,7 +46,6 @@ FORWARD_SAAS_API_HARD_BLOCK_REQUESTS_PER_MINUTE = 2000
 MAX_FORWARD_API_REQUESTS_PER_MINUTE = 60000
 FORWARD_API_RATE_LIMIT_CACHE_TIMEOUT_SECONDS = 120
 FORWARD_API_RATE_LIMIT_LOCK_TIMEOUT_SECONDS = 5
-DEFAULT_QUERY_PREFLIGHT_ENABLED = True
 DEFAULT_QUERY_DIAGNOSTICS_ENABLED = True
 DEFAULT_NQE_ASYNC_POLL_INTERVAL_SECONDS = 1.0
 DEFAULT_NQE_ASYNC_MAX_POLLS = 1200
@@ -288,11 +280,13 @@ class ForwardClient:
         self.base_url = source.url.rstrip("/")
         self.username = params.get("username")
         # The stored password is encrypted at rest (ForwardSource.save); decrypt it
-        # here, at the one place it is actually used for HTTP auth. A plaintext
-        # value (fresh form input / pre-migration row) passes through unchanged.
+        # here, at the one place it is actually used for HTTP auth.
         from .crypto import decrypt_secret
 
-        self.password = decrypt_secret(params.get("password"))
+        try:
+            self.password = decrypt_secret(params.get("password"))
+        except ValueError as exc:
+            raise ForwardClientError(str(exc)) from exc
         self.api_requests_per_minute = self._coerce_api_requests_per_minute(
             params.get("api_requests_per_minute")
         )
@@ -305,6 +299,7 @@ class ForwardClient:
         self._api_usage_first_http_attempt_at = None
         self._api_usage_last_http_attempt_at = None
         self._api_usage = self._empty_api_usage()
+        self._nqe_execution_signatures: dict[str, int] = {}
         self._latest_processed_snapshot_cache: dict[str, dict] = {}
         self._snapshots_cache: dict[tuple[str, bool, int], list[dict]] = {}
         self._snapshot_metrics_cache: dict[str, dict] = {}
@@ -347,6 +342,19 @@ class ForwardClient:
     def _record_api_usage(self, key, amount=1):
         with self._api_usage_lock:
             self._api_usage[key] = self._api_usage.get(key, 0) + amount
+
+    def _record_nqe_execution_signature(self, kind, identity):
+        encoded = json.dumps(
+            {"kind": kind, **identity},
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        signature = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+        with self._api_usage_lock:
+            self._nqe_execution_signatures[signature] = (
+                self._nqe_execution_signatures.get(signature, 0) + 1
+            )
 
     def _record_read_cache_hit(self):
         self._record_api_usage("read_cache_hits")
@@ -408,6 +416,8 @@ class ForwardClient:
         key = self._shared_query_read_generation_key()
         try:
             cache.incr(key)
+        except JobTimeoutException:
+            raise
         except Exception:
             try:
                 current = int(cache.get(key) or 0)
@@ -487,6 +497,15 @@ class ForwardClient:
             )
             first_attempt_at = self._api_usage_first_http_attempt_at
             last_attempt_at = self._api_usage_last_http_attempt_at
+            execution_counts = tuple(self._nqe_execution_signatures.values())
+        summary["nqe_execution_signature_count"] = len(execution_counts)
+        summary["nqe_repeated_execution_count"] = sum(
+            count - 1 for count in execution_counts if count > 1
+        )
+        summary["nqe_max_execution_signature_count"] = max(
+            execution_counts,
+            default=0,
+        )
         summary["throttle_sleep_seconds"] = round(
             float(summary.get("throttle_sleep_seconds") or 0.0),
             6,
@@ -519,6 +538,7 @@ class ForwardClient:
             self._api_usage_first_http_attempt_at = None
             self._api_usage_last_http_attempt_at = None
             self._api_usage = self._empty_api_usage()
+            self._nqe_execution_signatures = {}
 
     def _coerce_nqe_page_size(self, value):
         if value is None:
@@ -694,12 +714,12 @@ class ForwardClient:
             return
         try:
             self._throttle_with_shared_cache(key, cache)
+        except JobTimeoutException:
+            raise
         except Exception:
             self._throttle_in_process(key)
 
     def _proxy_mounts(self, url):
-        if resolve_proxies is None:
-            return None
         proxies = resolve_proxies(
             url=url,
             context={
@@ -1310,6 +1330,8 @@ class ForwardClient:
                         repository=repository,
                         directory="/",
                     )
+                except JobTimeoutException:
+                    raise
                 except Exception:
                     query_index = {}
             indexed_query = (query_index.get("by_path") or {}).get(query_path)
@@ -1630,11 +1652,8 @@ class ForwardClient:
         query_id=None,
         commit_id=None,
         parameters=None,
-        column_filters=None,
     ):
         payload = {"parameters": parameters or {}}
-        if column_filters:
-            payload["columnFilters"] = column_filters
         if query_id:
             payload["queryId"] = query_id
             execution_commit_id = _commit_id_for_nqe_execution(commit_id)
@@ -1671,14 +1690,12 @@ class ForwardClient:
         network_id,
         snapshot_id,
         parameters=None,
-        column_filters=None,
     ):
         payload = self._nqe_async_execution_payload(
             query=query,
             query_id=query_id,
             commit_id=commit_id,
             parameters=parameters,
-            column_filters=column_filters,
         )
         self._record_api_usage("nqe_async_trigger_calls")
         response = self._request(
@@ -1779,7 +1796,6 @@ class ForwardClient:
         limit=None,
         offset=0,
         item_format="JSON",
-        column_filters=None,
         fetch_all=False,
         deadline=None,
     ):
@@ -1798,6 +1814,18 @@ class ForwardClient:
         if str(item_format or "JSON").upper() != "JSON":
             raise ForwardClientError("Async NQE only supports JSON item format.")
 
+        self._record_nqe_execution_signature(
+            "query",
+            {
+                "query": hashlib.sha256((query or "").encode("utf-8")).hexdigest(),
+                "query_id": query_id or "",
+                "commit_id": commit_id or "",
+                "network_id": network_id,
+                "snapshot_id": snapshot_id,
+                "parameters": parameters or {},
+            },
+        )
+
         return self._run_nqe_query_async(
             query=query,
             query_id=query_id,
@@ -1807,7 +1835,6 @@ class ForwardClient:
             parameters=parameters,
             limit=limit,
             offset=offset,
-            column_filters=column_filters,
             fetch_all=fetch_all,
             deadline=deadline,
         )
@@ -1823,7 +1850,6 @@ class ForwardClient:
         parameters=None,
         limit=None,
         offset=0,
-        column_filters=None,
         fetch_all=False,
         deadline=None,
     ):
@@ -1836,7 +1862,6 @@ class ForwardClient:
             network_id=network_id,
             snapshot_id=snapshot_id,
             parameters=parameters,
-            column_filters=column_filters,
         )
         self._wait_for_nqe_async_completion(
             network_id=network_id,
@@ -1934,11 +1959,9 @@ class ForwardClient:
         before_snapshot_id,
         after_snapshot_id,
         commit_id=None,
-        parameters=None,
         limit=None,
         offset=0,
         item_format="JSON",
-        column_filters=None,
         fetch_all=False,
         deadline=None,
     ):
@@ -1953,6 +1976,16 @@ class ForwardClient:
         if limit < 1:
             raise ForwardClientError("`limit` must be at least 1.")
 
+        self._record_nqe_execution_signature(
+            "diff",
+            {
+                "query_id": query_id,
+                "commit_id": commit_id or "",
+                "before_snapshot_id": before_snapshot_id,
+                "after_snapshot_id": after_snapshot_id,
+            },
+        )
+
         def fetch_page(page_offset):
             self._record_api_usage("nqe_pages")
             self._record_api_usage("nqe_diff_pages")
@@ -1966,11 +1999,6 @@ class ForwardClient:
             }
             if commit_id:
                 payload["commitId"] = commit_id
-            if parameters:
-                payload["parameters"] = parameters
-            if column_filters:
-                payload["options"]["columnFilters"] = column_filters
-
             response = self._request(
                 "POST",
                 f"/nqe-diffs/{before_snapshot_id}/{after_snapshot_id}",

@@ -1,8 +1,8 @@
 # Apply Engine Model Matrix
 
-This matrix is the architecture contract for which models can run on the
-opt-in `bulk_orm` apply engine versus models that must remain on the adapter
-path.
+This matrix is the architecture contract for which models use the supported
+`bulk_orm` apply engine versus models whose relationship semantics require the
+supported adapter path.
 
 Source of truth:
 
@@ -13,7 +13,7 @@ Source of truth:
 
 ## Bulk ORM Safe Set
 
-These models are parity-tested for the current `bulk_orm` path:
+These models are parity-tested for the default `bulk_orm` path:
 
 - `dcim.site`
 - `dcim.manufacturer`
@@ -41,13 +41,9 @@ These models remain adapter-required with explicit blocker codes:
 - `netbox_cisco_aci.acifabric` | `plugin_model_dependencies`
 - `netbox_cisco_aci.acinode` | `plugin_model_dependencies`
 - `netbox_cisco_aci.acipod` | `plugin_model_dependencies`
-- `netbox_cisco_aci.aciappprofile` | `plugin_model_dependencies`
 - `netbox_cisco_aci.acibridgedomain` | `plugin_model_dependencies`
-- `netbox_cisco_aci.acicontract` | `plugin_model_dependencies`
-- `netbox_cisco_aci.aciendpointgroup` | `plugin_model_dependencies`
 - `netbox_cisco_aci.acifilter` | `plugin_model_dependencies`
 - `netbox_cisco_aci.acil3out` | `plugin_model_dependencies`
-- `netbox_cisco_aci.acistaticportbinding` | `plugin_model_dependencies`
 - `netbox_cisco_aci.acitenant` | `plugin_model_dependencies`
 - `netbox_cisco_aci.acivrf` | `plugin_model_dependencies`
 - `netbox_peering_manager.peeringsession` | `plugin_model_dependencies`

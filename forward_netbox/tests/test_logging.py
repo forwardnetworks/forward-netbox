@@ -8,12 +8,12 @@ from forward_netbox.utilities.logging import SyncLogging
 
 
 class SyncLoggingTest(TestCase):
-    @patch("forward_netbox.utilities.logging.cache.set")
+    @patch("forward_netbox.utilities.logging.Job.objects.filter")
     @patch("forward_netbox.utilities.logging.Job.objects.get")
     @patch("forward_netbox.utilities.logging.ContentType.objects.filter")
     @patch("forward_netbox.utilities.logging.timezone.now")
     def test_log_success_persists_core_job_log_entry(
-        self, mock_now, mock_content_type_filter, mock_job_get, mock_cache_set
+        self, mock_now, mock_content_type_filter, mock_job_get, mock_job_filter
     ):
         mock_now.return_value = datetime.fromisoformat("2026-05-04T14:00:00+00:00")
         mock_content_type_filter.return_value.exists.return_value = True
@@ -29,14 +29,16 @@ class SyncLoggingTest(TestCase):
             job.log_entries[0]["message"], "Synthetic UI harness ingestion completed."
         )
         self.assertEqual(job.log_entries[0]["timestamp"], mock_now.return_value)
-        mock_cache_set.assert_called_once()
+        mock_job_filter.return_value.update.assert_called_once_with(
+            data=logger.log_data
+        )
 
-    @patch("forward_netbox.utilities.logging.cache.set")
+    @patch("forward_netbox.utilities.logging.Job.objects.filter")
     @patch("forward_netbox.utilities.logging.Job.objects.get")
     @patch("forward_netbox.utilities.logging.ContentType.objects.filter")
     @patch("forward_netbox.utilities.logging.timezone.now")
     def test_log_failure_persists_core_job_log_entry(
-        self, mock_now, mock_content_type_filter, mock_job_get, mock_cache_set
+        self, mock_now, mock_content_type_filter, mock_job_get, mock_job_filter
     ):
         mock_now.return_value = datetime.fromisoformat("2026-05-04T14:00:00+00:00")
         mock_content_type_filter.return_value.exists.return_value = True
@@ -49,14 +51,16 @@ class SyncLoggingTest(TestCase):
         self.assertEqual(len(job.log_entries), 1)
         self.assertEqual(job.log_entries[0]["level"], "error")
         self.assertEqual(job.log_entries[0]["message"], "Forward ingestion failed.")
-        mock_cache_set.assert_called_once()
+        mock_job_filter.return_value.update.assert_called_once_with(
+            data=logger.log_data
+        )
 
-    @patch("forward_netbox.utilities.logging.cache.set")
+    @patch("forward_netbox.utilities.logging.Job.objects.filter")
     @patch("forward_netbox.utilities.logging.Job.objects.get")
     @patch("forward_netbox.utilities.logging.ContentType.objects.filter")
     @patch("forward_netbox.utilities.logging.timezone.now")
     def test_log_skips_core_job_persistence_when_object_type_missing(
-        self, mock_now, mock_content_type_filter, mock_job_get, mock_cache_set
+        self, mock_now, mock_content_type_filter, mock_job_get, mock_job_filter
     ):
         mock_now.return_value = datetime.fromisoformat("2026-05-04T14:00:00+00:00")
         mock_content_type_filter.return_value.exists.return_value = False
@@ -71,10 +75,12 @@ class SyncLoggingTest(TestCase):
         logger.log_info("Forward ingestion is still running.")
 
         self.assertEqual(len(job.log_entries), 0)
-        mock_cache_set.assert_called_once()
+        mock_job_filter.return_value.update.assert_called_once_with(
+            data=logger.log_data
+        )
 
-    @patch("forward_netbox.utilities.logging.cache.set")
-    def test_set_api_usage_summary_persists_counter_payload(self, mock_cache_set):
+    @patch("forward_netbox.utilities.logging.Job.objects.filter")
+    def test_set_api_usage_summary_persists_counter_payload(self, mock_job_filter):
         logger = SyncLogging(job=52)
 
         logger.set_api_usage_summary(
@@ -93,10 +99,14 @@ class SyncLoggingTest(TestCase):
                 "nqe_pages": 3,
             },
         )
-        mock_cache_set.assert_called_once()
+        mock_job_filter.return_value.update.assert_called_once_with(
+            data=logger.log_data
+        )
 
-    @patch("forward_netbox.utilities.logging.cache.set")
-    def test_add_dependency_lookup_summary_persists_model_payload(self, mock_cache_set):
+    @patch("forward_netbox.utilities.logging.Job.objects.filter")
+    def test_add_dependency_lookup_summary_persists_model_payload(
+        self, mock_job_filter
+    ):
         logger = SyncLogging(job=52)
 
         logger.add_dependency_lookup_summary(
@@ -127,10 +137,12 @@ class SyncLoggingTest(TestCase):
             logger.log_data["dependency_lookup_cache"]["models"][0]["model"],
             "dcim.device",
         )
-        mock_cache_set.assert_called_once()
+        mock_job_filter.return_value.update.assert_called_once_with(
+            data=logger.log_data
+        )
 
-    @patch("forward_netbox.utilities.logging.cache.set")
-    def test_increment_statistics_supports_bulk_amounts(self, mock_cache_set):
+    @patch("forward_netbox.utilities.logging.Job.objects.filter")
+    def test_increment_statistics_supports_bulk_amounts(self, mock_job_filter):
         logger = SyncLogging(job=52)
 
         logger.increment_statistics("dcim.interface", outcome="skipped", amount=3)
@@ -146,11 +158,35 @@ class SyncLoggingTest(TestCase):
                 "unchanged": 0,
             },
         )
-        mock_cache_set.assert_called_once()
+        mock_job_filter.return_value.update.assert_called_once_with(
+            data=logger.log_data
+        )
 
-    @patch("forward_netbox.utilities.logging.cache.set")
+    @patch("forward_netbox.utilities.logging.monotonic", return_value=10.0)
+    @patch("forward_netbox.utilities.logging.Job.objects.filter")
+    def test_single_row_statistics_are_debounced_until_durable_flush(
+        self, mock_job_filter, _mock_monotonic
+    ):
+        logger = SyncLogging(job=52)
+
+        for _ in range(1000):
+            logger.increment_statistics("dcim.interface", outcome="applied")
+
+        self.assertEqual(
+            logger.log_data["statistics"]["dcim.interface"]["applied"],
+            1000,
+        )
+        mock_job_filter.assert_not_called()
+
+        logger.flush()
+
+        mock_job_filter.return_value.update.assert_called_once_with(
+            data=logger.log_data
+        )
+
+    @patch("forward_netbox.utilities.logging.Job.objects.filter")
     def test_add_dependency_parent_coverage_summary_persists_model_payload(
-        self, mock_cache_set
+        self, mock_job_filter
     ):
         logger = SyncLogging(job=52)
 
@@ -187,4 +223,6 @@ class SyncLoggingTest(TestCase):
             logger.log_data["dependency_parent_coverage"]["models"][0]["model"],
             "dcim.interface",
         )
-        mock_cache_set.assert_called_once()
+        mock_job_filter.return_value.update.assert_called_once_with(
+            data=logger.log_data
+        )

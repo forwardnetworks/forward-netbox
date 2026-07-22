@@ -233,7 +233,6 @@ def _default_fetch_rows(sync, model_string):
     client = sync.source.get_client()
     fetcher = ForwardQueryFetcher(sync, client, SyncLogging())
     context = fetcher.resolve_context()
-    fetcher.run_preflight(context, model_strings=[model_string])
     workloads = fetcher.fetch_workloads(
         context,
         model_strings=[model_string],

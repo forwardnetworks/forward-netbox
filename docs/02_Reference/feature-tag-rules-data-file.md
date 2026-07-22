@@ -59,6 +59,7 @@ The initial optional query supports `record_type: structured_feature_tag_rule` w
 6. Enable `Forward Device Feature Tags with Rules`.
 7. For large datasets, copy the rules-aware query text into the Forward Org Repository and configure the NetBox NQE map to use the committed query ID.
 
-## Future Rule Types
-
-Keep structured features as the first choice because they are parsed by Forward and are less vendor-specific than raw configuration text. Raw configuration matching can be added later as a separate `record_type`, for example `config_text_tag_rule`, without changing the data file name or the NetBox sync adapter.
+Only `record_type: structured_feature_tag_rule` with `feature: bgp` is part of
+this contract. Unknown record types and feature values are ignored. Use a
+separate published NQE map for any other matching policy so this shipped schema
+remains deterministic.

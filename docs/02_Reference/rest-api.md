@@ -29,6 +29,12 @@ shapes.
 Read-only source discovery helpers (GET, list-level — used by the UI form,
 available over the API too):
 
+The networks and device-tags actions require `source_id` for an already-saved
+Forward source. Forward credentials are never accepted in query strings; the
+server uses the encrypted credentials stored on that source. During source
+creation, provide the network ID directly in the normal POST body, then use
+these actions for subsequent edits.
+
 | Action | Path |
 | --- | --- |
 | Available networks | `GET /api/plugins/forward/source/available-networks/` |

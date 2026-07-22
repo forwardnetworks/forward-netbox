@@ -168,9 +168,6 @@ if "CHANGELOG_RETENTION" in environ:
 # Maximum number of days to retain job results (scripts and reports). Set to 0 to retain job results in the database indefinitely. (Default: 90)
 if "JOB_RETENTION" in environ:
     JOB_RETENTION = _environ_get_and_map("JOB_RETENTION", None, _AS_INT)
-# JOBRESULT_RETENTION was renamed to JOB_RETENTION in the v3.5.0 release of NetBox. For backwards compatibility, map JOBRESULT_RETENTION to JOB_RETENTION
-elif "JOBRESULT_RETENTION" in environ:
-    JOB_RETENTION = _environ_get_and_map("JOBRESULT_RETENTION", None, _AS_INT)
 
 # API Cross-Origin Resource Sharing (CORS) settings. If CORS_ORIGIN_ALLOW_ALL is set to True, all origins will be
 # allowed. Otherwise, define a list of allowed origins using either CORS_ORIGIN_WHITELIST or
@@ -240,10 +237,6 @@ if "GRAPHQL_ENABLED" in environ:
 # Automatically reset the lifetime of a valid session upon each authenticated request. Enables users to remain
 # authenticated to NetBox indefinitely.
 LOGIN_PERSISTENCE = _environ_get_and_map("LOGIN_PERSISTENCE", "False", _AS_BOOL)
-
-# Setting this to True will permit only authenticated users to access any part of NetBox. By default, anonymous users
-# are permitted to access most data in NetBox (excluding secrets) but not make any changes.
-LOGIN_REQUIRED = _environ_get_and_map("LOGIN_REQUIRED", "False", _AS_BOOL)
 
 # The length of time (in seconds) for which a user will remain logged into the web UI before being prompted to
 # re-authenticate. (Default: 1209600 [14 days])
@@ -335,7 +328,7 @@ RELEASE_CHECK_URL = environ.get("RELEASE_CHECK_URL", None)
 # RELEASE_CHECK_URL = 'https://api.github.com/repos/netbox-community/netbox/releases'
 
 # Maximum execution time for background tasks, in seconds.
-RQ_DEFAULT_TIMEOUT = _environ_get_and_map("RQ_DEFAULT_TIMEOUT", 300, _AS_INT)
+RQ_DEFAULT_TIMEOUT = _environ_get_and_map("RQ_DEFAULT_TIMEOUT", 7200, _AS_INT)
 
 # The name to use for the csrf token cookie.
 CSRF_COOKIE_NAME = environ.get("CSRF_COOKIE_NAME", "csrftoken")

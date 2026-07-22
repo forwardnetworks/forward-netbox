@@ -1,17 +1,11 @@
+import logging
 from collections import Counter
 
 from .branching import missing_branch_table_report
-from .execution_ledger import api_usage_support_summary
-from .execution_ledger import dependency_lookup_cache_support_summary
-from .execution_ledger import (
-    dependency_parent_coverage_support_summary,
-)
-from .execution_ledger import latest_execution_run
 from .forward_api import LATEST_PROCESSED_SNAPSHOT
 from .health_apply_fetch import apply_engine_summary as _apply_engine_summary_impl
 from .health_apply_fetch import fetch_contract_summary as _fetch_contract_summary_impl
 from .health_apply_fetch import model_summary as _model_summary_impl
-from .health_checks import capacity_check_summary as _capacity_check_impl
 from .health_checks import check as _check_impl
 from .health_checks import health_checks as _health_checks_impl
 from .health_checks import ingestion_check_message as _ingestion_check_message_impl
@@ -25,11 +19,6 @@ from .health_checks import recommendation_status as _recommendation_status_impl
 from .health_checks import timeout_check as _timeout_check_impl
 from .health_checks import validation_check_message as _validation_check_message_impl
 from .health_checks import validation_check_status as _validation_check_status_impl
-from .health_summary_blocks import capacity_message as _capacity_message_impl
-from .health_summary_blocks import capacity_summary as _capacity_summary_impl
-from .health_summary_blocks import (
-    compatibility_cache_summary as _compatibility_cache_summary_impl,
-)
 from .health_summary_blocks import delete_wave_summary as _delete_wave_summary_impl
 from .health_summary_blocks import (
     density_learning_summary as _density_learning_summary_impl,
@@ -37,21 +26,13 @@ from .health_summary_blocks import (
 from .health_summary_blocks import (
     dependency_preflight_summary as _dependency_preflight_summary_impl,
 )
-from .health_summary_blocks import execution_run_summary as _execution_run_summary_impl
 from .health_summary_blocks import ingestion_summary as _ingestion_summary_impl
-from .health_summary_blocks import (
-    large_run_tuning_summary as _large_run_tuning_summary_impl,
-)
 from .health_summary_blocks import query_map_summary as _query_map_summary_impl
 from .health_summary_blocks import (
     query_path_resolution_summary as _query_path_resolution_summary_impl,
 )
-from .health_summary_blocks import (
-    query_pushdown_summary as _query_pushdown_summary_impl,
-)
 from .health_summary_blocks import runtime_summary as _runtime_summary_impl
 from .health_summary_blocks import source_summary as _source_summary_impl
-from .health_summary_blocks import step_duration_seconds as _step_duration_seconds_impl
 from .health_summary_blocks import throughput_summary as _throughput_summary_impl
 from .health_summary_blocks import validation_summary as _validation_summary_impl
 from .plugin_integrations import integration_capability_summary
@@ -60,6 +41,9 @@ from .query_binding_resolution import _QUERY_DRIFT_STATUS_LABELS
 from .query_binding_resolution import builtin_query_default_for_map
 from .query_registry import _default_query_parameters
 from .sync_facade import resolve_snapshot_id
+
+
+logger = logging.getLogger(__name__)
 
 
 DATA_FILE_HINTS = (
@@ -307,6 +291,8 @@ def _database_tables_check():
 
 
 def sync_health_summary(sync):
+    from .ownership import ownership_finalization_summary
+
     optional_plugin_capabilities = integration_capability_summary()
     all_maps = list(sync.get_maps())
     maps = [
@@ -315,9 +301,11 @@ def sync_health_summary(sync):
         if sync.is_model_enabled(query_map.model_string)
     ]
     latest_ingestion = sync.last_ingestion
+    ownership_finalization = ownership_finalization_summary(
+        sync,
+        generation=getattr(latest_ingestion, "pk", None),
+    )
     validation_run = sync.latest_validation_run
-    execution_run = latest_execution_run(sync)
-    capacity_summary = _capacity_summary(execution_run)
     query_mode_counts = Counter(query_map.execution_mode for query_map in maps)
     raw_maps = [query_map for query_map in maps if query_map.execution_mode == "query"]
     data_file_maps = [
@@ -326,48 +314,25 @@ def sync_health_summary(sync):
     model_summary = _model_summary(sync, all_maps)
     apply_engines = _apply_engine_summary(sync, model_summary["enabled_models"])
     fetch_contracts = _fetch_contract_summary(model_summary["enabled_models"])
-    query_pushdown = _query_pushdown_summary(execution_run)
-    delete_wave = _delete_wave_summary(execution_run, latest_ingestion)
-    throughput = _throughput_summary(sync, execution_run, latest_ingestion)
-    large_run_tuning = _large_run_tuning_summary_impl(
-        sync,
-        capacity=capacity_summary,
-        query_pushdown=query_pushdown,
-        throughput=throughput,
-    )
+    delete_wave = _delete_wave_summary(latest_ingestion)
+    throughput = _throughput_summary(sync, latest_ingestion)
     dependency_preflight = _dependency_preflight_summary(
         sync,
         model_summary["enabled_models"],
     )
-    compatibility_cache = _compatibility_cache_summary(sync, execution_run)
     density_learning = _density_learning_summary(sync)
     collection_gap = _collection_gap_summary(sync)
     out_of_scope = _out_of_scope_summary(sync)
-    dependency_lookup_cache = dependency_lookup_cache_support_summary(execution_run)
-    dependency_parent_coverage = dependency_parent_coverage_support_summary(
-        execution_run
-    )
     latest_ingestion_summary = _ingestion_summary(latest_ingestion) or {}
-    ingestion_dependency_lookup_cache = latest_ingestion_summary.get(
+    dependency_lookup_cache = latest_ingestion_summary.get(
         "dependency_lookup_cache", {}
     )
-    if (
-        isinstance(ingestion_dependency_lookup_cache, dict)
-        and not ingestion_dependency_lookup_cache.get("available")
-        and dependency_lookup_cache.get("available")
-    ):
-        latest_ingestion_summary["dependency_lookup_cache"] = dependency_lookup_cache
-    ingestion_dependency_parent_coverage = latest_ingestion_summary.get(
+    dependency_parent_coverage = latest_ingestion_summary.get(
         "dependency_parent_coverage", {}
     )
-    if (
-        isinstance(ingestion_dependency_parent_coverage, dict)
-        and not ingestion_dependency_parent_coverage.get("available")
-        and dependency_parent_coverage.get("available")
-    ):
-        latest_ingestion_summary["dependency_parent_coverage"] = (
-            dependency_parent_coverage
-        )
+    api_usage = _api_usage_summary(
+        latest_ingestion_summary.get("forward_api_usage", {})
+    )
     query_drift = [local_query_binding_drift(query_map) for query_map in maps]
     _elevate_optin_pinned_query_drift(
         query_drift, getattr(getattr(sync, "source", None), "parameters", None) or {}
@@ -384,14 +349,9 @@ def sync_health_summary(sync):
         data_file_maps=data_file_maps,
         validation_run=validation_run,
         latest_ingestion=latest_ingestion,
-        execution_run=execution_run,
-        capacity_summary=capacity_summary,
-        query_pushdown=query_pushdown,
-        large_run_tuning=large_run_tuning,
         dependency_preflight=dependency_preflight,
         delete_wave=delete_wave,
         throughput=throughput,
-        compatibility_cache=compatibility_cache,
         next_run=next_run,
     )
     optin_feature_check = _optin_feature_map_state_check(sync)
@@ -403,6 +363,30 @@ def sync_health_summary(sync):
     database_tables_check = _database_tables_check()
     if database_tables_check is not None:
         checks.append(database_tables_check)
+    if ownership_finalization["required_domains"]:
+        if ownership_finalization["complete"]:
+            ownership_status = "pass"
+            ownership_message = (
+                "Durable ownership reconciliation is current for the latest ingestion."
+            )
+        elif ownership_finalization["failed_domains"]:
+            ownership_status = "fail"
+            ownership_message = (
+                "Durable ownership reconciliation failed for the latest ingestion; "
+                "inspect the ownership finalization and support-bundle evidence."
+            )
+        else:
+            ownership_status = "warn"
+            ownership_message = (
+                "Durable ownership reconciliation is pending for the latest ingestion."
+            )
+        checks.append(
+            _check(
+                name="Ownership reconciliation",
+                status=ownership_status,
+                message=ownership_message,
+            )
+        )
 
     return {
         "source": _source_summary(sync),
@@ -410,15 +394,13 @@ def sync_health_summary(sync):
         "models": model_summary,
         "apply_engines": apply_engines,
         "fetch_contracts": fetch_contracts,
-        "query_pushdown": query_pushdown,
-        "large_run_tuning": large_run_tuning,
         "dependency_preflight": dependency_preflight,
         "delete_wave": delete_wave,
         "throughput": throughput,
-        "compatibility_cache": compatibility_cache,
         "density_learning": density_learning,
         "collection_gap": collection_gap,
         "out_of_scope": out_of_scope,
+        "ownership_finalization": ownership_finalization,
         "dependency_lookup_cache": dependency_lookup_cache,
         "dependency_parent_coverage": dependency_parent_coverage,
         "optional_plugin_capabilities": optional_plugin_capabilities,
@@ -451,9 +433,7 @@ def sync_health_summary(sync):
         },
         "latest_validation": _validation_summary(validation_run),
         "latest_ingestion": latest_ingestion_summary,
-        "latest_execution_run": _execution_run_summary(execution_run),
-        "api_usage": api_usage_support_summary(execution_run),
-        "capacity": capacity_summary,
+        "api_usage": api_usage,
         "next_run": next_run,
         "checks": checks,
     }
@@ -482,11 +462,12 @@ def live_source_health_check(sync):
         client = source.get_client()
         networks = client.get_networks()
     except Exception as exc:
+        logger.warning("Forward API health lookup failed (%s)", type(exc).__name__)
         result["checks"].append(
             _check(
                 name="Forward API reachability",
                 status="fail",
-                message=f"Forward API lookup failed: {exc}",
+                message="Forward API lookup failed. Review server logs and source connectivity.",
             )
         )
         return result
@@ -531,12 +512,19 @@ def live_source_health_check(sync):
     try:
         client.get_latest_processed_snapshot_id(configured_network_id)
     except Exception as exc:
+        logger.warning(
+            "Latest processed snapshot health lookup failed (%s)",
+            type(exc).__name__,
+        )
         result["latest_processed_snapshot_available"] = False
         result["checks"].append(
             _check(
                 name="Latest processed snapshot",
                 status="fail",
-                message=f"latestProcessed snapshot lookup failed: {exc}",
+                message=(
+                    "latestProcessed snapshot lookup failed. Review server logs and "
+                    "the configured network."
+                ),
             )
         )
         return result
@@ -593,11 +581,17 @@ def live_data_file_health_check(sync):
     try:
         resolved_snapshot_id = resolve_snapshot_id(sync, client=client)
     except Exception as exc:
+        logger.warning(
+            "Selected snapshot health resolution failed (%s)", type(exc).__name__
+        )
         result["checks"].append(
             _check(
                 name="Data-file freshness",
                 status="fail",
-                message=f"Could not resolve selected Forward snapshot: {exc}",
+                message=(
+                    "Could not resolve the selected Forward snapshot. Review server "
+                    "logs and source connectivity."
+                ),
             )
         )
         return result
@@ -663,6 +657,11 @@ def _probe_data_file(
             limit=1,
         )
     except Exception as exc:
+        logger.warning(
+            "Forward NQE data-file health probe failed for %s (%s)",
+            data_file_name,
+            type(exc).__name__,
+        )
         return {
             "data_file": data_file_name,
             "label": label,
@@ -671,7 +670,7 @@ def _probe_data_file(
             "row_count": None,
             "message": (
                 "Forward NQE could not read this data-file extension from the "
-                f"selected snapshot: {exc}"
+                "selected snapshot. Review server logs and source connectivity."
             ),
         }
 
@@ -730,10 +729,6 @@ def _apply_engine_summary(sync, model_strings):
 
 def _fetch_contract_summary(model_strings):
     return _fetch_contract_summary_impl(model_strings)
-
-
-def _compatibility_cache_summary(sync, run=None):
-    return _compatibility_cache_summary_impl(sync, run)
 
 
 def _density_learning_summary(sync):
@@ -894,16 +889,12 @@ def _dependency_preflight_summary(sync, enabled_models):
     return _dependency_preflight_summary_impl(sync, enabled_models)
 
 
-def _delete_wave_summary(run, latest_ingestion=None):
-    return _delete_wave_summary_impl(run, latest_ingestion)
+def _delete_wave_summary(latest_ingestion):
+    return _delete_wave_summary_impl(latest_ingestion)
 
 
-def _throughput_summary(sync, run, latest_ingestion=None):
-    return _throughput_summary_impl(sync, run, latest_ingestion)
-
-
-def _query_pushdown_summary(run):
-    return _query_pushdown_summary_impl(run)
+def _throughput_summary(sync, latest_ingestion):
+    return _throughput_summary_impl(sync, latest_ingestion)
 
 
 def _query_map_summary(query_map):
@@ -918,25 +909,22 @@ def _ingestion_summary(ingestion):
     return _ingestion_summary_impl(ingestion)
 
 
-def _execution_run_summary(run):
-    return _execution_run_summary_impl(run)
-
-
-def _capacity_summary(run):
-    return _capacity_summary_impl(run)
-
-
-def _step_duration_seconds(step):
-    return _step_duration_seconds_impl(step)
-
-
-def _capacity_message(run, *, average_seconds, max_seconds, remaining_steps):
-    return _capacity_message_impl(
-        run,
-        average_seconds=average_seconds,
-        max_seconds=max_seconds,
-        remaining_steps=remaining_steps,
-    )
+def _api_usage_summary(raw_summary):
+    raw_summary = raw_summary if isinstance(raw_summary, dict) else {}
+    if not raw_summary:
+        return {"available": False, "counters": {}, "budget": {}}
+    budget = raw_summary.get("budget") or {}
+    counters = {
+        key: value
+        for key, value in raw_summary.items()
+        if key not in {"budget", "step_query_parameters"}
+    }
+    return {
+        "available": True,
+        "counters": counters,
+        "budget": dict(budget) if isinstance(budget, dict) else {},
+        "step_query_parameters": list(raw_summary.get("step_query_parameters") or []),
+    }
 
 
 def _next_run_expectation(sync, maps, raw_maps):
@@ -1026,14 +1014,9 @@ def _health_checks(
     data_file_maps,
     validation_run,
     latest_ingestion,
-    execution_run,
-    capacity_summary,
-    query_pushdown,
-    large_run_tuning,
     dependency_preflight,
     delete_wave,
     throughput,
-    compatibility_cache,
     next_run,
 ):
     return _health_checks_impl(
@@ -1046,14 +1029,9 @@ def _health_checks(
         data_file_maps=data_file_maps,
         validation_run=validation_run,
         latest_ingestion=latest_ingestion,
-        execution_run=execution_run,
-        capacity_summary=capacity_summary,
-        query_pushdown=query_pushdown,
-        large_run_tuning=large_run_tuning,
         dependency_preflight=dependency_preflight,
         delete_wave=delete_wave,
         throughput=throughput,
-        compatibility_cache=compatibility_cache,
         next_run=next_run,
         branching_available_fn=_branching_available,
     )
@@ -1157,10 +1135,6 @@ def _recommendation_status(recommendation):
 
 def _timeout_check(sync):
     return _timeout_check_impl(sync)
-
-
-def _capacity_check(sync, capacity_summary):
-    return _capacity_check_impl(sync, capacity_summary)
 
 
 def _looks_data_file_dependent(query_map):

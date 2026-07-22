@@ -1,10 +1,15 @@
 # Pinned versions of the plugin's runtime dependencies as validated in CI — the
 # "tested == shipped" set, so a range in pyproject.toml can't silently ship an
 # untested resolution. Regenerate from the CI container with:
-#   uv pip freeze | grep -iE '^(httpx|netboxlabs-netbox-branching|pyzipper|cryptography)=='
+#   uv pip freeze | grep -iE \
+#   '^(httpx|netboxlabs-netbox-branching|pyzipper|cryptography|netbox-(cisco-aci|dlm|peering-manager|routing))=='
 # cryptography backs at-rest credential encryption (Fernet); it ships with NetBox
 # but is pinned here for audit/reproducibility.
 cryptography==49.0.0
 httpx==0.28.1
-netboxlabs-netbox-branching==1.1.0
+netbox-cisco-aci==0.4.0
+netbox-dlm==0.4.1
+netboxlabs-netbox-branching==1.1.1
+netbox-peering-manager==0.3.0
+netbox-routing==0.4.3
 pyzipper==0.4.0

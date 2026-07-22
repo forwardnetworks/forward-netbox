@@ -4,6 +4,7 @@ from django.utils import timezone
 from ..choices import ForwardDriftPolicyBaselineChoices
 from ..choices import ForwardValidationStatusChoices
 from ..exceptions import ForwardSyncError
+from .diagnostics import safe_operation_failure
 from .query_fetch import ForwardQueryFetcher
 from .sync_primitives import DEPENDENCY_PARENT_DEVICE_MODELS
 
@@ -25,8 +26,7 @@ class ForwardValidationRunner:
         try:
             fetcher = ForwardQueryFetcher(self.sync, self.client, self.logger)
             context = fetcher.resolve_context()
-            fetcher.run_preflight(context)
-            workloads = fetcher.fetch_workloads(context)
+            workloads = fetcher.fetch_workloads(context, include_diagnostics=True)
             return self.record_plan_validation(
                 context.as_dict(),
                 workloads,
@@ -39,7 +39,7 @@ class ForwardValidationRunner:
                 status=ForwardValidationStatusChoices.FAILED,
                 allowed=False,
                 completed=timezone.now(),
-                blocking_reasons=[str(exc)],
+                blocking_reasons=[safe_operation_failure("Forward validation", exc)],
             )
             raise
 

@@ -1,3 +1,4 @@
+import json
 import re
 from dataclasses import dataclass
 from dataclasses import field
@@ -5,7 +6,10 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from rq.timeouts import JobTimeoutException
+
 from ..choices import FORWARD_SUPPORTED_MODELS
+from ..exceptions import ForwardQueryError
 from .model_contracts import architecture_default_coalesce_fields_for_model
 from .model_contracts import architecture_fetch_contract_for_model
 from .plugin_integrations.registry import OPTIONAL_PLUGIN_INTEGRATIONS
@@ -93,6 +97,48 @@ class QuerySpec:
                 }
             )
         return parameters
+
+
+def ensure_unique_query_spec_executions(
+    specs,
+    *,
+    extra_parameters: dict[str, Any] | None = None,
+) -> list[QuerySpec]:
+    """Reject map definitions that would execute the same logical NQE twice."""
+    unique_specs = list(specs or [])
+    seen = {}
+    for spec in unique_specs:
+        query_id = str(spec.run_query_id or "").strip()
+        if query_id:
+            reference = ("query_id", query_id)
+        elif spec.query is not None:
+            reference = ("query", spec.query)
+        else:
+            reference = (
+                "query_path",
+                str(spec.query_repository or "org"),
+                str(spec.query_path or ""),
+            )
+        identity = (
+            reference,
+            str(spec.commit_id or ""),
+            json.dumps(
+                spec.merged_parameters(extra_parameters),
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            ),
+        )
+        existing = seen.get(identity)
+        if existing is not None:
+            raise ForwardQueryError(
+                "Duplicate logical NQE execution for "
+                f"{spec.model_string}: maps `{existing.query_name}` and "
+                f"`{spec.query_name}` resolve to the same query, commit, and "
+                "parameters. Disable or consolidate one map."
+            )
+        seen[identity] = spec
+    return unique_specs
 
 
 QUERY_DIR = Path(__file__).resolve().parents[1] / "queries"
@@ -324,11 +370,6 @@ BUILTIN_QUERY_MAPS = [
         "filename": "forward_devices.nqe",
     },
     {
-        "model_string": "dcim.virtualchassis",
-        "name": "Forward Virtual Chassis",
-        "filename": "forward_virtual_chassis.nqe",
-    },
-    {
         "model_string": "extras.taggeditem",
         "name": "Forward Device Feature Tags",
         "filename": "forward_device_feature_tags.nqe",
@@ -391,6 +432,12 @@ BUILTIN_QUERY_MAPS = [
 ]
 
 BUILTIN_OPTIONAL_QUERY_MAPS = [
+    {
+        "model_string": "dcim.virtualchassis",
+        "name": "Forward Virtual Chassis",
+        "filename": "forward_virtual_chassis.nqe",
+        "enabled": False,
+    },
     {
         "model_string": "dcim.devicetype",
         "name": "Forward Device Models with NetBox Device Type Aliases",
@@ -554,24 +601,6 @@ BUILTIN_OPTIONAL_QUERY_MAPS = [
         "enabled": False,
     },
     {
-        "model_string": "netbox_cisco_aci.aciappprofile",
-        "name": "Forward ACI Application Profiles",
-        "filename": "forward_aci_app_profiles.nqe",
-        "enabled": False,
-    },
-    {
-        "model_string": "netbox_cisco_aci.aciendpointgroup",
-        "name": "Forward ACI Endpoint Groups",
-        "filename": "forward_aci_endpoint_groups.nqe",
-        "enabled": False,
-    },
-    {
-        "model_string": "netbox_cisco_aci.acicontract",
-        "name": "Forward ACI Contracts",
-        "filename": "forward_aci_contracts.nqe",
-        "enabled": False,
-    },
-    {
         "model_string": "netbox_cisco_aci.acifilter",
         "name": "Forward ACI Filters",
         "filename": "forward_aci_filters.nqe",
@@ -581,12 +610,6 @@ BUILTIN_OPTIONAL_QUERY_MAPS = [
         "model_string": "netbox_cisco_aci.acil3out",
         "name": "Forward ACI L3Outs",
         "filename": "forward_aci_l3outs.nqe",
-        "enabled": False,
-    },
-    {
-        "model_string": "netbox_cisco_aci.acistaticportbinding",
-        "name": "Forward ACI Static Port Bindings",
-        "filename": "forward_aci_static_port_bindings.nqe",
         "enabled": False,
     },
 ]
@@ -901,6 +924,8 @@ def resolve_query_specs_for_client(specs: list[QuerySpec], client) -> list[Query
                         repository=repository,
                         directory="/",
                     )
+                except JobTimeoutException:
+                    raise
                 except Exception:
                     query_index = {}
                 if not isinstance(query_index, dict):
@@ -981,7 +1006,7 @@ def resolve_query_specs_for_client(specs: list[QuerySpec], client) -> list[Query
                 commit_id=resolved_commit_id or spec.commit_id,
             )
         )
-    return resolved_specs
+    return ensure_unique_query_spec_executions(resolved_specs)
 
 
 # Builtin map name suffix marking the "NetBox Device Type alias" variant of a
@@ -1034,7 +1059,9 @@ def _resolve_map_query_specs(model_string: str, maps) -> list[QuerySpec]:
         [query_map for query_map in selected_maps if query_map.built_in]
     )
     chosen_maps = custom_maps or builtin_maps
-    return [_build_query_spec_from_map(query_map) for query_map in chosen_maps]
+    return ensure_unique_query_spec_executions(
+        [_build_query_spec_from_map(query_map) for query_map in chosen_maps]
+    )
 
 
 def optional_builtin_query_names_for_model(model_string: str) -> list[str]:

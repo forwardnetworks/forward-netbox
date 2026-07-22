@@ -28,12 +28,12 @@ class ApplyEngineModelMatrixDocTest(unittest.TestCase):
             name = node.targets[0].id
             if name not in {
                 "BULK_ORM_ENABLED_MODELS",
-                "ADAPTER_REQUIRED_MODELS",
                 "ADAPTER_MODEL_BLOCKERS",
             }:
                 continue
             constants[name] = ast.literal_eval(node.value)
 
+        constants["ADAPTER_REQUIRED_MODELS"] = set(constants["ADAPTER_MODEL_BLOCKERS"])
         return constants
 
     def _parse_doc_sets(self):

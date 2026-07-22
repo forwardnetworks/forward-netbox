@@ -4,7 +4,7 @@ Install the plugin package, enable the required plugins, run the migrations, and
 
 ## Requirements
 
-- NetBox 4.6.4 required (4.5.x and earlier are no longer supported); requires netbox-branching 1.1.0+
+- NetBox 4.6.5 required (4.5.x and earlier are no longer supported); requires netbox-branching 1.1.1
 
 Forward 26.6 is the baseline for async NQE.
 - `netboxlabs-netbox-branching`
@@ -20,14 +20,14 @@ pip install forward-netbox
 Alternatively, install a specific wheel or source archive from GitHub Releases:
 
 ```bash
-pip install /path/to/forward_netbox-2.5.11-py3-none-any.whl
-pip install /path/to/forward_netbox-2.5.11.tar.gz
+pip install /path/to/forward_netbox-2.6.0-py3-none-any.whl
+pip install /path/to/forward_netbox-2.6.0.tar.gz
 ```
 
 If you mirror the package into a private Python index, pin the same release version:
 
 ```bash
-pip install forward-netbox==2.5.11
+pip install forward-netbox==2.6.0
 ```
 
 ## Editions: core vs integrations
@@ -59,14 +59,15 @@ migrations, e.g. netbox-dlm `0.2.0+`; older builds need
 
 ## Release Compatibility
 
-Latest release requires NetBox `4.6.4` and `netbox-branching` `1.1.0+`. Expand for the full per-release history and notes.
+The `2.6.0` release requires NetBox `4.6.5` and `netbox-branching` `1.1.1`. Expand for the published release history and release notes.
 
 <details>
 <summary>Release compatibility history</summary>
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v2.5.11` | `4.6.4` required (4.5.x dropped); needs netbox-branching `1.1.0` - `1.1.x` | Current release; Fix: **post-2.5.10 DLM and scope convergence** - optional DLM maps seed when `netbox-dlm` migrates after Forward NetBox; runtime arguments are projected onto each NQE signature, including preflight; CVEs retain valid metadata when an optional advisory URL is malformed; observed vulnerabilities populate affected software; and platforms receive a manufacturer only when ownership is unambiguous. Fix: **endpoint and CIMC identity** - generic SNMP endpoints remain off unless explicitly enabled, imported console endpoints inherit their matched include tags, CIMCs are excluded from standalone devices and can map to exact-parent inventory through a disabled opt-in map, and legacy Opengear/Avocent software-bearing DeviceTypes are reported for reviewed cleanup. Fix: **upgrade and drift evidence** - Scope Reconciliation and support evidence classify stale catalog records, while dependency previews report workload upper bounds as not-measured drift. After upgrading, run **Publish Bundled Queries** once with overwrite enabled. Python and NQE; no migration. |
+| `v2.6.0` | `4.6.5` required (4.5.x dropped); needs netbox-branching `1.1.1` | Current release; Feature: **durable convergence control plane** - main-schema, per-sync identity and ownership claims are stamped with the exact merged ingestion generation. Managed scope/status tags and virtual-parent links materialize from the union of current claims, including shared tags across sources; only syncs with a completed baseline participate, every completed ingestion reconciles status ownership, and last-claim removal waits for every participating sync. Pending, failed, stale, conflicting, and missing materialization states block convergence in Drift, Health, support evidence, recovery, and the read-only ownership audit. Post-sync analysis, scope/status, and parent work runs through NetBox JobRunner with generation guards; invoking users become durable sync owners, and unattended execution fails closed without attributable ownership. A branch merge with any failed row remains retryable and cannot mark the ingestion complete or enqueue overlays. One Branching branch is used per sync; bounded workload shards target that branch, conservative density baselines shape unprofiled work, and module bays are created branch-natively. Migration `0037` converts retired execution keys, standing schedules, endpoint scope markers, owners, and built-in virtual-chassis state once; runtime rejects retired or unknown configuration instead of carrying compatibility shims. Unsupported no-op ACI maps and inventory contracts are removed. Normal ingestion executes each enabled NQE map once with bounded concurrency, omits the retired sample-preflight pass and optional diagnostic NQEs, and reports privacy-safe unique/repeated execution signatures. Scheduled, webhook, and catch-up runs automatically no-op on an unchanged eligible baseline; manual UI/API runs are the explicit force-resync path. NetBox `4.6.5`, netbox-branching `1.1.1`, and Python `3.14` are exact startup, CI, and packaging requirements. Orphan deletion remains reviewed and manual. Python/UI plus schema and data migrations. Upgrades from any pre-2.6 release must run **Publish Bundled Queries** once with overwrite enabled before validation. |
+| `v2.5.11` | `4.6.4` required (4.5.x dropped); needs netbox-branching `1.1.0` - `1.1.x` | Superseded by `v2.6.0`; Fix: **post-2.5.10 DLM and scope convergence** - optional DLM maps seed when `netbox-dlm` migrates after Forward NetBox; runtime arguments are projected onto each NQE signature, including preflight; CVEs retain valid metadata when an optional advisory URL is malformed; observed vulnerabilities populate affected software; and platforms receive a manufacturer only when ownership is unambiguous. Fix: **endpoint and CIMC identity** - generic SNMP endpoints remain off unless explicitly enabled, imported console endpoints inherit their matched include tags, CIMCs are excluded from standalone devices and can map to exact-parent inventory through a disabled opt-in map, and legacy Opengear/Avocent software-bearing DeviceTypes are reported for reviewed cleanup. Fix: **upgrade and drift evidence** - Scope Reconciliation and support evidence classify stale catalog records, while dependency previews report workload upper bounds as not-measured drift. After upgrading, run **Publish Bundled Queries** once with overwrite enabled. Python and NQE; no migration. |
 | `v2.5.10` | `4.6.4` required (4.5.x dropped); needs netbox-branching `1.1.0` – `1.1.x` | Superseded by `v2.5.11`; Fix: **DLM CVE/Vulnerability execution** - remove unsupported `@primaryKey` annotations stacked with parameterized `@query` declarations; Forward rejected both published queries before reading CVE data. After upgrading, run **Publish Bundled Queries** once with overwrite enabled. These parameterized maps require the default **Allow full fallback** mode; Forward's diff endpoint rejects them without a primary-key annotation, and this runtime cannot combine that annotation with `@query`. Fix: **DLM installed-software associations** - device-scoped software rows now carry lifecycle dates and create the SoftwareVersion plus DeviceSoftware link together; the standalone catalog map can only enrich an associated version, so versions from Forward-only devices no longer appear with zero devices. Vulnerability imports ensure the same association. Fix: **SNMP endpoint safety and identity** - imported endpoints use the same scope rules during reconciliation; endpoint tag intersections feed NetBox scope tags; legacy sources with include tags fail closed to endpoint include scope until they explicitly save an opt-out; new sources default it on. Avocent and Opengear endpoints use stable hardware DeviceTypes and Console Server roles instead of software-bearing sysDescr strings. Endpoint probe failures abort reconciliation, and the UI/audit payload report endpoint counts. Fix: **architecture contract gate** - `invoke architecture-audit-check` now runs focused model, fetch, and query contract tests instead of calling a management command removed in 2.0. Fix: **drift report semantics** - dependency-preview workload estimates are labeled as apply work, not exact drift, so candidate rows and deletes are no longer double-counted or reported as mostly drift. Fix: **CIMC identity** - CIMC SNMP endpoints are excluded from standalone device import while the APIC CIMC inventory map remains authoritative. Fix: **release smoke validation** - restore the removed `forward_smoke_sync` command on the current single-branch backend with automatic existing-source selection and redacted evidence. Security: require `pyzipper` 0.4.0+, which removes plaintext-revealing CRC32 values from small AES-encrypted support-bundle entry headers (`PYSEC-2026-3044`). Python and NQE; no migration. |
 | `v2.5.9` | `4.6.4` required (4.5.x dropped); needs netbox-branching `1.1.0` – `1.1.x` | Superseded by `v2.5.10`; Fix: **DLM/query reliability** - Health now detects enabled optional maps whose models are not selected, base/alias hardware-notice mismatches, and missing DLM dependency readiness; dependency-related skips are rolled up into actionable ingestion issues. Fix: **live query-path publishing** - Publish Bundled Queries now updates the Forward Org Repository, clears stale direct query IDs, preserves explicit commit pins, and binds matching enabled maps to paths that resolve current head at each sync; the separate Refresh Query IDs action is removed. After upgrading, run **Publish Bundled Queries** once for each org-backed sync. Python-only; no migration and no bundled NQE source change. |
 | `v2.5.8` | `4.6.4` required (4.5.x dropped); needs netbox-branching `1.1.0` – `1.1.x` | Superseded by `v2.5.9`; Feature: **device CVE tab** — with netbox-dlm installed and the Vulnerability feed enabled, each device with findings gets a **CVEs** tab (severity totals + one row per CVE: id, severity, affected software version, description); registered only when netbox-dlm is present, hidden when a device has no findings (live-verified against netbox-dlm 0.2.0). Feature: **`forward_routing_dangling_audit`** read-only command reports netbox-routing BGP rows whose device references dangle (the post-prune sweep only covers plugin-pruned devices). Feature: **stability + scale hardening (all opt-in or default-identical, no query change)** — (1) `forward_stuck_job_recover` command recovers a sync wedged by a dead worker (idempotent merge requeue, bounded retries, or clean fail so schedules resume); (2) opt-in per-workload wall-clock **fetch budget** (`workload_fetch_timeout_seconds`) + circuit breaker so a slow shard can't silently hang a multi-hour sync; (3) opt-in **shard-key bucket-packing** (`enable_branch_budget_split`) splits an oversized unsharded model into co-located branch plan items, with an always-on warning when a workload exceeds budget; (4) bulk-apply **per-row isolation** (tree-model + virtual-chassis) so one bad row no longer rolls back a whole model batch, all unbounded `__in` lookups chunked, and event-queue hygiene so a failed isolated row's change events don't leak. Fix: REST `PATCH` of the standing-schedule intent keys now reconciles immediately; transactional schedule persist; a latent per-item stats-reset bug in the branch executor. Python-only; no NQE query change. |
@@ -151,7 +152,7 @@ Latest release requires NetBox `4.6.4` and `netbox-branching` `1.1.0+`. Expand f
 | `v0.9.4.4` | `4.5.9` and `4.6.0` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v0.9.4.5`; clarifies large branching progress by clamping progress-bar display and surfacing current shard row progress in the ingestion UI |
 | `v0.9.4.3` | `4.5.9` and `4.6.0` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v0.9.4.4`; hardens delete behavior by converting protected-reference delete failures into dependency skips so tag-scope prune/device cleanup runs continue safely |
 | `v0.9.4.1.1` | `4.5.9` and `4.6.0` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v0.9.4.3`; keeps the shared-branch architecture, execution ledger, support logging, and scale hardening while preserving the read-only advisory surfaces from `v0.9.0` |
-| `v0.9.0` | `4.5.9` and `4.6.0` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v0.9.4.1.1`; adds read-only analysis, workload preview, advisory summaries, and native log export for troubleshooting while keeping lifecycle enrichment and predict deferred |
+| `v0.9.0` | `4.5.9` and `4.6.0` validated; shared branch for `4.5.x` and `4.6.x` with capability-gated 4.6 features | Superseded by `v0.9.4.1.1`; adds read-only analysis, workload preview, advisory summaries, and native log export for troubleshooting |
 | `v0.8.6.3` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.9.4.1.1`; hardens beta routing scope resolution, invalid ASN filtering, conservative virtual chassis skips, and fast-bootstrap baseline readiness when only optional model issues remain |
 | `v0.8.6.2` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.8.6.3`; hardens issue and job-log rendering so unexpected nested payload objects stay JSON-safe in the UI and API |
 | `v0.8.6.1` | `4.5.9` validated; `4.5.x` only | Superseded by `v0.8.6.2`; clarifies the native NQE map bulk edit workflow so repository-path mode and runtime query-ID resolution are explicit in the UI |
@@ -183,9 +184,13 @@ Latest release requires NetBox `4.6.4` and `netbox-branching` `1.1.0+`. Expand f
 
 </details>
 
-## Support Disclaimer
+## Support
 
-This plugin is provided at your own risk. It is an unsupported release with no support commitment or compatibility guarantee beyond NetBox 4.5.x.
+This production-stable field integration is maintained without an SLA. The
+release compatibility table is the supported runtime contract; 2.6 requires
+NetBox 4.6.5 and `netbox-branching` 1.1.1. Report defects through the repository
+issue templates and security issues through the private process in
+`SECURITY.md`.
 
 ## Enable The Plugins
 

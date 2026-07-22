@@ -62,6 +62,25 @@ class ForwardApiUsageEvaluationTest(SimpleTestCase):
         self.assertEqual(evaluation["status"], "warning")
         self.assertEqual(evaluation["warnings"], ["forward_api_429_observed"])
 
+    def test_repeated_nqe_execution_signature_warns(self):
+        evaluation = evaluate_forward_api_usage(
+            {
+                "api_requests_per_minute": 1800,
+                "nqe_query_calls": 3,
+                "nqe_execution_signature_count": 2,
+                "nqe_repeated_execution_count": 1,
+            },
+            source_type=ForwardSourceDeploymentChoices.SAAS,
+        )
+
+        self.assertEqual(evaluation["status"], "warning")
+        self.assertEqual(
+            evaluation["warnings"],
+            ["repeated_nqe_execution_signature_observed"],
+        )
+        self.assertEqual(evaluation["metrics"]["nqe_execution_signature_count"], 2)
+        self.assertEqual(evaluation["metrics"]["nqe_repeated_execution_count"], 1)
+
     def test_short_observed_rate_sample_is_evidence_only(self):
         evaluation = evaluate_forward_api_usage(
             {

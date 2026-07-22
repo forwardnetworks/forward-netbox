@@ -1,28 +1,20 @@
 import logging
 
 from ..exceptions import ForwardQueryError
-from .sync_aci import apply_netbox_cisco_aci_aciappprofile
 from .sync_aci import apply_netbox_cisco_aci_acibridgedomain
-from .sync_aci import apply_netbox_cisco_aci_acicontract
-from .sync_aci import apply_netbox_cisco_aci_aciendpointgroup
 from .sync_aci import apply_netbox_cisco_aci_acifabric
 from .sync_aci import apply_netbox_cisco_aci_acifilter
 from .sync_aci import apply_netbox_cisco_aci_acil3out
 from .sync_aci import apply_netbox_cisco_aci_acinode
 from .sync_aci import apply_netbox_cisco_aci_acipod
-from .sync_aci import apply_netbox_cisco_aci_acistaticportbinding
 from .sync_aci import apply_netbox_cisco_aci_acitenant
 from .sync_aci import apply_netbox_cisco_aci_acivrf
-from .sync_aci import delete_netbox_cisco_aci_aciappprofile
 from .sync_aci import delete_netbox_cisco_aci_acibridgedomain
-from .sync_aci import delete_netbox_cisco_aci_acicontract
-from .sync_aci import delete_netbox_cisco_aci_aciendpointgroup
 from .sync_aci import delete_netbox_cisco_aci_acifabric
 from .sync_aci import delete_netbox_cisco_aci_acifilter
 from .sync_aci import delete_netbox_cisco_aci_acil3out
 from .sync_aci import delete_netbox_cisco_aci_acinode
 from .sync_aci import delete_netbox_cisco_aci_acipod
-from .sync_aci import delete_netbox_cisco_aci_acistaticportbinding
 from .sync_aci import delete_netbox_cisco_aci_acitenant
 from .sync_aci import delete_netbox_cisco_aci_acivrf
 from .sync_cable import apply_dcim_cable
@@ -392,7 +384,7 @@ class ForwardSyncRunnerAdapterMixin:
         if manufacturer_authoritative:
             # The Platform query emits one grouped row and leaves manufacturer
             # blank when the normalized platform spans vendors. That decision is
-            # authoritative, including clearing a legacy manufacturer. Device
+            # authoritative, including clearing a stale manufacturer. Device
             # rows preserve it; they only supply manufacturer on fallback create
             # for endpoint-only platforms absent from the Platform map.
             update_values["manufacturer"] = manufacturer
@@ -733,7 +725,27 @@ class ForwardSyncRunnerAdapterMixin:
         return sync_lookup_module_bay(self, device, module_bay_name)
 
     def _ensure_module_bay(self, device, row):
-        return self._lookup_module_bay(device, row["module_bay"])
+        from dcim.models import ModuleBay
+
+        from .module_readiness import module_bay_plan_row
+
+        existing = self._lookup_module_bay(device, row["module_bay"])
+        if existing is not None:
+            return existing
+        bay_row = module_bay_plan_row(row)
+        module_bay, _ = self._upsert_values_from_defaults(
+            "dcim.modulebay",
+            ModuleBay,
+            values={
+                "device": device,
+                "name": bay_row["name"],
+                "label": bay_row["label"],
+                "position": bay_row["position"],
+                "description": bay_row["description"],
+            },
+            coalesce_sets=[("device", "name")],
+        )
+        return module_bay
 
     def _content_type_for(self, model):
         return sync_content_type_for(self, model)
@@ -843,23 +855,11 @@ class ForwardSyncRunnerAdapterMixin:
     def _delete_netbox_cisco_aci_acibridgedomain(self, row):
         return delete_netbox_cisco_aci_acibridgedomain(self, row)
 
-    def _delete_netbox_cisco_aci_aciappprofile(self, row):
-        return delete_netbox_cisco_aci_aciappprofile(self, row)
-
-    def _delete_netbox_cisco_aci_aciendpointgroup(self, row):
-        return delete_netbox_cisco_aci_aciendpointgroup(self, row)
-
-    def _delete_netbox_cisco_aci_acicontract(self, row):
-        return delete_netbox_cisco_aci_acicontract(self, row)
-
     def _delete_netbox_cisco_aci_acifilter(self, row):
         return delete_netbox_cisco_aci_acifilter(self, row)
 
     def _delete_netbox_cisco_aci_acil3out(self, row):
         return delete_netbox_cisco_aci_acil3out(self, row)
-
-    def _delete_netbox_cisco_aci_acistaticportbinding(self, row):
-        return delete_netbox_cisco_aci_acistaticportbinding(self, row)
 
     def _apply_dcim_site(self, row):
         return apply_dcim_site(self, row)
@@ -987,20 +987,8 @@ class ForwardSyncRunnerAdapterMixin:
     def _apply_netbox_cisco_aci_acibridgedomain(self, row):
         return apply_netbox_cisco_aci_acibridgedomain(self, row)
 
-    def _apply_netbox_cisco_aci_aciappprofile(self, row):
-        return apply_netbox_cisco_aci_aciappprofile(self, row)
-
-    def _apply_netbox_cisco_aci_aciendpointgroup(self, row):
-        return apply_netbox_cisco_aci_aciendpointgroup(self, row)
-
-    def _apply_netbox_cisco_aci_acicontract(self, row):
-        return apply_netbox_cisco_aci_acicontract(self, row)
-
     def _apply_netbox_cisco_aci_acifilter(self, row):
         return apply_netbox_cisco_aci_acifilter(self, row)
 
     def _apply_netbox_cisco_aci_acil3out(self, row):
         return apply_netbox_cisco_aci_acil3out(self, row)
-
-    def _apply_netbox_cisco_aci_acistaticportbinding(self, row):
-        return apply_netbox_cisco_aci_acistaticportbinding(self, row)

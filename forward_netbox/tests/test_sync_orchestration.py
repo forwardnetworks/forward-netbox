@@ -9,6 +9,7 @@ from django.core.exceptions import ValidationError
 from django.test import override_settings
 from django.test import TestCase
 from django.utils import timezone
+from rq.timeouts import JobTimeoutException
 
 from forward_netbox.choices import ForwardSourceStatusChoices
 from forward_netbox.choices import ForwardSyncStatusChoices
@@ -98,7 +99,7 @@ class ForwardSyncOrchestrationHelperTest(TestCase):
     @patch(
         "forward_netbox.utilities.single_branch_executor.ForwardSingleBranchExecutor"
     )
-    def test_run_forward_sync_warns_when_worker_timeout_is_lower_than_source_timeout(
+    def test_run_forward_sync_uses_effective_forward_job_timeout(
         self,
         mock_executor_class,
         mock_log_warning,
@@ -112,9 +113,23 @@ class ForwardSyncOrchestrationHelperTest(TestCase):
 
         run_forward_sync(self.sync)
 
-        warning_message = mock_log_warning.call_args.args[0]
-        self.assertIn("RQ_DEFAULT_TIMEOUT is 300s", warning_message)
-        self.assertIn("Forward source timeout (1200s)", warning_message)
+        mock_log_warning.assert_not_called()
+
+    @patch(
+        "forward_netbox.utilities.single_branch_executor.ForwardSingleBranchExecutor"
+    )
+    def test_run_forward_sync_propagates_job_timeout(self, mock_executor_class):
+        mock_executor = mock_executor_class.return_value
+        mock_executor.run.side_effect = JobTimeoutException("sync timed out")
+        mock_executor.client = SimpleNamespace(api_usage_summary=Mock(return_value={}))
+
+        with self.assertRaisesRegex(JobTimeoutException, "sync timed out"):
+            run_forward_sync(self.sync)
+
+        self.sync.refresh_from_db()
+        self.source.refresh_from_db()
+        self.assertEqual(self.sync.status, ForwardSyncStatusChoices.TIMEOUT)
+        self.assertEqual(self.source.status, ForwardSourceStatusChoices.FAILED)
 
     def test_latest_processed_catchup_decision_skips_when_snapshot_is_current(self):
         self.sync.status = ForwardSyncStatusChoices.COMPLETED
@@ -209,11 +224,11 @@ class ForwardSyncOrchestrationHelperTest(TestCase):
     @patch(
         "forward_netbox.utilities.single_branch_executor.ForwardSingleBranchExecutor"
     )
-    def test_run_forward_sync_queues_catchup_when_latest_processed_advances(
+    def test_run_forward_sync_defers_catchup_until_ownership_complete(
         self,
         mock_executor_class,
     ):
-        self.sync.status = ForwardSyncStatusChoices.READY_TO_MERGE
+        self.sync.status = ForwardSyncStatusChoices.COMPLETED
         self.sync.save(update_fields=["status"])
         mock_executor = mock_executor_class.return_value
         mock_executor.run.return_value = []
@@ -225,7 +240,8 @@ class ForwardSyncOrchestrationHelperTest(TestCase):
         with patch.object(self.sync, "enqueue_sync_job") as mock_enqueue_sync_job:
             run_forward_sync(self.sync)
 
-        mock_enqueue_sync_job.assert_called_once_with(adhoc=True, user=None)
+        mock_enqueue_sync_job.assert_not_called()
+        mock_executor.client.get_latest_processed_snapshot_id.assert_not_called()
         self.sync.refresh_from_db()
         self.assertEqual(self.sync.status, ForwardSyncStatusChoices.COMPLETED)
 
@@ -277,6 +293,8 @@ class ForwardSyncOrchestrationHelperTest(TestCase):
                     "http_429_failures": 0,
                     "nqe_query_calls": 2,
                     "nqe_diff_calls": 1,
+                    "nqe_execution_signature_count": 3,
+                    "nqe_repeated_execution_count": 0,
                     "nqe_pages": 3,
                     "throttle_sleep_seconds": 1.25,
                     "read_cache_hits": 5,
@@ -298,6 +316,10 @@ class ForwardSyncOrchestrationHelperTest(TestCase):
         )
         self.assertIn(
             "Forward API usage summary: api_usage_status=passed http_attempts=7",
+            self.sync.logger.log_data["logs"][0][4],
+        )
+        self.assertIn(
+            "nqe_unique_executions=3 nqe_repeated_executions=0",
             self.sync.logger.log_data["logs"][0][4],
         )
 
@@ -322,7 +344,6 @@ class SkipUnchangedSnapshotTest(TestCase):
             parameters={
                 "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
                 "dcim.device": True,
-                "skip_unchanged_snapshot": True,
             },
         )
 
@@ -335,19 +356,27 @@ class SkipUnchangedSnapshotTest(TestCase):
         self._set_baseline("snapshot-1")
         self.sync.resolve_snapshot_id = Mock(return_value="snapshot-1")
 
-        result = should_skip_unchanged_snapshot(self.sync, adhoc=False, client=object())
+        result = should_skip_unchanged_snapshot(
+            self.sync,
+            force_unchanged=False,
+            client=object(),
+        )
 
         self.assertEqual(result, "snapshot-1")
 
-    def test_does_not_skip_adhoc_run(self):
+    def test_does_not_skip_explicit_force_run(self):
         self._set_baseline("snapshot-1")
         self.sync.resolve_snapshot_id = Mock(return_value="snapshot-1")
 
         self.assertIsNone(
-            should_skip_unchanged_snapshot(self.sync, adhoc=True, client=object())
+            should_skip_unchanged_snapshot(
+                self.sync,
+                force_unchanged=True,
+                client=object(),
+            )
         )
 
-    def test_does_not_skip_when_flag_off(self):
+    def test_retired_flag_cannot_disable_scheduled_noop(self):
         self.sync.parameters = {
             **self.sync.parameters,
             "skip_unchanged_snapshot": False,
@@ -356,8 +385,13 @@ class SkipUnchangedSnapshotTest(TestCase):
         self._set_baseline("snapshot-1")
         self.sync.resolve_snapshot_id = Mock(return_value="snapshot-1")
 
-        self.assertIsNone(
-            should_skip_unchanged_snapshot(self.sync, adhoc=False, client=object())
+        self.assertEqual(
+            should_skip_unchanged_snapshot(
+                self.sync,
+                force_unchanged=False,
+                client=object(),
+            ),
+            "snapshot-1",
         )
 
     def test_does_not_skip_when_no_baseline(self):
@@ -365,7 +399,11 @@ class SkipUnchangedSnapshotTest(TestCase):
         self.sync.resolve_snapshot_id = Mock(return_value="snapshot-1")
 
         self.assertIsNone(
-            should_skip_unchanged_snapshot(self.sync, adhoc=False, client=object())
+            should_skip_unchanged_snapshot(
+                self.sync,
+                force_unchanged=False,
+                client=object(),
+            )
         )
 
     def test_does_not_skip_when_snapshot_advanced(self):
@@ -373,7 +411,11 @@ class SkipUnchangedSnapshotTest(TestCase):
         self.sync.resolve_snapshot_id = Mock(return_value="snapshot-2")
 
         self.assertIsNone(
-            should_skip_unchanged_snapshot(self.sync, adhoc=False, client=object())
+            should_skip_unchanged_snapshot(
+                self.sync,
+                force_unchanged=False,
+                client=object(),
+            )
         )
 
     def test_does_not_skip_when_resolution_fails(self):
@@ -381,7 +423,11 @@ class SkipUnchangedSnapshotTest(TestCase):
         self.sync.resolve_snapshot_id = Mock(side_effect=RuntimeError("boom"))
 
         self.assertIsNone(
-            should_skip_unchanged_snapshot(self.sync, adhoc=False, client=object())
+            should_skip_unchanged_snapshot(
+                self.sync,
+                force_unchanged=False,
+                client=object(),
+            )
         )
 
     @patch(
@@ -391,8 +437,9 @@ class SkipUnchangedSnapshotTest(TestCase):
         self._set_baseline("snapshot-1")
         self.sync.resolve_snapshot_id = Mock(return_value="snapshot-1")
 
-        run_forward_sync(self.sync, adhoc=False)
+        result = run_forward_sync(self.sync, force_unchanged=False)
 
+        self.assertFalse(result)
         mock_executor_class.assert_not_called()
         self.sync.refresh_from_db()
         self.assertEqual(self.sync.status, ForwardSyncStatusChoices.COMPLETED)

@@ -7,10 +7,13 @@
 # 0029) with its physical parent device. Non-destructive and idempotent:
 # re-running reconciles the link, and a device that is no longer virtual (or
 # whose parent left NetBox) is unlinked.
+from django.db import transaction
+
+
 PARENT_DEVICE_CF = "forward_parent_device"
 
 
-def _virtual_device_rows(sync, client=None, *, fetch_rows=None):
+def _virtual_device_rows(sync, client=None, *, fetch_rows=None, snapshot_id=None):
     """Return [(name, physical_name), ...] for Forward virtual-context devices.
 
     ``fetch_rows(sync, client) -> list[dict]`` is injectable for tests.
@@ -22,7 +25,7 @@ def _virtual_device_rows(sync, client=None, *, fetch_rows=None):
         if not network_id:
             raise ValueError("Sync source has no network configured.")
         client = client or sync.source.get_client()
-        snapshot_id = sync.resolve_snapshot_id(client)
+        snapshot_id = str(snapshot_id or "").strip() or sync.resolve_snapshot_id(client)
         query = "\n".join(
             [
                 "foreach device in network.devices",
@@ -49,7 +52,15 @@ def _virtual_device_rows(sync, client=None, *, fetch_rows=None):
     return pairs
 
 
-def link_vsys_parents(sync, client=None, logger=None, *, fetch_rows=None) -> dict:
+def link_vsys_parents(
+    sync,
+    client=None,
+    logger=None,
+    *,
+    fetch_rows=None,
+    snapshot_id=None,
+    ingestion_id=None,
+) -> dict:
     """Model virtual-context firewalls (Palo vsys / Fortinet vdom) two ways, both
     additive and idempotent, never deleting a device:
     (1) set the ``forward_parent_device`` custom field to the chassis, and
@@ -60,78 +71,81 @@ def link_vsys_parents(sync, client=None, logger=None, *, fetch_rows=None) -> dic
     ``orphan_parent`` (chassis not in NetBox — skipped), ``vdc_created`` /
     ``vdc_existing`` (VirtualDeviceContexts created / already present).
     """
-    from dcim.models import Device
-    from dcim.models import VirtualDeviceContext
+    if (sync.parameters or {}).get("auto_link_vsys_parents") is False:
+        pairs = []
+    else:
+        pairs = _virtual_device_rows(
+            sync,
+            client,
+            fetch_rows=fetch_rows,
+            snapshot_id=snapshot_id,
+        )
+    from .post_sync import current_post_sync_snapshot
 
-    pairs = _virtual_device_rows(sync, client, fetch_rows=fetch_rows)
+    with transaction.atomic(), current_post_sync_snapshot(
+        sync,
+        snapshot_id,
+        ingestion_id=ingestion_id,
+    ) as generation:
+        result = _apply_virtual_device_pairs(
+            sync,
+            pairs,
+            generation=generation["generation"],
+            snapshot_id=generation["snapshot_id"],
+        )
+    if result["conflicts"]:
+        from .ownership import OwnershipConflictError
 
-    # name -> pk for every device we might touch (children + their parents).
+        raise OwnershipConflictError(
+            "Virtual-parent claims disagree for one or more devices; durable "
+            "claims were retained and the existing parent links were preserved."
+        )
+    return result
+
+
+def _apply_virtual_device_pairs(
+    sync,
+    pairs,
+    *,
+    generation=None,
+    snapshot_id=None,
+):
+    from .ownership import reconcile_virtual_parent_claims
+    from .ownership import resolve_device_identities
+
     names = {name for name, _ in pairs} | {parent for _, parent in pairs}
-    pk_by_name = dict(Device.objects.filter(name__in=names).values_list("name", "pk"))
+    pk_by_name, missing, ambiguous = resolve_device_identities(
+        sync,
+        names,
+        generation=generation,
+        snapshot_id=snapshot_id,
+    )
     desired = {}  # child_pk -> parent_pk (parent must exist in NetBox)
     orphan_parent = 0
+    out_of_scope = 0
     for name, parent in pairs:
         child_pk = pk_by_name.get(name)
         if child_pk is None:
-            continue  # virtual device not in NetBox (out of scope) — nothing to link
+            out_of_scope += 1
+            continue
         parent_pk = pk_by_name.get(parent)
         if parent_pk is None:
             orphan_parent += 1
             continue
         desired[child_pk] = parent_pk
 
-    linked = 0
-    cleared = 0
-    already = 0
-    # Apply desired links.
-    for device in Device.objects.filter(pk__in=desired):
-        want = desired[device.pk]
-        if device.custom_field_data.get(PARENT_DEVICE_CF) == want:
-            already += 1
-            continue
-        device.custom_field_data[PARENT_DEVICE_CF] = want
-        device.save()
-        linked += 1
-    # Self-heal: any device currently linked but no longer a desired child gets
-    # its link cleared (it stopped being a virtual context, or its parent left).
-    stale = Device.objects.filter(custom_field_data__has_key=PARENT_DEVICE_CF).exclude(
-        pk__in=desired
+    result = reconcile_virtual_parent_claims(
+        sync,
+        desired,
+        generation=generation,
+        snapshot_id=snapshot_id,
     )
-    for device in stale:
-        if device.custom_field_data.get(PARENT_DEVICE_CF) in (None, ""):
-            continue
-        device.custom_field_data[PARENT_DEVICE_CF] = None
-        device.save()
-        cleared += 1
-
-    # Also model each vsys/vdom as a NetBox VirtualDeviceContext (VDC) under its
-    # physical chassis — the NetBox-native representation of a firewall context.
-    # Additive + idempotent: create-or-find by (chassis device, context name); we
-    # never delete a VDC (an operator may curate them) and never touch the vsys
-    # device rows, so this is safe alongside the flat-device import.
-    vdc_created = 0
-    vdc_existing = 0
-    for name, parent in pairs:
-        parent_pk = pk_by_name.get(parent)
-        if parent_pk is None or pk_by_name.get(name) is None:
-            continue
-        _, created = VirtualDeviceContext.objects.get_or_create(
-            device_id=parent_pk,
-            name=name,
-            defaults={"status": "active"},
-        )
-        if created:
-            vdc_created += 1
-        else:
-            vdc_existing += 1
-
     return {
         "cf": PARENT_DEVICE_CF,
         "virtual_devices": len(pairs),
-        "linked": linked,
-        "already": already,
-        "cleared": cleared,
         "orphan_parent": orphan_parent,
-        "vdc_created": vdc_created,
-        "vdc_existing": vdc_existing,
+        "out_of_scope": out_of_scope,
+        "unresolved_identity": len(missing),
+        "ambiguous_identity": len(ambiguous),
+        **result,
     }

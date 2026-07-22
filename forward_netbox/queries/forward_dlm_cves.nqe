@@ -2,14 +2,16 @@
  * @intent Forward CVE catalog (netbox-dlm)
  * @description Every CVE in Forward's vulnerability database, for the optional
  * netbox-dlm plugin's CVE model. Global reference data (not device-scoped): one
- * row per catalog CVE. Severity is the worst-case across the CVE's per-vendor
- * infos, mapped to netbox-dlm CVESeverityChoices; description is one vendor's
- * text. The Forward->NetBox mapping and all length clamps live in this query
- * (NQE is the source of truth); the apply adapter only upserts by the unique
- * cve_id. Published date is the earliest vendor advisory date; CVSS values are
- * the maximum reported across vendor advisories; link is one deterministic
- * vendor advisory URL. The affected_software M2M is derived by the
- * vulnerability adapter from observed device/software findings.
+ * row per catalog CVE. Before branch planning, the plugin filters this workload
+ * to IDs referenced by the authoritative full Vulnerability workload. Severity
+ * is the worst-case across the CVE's per-vendor infos, mapped to netbox-dlm
+ * CVESeverityChoices; description is one vendor's text. The Forward->NetBox
+ * mapping and all length clamps live in this query (NQE is the source of truth);
+ * the apply adapter only upserts by the unique cve_id. Published date is the
+ * earliest vendor advisory date; CVSS values are the maximum reported across
+ * vendor advisories; link is one deterministic vendor advisory URL. The
+ * affected_software M2M is derived by the vulnerability adapter from observed
+ * device/software findings.
  */
 
 @query

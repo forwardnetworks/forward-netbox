@@ -1,7 +1,7 @@
 import logging
 
 from ..exceptions import ForwardQueryError
-from .module_readiness import module_bay_import_row
+from .module_readiness import module_bay_plan_row
 from .sync_cable import apply_dcim_cable
 from .sync_cable import delete_dcim_cable
 from .sync_cable import lookup_cable_between
@@ -143,7 +143,7 @@ from .sync_runner_contracts import ForwardSyncRunnerContractMixin
 _SYNC_RUNNER_IMPORT_ANCHORS = (
     logging,
     ForwardQueryError,
-    module_bay_import_row,
+    module_bay_plan_row,
     apply_dcim_cable,
     delete_dcim_cable,
     lookup_cable_between,

@@ -1,10 +1,10 @@
 import logging
-import traceback
 
 from core.exceptions import SyncError
 from core.signals import pre_sync
 from django.core.exceptions import ValidationError
 from django.utils import timezone
+from rq.timeouts import JobTimeoutException
 
 from ..choices import ForwardIngestionPhaseChoices
 from ..choices import ForwardSourceStatusChoices
@@ -15,10 +15,10 @@ from ..models import ForwardSource
 from ..models import ForwardSync
 from ..models import ForwardValidationRun
 from ..utilities.logging import SyncLogging
-from .api_usage import evaluate_forward_api_usage
+from .api_usage import record_forward_api_usage
+from .diagnostics import exception_type
+from .diagnostics import safe_operation_failure
 from .runtime_guidance import log_worker_timeout_guidance
-from .snapshot_freshness import latest_processed_catchup_decision
-from .sync_state import mark_branch_run_failed
 
 logger = logging.getLogger("forward_netbox.models")
 
@@ -28,7 +28,7 @@ def _prepare_forward_sync(sync, job=None):
         sync.logger = SyncLogging(job=job.pk)
         user = job.user
     else:
-        sync.logger = SyncLogging(job=sync.pk)
+        sync.logger = SyncLogging()
         user = sync.user
 
     pre_sync.send(sender=sync.__class__, instance=sync)
@@ -56,7 +56,7 @@ def _build_forward_ingestion(sync, job, executor):
 
 
 def _record_forward_sync_failure(sync, job, executor, ingestion, exc):
-    logger.exception("Forward sync failed")
+    logger.error("Forward sync failed (%s).", exception_type(exc))
     sync.status = ForwardSyncStatusChoices.FAILED
     if ingestion is None:
         ingestion = getattr(executor, "current_ingestion", None)
@@ -70,14 +70,14 @@ def _record_forward_sync_failure(sync, job, executor, ingestion, exc):
         ):
             ingestion.validation_run = validation_run
             ingestion.save(update_fields=["validation_run"])
-    mark_branch_run_failed(sync, f"Forward ingestion failed: {exc}")
-    sync.logger.log_failure(f"Forward ingestion failed: {exc}", obj=ingestion)
+    message = safe_operation_failure("Forward ingestion", exc)
+    sync.logger.log_failure(message, obj=ingestion)
     ForwardIngestionIssue.objects.create(
         ingestion=ingestion,
         phase=ForwardIngestionPhaseChoices.SYNC,
-        message=str(exc),
+        message=message,
         exception=exc.__class__.__name__,
-        raw_data={"traceback": traceback.format_exc()},
+        raw_data={},
     )
     return ingestion
 
@@ -114,19 +114,16 @@ def _finalize_forward_sync(sync, job):
         job.save(update_fields=["data"])
 
 
-def should_skip_unchanged_snapshot(sync, *, adhoc=False, client=None):
+def should_skip_unchanged_snapshot(sync, *, force_unchanged=False, client=None):
     """Return the resolved snapshot id when a scheduled run can no-op.
 
-    Opt-in (per-sync ``skip_unchanged_snapshot`` parameter, default off). When
-    enabled and the run is not an adhoc/manual run, and the snapshot the sync
-    would target equals the snapshot of the last eligible baseline ingestion,
-    there is nothing new to fetch — re-running would do full query work just to
-    produce zero changes. Returns the snapshot id to skip on, or ``None`` to run
-    normally. Any resolution error falls through to a normal run.
+    When the target equals the last eligible baseline, there is nothing new to
+    fetch. An explicit force flag, used by manual UI/API runs, remains the
+    repair path for out-of-band NetBox changes on the same snapshot. Scheduled,
+    webhook, and catch-up runs never force unchanged work. Any resolution error
+    falls through to a normal run.
     """
-    if adhoc:
-        return None
-    if not (sync.parameters or {}).get("skip_unchanged_snapshot"):
+    if force_unchanged:
         return None
     baseline = sync.latest_baseline_ingestion()
     baseline_snapshot = str(getattr(baseline, "snapshot_id", "") or "").strip()
@@ -134,6 +131,8 @@ def should_skip_unchanged_snapshot(sync, *, adhoc=False, client=None):
         return None
     try:
         current_snapshot = str(sync.resolve_snapshot_id(client) or "").strip()
+    except JobTimeoutException:
+        raise
     except Exception:
         return None
     if current_snapshot and current_snapshot == baseline_snapshot:
@@ -142,57 +141,34 @@ def should_skip_unchanged_snapshot(sync, *, adhoc=False, client=None):
 
 
 def _record_forward_api_usage(sync, executor):
-    client = getattr(executor, "client", None)
-    summary_method = getattr(client, "api_usage_summary", None)
-    if not callable(summary_method):
-        return
-    summary = summary_method()
-    if not isinstance(summary, dict):
-        return
-    summary = dict(summary)
-    budget = evaluate_forward_api_usage(
-        summary,
-        source_type=getattr(getattr(sync, "source", None), "type", None),
-    )
-    summary["budget"] = budget
-    sync.logger.set_api_usage_summary(summary)
-    sync.logger.log_info(
-        "Forward API usage summary: "
-        f"api_usage_status={budget.get('status')} "
-        f"http_attempts={summary.get('http_attempts', 0)} "
-        f"http_retries={summary.get('http_retries', 0)} "
-        f"http_429_failures={summary.get('http_429_failures', 0)} "
-        f"nqe_query_calls={summary.get('nqe_query_calls', 0)} "
-        f"nqe_diff_calls={summary.get('nqe_diff_calls', 0)} "
-        f"nqe_pages={summary.get('nqe_pages', 0)} "
-        f"read_cache_hits={summary.get('read_cache_hits', 0)} "
-        f"read_cache_hit_rate={summary.get('read_cache_hit_rate')} "
-        f"observed_http_attempts_per_minute="
-        f"{summary.get('observed_http_attempts_per_minute')} "
-        f"throttle_sleep_seconds={summary.get('throttle_sleep_seconds', 0.0)}.",
-        obj=sync,
-    )
+    return record_forward_api_usage(sync, getattr(executor, "client", None))
 
 
-def run_forward_sync(sync, job=None, *, max_changes_per_branch=None, adhoc=False):
+def run_forward_sync(
+    sync,
+    job=None,
+    *,
+    max_changes_per_staging_item=None,
+    force_unchanged=False,
+):
     from .single_branch_executor import ForwardSingleBranchExecutor
 
-    sync.logger = SyncLogging(job=job.pk if job else sync.pk)
+    sync.logger = SyncLogging(job=job.pk if job else None)
     try:
         sync.full_clean()
     except ValidationError as exc:
         sync.logger.log_failure(
-            f"Forward sync configuration is invalid: {exc}",
+            safe_operation_failure("Forward sync configuration validation", exc),
             obj=sync,
         )
         raise
 
-    if sync.is_waiting_for_branch_merge:
+    if sync.status == ForwardSyncStatusChoices.READY_TO_MERGE:
         sync.logger.log_warning(
-            "Forward sync is waiting for the current shard branch to be merged.",
+            "Forward sync is waiting for its branch to be merged.",
             obj=sync,
         )
-        return
+        return False
 
     if sync.status in (
         ForwardSyncStatusChoices.SYNCING,
@@ -202,7 +178,10 @@ def run_forward_sync(sync, job=None, *, max_changes_per_branch=None, adhoc=False
             "Cannot initiate sync; a Forward ingestion is already in progress."
         )
 
-    skip_snapshot = should_skip_unchanged_snapshot(sync, adhoc=adhoc)
+    skip_snapshot = should_skip_unchanged_snapshot(
+        sync,
+        force_unchanged=force_unchanged,
+    )
     if skip_snapshot:
         sync.status = ForwardSyncStatusChoices.COMPLETED
         sync.logger.log_success(
@@ -212,7 +191,7 @@ def run_forward_sync(sync, job=None, *, max_changes_per_branch=None, adhoc=False
             obj=sync,
         )
         _finalize_forward_sync(sync, job)
-        return
+        return False
 
     user = _prepare_forward_sync(sync, job=job)
 
@@ -233,20 +212,23 @@ def run_forward_sync(sync, job=None, *, max_changes_per_branch=None, adhoc=False
         if not ingestions:
             sync.status = ForwardSyncStatusChoices.COMPLETED
             sync.logger.log_success("Forward ingestion completed.", obj=sync)
-            return
+            return True
         ingestion = ingestions[-1]
         if sync.status == ForwardSyncStatusChoices.READY_TO_MERGE:
             sync.logger.log_success(
                 "Forward single-branch sync staged for review.",
                 obj=sync,
             )
-            return
+            return True
         sync.status = ForwardSyncStatusChoices.COMPLETED
         sync.logger.log_success(
             "Forward single-branch ingestion completed.",
             obj=sync,
         )
-        return
+        return True
+    except JobTimeoutException:
+        sync.status = ForwardSyncStatusChoices.TIMEOUT
+        raise
     except Exception as exc:
         ingestion = _record_forward_sync_failure(
             sync,
@@ -258,30 +240,3 @@ def run_forward_sync(sync, job=None, *, max_changes_per_branch=None, adhoc=False
     finally:
         _record_forward_api_usage(sync, executor)
         _finalize_forward_sync(sync, job)
-        if sync.status == ForwardSyncStatusChoices.COMPLETED:
-            current_snapshot_id = ""
-            if "ingestions" in locals() and ingestions:
-                current_snapshot_id = str(
-                    getattr(ingestions[-1], "snapshot_id", "") or ""
-                ).strip()
-            if not current_snapshot_id:
-                current_ingestion = getattr(executor, "current_ingestion", None)
-                current_snapshot_id = str(
-                    getattr(current_ingestion, "snapshot_id", "") or ""
-                ).strip()
-            decision = latest_processed_catchup_decision(
-                sync,
-                current_snapshot_id=current_snapshot_id,
-                client=getattr(executor, "client", None),
-                current_job=job,
-            )
-            if decision["should_queue"]:
-                selector = decision.get("snapshot_selector") or "latestProcessed"
-                sync.logger.log_info(
-                    f"Forward {selector} advanced from "
-                    f"`{decision['current_snapshot_id']}` to "
-                    f"`{decision['latest_processed_snapshot_id']}` during the run; "
-                    "queuing a catch-up sync.",
-                    obj=sync,
-                )
-                sync.enqueue_sync_job(adhoc=True, user=user)

@@ -7,14 +7,13 @@ from django.db.models import F
 
 from forward_netbox.choices import forward_configured_models
 from forward_netbox.choices import FORWARD_OPTIONAL_MODELS
-from forward_netbox.choices import ForwardExecutionBackendChoices
 from forward_netbox.choices import ForwardSourceDeploymentChoices
 from forward_netbox.choices import ForwardSourceStatusChoices
 from forward_netbox.choices import ForwardSyncStatusChoices
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.utilities.branch_budget import build_branch_plan
-from forward_netbox.utilities.branch_budget import DEFAULT_MAX_CHANGES_PER_BRANCH
+from forward_netbox.utilities.branch_budget import DEFAULT_MAX_CHANGES_PER_STAGING_ITEM
 from forward_netbox.utilities.ingestion_issues import blocking_issues_queryset
 from forward_netbox.utilities.query_fetch import ForwardQueryFetcher
 
@@ -85,17 +84,12 @@ class Command(BaseCommand):
             help="Stage the smoke sync for operator review without merging it.",
         )
         parser.add_argument(
-            "--execution-backend",
-            choices=[ForwardExecutionBackendChoices.SINGLE_BRANCH],
-            default=ForwardExecutionBackendChoices.SINGLE_BRANCH,
-        )
-        parser.add_argument(
-            "--max-changes-per-branch",
+            "--max-changes-per-staging-item",
             type=int,
             default=int(
                 os.getenv(
                     "FORWARD_SMOKE_MAX_CHANGES_PER_BRANCH",
-                    str(DEFAULT_MAX_CHANGES_PER_BRANCH),
+                    str(DEFAULT_MAX_CHANGES_PER_STAGING_ITEM),
                 )
             ),
         )
@@ -132,7 +126,7 @@ class Command(BaseCommand):
             snapshot_id=options["snapshot_id"],
             selected_models=self._selected_models(options["models"]),
             auto_merge=not options["no_auto_merge"],
-            max_changes_per_branch=options["max_changes_per_branch"],
+            max_changes_per_staging_item=options["max_changes_per_staging_item"],
             enable_bulk_orm=self._enable_bulk_orm(options),
         )
 
@@ -142,11 +136,11 @@ class Command(BaseCommand):
         if options["plan_only"]:
             self._run_plan_only(
                 sync,
-                max_changes_per_branch=options["max_changes_per_branch"],
+                max_changes_per_staging_item=options["max_changes_per_staging_item"],
             )
             return
 
-        sync.sync(max_changes_per_branch=options["max_changes_per_branch"])
+        sync.sync(max_changes_per_staging_item=options["max_changes_per_staging_item"])
         sync.refresh_from_db()
         ingestion = sync.last_ingestion
         if ingestion is None:
@@ -180,8 +174,8 @@ class Command(BaseCommand):
             )
         if options["query_limit"] < 1:
             raise CommandError("--query-limit must be at least 1.")
-        if options["max_changes_per_branch"] < 1:
-            raise CommandError("--max-changes-per-branch must be at least 1.")
+        if options["max_changes_per_staging_item"] < 1:
+            raise CommandError("--max-changes-per-staging-item must be at least 1.")
 
     def _resolve_source(self, options):
         source_name = str(options.get("source_name") or "").strip()
@@ -290,7 +284,7 @@ class Command(BaseCommand):
         snapshot_id,
         selected_models,
         auto_merge,
-        max_changes_per_branch,
+        max_changes_per_staging_item,
         enable_bulk_orm,
     ):
         existing_sync = ForwardSync.objects.filter(name=sync_name).first()
@@ -299,8 +293,7 @@ class Command(BaseCommand):
             {
                 "snapshot_id": snapshot_id,
                 "auto_merge": auto_merge,
-                "execution_backend": ForwardExecutionBackendChoices.SINGLE_BRANCH,
-                "max_changes_per_branch": max_changes_per_branch,
+                "max_changes_per_staging_item": max_changes_per_staging_item,
                 "enable_bulk_orm": enable_bulk_orm,
             }
         )
@@ -334,14 +327,13 @@ class Command(BaseCommand):
             )
         )
 
-    def _run_plan_only(self, sync, *, max_changes_per_branch):
+    def _run_plan_only(self, sync, *, max_changes_per_staging_item):
         fetcher = ForwardQueryFetcher(sync, sync.source.get_client(), sync.logger)
         context = fetcher.resolve_context()
-        fetcher.run_preflight(context)
-        workloads = fetcher.fetch_workloads(context)
+        workloads = fetcher.fetch_workloads(context, include_diagnostics=False)
         plan = build_branch_plan(
             workloads,
-            max_changes_per_branch=max_changes_per_branch,
+            max_changes_per_staging_item=max_changes_per_staging_item,
         )
         for item in plan:
             self.stdout.write(

@@ -1,8 +1,9 @@
+import logging
+
 from core.choices import ObjectChangeActionChoices
 from core.exceptions import SyncError
 from core.models import ObjectChange
 from django.contrib import messages
-from django.contrib.auth.mixins import LoginRequiredMixin
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models.functions import Greatest
@@ -14,7 +15,6 @@ from django.shortcuts import render
 from django.urls import reverse
 from django.utils import timezone
 from django.utils.translation import gettext as _
-from django.views.generic import View
 from netbox.object_actions import AddObject
 from netbox.object_actions import BulkDelete
 from netbox.object_actions import BulkEdit
@@ -68,10 +68,8 @@ from .tables import ForwardSourceTable
 from .tables import ForwardSyncTable
 from .tables import ForwardValidationRunTable
 from .utilities.change_explainability import change_explainability_summary
+from .utilities.diagnostics import sanitize_job_diagnostics
 from .utilities.direct_changes import object_changes_for_ingestion
-from .utilities.execution_ledger import execution_run_bundle_for_sync
-from .utilities.execution_ledger import live_support_diagnostics
-from .utilities.execution_ledger import pushdown_trend_history_for_sync
 from .utilities.execution_telemetry import build_plan_preview
 from .utilities.health import live_data_file_health_check
 from .utilities.health import live_source_health_check
@@ -83,10 +81,12 @@ from .utilities.query_binding import live_query_binding_drift
 from .utilities.query_binding import publish_builtin_nqe_map_queries
 from .utilities.query_binding import restore_builtin_raw_query_bindings
 from .utilities.support_bundle_archive import support_bundle_zip_response
-from .utilities.sync_state import get_execution_display_state
 
 
-_EXECUTION_PLAN_ITEM_LIMIT = 25
+logger = logging.getLogger(__name__)
+
+
+_PREVIEW_PLAN_ITEM_LIMIT = 25
 
 
 def annotate_statistics(queryset):
@@ -153,37 +153,72 @@ def _job_export_payload(job):
         "started": getattr(job, "started", None),
         "completed": getattr(job, "completed", None),
         "duration": getattr(job, "duration", None),
-        "data": json_safe_value(getattr(job, "data", {}) or {}),
-        "log_entries": json_safe_value(list(getattr(job, "log_entries", []) or [])),
+        "data": json_safe_value(
+            sanitize_job_diagnostics(getattr(job, "data", {}) or {})
+        ),
+        "log_entries": json_safe_value(
+            sanitize_job_diagnostics(
+                {"log_entries": list(getattr(job, "log_entries", []) or [])}
+            )["log_entries"]
+        ),
     }
 
 
-def _compact_execution_state_payload(execution_state):
-    state = dict(execution_state or {})
-    plan_items = state.get("plan_items")
-    if isinstance(plan_items, list):
-        state["plan_items_count"] = len(plan_items)
-        if len(plan_items) > _EXECUTION_PLAN_ITEM_LIMIT:
-            state["plan_items"] = plan_items[:_EXECUTION_PLAN_ITEM_LIMIT]
-            state["plan_items_truncated"] = True
-        else:
-            state["plan_items_truncated"] = False
-    else:
-        try:
-            state["plan_items_count"] = int(state.get("total_plan_items") or 0)
-        except (TypeError, ValueError):
-            state["plan_items_count"] = 0
-        state["plan_items_truncated"] = False
-    return state
+def _latest_dependency_preview_bundle_payload(sync, latest_ingestion):
+    """Return aggregate preview evidence without customer inventory rows."""
+    from core.choices import JobStatusChoices
+    from core.models import Job
+    from django.contrib.contenttypes.models import ContentType
+
+    from .utilities.drift_report import build_latest_sync_evidence
+    from .utilities.drift_report import compute_drift_report
+
+    job = (
+        Job.objects.filter(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=sync.pk,
+            name__icontains="dependency preview",
+            status=JobStatusChoices.STATUS_COMPLETED,
+        )
+        .order_by("-created")
+        .first()
+    )
+    if job is None or not isinstance(job.data, dict) or not job.data:
+        return None
+
+    data = job.data
+    context = data.get("context") if isinstance(data.get("context"), dict) else {}
+    return json_safe_value(
+        {
+            "job": {
+                "pk": job.pk,
+                "status": getattr(job, "status", ""),
+                "created": getattr(job, "created", None),
+                "completed": getattr(job, "completed", None),
+                "duration": getattr(job, "duration", None),
+            },
+            "generated_at": data.get("generated_at"),
+            "context": {
+                "snapshot_id": context.get("snapshot_id") or "",
+                "snapshot_selector": context.get("snapshot_selector") or "",
+            },
+            "change_estimate_kind": data.get("change_estimate_kind") or "",
+            "plan_preview": data.get("plan_preview") or {},
+            "model_results": data.get("model_results") or [],
+            "forward_api_usage": data.get("forward_api_usage") or {},
+            "drift_report": compute_drift_report(data),
+            "latest_sync_evidence": build_latest_sync_evidence(
+                latest_ingestion,
+                data,
+            ),
+        }
+    )
 
 
 def _ingestion_log_export_payload(ingestion, *, active_stage):
-    execution_state = _compact_execution_state_payload(
-        json_safe_value(get_execution_display_state(ingestion.sync))
-    )
-    execution_state_source = (
-        execution_state.get("state_source") if execution_state else None
-    )
+    from .utilities.ownership import ownership_finalization_summary
+    from .utilities.ownership import ownership_integrity_summary
+
     return {
         "exported_at": timezone.now().isoformat(),
         "active_stage": active_stage,
@@ -204,29 +239,19 @@ def _ingestion_log_export_payload(ingestion, *, active_stage):
             "name": ingestion.sync.name,
             "status": ingestion.sync.status,
             "current_activity": ingestion.sync.get_sync_activity(),
-            "execution_state": execution_state,
-            "execution_state_source": execution_state_source,
             "analysis_summary": ingestion.sync.get_analysis_summary(),
             "workload_summary": ingestion.sync.get_workload_summary(),
             "advisory_summary": ingestion.sync.get_advisory_summary(),
         },
-        "execution_plan": {
-            "next_plan_index": execution_state.get("next_plan_index"),
-            "total_plan_items": execution_state.get("total_plan_items"),
-            "phase": execution_state.get("phase") or "",
-            "phase_message": execution_state.get("phase_message") or "",
-            "current_model_string": execution_state.get("current_model_string") or "",
-            "current_shard_index": execution_state.get("current_shard_index"),
-            "last_stage_job_id": execution_state.get("last_stage_job_id"),
-            "plan_items_count": execution_state.get("plan_items_count", 0),
-            "plan_items_truncated": bool(
-                execution_state.get("plan_items_truncated") or False
-            ),
-            "plan_items": execution_state.get("plan_items") or [],
-        },
-        "execution_run": json_safe_value(execution_run_bundle_for_sync(ingestion.sync)),
         "change_explainability": json_safe_value(
             change_explainability_summary(ingestion)
+        ),
+        "ownership_integrity": json_safe_value(ownership_integrity_summary()),
+        "ownership_finalization": json_safe_value(
+            ownership_finalization_summary(
+                ingestion.sync,
+                generation=ingestion.pk,
+            )
         ),
         "job_results": json_safe_value(ingestion.get_job_logs(ingestion.job)),
         "merge_job_results": json_safe_value(
@@ -236,17 +261,17 @@ def _ingestion_log_export_payload(ingestion, *, active_stage):
 
 
 def _sync_support_bundle_payload(sync):
+    from .utilities.ownership import ownership_finalization_summary
+    from .utilities.ownership import ownership_integrity_summary
+    from .utilities.sync_facade import effective_scope_endpoints_by_include_tags
     from .utilities.upgrade_reconciliation import compute_upgrade_reconciliation
 
     latest_ingestion = sync.last_ingestion
-    execution_state = _compact_execution_state_payload(
-        json_safe_value(get_execution_display_state(sync))
-    )
-    execution_state_source = (
-        execution_state.get("state_source") if execution_state else None
-    )
+    source_parameters = dict(sync.source.parameters or {})
+    include_tags = source_parameters.get("device_tag_include_tags") or []
+    exclude_tags = source_parameters.get("device_tag_exclude_tags") or []
+    sync_device_tags = source_parameters.get("sync_device_tags") or []
     health = sync_health_summary(sync)
-    live_diagnostics = live_support_diagnostics(sync, sync_health=health)
     return {
         "exported_at": timezone.now().isoformat(),
         "sync": {
@@ -254,9 +279,31 @@ def _sync_support_bundle_payload(sync):
             "name": sync.name,
             "status": sync.status,
             "source": sync.source_id,
+            "scope_configuration": {
+                "sync_endpoints": bool(source_parameters.get("sync_endpoints")),
+                "sync_generic_endpoints": bool(
+                    source_parameters.get("sync_generic_endpoints")
+                ),
+                "scope_endpoints_by_include_tags": (
+                    effective_scope_endpoints_by_include_tags(source_parameters)
+                ),
+                "apply_device_scope_tags": bool(
+                    source_parameters.get("apply_device_scope_tags")
+                ),
+                "sync_device_tag_count": len(sync_device_tags),
+                "include_tag_count": len(include_tags),
+                "exclude_tag_count": len(exclude_tags),
+                "include_match": str(
+                    source_parameters.get("device_tag_include_match") or "any"
+                ),
+                "filter_mode": str(
+                    source_parameters.get("device_tag_filter_mode") or "local"
+                ),
+                "prune_out_of_scope": bool(
+                    source_parameters.get("device_tag_prune_out_of_scope")
+                ),
+            },
             "current_activity": sync.get_sync_activity(),
-            "execution_state": execution_state,
-            "execution_state_source": execution_state_source,
             "analysis_summary": sync.get_analysis_summary(),
             "workload_summary": sync.get_workload_summary(),
             "advisory_summary": sync.get_advisory_summary(),
@@ -266,7 +313,17 @@ def _sync_support_bundle_payload(sync):
         "upgrade_reconciliation": json_safe_value(
             compute_upgrade_reconciliation(include_samples=False)
         ),
-        "live_diagnostics": json_safe_value(live_diagnostics),
+        "ownership_integrity": json_safe_value(ownership_integrity_summary()),
+        "ownership_finalization": json_safe_value(
+            ownership_finalization_summary(
+                sync,
+                generation=getattr(latest_ingestion, "pk", None),
+            )
+        ),
+        "latest_dependency_preview": _latest_dependency_preview_bundle_payload(
+            sync,
+            latest_ingestion,
+        ),
         "latest_ingestion": (
             {
                 "pk": latest_ingestion.pk,
@@ -275,6 +332,26 @@ def _sync_support_bundle_payload(sync):
                 "baseline_ready": bool(latest_ingestion.baseline_ready),
                 "snapshot_id": latest_ingestion.snapshot_id or "",
                 "snapshot_selector": latest_ingestion.snapshot_selector or "",
+                "catchup": {
+                    "status": latest_ingestion.catchup_status,
+                    "target_snapshot_id": (
+                        latest_ingestion.catchup_target_snapshot_id or ""
+                    ),
+                    "reason": latest_ingestion.catchup_reason or "",
+                    "error_type": latest_ingestion.catchup_error_type or "",
+                    "checked_at": (
+                        latest_ingestion.catchup_checked_at.isoformat()
+                        if latest_ingestion.catchup_checked_at
+                        else None
+                    ),
+                },
+                "change_counts": {
+                    "applied": int(latest_ingestion.applied_change_count or 0),
+                    "failed": int(latest_ingestion.failed_change_count or 0),
+                    "created": int(latest_ingestion.created_change_count or 0),
+                    "updated": int(latest_ingestion.updated_change_count or 0),
+                    "deleted": int(latest_ingestion.deleted_change_count or 0),
+                },
                 "branch": (
                     latest_ingestion.branch.name if latest_ingestion.branch else ""
                 ),
@@ -287,7 +364,6 @@ def _sync_support_bundle_payload(sync):
             if latest_ingestion is not None
             else None
         ),
-        "execution_run": json_safe_value(execution_run_bundle_for_sync(sync)),
         "health": json_safe_value(health),
     }
 
@@ -322,10 +398,21 @@ def _dependency_model_result_summary(result):
     # ``fetcher.model_results`` are ForwardModelResult dataclasses, not dicts —
     # calling result.get(...) on them raised AttributeError and errored the whole
     # dependency preview (hidden as null-data until 2.2.4 surfaced job errors).
-    # Normalize via as_dict(); tolerate a plain dict too.
-    data = result.as_dict() if hasattr(result, "as_dict") else (result or {})
+    from .utilities.query_fetch_execution import ForwardModelResult
+
+    if not isinstance(result, ForwardModelResult):
+        raise TypeError("Dependency preview results must be ForwardModelResult values.")
+    data = result.as_dict()
     row_count = int(data.get("row_count") or 0)
     delete_count = int(data.get("delete_count") or 0)
+    durable_state = next(
+        (
+            diagnostic
+            for diagnostic in data.get("diagnostics") or []
+            if diagnostic.get("type") == "durable_workload_state"
+        ),
+        None,
+    )
     return {
         "model": data.get("model") or "",
         "query_name": data.get("query_name") or "",
@@ -338,30 +425,28 @@ def _dependency_model_result_summary(result):
         "estimated_changes": row_count + delete_count,
         "change_estimate_kind": "workload_upper_bound",
         "runtime_ms": float(data.get("runtime_ms") or 0.0),
+        # Preserve aggregate state evidence without copying diagnostic samples or
+        # source identifiers into the preview job payload.
+        "durable_workload_state": durable_state,
     }
 
 
-def _dependency_dry_run_payload(sync):
+def _dependency_dry_run_payload(sync, *, client=None):
+    from .utilities.api_usage import record_forward_api_usage
     from .utilities.branch_budget import build_branch_plan
     from .utilities.query_fetch import ForwardQueryFetcher
 
-    fetcher = ForwardQueryFetcher(sync, sync.source.get_client(), sync.logger)
+    client = client or sync.source.get_client()
+    fetcher = ForwardQueryFetcher(sync, client, sync.logger)
     context = fetcher.resolve_context()
-    workloads = fetcher.fetch_workloads(context)
-    if sync.parameters.get("enable_branch_budget_split"):
-        plan = build_branch_plan(
-            workloads,
-            max_changes_per_branch=sync.get_max_changes_per_branch(),
-            oversized_bucket_policy=(
-                "fail"
-                if sync.parameters.get("branch_budget_enforcement") == "strict"
-                else "warn"
-            ),
-        )
-    else:
-        plan = build_branch_plan(workloads)
+    workloads = fetcher.fetch_workloads(context, include_diagnostics=True)
+    plan = build_branch_plan(
+        workloads,
+        max_changes_per_staging_item=sync.get_max_changes_per_staging_item(),
+        oversized_bucket_policy="warn",
+    )
     plan_preview = build_plan_preview(
-        plan, max_changes_per_branch=sync.get_max_changes_per_branch()
+        plan, max_changes_per_staging_item=sync.get_max_changes_per_staging_item()
     )
     plan_items = [_dependency_plan_item_summary(item) for item in plan]
     context_dict = context.as_dict()
@@ -379,12 +464,13 @@ def _dependency_dry_run_payload(sync):
         },
         "plan_preview": plan_preview,
         "plan_items_count": len(plan_items),
-        "plan_items_truncated": len(plan_items) > _EXECUTION_PLAN_ITEM_LIMIT,
-        "plan_items": plan_items[:_EXECUTION_PLAN_ITEM_LIMIT],
+        "plan_items_truncated": len(plan_items) > _PREVIEW_PLAN_ITEM_LIMIT,
+        "plan_items": plan_items[:_PREVIEW_PLAN_ITEM_LIMIT],
         "change_estimate_kind": "workload_upper_bound",
         "model_results": [
             _dependency_model_result_summary(result) for result in fetcher.model_results
         ],
+        "forward_api_usage": record_forward_api_usage(sync, client),
     }
 
 
@@ -482,8 +568,12 @@ class ForwardNQEMapBulkEditView(generic.BulkEditView):
             try:
                 results = restore_builtin_raw_query_bindings(queryset=selected_queryset)
             except Exception as exc:
+                logger.warning(
+                    "Bundled NQE map restore failed (%s)", type(exc).__name__
+                )
                 raise ValidationError(
-                    f"Unable to restore bundled Forward NQE map queries: {exc}"
+                    "Unable to restore bundled Forward NQE map queries. Review "
+                    "server logs and the selected map configuration."
                 ) from exc
 
             updated_ids = [result.map_id for result in results if result.matched]
@@ -520,8 +610,12 @@ class ForwardNQEMapBulkEditView(generic.BulkEditView):
                     pin_commit=form.cleaned_data.get("bind_pin_commit", False),
                 )
             except Exception as exc:
+                logger.warning(
+                    "Bundled NQE map publication failed (%s)", type(exc).__name__
+                )
                 raise ValidationError(
-                    f"Unable to publish bundled Forward NQE maps: {exc}"
+                    "Unable to publish bundled Forward NQE maps. Review server "
+                    "logs and Forward repository permissions."
                 ) from exc
 
             updated_ids = [result.map_id for result in results if result.matched]
@@ -570,7 +664,11 @@ class ForwardNQEMapBulkEditView(generic.BulkEditView):
                 queryset=selected_queryset,
             )
         except Exception as exc:
-            raise ValidationError(f"Unable to bind Forward NQE maps: {exc}") from exc
+            logger.warning("Forward NQE map binding failed (%s)", type(exc).__name__)
+            raise ValidationError(
+                "Unable to bind Forward NQE maps. Review server logs and the "
+                "selected repository paths."
+            ) from exc
 
         updated_ids = [result.map_id for result in results if result.matched]
         if not updated_ids:
@@ -722,12 +820,10 @@ class ForwardSyncRefreshDeviceAnalysisView(BaseObjectView):
 
     def post(self, request, pk):
         # Live NQE over all devices — runs as a background job.
-        from core.models import Job
-        from django.utils.module_loading import import_string
+        from .jobs import DeviceAnalysisRefreshJob
 
         sync = get_object_or_404(self.queryset, pk=pk)
-        job = Job.enqueue(
-            import_string("forward_netbox.jobs.refresh_forward_device_analysis"),
+        job = DeviceAnalysisRefreshJob.enqueue(
             instance=sync,
             user=request.user,
             name=f"{sync.name} - refresh device analysis",
@@ -761,6 +857,7 @@ class ForwardSyncDriftReportView(BaseObjectView):
         from core.models import Job
         from django.contrib.contenttypes.models import ContentType
 
+        from .utilities.drift_report import build_latest_sync_evidence
         from .utilities.drift_report import compute_drift_report
 
         sync = get_object_or_404(self.queryset, pk=pk)
@@ -797,6 +894,7 @@ class ForwardSyncDriftReportView(BaseObjectView):
         preview_age = timezone.now() - job.created if job.created else None
         preview_is_old = bool(preview_age and preview_age > self.STALE_PREVIEW_AGE)
         drift_stale = newer_sync_ran or preview_is_old
+        latest_sync_evidence = build_latest_sync_evidence(last_ingestion, job.data)
         return render(
             request,
             self.template_name,
@@ -808,6 +906,7 @@ class ForwardSyncDriftReportView(BaseObjectView):
                 "drift_stale_old_preview": preview_is_old,
                 "last_sync_at": last_ingestion.created if last_ingestion else None,
                 "preview_at": job.created,
+                "latest_sync_evidence": latest_sync_evidence,
             },
         )
 
@@ -873,8 +972,10 @@ class ForwardSyncDependencyPreviewView(BaseObjectView):
         sync = get_object_or_404(self.queryset, pk=pk)
         try:
             job = enqueue_button_job(sync, "dependency_preview", request.user)
-        except JobAlreadyActive as exc:
-            messages.warning(request, str(exc))
+        except JobAlreadyActive:
+            messages.warning(
+                request, _("An equivalent dependency preview is already running.")
+            )
             return redirect(sync.get_absolute_url())
         messages.success(
             request,
@@ -901,12 +1002,22 @@ class ForwardStartSyncView(BaseObjectView):
     def post(self, request, pk):
         sync = get_object_or_404(self.queryset, pk=pk)
         try:
-            job = sync.enqueue_sync_job(user=request.user, adhoc=True)
+            job = sync.enqueue_sync_job(
+                user=request.user,
+                adhoc=True,
+                force_unchanged=True,
+            )
         except SyncError as exc:
-            messages.error(request, str(exc))
+            logger.warning("Forward sync enqueue was rejected (%s)", type(exc).__name__)
+            messages.error(
+                request,
+                _(
+                    "Forward sync could not be queued. Review the current sync and "
+                    "branch state before retrying."
+                ),
+            )
             return redirect(sync.get_absolute_url())
-        action = "continue" if sync.has_pending_execution else "run"
-        messages.success(request, f"Queued job #{job.pk} to {action} {sync}.")
+        messages.success(request, f"Queued job #{job.pk} to run {sync}.")
         return redirect(sync.get_absolute_url())
 
 
@@ -927,8 +1038,10 @@ class ForwardStartValidationView(BaseObjectView):
         sync = get_object_or_404(self.queryset, pk=pk)
         try:
             job = sync.enqueue_validation_job(user=request.user, adhoc=True)
-        except JobAlreadyActive as exc:
-            messages.warning(request, str(exc))
+        except JobAlreadyActive:
+            messages.warning(
+                request, _("An equivalent validation job is already running.")
+            )
             return redirect(sync.get_absolute_url())
         messages.success(request, f"Queued job #{job.pk} to validate {sync}.")
         return redirect(sync.get_absolute_url())
@@ -950,9 +1063,12 @@ class ForwardSyncScopeReconciliationView(BaseObjectView):
         try:
             report = compute_scope_reconciliation(sync)
         except Exception as exc:
+            logger.warning(
+                "Scope reconciliation report failed (%s)", type(exc).__name__
+            )
             messages.error(
                 request,
-                _("Scope reconciliation failed: %(error)s") % {"error": exc},
+                _("Scope reconciliation failed. Review server logs before retrying."),
             )
             return redirect(sync.get_absolute_url())
         from .utilities.scope_reconciliation import BACKFILLED_TAG_SLUG
@@ -1000,23 +1116,22 @@ class ForwardSyncTagBackfilledView(BaseObjectView):
         )
 
     def post(self, request, pk):
-        # Tags the backfilled devices so they are filterable in the standard
-        # device list. Runs as a background job (live Forward query + tag writes).
-        from core.models import Job
-        from django.utils.module_loading import import_string
+        # Reconciles plugin-maintained scope tags in the standard device list.
+        # Runs as a background job (live Forward query + tag writes).
+        from .jobs import DeviceScopeTagReconciliationJob
 
         sync = get_object_or_404(self.queryset, pk=pk)
-        job = Job.enqueue(
-            import_string("forward_netbox.jobs.tag_forward_backfilled_devices"),
+        job = DeviceScopeTagReconciliationJob.enqueue(
             instance=sync,
             user=request.user,
-            name=f"{sync.name} - tag backfilled devices",
+            name=f"{sync.name} - reconcile device scope tags",
         )
         messages.success(
             request,
             _(
-                "Queued job #%(pk)d to tag backfilled devices. When it finishes, "
-                "filter the device list by the forward-backfilled tag."
+                "Queued job #%(pk)d to reconcile device scope tags. It maintains "
+                "backfilled and out-of-scope labels and clears stale managed "
+                "include tags from out-of-scope devices."
             )
             % {"pk": job.pk},
         )
@@ -1057,8 +1172,11 @@ class ForwardSyncTagDeleteEligibleIpamView(BaseObjectView):
         sync = get_object_or_404(self.queryset, pk=pk)
         try:
             job = enqueue_button_job(sync, "tag_delete_eligible_ipam", request.user)
-        except JobAlreadyActive as exc:
-            messages.warning(request, str(exc))
+        except JobAlreadyActive:
+            messages.warning(
+                request,
+                _("An equivalent delete-eligible IPAM job is already running."),
+            )
             return redirect(sync.get_absolute_url())
         messages.success(
             request,
@@ -1103,8 +1221,10 @@ class ForwardSyncPruneOrphansView(BaseObjectView):
         sync = get_object_or_404(self.queryset, pk=pk)
         try:
             job = enqueue_button_job(sync, "prune_orphans", request.user)
-        except JobAlreadyActive as exc:
-            messages.warning(request, str(exc))
+        except JobAlreadyActive:
+            messages.warning(
+                request, _("An equivalent orphan-prune job is already running.")
+            )
             return redirect(sync.get_absolute_url())
         messages.success(
             request,
@@ -1132,9 +1252,10 @@ class ForwardSyncModuleReadinessView(BaseObjectView):
         try:
             report = compute_module_readiness_for_sync(sync)
         except Exception as exc:
+            logger.warning("Module readiness report failed (%s)", type(exc).__name__)
             messages.error(
                 request,
-                _("Module readiness check failed: %(error)s") % {"error": exc},
+                _("Module readiness check failed. Review server logs before retrying."),
             )
             return redirect(sync.get_absolute_url())
         return render(
@@ -1143,48 +1264,10 @@ class ForwardSyncModuleReadinessView(BaseObjectView):
             {
                 "object": sync,
                 "payload": report.as_dict(),
+                "module_bay_plan_rows": report.module_bay_plan_rows,
                 "missing_device_names": report.missing_device_names,
             },
         )
-
-
-@register_model_view(ForwardSync, "create_module_bays", path="create-module-bays")
-class ForwardSyncCreateModuleBaysView(BaseObjectView):
-    queryset = ForwardSync.objects.all()
-
-    def get_required_permission(self):
-        return "dcim.add_modulebay"
-
-    def get(self, request, pk):
-        sync = get_object_or_404(self.queryset, pk=pk)
-        return redirect(
-            reverse(
-                "plugins:forward_netbox:forwardsync_module_readiness",
-                kwargs={"pk": sync.pk},
-            )
-        )
-
-    def post(self, request, pk):
-        # Creating many module bays (with full_clean + save per bay) can exceed an
-        # HTTP gateway timeout on large fabrics, so it runs as a background job.
-        from .utilities.sync_facade import enqueue_button_job
-        from .utilities.sync_facade import JobAlreadyActive
-
-        sync = get_object_or_404(self.queryset, pk=pk)
-        try:
-            job = enqueue_button_job(sync, "create_module_bays", request.user)
-        except JobAlreadyActive as exc:
-            messages.warning(request, str(exc))
-            return redirect(sync.get_absolute_url())
-        messages.success(
-            request,
-            _(
-                "Queued job #%(pk)d to create missing module bays. Watch the Jobs "
-                "tab for the result."
-            )
-            % {"pk": job.pk},
-        )
-        return redirect(sync.get_absolute_url())
 
 
 @register_model_view(ForwardSync, "support_bundle", path="support-bundle")
@@ -1209,23 +1292,32 @@ class ForwardSyncSupportBundleZipView(BaseObjectView):
 
     def get(self, request, pk):
         sync = get_object_or_404(self.queryset, pk=pk)
-        return self._download(request, sync)
+        if "password" in request.GET:
+            return HttpResponseBadRequest(
+                "Archive passwords must be submitted in a POST request."
+            )
+        return self._download(sync, password="")
 
     def post(self, request, pk):
         sync = get_object_or_404(self.queryset, pk=pk)
-        return self._download(request, sync)
+        return self._download(sync, password=request.POST.get("password") or "")
 
-    def _download(self, request, sync):
+    def _download(self, sync, *, password):
         filename = f"forward-sync-{sync.pk}-support-bundle.zip"
         try:
             return support_bundle_zip_response(
                 _sync_support_bundle_payload(sync),
                 filename=filename,
                 json_filename=f"forward-sync-{sync.pk}-support-bundle.json",
-                password=request.POST.get("password") or request.GET.get("password"),
+                password=password,
             )
         except RuntimeError as exc:
-            return HttpResponseBadRequest(str(exc))
+            logger.warning(
+                "Support-bundle archive creation failed (%s)", type(exc).__name__
+            )
+            return HttpResponseBadRequest(
+                "Support-bundle archive creation failed. Review server logs."
+            )
 
 
 @register_model_view(ForwardSync, "health")
@@ -1238,9 +1330,7 @@ class ForwardSyncHealthView(generic.ObjectView):
     )
 
     def get_extra_context(self, request, instance):
-        health = sync_health_summary(instance)
-        live_diagnostics = live_support_diagnostics(instance, sync_health=health)
-        return {"health": health, "live_diagnostics": json_safe_value(live_diagnostics)}
+        return {"health": sync_health_summary(instance)}
 
 
 @register_model_view(ForwardSync, "query_drift", path="query-drift")
@@ -1305,16 +1395,16 @@ class ForwardSyncPublishBundledQueriesView(BaseObjectView):
                 commit_message="Publish Forward NetBox NQE maps",
                 pin_commit=False,
             )
-        except Exception as exc:  # noqa: BLE001 - surface any publish failure clearly
+        except Exception as exc:  # noqa: BLE001 - emit only a safe error class
+            logger.warning("Bundled query publication failed (%s)", type(exc).__name__)
             messages.error(
                 request,
                 _(
-                    "Unable to publish bundled queries to the Forward org library: "
-                    "%(error)s. Publishing writes to the Forward Org Repository and "
+                    "Unable to publish bundled queries to the Forward org library. "
+                    "Publishing writes to the Forward Org Repository and "
                     "needs a source login with NQE-library write permission "
                     "(Forward Network Operator or equivalent)."
-                )
-                % {"error": str(exc)},
+                ),
             )
             return redirect(
                 reverse(
@@ -1393,35 +1483,6 @@ class ForwardSyncDataFileHealthView(BaseObjectView):
         return _download_json_response(json_safe_value(payload), filename)
 
 
-@register_model_view(ForwardSync, "pushdown_trends", path="pushdown-trends")
-class ForwardSyncPushdownTrendsView(BaseObjectView):
-    queryset = ForwardSync.objects.all()
-
-    def get_required_permission(self):
-        return "forward_netbox.view_forwardsync"
-
-    def get(self, request, pk):
-        sync = get_object_or_404(self.queryset, pk=pk)
-        limit_raw = request.GET.get("limit")
-        try:
-            selected_limit = int(limit_raw) if limit_raw not in ("", None) else 180
-        except (TypeError, ValueError):
-            selected_limit = 180
-        selected_limit = max(1, min(1000, selected_limit))
-        history = pushdown_trend_history_for_sync(sync, limit=selected_limit)
-        payload = {
-            "exported_at": timezone.now().isoformat(),
-            "sync": {
-                "pk": sync.pk,
-                "name": sync.name,
-                "source": sync.source_id,
-            },
-            "history": history,
-        }
-        filename = f"forward-sync-{sync.pk}-pushdown-trends.json"
-        return _download_json_response(json_safe_value(payload), filename)
-
-
 @register_model_view(ForwardSync, "delete")
 class ForwardSyncDeleteView(generic.ObjectDeleteView):
     queryset = ForwardSync.objects.all()
@@ -1466,15 +1527,19 @@ class ForwardIngestionListView(generic.ObjectListView):
     queryset = annotate_statistics(ForwardIngestion.objects.all())
     filterset = ForwardIngestionFilterSet
     table = ForwardIngestionTable
-    actions = (BulkExport, BulkDelete)
+    actions = (BulkExport,)
 
 
 @register_model_view(ForwardIngestion, name="logs", path="logs")
-class ForwardIngestionLogView(LoginRequiredMixin, View):
+class ForwardIngestionLogView(BaseObjectView):
+    queryset = annotate_statistics(ForwardIngestion.objects.all())
     template_name = "forward_netbox/partials/ingestion_all.html"
 
+    def get_required_permission(self):
+        return "forward_netbox.view_forwardingestion"
+
     def get(self, request, **kwargs):
-        ingestion = annotate_statistics(ForwardIngestion.objects).get(pk=kwargs["pk"])
+        ingestion = get_object_or_404(self.queryset, pk=kwargs["pk"])
         active_stage = request.GET.get("stage", "sync")
         data = ingestion.get_statistics(stage=active_stage)
         data["object"] = ingestion
@@ -1483,19 +1548,16 @@ class ForwardIngestionLogView(LoginRequiredMixin, View):
         data["merge_job_results"] = ingestion.get_job_logs(ingestion.merge_job)
         data["active_stage"] = active_stage
         data["merge_disabled"] = not ingestion.merge_job
-        data["execution_state"] = _compact_execution_state_payload(
-            json_safe_value(get_execution_display_state(ingestion.sync))
-        )
         sync_running = ingestion.job and not ingestion.job.completed
         merge_running = ingestion.merge_job and not ingestion.merge_job.completed
         job_running = bool(sync_running or merge_running)
-        # Defer the change-explainability recompute while the job is running: it
+        # Keep change explainability unavailable while the job is running: it
         # is only meaningful once staging/merge completes, and recomputing it on
         # every poll piles DB load onto the web workers during a long settling
         # merge (a large platform reclassification can run for minutes) — that
         # contention is what produces the 504 gateway timeouts the customer sees.
         data["change_explainability"] = (
-            {"available": False, "reason": "deferred_while_running"}
+            {"available": False, "reason": "unavailable_while_running"}
             if job_running
             else change_explainability_summary(ingestion)
         )
@@ -1530,11 +1592,15 @@ class ForwardIngestionLogExportView(BaseObjectView):
 
 
 @register_model_view(ForwardIngestion, name="progress", path="progress")
-class ForwardIngestionProgressView(LoginRequiredMixin, View):
+class ForwardIngestionProgressView(BaseObjectView):
+    queryset = annotate_statistics(ForwardIngestion.objects.all())
     template_name = "forward_netbox/partials/ingestion_progress.html"
 
+    def get_required_permission(self):
+        return "forward_netbox.view_forwardingestion"
+
     def get(self, request, **kwargs):
-        ingestion = annotate_statistics(ForwardIngestion.objects).get(pk=kwargs["pk"])
+        ingestion = get_object_or_404(self.queryset, pk=kwargs["pk"])
         active_stage = request.GET.get("stage", "sync")
         if active_stage not in ("sync", "merge"):
             active_stage = "sync"
@@ -1543,9 +1609,6 @@ class ForwardIngestionProgressView(LoginRequiredMixin, View):
         data["merge_job"] = ingestion.merge_job
         data["active_stage"] = active_stage
         data["merge_disabled"] = not ingestion.merge_job
-        data["execution_state"] = _compact_execution_state_payload(
-            json_safe_value(get_execution_display_state(ingestion.sync))
-        )
         return render(request, self.template_name, data)
 
 
@@ -1564,13 +1627,10 @@ class ForwardIngestionView(generic.ObjectView):
         data["merge_job_results"] = instance.get_job_logs(instance.merge_job)
         data["active_stage"] = active_stage
         data["merge_disabled"] = not instance.merge_job
-        data["execution_state"] = _compact_execution_state_payload(
-            json_safe_value(get_execution_display_state(instance.sync))
-        )
-        # Defer change-explainability while the job is running (see
+        # Keep change explainability unavailable while the job is running (see
         # ForwardIngestionLogView): avoids recomputing it under merge contention.
         data["change_explainability"] = (
-            {"available": False, "reason": "deferred_while_running"}
+            {"available": False, "reason": "unavailable_while_running"}
             if data["job_running"]
             else change_explainability_summary(instance)
         )
@@ -1635,10 +1695,15 @@ class ForwardIngestionMergeView(BaseObjectView):
     path="change/<int:change_pk>",
     kwargs={"model": ForwardIngestion},
 )
-class ForwardIngestionChangesDiffView(LoginRequiredMixin, View):
+class ForwardIngestionChangesDiffView(BaseObjectView):
+    queryset = ForwardIngestion.objects.all()
     template_name = "forward_netbox/inc/diff.html"
 
+    def get_required_permission(self):
+        return "forward_netbox.view_forwardingestion"
+
     def get(self, request, **kwargs):
+        ingestion = get_object_or_404(self.queryset, pk=kwargs["pk"])
         change_id = kwargs.get("change_pk")
         if not request.htmx or not change_id:
             return render(
@@ -1654,7 +1719,11 @@ class ForwardIngestionChangesDiffView(LoginRequiredMixin, View):
                 },
             )
 
-        change = ChangeDiff.objects.get(pk=change_id)
+        change = get_object_or_404(
+            ChangeDiff,
+            pk=change_id,
+            branch_id=ingestion.branch_id,
+        )
         if change.original and change.modified:
             diff_added = shallow_compare_dict(
                 change.original or {},
@@ -1731,17 +1800,6 @@ class ForwardIngestionIssuesView(generic.ObjectChildrenView):
 
     def get_children(self, request, parent):
         return ForwardIngestionIssue.objects.filter(ingestion=parent)
-
-
-@register_model_view(ForwardIngestion, "delete")
-class ForwardIngestionDeleteView(generic.ObjectDeleteView):
-    queryset = ForwardIngestion.objects.all()
-
-
-@register_model_view(ForwardIngestion, "bulk_delete", path="delete", detail=False)
-class ForwardIngestionBulkDeleteView(generic.BulkDeleteView):
-    queryset = ForwardIngestion.objects.all()
-    table = ForwardIngestionTable
 
 
 @register_model_view(ForwardDeviceAnalysis, "list", path="", detail=False)

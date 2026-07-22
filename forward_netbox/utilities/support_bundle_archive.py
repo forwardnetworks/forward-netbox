@@ -2,14 +2,10 @@ import io
 import json
 import zipfile
 
+import pyzipper
 from django.http import HttpResponse
 
 from .json_safe import json_safe_value
-
-try:
-    import pyzipper
-except ImportError:  # pragma: no cover - dependency installed for release tests
-    pyzipper = None
 
 
 def support_bundle_zip_response(payload, *, filename, json_filename, password=""):
@@ -21,10 +17,6 @@ def support_bundle_zip_response(payload, *, filename, json_filename, password=""
     buffer = io.BytesIO()
     archive_password = (password or "").strip()
     if archive_password:
-        if pyzipper is None:
-            raise RuntimeError(
-                "Password-protected support bundle downloads require pyzipper."
-            )
         with pyzipper.AESZipFile(
             buffer,
             mode="w",

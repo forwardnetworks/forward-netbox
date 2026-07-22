@@ -38,18 +38,12 @@ UNIQUE_LOOKUP_CACHE_FIELD_SETS = {
         ("assigned_object_type", "assigned_object_id", "asn"),
     ),
     "netbox_routing.bgpscope": (("router", "vrf"),),
-    "netbox_cisco_aci.aciappprofile": (("aci_tenant", "name"),),
     "netbox_cisco_aci.acibridgedomain": (("aci_tenant", "name"),),
-    "netbox_cisco_aci.acicontract": (("aci_tenant", "name"),),
-    "netbox_cisco_aci.aciendpointgroup": (("aci_app_profile", "name"),),
     "netbox_cisco_aci.acifabric": (("name",),),
     "netbox_cisco_aci.acifilter": (("aci_tenant", "name"),),
     "netbox_cisco_aci.acil3out": (("aci_tenant", "name"),),
     "netbox_cisco_aci.acinode": (("aci_pod", "node_id"), ("aci_pod", "name")),
     "netbox_cisco_aci.acipod": (("aci_fabric", "pod_id"), ("aci_fabric", "name")),
-    "netbox_cisco_aci.acistaticportbinding": (
-        ("aci_endpoint_group", "dcim_interface", "encap_vlan"),
-    ),
     "netbox_cisco_aci.acitenant": (("aci_fabric", "name"),),
     "netbox_cisco_aci.acivrf": (("aci_tenant", "name"),),
     "netbox_peering_manager.relationship": (("slug",), ("name",)),
@@ -791,9 +785,11 @@ def dependency_parent_coverage_summary(runner, model_string, rows):
             "groups": [],
         }
 
-    missing_device_by_name_cache = getattr(runner, "_missing_device_by_name_cache", {})
-    if not isinstance(missing_device_by_name_cache, dict):
-        missing_device_by_name_cache = {}
+    missing_device_by_name_cache = getattr(
+        runner, "_missing_device_by_name_cache", set()
+    )
+    if not isinstance(missing_device_by_name_cache, (set, dict)):
+        missing_device_by_name_cache = set()
     groups: dict[tuple[str, str], dict] = {}
     for row in rows:
         for field in fields:

@@ -10,7 +10,7 @@ from django.db.models import Q
 DEFAULT_SAMPLE_LIMIT = 25
 
 
-def _legacy_endpoint_device_types(*, include_samples, sample_limit):
+def _stale_endpoint_device_types(*, include_samples, sample_limit):
     candidates = (
         DeviceType.objects.annotate(
             _has_devices=Exists(Device.objects.filter(device_type_id=OuterRef("pk")))
@@ -41,7 +41,7 @@ def _empty_dlm_summary(*, status, reason=""):
         "software_versions": {
             "total": None,
             "without_devices": None,
-            "catalog_retained_without_devices": None,
+            "protected_without_devices": None,
             "unreferenced_without_devices": None,
         },
         "cves": {
@@ -109,7 +109,7 @@ def _dlm_summary(*, include_samples, sample_limit):
             "software_versions": {
                 "total": SoftwareVersion.objects.count(),
                 "without_devices": without_devices_count,
-                "catalog_retained_without_devices": (
+                "protected_without_devices": (
                     without_devices_count - unreferenced_count
                 ),
                 "unreferenced_without_devices": unreferenced_count,
@@ -135,14 +135,14 @@ def _dlm_summary(*, include_samples, sample_limit):
                 "_has_image_files",
                 "_has_validated_rules",
             )
-            retained_sample = []
-            retained = classified.exclude(
+            protected_sample = []
+            protected = classified.exclude(
                 _has_cves=False,
                 _has_vulnerabilities=False,
                 _has_image_files=False,
                 _has_validated_rules=False,
             )
-            for row in retained.order_by("platform__name", "version").values(
+            for row in protected.order_by("platform__name", "version").values(
                 *sample_fields
             )[:sample_limit]:
                 reasons = [
@@ -155,9 +155,9 @@ def _dlm_summary(*, include_samples, sample_limit):
                     )
                     if row.pop(field)
                 ]
-                row["retained_by"] = ", ".join(reasons)
-                retained_sample.append(row)
-            dlm["software_versions"]["catalog_retained_sample"] = retained_sample
+                row["protected_by"] = ", ".join(reasons)
+                protected_sample.append(row)
+            dlm["software_versions"]["protected_sample"] = protected_sample
             dlm["software_versions"]["unreferenced_sample"] = list(
                 unreferenced.order_by("platform__name", "version").values(
                     "platform__name", "version"
@@ -177,7 +177,7 @@ def compute_upgrade_reconciliation(
     """Return local, read-only post-upgrade catalog reconciliation evidence.
 
     Global NetBox catalog objects do not record Forward-source ownership. This
-    function deliberately classifies possible legacy artifacts but never
+    function deliberately classifies possible stale artifacts but never
     deletes them. Samples are opt-in so support bundles contain aggregate
     evidence without customer inventory values.
     """
@@ -194,7 +194,7 @@ def compute_upgrade_reconciliation(
                 manufacturer__isnull=True
             ).count(),
         },
-        "legacy_endpoint_device_types": _legacy_endpoint_device_types(
+        "stale_endpoint_device_types": _stale_endpoint_device_types(
             include_samples=include_samples,
             sample_limit=sample_limit,
         ),

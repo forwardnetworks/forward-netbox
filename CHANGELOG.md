@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v2.6.0
+
+Feature: **durable convergence control plane** - main-schema, per-sync identity and ownership claims are stamped with the exact merged ingestion generation. Managed scope/status tags and virtual-parent links materialize from the union of current claims, including shared tags across sources; only syncs with a completed baseline participate, every completed ingestion reconciles status ownership, and last-claim removal waits for every participating sync. Pending, failed, stale, conflicting, and missing materialization states block convergence in Drift, Health, support evidence, recovery, and the read-only ownership audit. Post-sync analysis, scope/status, and parent work runs through NetBox JobRunner with generation guards; invoking users become durable sync owners, and unattended execution fails closed without attributable ownership. A branch merge with any failed row remains retryable and cannot mark the ingestion complete or enqueue overlays. Merge recovery updates authoritative branch state instead of trusting stale worker objects, and every queued Forward job enforces a two-hour timeout minimum while preserving larger operator values. One Branching branch is used per sync; bounded workload shards target that branch, conservative density baselines shape unprofiled work, and module bays are created branch-natively. Migration `0037` converts retired execution keys, standing schedules, endpoint scope markers, owners, and built-in virtual-chassis state once; runtime rejects retired or unknown configuration instead of carrying compatibility shims. Unsupported no-op ACI maps and inventory contracts are removed. NetBox `4.6.5`, netbox-branching `1.1.1`, and Python `3.14` are exact startup, CI, and packaging requirements. Orphan deletion remains reviewed and manual. Python/UI plus schema and data migrations. Upgrades from any pre-2.6 release must run **Publish Bundled Queries** once with overwrite enabled before validation.
+
 ## v2.5.11
 
 Fix: **post-2.5.10 DLM and scope convergence** - optional DLM maps seed when `netbox-dlm` migrates after Forward NetBox; runtime arguments are projected onto each NQE signature, including preflight; CVEs retain valid metadata when an optional advisory URL is malformed; observed vulnerabilities populate affected software; and platforms receive a manufacturer only when ownership is unambiguous. Fix: **endpoint and CIMC identity** - generic SNMP endpoints remain off unless explicitly enabled, imported console endpoints inherit their matched include tags, CIMCs are excluded from standalone devices and can map to exact-parent inventory through a disabled opt-in map, and legacy Opengear/Avocent software-bearing DeviceTypes are reported for reviewed cleanup. Fix: **upgrade and drift evidence** - Scope Reconciliation and support evidence classify stale catalog records, while dependency previews report workload upper bounds as not-measured drift. After upgrading, run **Publish Bundled Queries** once with overwrite enabled. Python and NQE; no migration.
@@ -348,7 +352,7 @@ keeps the shared-branch architecture, execution ledger, support logging, and sca
 
 ## v0.9.0
 
-adds read-only analysis, workload preview, advisory summaries, and native log export for troubleshooting while keeping lifecycle enrichment and predict deferred
+adds read-only analysis, workload preview, advisory summaries, and native log export for troubleshooting
 
 ## v0.8.6.3
 

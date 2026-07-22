@@ -17,6 +17,14 @@ const dockerProjectName =
   process.env.PLAYWRIGHT_DOCKER_PROJECT_NAME || "forward-netbox";
 const dockerProjectDirectory =
   process.env.PLAYWRIGHT_DOCKER_PROJECT_DIRECTORY || "development";
+const isolatedHarness = process.env.FORWARD_UI_HARNESS_ISOLATED === "true";
+
+if (!isolatedHarness) {
+  throw new Error(
+    "The Playwright UI harness may only run through the isolated " +
+      "`invoke playwright-test` runtime.",
+  );
+}
 
 const dockerComposeArgs = [
   "--project-name",
@@ -25,6 +33,8 @@ const dockerComposeArgs = [
   dockerProjectDirectory,
   "exec",
   "-T",
+  "--env",
+  "FORWARD_UI_HARNESS_ISOLATED=true",
   "netbox",
   "bash",
   "-lc",
@@ -177,13 +187,31 @@ async function main() {
     await expectVisible(page, "Health");
     await expectVisible(page, "ui-harness-drift-policy");
     await expectVisible(page, "latestProcessed");
-    await expectVisible(page, "max_changes_per_branch");
+    await expectVisible(page, "max_changes_per_staging_item");
     await expectVisible(page, "Current activity");
     await assertNoHorizontalOverflow(page, "desktop sync detail");
     evidence.screenshots.push(await screenshot(page, "desktop-sync-detail.jpg"));
     evidence.checks.push(
       "sync detail exposes validation, single-branch run controls, support export, and current activity",
     );
+
+    await page.getByRole("link", { name: "Drift Report", exact: true }).click();
+    await expectVisible(page, "Drift Report");
+    await expectVisible(page, "Latest Sync Evidence");
+    await expectVisible(page, "Not confirmed");
+    await expectVisible(page, "Same as preview");
+    await expectVisible(page, "Run this sync again against the same snapshot");
+    await expectVisible(page, "Not measured");
+    await assertNoHorizontalOverflow(page, "desktop drift report");
+    evidence.screenshots.push(await screenshot(page, "desktop-drift-report.jpg"));
+    evidence.checks.push(
+      "drift report distinguishes workload estimates from same-snapshot convergence evidence",
+    );
+
+    await page.goto(`${baseURL}/plugins/forward/sync/`, {
+      waitUntil: "domcontentloaded",
+    });
+    await page.getByRole("link", { name: "ui-harness-sync" }).first().click();
 
     await page.locator('a[href*="/sync/"][href$="/health/"]').first().click();
     await expectVisible(page, "Health Summary");
@@ -197,9 +225,10 @@ async function main() {
       (await page.getByText("Refresh Query IDs", { exact: true }).count()) === 0,
       "sync health should not expose the retired Refresh Query IDs action",
     );
-    await expectVisible(page, "Large Run Tuning");
-    await expectVisible(page, "Adaptive capacity");
-    await expectVisible(page, "Next tuning batch");
+    await expectVisible(page, "Forward API Usage");
+    await expectVisible(page, "Dependency Lookup Cache");
+    await expectVisible(page, "Density Learning");
+    await expectVisible(page, "Ownership finalization");
     await expectVisible(page, "Diff-capable maps");
     await expectVisible(page, "Next run");
     await expectVisible(page, "Health Details");
@@ -372,6 +401,14 @@ async function main() {
     await assertNoHorizontalOverflow(page, "mobile sync list");
     evidence.screenshots.push(await screenshot(page, "mobile-sync-list.jpg"));
     evidence.checks.push("mobile sync list fits without horizontal overflow");
+
+    await page.getByRole("link", { name: "ui-harness-sync" }).first().click();
+    await page.getByRole("link", { name: "Drift Report", exact: true }).click();
+    await expectVisible(page, "Latest Sync Evidence");
+    await expectVisible(page, "Not measured");
+    await assertNoHorizontalOverflow(page, "mobile drift report");
+    evidence.screenshots.push(await screenshot(page, "mobile-drift-report.jpg"));
+    evidence.checks.push("mobile drift report fits without horizontal overflow");
 
     writeFileSync(
       path.join(artifactDir, "forward-ui-summary.json"),

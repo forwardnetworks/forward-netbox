@@ -14,14 +14,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Bootstrap the exact 2.6 runtime before enforcing its branch rule.
+        # Validate the exact minimum and shipped NetBox patch.
         netbox-version:
           - v4.6.5
     env:
       NETBOX_VER: ${{ matrix.netbox-version }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           fetch-depth: 0
       - name: Set up Python
@@ -40,6 +40,17 @@ jobs:
         run: |
           python scripts/check_sensitive_content.py --protected-history \
             --require-baseline-env
+      - name: Check tracked file content for sensitive content
+        env:
+          # Scans the CONTENT of every tracked file (not just commit
+          # messages) against the same secret, so a customer name in a doc
+          # or test cannot slip past the message-only history scan. Set the
+          # secret with word-boundary regex for short tokens, e.g.
+          # `re:\bExampleCustomer\b`, to avoid substring false positives.
+          FORWARD_SENSITIVE_PATTERNS: ${{ secrets.FORWARD_SENSITIVE_PATTERNS }}
+          FORWARD_SENSITIVE_BINARY_HISTORY_ALLOWLIST: >-
+            ${{ secrets.FORWARD_SENSITIVE_BINARY_HISTORY_ALLOWLIST }}
+        run: python scripts/check_sensitive_content.py --git-files
       - name: Require protected sensitive-content configuration
         if: github.event_name == 'push'
         env:
@@ -49,33 +60,22 @@ jobs:
           FORWARD_SENSITIVE_HISTORY_BASELINE: >-
             ${{ vars.FORWARD_SENSITIVE_HISTORY_BASELINE }}
         run: |
-          # The bootstrap commit can only enforce post-baseline history because
-          # the scrubbed current tree is delivered by the protected 2.6 PR.
-          python scripts/check_sensitive_content.py --protected-history \
-            --require-env-patterns --require-baseline-env
+          python scripts/check_sensitive_content.py --git-files \
+            --protected-history --require-env-patterns --require-baseline-env
       - name: Install validation dependencies
         run: |
           python -m pip install --require-hashes \
             --requirement requirements-release.txt
       - name: Audit dependencies for known vulnerabilities (pip-audit)
-        # Non-blocking signal: Dependabot is the enforcing continuous scanner
-        # (.github/dependabot.yml). This surfaces CVEs in the declared runtime
-        # deps per-run without failing on unfixable upstream advisories.
-        continue-on-error: true
+        # A release candidate with a known vulnerable pinned dependency fails
+        # closed. Dependabot remains the continuous update source.
         run: pip-audit --progress-spinner off -r constraints.txt
       - name: Run pre-commit
-        # The protected-history steps above enforce new content during the
-        # one-time bootstrap. The 2.6 candidate restores the full-tree hook
-        # after removing the inherited pre-baseline identifiers.
-        env:
-          SKIP: sensitive-content-files
         run: pre-commit run --all-files
       - name: Check repository harness
-        # Enforce the plan-doc gate on human-authored PRs only. head_ref is
-        # set only on PRs (empty on push), so this skips the gate on the
-        # merge-to-main push and on Dependabot PRs (which can't carry a plan
-        # doc). Direct pushes stay covered by local invoke harness-check.
-        if: github.head_ref != '' && github.actor != 'dependabot[bot]'
+        # Dependabot cannot carry a plan document. Every human-authored push
+        # and PR runs the repository invariants and changed-file plan gate.
+        if: github.actor != 'dependabot[bot]'
         run: python scripts/check_harness.py
       - name: Run harness tests
         run: python -m unittest discover -s scripts/tests -p 'test_*.py'
@@ -163,6 +163,7 @@ jobs:
             --network-id \"${VAL_NETID}\" \
             --repository org \
             --directory /forward_netbox_validation/ \
+            --repair \
             --fail-on-gap"
       - name: Build release artifacts
         run: python -m build

@@ -1,6 +1,6 @@
 # Shared overlap-guard/enqueue path for the operator "button jobs"
-# (dependency preview, prune orphans, delete-eligible IPAM tagging, module-bay
-# creation). The HTML buttons and the REST API actions must produce
+# (dependency preview, prune orphans, and delete-eligible IPAM tagging). The
+# HTML buttons and REST API actions must produce
 # byte-identical job names (several lookups match on these strings) and refuse
 # to stack duplicates.
 from unittest.mock import Mock
@@ -48,7 +48,7 @@ class ButtonJobEnqueueTest(TestCase):
             job_id=f"123e4567-e89b-12d3-a456-42661417400{job_id_suffix}",
         )
 
-    def test_job_names_are_byte_identical_to_the_legacy_strings(self):
+    def test_job_names_match_supported_operator_actions(self):
         # Several lookups couple to these strings (drift report + preview GET
         # use icontains "dependency preview"; the webhook checks "- adhoc"/
         # "- scheduled"; auto-prune appends " (auto)"). Renaming breaks them.
@@ -56,14 +56,13 @@ class ButtonJobEnqueueTest(TestCase):
             "dependency_preview": "dependency preview",
             "prune_orphans": "prune orphans",
             "tag_delete_eligible_ipam": "tag delete-eligible IPAM",
-            "create_module_bays": "create module bays",
         }
         for kind, suffix in expected.items():
             self.assertEqual(BUTTON_JOB_SPECS[kind][1], suffix, kind)
 
     def test_enqueue_uses_spec_path_and_name(self):
         with patch(
-            "forward_netbox.utilities.sync_facade.Job.enqueue",
+            "forward_netbox.jobs.enqueue_forward_job",
             return_value=Mock(pk=1),
         ) as enqueue:
             enqueue_button_job(self.sync, "dependency_preview", None)
@@ -71,9 +70,23 @@ class ButtonJobEnqueueTest(TestCase):
         self.assertEqual(kwargs["name"], "button-sync - dependency preview")
         self.assertIs(kwargs["instance"], self.sync)
 
+    def test_enqueue_forwards_explicit_job_kwargs(self):
+        with patch(
+            "forward_netbox.jobs.enqueue_forward_job",
+            return_value=Mock(pk=1),
+        ) as enqueue:
+            enqueue_button_job(
+                self.sync,
+                "prune_orphans",
+                None,
+                job_kwargs={"snapshot_id": "snapshot-1"},
+            )
+
+        self.assertEqual(enqueue.call_args.kwargs["snapshot_id"], "snapshot-1")
+
     def test_pending_duplicate_raises(self):
         self._job("button-sync - dependency preview")
-        with patch("forward_netbox.utilities.sync_facade.Job.enqueue") as enqueue:
+        with patch("forward_netbox.jobs.enqueue_forward_job") as enqueue:
             with self.assertRaises(JobAlreadyActive):
                 enqueue_button_job(self.sync, "dependency_preview", None)
         enqueue.assert_not_called()
@@ -84,69 +97,26 @@ class ButtonJobEnqueueTest(TestCase):
             status=JobStatusChoices.STATUS_COMPLETED,
         )
         with patch(
-            "forward_netbox.utilities.sync_facade.Job.enqueue",
+            "forward_netbox.jobs.enqueue_forward_job",
             return_value=Mock(pk=2),
         ) as enqueue:
             enqueue_button_job(self.sync, "dependency_preview", None)
         enqueue.assert_called_once()
-
-    def test_auto_variant_blocks_manual_prune(self):
-        # Prefix semantics: "prune orphans (auto)" blocks a manual
-        # "prune orphans" click (the exact-match guard used to miss this).
-        self._job(
-            "button-sync - prune orphans (auto)",
-            status=JobStatusChoices.STATUS_RUNNING,
-        )
-        with self.assertRaises(JobAlreadyActive):
-            enqueue_button_job(self.sync, "prune_orphans", None)
-
-    def test_manual_prune_blocks_auto_variant(self):
-        self._job("button-sync - prune orphans")
-        with self.assertRaises(JobAlreadyActive):
-            enqueue_button_job(
-                self.sync,
-                "prune_orphans",
-                None,
-                name_suffix_extra=" (auto)",
-                during_sync_ok=True,
-            )
 
     def test_active_sync_blocks_prune_but_not_other_kinds(self):
         self._job("button-sync - adhoc", status=JobStatusChoices.STATUS_RUNNING)
         with self.assertRaises(JobAlreadyActive):
             enqueue_button_job(self.sync, "prune_orphans", None)
         with patch(
-            "forward_netbox.utilities.sync_facade.Job.enqueue",
+            "forward_netbox.jobs.enqueue_forward_job",
             return_value=Mock(pk=3),
         ) as enqueue:
             enqueue_button_job(self.sync, "dependency_preview", None)
         enqueue.assert_called_once()
 
-    def test_during_sync_ok_bypasses_only_the_sync_check(self):
-        # The post-sync auto-prune hook enqueues from inside the still-running
-        # sync job; it must bypass the sync-running check but still honor the
-        # duplicate-prune guard.
-        self._job("button-sync - adhoc", status=JobStatusChoices.STATUS_RUNNING)
-        with patch(
-            "forward_netbox.utilities.sync_facade.Job.enqueue",
-            return_value=Mock(pk=4),
-        ) as enqueue:
-            enqueue_button_job(
-                self.sync,
-                "prune_orphans",
-                None,
-                name_suffix_extra=" (auto)",
-                during_sync_ok=True,
-            )
-        enqueue.assert_called_once()
-        self.assertEqual(
-            enqueue.call_args.kwargs["name"],
-            "button-sync - prune orphans (auto)",
-        )
-
 
 class ButtonJobAPIActionTest(TestCase):
-    """REST parity for the four button jobs: per-action permission, 201 +
+    """REST parity for the supported button jobs: per-action permission, 201 +
     JobSerializer on success, 202 already_running when an equivalent job is
     active (idempotent for retry-blind schedulers)."""
 
@@ -154,7 +124,6 @@ class ButtonJobAPIActionTest(TestCase):
         ("dependency_preview", "dependency preview"),
         ("prune_orphans", "prune orphans"),
         ("tag_delete_eligible_ipam", "tag delete-eligible IPAM"),
-        ("create_module_bays", "create module bays"),
     )
 
     @classmethod
@@ -211,7 +180,7 @@ class ButtonJobAPIActionTest(TestCase):
                     job_id=f"123e4567-e89b-12d3-a456-4266141741{index:02d}",
                 )
                 with patch(
-                    "forward_netbox.utilities.sync_facade.Job.enqueue",
+                    "forward_netbox.jobs.enqueue_forward_job",
                     return_value=real_job,
                 ) as enqueue:
                     response = self._post(self.admin, kind)
@@ -222,9 +191,7 @@ class ButtonJobAPIActionTest(TestCase):
     def test_actions_403_without_permission(self):
         for kind, _suffix in self.KINDS:
             with self.subTest(kind=kind):
-                with patch(
-                    "forward_netbox.utilities.sync_facade.Job.enqueue"
-                ) as enqueue:
+                with patch("forward_netbox.jobs.enqueue_forward_job") as enqueue:
                     response = self._post(self.plain_user, kind)
                 self.assertEqual(response.status_code, 403, kind)
                 enqueue.assert_not_called()
@@ -246,12 +213,7 @@ class ButtonJobAPIActionTest(TestCase):
 
 
 class ButtonJobRunnerParityTest(TestCase):
-    """JobRunner classes for the three remaining button jobs (backlog:
-    conversion for parity with ValidationJob/DependencyPreviewJob). Their
-    fixed Meta.names must stay byte-identical to the BUTTON_JOB_SPECS
-    suffixes — the overlap guard's exact-name arm depends on it — and the
-    guard must stay instance-scoped (a fixed-name row on another sync must
-    not block this one)."""
+    """Every supported button job uses the JobRunner lifecycle."""
 
     @classmethod
     def setUpTestData(cls):
@@ -279,7 +241,6 @@ class ButtonJobRunnerParityTest(TestCase):
         )
 
     def test_meta_names_match_button_spec_suffixes(self):
-        from forward_netbox.jobs import CreateModuleBaysJob
         from forward_netbox.jobs import PruneOrphansJob
         from forward_netbox.jobs import TagDeleteEligibleIpamJob
 
@@ -287,9 +248,6 @@ class ButtonJobRunnerParityTest(TestCase):
         self.assertEqual(
             TagDeleteEligibleIpamJob.name,
             BUTTON_JOB_SPECS["tag_delete_eligible_ipam"][1],
-        )
-        self.assertEqual(
-            CreateModuleBaysJob.name, BUTTON_JOB_SPECS["create_module_bays"][1]
         )
 
     def test_fixed_name_occurrence_blocks_same_sync_button(self):
@@ -312,14 +270,13 @@ class ButtonJobRunnerParityTest(TestCase):
             job_id="123e4567-e89b-12d3-a456-426614176002",
         )
         with patch(
-            "forward_netbox.utilities.sync_facade.Job.enqueue",
+            "forward_netbox.jobs.enqueue_forward_job",
             return_value=Mock(pk=60),
         ) as enqueue:
             enqueue_button_job(self.sync, "prune_orphans", None)
         enqueue.assert_called_once()
 
     def test_runner_run_invokes_work(self):
-        from forward_netbox.jobs import CreateModuleBaysJob
         from forward_netbox.jobs import PruneOrphansJob
         from forward_netbox.jobs import TagDeleteEligibleIpamJob
 
@@ -328,10 +285,6 @@ class ButtonJobRunnerParityTest(TestCase):
             (
                 TagDeleteEligibleIpamJob,
                 "forward_netbox.jobs._tag_delete_eligible_ipam_work",
-            ),
-            (
-                CreateModuleBaysJob,
-                "forward_netbox.jobs._create_module_bays_work",
             ),
         )
         for index, (runner_cls, work_path) in enumerate(pairs):

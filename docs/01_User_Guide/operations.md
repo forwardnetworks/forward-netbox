@@ -141,16 +141,29 @@ It reports:
 - unreferenced Opengear/Avocent DeviceTypes whose model still contains the old
   software-bearing `sysDescr` signature.
 
-The audit does not delete catalog objects. SoftwareVersions, CVEs, Platforms,
-and DeviceTypes are global NetBox records and do not record which Forward source
-created them; another sync or an operator may own them. Review candidates in
-NetBox before deleting them manually. Previously imported standalone CIMCs are
-devices, so the existing source-scoped **Prune orphans** workflow handles them
-after the corrected endpoint query excludes them.
+The audit itself does not delete catalog objects. A complete 2.6 sync does:
+its DeviceSoftware and Vulnerability associations define the authoritative
+SoftwareVersion union, while its full Vulnerability workload defines the CVE
+catalog. A version outside the union is removed only when no DeviceSoftware,
+Vulnerability, SoftwareImageFile, or ValidatedSoftware relation protects it. A
+CVE outside its target is removed only when it has no Vulnerability; its
+affected-software relation is derived exactly from current Vulnerabilities.
+Removing a Vulnerability removes only its now-unrepresented SoftwareVersion
+from that relation, and a guarded CVE delete clears any remainder.
+Durable workload state protects identities asserted by another completed sync
+and blocks deletion while a peer has not established comparable state.
+Platforms and DeviceTypes remain global metadata for manual review.
+
+Previously imported standalone CIMCs with exact, unprotected identities from
+the current sync are removed through its normal branch and merge. The existing
+source-scoped **Prune orphans** workflow remains available for historical or
+operator-owned rows that cannot be proven safe for automatic removal.
 
 A device successfully applied by the current sync automatically loses the
 plugin-maintained `forward-out-of-scope` tag. Other NetBox tags are untouched.
-This self-heals stale visual scope state; it does not delete orphan devices.
+This self-heals stale visual scope state independently of authoritative device
+cleanup; it never treats a tag assignment alone as permission to delete a
+device.
 
 Support bundles include aggregate reconciliation counts but omit the sampled
 Platform/version and DeviceType values.
@@ -162,10 +175,40 @@ them in this snapshot and carried over older data. A persistent backfilled set
 usually means a **collection gap in Forward** (unreachable device, canceled
 collection), not a plugin problem.
 
-The **Tag backfilled devices** button queues a job that applies a maintained
-`forward-backfilled` tag to them. Filter `/dcim/devices/?tag=forward-backfilled`
-to see the list. The tag self-heals: a device that collects fresh again loses the
-tag on the next run.
+The **Reconcile device scope tags** button queues a job that maintains the
+`forward-backfilled` and `forward-out-of-scope` tags. Filter
+`/dcim/devices/?tag=forward-backfilled` to see the backfilled list. The tags
+self-heal on the next run. When **Apply Device Scope Tags** is enabled, the same
+job also removes only the source's configured include-tag assignments from
+devices that are now out of scope; unrelated operator tags remain untouched.
+After each successful sync, the same pinned-generation job reconciles status
+and include-tag ownership automatically. Out-of-scope status applies only to
+devices previously claimed by that sync, so unrelated NetBox devices are never
+classified by absence.
+
+Automatic cleanup starts only after the sync is merged and completed, and it
+uses the exact generation and snapshot recorded on that ingestion. Each sync
+persists its claims in the main schema, and shared managed tags materialize from
+the union of every current claim. The last assignment is removed only after all
+relevant syncs reconcile their latest baselines. An empty or failed Forward
+scope removes nothing and leaves failed reconciliation evidence. An obsolete
+queued overlay completes without mutation and requests a catch-up for the
+newest completed ingestion. Orphan pruning is never part of this automatic
+path; it remains a reviewed manual job.
+
+Snapshot catch-up waits until every required scope, status-tag, and virtual-
+parent ownership domain for the ingestion is complete. Health reports the
+durable pending or checking state; a failed check remains recoverable without
+replaying the merged branch.
+
+Deleting a source or sync releases only that object's durable tag and virtual
+parent claims. Conflicting parent evidence owned by another source is preserved
+for its operator to resolve and does not block deletion of an unrelated sync.
+
+Virtual-parent reconciliation uses the same per-sync claim model. Compatible
+claims materialize one parent link and one plugin-owned Virtual Device Context.
+Conflicting claims are retained as evidence, preserve the current link, fail the
+overlay, and block convergence until the source data is corrected.
 
 The **Collection gap** health signal (sync health summary) flags when the
 backfilled count is non-trivial so you can investigate collection in Forward.
@@ -192,17 +235,16 @@ These are different buckets — only one is removable:
 So a device showing `forward-backfilled` but not an included tag in NetBox is
 **not** an out-of-scope orphan — it is in scope and intentionally retained.
 
-## Module readiness
+## Module synchronization
 
-NetBox Branching cannot create a new device's module bays during a merge, so
-optional `dcim.module` sync needs the bays to exist first. The **Module
-Readiness** page reports how many module rows already have bays, how many are
-missing, and whether sync is ready.
+Under the required NetBox 4.6.5 and Branching 1.1.1 matrix, module sync creates
+missing module bays inside the same branch before it creates each module. The
+**Module Readiness** page remains an optional preflight that reports existing
+and missing bays.
 
-- **Ready** reflects *missing module bays only*. Module rows for devices not in
-  NetBox skip harmlessly and do not hold readiness at "No".
-- The **Create missing module bays** button queues a job that creates the bays
-  directly (MPTT-safe, idempotent). Re-run the sync afterward to import modules.
+- It reports the exact `(device, bay)` identities the sync will create.
+- Rows whose devices are not yet in NetBox are reported separately; device and
+  module ordering is resolved inside the sync branch.
 
 When modules are created, the device's existing Forward-synced interfaces are
 **adopted** into the module rather than recreated, so enabling module sync does
@@ -212,10 +254,18 @@ CLI equivalent: `python manage.py forward_module_readiness --sync-name "<sync>"`
 
 ## Dependency preview
 
-The **Preview Dependencies** button queues a job that builds the multi-branch
-dependency plan (a heavy live dry-run). When it finishes, **View Last Preview**
+The **Preview Dependencies** button queues a job that builds the single-branch
+dependency workload (a heavy live dry-run). When it finishes, **View Last Preview**
 renders the cached result and `?format=json` downloads it. The preview never runs
 the dry-run in the web request, so it does not time out on large fabrics.
+
+Dependency preview reports fetched apply candidates and planned deletes as a
+workload upper bound. It does not compare every candidate with persisted NetBox
+objects, so the Drift Report labels object drift as **Not measured**. The report
+also shows the latest ingestion's persisted created, updated, deleted, applied,
+and failed counters. A merged sync with zero changes and zero failures confirms
+convergence only when its snapshot ID matches the preview snapshot. If a sync
+applied changes, run it once more against the same resolved snapshot.
 
 ### Recovering a sync wedged by a dead worker
 
@@ -272,20 +322,24 @@ the sync **Health** panel now flags the two common causes:
   overwrite enabled. Vulnerability imports also ensure the same device-software
   association when enabled independently.
 
-- **CVE detail fields and affected versions** - the CVE catalog imports the
-  earliest Forward vendor-advisory date, a deterministic valid HTTP(S)
-  vendor-advisory URL, and the maximum overall/CVSSv2/CVSSv3 scores reported
-  across vendor records. Malformed advisory URLs are omitted instead of
-  rejecting the CVE row. The Vulnerability map also adds its observed
-  SoftwareVersion to the CVE's **Affected software** relation. This is
-  intentionally additive catalog knowledge: upgrading or removing the last
-  current device does not make the historical software release unaffected.
+- **CVE detail fields and affected versions** - the CVE catalog imports only
+  CVEs referenced by vulnerable findings on the same in-scope, completed,
+  versioned devices eligible for the Vulnerability map. It adds the earliest
+  Forward vendor-advisory date, a deterministic valid HTTP(S) vendor-advisory
+  URL, and the maximum overall/CVSSv2/CVSSv3 scores reported across vendor
+  records. Malformed advisory URLs are omitted instead of rejecting the CVE
+  row. The Vulnerability map also adds its observed SoftwareVersion to the CVE's
+  **Affected software** relation.
 
 - **Post-upgrade catalog evidence** - Scope Reconciliation separates
   zero-device SoftwareVersions retained by catalog relations from completely
   unreferenced candidates, and reports CVEs linked to Vulnerabilities or
-  affected software. It is intentionally read-only because these are global
-  NetBox records without Forward-source ownership.
+  affected software. A full sync after upgrading to 2.6 removes versions outside
+  the authoritative DeviceSoftware/Vulnerability union when no local DLM
+  relation protects them, and removes CVEs outside the full Vulnerability target
+  when no Vulnerability protects them. Resulting deletes are recorded as durable
+  tombstones after merge, so forced repeats do not retry already-applied catalog
+  deletes.
 
 - **DLM hardware-notice alias** — warns when the alias-aware device query is
   active but the *base* hardware-notice map is enabled (or vice versa). The
@@ -303,8 +357,8 @@ the sync **Health** panel now flags the two common causes:
 - **DLM dependency readiness** — warns when the last run skipped DLM rows
   because their device types / devices aren't synced. DLM notices and
   vulnerabilities and installed software hang off synced devices, so fix device
-  (and device-type) sync first; the CVE *catalog* is device-independent and
-  populates on its own. A flood of "not in NetBox yet" skips is now collapsed
+  (and device-type) sync first; the CVE catalog is projected from the complete
+  in-scope Vulnerability workload. A flood of "not in NetBox yet" skips is now collapsed
   into capped detail plus one summary issue instead of one row per device type
   or vulnerability.
 
@@ -369,9 +423,9 @@ Behavior:
   response is deliberately identical for all failure causes.
 - `409` — the sync cannot start (e.g. waiting for a branch merge).
 
-Use a long random secret and rotate it from the sync form. Combined with
-**Skip scheduled runs on an unchanged snapshot**, a webhook per Forward
-processing event keeps NetBox current without any polling schedule.
+Use a long random secret and rotate it from the sync form. A webhook per Forward
+processing event keeps NetBox current without polling; delayed duplicate
+deliveries no-op automatically when the baseline already uses that snapshot.
 
 ### Configuring Forward as the sender
 
@@ -409,19 +463,21 @@ Notes: the endpoint is idempotent for Forward's retries (an already-running
 sync is acknowledged, not re-queued). Serve NetBox over HTTPS and remember a
 query-string secret can appear in proxy/access logs — rotate it from the sync
 form if exposed. Forward's delivery retry/timeout behavior is not documented;
-keep a low-frequency scheduled sync with **Skip scheduled runs on an unchanged
-snapshot** as the safety net for missed deliveries.
+keep a low-frequency scheduled sync as the safety net for missed deliveries.
+Scheduled runs automatically no-op while the Forward snapshot remains unchanged;
+the no-op also suppresses post-sync overlay jobs, so the complete occurrence
+issues no NQE calls. A manual force-resync is rejected while another sync job is
+active and can be retried after that job finishes.
 
 ## Automating operator jobs (API + standing schedules)
 
-The four operator buttons are also exposed as token-authenticated REST
+The three operator jobs are also exposed as token-authenticated REST
 actions, so an external scheduler can drive them:
 
 ```bash
 POST /api/plugins/forward/sync/<id>/dependency-preview/
 POST /api/plugins/forward/sync/<id>/prune-orphans/
 POST /api/plugins/forward/sync/<id>/tag-delete-eligible-ipam/
-POST /api/plugins/forward/sync/<id>/create-module-bays/
 ```
 
 Each returns `201` with the job on success, `403` without permission, and
@@ -430,7 +486,7 @@ already queued or running — duplicates never stack (across buttons, API
 calls, and scheduled occurrences) and retries from a calendar-blind cron
 stay green. Prune while a sync run is active answers
 `202 {"status": "blocked_by_sync_run"}` instead: that prune did **not** run
-(enable post-sync auto-prune to cover the gap, or retry after the sync). Permissions: in addition to each button's own permission (e.g.
+(retry after the sync completes). Permissions: in addition to each button's own permission (e.g.
 `dcim.delete_device` for prune), NetBox's API token layer requires
 `forward_netbox.add_forwardsync` for any POST to this viewset — grant both
 to the service account. **Validate** (`POST .../validate/`) follows the same
@@ -445,7 +501,7 @@ blank disables) or via the API on `validate` and `dependency-preview`:
 ```bash
 curl -X POST https://netbox.example.com/api/plugins/forward/sync/<id>/dependency-preview/ \
   -H "Authorization: Token <api-token>" -H "Content-Type: application/json" \
-  -d '{"interval": 1440}'          # minutes; 0 cancels; optional future "schedule_at"
+  -d '{"interval": 1440}'          # minutes; 0 cancels; optional "schedule_at"
 ```
 
 - An empty body keeps the one-shot behavior unchanged.
@@ -461,16 +517,18 @@ curl -X POST https://netbox.example.com/api/plugins/forward/sync/<id>/dependency
 - **To cancel**: blank the form field, or POST `{"interval": 0}`. Deleting
   the scheduled job from the Jobs list alone is not enough anymore — the
   recorded intent recreates it (see self-healing below). Deleting the sync
-  cancels its schedules. Cancelling while an occurrence is mid-run is safe:
-  the in-flight run finishes, then its chain reads the cancelled intent and
-  stops itself.
+  cancels pending schedules; deletion is rejected while any sync-bound worker
+  is running so its terminal status and logs cannot be discarded. Cancelling
+  while an occurrence is mid-run is safe: the in-flight run finishes, then its
+  chain reads the cancelled intent and stops itself.
 - **Self-healing**: the schedule intent lives on the sync; the plugin
   re-creates a missing schedule at the end of every sync run, every
   occurrence re-checks the intent (a stale or duplicate chain re-aligns or
-  stops itself), and schedules created on 2.5.6 (before intent storage) are
-  adopted automatically. A worker hard-killed mid-occurrence (OOM/SIGKILL)
-  no longer silently kills the schedule. The sync detail page shows each
-  standing schedule and its next run.
+  stops itself), checks RQ liveness before retaining a running occurrence, and
+  schedules created on 2.5.6 (before intent storage) are adopted automatically.
+  A worker hard-killed mid-occurrence (OOM/SIGKILL) no longer silently kills
+  the schedule. The sync detail page shows each standing schedule and its next
+  run.
 - Editing the intent keys directly via a REST `PATCH` of `parameters` is
   validated (non-negative minutes; preview ≥ 60) but only takes effect at
   the next sync run, form save, or occurrence — the API actions above apply
@@ -515,11 +573,14 @@ Maintainers cut releases with `invoke release` (see `scripts/release.py`):
 invoke release --version X.Y.Z --summary "one-line note" --write
 ```
 
-`--write` runs prepare (version bump + compatibility tables) and the local CI
-mirror. Rollout (branch, push, tag, GitHub release, PyPI) only happens with
-`--publish`/`--finish`, after GitHub CI is green. Pushing the `vX.Y.Z` tag
-triggers the Trusted-Publishing workflow (`.github/workflows/release.yml`), which
-builds and uploads to PyPI over OIDC with no stored token.
+`--write` creates a release-candidate row and runs the local CI mirror while the
+previous published release remains marked current. Rollout only happens with
+`--publish`/`--finish`. Finalization promotes the candidate in a separately
+tested commit, fast-forwards `main`, and pushes `vX.Y.Z`. The tag workflow builds
+and validates one wheel/sdist pair, inventories the installed NetBox runtime in
+a CycloneDX SBOM, publishes the pair to PyPI over OIDC, then attaches those exact
+same bytes and the SBOM to the GitHub release. The release command waits for that
+workflow to succeed before reporting completion.
 
 ## Large-fabric fetch safety
 

@@ -7,7 +7,7 @@ This section is the operator and agent harness for `forward-netbox`. It exists t
 - choosing the right validation gate before changing or releasing code
 - running the local Docker NetBox stack
 - cutting GitHub and PyPI releases
-- understanding current quality risks
+- understanding current quality evidence and invariants
 - deciding when a change needs an implementation plan
 
 ## Key Files
@@ -19,8 +19,8 @@ This section is the operator and agent harness for `forward-netbox`. It exists t
 - [Release Playbook](release-playbook.md)
 - [Runtime Tuning Runbook (Generic)](runtime-tuning-runbook.md)
 - [Local Docker Workflow](local-docker-workflow.md)
+- [Harness Engineering Alignment](harness-engineering-alignment.md)
 - [Quality Score](quality-score.md)
 - [Active Implementation Plans](../03_Plans/active/README.md)
-- [Technical Debt Tracker](../03_Plans/technical-debt.md)
 
 For user-facing setup and operation, use the [User Guide](../01_User_Guide/README.md). For model/query details, use the [Reference](../02_Reference/README.md).
