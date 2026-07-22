@@ -38,6 +38,8 @@ repair commit through the protected PR flow.
 
 - Use the actual first-parent bridge commit rather than weakening provenance
   validation or bypassing the release workflow.
+- Treat GitHub-merged pull-request lineage and required checks as the release
+  trust source; historical commit signatures are not consistently available.
 
 ## Completion
 

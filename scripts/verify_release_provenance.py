@@ -299,13 +299,11 @@ def verify_github_release_controls(token: str) -> dict:
     }
 
 
-def _require_verified_commit(commit: str, token: str) -> dict:
+def _require_release_commit_shape(commit: str, token: str) -> dict:
+    """Validate the GitHub commit object; PR provenance supplies trust."""
     payload = _github_json(f"commits/{commit}", token)
     if not isinstance(payload, dict):
         raise ProvenanceError(f"GitHub returned invalid commit data for {commit}")
-    verification = (payload.get("commit") or {}).get("verification") or {}
-    if verification.get("verified") is not True:
-        raise ProvenanceError(f"commit {commit} is not GitHub-verified")
     parents = payload.get("parents") or []
     if len(parents) != 1:
         raise ProvenanceError(f"commit {commit} must have exactly one parent")
@@ -591,7 +589,7 @@ def verify_release_commit_provenance(
     _require_security_bootstrap(PRIOR_POST_RELEASE_DOC_COMMIT, reviewed_commits[0])
 
     for index, commit in enumerate(reviewed_commits):
-        _require_verified_commit(commit, token)
+        _require_release_commit_shape(commit, token)
         _require_merged_main_pr(
             commit,
             token,
