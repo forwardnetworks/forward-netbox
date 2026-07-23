@@ -4,6 +4,8 @@ import re
 from dataclasses import dataclass
 from typing import Iterable
 
+from rq.timeouts import JobTimeoutException
+
 
 @dataclass(frozen=True)
 class ModuleReadinessReport:
@@ -119,6 +121,8 @@ def fetch_module_rows_for_sync(sync) -> list[dict]:
         specs = [get_seeded_builtin_query_spec("dcim.module", "Forward Modules")]
     try:
         specs = resolve_query_specs_for_client(specs, client)
+    except JobTimeoutException:
+        raise
     except Exception:
         # A moved or stale repository path must not make the diagnostic page
         # unusable. Fall back to the shipped query, which is also the safe
