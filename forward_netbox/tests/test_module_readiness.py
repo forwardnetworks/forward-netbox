@@ -195,7 +195,9 @@ class ForwardModuleReadinessCommandTest(TestCase):
 
     def test_readiness_falls_back_to_bundled_query_when_repository_path_is_stale(self):
         client = Mock()
-        client.run_nqe_query.return_value = [{"device": "device-a", "module_bay": "Slot 1"}]
+        client.run_nqe_query.return_value = [
+            {"device": "device-a", "module_bay": "Slot 1"}
+        ]
         with (
             patch.object(ForwardSource, "get_client", return_value=client),
             patch(

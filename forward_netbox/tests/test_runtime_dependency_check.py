@@ -3,9 +3,9 @@ from unittest.mock import patch
 from django.core.exceptions import ImproperlyConfigured
 from django.test import SimpleTestCase
 
-from forward_netbox import NetboxForwardConfig
 from forward_netbox import _check_runtime_dependencies
 from forward_netbox import _resolved_branching_version
+from forward_netbox import NetboxForwardConfig
 
 
 class RuntimeDependencyCheckTest(SimpleTestCase):
