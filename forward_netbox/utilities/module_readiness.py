@@ -117,7 +117,13 @@ def fetch_module_rows_for_sync(sync) -> list[dict]:
     specs = get_query_specs("dcim.module", maps=sync.get_maps())
     if not specs:
         specs = [get_seeded_builtin_query_spec("dcim.module", "Forward Modules")]
-    specs = resolve_query_specs_for_client(specs, client)
+    try:
+        specs = resolve_query_specs_for_client(specs, client)
+    except Exception:
+        # A moved or stale repository path must not make the diagnostic page
+        # unusable. Fall back to the shipped query, which is also the safe
+        # source for a readiness report and preserves sync tag parameters.
+        specs = [get_seeded_builtin_query_spec("dcim.module", "Forward Modules")]
 
     rows: list[dict] = []
     for spec in specs:
