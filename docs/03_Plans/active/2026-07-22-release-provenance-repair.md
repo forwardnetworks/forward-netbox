@@ -42,6 +42,9 @@ repair commit through the protected PR flow.
   trust source; historical commit signatures are not consistently available.
 - Permit only the known pre-PR security-control prefix to use direct commit
   provenance, and reject it if it changes production plugin code.
+- Skip unavailable historical workflow-run lookups only for that same
+  security-control prefix; all pull-request-backed commits still require the
+  complete required-workflow success set.
 
 ## Completion
 

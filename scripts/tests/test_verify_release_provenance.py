@@ -328,6 +328,25 @@ class ReleaseProvenanceTest(unittest.TestCase):
 
         self.assertEqual(result["release_commit"], self.release_commit)
 
+    def test_direct_control_commit_skips_unavailable_historical_workflow_runs(self):
+        commit = "f" * 40
+
+        with (
+            patch.object(provenance, "_github_pages", return_value=[]),
+            patch.object(
+                provenance,
+                "_git_capture",
+                return_value="docs/03_Plans/completed/security-controls.md",
+            ),
+        ):
+            self.assertTrue(
+                provenance._require_merged_main_pr(
+                    commit,
+                    "token",
+                    allow_direct_control_commit=True,
+                )
+            )
+
     def test_rejects_tagged_release_diverged_from_main(self):
         advanced_main = "e" * 40
 
