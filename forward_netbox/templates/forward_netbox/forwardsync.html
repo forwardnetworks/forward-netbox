@@ -228,8 +228,10 @@
             <i class="mdi mdi-heart-pulse" aria-hidden="true"></i>&nbsp;{% trans "Health" %}
           </a>
           {% if perms.forward_netbox.change_forwardnqemap %}
-            <form method="post" action="{% url 'plugins:forward_netbox:forwardsync_publish_bundled_queries' pk=object.pk %}">
+            <form method="post" action="{% url 'plugins:forward_netbox:forwardsync_publish_bundled_queries' pk=object.pk %}" class="d-flex align-items-center gap-2">
               {% csrf_token %}
+              <label class="visually-hidden" for="detail-query-directory">{% trans "Forward query folder" %}</label>
+              <input id="detail-query-directory" name="query_directory" class="form-control form-control-sm" type="text" value="/forward_netbox_validation/" aria-label="{% trans 'Forward query folder' %}">
               <button type="submit" class="btn btn-sm btn-outline-primary">
                 <i class="mdi mdi-cloud-upload" aria-hidden="true"></i>&nbsp;{% trans "Publish Bundled Queries" %}
               </button>

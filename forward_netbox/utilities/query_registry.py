@@ -892,13 +892,19 @@ def _build_query_spec_from_map(query_map) -> QuerySpec:
                 ),
                 placeholder=False,
             )
+    query_id = query_map.query_id or None
+    query_path = getattr(query_map, "query_path", "") or None
+    query_repository = getattr(query_map, "query_repository", "") or None
+    if query_id:
+        query_path = None
+        query_repository = None
     return QuerySpec(
         model_string=query_map.model_string,
         query_name=query_map.name,
         query=query_map.query or None,
-        query_id=query_map.query_id or None,
-        query_repository=getattr(query_map, "query_repository", "") or None,
-        query_path=getattr(query_map, "query_path", "") or None,
+        query_id=query_id,
+        query_repository=query_repository,
+        query_path=query_path,
         commit_id=query_map.commit_id or None,
         parameters=query_map.parameters or {},
         coalesce_fields=tuple(tuple(field_set) for field_set in normalized_coalesce),
@@ -931,7 +937,20 @@ def resolve_query_specs_for_client(specs: list[QuerySpec], client) -> list[Query
                 if not isinstance(query_index, dict):
                     query_index = {"by_path": {}}
                 query_indexes[repository] = query_index
-            indexed_query = (query_index.get("by_path") or {}).get(spec.query_path)
+            by_path = query_index.get("by_path") or {}
+            indexed_query = by_path.get(spec.query_path)
+            if not indexed_query:
+                query_filename = (
+                    str(spec.query_path or "").rstrip("/").rsplit("/", 1)[-1]
+                )
+                moved_matches = [
+                    query
+                    for path, query in by_path.items()
+                    if str(path).rstrip("/").rsplit("/", 1)[-1] == query_filename
+                    and query.get("queryId")
+                ]
+                if len(moved_matches) == 1:
+                    indexed_query = moved_matches[0]
             if indexed_query and indexed_query.get("queryId"):
                 resolved_commit_id = str(
                     indexed_query.get("commitId")

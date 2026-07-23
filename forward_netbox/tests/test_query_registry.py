@@ -375,6 +375,55 @@ class QueryRegistryTest(TestCase):
         self.assertEqual(resolved[1].commit_id, "commit-2")
         client.get_committed_nqe_query.assert_not_called()
 
+    def test_resolve_query_specs_for_client_follows_unique_moved_path(self):
+        client = Mock()
+        client.get_nqe_repository_query_index.return_value = {
+            "by_path": {
+                "/customer/netbox/forward_devices": {
+                    "queryId": "Q_devices_moved",
+                    "path": "/customer/netbox/forward_devices",
+                    "lastCommitId": "commit-moved",
+                }
+            }
+        }
+        specs = [
+            QuerySpec(
+                model_string="dcim.device",
+                query_name="Forward Devices",
+                query_repository="org",
+                query_path="/forward_netbox_validation/forward_devices",
+            )
+        ]
+
+        resolved = resolve_query_specs_for_client(specs, client)
+
+        self.assertEqual(resolved[0].run_query_id, "Q_devices_moved")
+        self.assertEqual(resolved[0].commit_id, "commit-moved")
+        client.get_committed_nqe_query.assert_not_called()
+
+    def test_resolve_query_specs_for_client_does_not_guess_ambiguous_moved_path(self):
+        client = Mock()
+        client.get_nqe_repository_query_index.return_value = {
+            "by_path": {
+                "/folder-a/forward_devices": {"queryId": "Q_devices_a"},
+                "/folder-b/forward_devices": {"queryId": "Q_devices_b"},
+            }
+        }
+        client.get_committed_nqe_query.side_effect = RuntimeError("missing old path")
+        specs = [
+            QuerySpec(
+                model_string="dcim.device",
+                query_name="Forward Devices",
+                query_repository="org",
+                query_path="/forward_netbox_validation/forward_devices",
+            )
+        ]
+
+        with self.assertRaisesRegex(RuntimeError, "missing old path"):
+            resolve_query_specs_for_client(specs, client)
+
+        client.get_committed_nqe_query.assert_called_once()
+
     def test_resolve_query_specs_for_client_falls_back_for_pinned_commit(self):
         client = Mock()
         client.get_nqe_repository_query_index.return_value = {"by_path": {}}
@@ -1191,6 +1240,26 @@ class QueryRegistryTest(TestCase):
         self.assertEqual(len(specs), 1)
         self.assertEqual(specs[0].query_id, "FQ_custom_devices")
         self.assertEqual(specs[0].query, None)
+
+    def test_custom_map_executes_by_id_when_location_metadata_is_present(self):
+        netbox_model = ContentType.objects.get(app_label="dcim", model="device")
+        custom_map = ForwardNQEMap.objects.create(
+            name="Custom Devices",
+            netbox_model=netbox_model,
+            query_id="OQ_custom_devices",
+            query_repository="org",
+            query_path="/old/folder/custom_devices",
+            built_in=False,
+            enabled=True,
+        )
+
+        specs = get_query_specs("dcim.device", maps=[custom_map])
+
+        self.assertEqual(len(specs), 1)
+        self.assertEqual(specs[0].query_id, "OQ_custom_devices")
+        self.assertIsNone(specs[0].query_repository)
+        self.assertIsNone(specs[0].query_path)
+        self.assertEqual(specs[0].execution_mode, "query_id")
 
     def test_duplicate_custom_map_execution_is_rejected_before_fetch(self):
         netbox_model = ContentType.objects.get(app_label="dcim", model="device")

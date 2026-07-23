@@ -17,6 +17,7 @@ from django.utils import timezone
 from forward_netbox.choices import forward_configured_models
 from forward_netbox.choices import ForwardCatchupStatusChoices
 from forward_netbox.choices import ForwardSourceStatusChoices
+from forward_netbox.exceptions import ForwardQueryError
 from forward_netbox.models import ForwardIngestion
 from forward_netbox.models import ForwardNQEMap
 from forward_netbox.models import ForwardOwnershipReconciliation
@@ -30,7 +31,9 @@ from forward_netbox.utilities.health import sync_health_summary
 from forward_netbox.utilities.health_checks import ingestion_check_message
 from forward_netbox.utilities.health_checks import ingestion_check_status
 from forward_netbox.utilities.health_checks import query_drift_check_message
+from forward_netbox.utilities.query_fetch_execution import ForwardModelResult
 from forward_netbox.utilities.query_registry import read_compiled_builtin_query_source
+from forward_netbox.views import _dependency_dry_run_payload
 
 
 BGP_PLUGIN_CONFIG = {
@@ -43,6 +46,36 @@ BGP_PLUGIN_CONFIG = {
 
 
 class HealthCheckMessageTest(SimpleTestCase):
+    @patch("forward_netbox.utilities.query_fetch.ForwardQueryFetcher")
+    def test_dependency_preview_fails_when_query_models_fail(self, fetcher_class):
+        fetcher = fetcher_class.return_value
+        fetcher.resolve_context.return_value = SimpleNamespace(
+            as_dict=lambda: {
+                "network_id": "network-1",
+                "snapshot_id": "snapshot-1",
+                "snapshot_selector": "latestProcessed",
+            }
+        )
+        fetcher.fetch_workloads.return_value = []
+        fetcher.model_results = [
+            ForwardModelResult(
+                model_string="dcim.device",
+                query_name="dcim.device",
+                execution_mode="",
+                execution_value="",
+                sync_mode="planning",
+                row_count=0,
+                failure_count=1,
+            )
+        ]
+        sync = Mock()
+
+        with self.assertRaisesRegex(
+            ForwardQueryError,
+            "Dependency preview query validation failed for 1 model",
+        ):
+            _dependency_dry_run_payload(sync, client=Mock())
+
     def test_failed_snapshot_catchup_fails_ingestion_health(self):
         ingestion = SimpleNamespace(
             pk=17,
@@ -784,17 +817,17 @@ class ForwardSyncHealthTest(TestCase):
             data["query_drift_summary"]["status_counts"],
             {
                 "direct_query_id_unverified": 1,
-                "repository_path_matches_bundled_filename": 1,
+                "legacy_repository_path_binding": 1,
             },
         )
-        self.assertEqual(data["query_drift_summary"]["warn_count"], 0)
+        self.assertEqual(data["query_drift_summary"]["warn_count"], 1)
         self.assertEqual(data["query_drift_summary"]["info_count"], 1)
-        self.assertEqual(data["query_drift_summary"]["pass_count"], 1)
+        self.assertEqual(data["query_drift_summary"]["pass_count"], 0)
         self.assertEqual(len(data["results"]), 2)
         path_result = next(
             result for result in data["results"] if result["mode"] == "query_path"
         )
-        self.assertEqual(path_result["status"], "live_repository_source_match")
+        self.assertEqual(path_result["status"], "legacy_repository_path_binding")
         self.assertEqual(path_result["live_query_id"], "Q_devices")
         self.assertEqual(path_result["requested_commit_id"], "head")
         self.assertEqual(path_result["commit_binding"], "latest_commit")
@@ -814,7 +847,8 @@ class ForwardSyncHealthTest(TestCase):
                 reverse(
                     "plugins:forward_netbox:forwardsync_publish_bundled_queries",
                     kwargs={"pk": self.sync.pk},
-                )
+                ),
+                {"query_directory": "/team/netbox/"},
             )
 
         self.assertEqual(response.status_code, 302)
@@ -827,9 +861,7 @@ class ForwardSyncHealthTest(TestCase):
         )
         publish.assert_called_once()
         self.assertEqual(publish.call_args.kwargs["client"], client)
-        self.assertEqual(
-            publish.call_args.kwargs["directory"], "/forward_netbox_validation/"
-        )
+        self.assertEqual(publish.call_args.kwargs["directory"], "/team/netbox/")
         self.assertTrue(publish.call_args.kwargs["overwrite"])
 
     def test_sync_publish_bundled_queries_surfaces_write_permission_error(self):

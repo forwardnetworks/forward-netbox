@@ -40,8 +40,27 @@ jobs:
         run: |
           git fetch --no-tags origin main:refs/remotes/origin/main
           git fetch --force origin refs/tags/v2.5.11:refs/tags/v2.5.11
-          python scripts/verify_release_provenance.py \
-            --tag "${GITHUB_REF_NAME}"
+          set -o pipefail
+          for attempt in $(seq 1 120); do
+            provenance_log="$(mktemp)"
+            if python scripts/verify_release_provenance.py \
+              --tag "${GITHUB_REF_NAME}" 2>&1 | tee "${provenance_log}"; then
+              rm -f "${provenance_log}"
+              exit 0
+            fi
+            if ! grep -q \
+              "latest .* run did not succeed" "${provenance_log}"; then
+              cat "${provenance_log}"
+              rm -f "${provenance_log}"
+              exit 1
+            fi
+            rm -f "${provenance_log}"
+            echo "Main-commit provenance is still settling;"
+            echo "retry ${attempt}/120."
+            sleep 30
+          done
+          echo "Timed out waiting for successful main-commit provenance."
+          exit 1
       - name: Set up Node
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:

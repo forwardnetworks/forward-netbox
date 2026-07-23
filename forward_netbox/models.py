@@ -412,16 +412,18 @@ class ForwardNQEMap(ForwardPluginModelDocsMixin, ChangeLoggedModel):
 
     @property
     def execution_mode(self):
-        if self.query_path:
-            return "query_path"
-        return "query_id" if self.query_id else "query"
+        if self.query_id:
+            return "query_id"
+        return "query_path" if self.query_path else "query"
 
     @property
     def execution_value(self):
-        if self.query_path:
-            repository = self.query_repository or "org"
-            return f"{repository}:{self.query_path}"
-        return self.query_id or self.name
+        if self.query_id:
+            return self.query_id
+        if not self.query_path:
+            return self.name
+        repository = self.query_repository or "org"
+        return f"{repository}:{self.query_path}"
 
     def get_absolute_url(self):
         return reverse("plugins:forward_netbox:forwardnqemap", args=[self.pk])

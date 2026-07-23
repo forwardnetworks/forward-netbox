@@ -573,7 +573,7 @@ class ForwardNQEMapFormTest(TestCase):
             ForwardSource.objects.order_by("pk").first().pk,
         )
         self.assertEqual(form.fields["query_repository"].initial, "org")
-        self.assertEqual(form.fields["query_mode"].initial, "query_path")
+        self.assertEqual(form.fields["query_mode"].initial, "query_id")
 
     def test_query_path_mode_clears_raw_query_and_direct_id(self):
         netbox_model = ContentType.objects.get(app_label="dcim", model="site")
@@ -745,11 +745,11 @@ class ForwardNQEMapBulkEditFormTest(TestCase):
             "/api/plugins/forward/nqe-map/available-queries/",
         )
         self.assertIn(
-            "clear direct query IDs",
+            "resolves and saves each published query ID",
             form.fields["query_bulk_operation"].help_text,
         )
         self.assertIn(
-            "resolved at sync time",
+            "published query",
             form.fields[query_path_field].help_text,
         )
         dynamic_params = form.fields[query_path_field].widget.attrs[

@@ -5,6 +5,7 @@ from django.test import SimpleTestCase
 
 from forward_netbox import _check_runtime_dependencies
 from forward_netbox import _resolved_branching_version
+from forward_netbox import NetboxForwardConfig
 
 
 class RuntimeDependencyCheckTest(SimpleTestCase):
@@ -20,6 +21,9 @@ class RuntimeDependencyCheckTest(SimpleTestCase):
     def test_resolves_version_by_correct_distribution_name(self):
         # netbox-branching is installed as the netboxlabs-netbox-branching dist.
         self.assertIsNotNone(_resolved_branching_version())
+
+    def test_plugin_config_version_matches_package_release(self):
+        self.assertEqual(NetboxForwardConfig.version, "2.6.1")
 
     def test_exact_runtime_passes(self):
         _check_runtime_dependencies()

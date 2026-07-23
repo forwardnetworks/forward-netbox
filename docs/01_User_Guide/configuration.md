@@ -124,8 +124,11 @@ Capacity notes:
 - `NetBox Model`
   - The NetBox object type the map populates.
 - `Query ID`
-  - Optional published Forward query reference.
-  - Use this or `Query`, not both.
+  - Published Forward query identity used for execution.
+  - Folder moves do not change this binding.
+- `Query Repository` and `Query Path`
+  - Current query location metadata.
+  - A legacy path-only map is resolved once and rebound to its query ID.
 - `Query`
   - Optional raw NQE text.
   - Use this or `Query ID`, not both.
@@ -138,31 +141,29 @@ Capacity notes:
 
 ### Execution Modes
 
-Each map must define exactly one of:
+Each map must define one execution reference:
 
-- repository `query_path`
-- `query_id`
+- published `query_id` with optional repository/path metadata
 - raw `query`
 
-Use repository `query_path` when you want the map to call a committed Forward
-query by path. This is the preferred mode because it survives different Forward
-orgs: the plugin resolves the org-specific query ID from the selected source at
-sync time. Use direct `query_id` only when the map is tied to one Forward org.
-Use raw `query` when you want the exact NQE text stored directly in NetBox.
+Use `query_id` for committed Forward queries. It is the durable identity within
+the selected Forward org and remains valid when the query moves between folders.
+Repository and path fields record the current location for display and source
+inspection only. Use raw `query` when you want the exact NQE text stored directly
+in NetBox.
 
 `query_path` and direct `query_id` values are map properties, not source
 configuration. The `Forward Source` supplies credentials and org context for
 selector lookup and runtime path resolution.
 
-When editing an NQE map in the UI, choose `Repository Query Path`, `Direct Query
-ID`, or `Raw Query Text` under `Query Definition Mode`.
+When editing an NQE map in the UI, choose `Direct Query ID` or `Raw Query Text`
+under `Query Definition Mode`. `Repository Query Path` remains available to
+recover a legacy path-only binding.
 
-For repository-path queries, the UI uses `Forward Source for Query Lookup` to
-populate selectors. Pick the query repository, then a folder, then the query
-path. The plugin detects Org Repository queries and Forward Library queries
-from the selected source. After a query is selected, the `Commit ID` selector
-can pin a specific committed revision; leave it blank to resolve the latest
-committed revision at sync time.
+The UI uses `Forward Source for Query Lookup` to populate published-query
+selectors. Pick the repository and optional folder filter, then select the
+query. The saved map uses the returned query ID. The `Commit ID` selector can
+pin a specific committed revision; leave it blank to use the latest revision.
 
 For raw queries, paste the NQE in `Query`. The form clears `query_id` and
 `commit_id` before saving so each map has exactly one execution mode.
@@ -336,11 +337,10 @@ If you prefer to manage the query files in Forward directly:
 9. Validate against a known snapshot before enabling the map in production syncs.
 
 The native bulk edit workflow applies only to the maps selected in the table.
-For each selected map, the operator explicitly chooses the committed query path
-to bind. The plugin verifies that the selected query path targets the same
-NetBox model as the map before saving it. Matched maps clear direct `query_id`
-and raw `query`, and optional `commit_id` is stored only when `Pin current
-commit` is selected.
+For each selected map, the operator chooses the published query. The folder
+limits the selector choices only. The plugin verifies that the selection targets
+the same NetBox model, then saves its query ID and current location metadata.
+Optional `commit_id` is stored only when `Pin current commit` is selected.
 
 The same native bulk edit form can move selected maps back to bundled raw query
 text. Select the maps, choose `Restore bundled raw query text`, and apply the
@@ -349,10 +349,9 @@ edit. The plugin restores the shipped NQE source and clears `query_id`,
 unambiguously. Custom or ambiguous maps are skipped and reported instead of
 being guessed.
 
-This workflow intentionally does not store static query IDs on every map, so
-there is no direct query-ID selector in the native bulk edit form. Repository
-paths are portable across Forward orgs; the plugin resolves each path to the
-correct query ID from the selected `Forward Source` during sync execution.
+Query IDs are org-specific. When configuring another Forward org, publish or
+select that org's queries once so each map receives the correct IDs. Subsequent
+folder moves do not require rebinding.
 
 Use `invoke validation-org-query-audit` when you want to verify that the
 bundled query set is still published in the validation org repository folder
@@ -365,7 +364,7 @@ curl -X PATCH \
   -H "Authorization: Bearer $NETBOX_TOKEN" \
   -H "Content-Type: application/json" \
   https://netbox.example.com/api/plugins/forward/nqe-map/123/ \
-  --data '{"query_repository":"org","query_path":"/forward_netbox_validation/forward_ip_addresses","query_id":"","query":"","commit_id":""}'
+  --data '{"query_repository":"org","query_path":"/forward_netbox_validation/forward_ip_addresses","query_id":"OQ_example","query":"","commit_id":""}'
 ```
 
 Use `Bearer $NETBOX_TOKEN` for NetBox API authentication.
@@ -379,14 +378,14 @@ immediately or pauses for review. A merge with any failed row remains open and
 retryable; it never becomes a baseline and never starts post-sync ownership
 reconciliation.
 
-For large datasets, prefer Org Repository-backed `query_path` maps over bundled raw `query` maps.
+For large datasets, prefer published `query_id` maps over bundled raw `query` maps.
 
 - Keep the query source in Forward by committing the modular query set into the Org Repository.
-- Bulk bind `Forward NQE Maps` to the committed repository query paths.
+- Bulk bind `Forward NQE Maps` to the published query IDs.
 - Leave the sync `Snapshot` at `latestProcessed`.
 - Run one clean, fully merged baseline ingestion first.
 - Later `latestProcessed` runs can use Forward `nqe-diffs` for eligible,
-  unparameterized repository-path or direct-query-ID maps. Maps that declare
+  unparameterized query-ID maps. Maps that declare
   runtime parameters use full asynchronous NQE execution because Forward's diff
   endpoint does not accept a `parameters` payload. After the first successful
   2.6 ingestion, the plugin compares those full results with its compressed,

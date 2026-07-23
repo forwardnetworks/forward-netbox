@@ -18,6 +18,7 @@ from forward_netbox.choices import ForwardSourceDeploymentChoices
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.utilities.module_readiness import derive_module_bay_position
+from forward_netbox.utilities.module_readiness import fetch_module_rows_for_sync
 from forward_netbox.utilities.module_readiness import summarize_module_readiness
 
 
@@ -191,3 +192,21 @@ class ForwardModuleReadinessCommandTest(TestCase):
             client.run_nqe_query.call_args.kwargs["snapshot_id"],
             "snapshot-test",
         )
+
+    def test_readiness_falls_back_to_bundled_query_when_repository_path_is_stale(self):
+        client = Mock()
+        client.run_nqe_query.return_value = [
+            {"device": "device-a", "module_bay": "Slot 1"}
+        ]
+        with (
+            patch.object(ForwardSource, "get_client", return_value=client),
+            patch(
+                "forward_netbox.utilities.query_registry.resolve_query_specs_for_client",
+                side_effect=RuntimeError("stale repository path"),
+            ),
+        ):
+            rows = fetch_module_rows_for_sync(self.sync)
+
+        self.assertEqual(rows, [{"device": "device-a", "module_bay": "Slot 1"}])
+        self.assertEqual(client.run_nqe_query.call_count, 1)
+        self.assertEqual(client.run_nqe_query.call_args.kwargs["query_id"], None)
