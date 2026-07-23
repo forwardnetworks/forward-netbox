@@ -45,6 +45,8 @@ repair commit through the protected PR flow.
 - Skip unavailable historical workflow-run lookups only for that same
   security-control prefix; all pull-request-backed commits still require the
   complete required-workflow success set.
+- Classify test-only paths under `forward_netbox/tests/` as control evidence;
+  runtime plugin modules remain rejected for direct historical commits.
 
 ## Completion
 

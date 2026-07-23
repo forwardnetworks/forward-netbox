@@ -347,6 +347,24 @@ class ReleaseProvenanceTest(unittest.TestCase):
                 )
             )
 
+    def test_direct_control_commit_rejects_runtime_plugin_code(self):
+        commit = "f" * 40
+
+        with (
+            patch.object(provenance, "_github_pages", return_value=[]),
+            patch.object(
+                provenance,
+                "_git_capture",
+                return_value="forward_netbox/models.py",
+            ),
+        ):
+            with self.assertRaises(provenance.ProvenanceError):
+                provenance._require_merged_main_pr(
+                    commit,
+                    "token",
+                    allow_direct_control_commit=True,
+                )
+
     def test_rejects_tagged_release_diverged_from_main(self):
         advanced_main = "e" * 40
 

@@ -418,7 +418,13 @@ def _require_merged_main_pr(
                 ).splitlines()
                 if line
             }
-            if any(path.startswith("forward_netbox/") for path in changed):
+            runtime_paths = {
+                path
+                for path in changed
+                if path.startswith("forward_netbox/")
+                and not path.startswith("forward_netbox/tests/")
+            }
+            if runtime_paths:
                 raise ProvenanceError(
                     f"direct release-control commit {commit} changes production code"
                 )
