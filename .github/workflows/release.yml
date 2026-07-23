@@ -73,7 +73,12 @@ jobs:
             --version "${GITHUB_REF_NAME#v}"
       - name: Audit pinned runtime dependencies
         run: pip-audit --progress-spinner off -r constraints.txt
-      - name: Run exact release gate
+      - name: Run release-specific provenance gate
+        # The exact NetBox matrix, CodeQL, and trusted scanner are required
+        # status checks on main and have already run on this exact tree. Do not
+        # run the full invoke ci fan-out a second time here: it duplicates the
+        # protected CI, includes the long scale/UI suites, and can time out
+        # before artifact publication without adding release evidence.
         env:
           FORWARD_SENSITIVE_PATTERNS: ${{ secrets.FORWARD_SENSITIVE_PATTERNS }}
           FORWARD_SENSITIVE_BINARY_HISTORY_ALLOWLIST: >-
@@ -83,7 +88,6 @@ jobs:
         run: |
           python scripts/check_sensitive_content.py --git-files \
             --protected-history --require-env-patterns --require-baseline-env
-          python -m invoke ci
   build:
     name: Build distribution
     needs: validate
