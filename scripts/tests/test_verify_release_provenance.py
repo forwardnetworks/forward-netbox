@@ -167,6 +167,7 @@ class ReleaseProvenanceTest(unittest.TestCase):
                     "number": number,
                     "merged_at": merged_at[number],
                     "head": {"sha": candidate},
+                    "base": {"ref": "main"},
                 }
 
         status_runs = {
@@ -208,13 +209,7 @@ class ReleaseProvenanceTest(unittest.TestCase):
                     "event": "pull_request_target",
                     "status": "completed",
                     "conclusion": "success",
-                    "pull_requests": [
-                        {
-                            "number": pull_number,
-                            "head": {"sha": candidate},
-                            "base": {"ref": "main"},
-                        }
-                    ],
+                    "pull_requests": [],
                 }
 
         workflow_paths = dict(enumerate(provenance.REQUIRED_WORKFLOWS, 1))
@@ -478,7 +473,13 @@ class ReleaseProvenanceTest(unittest.TestCase):
         def github(path, token):
             payload = self._github(path, token)
             if path == "actions/runs/202":
-                payload["pull_requests"][0]["number"] = 999
+                payload["pull_requests"] = [
+                    {
+                        "number": 999,
+                        "head": {"sha": self.evidence_candidate},
+                        "base": {"ref": "main"},
+                    }
+                ]
             return payload
 
         with self.assertRaisesRegex(provenance.ProvenanceError, "exact pull"):

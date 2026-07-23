@@ -47,6 +47,8 @@ repair commit through the protected PR flow.
   complete required-workflow success set.
 - Classify test-only paths under `forward_netbox/tests/` as control evidence;
   runtime plugin modules remain rejected for direct historical commits.
+- Resolve trusted scanner coverage against the exact merged PR when GitHub no
+  longer includes the PR in the completed run payload.
 
 ## Completion
 

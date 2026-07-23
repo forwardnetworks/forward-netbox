@@ -385,6 +385,15 @@ def _require_trusted_candidate_status(
         and (pull.get("head") or {}).get("sha") == candidate
         and (pull.get("base") or {}).get("ref") == "main"
     ]
+    if not pull_matches and not run.get("pull_requests"):
+        pull = _github_json(f"pulls/{pull_number}", token)
+        if (
+            isinstance(pull, dict)
+            and pull.get("number") == pull_number
+            and (pull.get("head") or {}).get("sha") == candidate
+            and (pull.get("base") or {}).get("ref") == "main"
+        ):
+            pull_matches = [pull]
     if len(pull_matches) != 1:
         raise ProvenanceError(
             "trusted scanner run does not cover the exact pull request candidate"
