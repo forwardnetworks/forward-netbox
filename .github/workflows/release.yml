@@ -48,13 +48,15 @@ jobs:
               rm -f "${provenance_log}"
               exit 0
             fi
-            if ! grep -q "latest .* run did not succeed" "${provenance_log}"; then
+            if ! grep -q \
+              "latest .* run did not succeed" "${provenance_log}"; then
               cat "${provenance_log}"
               rm -f "${provenance_log}"
               exit 1
             fi
             rm -f "${provenance_log}"
-            echo "Main-commit provenance is still settling; retry ${attempt}/120."
+            echo "Main-commit provenance is still settling;"
+            echo "retry ${attempt}/120."
             sleep 30
           done
           echo "Timed out waiting for successful main-commit provenance."
