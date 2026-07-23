@@ -375,6 +375,55 @@ class QueryRegistryTest(TestCase):
         self.assertEqual(resolved[1].commit_id, "commit-2")
         client.get_committed_nqe_query.assert_not_called()
 
+    def test_resolve_query_specs_for_client_follows_unique_moved_path(self):
+        client = Mock()
+        client.get_nqe_repository_query_index.return_value = {
+            "by_path": {
+                "/customer/netbox/forward_devices": {
+                    "queryId": "Q_devices_moved",
+                    "path": "/customer/netbox/forward_devices",
+                    "lastCommitId": "commit-moved",
+                }
+            }
+        }
+        specs = [
+            QuerySpec(
+                model_string="dcim.device",
+                query_name="Forward Devices",
+                query_repository="org",
+                query_path="/forward_netbox_validation/forward_devices",
+            )
+        ]
+
+        resolved = resolve_query_specs_for_client(specs, client)
+
+        self.assertEqual(resolved[0].run_query_id, "Q_devices_moved")
+        self.assertEqual(resolved[0].commit_id, "commit-moved")
+        client.get_committed_nqe_query.assert_not_called()
+
+    def test_resolve_query_specs_for_client_does_not_guess_ambiguous_moved_path(self):
+        client = Mock()
+        client.get_nqe_repository_query_index.return_value = {
+            "by_path": {
+                "/folder-a/forward_devices": {"queryId": "Q_devices_a"},
+                "/folder-b/forward_devices": {"queryId": "Q_devices_b"},
+            }
+        }
+        client.get_committed_nqe_query.side_effect = RuntimeError("missing old path")
+        specs = [
+            QuerySpec(
+                model_string="dcim.device",
+                query_name="Forward Devices",
+                query_repository="org",
+                query_path="/forward_netbox_validation/forward_devices",
+            )
+        ]
+
+        with self.assertRaisesRegex(RuntimeError, "missing old path"):
+            resolve_query_specs_for_client(specs, client)
+
+        client.get_committed_nqe_query.assert_called_once()
+
     def test_resolve_query_specs_for_client_falls_back_for_pinned_commit(self):
         client = Mock()
         client.get_nqe_repository_query_index.return_value = {"by_path": {}}

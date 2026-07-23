@@ -29,6 +29,7 @@ from utilities.views import get_viewname
 from utilities.views import register_model_view
 from utilities.views import ViewTab
 
+from .exceptions import ForwardQueryError
 from .filtersets import ForwardDeviceAnalysisFilterSet
 from .filtersets import ForwardDriftPolicyFilterSet
 from .filtersets import ForwardIngestionChangeFilterSet
@@ -420,6 +421,7 @@ def _dependency_model_result_summary(result):
         "fetch_mode": data.get("fetch_mode") or "unknown",
         "row_count": row_count,
         "delete_count": delete_count,
+        "failure_count": int(data.get("failure_count") or 0),
         # Per-model change estimate: upsert rows + deletes (as_dict has no
         # estimated_changes field). The plan-level total is plan_preview.
         "estimated_changes": row_count + delete_count,
@@ -440,6 +442,18 @@ def _dependency_dry_run_payload(sync, *, client=None):
     fetcher = ForwardQueryFetcher(sync, client, sync.logger)
     context = fetcher.resolve_context()
     workloads = fetcher.fetch_workloads(context, include_diagnostics=True)
+    failed_models = [
+        result.model_string
+        for result in fetcher.model_results
+        if int(result.failure_count or 0) > 0
+    ]
+    if failed_models:
+        sample = ", ".join(failed_models[:5])
+        suffix = "" if len(failed_models) <= 5 else ", ..."
+        raise ForwardQueryError(
+            "Dependency preview query validation failed for "
+            f"{len(failed_models)} model(s): {sample}{suffix}."
+        )
     plan = build_branch_plan(
         workloads,
         max_changes_per_staging_item=sync.get_max_changes_per_staging_item(),

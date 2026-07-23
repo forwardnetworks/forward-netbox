@@ -931,7 +931,20 @@ def resolve_query_specs_for_client(specs: list[QuerySpec], client) -> list[Query
                 if not isinstance(query_index, dict):
                     query_index = {"by_path": {}}
                 query_indexes[repository] = query_index
-            indexed_query = (query_index.get("by_path") or {}).get(spec.query_path)
+            by_path = query_index.get("by_path") or {}
+            indexed_query = by_path.get(spec.query_path)
+            if not indexed_query:
+                query_filename = (
+                    str(spec.query_path or "").rstrip("/").rsplit("/", 1)[-1]
+                )
+                moved_matches = [
+                    query
+                    for path, query in by_path.items()
+                    if str(path).rstrip("/").rsplit("/", 1)[-1] == query_filename
+                    and query.get("queryId")
+                ]
+                if len(moved_matches) == 1:
+                    indexed_query = moved_matches[0]
             if indexed_query and indexed_query.get("queryId"):
                 resolved_commit_id = str(
                     indexed_query.get("commitId")
