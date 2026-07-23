@@ -397,7 +397,7 @@ def _require_merged_main_pr(
     *,
     require_trusted_status: bool = True,
     allow_direct_control_commit: bool = False,
-) -> dict:
+) -> bool:
     pulls = _github_pages(f"commits/{commit}/pulls", token)
     matches = [
         pull
@@ -422,7 +422,7 @@ def _require_merged_main_pr(
                 raise ProvenanceError(
                     f"direct release-control commit {commit} changes production code"
                 )
-            return {}
+            return True
         raise ProvenanceError(
             f"commit {commit} must map to exactly one merged main pull request"
         )
@@ -434,7 +434,7 @@ def _require_merged_main_pr(
         raise ProvenanceError(f"pull request for {commit} has no candidate SHA")
     if require_trusted_status:
         _require_trusted_candidate_status(candidate, int(pull["number"]), token)
-    return pull
+    return False
 
 
 def _require_successful_workflow(commit: str, workflow_path: str, token: str) -> None:
@@ -607,12 +607,14 @@ def verify_release_commit_provenance(
 
     for index, commit in enumerate(reviewed_commits):
         _require_release_commit_shape(commit, token)
-        _require_merged_main_pr(
+        direct_control_commit = _require_merged_main_pr(
             commit,
             token,
             require_trusted_status=index != 0,
             allow_direct_control_commit=index < 3,
         )
+        if direct_control_commit:
+            continue
         for workflow_path in REQUIRED_WORKFLOWS:
             _require_successful_workflow(commit, workflow_path, token)
 
