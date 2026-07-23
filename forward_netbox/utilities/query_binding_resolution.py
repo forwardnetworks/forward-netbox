@@ -82,15 +82,15 @@ def binding_matches_current_reference(
     query_map: ForwardNQEMap,
     binding: NQEMapBinding,
 ) -> bool:
+    if query_map.query_id and query_map.query_id == binding.query_id:
+        return True
     if query_map.name and query_map.name == binding.query_name:
         return True
-    if query_map.query_path:
+    if query_map.query_path and not query_map.query_id:
         return (
             query_map.query_path == binding.query_path
             or query_filename_from_path(query_map.query_path) == binding.query_filename
         )
-    if query_map.query_id and query_map.query_id == binding.query_id:
-        return True
     if query_map.query:
         return normalize_query_source(query_map.query) == normalize_query_source(
             read_builtin_query_source(binding.query_filename)
@@ -145,36 +145,19 @@ def local_query_binding_drift(query_map: ForwardNQEMap) -> dict:
 
     if mode == "query_path":
         current_filename = query_filename_from_path(query_map.query_path)
-        if current_filename == expected_filename:
-            return _query_drift_result(
-                query_map,
-                status="repository_path_matches_bundled_filename",
-                severity="pass",
-                message=(
-                    "Repository path filename matches the bundled NQE map. Live "
-                    "commit/source drift is not checked on page render."
-                ),
-                remediation=(
-                    "No change needed unless you want to pin a specific query "
-                    "commit for reproducible drift checks."
-                ),
-                expected_filename=expected_filename,
-                expected_name=expected_name,
-                current_filename=current_filename,
-            )
         return _query_drift_result(
             query_map,
-            status="repository_path_mismatch",
+            status="legacy_repository_path_binding",
             severity="warn",
             message=(
-                "Repository path filename does not match the bundled NQE map for "
-                "this NetBox model."
+                "This legacy map is bound by repository path. Folder and path "
+                "changes must not be used as durable query identity."
             ),
             remediation=(
-                "Bind the map to the bundled query path for this model or restore "
-                "the correct shipped map before syncing."
+                "Publish or rebind the map once to store the resolved Forward "
+                "query ID."
             ),
-            remediation_action="restore_builtin_query_binding",
+            remediation_action="publish_bundled_queries",
             expected_filename=expected_filename,
             expected_name=expected_name,
             current_filename=current_filename,
@@ -190,12 +173,9 @@ def local_query_binding_drift(query_map: ForwardNQEMap) -> dict:
                 "bundled query source without a live Forward repository lookup."
             ),
             remediation=(
-                "Use Publish Bundled Queries on the sync Health page to update "
-                "the org query and convert matching built-in maps to live "
-                "repository paths. Keep a direct ID only for an intentional "
-                "custom binding."
+                "Run a live drift check to verify the query ID and source. Folder "
+                "and repository path changes do not require rebinding."
             ),
-            remediation_action="publish_bundled_queries",
             expected_filename=expected_filename,
             expected_name=expected_name,
         )
@@ -281,8 +261,8 @@ def _live_lookup_failed(local_result: dict, exc: Exception) -> dict:
             "repository connectivity."
         ),
         "remediation": (
-            "Retry after fixing Forward repository connectivity, or switch the map "
-            "to a repository path if you need deterministic drift checks."
+            "Retry after fixing Forward repository connectivity. Query execution "
+            "continues to use the stored query ID."
         ),
     }
 
@@ -331,31 +311,19 @@ def _live_drift_for_query_id(
             "live_status": "direct_query_id_not_found",
             "live_message": message,
             "remediation": (
-                "Use Publish Bundled Queries on the sync Health page to publish "
-                "the canonical validation-folder query and bind this map to its "
-                "repository path."
-            ),
-            "remediation_action": "publish_bundled_queries",
-        }
-    if len(matches) > 1:
-        return {
-            **local_result,
-            "severity": "warn",
-            "live_checked": True,
-            "live_status": "direct_query_id_ambiguous",
-            "live_message": (
-                "Direct query ID matched multiple repository entries; bind by "
-                "repository path to make drift checks deterministic."
-            ),
-            "remediation": (
-                "Use Publish Bundled Queries on the sync Health page to bind this "
-                "built-in map to its canonical repository path, or edit a custom "
-                "map directly when the ID is intentionally shared."
+                "Publish or rebind the map to a visible Forward query ID, then "
+                "retry the live check."
             ),
             "remediation_action": "publish_bundled_queries",
         }
 
-    repository, query = matches[0]
+    repository, query = sorted(
+        matches,
+        key=lambda match: (
+            match[0],
+            str(match[1].get("path") or ""),
+        ),
+    )[0]
     query_path = str(query.get("path") or "").strip()
     commit_id = str(query.get("lastCommitId") or "").strip() or "head"
     try:
@@ -402,28 +370,27 @@ def _live_drift_result_from_committed_query(
             read_compiled_builtin_query_source(expected_filename)
         )
 
-    if query_filename != expected_filename:
-        status = "live_repository_path_mismatch"
+    mode = str(local_result.get("mode") or "")
+    if mode == "query_path":
+        status = "legacy_repository_path_binding"
         severity = "warn"
         message = (
-            "Forward repository query path does not match the bundled query "
-            "filename expected for this map."
+            "The legacy repository path resolved successfully, but the map must "
+            "be rebound to the returned query ID."
         )
     elif source_matches is True:
-        status = "live_repository_source_match"
+        status = "live_query_id_source_match"
         severity = "pass"
-        message = "Forward repository query source matches the bundled compiled NQE."
+        message = "Forward query ID source matches the bundled compiled NQE."
     elif source_matches is False:
-        status = "live_repository_source_modified"
+        status = "live_query_id_source_modified"
         severity = "warn"
-        message = (
-            "Forward repository query source differs from the bundled compiled NQE."
-        )
+        message = "Forward query ID source differs from the bundled compiled NQE."
     else:
-        status = "live_repository_source_unavailable"
+        status = "live_query_id_source_unavailable"
         severity = "info"
         message = (
-            "Forward repository query was found, but the API response did not "
+            "Forward query ID was found, but the API response did not "
             "include source code for comparison."
         )
 
@@ -537,7 +504,8 @@ def builtin_query_default_for_map(query_map: ForwardNQEMap) -> tuple[dict | None
             and str(query_default["model_string"]) == query_map.model_string
         ):
             return query_default, ""
-        return None, "Current repository query path does not match a bundled map."
+        if not query_map.query_id:
+            return None, "Current repository query path does not match a bundled map."
 
     if query_map.query:
         current_query = normalize_query_source(query_map.query)
@@ -591,7 +559,7 @@ def build_nqe_map_bindings(
     for query in query_index.get("rows") or []:
         query_path = str(query.get("path") or "").strip()
         query_id = str(query.get("queryId") or "").strip()
-        if not query_path:
+        if not query_path or not query_id:
             continue
         query_filename = query_filename_from_path(query_path)
         query_default = filename_to_query_default.get(query_filename)
@@ -1156,7 +1124,7 @@ def apply_nqe_map_bindings(
                 continue
             binding = reference_matches[0]
 
-        _save_repository_path_binding(
+        _save_query_id_binding(
             query_map,
             binding,
             preserve_existing_commit_pin=True,
@@ -1293,7 +1261,7 @@ def apply_explicit_nqe_map_bindings(
             )
             continue
 
-        _save_repository_path_binding(
+        _save_query_id_binding(
             query_map,
             binding,
             preserve_existing_commit_pin=preserve_existing_commit_pin,
@@ -1313,7 +1281,7 @@ def apply_explicit_nqe_map_bindings(
     return applied
 
 
-def _save_repository_path_binding(
+def _save_query_id_binding(
     query_map: ForwardNQEMap,
     binding: NQEMapBinding,
     *,
@@ -1322,7 +1290,7 @@ def _save_repository_path_binding(
     commit_id = binding.commit_id
     if preserve_existing_commit_pin and query_map.commit_id:
         commit_id = query_map.commit_id
-    query_map.query_id = ""
+    query_map.query_id = binding.query_id
     query_map.query_repository = binding.query_repository
     query_map.query_path = binding.query_path
     query_map.query = ""

@@ -892,13 +892,19 @@ def _build_query_spec_from_map(query_map) -> QuerySpec:
                 ),
                 placeholder=False,
             )
+    query_id = query_map.query_id or None
+    query_path = getattr(query_map, "query_path", "") or None
+    query_repository = getattr(query_map, "query_repository", "") or None
+    if query_id:
+        query_path = None
+        query_repository = None
     return QuerySpec(
         model_string=query_map.model_string,
         query_name=query_map.name,
         query=query_map.query or None,
-        query_id=query_map.query_id or None,
-        query_repository=getattr(query_map, "query_repository", "") or None,
-        query_path=getattr(query_map, "query_path", "") or None,
+        query_id=query_id,
+        query_repository=query_repository,
+        query_path=query_path,
         commit_id=query_map.commit_id or None,
         parameters=query_map.parameters or {},
         coalesce_fields=tuple(tuple(field_set) for field_set in normalized_coalesce),

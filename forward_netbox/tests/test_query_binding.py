@@ -106,7 +106,7 @@ class NQEMapBindingTest(TestCase):
         self.assertEqual(bindings[0].query_id, "Q_devices")
         client.get_nqe_repository_query_index.assert_not_called()
 
-    def test_apply_bindings_switches_matching_model_to_repository_path(self):
+    def test_apply_bindings_switches_matching_model_to_query_id(self):
         netbox_model = ContentType.objects.get(app_label="dcim", model="device")
         query_map = ForwardNQEMap.objects.create(
             name="Custom Device Import",
@@ -159,7 +159,7 @@ class NQEMapBindingTest(TestCase):
         self.assertTrue(results[0].matched)
         self.assertEqual(results[0].map_id, query_map.pk)
         query_map.refresh_from_db()
-        self.assertEqual(query_map.query_id, "")
+        self.assertEqual(query_map.query_id, "Q_devices")
         self.assertEqual(query_map.query_repository, "org")
         self.assertEqual(
             query_map.query_path,
@@ -233,7 +233,7 @@ class NQEMapBindingTest(TestCase):
 
         self.assertEqual([obj.pk for obj in updated], [query_map.pk])
         query_map.refresh_from_db()
-        self.assertEqual(query_map.query_id, "")
+        self.assertEqual(query_map.query_id, "Q_devices")
         self.assertEqual(query_map.query_repository, "org")
         self.assertEqual(
             query_map.query_path,
@@ -288,7 +288,7 @@ class NQEMapBindingTest(TestCase):
         self.assertEqual(drift["expected_filename"], "forward_devices.nqe")
         self.assertEqual(drift["commit_binding"], "raw_query_not_applicable")
 
-    def test_local_query_binding_drift_reports_repository_path_match(self):
+    def test_local_query_binding_drift_reports_legacy_repository_path(self):
         netbox_model = ContentType.objects.get(app_label="dcim", model="device")
         query_map = ForwardNQEMap.objects.create(
             name="Forward Devices",
@@ -299,11 +299,9 @@ class NQEMapBindingTest(TestCase):
 
         drift = local_query_binding_drift(query_map)
 
-        self.assertEqual(
-            drift["status"],
-            "repository_path_matches_bundled_filename",
-        )
-        self.assertEqual(drift["severity"], "pass")
+        self.assertEqual(drift["status"], "legacy_repository_path_binding")
+        self.assertEqual(drift["severity"], "warn")
+        self.assertEqual(drift["remediation_action"], "publish_bundled_queries")
         self.assertEqual(drift["commit_binding"], "latest_commit")
         self.assertIn(
             "latest committed Forward query revision", drift["commit_message"]
@@ -321,7 +319,7 @@ class NQEMapBindingTest(TestCase):
 
         drift = local_query_binding_drift(query_map)
 
-        self.assertEqual(drift["status"], "repository_path_matches_bundled_filename")
+        self.assertEqual(drift["status"], "legacy_repository_path_binding")
         self.assertEqual(drift["commit_binding"], "pinned_commit")
         self.assertIn("pinned to a Forward query commit", drift["commit_message"])
 
@@ -338,8 +336,8 @@ class NQEMapBindingTest(TestCase):
         self.assertEqual(drift["status"], "direct_query_id_unverified")
         self.assertEqual(drift["severity"], "info")
         self.assertEqual(drift["commit_binding"], "latest_commit")
-        self.assertIn("Publish Bundled Queries", drift["remediation"])
-        self.assertEqual(drift["remediation_action"], "publish_bundled_queries")
+        self.assertIn("Folder", drift["remediation"])
+        self.assertEqual(drift["remediation_action"], "")
 
     def test_live_query_binding_drift_reports_repository_source_match(self):
         netbox_model = ContentType.objects.get(app_label="dcim", model="device")
@@ -359,8 +357,8 @@ class NQEMapBindingTest(TestCase):
 
         drift = live_query_binding_drift(client=client, query_map=query_map)
 
-        self.assertEqual(drift["status"], "live_repository_source_match")
-        self.assertEqual(drift["severity"], "pass")
+        self.assertEqual(drift["status"], "legacy_repository_path_binding")
+        self.assertEqual(drift["severity"], "warn")
         self.assertTrue(drift["live_checked"])
         self.assertEqual(drift["live_query_id"], "Q_devices")
         self.assertEqual(drift["live_commit_id"], "commit-1")
@@ -384,16 +382,18 @@ class NQEMapBindingTest(TestCase):
 
         drift = live_query_binding_drift(client=client, query_map=query_map)
 
-        self.assertEqual(drift["status"], "live_repository_source_modified")
+        self.assertEqual(drift["status"], "legacy_repository_path_binding")
         self.assertEqual(drift["severity"], "warn")
         self.assertFalse(drift["source_matches_bundled"])
 
-    def test_live_query_binding_drift_resolves_direct_query_id_to_repository(self):
+    def test_live_query_binding_drift_refreshes_moved_query_location_by_id(self):
         netbox_model = ContentType.objects.get(app_label="dcim", model="device")
         query_map = ForwardNQEMap.objects.create(
             name="Forward Devices",
             netbox_model=netbox_model,
             query_id="Q_devices",
+            query_repository="org",
+            query_path="/old/folder/forward_devices",
         )
         client = Mock()
         client.get_nqe_repository_query_index.side_effect = [
@@ -402,7 +402,7 @@ class NQEMapBindingTest(TestCase):
                     "Q_devices": [
                         {
                             "queryId": "Q_devices",
-                            "path": "/forward_netbox_validation/forward_devices",
+                            "path": "/team/netbox/forward_devices",
                             "lastCommitId": "commit-1",
                         }
                     ]
@@ -413,15 +413,22 @@ class NQEMapBindingTest(TestCase):
         client.get_committed_nqe_query.return_value = {
             "queryId": "Q_devices",
             "lastCommitId": "commit-1",
-            "path": "/forward_netbox_validation/forward_devices",
+            "path": "/team/netbox/forward_devices",
             "sourceCode": read_compiled_builtin_query_source("forward_devices.nqe"),
         }
 
         drift = live_query_binding_drift(client=client, query_map=query_map)
 
-        self.assertEqual(drift["status"], "live_repository_source_match")
+        self.assertEqual(drift["status"], "live_query_id_source_match")
         self.assertEqual(drift["severity"], "pass")
         self.assertEqual(drift["live_repository"], "org")
+        self.assertEqual(drift["live_query_path"], "/team/netbox/forward_devices")
+        client.get_committed_nqe_query.assert_called_once_with(
+            repository="org",
+            query_path="/team/netbox/forward_devices",
+            commit_id="commit-1",
+            require_source_code=True,
+        )
 
     def test_live_query_binding_drift_uses_pinned_direct_query_commit(self):
         netbox_model = ContentType.objects.get(app_label="dcim", model="device")
@@ -455,7 +462,7 @@ class NQEMapBindingTest(TestCase):
 
         drift = live_query_binding_drift(client=client, query_map=query_map)
 
-        self.assertEqual(drift["status"], "live_repository_source_match")
+        self.assertEqual(drift["status"], "live_query_id_source_match")
         self.assertEqual(drift["commit_binding"], "pinned_commit")
         self.assertEqual(drift["requested_commit_id"], "commit-pinned")
         client.get_committed_nqe_query.assert_called_once_with(
@@ -480,7 +487,7 @@ class NQEMapBindingTest(TestCase):
         self.assertEqual(drift["status"], "direct_query_id_unverified")
         self.assertEqual(drift["severity"], "warn")
         self.assertEqual(drift["live_status"], "direct_query_id_not_found")
-        self.assertIn("Publish Bundled Queries", drift["remediation"])
+        self.assertIn("query ID", drift["remediation"])
         self.assertEqual(drift["remediation_action"], "publish_bundled_queries")
 
     def test_live_query_binding_drift_does_not_export_exception_details(self):
@@ -601,7 +608,7 @@ class NQEMapBindingTest(TestCase):
         self.assertTrue(any(result.matched for result in results))
         query_map.refresh_from_db()
         self.assertEqual(query_map.query_repository, "org")
-        self.assertEqual(query_map.query_id, "")
+        self.assertEqual(query_map.query_id, "OQ_devices")
         self.assertEqual(
             query_map.query_path,
             "/forward_netbox_validation/forward_devices",
@@ -695,7 +702,7 @@ class NQEMapBindingTest(TestCase):
 
         self.assertEqual([obj.pk for obj in updated], [query_map.pk])
         query_map.refresh_from_db()
-        self.assertEqual(query_map.query_id, "")
+        self.assertEqual(query_map.query_id, "OQ_devices")
         self.assertEqual(
             query_map.query_path,
             "/forward_netbox_validation/forward_devices",
@@ -756,7 +763,7 @@ class NQEMapBindingTest(TestCase):
         self.assertEqual(len(results), 1)
         self.assertTrue(results[0].matched)
         query_map.refresh_from_db()
-        self.assertEqual(query_map.query_id, "")
+        self.assertEqual(query_map.query_id, "OQ_devices")
         self.assertEqual(
             query_map.query_path,
             "/forward_netbox_validation/forward_devices",
@@ -805,7 +812,7 @@ class NQEMapBindingTest(TestCase):
         self.assertEqual(len(results), 1)
         self.assertTrue(results[0].matched)
         query_map.refresh_from_db()
-        self.assertEqual(query_map.query_id, "")
+        self.assertEqual(query_map.query_id, "Q_devices_head")
         self.assertEqual(
             query_map.query_path,
             "/forward_netbox_validation/forward_devices",
@@ -850,7 +857,7 @@ class NQEMapBindingTest(TestCase):
         self.assertEqual(len(results), 1)
         self.assertTrue(results[0].matched)
         query_map.refresh_from_db()
-        self.assertEqual(query_map.query_id, "")
+        self.assertEqual(query_map.query_id, "Q_devices_head")
         self.assertEqual(
             query_map.query_path,
             "/forward_netbox_validation/forward_devices",
@@ -918,7 +925,7 @@ class NQEMapBindingTest(TestCase):
         )
         self.assertTrue(any(result.matched for result in results))
         query_map.refresh_from_db()
-        self.assertEqual(query_map.query_id, "")
+        self.assertEqual(query_map.query_id, "OQ_devices")
         self.assertEqual(
             query_map.query_path,
             "/forward_netbox_validation/forward_devices",
@@ -1045,7 +1052,7 @@ class NQEMapBindingTest(TestCase):
             "/forward_netbox_validation/forward_devices_with_netbox_aliases",
         )
         query_map.refresh_from_db()
-        self.assertEqual(query_map.query_id, "")
+        self.assertEqual(query_map.query_id, "Q_alias")
         self.assertEqual(
             query_map.query_path,
             "/forward_netbox_validation/forward_devices_with_netbox_aliases",
@@ -1219,7 +1226,7 @@ class NQEMapBindingTest(TestCase):
         self.assertTrue(results[0].matched)
         self.assertEqual(results[0].query_filename, "forward_prefixes_ipv4.nqe")
         query_map.refresh_from_db()
-        self.assertEqual(query_map.query_id, "")
+        self.assertEqual(query_map.query_id, "Q_ipv4")
         self.assertEqual(
             query_map.query_path,
             "/forward_netbox_validation/forward_prefixes_ipv4",

@@ -1340,9 +1340,12 @@ class ForwardNQEMapForm(NetBoxModelForm):
     query_mode = forms.ChoiceField(
         choices=FORWARD_NQE_QUERY_MODE_CHOICES,
         required=False,
-        initial="query_path",
+        initial="query_id",
         label="Query Definition Mode",
-        help_text="Choose whether this map resolves a repository query path, runs a direct query ID, or stores raw NQE text in NetBox.",
+        help_text=(
+            "Use a published query ID for durable execution, or store raw NQE "
+            "text in NetBox. Repository paths are supported for legacy rebinding."
+        ),
     )
     query_source = forms.ModelChoiceField(
         queryset=ForwardSource.objects.all(),
@@ -1376,8 +1379,8 @@ class ForwardNQEMapForm(NetBoxModelForm):
         widget=APISelect(api_url="/api/plugins/forward/nqe-map/available-queries/"),
         help_text=(
             "Org-specific published Forward query ID. Query choices are "
-            "filtered by the selected NetBox model. Prefer `Repository Query Path` "
-            "for portable maps."
+            "filtered by the selected NetBox model. Folder moves do not change "
+            "the binding."
         ),
     )
     query_path = forms.ChoiceField(
@@ -1386,9 +1389,9 @@ class ForwardNQEMapForm(NetBoxModelForm):
         choices=(),
         widget=APISelect(api_url="/api/plugins/forward/nqe-map/available-queries/"),
         help_text=(
-            "Repository path to resolve at sync time. Query choices are "
-            "filtered by the selected NetBox model. Required when mode is "
-            "`Repository Query Path`."
+            "Legacy repository-path binding used to discover and save the "
+            "corresponding query ID. Query choices are filtered by the selected "
+            "NetBox model."
         ),
     )
     query = forms.CharField(
@@ -1444,13 +1447,13 @@ class ForwardNQEMapForm(NetBoxModelForm):
             self.data.get("query_mode")
             if self.is_bound
             else (
-                "query_path"
-                if getattr(self.instance, "query_path", "")
+                "query_id"
+                if getattr(self.instance, "query_id", "")
                 else (
-                    "query_id"
-                    if getattr(self.instance, "query_id", "")
+                    "query_path"
+                    if getattr(self.instance, "query_path", "")
                     else (
-                        "query" if getattr(self.instance, "query", "") else "query_path"
+                        "query" if getattr(self.instance, "query", "") else "query_id"
                     )
                 )
             )
@@ -1567,9 +1570,9 @@ class ForwardNQEMapBulkEditForm(NetBoxModelBulkEditForm):
         required=False,
         label="Query Bulk Operation",
         help_text=(
-            "Repository-path operations clear direct query IDs and save the "
-            "selected repository paths so each sync resolves the current query. "
-            "Enable commit pinning only when a fixed revision is required."
+            "Repository selection resolves and saves each published query ID. "
+            "The selected path remains display metadata only. Enable commit "
+            "pinning only when a fixed revision is required."
         ),
     )
     bind_query_source = forms.ModelChoiceField(
@@ -1673,9 +1676,9 @@ class ForwardNQEMapBulkEditForm(NetBoxModelBulkEditForm):
                     api_url="/api/plugins/forward/nqe-map/available-queries/"
                 ),
                 help_text=(
-                    "Select the repository query path for this NetBox map. Saving "
-                    "this field stores the path so the current Forward query ID is "
-                    "resolved at sync time. Leave blank to keep this map unchanged."
+                    "Select a published query for this NetBox map. Saving resolves "
+                    "and stores its query ID; the path remains location metadata. "
+                    "Leave blank to keep this map unchanged."
                 ),
             )
             _configure_api_select(

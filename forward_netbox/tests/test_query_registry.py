@@ -1241,6 +1241,26 @@ class QueryRegistryTest(TestCase):
         self.assertEqual(specs[0].query_id, "FQ_custom_devices")
         self.assertEqual(specs[0].query, None)
 
+    def test_custom_map_executes_by_id_when_location_metadata_is_present(self):
+        netbox_model = ContentType.objects.get(app_label="dcim", model="device")
+        custom_map = ForwardNQEMap.objects.create(
+            name="Custom Devices",
+            netbox_model=netbox_model,
+            query_id="OQ_custom_devices",
+            query_repository="org",
+            query_path="/old/folder/custom_devices",
+            built_in=False,
+            enabled=True,
+        )
+
+        specs = get_query_specs("dcim.device", maps=[custom_map])
+
+        self.assertEqual(len(specs), 1)
+        self.assertEqual(specs[0].query_id, "OQ_custom_devices")
+        self.assertIsNone(specs[0].query_repository)
+        self.assertIsNone(specs[0].query_path)
+        self.assertEqual(specs[0].execution_mode, "query_id")
+
     def test_duplicate_custom_map_execution_is_rejected_before_fetch(self):
         netbox_model = ContentType.objects.get(app_label="dcim", model="device")
         first = ForwardNQEMap.objects.create(

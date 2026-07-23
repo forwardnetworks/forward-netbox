@@ -817,17 +817,17 @@ class ForwardSyncHealthTest(TestCase):
             data["query_drift_summary"]["status_counts"],
             {
                 "direct_query_id_unverified": 1,
-                "repository_path_matches_bundled_filename": 1,
+                "legacy_repository_path_binding": 1,
             },
         )
-        self.assertEqual(data["query_drift_summary"]["warn_count"], 0)
+        self.assertEqual(data["query_drift_summary"]["warn_count"], 1)
         self.assertEqual(data["query_drift_summary"]["info_count"], 1)
-        self.assertEqual(data["query_drift_summary"]["pass_count"], 1)
+        self.assertEqual(data["query_drift_summary"]["pass_count"], 0)
         self.assertEqual(len(data["results"]), 2)
         path_result = next(
             result for result in data["results"] if result["mode"] == "query_path"
         )
-        self.assertEqual(path_result["status"], "live_repository_source_match")
+        self.assertEqual(path_result["status"], "legacy_repository_path_binding")
         self.assertEqual(path_result["live_query_id"], "Q_devices")
         self.assertEqual(path_result["requested_commit_id"], "head")
         self.assertEqual(path_result["commit_binding"], "latest_commit")
@@ -847,7 +847,8 @@ class ForwardSyncHealthTest(TestCase):
                 reverse(
                     "plugins:forward_netbox:forwardsync_publish_bundled_queries",
                     kwargs={"pk": self.sync.pk},
-                )
+                ),
+                {"query_directory": "/team/netbox/"},
             )
 
         self.assertEqual(response.status_code, 302)
@@ -860,9 +861,7 @@ class ForwardSyncHealthTest(TestCase):
         )
         publish.assert_called_once()
         self.assertEqual(publish.call_args.kwargs["client"], client)
-        self.assertEqual(
-            publish.call_args.kwargs["directory"], "/forward_netbox_validation/"
-        )
+        self.assertEqual(publish.call_args.kwargs["directory"], "/team/netbox/")
         self.assertTrue(publish.call_args.kwargs["overwrite"])
 
     def test_sync_publish_bundled_queries_surfaces_write_permission_error(self):

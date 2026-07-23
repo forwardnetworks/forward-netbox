@@ -1385,6 +1385,7 @@ class ForwardSyncQueryDriftView(BaseObjectView):
 )
 class ForwardSyncPublishBundledQueriesView(BaseObjectView):
     queryset = ForwardSync.objects.all()
+    default_directory = "/forward_netbox_validation/"
 
     def get_required_permission(self):
         return "forward_netbox.change_forwardnqemap"
@@ -1392,6 +1393,25 @@ class ForwardSyncPublishBundledQueriesView(BaseObjectView):
     def post(self, request, pk):
         sync = get_object_or_404(self.queryset, pk=pk)
         client = sync.source.get_client()
+        directory = str(
+            request.POST.get("query_directory") or self.default_directory
+        ).strip()
+        if not directory.startswith("/"):
+            directory = f"/{directory}"
+        path_segments = [segment for segment in directory.split("/") if segment]
+        if (
+            not path_segments
+            or any(segment in {".", ".."} for segment in path_segments)
+            or "\\" in directory
+            or "\x00" in directory
+        ):
+            messages.error(request, _("Enter a valid Forward query folder."))
+            return redirect(
+                reverse(
+                    "plugins:forward_netbox:forwardsync_health", kwargs={"pk": sync.pk}
+                )
+            )
+        directory = f"/{'/'.join(path_segments)}/"
         maps = [
             query_map.pk
             for query_map in sync.get_maps()
@@ -1403,7 +1423,7 @@ class ForwardSyncPublishBundledQueriesView(BaseObjectView):
         try:
             results = publish_builtin_nqe_map_queries(
                 client=client,
-                directory="/forward_netbox_validation/",
+                directory=directory,
                 queryset=queryset,
                 overwrite=True,
                 commit_message="Publish Forward NetBox NQE maps",
@@ -1432,8 +1452,8 @@ class ForwardSyncPublishBundledQueriesView(BaseObjectView):
                 request,
                 _(
                     "Published %(count)s bundled quer(y/ies) to the Forward org "
-                    "library and bound the enabled maps to repository paths, so "
-                    "they resolve the current query at each sync."
+                    "library and bound the enabled maps to query IDs. Current "
+                    "folder metadata is retained for display only."
                 )
                 % {"count": len(published)},
             )
@@ -1442,9 +1462,9 @@ class ForwardSyncPublishBundledQueriesView(BaseObjectView):
                 request,
                 _(
                     "%(count)s NQE map(s) could not be published; confirm the "
-                    "source can write to the /forward_netbox_validation folder."
+                    "source can write to %(directory)s."
                 )
-                % {"count": len(skipped)},
+                % {"count": len(skipped), "directory": directory},
             )
         if not published and not skipped:
             messages.info(request, _("No enabled NQE maps were available to publish."))

@@ -201,7 +201,7 @@ class ForwardModuleReadinessCommandTest(TestCase):
         with (
             patch.object(ForwardSource, "get_client", return_value=client),
             patch(
-                "forward_netbox.utilities.module_readiness.resolve_query_specs_for_client",
+                "forward_netbox.utilities.query_registry.resolve_query_specs_for_client",
                 side_effect=RuntimeError("stale repository path"),
             ),
         ):

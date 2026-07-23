@@ -2274,6 +2274,21 @@ class ForwardIngestionSnapshotSummaryTest(TestCase):
 
 
 class ForwardNQEMapModelTest(TestCase):
+    def test_query_id_allows_location_metadata_but_remains_execution_identity(self):
+        netbox_model = ContentType.objects.get(app_label="dcim", model="device")
+        query_map = ForwardNQEMap(
+            name="Device Map",
+            netbox_model=netbox_model,
+            query_id="OQ_devices",
+            query_repository="org",
+            query_path="/team/netbox/forward_devices",
+        )
+
+        query_map.clean()
+
+        self.assertEqual(query_map.execution_mode, "query_id")
+        self.assertEqual(query_map.execution_value, "OQ_devices")
+
     def test_map_defaults_coalesce_fields_from_model_contract(self):
         netbox_model = ContentType.objects.get(app_label="dcim", model="site")
         query_map = ForwardNQEMap(

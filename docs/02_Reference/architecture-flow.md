@@ -110,7 +110,7 @@ otherwise.
 
 ```mermaid
 flowchart TD
-    model["Enabled model + NQE map"] --> spec["Resolve query spec\nquery_id / repository query_path / inline query"]
+    model["Enabled model + NQE map"] --> spec["Resolve query spec\nquery_id / legacy query_path / inline query"]
 
     spec --> eligible{"Diff eligible?\nselector == latestProcessed\nAND spec has diff_query_id\nAND baseline exists\nAND baseline snapshot != current"}
 
@@ -135,8 +135,8 @@ Notes:
 - `Diff fallback mode` controls what happens when a diff-eligible map cannot run
   as a diff: `Allow full fallback` keeps the run moving; `Require diff` fails
   fast instead.
-- Org Repository-backed `query_path` and direct `query_id` maps are diff-capable;
-  inline `query` text always runs full.
+- Published `query_id` maps are diff-capable; inline `query` text always runs
+  full. A legacy path-only map must resolve to a query ID before execution.
 - Full parameterized workloads use compressed, checksummed local state. Only a
   successful merge promotes the pending generation, so preview, failure, and an
   open review branch cannot redefine presence.

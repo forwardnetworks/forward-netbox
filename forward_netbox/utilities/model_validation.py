@@ -283,14 +283,16 @@ def clean_forward_nqe_map(nqe_map):
     query_reference_count = sum(
         bool(value)
         for value in (
-            nqe_map.query_id,
-            getattr(nqe_map, "query_path", ""),
+            nqe_map.query_id or getattr(nqe_map, "query_path", ""),
             nqe_map.query,
         )
     )
     if query_reference_count != 1:
         raise ValidationError(
-            _("Set exactly one of `Query ID`, `Query Path`, or `Query`.")
+            _(
+                "Set either a published query reference (`Query ID` with optional "
+                "`Query Path` metadata) or raw `Query` text."
+            )
         )
     if getattr(nqe_map, "query_path", "") and not getattr(
         nqe_map, "query_repository", ""
