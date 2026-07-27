@@ -1,0 +1,1237 @@
+{
+  "engine": "fast",
+  "fixture": {
+    "actual_model_counts": {
+      "dcim.cable": 23083,
+      "dcim.device": 3400,
+      "dcim.interface": 535777,
+      "dcim.inventoryitem": 82572,
+      "dcim.macaddress": 277915,
+      "ipam.ipaddress": 51944,
+      "ipam.prefix": 34388,
+      "netbox_dlm.vulnerability": 70230
+    },
+    "basis": "deterministic anonymized customer-shaped baseline",
+    "logical_change_denominator": 1173589,
+    "reference_counts": {
+      "dcim.devicerole": 5,
+      "dcim.devicetype": 100,
+      "dcim.manufacturer": 10,
+      "dcim.platform": 10,
+      "dcim.site": 34
+    },
+    "requested_model_counts": {
+      "dcim.cable": 23083,
+      "dcim.device": 3400,
+      "dcim.interface": 535777,
+      "dcim.inventoryitem": 82572,
+      "dcim.macaddress": 277915,
+      "ipam.ipaddress": 51944,
+      "ipam.prefix": 34388,
+      "netbox_dlm.vulnerability": 70230
+    },
+    "source_rows": 1079468
+  },
+  "measurement": {
+    "baseline_rss_mib": 586.3125,
+    "incremental_peak_rss_mib": 566.79296875,
+    "peak_rss_mib": 1153.10546875,
+    "phases": {
+      "eligibility": "eligible_empty_baseline"
+    },
+    "python_system_seconds": 4.9240390000000005,
+    "python_user_seconds": 242.816821,
+    "rate_samples": [
+      {
+        "applied": 17353,
+        "elapsed_seconds": 12.51774028496584,
+        "interval_rows_per_second": 1386.272570364912,
+        "model": "ipam.prefix",
+        "overall_rows_per_second": 1386.272570364912,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 25950,
+        "elapsed_seconds": 19.367236730002332,
+        "interval_rows_per_second": 1255.1287629661945,
+        "model": "ipam.prefix",
+        "overall_rows_per_second": 1339.891713090909,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 34547,
+        "elapsed_seconds": 28.337273256969638,
+        "interval_rows_per_second": 958.413042595109,
+        "model": "ipam.prefix",
+        "overall_rows_per_second": 1219.1363539716392,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 47875,
+        "elapsed_seconds": 42.84533891797764,
+        "interval_rows_per_second": 918.6614061046361,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 1117.391091050792,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 57803,
+        "elapsed_seconds": 46.04040988400811,
+        "interval_rows_per_second": 3107.2862247984626,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 1255.4840442477807,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 67731,
+        "elapsed_seconds": 48.85662092396524,
+        "interval_rows_per_second": 3525.3039843743913,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 1386.3218274020353,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 77659,
+        "elapsed_seconds": 51.6542133599869,
+        "interval_rows_per_second": 3548.765671570873,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 1503.4397960681615,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 87587,
+        "elapsed_seconds": 54.767753648979124,
+        "interval_rows_per_second": 3188.653133893906,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 1599.2439741342691,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 97515,
+        "elapsed_seconds": 57.9082600849797,
+        "interval_rows_per_second": 3161.273572374291,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 1683.9566558708182,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 117371,
+        "elapsed_seconds": 63.78830738196848,
+        "interval_rows_per_second": 3376.8435859637434,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 1840.0080644431418,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 127299,
+        "elapsed_seconds": 66.6176637840108,
+        "interval_rows_per_second": 3508.925207454828,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 1910.8895864726135,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 137227,
+        "elapsed_seconds": 69.72300812095637,
+        "interval_rows_per_second": 3197.0689632973986,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 1968.1738309674886,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 147155,
+        "elapsed_seconds": 72.82281756197335,
+        "interval_rows_per_second": 3202.777521944322,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 2020.726537733435,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 157083,
+        "elapsed_seconds": 75.57596374198329,
+        "interval_rows_per_second": 3606.0562537816913,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 2078.4782915409737,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 167011,
+        "elapsed_seconds": 78.67530550196534,
+        "interval_rows_per_second": 3203.2608111141276,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 2122.7880709764513,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 176939,
+        "elapsed_seconds": 81.4499409099808,
+        "interval_rows_per_second": 3578.1277681816046,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 2172.36498913553,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 186867,
+        "elapsed_seconds": 84.59178092499496,
+        "interval_rows_per_second": 3159.931744632526,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 2209.0444007283572,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 196795,
+        "elapsed_seconds": 87.48638707399368,
+        "interval_rows_per_second": 3429.8275789382337,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 2249.4356731585676,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 206723,
+        "elapsed_seconds": 90.57689116097754,
+        "interval_rows_per_second": 3212.420925703782,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 2282.292948568991,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 216651,
+        "elapsed_seconds": 93.68596501398133,
+        "interval_rows_per_second": 3193.2338919540903,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 2312.5235457378044,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 236507,
+        "elapsed_seconds": 99.6121083899634,
+        "interval_rows_per_second": 3350.577051590406,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 2374.2796314893553,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 246435,
+        "elapsed_seconds": 102.37678182701347,
+        "interval_rows_per_second": 3591.020865955594,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 2407.1375911815862,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 256363,
+        "elapsed_seconds": 105.50724131497554,
+        "interval_rows_per_second": 3171.419415640842,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 2429.814264924887,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 266291,
+        "elapsed_seconds": 108.6196797209559,
+        "interval_rows_per_second": 3189.7819988739275,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 2451.5907309255736,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 276219,
+        "elapsed_seconds": 111.37747647298966,
+        "interval_rows_per_second": 3599.9752311980683,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 2480.0256635998244,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 286147,
+        "elapsed_seconds": 114.52297746198019,
+        "interval_rows_per_second": 3156.253975042027,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 2498.599026514101,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 296075,
+        "elapsed_seconds": 117.28858335199766,
+        "interval_rows_per_second": 3589.810115691246,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 2524.329235961884,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 306003,
+        "elapsed_seconds": 120.37196095701074,
+        "interval_rows_per_second": 3219.845660115921,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 2542.1451770590074,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 315931,
+        "elapsed_seconds": 123.41470871196361,
+        "interval_rows_per_second": 3262.8403007904863,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 2559.913670722574,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 325859,
+        "elapsed_seconds": 126.8035817409982,
+        "interval_rows_per_second": 2929.587480835264,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 2569.793341213193,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 335787,
+        "elapsed_seconds": 129.90272322797682,
+        "interval_rows_per_second": 3203.467812526004,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 2584.9111678028503,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 345715,
+        "elapsed_seconds": 132.75130800297484,
+        "interval_rows_per_second": 3485.239437891369,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 2604.2304607066685,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 365257,
+        "elapsed_seconds": 138.53825153998332,
+        "interval_rows_per_second": 3376.9121601110505,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 2636.5064950641718,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 375184,
+        "elapsed_seconds": 141.6063816290116,
+        "interval_rows_per_second": 3235.5212171411035,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 2649.48511277499,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 385111,
+        "elapsed_seconds": 144.77456860098755,
+        "interval_rows_per_second": 3133.337801022729,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 2660.073545523057,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 395038,
+        "elapsed_seconds": 147.5187459649751,
+        "interval_rows_per_second": 3617.4775472876654,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 2677.8833931640975,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 404965,
+        "elapsed_seconds": 150.61923196096905,
+        "interval_rows_per_second": 3201.7561159206643,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 2688.6672752716017,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 414892,
+        "elapsed_seconds": 153.381070361007,
+        "interval_rows_per_second": 3594.3449840742173,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 2704.9752555741397,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 424819,
+        "elapsed_seconds": 156.46483399998397,
+        "interval_rows_per_second": 3219.118311964169,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 2715.108495242091,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 434746,
+        "elapsed_seconds": 159.2855923989555,
+        "interval_rows_per_second": 3519.26630923779,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 2729.349173722575,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 444673,
+        "elapsed_seconds": 162.3629918579827,
+        "interval_rows_per_second": 3225.7755719298043,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 2738.7583519583764,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 454600,
+        "elapsed_seconds": 165.21080935298232,
+        "interval_rows_per_second": 3485.8273107144228,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 2751.6359358104783,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 464527,
+        "elapsed_seconds": 168.24112884496571,
+        "interval_rows_per_second": 3275.8922041921805,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 2761.078715942651,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 484381,
+        "elapsed_seconds": 174.01843307598028,
+        "interval_rows_per_second": 3436.550890537642,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 2783.503973906653,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 494308,
+        "elapsed_seconds": 177.1415305059636,
+        "interval_rows_per_second": 3178.57518779138,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 2790.469285142361,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 504235,
+        "elapsed_seconds": 179.8779970089672,
+        "interval_rows_per_second": 3627.670935896304,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 2803.2055525660708,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 514162,
+        "elapsed_seconds": 182.96637937799096,
+        "interval_rows_per_second": 3214.304064019758,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 2810.1446929645513,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 524089,
+        "elapsed_seconds": 185.78947891597636,
+        "interval_rows_per_second": 3516.3478532832873,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 2820.87555795891,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 534016,
+        "elapsed_seconds": 188.8863375330111,
+        "interval_rows_per_second": 3205.506362284358,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 2827.181716658949,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 543943,
+        "elapsed_seconds": 191.67720726697007,
+        "interval_rows_per_second": 3556.955697075161,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 2837.8074146415875,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 553870,
+        "elapsed_seconds": 194.71178459195653,
+        "interval_rows_per_second": 3271.2957808858273,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 2844.563317832588,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 563797,
+        "elapsed_seconds": 197.80116331297904,
+        "interval_rows_per_second": 3213.267422491469,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 2850.3219625048864,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 573724,
+        "elapsed_seconds": 200.53347980196122,
+        "interval_rows_per_second": 3633.18087052863,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 2860.988601836395,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 582904,
+        "elapsed_seconds": 202.61163733899593,
+        "interval_rows_per_second": 4417.374446548833,
+        "model": "dcim.inventoryitem",
+        "overall_rows_per_second": 2876.952220788409,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 601264,
+        "elapsed_seconds": 207.08896206697682,
+        "interval_rows_per_second": 4100.663033275165,
+        "model": "dcim.inventoryitem",
+        "overall_rows_per_second": 2903.4092111849923,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 610444,
+        "elapsed_seconds": 209.17966349195922,
+        "interval_rows_per_second": 4390.870877259427,
+        "model": "dcim.inventoryitem",
+        "overall_rows_per_second": 2918.276039885996,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 619624,
+        "elapsed_seconds": 211.29512670601252,
+        "interval_rows_per_second": 4339.475127251575,
+        "model": "dcim.inventoryitem",
+        "overall_rows_per_second": 2932.5049264487757,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 628804,
+        "elapsed_seconds": 213.7206413449603,
+        "interval_rows_per_second": 3784.7637992332925,
+        "model": "dcim.inventoryitem",
+        "overall_rows_per_second": 2942.1772087285926,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 637984,
+        "elapsed_seconds": 215.78898245398887,
+        "interval_rows_per_second": 4438.339478883934,
+        "model": "dcim.inventoryitem",
+        "overall_rows_per_second": 2956.5179498264365,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 656296,
+        "elapsed_seconds": 220.04267121996963,
+        "interval_rows_per_second": 4304.969405954603,
+        "model": "dcim.inventoryitem",
+        "overall_rows_per_second": 2982.5851338803363,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 664944,
+        "elapsed_seconds": 221.77806915598921,
+        "interval_rows_per_second": 4983.295082069536,
+        "model": "ipam.ipaddress",
+        "overall_rows_per_second": 2998.2405498007415,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 673592,
+        "elapsed_seconds": 223.12782298400998,
+        "interval_rows_per_second": 6407.094257092152,
+        "model": "ipam.ipaddress",
+        "overall_rows_per_second": 3018.8615251638594,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 682254,
+        "elapsed_seconds": 224.51416782400338,
+        "interval_rows_per_second": 6248.084711767128,
+        "model": "ipam.ipaddress",
+        "overall_rows_per_second": 3038.8015447417947,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 690916,
+        "elapsed_seconds": 225.88491902599344,
+        "interval_rows_per_second": 6319.162797321997,
+        "model": "ipam.ipaddress",
+        "overall_rows_per_second": 3058.7079605809968,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 708240,
+        "elapsed_seconds": 228.679911084997,
+        "interval_rows_per_second": 6198.2287012923225,
+        "model": "ipam.ipaddress",
+        "overall_rows_per_second": 3097.0800917303027,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 718212,
+        "elapsed_seconds": 229.9859795969678,
+        "interval_rows_per_second": 7635.1277965905765,
+        "model": "dcim.macaddress",
+        "overall_rows_per_second": 3122.8512331865168,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 728184,
+        "elapsed_seconds": 231.33940003899625,
+        "interval_rows_per_second": 7367.998657574937,
+        "model": "dcim.macaddress",
+        "overall_rows_per_second": 3147.686904510222,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 738156,
+        "elapsed_seconds": 232.93835906498134,
+        "interval_rows_per_second": 6236.557558975844,
+        "model": "dcim.macaddress",
+        "overall_rows_per_second": 3168.889842630347,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 748128,
+        "elapsed_seconds": 234.2341749679763,
+        "interval_rows_per_second": 7695.537596777662,
+        "model": "dcim.macaddress",
+        "overall_rows_per_second": 3193.9318850559766,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 758100,
+        "elapsed_seconds": 235.5295978419599,
+        "interval_rows_per_second": 7697.872409288683,
+        "model": "dcim.macaddress",
+        "overall_rows_per_second": 3218.703750807082,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 768072,
+        "elapsed_seconds": 236.8249612720101,
+        "interval_rows_per_second": 7698.225662904144,
+        "model": "dcim.macaddress",
+        "overall_rows_per_second": 3243.205428492883,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 778044,
+        "elapsed_seconds": 238.10846232395852,
+        "interval_rows_per_second": 7769.374232192569,
+        "model": "dcim.macaddress",
+        "overall_rows_per_second": 3267.6033115590494,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 797826,
+        "elapsed_seconds": 240.7664614690002,
+        "interval_rows_per_second": 7442.440317146813,
+        "model": "dcim.macaddress",
+        "overall_rows_per_second": 3313.6924268113803,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 807717,
+        "elapsed_seconds": 242.38545452896506,
+        "interval_rows_per_second": 6109.352933368807,
+        "model": "dcim.macaddress",
+        "overall_rows_per_second": 3332.3658037552655,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 817608,
+        "elapsed_seconds": 243.67271946696565,
+        "interval_rows_per_second": 7683.732934855614,
+        "model": "dcim.macaddress",
+        "overall_rows_per_second": 3355.3530398828334,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 827499,
+        "elapsed_seconds": 244.96315406495705,
+        "interval_rows_per_second": 7664.8595871465195,
+        "model": "dcim.macaddress",
+        "overall_rows_per_second": 3378.054969771378,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 837390,
+        "elapsed_seconds": 246.24937365599908,
+        "interval_rows_per_second": 7689.977721445555,
+        "model": "dcim.macaddress",
+        "overall_rows_per_second": 3400.5771773852375,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 847281,
+        "elapsed_seconds": 247.53559752897127,
+        "interval_rows_per_second": 7689.952120966334,
+        "model": "dcim.macaddress",
+        "overall_rows_per_second": 3422.865270522698,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 857172,
+        "elapsed_seconds": 248.81767946796026,
+        "interval_rows_per_second": 7714.795520635521,
+        "model": "dcim.macaddress",
+        "overall_rows_per_second": 3444.9802836875033,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 867063,
+        "elapsed_seconds": 250.10994804097572,
+        "interval_rows_per_second": 7653.981692768171,
+        "model": "dcim.macaddress",
+        "overall_rows_per_second": 3466.7273604724764,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 876954,
+        "elapsed_seconds": 251.7525356480037,
+        "interval_rows_per_second": 6021.596630633546,
+        "model": "dcim.macaddress",
+        "overall_rows_per_second": 3483.396891088886,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 886845,
+        "elapsed_seconds": 253.05247285199584,
+        "interval_rows_per_second": 7608.829080069676,
+        "model": "dcim.macaddress",
+        "overall_rows_per_second": 3504.5893446719797,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 896736,
+        "elapsed_seconds": 254.36046588496538,
+        "interval_rows_per_second": 7561.966884138885,
+        "model": "dcim.macaddress",
+        "overall_rows_per_second": 3525.453520774526,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 916518,
+        "elapsed_seconds": 256.9620694759651,
+        "interval_rows_per_second": 7603.771792303793,
+        "model": "dcim.macaddress",
+        "overall_rows_per_second": 3566.744313155239,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 926409,
+        "elapsed_seconds": 258.2595728309825,
+        "interval_rows_per_second": 7623.101675808289,
+        "model": "dcim.macaddress",
+        "overall_rows_per_second": 3587.1235665919985,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 936300,
+        "elapsed_seconds": 259.5808991380036,
+        "interval_rows_per_second": 7485.660390959121,
+        "model": "dcim.macaddress",
+        "overall_rows_per_second": 3606.968013090306,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 946271,
+        "elapsed_seconds": 261.21991006698227,
+        "interval_rows_per_second": 6083.5469878247,
+        "model": "dcim.macaddress",
+        "overall_rows_per_second": 3622.5071808552275,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 956242,
+        "elapsed_seconds": 262.5244301969651,
+        "interval_rows_per_second": 7643.423639718846,
+        "model": "dcim.macaddress",
+        "overall_rows_per_second": 3642.4876697477525,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 966213,
+        "elapsed_seconds": 263.8304282829631,
+        "interval_rows_per_second": 7634.773823102892,
+        "model": "dcim.macaddress",
+        "overall_rows_per_second": 3662.2500531429164,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 976184,
+        "elapsed_seconds": 265.12822005100315,
+        "interval_rows_per_second": 7683.05073706736,
+        "model": "dcim.macaddress",
+        "overall_rows_per_second": 3681.9317076552993,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 986155,
+        "elapsed_seconds": 266.43235323997214,
+        "interval_rows_per_second": 7645.69147103969,
+        "model": "dcim.macaddress",
+        "overall_rows_per_second": 3701.3335205270023,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 993850,
+        "elapsed_seconds": 272.0176555129583,
+        "interval_rows_per_second": 1377.7231068079518,
+        "model": "dcim.cable",
+        "overall_rows_per_second": 3653.623137534377,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 1009238,
+        "elapsed_seconds": 283.7446785919601,
+        "interval_rows_per_second": 1312.1829722969903,
+        "model": "dcim.cable",
+        "overall_rows_per_second": 3556.852607802868,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 1018017,
+        "elapsed_seconds": 285.26073787600035,
+        "interval_rows_per_second": 5790.670650163698,
+        "model": "netbox_dlm.vulnerability",
+        "overall_rows_per_second": 3568.724555576662,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 1026796,
+        "elapsed_seconds": 286.83585057297023,
+        "interval_rows_per_second": 5573.569444833106,
+        "model": "netbox_dlm.vulnerability",
+        "overall_rows_per_second": 3579.733837136882,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 1044354,
+        "elapsed_seconds": 290.11093572399113,
+        "interval_rows_per_second": 5361.081984243022,
+        "model": "netbox_dlm.vulnerability",
+        "overall_rows_per_second": 3599.8436163522933,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 1053133,
+        "elapsed_seconds": 292.03396177396644,
+        "interval_rows_per_second": 4565.200767879735,
+        "model": "netbox_dlm.vulnerability",
+        "overall_rows_per_second": 3606.200435054613,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 1061912,
+        "elapsed_seconds": 293.6209942160058,
+        "interval_rows_per_second": 5531.707964784225,
+        "model": "netbox_dlm.vulnerability",
+        "overall_rows_per_second": 3616.6078751807227,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 1070690,
+        "elapsed_seconds": 295.2106484819669,
+        "interval_rows_per_second": 5521.955426384872,
+        "model": "netbox_dlm.vulnerability",
+        "overall_rows_per_second": 3626.86781627189,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 1079468,
+        "elapsed_seconds": 296.93705392896663,
+        "interval_rows_per_second": 5084.553003035962,
+        "model": "netbox_dlm.vulnerability",
+        "overall_rows_per_second": 3635.342863805171,
+        "phase": "fast_load"
+      }
+    ],
+    "rows_per_second": 3440.233592444814,
+    "sql_by_verb": {
+      "INSERT": 3767,
+      "LOCK": 1,
+      "RELEASE": 6888,
+      "SAVEPOINT": 6888,
+      "SELECT": 35047,
+      "UPDATE": 983
+    },
+    "statements": 53574,
+    "statements_per_change": 0.04564971212238697,
+    "wal_bytes": 1462253440,
+    "wall_seconds": 341.1364282289869
+  },
+  "remedy": "none",
+  "scale": 1.0,
+  "schema_version": 1,
+  "verification": {
+    "applied_changes": 0,
+    "baseline_ready": true,
+    "branch_id": null,
+    "change_diffs": 0,
+    "durable_state_counts": {
+      "contributor_baselines": 0,
+      "current_workload_states": 0,
+      "device_identities": 3400,
+      "workload_states": 0
+    },
+    "fast_baseline_attestation": {
+      "eligibility_reason": "eligible_empty_baseline",
+      "engine": "direct_main_bulk_apply",
+      "logical_applied_changes": 1199279,
+      "model_engines": {
+        "dcim.cable": "fast_baseline_set_based",
+        "dcim.device": "normal_apply_engine",
+        "dcim.devicerole": "normal_apply_engine",
+        "dcim.devicetype": "normal_apply_engine",
+        "dcim.interface": "fast_baseline_set_based",
+        "dcim.inventoryitem": "fast_baseline_set_based",
+        "dcim.macaddress": "fast_baseline_set_based",
+        "dcim.manufacturer": "normal_apply_engine",
+        "dcim.platform": "normal_apply_engine",
+        "dcim.site": "normal_apply_engine",
+        "ipam.ipaddress": "fast_baseline_set_based",
+        "ipam.prefix": "fast_baseline_set_based",
+        "netbox_dlm.vulnerability": "fast_baseline_set_based"
+      },
+      "model_specs": {
+        "dcim.cable": 3,
+        "dcim.device": 1,
+        "dcim.devicerole": 1,
+        "dcim.devicetype": 1,
+        "dcim.interface": 2,
+        "dcim.inventoryitem": 3,
+        "dcim.macaddress": 2,
+        "dcim.manufacturer": 1,
+        "dcim.platform": 1,
+        "dcim.site": 1,
+        "ipam.ipaddress": 2,
+        "ipam.prefix": 2,
+        "netbox_dlm.vulnerability": 3
+      },
+      "omitted_evidence": [
+        "branch",
+        "branch_event",
+        "source_object_change",
+        "source_change_diff",
+        "destination_object_change",
+        "applied_change",
+        "branch_rollback"
+      ],
+      "runtime": {
+        "branching": "1.1.1",
+        "forward_netbox": "2.6.1",
+        "netbox": "4.6.5",
+        "optional_plugins": {
+          "netbox-cisco-aci": "0.4.0",
+          "netbox-dlm": "0.4.1",
+          "netbox-peering-manager": "0.3.0",
+          "netbox-routing": "0.4.3"
+        },
+        "plugin_apps": [
+          "forward_netbox",
+          "netbox_branching",
+          "netbox_cisco_aci",
+          "netbox_dlm",
+          "netbox_peering_manager",
+          "netbox_routing"
+        ]
+      },
+      "side_changes": 119811,
+      "spec_version": 1,
+      "staged_workload_state_count": 0,
+      "statistics": {
+        "applied": 1079468,
+        "failed": 0,
+        "models": {
+          "dcim.cable": {
+            "applied": 23083,
+            "current": 23083,
+            "failed": 0,
+            "skipped": 0,
+            "total": 23083,
+            "unchanged": 0
+          },
+          "dcim.device": {
+            "applied": 3400,
+            "current": 3400,
+            "failed": 0,
+            "skipped": 0,
+            "total": 3400,
+            "unchanged": 0
+          },
+          "dcim.devicerole": {
+            "applied": 5,
+            "current": 5,
+            "failed": 0,
+            "skipped": 0,
+            "total": 5,
+            "unchanged": 0
+          },
+          "dcim.devicetype": {
+            "applied": 100,
+            "current": 100,
+            "failed": 0,
+            "skipped": 0,
+            "total": 100,
+            "unchanged": 0
+          },
+          "dcim.interface": {
+            "applied": 535777,
+            "current": 535777,
+            "failed": 0,
+            "skipped": 0,
+            "total": 535777,
+            "unchanged": 0
+          },
+          "dcim.inventoryitem": {
+            "applied": 82572,
+            "current": 82572,
+            "failed": 0,
+            "skipped": 0,
+            "total": 82572,
+            "unchanged": 0
+          },
+          "dcim.macaddress": {
+            "applied": 277915,
+            "current": 277915,
+            "failed": 0,
+            "skipped": 0,
+            "total": 277915,
+            "unchanged": 0
+          },
+          "dcim.manufacturer": {
+            "applied": 10,
+            "current": 110,
+            "failed": 0,
+            "skipped": 0,
+            "total": 10,
+            "unchanged": 100
+          },
+          "dcim.platform": {
+            "applied": 10,
+            "current": 10,
+            "failed": 0,
+            "skipped": 0,
+            "total": 10,
+            "unchanged": 0
+          },
+          "dcim.site": {
+            "applied": 34,
+            "current": 34,
+            "failed": 0,
+            "skipped": 0,
+            "total": 34,
+            "unchanged": 0
+          },
+          "ipam.ipaddress": {
+            "applied": 51944,
+            "current": 51944,
+            "failed": 0,
+            "skipped": 0,
+            "total": 51944,
+            "unchanged": 0
+          },
+          "ipam.prefix": {
+            "applied": 34388,
+            "current": 34388,
+            "failed": 0,
+            "skipped": 0,
+            "total": 34388,
+            "unchanged": 0
+          },
+          "netbox_dlm.vulnerability": {
+            "applied": 70230,
+            "current": 70230,
+            "failed": 0,
+            "skipped": 0,
+            "total": 70230,
+            "unchanged": 0
+          }
+        },
+        "skipped": 0,
+        "unchanged": 100
+      }
+    },
+    "ingestion_change_totals": {
+      "applied": 1199279,
+      "created": 1199279,
+      "deleted": 0,
+      "failed": 0,
+      "updated": 0
+    },
+    "issues": 0,
+    "model_results": [
+      {
+        "model": "dcim.site",
+        "row_count": 34,
+        "sync_mode": "full"
+      },
+      {
+        "model": "dcim.manufacturer",
+        "row_count": 10,
+        "sync_mode": "full"
+      },
+      {
+        "model": "dcim.devicerole",
+        "row_count": 5,
+        "sync_mode": "full"
+      },
+      {
+        "model": "dcim.platform",
+        "row_count": 10,
+        "sync_mode": "full"
+      },
+      {
+        "model": "dcim.devicetype",
+        "row_count": 100,
+        "sync_mode": "full"
+      },
+      {
+        "model": "ipam.prefix",
+        "row_count": 34388,
+        "sync_mode": "full"
+      },
+      {
+        "model": "dcim.device",
+        "row_count": 3400,
+        "sync_mode": "full"
+      },
+      {
+        "model": "dcim.interface",
+        "row_count": 535777,
+        "sync_mode": "full"
+      },
+      {
+        "model": "dcim.inventoryitem",
+        "row_count": 82572,
+        "sync_mode": "full"
+      },
+      {
+        "model": "ipam.ipaddress",
+        "row_count": 51944,
+        "sync_mode": "full"
+      },
+      {
+        "model": "dcim.macaddress",
+        "row_count": 277915,
+        "sync_mode": "full"
+      },
+      {
+        "model": "dcim.cable",
+        "row_count": 23083,
+        "sync_mode": "full"
+      },
+      {
+        "model": "netbox_dlm.vulnerability",
+        "row_count": 70230,
+        "sync_mode": "full"
+      }
+    ],
+    "object_changes": 0,
+    "passed": true,
+    "semantic_fingerprints": {
+      "cable": {
+        "count": 23083,
+        "sha256": "d2352714566526b34568449b3a8924e5eac4f26dd177e305415a9c3a1a23a2fa"
+      },
+      "cable_path": {
+        "count": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "cable_termination": {
+        "count": 46166,
+        "sha256": "02542deee4752ee57bcd48710734c0e7410eeb6c71fec491c86b4017ea43fe6b"
+      },
+      "cached_value": {
+        "count": 247756,
+        "sha256": "b7f51257298dac1b8c269d752d65734581a28770a66364f545ed54f79e8ad9c7"
+      },
+      "cve": {
+        "count": 70230,
+        "sha256": "42a90c6826074d35244b3a12f9e5f378c828aa4a13960b28153bc232fbf3f8da"
+      },
+      "cve_affected_software": {
+        "count": 70230,
+        "sha256": "f2f11aa3a6af0337960078ce023815587a3b938b2e5c815d4c8102bee5fc55b9"
+      },
+      "device": {
+        "count": 3400,
+        "sha256": "16ddaf8084ca98434cc55df09c6e1a118cb3ab086f71794c5ec9d7f443faf0a3"
+      },
+      "device_role": {
+        "count": 5,
+        "sha256": "6190e7c5f0bb990570650a9f084ed46ac40b554bb38bccda210429ee91baa019"
+      },
+      "device_software": {
+        "count": 3400,
+        "sha256": "a29f7b01f52790f734b72f76244e63173c581174c74860d65d3a5c393d1eb30f"
+      },
+      "device_type": {
+        "count": 100,
+        "sha256": "76b6f474d0af1ec1e6b55229511bcde63f24fffc113b4b3a06c79d52d0d6a380"
+      },
+      "interface": {
+        "count": 535777,
+        "sha256": "ddda705ea3b65e95af47fd411850cf3e138d4260444cc29ea8341437301ca6e0"
+      },
+      "inventory": {
+        "count": 82572,
+        "sha256": "2c1b070fca8f689597dc4b4e064dc9e71cab5c3d349a5f4ed65f406e78a2633f"
+      },
+      "inventory_role": {
+        "count": 5,
+        "sha256": "6aba2785d1c07f5b859b000e9a7e5075ff89f8f6c97a8c559887f505c077bec6"
+      },
+      "ip_address": {
+        "count": 51944,
+        "sha256": "b6894ac4eea7d8676b64dedacce2cc4643b5958cdc61bb2d095454275e61a572"
+      },
+      "mac": {
+        "count": 277915,
+        "sha256": "0ce904d7e3b2ca70070bacb2756c15f61d27b35362b6fd67420b0ce367825a49"
+      },
+      "manufacturer": {
+        "count": 10,
+        "sha256": "da20e00755a0e366ba0c08847a6405abdb2c07de093fe9acdf8bd0fcc25b57e9"
+      },
+      "platform": {
+        "count": 10,
+        "sha256": "b70670edc0ad1c80ebcf62249a8d62ccc50efd68f02730318c87de2384e02221"
+      },
+      "prefix": {
+        "count": 34388,
+        "sha256": "9480e3d261c56d7ad711616ed992bed0a026002cb56155417393c699be635464"
+      },
+      "site": {
+        "count": 34,
+        "sha256": "7bfd0af341315de45790951f3dc132b605922bf7d41d2e9e4a88913634a91cc6"
+      },
+      "software_version": {
+        "count": 10,
+        "sha256": "3194ccc58e10c87f6bc1a5a3afc5e7243c5ab84d5f90b1368189023db55446d8"
+      },
+      "vulnerability": {
+        "count": 70230,
+        "sha256": "998f7647f4d0c538c8aeb57d199ae6d8ef980349d29a82ac94b87c205472b57b"
+      }
+    },
+    "side_counts": {
+      "dcim.cablepath": 0,
+      "dcim.cabletermination": 46166,
+      "dcim.inventoryitemrole": 5,
+      "extras.cachedvalue": 247756,
+      "netbox_dlm.cve": 70230,
+      "netbox_dlm.cve_affected_software": 70230,
+      "netbox_dlm.devicesoftware": 3400,
+      "netbox_dlm.softwareversion": 10
+    },
+    "sync_status": "completed",
+    "target_counts": {
+      "dcim.cable": 23083,
+      "dcim.interface": 535777,
+      "dcim.inventoryitem": 82572,
+      "dcim.macaddress": 277915,
+      "dcim.site": 34,
+      "ipam.ipaddress": 51944,
+      "ipam.prefix": 34388,
+      "netbox_dlm.vulnerability": 70230
+    }
+  }
+}

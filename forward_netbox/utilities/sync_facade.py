@@ -37,6 +37,8 @@ def normalize_forward_sync(sync):
     )
     if "enable_bulk_orm" not in parameters:
         parameters["enable_bulk_orm"] = DEFAULT_ENABLE_BULK_ORM_FOR_NEW_SYNCS
+    parameters.setdefault("enable_fast_baseline_load", False)
+    parameters.setdefault("require_fast_baseline_eligibility", False)
     parameters.setdefault("validation_schedule_interval", 0)
     parameters.setdefault("preview_schedule_interval", 0)
     max_changes_per_staging_item = get_state_max_changes_per_staging_item(

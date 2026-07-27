@@ -67,7 +67,28 @@ Create a `Forward Source` for each Forward deployment or tenant you want to sync
     resolution queries, regardless of this setting.
 - `Async NQE`
   - Uses Forward's async NQE execution API when the source is pointed at Forward 26.6 or newer.
-  - `nqe_async_poll_interval_seconds` defaults to `1.0`; `nqe_async_max_polls` defaults to `1200`.
+  - Status polling backs off from `0.1` seconds to the operator-configurable
+    `nqe_async_poll_interval_seconds` ceiling, which defaults to `5.0` seconds.
+    Fast-query latency therefore keeps the short initial checks while
+    long-running queries stop polling once per second.
+  - `nqe_async_max_polls` defaults to `1200`, an approximately 100-minute
+    poll-count envelope at the default ceiling. An enabled per-workload
+    wall-clock fetch budget remains authoritative.
+  - Server-side diff calls have an independent
+    `diff_fetch_timeout_seconds` budget, defaulting to `60`. A budget breach
+    aborts the client request and, when full fallback is allowed, runs the
+    immutable full query instead. The type-only fallback classifier is retained
+    in ingestion diagnostics and support bundles.
+  - `diff_timeout_circuit_breaker_threshold` defaults to `1`. After that many
+    timeouts for the same immutable map contract in one run, later consumers
+    skip the diff and use full execution instead of repeatedly spending the
+    timeout budget.
+  - The disabled-by-default Tier 3 contributor prerequisite uses chunked,
+    merge-gated local state. `contributor_cache_max_rows` defaults to
+    `1500000`; `contributor_cache_max_compressed_bytes` defaults to
+    `314572800` (300 MiB) per pending generation. Exceeding either guard
+    refuses cache staging without truncation and keeps the map on full
+    execution.
   - Async mode only runs when the sync has a network, a processed snapshot, and a JSON response format.
 - `Verify`
   - Only shown for custom deployments.
@@ -163,7 +184,12 @@ recover a legacy path-only binding.
 The UI uses `Forward Source for Query Lookup` to populate published-query
 selectors. Pick the repository and optional folder filter, then select the
 query. The saved map uses the returned query ID. The `Commit ID` selector can
-pin a specific committed revision; leave it blank to use the latest revision.
+pin a specific committed revision. For a bundled built-in map whose commit is
+blank, sync preflight does not execute the mutable query head: it searches the
+query's immutable history for the exact shipped full-query source and runtime
+parameter declaration. If no compatible immutable revision exists, preflight
+fails closed before any NQE workload request. Pin custom published queries
+explicitly; their source contract cannot be inferred from a bundled query.
 
 For raw queries, paste the NQE in `Query`. The form clears `query_id` and
 `commit_id` before saving so each map has exactly one execution mode.
@@ -177,6 +203,13 @@ The plugin enforces a strict identity contract:
   - advanced `coalesce_fields` values, when present from existing data or API input, must be valid for the selected model.
   - Raw `query` maps must include required output fields and coalesce fields.
 - Sync-time validation:
+  - Full execution requires an immutable, source-verified revision whose exact
+    declared parameter names match the supplied runtime parameter names.
+  - Diff execution requires a separate source-verified, parameterless revision;
+    a parameter-declaring diff revision is reported and falls back to the safe
+    full revision unless the sync requires diff-only execution.
+  - Contract incompatibilities are reported during workload preflight, before
+    any mapped NQE query or diff request is scheduled.
   - Rows must include required identity fields.
   - Rows must satisfy at least one configured coalesce field set.
   - Ambiguous coalesce matches fail the sync to prevent duplicate or inconsistent object resolution.
@@ -369,14 +402,45 @@ curl -X PATCH \
 
 Use `Bearer $NETBOX_TOKEN` for NetBox API authentication.
 
+### Read-only query-ID binding
+
+An operator who can read the Forward NQE repository but cannot publish to it
+can use **Resolve to Query ID** on the sync detail or Health page. The action
+looks up each enabled path-bound map by exact path, unique filename, and then
+bundled query intent. It persists a query ID only for an unambiguous match;
+ambiguous and unresolved maps remain unchanged. It does not add, edit, commit,
+or otherwise change any Forward query.
+
+The equivalent management path is:
+
+```bash
+python manage.py forward_resolve_query_ids --sync-id 123
+# or
+invoke resolve-query-ids --sync-id 123
+```
+
+The command reports aggregate resolved/unchanged counts without printing map,
+source, repository, or tenant identifiers. **Publish Bundled Queries** remains
+the workflow for changing Forward query source. Before that workflow makes any
+repository request or write, it checks the source login's current Forward roles
+and stops with an actionable permission message unless the login has Network
+Operator, organization administrator, or equivalent write access.
+
+Persisting a query ID restores the durable identity required by the Forward
+diff API, but query identity is not the only diff requirement. A compatible
+merged baseline must exist, the sync must select `latestProcessed`, and the map
+must have no effective runtime parameters. The shipped parameterized maps still
+use full Forward execution plus the plugin's durable local row-delta state
+because Forward's NQE diff endpoint has no runtime-parameter payload.
+
 ### Initial Baseline Strategy
 
-Version 2.6 has one production execution path. Validation and dependency
-planning run first, then every dependency-ordered workload is staged into one
-native NetBox Branching branch. `Auto merge` controls whether that branch merges
-immediately or pauses for review. A merge with any failed row remains open and
-retryable; it never becomes a baseline and never starts post-sync ownership
-reconciliation.
+Validation and dependency planning normally stage every dependency-ordered
+workload into one native NetBox Branching branch. `Auto merge` controls whether
+that branch merges immediately or pauses for review. A merge with any failed
+row remains open and retryable; it never becomes a baseline and never starts
+post-sync ownership reconciliation. The only exception is the explicit,
+disabled-by-default fast first baseline documented below.
 
 For large datasets, prefer published `query_id` maps over bundled raw `query` maps.
 
@@ -621,6 +685,14 @@ Create a `Forward Sync` to bind a source, a NetBox model selection, and the inge
   - The single-branch path auto-enables the same safe set when unset; set this explicitly to `false` to force adapter-only behavior.
   - Models with dependency, relationship, IPAM hierarchy, or plugin-specific contracts remain on the adapter path even when this is enabled.
   - Current safe set: `dcim.site`, `dcim.manufacturer`, `dcim.devicerole`, `dcim.platform`, `dcim.devicetype`, `dcim.macaddress`, `dcim.virtualchassis`, `ipam.vlan`, `ipam.vrf`, and the two highest-volume models `dcim.interface` and `ipam.ipaddress` (promoted to the safe set with adapter-vs-bulk parity tests and compare-before-write).
+- `Use fast first-baseline load`
+  - Disabled by default and valid only with bulk ORM plus `Auto merge`.
+  - Before running, use `python manage.py forward_fast_baseline_preflight --sync <id> --fail-on-ineligible`; this performs the live read-only workload and locked environment proof without creating inventory.
+  - Exact runtime, full workload, row-shape allowlist, empty target/side tables, no prior baseline state, no competing branch, and no unproved runtime hooks are mandatory. The only admitted delete rows are normalization-stamped out-of-scope CVE tombstones proven to be physical no-ops on the empty target.
+  - A successful load omits Branching review/audit/rollback evidence. Recovery is database restore/reseed; see the operations guide and evidence reference.
+- `Abort unless the fast baseline is eligible`
+  - Optional companion to the fast baseline. The normal sync fetches the workload once, performs the same locked proof, and either loads it directly or aborts before provisioning a branch or writing a target row.
+  - Use this to avoid paying for a separate full preflight fetch plus a second load fetch. An ineligible sync provisions no branch and writes no target row, but normal sync failure bookkeeping records one failed ingestion with the rejection reason. Leave it disabled to retain the default behavior of falling back to the ordinary branch path after a pre-DML rejection.
 - `Auto merge`
   - Enabled by default.
   - When enabled, the one native Branching branch merges automatically after staging.
@@ -648,7 +720,11 @@ Create a `Forward Sync` to bind a source, a NetBox model selection, and the inge
 - `latestCollected` is an alternative selector that skips snapshots whose in-scope devices were all backfilled (collection canceled) and resolves to the most recent snapshot that actually collected an in-scope device. Because the resolved snapshot can change between runs, `latestCollected` always runs a full fetch rather than a Forward `nqe-diff`.
 - Both dynamic selectors get end-of-run catch-up: if a newer snapshot (newest processed for `latestProcessed`, or newest with a collected in-scope device for `latestCollected`) appears while a run is in progress, the plugin queues a follow-up sync automatically instead of waiting for the next scheduled interval.
 - All built-in queries only ingest devices whose snapshot collection `result` is `completed`; backfilled (collection-canceled) devices are intentionally excluded. When a `latestProcessed` run finds that every in-scope device in the snapshot is backfilled, the run logs a warning and applies zero changes — switch the sync to `latestCollected`, pin a known-good snapshot, or re-run collection in Forward.
-- Every sync uses one native NetBox Branching branch.
+- Every ordinary and post-baseline sync uses one native NetBox Branching branch.
+- Only an explicitly opted-in, fully eligible first baseline may load directly
+  into an empty main schema in one atomic transaction. Any pre-DML rejection
+  returns to the ordinary branch path; any post-DML failure rolls back and never
+  switches engines.
 - `Auto merge` controls whether that branch merges automatically or pauses for review.
 - The custom merge is idempotent. Any failed row records an ingestion issue,
   leaves the branch ready for inspection and retry, and prevents baseline and

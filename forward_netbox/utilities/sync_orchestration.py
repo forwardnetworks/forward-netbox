@@ -60,6 +60,16 @@ def _record_forward_sync_failure(sync, job, executor, ingestion, exc):
     sync.status = ForwardSyncStatusChoices.FAILED
     if ingestion is None:
         ingestion = getattr(executor, "current_ingestion", None)
+    # A direct-to-main ingestion is created inside the target transaction. If
+    # that transaction rolls back, the executor still holds its Python object
+    # and pk even though the database row no longer exists.
+    if (
+        ingestion is not None
+        and not ForwardIngestion.objects.filter(
+            pk=getattr(ingestion, "pk", None)
+        ).exists()
+    ):
+        ingestion = None
     if ingestion is None:
         ingestion = _build_forward_ingestion(sync, job, executor)
     else:

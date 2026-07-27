@@ -102,9 +102,11 @@ class ScopeModuleUiTest(TestCase):
     def test_ingestion_evidence_has_no_delete_controls(self):
         from netbox.object_actions import BulkDelete
 
+        from forward_netbox.tables import ForwardIngestionTable
         from forward_netbox.views import ForwardIngestionListView
 
         self.assertNotIn(BulkDelete, ForwardIngestionListView.actions)
+        self.assertEqual(ForwardIngestionTable.base_columns["actions"].actions, {})
         with self.assertRaises(NoReverseMatch):
             reverse(
                 "plugins:forward_netbox:forwardingestion_delete",
@@ -112,6 +114,17 @@ class ScopeModuleUiTest(TestCase):
             )
         with self.assertRaises(NoReverseMatch):
             reverse("plugins:forward_netbox:forwardingestion_bulk_delete")
+
+    def test_ingestion_list_renders_for_superuser_without_delete_link(self):
+        response = self._superuser_client().get(
+            reverse("plugins:forward_netbox:forwardingestion_list")
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, f"Ingestion {self.ingestion.pk}")
+        self.assertNotContains(response, 'aria-label="Edit"')
+        self.assertNotContains(response, 'aria-label="Delete"')
+        self.assertNotContains(response, 'aria-label="Changelog"')
 
     def test_scope_reconciliation_view_and_prune(self):
         self._device("dev-a")

@@ -34,6 +34,17 @@ class SmokeSyncTaskTest(unittest.TestCase):
             "forward_smoke_sync --disable-bulk-orm",
         )
 
+    def test_resolve_query_ids_uses_aggregate_management_command(self):
+        context = Mock()
+
+        with patch.object(tasks, "manage_py") as manage_py:
+            tasks.resolve_query_ids.body(context, sync_id=23)
+
+        manage_py.assert_called_once_with(
+            context,
+            "forward_resolve_query_ids --sync-id 23",
+        )
+
 
 class DockerComposeIsolationTest(unittest.TestCase):
     def test_alternate_project_forces_project_scoped_postgres_volume(self):
@@ -126,6 +137,7 @@ class ReleaseArtifactTaskTest(unittest.TestCase):
             "python manage.py makemigrations --check --dry-run forward_netbox",
             commands[1],
         )
+        self.assertIn("validate_installed_routes.py", commands[1])
         self.assertIn("cyclonedx-bom==7.3.0", commands[2])
         self.assertIn("uv tool run --isolated", commands[2])
         self.assertIn("cyclonedx-py environment", commands[2])

@@ -46,6 +46,7 @@ from forward_netbox.exceptions import ForwardSearchError
 from forward_netbox.exceptions import ForwardSyncDataError
 from forward_netbox.models import ForwardIngestion
 from forward_netbox.models import ForwardIngestionIssue
+from forward_netbox.models import ForwardNQEMap
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.signals import seed_builtin_nqe_maps
@@ -73,11 +74,15 @@ from forward_netbox.utilities.branch_budget import SHARD_FETCH_MODEL_CONTRACTS
 from forward_netbox.utilities.execution_telemetry import build_plan_preview
 from forward_netbox.utilities.forward_api import DEFAULT_QUERY_FETCH_CONCURRENCY
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
+from forward_netbox.utilities.query_binding import resolve_nqe_map_query_ids
 from forward_netbox.utilities.query_diagnostics import (
     summarize_ipaddress_parent_prefix_rows,
 )
+from forward_netbox.utilities.query_execution_contract import query_source_sha256
+from forward_netbox.utilities.query_execution_contract import resolve_execution_contract
 from forward_netbox.utilities.query_fetch import ForwardQueryContext
 from forward_netbox.utilities.query_fetch import ForwardQueryFetcher
+from forward_netbox.utilities.query_registry import get_query_specs
 from forward_netbox.utilities.query_registry import QuerySpec
 from forward_netbox.utilities.sync import ForwardSyncRunner
 from forward_netbox.utilities.sync_contracts import validate_row_shape_for_model
@@ -90,6 +95,7 @@ from forward_netbox.utilities.sync_primitives import get_unique_or_raise
 from forward_netbox.utilities.sync_primitives import prime_dependency_lookup_caches
 from forward_netbox.utilities.sync_routing_impl import lookup_ipaddress_by_host
 from forward_netbox.utilities.sync_routing_impl import lookup_routing_interface_name
+from forward_netbox.utilities.validation import ForwardValidationRunner
 
 
 class ForwardIPAMDiagnosticTest(TestCase):
@@ -544,6 +550,27 @@ class ForwardSyncRunnerTest(TestCase):
                 "dcim.device": True,
                 "enable_bulk_orm": False,
             },
+        )
+
+    def _verified_site_diff_spec(self):
+        source = """
+@query
+f() = foreach site in network.sites
+select {name: site.name, slug: site.name}
+"""
+        source_sha256 = query_source_sha256(source)
+        return QuerySpec(
+            model_string="dcim.site",
+            query_name="Forward Sites",
+            query_id="Q_sites",
+            commit_id="full-commit",
+            built_in=True,
+            contract_key="forward_sites",
+            full_query_source=source,
+            full_source_sha256=source_sha256,
+            diff_commit_id="diff-commit",
+            diff_query_source=source,
+            diff_source_sha256=source_sha256,
         )
 
     def _create_device(self, name):
@@ -4091,6 +4118,124 @@ class ForwardSyncRunnerTest(TestCase):
         self.assertEqual(len(first_queries), 1)
         self.assertEqual(len(queries), 0)
 
+    def test_apply_dcim_cable_uses_termination_when_endpoint_cache_is_absent(self):
+        cable_termination = apps.get_model("dcim", "cabletermination")
+        device = self._create_device("device-a")
+        remote_device = self._create_device("device-b")
+        interface = Interface.objects.create(
+            device=device,
+            name="Ethernet1/1",
+            type="1000base-t",
+        )
+        remote_interface = Interface.objects.create(
+            device=remote_device,
+            name="Ethernet1/2",
+            type="1000base-t",
+        )
+        cable = Cable.objects.create(status="connected")
+        interface_type = ContentType.objects.get_for_model(Interface)
+        cable_termination.objects.bulk_create(
+            [
+                cable_termination(
+                    cable=cable,
+                    cable_end="A",
+                    termination_type=interface_type,
+                    termination_id=interface.pk,
+                ),
+                cable_termination(
+                    cable=cable,
+                    cable_end="B",
+                    termination_type=interface_type,
+                    termination_id=remote_interface.pk,
+                ),
+            ]
+        )
+        interface.refresh_from_db()
+        remote_interface.refresh_from_db()
+        self.assertIsNone(interface.cable_id)
+        self.assertIsNone(remote_interface.cable_id)
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+        result = runner._apply_dcim_cable(
+            {
+                "device": "device-a",
+                "interface": "Ethernet1/1",
+                "remote_device": "device-b",
+                "remote_interface": "Ethernet1/2",
+                "status": "planned",
+            }
+        )
+
+        cable.refresh_from_db()
+        self.assertEqual(result.pk, cable.pk)
+        self.assertEqual(cable.status, "planned")
+        self.assertEqual(Cable.objects.count(), 1)
+
+    def test_fetcher_cable_normalization_uses_authoritative_terminations(self):
+        cable_termination = apps.get_model("dcim", "cabletermination")
+        device = self._create_device("device-a")
+        remote_device = self._create_device("device-b")
+        interface = Interface.objects.create(
+            device=device,
+            name="Ethernet1/1",
+            type="1000base-t",
+        )
+        remote_interface = Interface.objects.create(
+            device=remote_device,
+            name="Ethernet1/2",
+            type="1000base-t",
+        )
+        cable = Cable.objects.create(status="connected")
+        interface_type = ContentType.objects.get_for_model(Interface)
+        cable_termination.objects.bulk_create(
+            [
+                cable_termination(
+                    cable=cable,
+                    cable_end="A",
+                    termination_type=interface_type,
+                    termination_id=interface.pk,
+                    _device=device,
+                ),
+                cable_termination(
+                    cable=cable,
+                    cable_end="B",
+                    termination_type=interface_type,
+                    termination_id=remote_interface.pk,
+                    _device=remote_device,
+                ),
+            ]
+        )
+        workload = BranchWorkload(
+            model_string="dcim.cable",
+            label="cables",
+            upsert_rows=[
+                {
+                    "device": device.name,
+                    "interface": interface.name,
+                    "remote_device": remote_device.name,
+                    "remote_interface": remote_interface.name,
+                    "status": "connected",
+                }
+            ],
+        )
+        fetcher = ForwardQueryFetcher(
+            sync=self.sync,
+            client=Mock(),
+            logger_=Mock(),
+        )
+
+        existing = fetcher._existing_cable_ids_by_endpoint([workload])
+
+        self.assertEqual(
+            existing,
+            {
+                (device.name, interface.name): cable.pk,
+                (remote_device.name, remote_interface.name): cable.pk,
+            },
+        )
+
     def test_apply_dcim_cable_skips_lag_endpoint(self):
         device = self._create_device("device-a")
         remote_device = self._create_device("device-b")
@@ -4720,6 +4865,23 @@ class ForwardSyncRunnerTest(TestCase):
             },
             [["rd"], ["name"]],
         )
+
+    def test_validate_devicerole_row_rejects_legacy_shape_without_color(self):
+        row = {
+            "name": "edge-role",
+            "slug": "edge-role",
+            "comments": "Anonymized legacy query output.",
+        }
+
+        with self.assertRaisesRegex(
+            ForwardQueryError,
+            r"missing required fields: color",
+        ):
+            validate_row_shape_for_model(
+                "dcim.devicerole",
+                row,
+                [["slug"], ["name"]],
+            )
 
     def test_validate_row_shape_allows_prefix_with_null_vrf_identity(self):
         validate_row_shape_for_model(
@@ -6424,19 +6586,13 @@ class ForwardSyncRunnerTest(TestCase):
 
         with patch(
             "forward_netbox.utilities.sync_execution.get_query_specs",
-            return_value=[
-                QuerySpec(
-                    model_string="dcim.site",
-                    query_name="Forward Sites",
-                    query_id="Q_sites",
-                )
-            ],
+            return_value=[self._verified_site_diff_spec()],
         ):
             runner.run()
 
         client.run_nqe_diff.assert_called_once_with(
             query_id="Q_sites",
-            commit_id=None,
+            commit_id="diff-commit",
             before_snapshot_id=baseline.snapshot_id,
             after_snapshot_id="snapshot-after",
             fetch_all=True,
@@ -6456,6 +6612,101 @@ class ForwardSyncRunnerTest(TestCase):
         )
         ingestion.refresh_from_db()
         self.assertEqual(ingestion.sync_mode, "diff")
+
+    def test_read_only_rebind_remains_full_only_without_verified_diff_contract(self):
+        site_type = ContentType.objects.get(app_label="dcim", model="site")
+        query_map = ForwardNQEMap.objects.create(
+            name="Custom Sites",
+            netbox_model=site_type,
+            query_repository="org",
+            query_path="/legacy/custom_sites",
+            parameters={},
+            enabled=True,
+        )
+        client = Mock()
+        client.get_nqe_repository_query_index.return_value = {
+            "rows": [
+                {
+                    "queryId": "Q_sites",
+                    "path": "/current/custom_sites",
+                    "lastCommitId": "full-commit",
+                }
+            ],
+            "by_path": {
+                "/current/custom_sites": {
+                    "queryId": "Q_sites",
+                    "path": "/current/custom_sites",
+                    "lastCommitId": "full-commit",
+                }
+            },
+            "by_query_id": {},
+        }
+
+        results = resolve_nqe_map_query_ids(
+            client=client,
+            queryset=ForwardNQEMap.objects.filter(pk=query_map.pk),
+        )
+
+        self.assertTrue(results[0].matched)
+        query_map.refresh_from_db()
+        spec = get_query_specs("dcim.site", maps=[query_map])[0]
+        self.assertIsNone(spec.diff_query_id)
+        self.assertEqual(spec.run_query_id, "Q_sites")
+        self.assertEqual(spec.commit_id, "full-commit")
+        self.assertEqual(spec.parameters, {})
+        client.add_org_nqe_query.assert_not_called()
+        client.edit_org_nqe_query.assert_not_called()
+        client.commit_org_nqe_queries.assert_not_called()
+
+        ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-before",
+            baseline_ready=True,
+        )
+        ingestion = ForwardIngestion.objects.create(sync=self.sync)
+        client.get_snapshots.return_value = [
+            {"id": "snapshot-before", "state": "PROCESSED"},
+            {"id": "snapshot-after", "state": "PROCESSED"},
+        ]
+        client.get_latest_processed_snapshot.return_value = {
+            "id": "snapshot-after",
+            "processedAt": "2026-03-31T12:15:00Z",
+        }
+        client.get_snapshot_metrics.return_value = {}
+        client.get_committed_nqe_query.return_value = {
+            "queryId": "Q_sites",
+            "path": "/current/custom_sites",
+            "sourceCode": 'select {name: "site-2", slug: "site-2"}',
+        }
+        client.run_nqe_query.return_value = [
+            {"name": "site-2", "slug": "site-2"},
+        ]
+        runner = ForwardSyncRunner(
+            sync=self.sync,
+            ingestion=ingestion,
+            client=client,
+            logger_=Mock(),
+        )
+        runner._apply_model_rows = Mock()
+        runner._delete_model_rows = Mock()
+        self.sync.get_model_strings = lambda: ["dcim.site"]
+        self.sync.get_snapshot_id = lambda: LATEST_PROCESSED_SNAPSHOT
+        self.sync.resolve_snapshot_id = lambda client=None: "snapshot-after"
+        self.sync.incremental_diff_baseline = Mock(
+            return_value=Mock(snapshot_id="snapshot-before")
+        )
+
+        with patch(
+            "forward_netbox.utilities.sync_execution.get_query_specs",
+            return_value=[spec],
+        ):
+            runner.run()
+
+        client.run_nqe_diff.assert_not_called()
+        client.run_nqe_query.assert_called_once()
+        ingestion.refresh_from_db()
+        self.assertEqual(ingestion.sync_mode, "full")
 
     def test_run_updates_existing_rows_from_nqe_diff_modifications(self):
         Site.objects.create(name="site-before", slug="site-update", status="active")
@@ -6495,19 +6746,13 @@ class ForwardSyncRunnerTest(TestCase):
 
         with patch(
             "forward_netbox.utilities.sync_execution.get_query_specs",
-            return_value=[
-                QuerySpec(
-                    model_string="dcim.site",
-                    query_name="Forward Sites",
-                    query_id="Q_sites",
-                )
-            ],
+            return_value=[self._verified_site_diff_spec()],
         ):
             runner.run()
 
         client.run_nqe_diff.assert_called_once_with(
             query_id="Q_sites",
-            commit_id=None,
+            commit_id="diff-commit",
             before_snapshot_id=baseline.snapshot_id,
             after_snapshot_id="snapshot-after",
             fetch_all=True,
@@ -6563,19 +6808,13 @@ class ForwardSyncRunnerTest(TestCase):
 
         with patch(
             "forward_netbox.utilities.sync_execution.get_query_specs",
-            return_value=[
-                QuerySpec(
-                    model_string="dcim.site",
-                    query_name="Forward Sites",
-                    query_id="Q_sites",
-                )
-            ],
+            return_value=[self._verified_site_diff_spec()],
         ):
             runner.run()
 
         client.run_nqe_diff.assert_called_once_with(
             query_id="Q_sites",
-            commit_id=None,
+            commit_id="diff-commit",
             before_snapshot_id=baseline.snapshot_id,
             after_snapshot_id="snapshot-after",
             fetch_all=True,
@@ -6626,13 +6865,7 @@ class ForwardSyncRunnerTest(TestCase):
 
         with patch(
             "forward_netbox.utilities.sync_execution.get_query_specs",
-            return_value=[
-                QuerySpec(
-                    model_string="dcim.site",
-                    query_name="Forward Sites",
-                    query_id="Q_sites",
-                )
-            ],
+            return_value=[self._verified_site_diff_spec()],
         ):
             runner.run()
 
@@ -6676,13 +6909,7 @@ class ForwardSyncRunnerTest(TestCase):
 
         with patch(
             "forward_netbox.utilities.sync_execution.get_query_specs",
-            return_value=[
-                QuerySpec(
-                    model_string="dcim.site",
-                    query_name="Forward Sites",
-                    query_id="Q_sites",
-                )
-            ],
+            return_value=[self._verified_site_diff_spec()],
         ):
             runner.run()
 
@@ -6713,7 +6940,11 @@ class ForwardSyncRunnerTest(TestCase):
         spec = QuerySpec(
             model_string="dcim.cable",
             query_name="Forward Inferred Interface Cables",
-            query="foreach link select {device: link.device}",
+            query="""
+@query
+f(forward_netbox_shard_keys: List<String>) =
+foreach link select {device: link.device}
+""",
         )
         shard_keys = [
             "cable:device-a:Ethernet1/1|device-b:Ethernet1/2",
@@ -7009,7 +7240,7 @@ class ForwardSyncRunnerTest(TestCase):
 
         with self.assertRaisesRegex(
             ForwardQueryError,
-            "Diff execution is required, but `Forward Interfaces` for dcim.interface has no query_id",
+            "Diff execution is required.*resolved execution contract.*full-only.*raw_query",
         ):
             fetcher._fetch_spec_rows(
                 "dcim.interface",
@@ -7030,10 +7261,29 @@ class ForwardSyncRunnerTest(TestCase):
             client=Mock(),
             logger_=Mock(),
         )
+        full_source = """
+@query
+f() = foreach interface in network.interfaces
+select {device: interface.device.name, name: interface.name}
+"""
+        diff_source = """
+@query
+f() = foreach interface in network.interfaces
+select {device: interface.device.name, name: interface.name}
+"""
         spec = QuerySpec(
             model_string="dcim.interface",
             query_name="Forward Interfaces",
             query_id="Q_interfaces",
+            commit_id="full-commit",
+            built_in=True,
+            contract_key="forward_interfaces",
+            full_query_source=full_source,
+            full_source_sha256=query_source_sha256(full_source),
+            diff_commit_id="diff-commit",
+            diff_query_source=diff_source,
+            diff_source_sha256=query_source_sha256(diff_source),
+            coalesce_fields=(("device", "name"),),
         )
         context = ForwardQueryContext(
             network_id="test-network",
@@ -7098,17 +7348,35 @@ class ForwardSyncRunnerTest(TestCase):
             client=Mock(),
             logger_=Mock(),
         )
+        full_query_with_scope = """
+@query f(scope: List<String>) =
+foreach value in scope
+select {device: value, name: value}
+"""
+        parameterless_query = """
+@query f() =
+foreach value in ["device-1"]
+select {device: value, name: value}
+"""
         specs = [
             QuerySpec(
                 model_string="dcim.interface",
                 query_name="Parameterized Interfaces",
                 query_id="Q_parameterized",
+                commit_id="full-parameterized",
+                built_in=True,
+                full_query_source=full_query_with_scope,
+                full_source_sha256=query_source_sha256(full_query_with_scope),
                 parameters={"scope": []},
             ),
             QuerySpec(
                 model_string="dcim.interface",
                 query_name="Parameterless Interfaces",
                 query_id="Q_parameterless",
+                commit_id="full-parameterless",
+                built_in=True,
+                full_query_source=parameterless_query,
+                full_source_sha256=query_source_sha256(parameterless_query),
             ),
         ]
         baseline = Mock(pk=7, snapshot_id="snapshot-before")
@@ -7224,6 +7492,137 @@ class ForwardSyncRunnerTest(TestCase):
 
         self.assertEqual(jobs, [])
         self.assertIn("dcim.device", fetcher._failed_model_results)
+
+    def test_workload_planning_resolves_legacy_bundled_path_by_org_intent(self):
+        seed_builtin_nqe_maps(type("Sender", (), {"label": "forward_netbox"}))
+        content_type = ContentType.objects.get(app_label="dcim", model="device")
+        query_map = ForwardNQEMap.objects.get(
+            netbox_model=content_type,
+            name="Forward Devices",
+            built_in=True,
+        )
+        query_map.query = ""
+        query_map.query_repository = "org"
+        query_map.query_path = "/retired/netbox/device_inventory"
+        query_map.commit_id = "commit-pinned"
+        full_source = get_query_specs("dcim.device", maps=[query_map])[
+            0
+        ].full_query_source
+        query_map.full_source_sha256 = query_source_sha256(full_source)
+        query_map.save(
+            update_fields=[
+                "query",
+                "query_repository",
+                "query_path",
+                "commit_id",
+                "full_source_sha256",
+            ],
+        )
+        client = Mock()
+        client.get_nqe_repository_query_index.return_value = {
+            "by_path": {
+                "/org-library/netbox/devices": {
+                    "queryId": "Q_devices_read_only",
+                    "path": "/org-library/netbox/devices",
+                    "intent": (
+                        "Devices collected by Forward " "(plus optional SNMP endpoints)"
+                    ),
+                    "lastCommitId": "commit-read-only",
+                }
+            }
+        }
+        client.get_committed_nqe_query.return_value = {
+            "queryId": "Q_devices_read_only",
+            "path": "/org-library/netbox/devices",
+            "lastCommitId": "commit-pinned",
+            "sourceCode": full_source,
+        }
+        fetcher = ForwardQueryFetcher(
+            sync=self.sync,
+            client=client,
+            logger_=Mock(),
+        )
+        context = ForwardQueryContext(
+            network_id="test-network",
+            snapshot_selector="snapshot-current",
+            snapshot_id="snapshot-current",
+            maps=[query_map],
+        )
+
+        jobs = fetcher._build_workload_jobs(
+            context,
+            model_strings=["dcim.device"],
+        )
+        validation_run = ForwardValidationRunner(
+            self.sync,
+            client,
+            Mock(),
+        ).record_plan_validation(
+            context.as_dict(),
+            [],
+            [result.as_dict() for result in fetcher._failed_model_results.values()],
+        )
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(
+            jobs[0][1].full_revision.query_id,
+            "Q_devices_read_only",
+        )
+        self.assertEqual(jobs[0][1].full_revision.commit_id, "commit-pinned")
+        self.assertNotIn("dcim.device", fetcher._failed_model_results)
+        self.assertTrue(validation_run.allowed)
+        client.get_committed_nqe_query.assert_called_once_with(
+            repository="org",
+            query_path="/org-library/netbox/devices",
+            commit_id="commit-pinned",
+            require_source_code=True,
+        )
+
+    def test_spec_resolution_error_logs_type_without_exception_content(self):
+        seed_builtin_nqe_maps(type("Sender", (), {"label": "forward_netbox"}))
+        content_type = ContentType.objects.get(app_label="dcim", model="device")
+        query_map = ForwardNQEMap.objects.get(
+            netbox_model=content_type,
+            name="Forward Devices",
+            built_in=True,
+        )
+        query_map.query = ""
+        query_map.query_repository = "org"
+        query_map.query_path = "/retired/netbox/forward_devices"
+        query_map.save(
+            update_fields=["query", "query_repository", "query_path"],
+        )
+        client = Mock()
+        client.get_nqe_repository_query_index.return_value = {"by_path": {}}
+        client.get_committed_nqe_query.side_effect = ForwardClientError(
+            "sentinel-private-query-path"
+        )
+        logger = Mock()
+        fetcher = ForwardQueryFetcher(
+            sync=self.sync,
+            client=client,
+            logger_=logger,
+        )
+        context = ForwardQueryContext(
+            network_id="test-network",
+            snapshot_selector="snapshot-current",
+            snapshot_id="snapshot-current",
+            maps=[query_map],
+        )
+
+        jobs = fetcher._build_workload_jobs(
+            context,
+            model_strings=["dcim.device"],
+        )
+
+        self.assertEqual(jobs, [])
+        info_messages = [call.args[0] for call in logger.log_info.call_args_list]
+        self.assertIn(
+            "Forward query spec resolution for dcim.device failed "
+            "(ForwardClientError).",
+            info_messages,
+        )
+        self.assertNotIn("sentinel-private-query-path", str(info_messages))
 
     def test_resolve_context_applies_source_device_tag_scope(self):
         self.source.parameters["device_tag_include_tags"] = ["DATACENTER", "CORE"]
@@ -8850,6 +9249,83 @@ class QueryParameterContractTest(TestCase):
         logger.log_info.assert_not_called()
         logger.log_warning.assert_not_called()
 
+    def test_legacy_path_query_retries_without_unsupported_default_parameters(self):
+        sync = Mock()
+        logger = Mock()
+        client = Mock()
+        client.run_nqe_query.side_effect = [
+            ForwardClientError("request parameter is not declared"),
+            [{"name": "device-1"}],
+        ]
+        fetcher = ForwardQueryFetcher(sync=sync, client=client, logger_=logger)
+        spec = QuerySpec(
+            model_string="dcim.device",
+            query_name="Forward Devices",
+            query_repository="org",
+            query_path="/retired/netbox/forward_devices",
+            resolved_query_id="qid-1",
+            parameters={"forward_netbox_shard_keys": []},
+        )
+        context = ForwardQueryContext(
+            network_id="test-network",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-current",
+        )
+
+        rows = fetcher._run_nqe_query(
+            spec=spec,
+            context=context,
+            parameters={"forward_netbox_shard_keys": []},
+            fetch_all=True,
+        )
+
+        self.assertEqual(rows, [{"name": "device-1"}])
+        self.assertEqual(client.run_nqe_query.call_count, 2)
+        self.assertEqual(
+            client.run_nqe_query.call_args_list[0].kwargs["parameters"],
+            {"forward_netbox_shard_keys": []},
+        )
+        self.assertEqual(
+            client.run_nqe_query.call_args_list[1].kwargs["parameters"],
+            {},
+        )
+        logger.log_info.assert_called_once_with(
+            "Retrying read-only legacy path query for dcim.device "
+            "without unsupported default parameters.",
+            obj=sync,
+        )
+
+    def test_legacy_path_query_does_not_retry_nondefault_parameters(self):
+        sync = Mock()
+        client = Mock()
+        client.run_nqe_query.side_effect = ForwardClientError(
+            "request parameter is not declared"
+        )
+        fetcher = ForwardQueryFetcher(sync=sync, client=client, logger_=Mock())
+        spec = QuerySpec(
+            model_string="dcim.device",
+            query_name="Forward Devices",
+            query_repository="org",
+            query_path="/retired/netbox/forward_devices",
+            resolved_query_id="qid-1",
+            parameters={"sync_endpoints": True},
+        )
+        context = ForwardQueryContext(
+            network_id="test-network",
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-current",
+        )
+
+        with self.assertRaises(ForwardClientError):
+            fetcher._run_nqe_query(
+                spec=spec,
+                context=context,
+                parameters={"sync_endpoints": True},
+                fetch_all=True,
+            )
+
+        self.assertEqual(client.run_nqe_query.call_count, 1)
+
     def test_query_fetch_pushes_context_tags_to_tag_capable_specs(self):
         sync = Mock()
         fetcher = ForwardQueryFetcher(sync=sync, client=Mock(), logger_=Mock())
@@ -8982,7 +9458,7 @@ class QueryParameterContractTest(TestCase):
             {"forward_netbox_shard_keys": []},
         )
 
-    def test_cable_scope_requires_both_endpoints_to_be_in_scope(self):
+    def test_cable_scope_retains_rows_when_either_endpoint_is_in_scope(self):
         fetcher = ForwardQueryFetcher(sync=Mock(), client=Mock(), logger_=Mock())
         context = ForwardQueryContext(
             network_id="test-network",
@@ -9007,8 +9483,8 @@ class QueryParameterContractTest(TestCase):
 
         kept, removed = fetcher._apply_device_tag_scope("dcim.cable", rows, context)
 
-        self.assertEqual(kept, [rows[0]])
-        self.assertEqual(removed, [rows[1]])
+        self.assertEqual(kept, rows)
+        self.assertEqual(removed, [])
 
     def test_query_fetch_rejects_unsupported_parameters_after_merge(self):
         sync = Mock()
@@ -9131,7 +9607,35 @@ class QueryParameterContractTest(TestCase):
     def test_diff_fetch_is_always_parameterless(self):
         sync = Mock()
         fetcher = ForwardQueryFetcher(sync=sync, client=Mock(), logger_=Mock())
-        spec = Mock(run_query_id="qid-1", commit_id="cid-1", execution_value="qid-1")
+        full_source = """
+@query f(scope: List<String>) =
+foreach value in scope
+select {name: value}
+"""
+        diff_source = """
+@query f() =
+foreach value in ["device-1"]
+select {name: value}
+"""
+        spec = QuerySpec(
+            model_string="dcim.device",
+            query_name="Forward Devices",
+            query_id="qid-1",
+            resolved_query_path="/Forward/forward_devices",
+            commit_id="full-commit",
+            built_in=True,
+            contract_key="forward_devices",
+            full_query_source=full_source,
+            full_source_sha256=query_source_sha256(full_source),
+            diff_commit_id="diff-commit",
+            diff_query_source=diff_source,
+            diff_source_sha256=query_source_sha256(diff_source),
+            parameters={"scope": []},
+        )
+        contract = resolve_execution_contract(
+            spec,
+            effective_parameters={"scope": []},
+        )
         context = Mock(snapshot_id="after-s1")
         fetcher.client.run_nqe_diff.return_value = [
             {"changeType": "ADD", "data": {"name": "device-1"}}
@@ -9139,6 +9643,7 @@ class QueryParameterContractTest(TestCase):
 
         rows = fetcher._run_nqe_diff(
             spec=spec,
+            contract=contract,
             context=context,
             before_snapshot_id="before-s1",
         )
@@ -9153,10 +9658,19 @@ class QueryParameterContractTest(TestCase):
         logger = Mock()
         sync = Mock(parameters={}, source=Mock(parameters={}), pk=1)
         fetcher = ForwardQueryFetcher(sync=sync, client=Mock(), logger_=logger)
+        full_source = """
+@query f(forward_netbox_shard_keys: List<String>) =
+foreach value in forward_netbox_shard_keys
+select {device: value, name: value}
+"""
         spec = QuerySpec(
             model_string="dcim.interface",
             query_name="Forward Interfaces",
             query_id="Q_interfaces",
+            commit_id="full-commit",
+            built_in=True,
+            full_query_source=full_source,
+            full_source_sha256=query_source_sha256(full_source),
             parameters={"forward_netbox_shard_keys": []},
         )
         context = ForwardQueryContext(
@@ -9182,8 +9696,9 @@ class QueryParameterContractTest(TestCase):
         fetcher._run_nqe_query.assert_called_once()
         self.assertTrue(
             any(
-                "do not accept runtime query parameters" in str(call.args[0])
-                for call in logger.log_info.call_args_list
+                "resolved execution contract" in str(call.args[0]).lower()
+                and "full-only" in str(call.args[0]).lower()
+                for call in logger.log_warning.call_args_list
             )
         )
 
@@ -9212,7 +9727,7 @@ class QueryParameterContractTest(TestCase):
 
         with self.assertRaisesRegex(
             ForwardQueryError,
-            "Diff execution is required.*do not accept runtime query parameters",
+            "Diff execution is required.*resolved execution contract.*full-only",
         ):
             fetcher._fetch_spec_rows(
                 "dcim.interface",

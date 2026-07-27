@@ -1,9 +1,11 @@
 # Forward NetBox Architecture
 
 `forward_netbox` synchronizes Forward inventory into NetBox through shipped or
-published NQE maps. Version 2.6 has one production execution shape: validate and
-stage a complete sync in one native NetBox Branching branch, then merge that
-branch with the plugin's custom bulk merge.
+published NQE maps. Incremental and reviewable syncs validate and stage one
+native NetBox Branching branch, then merge that branch with the plugin's custom
+bulk merge. An explicitly enabled, exact-version-pinned first baseline may use
+the fail-closed direct bulk path described below; it does not change the
+ongoing Branching workflow.
 
 The supported runtime is NetBox `4.6.5` with `netbox-branching` `1.1.1`.
 
@@ -28,7 +30,10 @@ The supported runtime is NetBox `4.6.5` with `netbox-branching` `1.1.1`.
 5. `ForwardValidationRun` records pre-branch policy and drift evidence.
    Blocking validation stops the run before branch provisioning.
 6. `ForwardSingleBranchExecutor` creates one `ForwardIngestion` and exactly one
-   native Branching branch for the sync.
+   native Branching branch for the sync. The only exception is an opted-in
+   first baseline whose empty-state, runtime, hook, model, and workload
+   contracts all pass again under PostgreSQL locks. That path creates the
+   ingestion but applies the validated workload directly to main atomically.
 7. Dependency-ordered plan items are applied in that branch through the apply
    engine. `apply_engine_bulk.py` owns parity-tested batched mutations and the
    corresponding branch ObjectChanges; model-family adapters own exceptional
@@ -116,9 +121,51 @@ normalization contract.
 
 ## Execution Model
 
-There is one branch per sync. `branch_budget.py` still orders dependency phases
-and can partition work into bounded progress units, but those units all target
-the same branch; they are not independent branch shards.
+There is one branch per ordinary sync. `branch_budget.py` still orders
+dependency phases and can partition work into bounded progress units, but those
+units all target the same branch; they are not independent branch shards. The
+disabled-by-default fast baseline is a first-load exception only: it uses the
+same dependency plan without provisioning a branch, then returns all later runs
+to this one-branch model.
+
+### First-baseline direct-load exception
+
+`fast_baseline.py` owns selection, locking, preflight, the transaction,
+attestation, and durable finalization. `fast_baseline_models.py` owns pinned
+set-based specs for the large admitted families. Selection requires explicit
+opt-in and auto-merge, bulk ORM, full workloads, no primary-IP
+overlay, the exact supported NetBox/Branching/plugin/application tuple, an
+allowlisted model set, proven row contracts, empty target and owned side tables,
+no prior Forward ingestion/workload/contributor/identity evidence, no competing
+branch, and no unproved custom fields, validators, protection rules, or event
+rules. Doubt before DML returns to the normal branch path; any fault after DML
+rolls back the entire target and ingestion transaction without switching
+engines.
+
+Delete admission is one narrow exception: dependency normalization may stamp
+the authoritative full CVE catalog rows excluded because no in-scope
+Vulnerability references them. On an empty destination those rows are proven
+physical no-ops, so direct load omits the database delete but promotes their
+durable workload-state tombstones for later drift/prune behavior. Source
+deletes, mixed provenance, count mismatches, overlaps, and every other derived
+delete still reject before DML.
+
+Relationship models (`dcim.module`, `extras.taggeditem`, `ipam.fhrpgroup`,
+`ipam.vlan`, and the admitted `netbox_routing` BGP/OSPF models) deliberately use
+the existing normal adapters inside the direct transaction. Their contract
+proves required parent coverage and syntax while retaining the adapters'
+coalesce, generic-relation, shared-VIP, and side-object behavior. Module-native
+inventory rows are omitted from InventoryItem only when module sync owns them.
+
+The direct baseline preserves target and owned side-table state, ingestion
+statistics/issues/model results, workload and contributor baseline promotion,
+device identities, ownership and catch-up inputs, and baseline-ready lifecycle.
+It intentionally does not create a Branch, BranchEvent, per-row source or
+destination ObjectChange, ChangeDiff, AppliedChange, or branch rollback point.
+The ingestion persists the engine, runtime tuple, model-spec versions,
+per-model engine, omitted evidence, and aggregate logical counts. The ingestion
+UI/API and support/log exports surface that durable attestation. Recovery after
+a successful direct baseline is database restore/reseed.
 
 `ForwardSingleBranchExecutor` is the only executor. Migration `0037` removes
 retired execution parameters from existing syncs, and runtime validation rejects

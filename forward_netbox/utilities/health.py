@@ -363,6 +363,19 @@ def sync_health_summary(sync):
     database_tables_check = _database_tables_check()
     if database_tables_check is not None:
         checks.append(database_tables_check)
+    query_contract_preflight = _persisted_query_contract_preflight(maps)
+    if query_contract_preflight["issues"]:
+        checks.append(
+            _check(
+                name="Query execution contracts",
+                status="fail",
+                message=(
+                    "Enabled NQE maps have unresolved persisted execution "
+                    "contracts. Correct the reported type-only contract issues "
+                    "before starting a sync."
+                ),
+            )
+        )
     if ownership_finalization["required_domains"]:
         if ownership_finalization["complete"]:
             ownership_status = "pass"
@@ -409,6 +422,7 @@ def sync_health_summary(sync):
             for key, value in optional_plugin_capabilities.items()
         },
         "query_drift_summary": query_drift_summary,
+        "query_contract_preflight": query_contract_preflight,
         "analysis_summary": (
             latest_ingestion.get_analysis_summary()
             if latest_ingestion is not None
@@ -436,6 +450,47 @@ def sync_health_summary(sync):
         "api_usage": api_usage,
         "next_run": next_run,
         "checks": checks,
+    }
+
+
+def _persisted_query_contract_preflight(maps):
+    issues = []
+    for query_map in maps:
+        full_commit_id = str(getattr(query_map, "commit_id", "") or "").strip()
+        diff_commit_id = str(getattr(query_map, "diff_commit_id", "") or "").strip()
+        if query_map.execution_mode != "query" and (
+            not full_commit_id or full_commit_id == "head"
+        ):
+            issues.append(
+                {
+                    "map_id": query_map.pk,
+                    "model": query_map.model_string,
+                    "type": "unresolved_full_commit",
+                }
+            )
+        if diff_commit_id and diff_commit_id == full_commit_id:
+            issues.append(
+                {
+                    "map_id": query_map.pk,
+                    "model": query_map.model_string,
+                    "type": "identical_full_diff_commit",
+                }
+            )
+        if (
+            diff_commit_id
+            and not str(getattr(query_map, "diff_source_sha256", "") or "").strip()
+        ):
+            issues.append(
+                {
+                    "map_id": query_map.pk,
+                    "model": query_map.model_string,
+                    "type": "missing_diff_source_hash",
+                }
+            )
+    return {
+        "consistent": not issues,
+        "issue_count": len(issues),
+        "issues": issues,
     }
 
 

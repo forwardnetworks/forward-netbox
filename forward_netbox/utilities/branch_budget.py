@@ -482,6 +482,11 @@ class BranchWorkload:
     query_parameters: dict = field(default_factory=dict)
     operation: str = BRANCH_PLAN_OPERATION_MIXED
     shard_keys: tuple[str, ...] = ()
+    # Empty by default. Normalization may stamp one narrowly versioned contract
+    # when every delete row was derived locally from authoritative full-model
+    # coverage. Consumers must still explicitly allow that exact contract.
+    derived_delete_contract: str = ""
+    derived_delete_count: int = 0
 
     @property
     def estimated_changes(self):
@@ -512,6 +517,8 @@ class BranchPlanItem:
     fetch_parameters: dict = field(default_factory=dict)
     query_parameters: dict = field(default_factory=dict)
     operation: str = BRANCH_PLAN_OPERATION_MIXED
+    derived_delete_contract: str = ""
+    derived_delete_count: int = 0
 
 
 def row_shard_key(model_string, row, coalesce_fields):
@@ -655,6 +662,10 @@ def split_workload(
             query_parameters=workload.query_parameters,
             operation=workload.operation,
             shard_keys=tuple(sorted(chunk["shard_keys"])),
+            derived_delete_contract=workload.derived_delete_contract,
+            derived_delete_count=(
+                len(chunk["delete_rows"]) if workload.derived_delete_contract else 0
+            ),
         )
         for chunk in packed
         if chunk["upsert_rows"] or chunk["delete_rows"]
@@ -843,7 +854,49 @@ def dependency_phased_workloads(workloads):
             item[0],
         ),
     )
-    return [item[1] for item in ordered_applies] + [item[1] for item in ordered_deletes]
+    ordered = [item[1] for item in ordered_applies] + [
+        item[1] for item in ordered_deletes
+    ]
+    return _hoist_cable_deletes(ordered)
+
+
+def _hoist_cable_deletes(ordered):
+    """Retire cables before re-cabling the same endpoints in one branch.
+
+    Applies are otherwise planned ahead of deletes so parents exist before
+    orphans are removed. Cables invert that: a replacement cannot occupy
+    endpoints the outgoing link still holds, so an apply-first plan defers the
+    replacement to a later sync and repeated runs never converge. Cable deletes
+    therefore move immediately ahead of cable applies; every other model keeps
+    the existing order.
+    """
+
+    delete_positions = [
+        index
+        for index, workload in enumerate(ordered)
+        if workload.model_string == "dcim.cable"
+        and workload.operation == BRANCH_PLAN_OPERATION_DELETE
+    ]
+    if not delete_positions:
+        return ordered
+
+    hoisted = [ordered[index] for index in delete_positions]
+    skip = set(delete_positions)
+    remaining = [
+        workload for index, workload in enumerate(ordered) if index not in skip
+    ]
+    insert_at = next(
+        (
+            index
+            for index, workload in enumerate(remaining)
+            if workload.model_string == "dcim.cable"
+            and workload.operation == BRANCH_PLAN_OPERATION_APPLY
+        ),
+        None,
+    )
+    if insert_at is None:
+        return ordered
+    return remaining[:insert_at] + hoisted + remaining[insert_at:]
 
 
 def _workload_for_operation(workload, *, upsert_rows, delete_rows, operation):
@@ -871,6 +924,10 @@ def _workload_for_operation(workload, *, upsert_rows, delete_rows, operation):
         fetch_parameters=workload.fetch_parameters,
         query_parameters=workload.query_parameters,
         operation=operation,
+        derived_delete_contract=workload.derived_delete_contract,
+        derived_delete_count=(
+            len(delete_rows) if workload.derived_delete_contract else 0
+        ),
     )
 
 
@@ -926,6 +983,8 @@ def build_branch_plan(
             query_parameters=workload.query_parameters,
             operation=workload.operation,
             shard_keys=workload.shard_keys,
+            derived_delete_contract=workload.derived_delete_contract,
+            derived_delete_count=workload.derived_delete_count,
         )
         for index, (workload, label) in enumerate(plan_workloads, start=1)
     ]

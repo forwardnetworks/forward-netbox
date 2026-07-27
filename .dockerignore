@@ -26,6 +26,8 @@ build
 .playwright-artifacts
 .forward-netbox-reports
 output
+/scratchpad/
+scratchpad/**
 
 development/logs
 development/secrets

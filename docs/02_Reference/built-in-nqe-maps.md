@@ -316,7 +316,8 @@ f(forward_netbox_shard_keys: List<String>) =
 foreach device in network.devices
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
-let platform_name = normalizePlatformName(toString(device.platform.os), device.platform.osVersion)
+let platform_os_version = if isPresent(device.platform.osVersion) then device.platform.osVersion else ""
+let platform_name = normalizePlatformName(toString(device.platform.os), platform_os_version)
 let platform_slug = slugify(platform_name)
 let manufacturer_name = canonicalManufacturerName(device.platform.vendor)
 group manufacturer_name as manufacturers by {

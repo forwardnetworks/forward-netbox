@@ -44,6 +44,10 @@ def clean_forward_source(source):
             "nqe_async_poll_interval_seconds",
             "nqe_async_max_polls",
             "workload_fetch_timeout_seconds",
+            "diff_fetch_timeout_seconds",
+            "diff_timeout_circuit_breaker_threshold",
+            "contributor_cache_max_rows",
+            "contributor_cache_max_compressed_bytes",
             "query_diagnostics_enabled",
             "pushdown_fallback_warn_rate",
             "pushdown_runtime_fallback_warn_share",
@@ -181,6 +185,43 @@ def clean_forward_source(source):
                 _("`workload_fetch_timeout_seconds` must be >= 0 (0 disables).")
             )
         parameters["workload_fetch_timeout_seconds"] = wf_timeout
+    if parameters.get("diff_fetch_timeout_seconds") is not None:
+        try:
+            diff_timeout = int(parameters.get("diff_fetch_timeout_seconds"))
+        except (TypeError, ValueError) as exc:
+            raise ValidationError(
+                _("`diff_fetch_timeout_seconds` must be an integer.")
+            ) from exc
+        if diff_timeout < 1:
+            raise ValidationError(_("`diff_fetch_timeout_seconds` must be at least 1."))
+        parameters["diff_fetch_timeout_seconds"] = diff_timeout
+    if parameters.get("diff_timeout_circuit_breaker_threshold") is not None:
+        try:
+            diff_threshold = int(
+                parameters.get("diff_timeout_circuit_breaker_threshold")
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValidationError(
+                _("`diff_timeout_circuit_breaker_threshold` must be an integer.")
+            ) from exc
+        if diff_threshold < 1 or diff_threshold > 100:
+            raise ValidationError(
+                _("`diff_timeout_circuit_breaker_threshold` must be between 1 and 100.")
+            )
+        parameters["diff_timeout_circuit_breaker_threshold"] = diff_threshold
+    for key in (
+        "contributor_cache_max_rows",
+        "contributor_cache_max_compressed_bytes",
+    ):
+        if parameters.get(key) is None:
+            continue
+        try:
+            value = int(parameters.get(key))
+        except (TypeError, ValueError) as exc:
+            raise ValidationError(_(f"`{key}` must be an integer.")) from exc
+        if value < 1:
+            raise ValidationError(_(f"`{key}` must be at least 1."))
+        parameters[key] = value
     if parameters.get("nqe_fetch_all_max_pages") is not None:
         try:
             nqe_fetch_all_max_pages = int(parameters.get("nqe_fetch_all_max_pages"))
@@ -298,6 +339,19 @@ def clean_forward_nqe_map(nqe_map):
         nqe_map, "query_repository", ""
     ):
         raise ValidationError(_("Set `Query Repository` when `Query Path` is set."))
+    diff_commit_id = str(getattr(nqe_map, "diff_commit_id", "") or "").strip()
+    full_commit_id = str(getattr(nqe_map, "commit_id", "") or "").strip()
+    if diff_commit_id and diff_commit_id == full_commit_id:
+        raise ValidationError(
+            _("Full and diff contracts must use distinct immutable commit IDs.")
+        )
+    if (
+        diff_commit_id
+        and not str(getattr(nqe_map, "diff_source_sha256", "") or "").strip()
+    ):
+        raise ValidationError(
+            _("A diff contract requires a verified diff source SHA-256.")
+        )
     if nqe_map.parameters and not isinstance(nqe_map.parameters, dict):
         raise ValidationError(_("Parameters must be a JSON object."))
     try:
@@ -337,6 +391,8 @@ def clean_forward_sync(sync):
             "max_changes_per_staging_item",
             "snapshot_id",
             "enable_bulk_orm",
+            "enable_fast_baseline_load",
+            "require_fast_baseline_eligibility",
             "set_primary_ip_from_mgmt_tag",
             "diff_fallback_mode",
             "webhook_secret",
@@ -412,6 +468,25 @@ def clean_forward_sync(sync):
             DEFAULT_ENABLE_BULK_ORM_FOR_NEW_SYNCS,
         )
     )
+    enable_fast_baseline_load = parameters.get("enable_fast_baseline_load", False)
+    if not isinstance(enable_fast_baseline_load, bool):
+        raise ValidationError(_("`enable_fast_baseline_load` must be a boolean."))
+    parameters["enable_fast_baseline_load"] = enable_fast_baseline_load
+    require_fast_baseline_eligibility = parameters.get(
+        "require_fast_baseline_eligibility", False
+    )
+    if not isinstance(require_fast_baseline_eligibility, bool):
+        raise ValidationError(
+            _("`require_fast_baseline_eligibility` must be a boolean.")
+        )
+    if require_fast_baseline_eligibility and not enable_fast_baseline_load:
+        raise ValidationError(
+            _(
+                "`require_fast_baseline_eligibility` requires "
+                "`enable_fast_baseline_load`."
+            )
+        )
+    parameters["require_fast_baseline_eligibility"] = require_fast_baseline_eligibility
     try:
         max_changes_per_staging_item = int(
             parameters.get(

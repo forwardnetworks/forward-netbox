@@ -62,6 +62,11 @@ orchestration changes, the scenario and full suites must include crash/retry,
 partial-merge, post-merge-resume, stale-generation, and stuck-job recovery
 coverage.
 
+The artifact test removes the source package, installs the built wheel, runs
+migrations and system checks, and renders every authenticated Forward plugin
+menu destination with minimal persisted records. A route-reversal or
+template-rendering failure blocks publication.
+
 `invoke package` performs two isolated builds with the commit timestamp as
 `SOURCE_DATE_EPOCH` and fails unless both wheel and sdist SHA-256 digests are
 byte-identical. CI and release jobs install Python controller tools only from

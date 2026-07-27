@@ -47,12 +47,17 @@ MAX_FORWARD_API_REQUESTS_PER_MINUTE = 60000
 FORWARD_API_RATE_LIMIT_CACHE_TIMEOUT_SECONDS = 120
 FORWARD_API_RATE_LIMIT_LOCK_TIMEOUT_SECONDS = 5
 DEFAULT_QUERY_DIAGNOSTICS_ENABLED = True
-DEFAULT_NQE_ASYNC_POLL_INTERVAL_SECONDS = 1.0
+# Exponential async polling starts at 0.1s, preserving fast-query latency, and
+# uses this value only as the slow-query plateau. At the default 1200-poll
+# budget, a 5s ceiling permits about 100 minutes before the poll-count guard;
+# an enabled per-workload deadline remains the authoritative wall-clock guard.
+DEFAULT_NQE_ASYNC_POLL_INTERVAL_SECONDS = 5.0
 DEFAULT_NQE_ASYNC_MAX_POLLS = 1200
 MAX_NQE_ASYNC_POLL_INTERVAL_SECONDS = 60.0
 MAX_NQE_ASYNC_MAX_POLLS = 10000
 TRANSIENT_FORWARD_HTTP_STATUS_CODES = {408, 429, 502, 503, 504}
 NQE_QUERY_REPOSITORIES = {"org", "fwd"}
+NQE_LIBRARY_WRITE_ROLES = {"ADMIN", "OPERATOR"}
 READ_CACHE_TIMEOUT_SECONDS = 60
 READ_CACHE_GENERATION_KEY_SUFFIX = ":query-generation"
 _RATE_LIMIT_LOCK = threading.Lock()
@@ -302,6 +307,9 @@ class ForwardClient:
         self._nqe_execution_signatures: dict[str, int] = {}
         self._latest_processed_snapshot_cache: dict[str, dict] = {}
         self._snapshots_cache: dict[tuple[str, bool, int], list[dict]] = {}
+        self._snapshot_data_file_hashes_cache: dict[tuple[str, str], dict[str, str]] = (
+            {}
+        )
         self._snapshot_metrics_cache: dict[str, dict] = {}
         self._networks_cache: list[dict] | None = None
         self._committed_nqe_query_cache: dict[tuple[str, str, str], dict] = {}
@@ -738,18 +746,53 @@ class ForwardClient:
             mounts[f"{protocol}://"] = httpx.HTTPTransport(proxy=proxy_url)
         return mounts or None
 
-    def _request(self, method, path, *, params=None, json_body=None, headers=None):
+    def _request(
+        self,
+        method,
+        path,
+        *,
+        params=None,
+        json_body=None,
+        headers=None,
+        deadline=None,
+    ):
         url = self._api_url(path)
         last_connectivity_error = None
         for attempt in range(self.retries + 1):
             retry_after = None
+            deadline_limited_timeout = False
             try:
+                request_timeout = self.timeout
+                if deadline is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise ForwardFetchBudgetExceededError(
+                            "Forward NQE fetch exceeded its wall-clock budget"
+                        )
+                    try:
+                        configured_timeout = float(self.timeout)
+                    except (TypeError, ValueError):
+                        configured_timeout = remaining
+                    deadline_limited_timeout = remaining <= configured_timeout
+                    request_timeout = min(configured_timeout, remaining)
+                self._throttle_request()
+                if deadline is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise ForwardFetchBudgetExceededError(
+                            "Forward NQE fetch exceeded its wall-clock budget"
+                        )
+                    try:
+                        configured_timeout = float(self.timeout)
+                    except (TypeError, ValueError):
+                        configured_timeout = remaining
+                    deadline_limited_timeout = remaining <= configured_timeout
+                    request_timeout = min(configured_timeout, remaining)
                 with httpx.Client(
-                    timeout=self.timeout,
+                    timeout=request_timeout,
                     verify=self.verify,
                     mounts=self._proxy_mounts(url),
                 ) as client:
-                    self._throttle_request()
                     self._record_http_attempt_usage()
                     response = client.request(
                         method,
@@ -759,6 +802,10 @@ class ForwardClient:
                         headers={**self._headers(), **(headers or {})},
                         auth=self._auth(),
                     )
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise ForwardFetchBudgetExceededError(
+                        "Forward NQE fetch exceeded its wall-clock budget"
+                    )
                 response.raise_for_status()
                 self._record_api_usage("http_successes")
                 self._record_http_status_class(getattr(response, "status_code", None))
@@ -766,6 +813,10 @@ class ForwardClient:
             except httpx.TimeoutException as exc:
                 self._record_api_usage("http_failures")
                 self._record_api_usage("http_timeout_failures")
+                if deadline_limited_timeout:
+                    raise ForwardFetchBudgetExceededError(
+                        "Forward NQE fetch exceeded its wall-clock budget"
+                    ) from exc
                 last_connectivity_error = ForwardConnectivityError(
                     "Forward API request timed out while connecting to Forward."
                 )
@@ -806,7 +857,15 @@ class ForwardClient:
                 raise ForwardClientError(f"Forward API request failed: {exc}") from exc
             if attempt < self.retries:
                 self._record_api_usage("http_retries")
-                time.sleep(_retry_wait_seconds(attempt, retry_after))
+                wait_seconds = _retry_wait_seconds(attempt, retry_after)
+                if deadline is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise ForwardFetchBudgetExceededError(
+                            "Forward NQE fetch exceeded its wall-clock budget"
+                        )
+                    wait_seconds = min(wait_seconds, remaining)
+                time.sleep(wait_seconds)
         raise last_connectivity_error
 
     def get_networks(self):
@@ -1128,6 +1187,63 @@ class ForwardClient:
                 self._snapshot_metrics_cache[snapshot_id] = dict(metrics)
             self._shared_read_cache_set(shared_cache_key, dict(metrics))
         return metrics
+
+    def get_snapshot_data_file_hashes(self, network_id, snapshot_id):
+        """Return snapshot-correct NQE data-file content hashes by file name."""
+
+        network_id = str(network_id or "").strip()
+        snapshot_id = str(snapshot_id or "").strip()
+        if not network_id or not snapshot_id:
+            raise ForwardClientError(
+                "Snapshot data-file hashes require network and snapshot IDs."
+            )
+        cache_key = (network_id, snapshot_id)
+        with self._read_cache_lock:
+            cached = self._snapshot_data_file_hashes_cache.get(cache_key)
+        if cached is not None:
+            self._record_read_cache_hit()
+            return dict(cached)
+        self._record_read_cache_miss()
+        response = self._request(
+            "GET",
+            f"/networks/{quote(network_id, safe='')}/data-files",
+            params={"view": "snapshot", "snapshotId": snapshot_id},
+        )
+        payload = response.json() or []
+        if isinstance(payload, dict):
+            rows = (
+                payload.get("dataFiles")
+                or payload.get("items")
+                or payload.get("results")
+                or []
+            )
+        else:
+            rows = payload
+        if not isinstance(rows, list):
+            raise ForwardClientError(
+                "Forward snapshot data-file response had an unsupported shape."
+            )
+        hashes = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            name = str(
+                row.get("dataFileName") or row.get("name") or row.get("fileName") or ""
+            ).strip()
+            content_hash = str(
+                row.get("contentMd5Hex")
+                or row.get("contentHash")
+                or row.get("md5")
+                or ""
+            ).strip()
+            if name and content_hash:
+                normalized_hash = f"md5:{content_hash.lower()}"
+                hashes[name] = normalized_hash
+                if name.lower().endswith(".json"):
+                    hashes[name[:-5]] = normalized_hash
+        with self._read_cache_lock:
+            self._snapshot_data_file_hashes_cache[cache_key] = dict(hashes)
+        return hashes
 
     def trigger_snapshot_reachability(self, network_id, snapshot_id):
         """Trigger advanced reachability computation for a snapshot (FWD-53559).
@@ -1479,6 +1595,32 @@ class ForwardClient:
         self._shared_read_cache_set(shared_cache_key, list(rows))
         return rows
 
+    def has_nqe_library_write_permission(self):
+        """Return whether the current login may write the org NQE library."""
+        response = self._request("GET", "/users/current")
+        data = response.json() or {}
+        roles = data.get("roles") if isinstance(data, dict) else {}
+        if not isinstance(roles, dict):
+            return False
+
+        org_roles = roles.get("org") or []
+        if isinstance(org_roles, str):
+            org_roles = [org_roles]
+        normalized_org_roles = {
+            str(role or "").strip().upper()
+            for role in org_roles
+            if str(role or "").strip()
+        }
+        if normalized_org_roles.intersection(NQE_LIBRARY_WRITE_ROLES):
+            return True
+
+        network_roles = roles.get("network") or {}
+        if not isinstance(network_roles, dict):
+            return False
+        network_id = str((self.source.parameters or {}).get("network_id") or "").strip()
+        network_role = str(network_roles.get(network_id) or "").strip().upper()
+        return network_role in NQE_LIBRARY_WRITE_ROLES
+
     def add_org_nqe_query(self, *, query_path, source_code):
         query_path = _normalize_nqe_query_path(query_path)
         if not query_path:
@@ -1690,6 +1832,7 @@ class ForwardClient:
         network_id,
         snapshot_id,
         parameters=None,
+        deadline=None,
     ):
         payload = self._nqe_async_execution_payload(
             query=query,
@@ -1698,11 +1841,16 @@ class ForwardClient:
             parameters=parameters,
         )
         self._record_api_usage("nqe_async_trigger_calls")
+        request_kwargs = {
+            "params": {"snapshotId": snapshot_id},
+            "json_body": payload,
+        }
+        if deadline is not None:
+            request_kwargs["deadline"] = deadline
         response = self._request(
             "POST",
             f"/networks/{quote(str(network_id), safe='')}/nqe-executions",
-            params={"snapshotId": snapshot_id},
-            json_body=payload,
+            **request_kwargs,
         )
         data = response.json() or {}
         execution_key = str(data.get("executionKey") or "").strip()
@@ -1712,14 +1860,18 @@ class ForwardClient:
             )
         return execution_key, data
 
-    def _get_nqe_async_status(self, *, network_id, execution_key):
+    def _get_nqe_async_status(self, *, network_id, execution_key, deadline=None):
         self._record_api_usage("nqe_async_status_calls")
+        request_kwargs = {}
+        if deadline is not None:
+            request_kwargs["deadline"] = deadline
         response = self._request(
             "GET",
             "/networks/{network_id}/nqe-executions/{execution_key}".format(
                 network_id=quote(str(network_id), safe=""),
                 execution_key=quote(str(execution_key), safe=""),
             ),
+            **request_kwargs,
         )
         return response.json() or {}
 
@@ -1750,10 +1902,16 @@ class ForwardClient:
                 # Fast queries return in <0.1s; slow ones plateau at the
                 # configured ceiling so the poll budget stays meaningful.
                 sleep_seconds = min(poll_ceiling, 0.1 * (2**poll_index))
+                if deadline is not None:
+                    sleep_seconds = min(
+                        sleep_seconds,
+                        max(0.0, deadline - time.monotonic()),
+                    )
                 time.sleep(sleep_seconds)
             current_status = self._get_nqe_async_status(
                 network_id=network_id,
                 execution_key=execution_key,
+                deadline=deadline,
             )
         raise ForwardClientError(
             "Forward async NQE execution did not complete after "
@@ -1767,20 +1925,26 @@ class ForwardClient:
         execution_key,
         limit,
         offset,
+        deadline=None,
     ):
         self._record_api_usage("nqe_pages")
         self._record_api_usage("nqe_query_pages")
         self._record_api_usage("nqe_async_result_calls")
+        request_kwargs = {
+            "params": {"offset": offset, "limit": limit},
+            "headers": {
+                "Accept": "application/x-ndjson, application/jsonl;q=0.9, application/json;q=0.1"
+            },
+        }
+        if deadline is not None:
+            request_kwargs["deadline"] = deadline
         response = self._request(
             "GET",
             "/networks/{network_id}/nqe-executions/{execution_key}/result".format(
                 network_id=quote(str(network_id), safe=""),
                 execution_key=quote(str(execution_key), safe=""),
             ),
-            params={"offset": offset, "limit": limit},
-            headers={
-                "Accept": "application/x-ndjson, application/jsonl;q=0.9, application/json;q=0.1"
-            },
+            **request_kwargs,
         )
         return self._parse_nqe_async_result(response)
 
@@ -1833,10 +1997,10 @@ class ForwardClient:
             network_id=network_id,
             snapshot_id=snapshot_id,
             parameters=parameters,
+            deadline=deadline,
             limit=limit,
             offset=offset,
             fetch_all=fetch_all,
-            deadline=deadline,
         )
 
     def _run_nqe_query_async(
@@ -1862,6 +2026,7 @@ class ForwardClient:
             network_id=network_id,
             snapshot_id=snapshot_id,
             parameters=parameters,
+            deadline=deadline,
         )
         self._wait_for_nqe_async_completion(
             network_id=network_id,
@@ -1874,6 +2039,7 @@ class ForwardClient:
             execution_key=execution_key,
             limit=limit,
             offset=offset,
+            deadline=deadline,
         )
         if not fetch_all:
             return records
@@ -1918,6 +2084,7 @@ class ForwardClient:
                 execution_key=execution_key,
                 limit=limit,
                 offset=next_offset,
+                deadline=deadline,
             )
             fetched_pages += 1
             if expected_total is None and page_total is not None:
@@ -1999,10 +2166,13 @@ class ForwardClient:
             }
             if commit_id:
                 payload["commitId"] = commit_id
+            request_kwargs = {"json_body": payload}
+            if deadline is not None:
+                request_kwargs["deadline"] = deadline
             response = self._request(
                 "POST",
                 f"/nqe-diffs/{before_snapshot_id}/{after_snapshot_id}",
-                json_body=payload,
+                **request_kwargs,
             )
             return self._parse_nqe_diff_rows(response.json() or {})
 

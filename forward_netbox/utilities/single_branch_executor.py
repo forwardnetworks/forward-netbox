@@ -59,6 +59,16 @@ class ForwardSingleBranchExecutor(ForwardExecutorBase):
         if not workloads:
             self.logger.log_info("No Forward changes were returned for this run.")
             ingestion = create_noop_ingestion(self, context.as_dict())
+            staged_contributor_relations = fetcher.stage_pending_contributor_baseline(
+                ingestion, context
+            )
+            if staged_contributor_relations:
+                self.logger.log_info(
+                    "Staged "
+                    f"{staged_contributor_relations} contributor relation(s) "
+                    "for merge-gated no-op promotion.",
+                    obj=ingestion,
+                )
             promoted = stage_and_promote_noop_workload_states(
                 ingestion,
                 fetcher.pending_workload_states,
@@ -70,10 +80,75 @@ class ForwardSingleBranchExecutor(ForwardExecutorBase):
                 )
             return [ingestion]
 
+        from .fast_baseline import fast_baseline_static_decision, run_fast_baseline_load
+
+        fast_baseline_decision = fast_baseline_static_decision(
+            sync=self.sync,
+            workloads=workloads,
+            model_results=self.last_model_results,
+        )
+        fast_baseline_enabled = bool(
+            (self.sync.parameters or {}).get("enable_fast_baseline_load")
+        )
+        fast_baseline_required = bool(
+            (self.sync.parameters or {}).get("require_fast_baseline_eligibility")
+        )
+        if fast_baseline_required and not fast_baseline_enabled:
+            raise SyncError(
+                "Fast baseline eligibility cannot be required while the fast "
+                "baseline load is disabled."
+            )
+        if fast_baseline_enabled:
+            if fast_baseline_decision.enabled:
+                self.logger.log_info(
+                    "Fast baseline static checks passed; acquiring locked empty-"
+                    "database eligibility checks.",
+                    obj=self.sync,
+                )
+                ingestion, locked_decision = run_fast_baseline_load(
+                    self,
+                    context=context,
+                    workloads=workloads,
+                    fetcher=fetcher,
+                )
+                if ingestion is not None:
+                    return [ingestion]
+                if fast_baseline_required:
+                    raise SyncError(
+                        "Fast baseline eligibility is required; locked proof "
+                        f"failed ({locked_decision.reason_code})."
+                    )
+                self.logger.log_info(
+                    "Fast baseline failed closed "
+                    f"({locked_decision.reason_code}); using the ordinary branch path.",
+                    obj=self.sync,
+                )
+            else:
+                if fast_baseline_required:
+                    raise SyncError(
+                        "Fast baseline eligibility is required; static proof "
+                        f"failed ({fast_baseline_decision.reason_code})."
+                    )
+                self.logger.log_info(
+                    "Fast baseline failed closed "
+                    f"({fast_baseline_decision.reason_code}); using the ordinary branch path.",
+                    obj=self.sync,
+                )
+
         request = build_branch_request(self.user)
         ingestion = self._create_ingestion(
             context.as_dict(), change_request_id=request.id
         )
+        staged_contributor_relations = fetcher.stage_pending_contributor_baseline(
+            ingestion,
+            context,
+        )
+        if staged_contributor_relations:
+            self.logger.log_info(
+                f"Staged {staged_contributor_relations} contributor relation(s) "
+                "for merge-gated promotion.",
+                obj=ingestion,
+            )
         staged_states = stage_workload_states(
             ingestion,
             fetcher.pending_workload_states,

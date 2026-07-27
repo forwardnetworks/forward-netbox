@@ -1814,6 +1814,38 @@ class ForwardSyncModelTest(TestCase):
         self.assertEqual(issue.raw_data, {})
         self.assertNotIn("boom", issue.message)
 
+    @patch("forward_netbox.models.ForwardSource.get_client")
+    @patch(
+        "forward_netbox.utilities.single_branch_executor.ForwardSingleBranchExecutor"
+    )
+    def test_sync_failure_replaces_rolled_back_executor_ingestion(
+        self,
+        mock_executor_class,
+        _mock_get_client,
+    ):
+        sync = ForwardSync.objects.create(
+            name="sync-rolled-back-ingestion-failure",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": True,
+            },
+        )
+        rolled_back = ForwardIngestion.objects.create(sync=sync)
+        stale_pk = rolled_back.pk
+        rolled_back.delete()
+        rolled_back.pk = stale_pk
+        mock_executor = mock_executor_class.return_value
+        mock_executor.current_ingestion = rolled_back
+        mock_executor.run.side_effect = RuntimeError("boom")
+
+        sync.sync()
+
+        ingestion = ForwardIngestion.objects.get(sync=sync)
+        self.assertNotEqual(ingestion.pk, stale_pk)
+        self.assertEqual(ingestion.issues.count(), 1)
+        self.assertEqual(sync.status, ForwardSyncStatusChoices.FAILED)
+
     def test_latest_baseline_ingestion_returns_latest_ready_snapshot(self):
         sync = ForwardSync.objects.create(
             name="sync-baseline",
@@ -2282,12 +2314,32 @@ class ForwardNQEMapModelTest(TestCase):
             query_id="OQ_devices",
             query_repository="org",
             query_path="/team/netbox/forward_devices",
+            commit_id="full-commit",
         )
 
         query_map.clean()
 
         self.assertEqual(query_map.execution_mode, "query_id")
         self.assertEqual(query_map.execution_value, "OQ_devices")
+
+    def test_identical_full_and_diff_commits_fail_configuration_validation(self):
+        netbox_model = ContentType.objects.get(app_label="dcim", model="device")
+        query_map = ForwardNQEMap(
+            name="Device Map",
+            netbox_model=netbox_model,
+            query_id="OQ_devices",
+            query_repository="org",
+            query_path="/team/netbox/forward_devices",
+            commit_id="same-commit",
+            diff_commit_id="same-commit",
+            diff_source_sha256="a" * 64,
+        )
+
+        with self.assertRaisesRegex(
+            ValidationError,
+            "distinct immutable commit IDs",
+        ):
+            query_map.clean()
 
     def test_map_defaults_coalesce_fields_from_model_contract(self):
         netbox_model = ContentType.objects.get(app_label="dcim", model="site")

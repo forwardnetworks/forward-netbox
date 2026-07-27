@@ -432,6 +432,13 @@
           {% trans "Export Live Query Drift Check" %}
         </a>
         {% if perms.forward_netbox.change_forwardnqemap %}
+        <form method="post" action="{% url 'plugins:forward_netbox:forwardsync_resolve_query_ids' pk=object.pk %}" class="d-inline-flex ms-2">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-sm btn-outline-primary">
+            <i class="mdi mdi-link-variant" aria-hidden="true"></i>&nbsp;
+            {% trans "Resolve to Query ID" %}
+          </button>
+        </form>
         <form method="post" action="{% url 'plugins:forward_netbox:forwardsync_publish_bundled_queries' pk=object.pk %}" class="d-inline-flex align-items-center gap-2 ms-2">
           {% csrf_token %}
           <label class="visually-hidden" for="health-query-directory">{% trans "Forward query folder" %}</label>
@@ -443,7 +450,7 @@
         </form>
         {% endif %}
         <span class="text-muted ms-2">
-          {% trans "Publish to the selected folder and bind enabled maps by query ID." %}
+          {% trans "Resolve existing queries read-only, or publish bundled source with NQE-library write permission." %}
         </span>
       </div>
       <div class="table-responsive">

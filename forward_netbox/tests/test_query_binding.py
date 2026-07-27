@@ -12,9 +12,13 @@ from forward_netbox.utilities.query_binding import apply_explicit_nqe_map_bindin
 from forward_netbox.utilities.query_binding import apply_nqe_map_bindings
 from forward_netbox.utilities.query_binding import build_nqe_map_bindings
 from forward_netbox.utilities.query_binding import live_query_binding_drift
+from forward_netbox.utilities.query_binding import live_query_binding_drifts
 from forward_netbox.utilities.query_binding import local_query_binding_drift
+from forward_netbox.utilities.query_binding import NQELibraryWritePermissionError
 from forward_netbox.utilities.query_binding import publish_builtin_nqe_map_queries
+from forward_netbox.utilities.query_binding import resolve_nqe_map_query_ids
 from forward_netbox.utilities.query_binding import restore_builtin_raw_query_bindings
+from forward_netbox.utilities.query_registry import get_query_specs
 from forward_netbox.utilities.query_registry import read_builtin_query_source
 from forward_netbox.utilities.query_registry import read_compiled_builtin_query_source
 from forward_netbox.views import ForwardNQEMapBulkEditView
@@ -301,7 +305,7 @@ class NQEMapBindingTest(TestCase):
 
         self.assertEqual(drift["status"], "legacy_repository_path_binding")
         self.assertEqual(drift["severity"], "warn")
-        self.assertEqual(drift["remediation_action"], "publish_bundled_queries")
+        self.assertEqual(drift["remediation_action"], "resolve_to_query_id")
         self.assertEqual(drift["commit_binding"], "latest_commit")
         self.assertIn(
             "latest committed Forward query revision", drift["commit_message"]
@@ -385,6 +389,57 @@ class NQEMapBindingTest(TestCase):
         self.assertEqual(drift["status"], "legacy_repository_path_binding")
         self.assertEqual(drift["severity"], "warn")
         self.assertFalse(drift["source_matches_bundled"])
+
+    def test_bulk_live_query_path_drift_reuses_repository_index(self):
+        netbox_model = ContentType.objects.get(app_label="dcim", model="device")
+        query_maps = [
+            ForwardNQEMap.objects.create(
+                name="Forward Devices",
+                netbox_model=netbox_model,
+                query_repository="org",
+                query_path=f"/legacy-{index}/forward_devices",
+            )
+            for index in range(2)
+        ]
+        rows = [
+            {
+                "queryId": f"Q_devices_{index}",
+                "path": query_map.query_path,
+                "lastCommitId": f"commit-{index}",
+            }
+            for index, query_map in enumerate(query_maps)
+        ]
+        query_index = {
+            "rows": rows,
+            "by_path": {row["path"]: row for row in rows},
+            "by_query_id": {},
+        }
+        client = Mock()
+        client.get_nqe_repository_query_index.return_value = query_index
+        client.get_committed_nqe_query.side_effect = [
+            {
+                **row,
+                "sourceCode": read_compiled_builtin_query_source("forward_devices.nqe"),
+            }
+            for row in rows
+        ]
+
+        results = live_query_binding_drifts(client=client, query_maps=query_maps)
+
+        self.assertEqual(len(results), 2)
+        client.get_nqe_repository_query_index.assert_called_once_with(
+            repository="org",
+            directory="/",
+        )
+        self.assertEqual(client.get_committed_nqe_query.call_count, 2)
+        self.assertTrue(
+            all(
+                call.kwargs["query_index"] is query_index
+                for call in client.get_committed_nqe_query.call_args_list
+            )
+        )
+        client.run_nqe_query.assert_not_called()
+        client.run_nqe_diff.assert_not_called()
 
     def test_live_query_binding_drift_refreshes_moved_query_location_by_id(self):
         netbox_model = ContentType.objects.get(app_label="dcim", model="device")
@@ -514,6 +569,244 @@ class NQEMapBindingTest(TestCase):
         self.assertNotIn("sentinel-private-detail", " ".join(logs.output))
         self.assertIn("Review server logs", rendered)
 
+    def test_bulk_live_query_binding_drift_fetches_each_repository_index_once(self):
+        netbox_model = ContentType.objects.get(app_label="dcim", model="device")
+        query_maps = [
+            ForwardNQEMap.objects.create(
+                name="Forward Devices",
+                netbox_model=netbox_model,
+                query_id=f"Q_devices_{index}",
+            )
+            for index in range(32)
+        ]
+        org_rows = {
+            query_map.query_id: [
+                {
+                    "queryId": query_map.query_id,
+                    "path": f"/team/netbox/forward_devices_{index}",
+                    "lastCommitId": f"commit-{index}",
+                }
+            ]
+            for index, query_map in enumerate(query_maps)
+        }
+        client = Mock()
+        client.get_nqe_repository_query_index.side_effect = [
+            {"by_query_id": org_rows},
+            {"by_query_id": {}},
+        ]
+        client.get_committed_nqe_query.return_value = {
+            "queryId": "Q_devices",
+            "lastCommitId": "commit-1",
+            "sourceCode": read_compiled_builtin_query_source("forward_devices.nqe"),
+        }
+
+        results = live_query_binding_drifts(client=client, query_maps=query_maps)
+
+        self.assertEqual(len(results), 32)
+        # Before operation-scoped reuse this was 64 calls: org + fwd per map.
+        # Fetching each visible index once removes 62 redundant calls.
+        self.assertEqual(client.get_nqe_repository_query_index.call_count, 2)
+        client.get_nqe_repository_query_index.assert_any_call(
+            repository="org",
+            directory="/",
+        )
+        client.get_nqe_repository_query_index.assert_any_call(
+            repository="fwd",
+            directory="/",
+        )
+        client.run_nqe_query.assert_not_called()
+        client.run_nqe_diff.assert_not_called()
+
+    def test_read_only_resolve_persists_query_id_without_forward_writes(self):
+        netbox_model = ContentType.objects.get(app_label="dcim", model="device")
+        query_map = ForwardNQEMap.objects.create(
+            name="Forward Devices",
+            netbox_model=netbox_model,
+            query_repository="org",
+            query_path="/legacy/forward_devices",
+            commit_id="commit-pinned",
+            built_in=True,
+        )
+        client = Mock()
+        client.get_nqe_repository_query_index.return_value = {
+            "rows": [
+                {
+                    "queryId": "Q_devices",
+                    "path": "/current/forward_devices",
+                    "lastCommitId": "commit-head",
+                }
+            ],
+            "by_path": {
+                "/current/forward_devices": {
+                    "queryId": "Q_devices",
+                    "path": "/current/forward_devices",
+                    "lastCommitId": "commit-head",
+                }
+            },
+            "by_query_id": {},
+        }
+
+        results = resolve_nqe_map_query_ids(
+            client=client,
+            queryset=ForwardNQEMap.objects.filter(pk=query_map.pk),
+        )
+
+        self.assertEqual(len(results), 1)
+        self.assertTrue(results[0].matched)
+        query_map.refresh_from_db()
+        self.assertEqual(query_map.query_id, "Q_devices")
+        self.assertEqual(query_map.execution_mode, "query_id")
+        self.assertEqual(query_map.query_path, "/current/forward_devices")
+        self.assertEqual(query_map.commit_id, "commit-pinned")
+        client.get_nqe_repository_query_index.assert_called_once_with(
+            repository="org",
+            directory="/",
+        )
+        client.add_org_nqe_query.assert_not_called()
+        client.edit_org_nqe_query.assert_not_called()
+        client.commit_org_nqe_queries.assert_not_called()
+        client.run_nqe_query.assert_not_called()
+        client.run_nqe_diff.assert_not_called()
+
+    def test_read_only_resolve_fetches_one_index_for_thirty_two_maps(self):
+        netbox_model = ContentType.objects.get(app_label="dcim", model="device")
+        query_maps = [
+            ForwardNQEMap.objects.create(
+                name=f"Forward Devices {index}",
+                netbox_model=netbox_model,
+                query_repository="org",
+                query_path=f"/legacy-{index}/forward_devices",
+                built_in=True,
+            )
+            for index in range(32)
+        ]
+        rows = [
+            {
+                "queryId": f"Q_devices_{index}",
+                "path": query_map.query_path,
+            }
+            for index, query_map in enumerate(query_maps)
+        ]
+        client = Mock()
+        client.get_nqe_repository_query_index.return_value = {
+            "rows": rows,
+            "by_path": {row["path"]: row for row in rows},
+            "by_query_id": {},
+        }
+
+        results = resolve_nqe_map_query_ids(
+            client=client,
+            queryset=ForwardNQEMap.objects.filter(
+                pk__in=[query_map.pk for query_map in query_maps]
+            ),
+        )
+
+        self.assertEqual(len(results), 32)
+        self.assertTrue(all(result.matched for result in results))
+        # The operation cache removes 31 redundant index calls at 32 maps.
+        client.get_nqe_repository_query_index.assert_called_once_with(
+            repository="org",
+            directory="/",
+        )
+        client.run_nqe_query.assert_not_called()
+        client.run_nqe_diff.assert_not_called()
+
+    def test_read_only_resolve_keeps_parameters_without_diff_identity(self):
+        netbox_model = ContentType.objects.get(app_label="dcim", model="device")
+        query_map = ForwardNQEMap.objects.create(
+            name="Forward Devices",
+            netbox_model=netbox_model,
+            query_repository="org",
+            query_path="/current/forward_devices",
+            built_in=True,
+        )
+        client = Mock()
+        client.get_nqe_repository_query_index.return_value = {
+            "rows": [
+                {
+                    "queryId": "Q_devices",
+                    "path": "/current/forward_devices",
+                }
+            ],
+            "by_path": {
+                "/current/forward_devices": {
+                    "queryId": "Q_devices",
+                    "path": "/current/forward_devices",
+                }
+            },
+            "by_query_id": {},
+        }
+
+        resolve_nqe_map_query_ids(
+            client=client,
+            queryset=ForwardNQEMap.objects.filter(pk=query_map.pk),
+        )
+
+        query_map.refresh_from_db()
+        spec = get_query_specs("dcim.device", maps=[query_map])[0]
+        self.assertEqual(spec.run_query_id, "Q_devices")
+        self.assertIsNone(spec.diff_query_id)
+        self.assertTrue(spec.parameters)
+
+    def test_read_only_resolve_leaves_ambiguous_filename_match_unchanged(self):
+        netbox_model = ContentType.objects.get(app_label="dcim", model="device")
+        query_map = ForwardNQEMap.objects.create(
+            name="Forward Devices",
+            netbox_model=netbox_model,
+            query_repository="org",
+            query_path="/legacy/forward_devices",
+            built_in=True,
+        )
+        client = Mock()
+        rows = [
+            {"queryId": "Q_one", "path": "/one/forward_devices"},
+            {"queryId": "Q_two", "path": "/two/forward_devices"},
+        ]
+        client.get_nqe_repository_query_index.return_value = {
+            "rows": rows,
+            "by_path": {row["path"]: row for row in rows},
+            "by_query_id": {},
+        }
+
+        results = resolve_nqe_map_query_ids(
+            client=client,
+            queryset=ForwardNQEMap.objects.filter(pk=query_map.pk),
+        )
+
+        self.assertFalse(results[0].matched)
+        self.assertIn("No unique repository match", results[0].skipped_reason)
+        query_map.refresh_from_db()
+        self.assertEqual(query_map.query_id, "")
+        self.assertEqual(query_map.execution_mode, "query_path")
+        client.add_org_nqe_query.assert_not_called()
+        client.edit_org_nqe_query.assert_not_called()
+        client.commit_org_nqe_queries.assert_not_called()
+
+    def test_publish_precheck_blocks_before_any_write_or_repository_lookup(self):
+        netbox_model = ContentType.objects.get(app_label="dcim", model="device")
+        query_map = ForwardNQEMap.objects.create(
+            name="Forward Devices",
+            netbox_model=netbox_model,
+            query=read_builtin_query_source("forward_devices.nqe"),
+        )
+        client = Mock()
+        client.has_nqe_library_write_permission.return_value = False
+
+        with self.assertRaisesRegex(
+            NQELibraryWritePermissionError,
+            "Use 'Resolve to Query ID'",
+        ):
+            publish_builtin_nqe_map_queries(
+                client=client,
+                directory="/forward_netbox_validation/",
+                queryset=ForwardNQEMap.objects.filter(pk=query_map.pk),
+            )
+
+        client.get_nqe_repository_query_index.assert_not_called()
+        client.add_org_nqe_query.assert_not_called()
+        client.edit_org_nqe_query.assert_not_called()
+        client.commit_org_nqe_queries.assert_not_called()
+
     def test_publish_builtin_queries_adds_sources_commits_and_binds_selected_maps(self):
         netbox_model = ContentType.objects.get(app_label="dcim", model="device")
         query_map = ForwardNQEMap.objects.create(
@@ -568,6 +861,7 @@ class NQEMapBindingTest(TestCase):
             },
         ]
         client.commit_org_nqe_queries.return_value = "commit-1"
+        client.has_nqe_library_write_permission.return_value = True
 
         results = publish_builtin_nqe_map_queries(
             client=client,
@@ -695,6 +989,7 @@ class NQEMapBindingTest(TestCase):
             },
         ]
         client.commit_org_nqe_queries.return_value = "commit-1"
+        client.has_nqe_library_write_permission.return_value = True
 
         view = ForwardNQEMapBulkEditView()
         with patch.object(ForwardSource, "get_client", return_value=client):
@@ -751,6 +1046,7 @@ class NQEMapBindingTest(TestCase):
                 ]
             },
         }
+        client.has_nqe_library_write_permission.return_value = True
 
         results = publish_builtin_nqe_map_queries(
             client=client,
@@ -800,6 +1096,7 @@ class NQEMapBindingTest(TestCase):
             },
             "by_query_id": {},
         }
+        client.has_nqe_library_write_permission.return_value = True
 
         results = publish_builtin_nqe_map_queries(
             client=client,
@@ -845,6 +1142,7 @@ class NQEMapBindingTest(TestCase):
             },
             "by_query_id": {},
         }
+        client.has_nqe_library_write_permission.return_value = True
 
         results = publish_builtin_nqe_map_queries(
             client=client,
@@ -907,6 +1205,7 @@ class NQEMapBindingTest(TestCase):
             },
         ]
         client.commit_org_nqe_queries.return_value = "commit-1"
+        client.has_nqe_library_write_permission.return_value = True
 
         results = publish_builtin_nqe_map_queries(
             client=client,
@@ -976,6 +1275,7 @@ class NQEMapBindingTest(TestCase):
             "lastCommitId": "commit-1",
             "path": "/forward_netbox_validation/forward_devices",
         }
+        client.has_nqe_library_write_permission.return_value = True
 
         publish_builtin_nqe_map_queries(
             client=client,

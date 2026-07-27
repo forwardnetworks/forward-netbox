@@ -1082,6 +1082,27 @@ class ForwardSyncForm(NetBoxModelForm):
             "plugin-specific contracts remain on the adapter path."
         ),
     )
+    enable_fast_baseline_load = forms.BooleanField(
+        required=False,
+        initial=False,
+        label="Use fast first-baseline load",
+        help_text=(
+            "Exact-version, first-full-snapshot opt-in for an empty NetBox. "
+            "It omits branch review, per-row audit evidence, and branch rollback; "
+            "run `python manage.py forward_fast_baseline_preflight --sync <id>` "
+            "and verify a database backup before enabling it."
+        ),
+    )
+    require_fast_baseline_eligibility = forms.BooleanField(
+        required=False,
+        initial=False,
+        label="Abort unless the fast baseline is eligible",
+        help_text=(
+            "Use the fetched workload once for the locked eligibility proof and "
+            "direct load. If the proof fails, abort before creating an ingestion, "
+            "branch, or target row instead of falling back to branch staging."
+        ),
+    )
     set_primary_ip_from_mgmt_tag = forms.BooleanField(
         required=False,
         label="Set primary IP from Mgmt_ tag",
@@ -1182,6 +1203,14 @@ class ForwardSyncForm(NetBoxModelForm):
             "enable_bulk_orm",
             DEFAULT_ENABLE_BULK_ORM_FOR_NEW_SYNCS,
         )
+        self.fields["enable_fast_baseline_load"].initial = parameters.get(
+            "enable_fast_baseline_load",
+            False,
+        )
+        self.fields["require_fast_baseline_eligibility"].initial = parameters.get(
+            "require_fast_baseline_eligibility",
+            False,
+        )
         self.fields["set_primary_ip_from_mgmt_tag"].initial = parameters.get(
             "set_primary_ip_from_mgmt_tag",
             False,
@@ -1227,6 +1256,8 @@ class ForwardSyncForm(NetBoxModelForm):
             FieldSet(
                 "auto_merge",
                 "enable_bulk_orm",
+                "enable_fast_baseline_load",
+                "require_fast_baseline_eligibility",
                 "set_primary_ip_from_mgmt_tag",
                 "diff_fallback_mode",
                 "scheduled",
@@ -1275,10 +1306,23 @@ class ForwardSyncForm(NetBoxModelForm):
             for model_string in forward_configured_models()
         ):
             raise forms.ValidationError("Select at least one NetBox model to sync.")
+        if cleaned.get("require_fast_baseline_eligibility") and not cleaned.get(
+            "enable_fast_baseline_load"
+        ):
+            raise forms.ValidationError(
+                "Requiring fast-baseline eligibility also requires enabling the "
+                "fast first-baseline load."
+            )
         parameters = {
             "auto_merge": cleaned.get("auto_merge", False),
             "snapshot_id": snapshot_id,
             "enable_bulk_orm": bool(cleaned.get("enable_bulk_orm", False)),
+            "enable_fast_baseline_load": bool(
+                cleaned.get("enable_fast_baseline_load", False)
+            ),
+            "require_fast_baseline_eligibility": bool(
+                cleaned.get("require_fast_baseline_eligibility", False)
+            ),
             "set_primary_ip_from_mgmt_tag": bool(
                 cleaned.get("set_primary_ip_from_mgmt_tag", False)
             ),
@@ -1304,6 +1348,12 @@ class ForwardSyncForm(NetBoxModelForm):
             "snapshot_id": self.cleaned_data.get("snapshot_id")
             or LATEST_PROCESSED_SNAPSHOT,
             "enable_bulk_orm": bool(self.cleaned_data.get("enable_bulk_orm", False)),
+            "enable_fast_baseline_load": bool(
+                self.cleaned_data.get("enable_fast_baseline_load", False)
+            ),
+            "require_fast_baseline_eligibility": bool(
+                self.cleaned_data.get("require_fast_baseline_eligibility", False)
+            ),
             "set_primary_ip_from_mgmt_tag": bool(
                 self.cleaned_data.get("set_primary_ip_from_mgmt_tag", False)
             ),

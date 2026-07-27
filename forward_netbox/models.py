@@ -234,6 +234,10 @@ class ForwardSource(ForwardPluginModelDocsMixin, JobsMixin, PrimaryModel):
             "nqe_async_max_polls",
             "nqe_fetch_all_max_pages",
             "nqe_identical_full_page_streak_limit",
+            "diff_fetch_timeout_seconds",
+            "diff_timeout_circuit_breaker_threshold",
+            "contributor_cache_max_rows",
+            "contributor_cache_max_compressed_bytes",
             "query_diagnostics_enabled",
             "pushdown_fallback_warn_rate",
             "pushdown_runtime_fallback_warn_share",
@@ -391,6 +395,24 @@ class ForwardNQEMap(ForwardPluginModelDocsMixin, ChangeLoggedModel):
     query_path = models.CharField(max_length=500, blank=True, default="")
     query = models.TextField(blank=True)
     commit_id = models.CharField(max_length=100, blank=True)
+    diff_commit_id = models.CharField(
+        max_length=100,
+        blank=True,
+        default="",
+        editable=False,
+    )
+    full_source_sha256 = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        editable=False,
+    )
+    diff_source_sha256 = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        editable=False,
+    )
     parameters = models.JSONField(blank=True, default=dict)
     coalesce_fields = models.JSONField(blank=True, default=list)
     weight = models.PositiveIntegerField(default=100)
@@ -524,14 +546,17 @@ class ForwardSync(ForwardPluginModelDocsMixin, JobsMixin, TagsMixin, ChangeLogge
     def incremental_diff_baseline(
         self,
         *,
-        specs,
+        model_contract=None,
+        specs=None,
         current_snapshot_id,
         exclude_ingestion_id=None,
         client=None,
     ):
         if self.get_snapshot_id() != LATEST_PROCESSED_SNAPSHOT:
             return None
-        if not specs or any(not getattr(spec, "diff_query_id", None) for spec in specs):
+        if model_contract is None or not getattr(
+            model_contract, "diff_eligible", False
+        ):
             return None
         baseline = self.latest_baseline_ingestion(
             exclude_ingestion_id=exclude_ingestion_id
@@ -544,6 +569,10 @@ class ForwardSync(ForwardPluginModelDocsMixin, JobsMixin, TagsMixin, ChangeLogge
             baseline.snapshot_id,
             client=client,
         ):
+            return None
+        from .utilities.query_execution_contract import compatible_baseline_evidence
+
+        if compatible_baseline_evidence(baseline, model_contract) is None:
             return None
         return baseline
 
@@ -1002,6 +1031,151 @@ class ForwardWorkloadState(ForwardPluginModelDocsMixin, models.Model):
     def __str__(self):
         status = "current" if self.is_current else "pending"
         return f"{self.sync}: {self.model_string} ({status})"
+
+
+class ForwardContributorBaseline(ForwardPluginModelDocsMixin, models.Model):
+    """Merge-gated generation containing complete contributor relations."""
+
+    class Status(models.TextChoices):
+        PENDING = "pending", _("Pending")
+        CURRENT = "current", _("Current")
+        SUPERSEDED = "superseded", _("Superseded")
+        INVALID = "invalid", _("Invalid")
+
+    sync = models.ForeignKey(
+        ForwardSync,
+        on_delete=models.CASCADE,
+        related_name="contributor_baselines",
+    )
+    ingestion = models.OneToOneField(
+        ForwardIngestion,
+        on_delete=models.PROTECT,
+        related_name="contributor_baseline",
+    )
+    parent_baseline = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="child_baselines",
+    )
+    snapshot_id = models.CharField(max_length=100)
+    network_fingerprint = models.CharField(max_length=64)
+    map_set_fingerprint = models.CharField(max_length=64)
+    scope_config_fingerprint = models.CharField(max_length=64)
+    scope_membership_fingerprint = models.CharField(max_length=64)
+    scope_payload_version = models.PositiveSmallIntegerField(default=1)
+    scope_payload = models.BinaryField(blank=True, default=b"")
+    scope_payload_checksum = models.CharField(max_length=64)
+    status = models.CharField(
+        max_length=20,
+        choices=Status,
+        default=Status.PENDING,
+        db_index=True,
+    )
+    is_current = models.BooleanField(default=False, db_index=True)
+    created = models.DateTimeField(default=timezone.now, editable=False)
+    promoted_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        ordering = ("sync_id", "-ingestion_id")
+        verbose_name = _("Forward Contributor Baseline")
+        verbose_name_plural = _("Forward Contributor Baselines")
+        db_table = "forward_netbox_contributor_baseline"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["sync"],
+                condition=Q(is_current=True),
+                name="forward_contributor_baseline_current_sync",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.sync}: contributor baseline {self.snapshot_id} ({self.status})"
+
+
+class ForwardContributorRelation(ForwardPluginModelDocsMixin, models.Model):
+    """Metadata for one chunked contributor relation in a baseline."""
+
+    baseline = models.ForeignKey(
+        ForwardContributorBaseline,
+        on_delete=models.CASCADE,
+        related_name="relations",
+    )
+    query_map = models.ForeignKey(
+        ForwardNQEMap,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    model_string = models.CharField(max_length=100)
+    contract_key = models.CharField(max_length=255)
+    query_path = models.CharField(max_length=500)
+    query_id = models.CharField(max_length=100)
+    full_commit_id = models.CharField(max_length=100)
+    full_source_sha256 = models.CharField(max_length=64)
+    diff_query_id = models.CharField(max_length=100)
+    diff_commit_id = models.CharField(max_length=100)
+    diff_source_sha256 = models.CharField(max_length=64)
+    contract_fingerprint = models.CharField(max_length=64)
+    reducer_id = models.CharField(max_length=100)
+    reducer_version = models.PositiveIntegerField()
+    normalization_version = models.PositiveIntegerField()
+    identity_version = models.PositiveIntegerField()
+    provenance_identity_version = models.PositiveIntegerField(default=1)
+    payload_version = models.PositiveIntegerField(default=1)
+    row_count = models.PositiveIntegerField(default=0)
+    uncompressed_bytes = models.PositiveBigIntegerField(default=0)
+    compressed_bytes = models.PositiveBigIntegerField(default=0)
+    relation_checksum = models.CharField(max_length=64)
+
+    class Meta:
+        ordering = ("baseline_id", "contract_key")
+        verbose_name = _("Forward Contributor Relation")
+        verbose_name_plural = _("Forward Contributor Relations")
+        db_table = "forward_netbox_contributor_relation"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["baseline", "contract_key"],
+                name="forward_contributor_relation_baseline_contract",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.baseline}: {self.contract_key}"
+
+
+class ForwardContributorRelationChunk(
+    ForwardPluginModelDocsMixin,
+    models.Model,
+):
+    """One independently checksummed and compressed contributor payload frame."""
+
+    relation = models.ForeignKey(
+        ForwardContributorRelation,
+        on_delete=models.CASCADE,
+        related_name="chunks",
+    )
+    sequence = models.PositiveIntegerField()
+    payload = models.BinaryField()
+    payload_checksum = models.CharField(max_length=64)
+    compressed_bytes = models.PositiveIntegerField()
+
+    class Meta:
+        ordering = ("relation_id", "sequence")
+        verbose_name = _("Forward Contributor Relation Chunk")
+        verbose_name_plural = _("Forward Contributor Relation Chunks")
+        db_table = "forward_netbox_contributor_relation_chunk"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["relation", "sequence"],
+                name="forward_contributor_chunk_relation_sequence",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.relation}: chunk {self.sequence}"
 
 
 class ForwardIngestionIssue(ForwardPluginModelDocsMixin, models.Model):

@@ -9,6 +9,8 @@ from django.test import TestCase
 from forward_netbox.exceptions import ForwardQueryError
 from forward_netbox.models import ForwardNQEMap
 from forward_netbox.signals import seed_builtin_nqe_maps
+from forward_netbox.utilities.query_execution_contract import query_source_sha256
+from forward_netbox.utilities.query_execution_contract import resolve_execution_contract
 from forward_netbox.utilities.query_registry import _collapse_alias_variant_duplicates
 from forward_netbox.utilities.query_registry import _query_contract_gap_remediation
 from forward_netbox.utilities.query_registry import builtin_nqe_map_rows
@@ -209,6 +211,49 @@ def _network_device_loop_blocks(query):
 
 
 class QueryRegistryTest(TestCase):
+    def test_tier2_maps_declare_one_central_ownership_contract(self):
+        specs_by_key = {}
+        for query_default in [
+            *BUILTIN_QUERY_MAPS,
+            *BUILTIN_OPTIONAL_QUERY_MAPS,
+        ]:
+            spec = get_seeded_builtin_query_spec(
+                query_default["model_string"],
+                query_default["name"],
+            )
+            specs_by_key[spec.contract_key] = spec
+        expected_modes = {
+            "forward_inferred_interface_cables": "cable_either_endpoint",
+            "forward_interfaces": "device",
+            "forward_inventory_items": "device",
+            "forward_modules": "device",
+            "forward_bgp_peers": "device",
+            "forward_bgp_address_families": "device",
+            "forward_bgp_peer_address_families": "device",
+            "forward_ospf_instances": "device",
+            "forward_ospf_interfaces": "device",
+        }
+
+        self.assertEqual(
+            {
+                contract_key: specs_by_key[contract_key].diff_ownership_mode
+                for contract_key in expected_modes
+            },
+            expected_modes,
+        )
+        for contract_key in expected_modes:
+            self.assertTrue(
+                specs_by_key[contract_key].reducer_id.startswith("tier2_side_local_")
+            )
+            self.assertEqual(specs_by_key[contract_key].reducer_version, 2)
+
+        apic = specs_by_key["forward_aci_apic_cimc_inventory"]
+        self.assertEqual(
+            apic.diff_ownership_mode,
+            "unsafe_contributor_reduction",
+        )
+        self.assertEqual(apic.reducer_id, "full_only_contributor_reduction")
+
     def test_aci_command_inventory_query_matches_fixture_contract(self):
         fixture_path = (
             Path(__file__).with_name("fixtures") / "aci_command_inventory_expected.json"
@@ -261,6 +306,7 @@ class QueryRegistryTest(TestCase):
                 return {
                     "queryId": "Q_devices",
                     "commitId": "commit-1",
+                    "path": "/forward_netbox_validation/forward_devices_resolved",
                 }
 
         client = Client()
@@ -274,8 +320,12 @@ class QueryRegistryTest(TestCase):
         resolved = spec.resolve(client)
 
         self.assertEqual(resolved.run_query_id, "Q_devices")
-        self.assertEqual(resolved.diff_query_id, "Q_devices")
+        self.assertIsNone(resolved.diff_query_id)
         self.assertEqual(resolved.commit_id, "commit-1")
+        self.assertEqual(
+            resolved.resolved_query_path,
+            "/forward_netbox_validation/forward_devices_resolved",
+        )
         self.assertEqual(resolved.execution_mode, "query_path")
         self.assertEqual(
             resolved.execution_value,
@@ -302,6 +352,7 @@ class QueryRegistryTest(TestCase):
             built_in=True,
         )
         specs = get_query_specs("dcim.device", maps=[query_map])
+        full_source = specs[0].full_query_source
         client = Mock()
         client.get_nqe_repository_query_index.side_effect = [
             {
@@ -321,6 +372,18 @@ class QueryRegistryTest(TestCase):
                 }
             },
         ]
+        client.get_nqe_query_history.side_effect = [
+            [{"id": "commit-1"}],
+            [{"id": "commit-2"}],
+        ]
+        client.get_committed_nqe_query.side_effect = lambda **kwargs: {
+            "queryId": (
+                "Q_devices_v1" if kwargs["commit_id"] == "commit-1" else "Q_devices_v2"
+            ),
+            "path": query_map.query_path,
+            "lastCommitId": kwargs["commit_id"],
+            "sourceCode": full_source,
+        }
 
         first = resolve_query_specs_for_client(specs, client)[0]
         second = resolve_query_specs_for_client(specs, client)[0]
@@ -330,7 +393,7 @@ class QueryRegistryTest(TestCase):
         self.assertEqual(second.run_query_id, "Q_devices_v2")
         self.assertEqual(second.commit_id, "commit-2")
         self.assertEqual(specs[0].execution_mode, "query_path")
-        client.get_committed_nqe_query.assert_not_called()
+        self.assertEqual(client.get_nqe_query_history.call_count, 2)
 
     def test_resolve_query_specs_for_client_batches_head_path_queries_by_repository(
         self,
@@ -401,12 +464,49 @@ class QueryRegistryTest(TestCase):
         self.assertEqual(resolved[0].commit_id, "commit-moved")
         client.get_committed_nqe_query.assert_not_called()
 
+    def test_resolution_prefers_unique_filename_over_conflicting_intent(self):
+        client = Mock()
+        client.get_nqe_repository_query_index.return_value = {
+            "by_path": {
+                "/library/renamed_device_roles": {
+                    "queryId": "Q_stale_intent",
+                    "intent": "Device roles collected by Forward",
+                },
+                "/published/forward_device_roles": {
+                    "queryId": "Q_matching_filename",
+                    "intent": "Current device role contract",
+                    "lastCommitId": "commit-current",
+                },
+            }
+        }
+        specs = [
+            QuerySpec(
+                model_string="dcim.devicerole",
+                query_name="Forward Device Roles",
+                query_repository="org",
+                query_path="/legacy/forward_device_roles",
+                query_intent="Device roles collected by Forward",
+            )
+        ]
+
+        resolved = resolve_query_specs_for_client(specs, client)
+
+        self.assertEqual(resolved[0].run_query_id, "Q_matching_filename")
+        self.assertEqual(resolved[0].commit_id, "commit-current")
+        client.get_committed_nqe_query.assert_not_called()
+
     def test_resolve_query_specs_for_client_does_not_guess_ambiguous_moved_path(self):
         client = Mock()
         client.get_nqe_repository_query_index.return_value = {
             "by_path": {
-                "/folder-a/forward_devices": {"queryId": "Q_devices_a"},
-                "/folder-b/forward_devices": {"queryId": "Q_devices_b"},
+                "/folder-a/forward_devices": {
+                    "queryId": "Q_devices_a",
+                    "intent": "Devices collected by Forward",
+                },
+                "/folder-b/forward_devices": {
+                    "queryId": "Q_devices_b",
+                    "intent": "Devices collected by Forward",
+                },
             }
         }
         client.get_committed_nqe_query.side_effect = RuntimeError("missing old path")
@@ -416,6 +516,7 @@ class QueryRegistryTest(TestCase):
                 query_name="Forward Devices",
                 query_repository="org",
                 query_path="/forward_netbox_validation/forward_devices",
+                query_intent="Devices collected by Forward",
             )
         ]
 
@@ -423,6 +524,163 @@ class QueryRegistryTest(TestCase):
             resolve_query_specs_for_client(specs, client)
 
         client.get_committed_nqe_query.assert_called_once()
+
+    def test_resolve_query_specs_for_client_follows_unique_relocated_subtree(self):
+        client = Mock()
+        client.get_nqe_repository_query_index.return_value = {
+            "by_path": {
+                "/library/netbox/forward_devices": {
+                    "queryId": "Q_devices_relocated",
+                    "intent": "Devices collected by Forward",
+                    "lastCommitId": "commit-relocated",
+                },
+                "/archive/forward_devices": {
+                    "queryId": "Q_devices_archive",
+                    "intent": "Devices collected by Forward",
+                    "lastCommitId": "commit-archive",
+                },
+            }
+        }
+        specs = [
+            QuerySpec(
+                model_string="dcim.device",
+                query_name="Forward Devices",
+                query_repository="org",
+                query_path="/netbox/forward_devices",
+                query_intent="Devices collected by Forward",
+            )
+        ]
+
+        resolved = resolve_query_specs_for_client(specs, client)
+
+        self.assertEqual(resolved[0].run_query_id, "Q_devices_relocated")
+        self.assertEqual(resolved[0].commit_id, "commit-relocated")
+        client.get_committed_nqe_query.assert_not_called()
+
+    def test_resolve_query_specs_for_client_uses_relocation_when_intent_changed(self):
+        client = Mock()
+        client.get_nqe_repository_query_index.return_value = {
+            "by_path": {
+                "/library/netbox/forward_devices": {
+                    "queryId": "Q_devices_relocated",
+                    "intent": "Updated device inventory contract",
+                },
+                "/archive/forward_devices": {
+                    "queryId": "Q_devices_archive",
+                    "intent": "Archived device inventory contract",
+                },
+            }
+        }
+        specs = [
+            QuerySpec(
+                model_string="dcim.device",
+                query_name="Forward Devices",
+                query_repository="org",
+                query_path="/netbox/forward_devices",
+                query_intent="Devices collected by Forward",
+            )
+        ]
+
+        resolved = resolve_query_specs_for_client(specs, client)
+
+        self.assertEqual(resolved[0].run_query_id, "Q_devices_relocated")
+        client.get_committed_nqe_query.assert_not_called()
+
+    def test_resolve_query_specs_for_client_does_not_guess_two_relocations(self):
+        client = Mock()
+        client.get_nqe_repository_query_index.return_value = {
+            "by_path": {
+                "/library/netbox/forward_devices": {
+                    "queryId": "Q_devices_library",
+                    "intent": "Devices collected by Forward",
+                },
+                "/archive/netbox/forward_devices": {
+                    "queryId": "Q_devices_archive",
+                    "intent": "Devices collected by Forward",
+                },
+            }
+        }
+        client.get_committed_nqe_query.side_effect = RuntimeError("missing old path")
+        specs = [
+            QuerySpec(
+                model_string="dcim.device",
+                query_name="Forward Devices",
+                query_repository="org",
+                query_path="/netbox/forward_devices",
+                query_intent="Devices collected by Forward",
+            )
+        ]
+
+        with self.assertRaisesRegex(RuntimeError, "missing old path"):
+            resolve_query_specs_for_client(specs, client)
+
+        client.get_committed_nqe_query.assert_called_once()
+
+    def test_legacy_path_resolution_requires_no_repository_write_permission(self):
+        class ReadOnlyClient:
+            write_attempts = 0
+
+            def get_nqe_repository_query_index(self, *, repository, directory):
+                return {
+                    "by_path": {
+                        "/library/netbox/forward_devices": {
+                            "queryId": "Q_devices_read_only",
+                            "path": "/library/netbox/forward_devices",
+                            "intent": "Devices collected by Forward",
+                            "lastCommitId": "commit-read-only",
+                        },
+                        "/archive/forward_devices": {
+                            "queryId": "Q_devices_archive",
+                            "intent": "Devices collected by Forward",
+                        },
+                    }
+                }
+
+            def get_committed_nqe_query(
+                self,
+                *,
+                repository,
+                query_path,
+                commit_id,
+                query_index=None,
+            ):
+                raise AssertionError("obsolete path lookup must not be needed")
+
+            def _deny_write(self, **kwargs):
+                self.write_attempts += 1
+                raise PermissionError("repository is read-only")
+
+            add_org_nqe_query = _deny_write
+            edit_org_nqe_query = _deny_write
+            commit_org_nqe_queries = _deny_write
+
+        client = ReadOnlyClient()
+        specs = [
+            QuerySpec(
+                model_string="dcim.device",
+                query_name="Forward Devices",
+                query_repository="org",
+                query_path="/netbox/forward_devices",
+                query_intent="Devices collected by Forward",
+                parameters={
+                    "forward_netbox_shard_keys": [],
+                    "sync_endpoints": False,
+                },
+            )
+        ]
+
+        resolved = resolve_query_specs_for_client(specs, client)
+
+        self.assertEqual(resolved[0].run_query_id, "Q_devices_read_only")
+        self.assertEqual(resolved[0].commit_id, "commit-read-only")
+        self.assertEqual(
+            resolved[0].parameters,
+            {
+                "forward_netbox_shard_keys": [],
+                "sync_endpoints": False,
+            },
+        )
+        self.assertEqual(client.write_attempts, 0)
 
     def test_resolve_query_specs_for_client_falls_back_for_pinned_commit(self):
         client = Mock()
@@ -446,7 +704,10 @@ class QueryRegistryTest(TestCase):
 
         self.assertEqual(resolved[0].run_query_id, "Q_devices")
         self.assertEqual(resolved[0].commit_id, "commit-1")
-        client.get_nqe_repository_query_index.assert_not_called()
+        client.get_nqe_repository_query_index.assert_called_once_with(
+            repository="org",
+            directory="/",
+        )
         client.get_committed_nqe_query.assert_called_once_with(
             repository="org",
             query_path="/forward_netbox_validation/forward_devices",
@@ -794,7 +1055,13 @@ class QueryRegistryTest(TestCase):
         # Forward Platforms calls normalizePlatformName directly so it works for
         # ACI/APIC/CIMC devices whose vendor enum may not resolve via device context.
         self.assertIn(
-            "normalizePlatformName(toString(device.platform.os), device.platform.osVersion)",
+            "let platform_os_version = if isPresent(device.platform.osVersion) "
+            'then device.platform.osVersion else ""',
+            platform_spec.query,
+            msg="Forward Platforms must default an absent OS version before normalization.",
+        )
+        self.assertIn(
+            "normalizePlatformName(toString(device.platform.os), platform_os_version)",
             platform_spec.query,
             msg="Forward Platforms should not use normalizeDevicePlatformName — it must call normalizePlatformName directly.",
         )
@@ -1257,9 +1524,61 @@ class QueryRegistryTest(TestCase):
 
         self.assertEqual(len(specs), 1)
         self.assertEqual(specs[0].query_id, "OQ_custom_devices")
-        self.assertIsNone(specs[0].query_repository)
+        self.assertEqual(specs[0].query_repository, "org")
         self.assertIsNone(specs[0].query_path)
+        self.assertEqual(
+            specs[0].resolved_query_path,
+            "/old/folder/custom_devices",
+        )
         self.assertEqual(specs[0].execution_mode, "query_id")
+
+    def test_pinned_custom_query_hydrates_source_and_checks_declared_parameters(self):
+        full_source = """
+@query
+f(scope: List<String>) =
+foreach value in scope
+select {name: value}
+"""
+        netbox_model = ContentType.objects.get(app_label="dcim", model="device")
+        custom_map = ForwardNQEMap.objects.create(
+            name="Custom Devices",
+            netbox_model=netbox_model,
+            query_id="OQ_custom_devices",
+            query_repository="org",
+            query_path="/old/folder/custom_devices",
+            commit_id="custom-full-commit",
+            parameters={"scope": []},
+            built_in=False,
+            enabled=True,
+        )
+        client = Mock()
+        client.get_committed_nqe_query.return_value = {
+            "queryId": "OQ_custom_devices",
+            "path": "/old/folder/custom_devices",
+            "sourceCode": full_source,
+        }
+
+        (resolved,) = resolve_query_specs_for_client(
+            get_query_specs("dcim.device", maps=[custom_map]),
+            client,
+        )
+        contract = resolve_execution_contract(
+            resolved,
+            effective_parameters={"scope": ["device-a"]},
+        )
+
+        self.assertTrue(contract.full_eligible)
+        self.assertEqual(contract.full_reason_code, "eligible")
+        self.assertEqual(
+            resolved.full_source_sha256,
+            query_source_sha256(full_source),
+        )
+        client.get_committed_nqe_query.assert_called_once_with(
+            repository="org",
+            query_path="/old/folder/custom_devices",
+            commit_id="custom-full-commit",
+            require_source_code=True,
+        )
 
     def test_duplicate_custom_map_execution_is_rejected_before_fetch(self):
         netbox_model = ContentType.objects.get(app_label="dcim", model="device")
@@ -1389,6 +1708,299 @@ class QueryRegistryTest(TestCase):
         self.assertEqual(len(specs), 1)
         self.assertIn("where false", specs[0].query)
         self.assertNotIn('select {stale: "query"}', specs[0].query)
+
+    def test_persisted_diff_contract_hydrates_both_pinned_sources(self):
+        full_source = """
+@query
+f(forward_netbox_shard_keys: List<String>) =
+foreach value in forward_netbox_shard_keys
+select {name: value, slug: value}
+"""
+        diff_source = """
+@query
+f() =
+foreach value in ["vendor"]
+select {name: value, slug: value}
+"""
+        query_id = "OQ_vendor"
+        query_path = "/validation/forward_device_vendors"
+        netbox_model = ContentType.objects.get(app_label="dcim", model="manufacturer")
+        query_map = ForwardNQEMap.objects.create(
+            name="Forward Device Vendors",
+            netbox_model=netbox_model,
+            query_id=query_id,
+            query_repository="org",
+            query_path=query_path,
+            commit_id="full-commit",
+            diff_commit_id="diff-commit",
+            full_source_sha256=query_source_sha256(full_source),
+            diff_source_sha256=query_source_sha256(diff_source),
+            built_in=True,
+            enabled=True,
+        )
+        client = Mock()
+        client.get_committed_nqe_query.side_effect = lambda **kwargs: {
+            "queryId": query_id,
+            "path": query_path,
+            "lastCommitId": kwargs["commit_id"],
+            "sourceCode": (
+                full_source if kwargs["commit_id"] == "full-commit" else diff_source
+            ),
+        }
+
+        specs = resolve_query_specs_for_client(
+            get_query_specs("dcim.manufacturer", maps=[query_map]),
+            client,
+        )
+        contract = resolve_execution_contract(
+            specs[0],
+            effective_parameters={"forward_netbox_shard_keys": []},
+        )
+
+        self.assertTrue(contract.diff_eligible)
+        self.assertEqual(contract.reason_code, "eligible")
+        self.assertEqual(contract.full_revision.commit_id, "full-commit")
+        self.assertEqual(contract.diff_revision.commit_id, "diff-commit")
+        self.assertEqual(
+            contract.full_revision.declared_parameters[0].name,
+            "forward_netbox_shard_keys",
+        )
+        self.assertEqual(contract.diff_revision.declared_parameters, ())
+        self.assertEqual(client.get_committed_nqe_query.call_count, 2)
+        for call in client.get_committed_nqe_query.call_args_list:
+            self.assertTrue(call.kwargs["require_source_code"])
+
+    def test_unpinned_query_id_resolves_compatible_immutable_full_revision(self):
+        full_source = """
+@query
+f(scope: List<String>) =
+foreach value in scope
+select {name: value, slug: value}
+"""
+        parameterless_head = """
+@query
+f() =
+foreach value in ["site"]
+select {name: value, slug: value}
+"""
+        query_id = "Q_sites"
+        query_path = "/validation/forward_locations"
+        spec = QuerySpec(
+            model_string="dcim.site",
+            query_name="Forward Locations",
+            query_id=query_id,
+            query_repository="org",
+            resolved_query_path=query_path,
+            built_in=True,
+            contract_key="forward_locations",
+            full_query_source=full_source,
+            full_source_sha256=query_source_sha256(full_source),
+            parameters={"scope": []},
+        )
+        client = Mock()
+        client.get_nqe_query_history.return_value = [
+            {"id": "full-commit"},
+            {"id": "parameterless-head"},
+        ]
+
+        def committed_query(**kwargs):
+            return {
+                "queryId": query_id,
+                "path": query_path,
+                "lastCommitId": kwargs["commit_id"],
+                "sourceCode": (
+                    full_source
+                    if kwargs["commit_id"] == "full-commit"
+                    else parameterless_head
+                ),
+            }
+
+        client.get_committed_nqe_query.side_effect = committed_query
+
+        (resolved,) = resolve_query_specs_for_client([spec], client)
+        contract = resolve_execution_contract(
+            resolved,
+            effective_parameters={"scope": ["site-a"]},
+        )
+
+        self.assertEqual(resolved.commit_id, "full-commit")
+        self.assertTrue(contract.full_eligible)
+        self.assertEqual(contract.full_reason_code, "eligible")
+        self.assertEqual(
+            {
+                parameter.name
+                for parameter in contract.full_revision.declared_parameters
+            },
+            {"scope"},
+        )
+        client.get_nqe_query_history.assert_called_once_with(query_id)
+
+    def test_unpinned_query_id_without_compatible_history_fails_closed(self):
+        full_source = """
+@query
+f(scope: List<String>) =
+foreach value in scope
+select {name: value, slug: value}
+"""
+        parameterless_head = """
+@query
+f() =
+foreach value in ["site"]
+select {name: value, slug: value}
+"""
+        query_id = "Q_sites"
+        query_path = "/validation/forward_locations"
+        spec = QuerySpec(
+            model_string="dcim.site",
+            query_name="Forward Locations",
+            query_id=query_id,
+            query_repository="org",
+            resolved_query_path=query_path,
+            built_in=True,
+            contract_key="forward_locations",
+            full_query_source=full_source,
+            full_source_sha256=query_source_sha256(full_source),
+            parameters={"scope": []},
+        )
+        client = Mock()
+        client.get_nqe_query_history.return_value = [{"id": "parameterless-head"}]
+        client.get_committed_nqe_query.return_value = {
+            "queryId": query_id,
+            "path": query_path,
+            "lastCommitId": "parameterless-head",
+            "sourceCode": parameterless_head,
+        }
+
+        (resolved,) = resolve_query_specs_for_client([spec], client)
+        contract = resolve_execution_contract(
+            resolved,
+            effective_parameters={"scope": ["site-a"]},
+        )
+
+        self.assertIsNone(resolved.commit_id)
+        self.assertFalse(contract.full_eligible)
+        self.assertEqual(contract.full_reason_code, "unresolved_full_commit")
+
+    def test_builtin_map_uses_shipped_full_hash_when_persisted_hash_is_empty(self):
+        netbox_model = ContentType.objects.get(app_label="dcim", model="device")
+        query_map = ForwardNQEMap.objects.create(
+            name="Forward Devices",
+            netbox_model=netbox_model,
+            query_id="Q_devices",
+            query_repository="org",
+            query_path="/validation/forward_devices",
+            built_in=True,
+            enabled=True,
+        )
+
+        (spec,) = get_query_specs("dcim.device", maps=[query_map])
+
+        self.assertEqual(
+            spec.full_source_sha256,
+            query_source_sha256(spec.full_query_source),
+        )
+
+    def test_persisted_full_only_contract_hydrates_its_pinned_source(self):
+        bundled_source = """
+@query
+f(forward_netbox_shard_keys: List<String>) =
+foreach value in forward_netbox_shard_keys
+select {name: value, slug: value}
+"""
+        parameterless_live_source = """
+@query
+f() =
+foreach value in ["vendor"]
+select {name: value, slug: value}
+"""
+        query_id = "OQ_vendor"
+        query_path = "/validation/forward_device_vendors"
+        netbox_model = ContentType.objects.get(app_label="dcim", model="manufacturer")
+        query_map = ForwardNQEMap.objects.create(
+            name="Forward Device Vendors",
+            netbox_model=netbox_model,
+            query_id=query_id,
+            query_repository="org",
+            query_path=query_path,
+            commit_id="full-commit",
+            full_source_sha256=query_source_sha256(bundled_source),
+            built_in=True,
+            enabled=True,
+        )
+        client = Mock()
+        client.get_committed_nqe_query.return_value = {
+            "queryId": query_id,
+            "path": query_path,
+            "lastCommitId": "full-commit",
+            "sourceCode": parameterless_live_source,
+        }
+
+        specs = resolve_query_specs_for_client(
+            get_query_specs("dcim.manufacturer", maps=[query_map]),
+            client,
+        )
+        contract = resolve_execution_contract(
+            specs[0],
+            effective_parameters={"forward_netbox_shard_keys": []},
+        )
+
+        self.assertFalse(contract.full_eligible)
+        self.assertEqual(contract.full_reason_code, "unverified_full_source")
+        client.get_committed_nqe_query.assert_called_once_with(
+            repository="org",
+            query_path=query_path,
+            commit_id="full-commit",
+            require_source_code=True,
+        )
+
+    def test_persisted_diff_contract_source_mismatch_falls_back_closed(self):
+        full_source = """
+@query
+f(forward_netbox_shard_keys: List<String>) =
+select {name: "vendor", slug: "vendor"}
+"""
+        diff_source = """
+@query
+f() =
+select {name: "vendor", slug: "vendor"}
+"""
+        query_id = "OQ_vendor"
+        query_path = "/validation/forward_device_vendors"
+        netbox_model = ContentType.objects.get(app_label="dcim", model="manufacturer")
+        query_map = ForwardNQEMap.objects.create(
+            name="Forward Device Vendors",
+            netbox_model=netbox_model,
+            query_id=query_id,
+            query_repository="org",
+            query_path=query_path,
+            commit_id="full-commit",
+            diff_commit_id="diff-commit",
+            full_source_sha256=query_source_sha256(full_source),
+            diff_source_sha256="0" * 64,
+            built_in=True,
+            enabled=True,
+        )
+        client = Mock()
+        client.get_committed_nqe_query.side_effect = lambda **kwargs: {
+            "queryId": query_id,
+            "path": query_path,
+            "lastCommitId": kwargs["commit_id"],
+            "sourceCode": (
+                full_source if kwargs["commit_id"] == "full-commit" else diff_source
+            ),
+        }
+
+        specs = resolve_query_specs_for_client(
+            get_query_specs("dcim.manufacturer", maps=[query_map]),
+            client,
+        )
+        contract = resolve_execution_contract(
+            specs[0],
+            effective_parameters={"forward_netbox_shard_keys": []},
+        )
+
+        self.assertFalse(contract.diff_eligible)
+        self.assertEqual(contract.reason_code, "unverified_diff_source")
 
     def test_builtin_map_rows_keep_authored_query_source(self):
         row = next(

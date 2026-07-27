@@ -7,15 +7,16 @@ from dataclasses import replace
 from django.apps import apps
 from django.db import transaction
 from django.db.models import Q
+from django.utils import timezone
 
 from ..exceptions import ForwardQueryError
 from .delete_policy import should_suppress_aci_deletes
 from .sync_contracts import canonical_cable_endpoint_identity
 from .sync_contracts import row_coalesce_field_is_complete
 
-
 PAYLOAD_VERSION = 2
 STATE_ACTIONS = frozenset({"upsert", "delete"})
+CANONICAL_ROW_IDENTITY_HASH_SCHEME = "sha256_canonical_row_identity_v1"
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,22 @@ def canonical_row_identity(model_string, row, coalesce_fields) -> str:
         endpoints = canonical_cable_endpoint_identity(row)
         if endpoints is not None:
             return _canonical_json({"cable_endpoints": endpoints})
+    if model_string == "ipam.fhrpgroup":
+        # Durable full-state reconciliation must retain every participant.
+        # Group-level coalesce alone would overwrite all but one assignment and
+        # can manufacture a later delete for a still-present group member.
+        fields = (
+            "protocol",
+            "group_id",
+            "address",
+            "vrf",
+            "device",
+            "interface",
+        )
+        if all(row.get(field) not in (None, "") for field in fields[:3] + fields[4:]):
+            return _canonical_json(
+                {"fhrp_participant": {field: row.get(field) for field in fields}}
+            )
 
     for field_set in coalesce_fields:
         if all(
@@ -59,6 +76,58 @@ def canonical_row_identity(model_string, row, coalesce_fields) -> str:
     raise ForwardQueryError(
         f"Unable to derive durable workload identity for `{model_string}`."
     )
+
+
+def canonical_row_identity_hash(model_string, row, coalesce_fields) -> str:
+    """Return the sole hashed form of the production durable row identity."""
+
+    identity = canonical_row_identity(model_string, row, coalesce_fields)
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def compare_canonical_delete_identities(
+    before_target_identities,
+    after_target_identities,
+    captured_delete_identities,
+) -> dict:
+    """Compare one model's logical deletes by exact canonical identity.
+
+    Counts are identity counts, not raw contributor-row counts.  A delete is
+    correct only when its identity was in the complete before target and is no
+    longer in the complete after target.
+    """
+
+    before = set(before_target_identities or ())
+    after = set(after_target_identities or ())
+    captured = set(captured_delete_identities or ())
+    expected = before - after
+    matched = expected & captured
+    spurious = captured - expected
+    missing = expected - captured
+    return {
+        "before_target_count": len(before),
+        "after_target_count": len(after),
+        "full_pair_expected_delete_count": len(expected),
+        "captured_staging_delete_count": len(captured),
+        "matched_delete_count": len(matched),
+        "spurious_delete_count": len(spurious),
+        "spurious_identity_hash_sample": sorted(spurious)[:20],
+        "missing_delete_count": len(missing),
+        "missing_identity_hash_sample": sorted(missing)[:20],
+        "exact_match": not spurious and not missing,
+    }
+
+
+def canonical_identity_hash_scheme_errors(
+    observed_schemes: dict[str, str],
+) -> list[str]:
+    """Fail-closed diagnostics for oracle artifacts from another namespace."""
+
+    return [
+        f"identity_scheme_mismatch:{source}:{scheme or 'missing'}"
+        for source, scheme in sorted((observed_schemes or {}).items())
+        if scheme != CANONICAL_ROW_IDENTITY_HASH_SCHEME
+    ]
 
 
 def build_state_entries(model_string, rows, coalesce_fields, *, action="upsert"):
@@ -218,9 +287,7 @@ def _peer_delete_protection(sync, model_string, identity_contract_hash):
     state yet.
     """
 
-    from ..models import ForwardIngestion
-    from ..models import ForwardSync
-    from ..models import ForwardWorkloadState
+    from ..models import ForwardIngestion, ForwardSync, ForwardWorkloadState
 
     baseline_peer_sync_ids = set(
         ForwardIngestion.objects.filter(baseline_ready=True)
@@ -423,10 +490,12 @@ def _locally_referenced_delete_identities(
 
 
 def _claimed_device_delete_identities(delete_entries):
-    from ..models import ForwardDeviceIdentity
-    from ..models import ForwardDeviceTagClaim
-    from ..models import ForwardPreservedDeviceTagAssignment
-    from ..models import ForwardVirtualParentClaim
+    from ..models import (
+        ForwardDeviceIdentity,
+        ForwardDeviceTagClaim,
+        ForwardPreservedDeviceTagAssignment,
+        ForwardVirtualParentClaim,
+    )
 
     names = {
         str(value["row"].get("name") or "").strip() for value in delete_entries.values()
@@ -918,6 +987,34 @@ def promote_workload_states_locked(ingestion):
 
 
 def stage_and_promote_noop_workload_states(ingestion, pending_states):
+    from .contributor_baseline import promote_contributor_baselines_fail_closed
+
     with transaction.atomic():
-        stage_workload_states(ingestion, pending_states)
-        return promote_workload_states_locked(ingestion)
+        locked_sync = ingestion.sync.__class__.objects.select_for_update().get(
+            pk=ingestion.sync_id
+        )
+        locked_ingestion = ingestion.__class__.objects.select_for_update().get(
+            pk=ingestion.pk
+        )
+        stage_workload_states(locked_ingestion, pending_states)
+        promoted = promote_workload_states_locked(locked_ingestion)
+        finalized_at = timezone.now()
+        locked_ingestion.merge_applied_at = finalized_at
+        locked_ingestion.save(update_fields=["merge_applied_at"])
+        promote_contributor_baselines_fail_closed(
+            locked_ingestion,
+            logger=locked_sync.logger,
+        )
+        locked_ingestion.baseline_ready = True
+        locked_ingestion.merge_finalized_at = finalized_at
+        locked_ingestion.save(
+            update_fields=[
+                "baseline_ready",
+                "merge_finalized_at",
+            ]
+        )
+        ingestion.baseline_ready = True
+        ingestion.merge_applied_at = finalized_at
+        ingestion.merge_finalized_at = finalized_at
+        ingestion.sync = locked_sync
+        return promoted

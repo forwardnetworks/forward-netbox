@@ -69,6 +69,8 @@ from .tables import ForwardSourceTable
 from .tables import ForwardSyncTable
 from .tables import ForwardValidationRunTable
 from .utilities.change_explainability import change_explainability_summary
+from .utilities.diagnostics import diff_fallback_summary
+from .utilities.diagnostics import safe_job_error_summary
 from .utilities.diagnostics import sanitize_job_diagnostics
 from .utilities.direct_changes import object_changes_for_ingestion
 from .utilities.execution_telemetry import build_plan_preview
@@ -78,11 +80,13 @@ from .utilities.health import sync_health_summary
 from .utilities.json_safe import json_safe_value
 from .utilities.query_binding import apply_explicit_nqe_map_bindings
 from .utilities.query_binding import build_nqe_map_bindings
-from .utilities.query_binding import live_query_binding_drift
+from .utilities.query_binding import live_query_binding_drifts
+from .utilities.query_binding import NQE_LIBRARY_WRITE_PERMISSION_MESSAGE
+from .utilities.query_binding import NQELibraryWritePermissionError
 from .utilities.query_binding import publish_builtin_nqe_map_queries
+from .utilities.query_binding import resolve_nqe_map_query_ids
 from .utilities.query_binding import restore_builtin_raw_query_bindings
 from .utilities.support_bundle_archive import support_bundle_zip_response
-
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +158,7 @@ def _job_export_payload(job):
         "started": getattr(job, "started", None),
         "completed": getattr(job, "completed", None),
         "duration": getattr(job, "duration", None),
+        "error": safe_job_error_summary(getattr(job, "error", "")),
         "data": json_safe_value(
             sanitize_job_diagnostics(getattr(job, "data", {}) or {})
         ),
@@ -171,8 +176,7 @@ def _latest_dependency_preview_bundle_payload(sync, latest_ingestion):
     from core.models import Job
     from django.contrib.contenttypes.models import ContentType
 
-    from .utilities.drift_report import build_latest_sync_evidence
-    from .utilities.drift_report import compute_drift_report
+    from .utilities.drift_report import build_latest_sync_evidence, compute_drift_report
 
     job = (
         Job.objects.filter(
@@ -217,8 +221,10 @@ def _latest_dependency_preview_bundle_payload(sync, latest_ingestion):
 
 
 def _ingestion_log_export_payload(ingestion, *, active_stage):
-    from .utilities.ownership import ownership_finalization_summary
-    from .utilities.ownership import ownership_integrity_summary
+    from .utilities.ownership import (
+        ownership_finalization_summary,
+        ownership_integrity_summary,
+    )
 
     return {
         "exported_at": timezone.now().isoformat(),
@@ -234,6 +240,9 @@ def _ingestion_log_export_payload(ingestion, *, active_stage):
             "sync_status": ingestion.sync.status,
             "job": _job_export_payload(ingestion.job),
             "merge_job": _job_export_payload(ingestion.merge_job),
+            "fast_baseline_attestation": json_safe_value(
+                (ingestion.snapshot_info or {}).get("fast_baseline_load") or {}
+            ),
         },
         "sync": {
             "pk": ingestion.sync.pk,
@@ -262,8 +271,10 @@ def _ingestion_log_export_payload(ingestion, *, active_stage):
 
 
 def _sync_support_bundle_payload(sync):
-    from .utilities.ownership import ownership_finalization_summary
-    from .utilities.ownership import ownership_integrity_summary
+    from .utilities.ownership import (
+        ownership_finalization_summary,
+        ownership_integrity_summary,
+    )
     from .utilities.sync_facade import effective_scope_endpoints_by_include_tags
     from .utilities.upgrade_reconciliation import compute_upgrade_reconciliation
 
@@ -353,6 +364,7 @@ def _sync_support_bundle_payload(sync):
                     "updated": int(latest_ingestion.updated_change_count or 0),
                     "deleted": int(latest_ingestion.deleted_change_count or 0),
                 },
+                "diff_fallbacks": diff_fallback_summary(latest_ingestion.model_results),
                 "branch": (
                     latest_ingestion.branch.name if latest_ingestion.branch else ""
                 ),
@@ -360,6 +372,10 @@ def _sync_support_bundle_payload(sync):
                 "merge_job": _job_export_payload(latest_ingestion.merge_job),
                 "change_explainability": json_safe_value(
                     change_explainability_summary(latest_ingestion)
+                ),
+                "fast_baseline_attestation": json_safe_value(
+                    (latest_ingestion.snapshot_info or {}).get("fast_baseline_load")
+                    or {}
                 ),
             }
             if latest_ingestion is not None
@@ -623,6 +639,9 @@ class ForwardNQEMapBulkEditView(generic.BulkEditView):
                     commit_message=form.cleaned_data.get("publish_commit_message", ""),
                     pin_commit=form.cleaned_data.get("bind_pin_commit", False),
                 )
+            except NQELibraryWritePermissionError as exc:
+                logger.info("Bundled NQE map publication permission pre-check failed")
+                raise ValidationError(NQE_LIBRARY_WRITE_PERMISSION_MESSAGE) from exc
             except Exception as exc:
                 logger.warning(
                     "Bundled NQE map publication failed (%s)", type(exc).__name__
@@ -788,8 +807,10 @@ class ForwardSyncView(generic.ObjectView):
     def _standing_schedules(instance):
         from core.choices import JobStatusChoices
 
-        from .utilities.sync_facade import STANDING_SCHEDULE_JOB_NAMES
-        from .utilities.sync_facade import STANDING_SCHEDULE_PARAM_KEYS
+        from .utilities.sync_facade import (
+            STANDING_SCHEDULE_JOB_NAMES,
+            STANDING_SCHEDULE_PARAM_KEYS,
+        )
 
         parameters = instance.parameters or {}
         rows = []
@@ -871,8 +892,10 @@ class ForwardSyncDriftReportView(BaseObjectView):
         from core.models import Job
         from django.contrib.contenttypes.models import ContentType
 
-        from .utilities.drift_report import build_latest_sync_evidence
-        from .utilities.drift_report import compute_drift_report
+        from .utilities.drift_report import (
+            build_latest_sync_evidence,
+            compute_drift_report,
+        )
 
         sync = get_object_or_404(self.queryset, pk=pk)
         job = (
@@ -980,8 +1003,7 @@ class ForwardSyncDependencyPreviewView(BaseObjectView):
     def post(self, request, pk):
         # Building the dependency plan is a heavy live Forward dry-run that exceeds
         # an HTTP gateway timeout on large fabrics, so it runs as a background job.
-        from .utilities.sync_facade import enqueue_button_job
-        from .utilities.sync_facade import JobAlreadyActive
+        from .utilities.sync_facade import JobAlreadyActive, enqueue_button_job
 
         sync = get_object_or_404(self.queryset, pk=pk)
         try:
@@ -1180,8 +1202,7 @@ class ForwardSyncTagDeleteEligibleIpamView(BaseObjectView):
         # fetch no longer reports so an operator can review and delete them by
         # hand. Runs as a background job: it issues live Forward fetches per IPAM
         # model and may tag/untag many objects. Tag-only — never deletes.
-        from .utilities.sync_facade import enqueue_button_job
-        from .utilities.sync_facade import JobAlreadyActive
+        from .utilities.sync_facade import JobAlreadyActive, enqueue_button_job
 
         sync = get_object_or_404(self.queryset, pk=pk)
         try:
@@ -1229,8 +1250,7 @@ class ForwardSyncPruneOrphansView(BaseObjectView):
         # Pruning cascades device deletes (interfaces, IPs, change-log signals)
         # and can far exceed an HTTP gateway timeout on large fabrics, so it runs
         # as a background job rather than synchronously in the request.
-        from .utilities.sync_facade import enqueue_button_job
-        from .utilities.sync_facade import JobAlreadyActive
+        from .utilities.sync_facade import JobAlreadyActive, enqueue_button_job
 
         sync = get_object_or_404(self.queryset, pk=pk)
         try:
@@ -1371,13 +1391,76 @@ class ForwardSyncQueryDriftView(BaseObjectView):
                 "source": sync.source_id,
             },
             "query_drift_summary": health.get("query_drift_summary", {}),
-            "results": [
-                live_query_binding_drift(client=client, query_map=query_map)
-                for query_map in maps
-            ],
+            "results": live_query_binding_drifts(client=client, query_maps=maps),
         }
         filename = f"forward-sync-{sync.pk}-live-query-drift.json"
         return _download_json_response(json_safe_value(payload), filename)
+
+
+@register_model_view(ForwardSync, "resolve_query_ids", path="resolve-query-ids")
+class ForwardSyncResolveQueryIDsView(BaseObjectView):
+    queryset = ForwardSync.objects.all()
+
+    def get_required_permission(self):
+        return "forward_netbox.change_forwardnqemap"
+
+    def post(self, request, pk):
+        sync = get_object_or_404(self.queryset, pk=pk)
+        map_ids = [
+            query_map.pk
+            for query_map in sync.get_maps()
+            if sync.is_model_enabled(query_map.model_string)
+        ]
+        queryset = ForwardNQEMap.objects.filter(pk__in=map_ids).select_related(
+            "netbox_model"
+        )
+        try:
+            results = resolve_nqe_map_query_ids(
+                client=sync.source.get_client(),
+                queryset=queryset,
+            )
+        except Exception as exc:  # noqa: BLE001 - emit only a safe error class
+            logger.warning(
+                "Read-only query ID resolution failed (%s)", type(exc).__name__
+            )
+            messages.error(
+                request,
+                _(
+                    "Unable to resolve query IDs from read-only Forward "
+                    "repository metadata. Review server logs and source access."
+                ),
+            )
+        else:
+            resolved_count = len([result for result in results if result.matched])
+            unchanged_count = len(results) - resolved_count
+            if resolved_count:
+                messages.success(
+                    request,
+                    _(
+                        "Resolved and persisted query IDs for %(count)s enabled "
+                        "NQE map(s) using read-only Forward repository metadata. "
+                        "No Forward queries were published or changed."
+                    )
+                    % {"count": resolved_count},
+                )
+            if unchanged_count:
+                messages.warning(
+                    request,
+                    _(
+                        "%(count)s enabled NQE map(s) remained unchanged because "
+                        "they were already bound, not path-bound, ambiguous, or "
+                        "unresolved."
+                    )
+                    % {"count": unchanged_count},
+                )
+            if not results:
+                messages.info(
+                    request,
+                    _("No enabled NQE maps were available to resolve."),
+                )
+        return redirect(
+            reverse("plugins:forward_netbox:forwardsync_health", kwargs={"pk": sync.pk})
+        )
 
 
 @register_model_view(
@@ -1429,15 +1512,21 @@ class ForwardSyncPublishBundledQueriesView(BaseObjectView):
                 commit_message="Publish Forward NetBox NQE maps",
                 pin_commit=False,
             )
+        except NQELibraryWritePermissionError:
+            logger.info("Bundled query publication permission pre-check failed")
+            messages.error(request, _(NQE_LIBRARY_WRITE_PERMISSION_MESSAGE))
+            return redirect(
+                reverse(
+                    "plugins:forward_netbox:forwardsync_health", kwargs={"pk": sync.pk}
+                )
+            )
         except Exception as exc:  # noqa: BLE001 - emit only a safe error class
             logger.warning("Bundled query publication failed (%s)", type(exc).__name__)
             messages.error(
                 request,
                 _(
                     "Unable to publish bundled queries to the Forward org library. "
-                    "Publishing writes to the Forward Org Repository and "
-                    "needs a source login with NQE-library write permission "
-                    "(Forward Network Operator or equivalent)."
+                    "Review server logs and the Forward repository state."
                 ),
             )
             return redirect(

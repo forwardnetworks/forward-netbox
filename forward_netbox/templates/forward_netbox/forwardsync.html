@@ -228,6 +228,12 @@
             <i class="mdi mdi-heart-pulse" aria-hidden="true"></i>&nbsp;{% trans "Health" %}
           </a>
           {% if perms.forward_netbox.change_forwardnqemap %}
+            <form method="post" action="{% url 'plugins:forward_netbox:forwardsync_resolve_query_ids' pk=object.pk %}" class="d-inline-flex">
+              {% csrf_token %}
+              <button type="submit" class="btn btn-sm btn-outline-primary">
+                <i class="mdi mdi-link-variant" aria-hidden="true"></i>&nbsp;{% trans "Resolve to Query ID" %}
+              </button>
+            </form>
             <form method="post" action="{% url 'plugins:forward_netbox:forwardsync_publish_bundled_queries' pk=object.pk %}" class="d-flex align-items-center gap-2">
               {% csrf_token %}
               <label class="visually-hidden" for="detail-query-directory">{% trans "Forward query folder" %}</label>
@@ -237,6 +243,9 @@
               </button>
             </form>
           {% endif %}
+        </div>
+        <div class="form-text">
+          {% trans "Resolve existing repository queries read-only. Publishing bundled source requires NQE-library write permission." %}
         </div>
       </div>
     </div>

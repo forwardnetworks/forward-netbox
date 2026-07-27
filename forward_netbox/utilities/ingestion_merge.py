@@ -194,8 +194,7 @@ def reconcile_catchup_if_ownership_complete(
 ):
     """Claim and run catch-up only after this ingestion's ownership converges."""
     from .logging import SyncLogging
-    from .ownership import ownership_generation_complete
-    from .ownership import ownership_write_lock
+    from .ownership import ownership_generation_complete, ownership_write_lock
 
     with ownership_write_lock():
         locked = (
@@ -235,10 +234,13 @@ def reconcile_catchup_if_ownership_complete(
 
 
 def _complete_post_merge_bookkeeping(ingestion, *, context, remove_branch):
-    from .ownership import _mark_ownership_pending_locked
-    from .ownership import finalize_device_identities_locked
-    from .ownership import ownership_write_lock
-    from .ownership import required_ownership_domains
+    from .contributor_baseline import promote_contributor_baselines_fail_closed
+    from .ownership import (
+        _mark_ownership_pending_locked,
+        finalize_device_identities_locked,
+        ownership_write_lock,
+        required_ownership_domains,
+    )
     from .workload_state import promote_workload_states_locked
 
     with ownership_write_lock():
@@ -254,9 +256,6 @@ def _complete_post_merge_bookkeeping(ingestion, *, context, remove_branch):
         forwardsync = locked_ingestion.sync.__class__.objects.select_for_update().get(
             pk=locked_ingestion.sync_id
         )
-        if context["mark_baseline_ready"]:
-            locked_ingestion.baseline_ready = True
-
         parameters = dict(forwardsync.parameters or {})
         forwardsync.parameters = parameters
         forwardsync.status = ForwardSyncStatusChoices.COMPLETED
@@ -266,6 +265,12 @@ def _complete_post_merge_bookkeeping(ingestion, *, context, remove_branch):
 
         finalize_device_identities_locked(locked_ingestion)
         promote_workload_states_locked(locked_ingestion)
+        if context["mark_baseline_ready"]:
+            promote_contributor_baselines_fail_closed(
+                locked_ingestion,
+                logger=forwardsync.logger,
+            )
+            locked_ingestion.baseline_ready = True
         domains = []
         if forwardsync.status == ForwardSyncStatusChoices.COMPLETED:
             domains = required_ownership_domains(forwardsync)

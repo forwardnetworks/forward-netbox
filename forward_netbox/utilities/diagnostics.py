@@ -1,7 +1,8 @@
 """Safe diagnostic helpers for persisted and user-visible job evidence."""
 
+import re
+from collections import Counter
 from copy import deepcopy
-
 
 REDACTED_DIAGNOSTIC = "<redacted diagnostic>"
 SAFE_FAILURE_LOG_MESSAGE = (
@@ -14,6 +15,7 @@ _SENSITIVE_DIAGNOSTIC_KEYS = {
     "traceback",
     "worker_terminal_error",
 }
+_SAFE_DIAGNOSTIC_TOKEN = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 
 
 def exception_type(exc) -> str:
@@ -24,6 +26,47 @@ def exception_type(exc) -> str:
 def safe_operation_failure(operation: str, exc) -> str:
     """Return an operator-safe failure message with a stable classifier."""
     return f"{operation} failed ({exception_type(exc)})."
+
+
+def diff_fallback_summary(model_results) -> list[dict]:
+    """Return aggregate diff fallback classifiers without query/customer data."""
+
+    counts = Counter()
+    for result in model_results or []:
+        if not isinstance(result, dict):
+            continue
+        model = str(result.get("model") or result.get("model_string") or "")
+        parameters = result.get("fetch_parameters")
+        reason = (
+            str(parameters.get("fallback_reason") or "")
+            if isinstance(parameters, dict)
+            else ""
+        )
+        if not reason:
+            continue
+        safe_model = model if _SAFE_DIAGNOSTIC_TOKEN.fullmatch(model) else "redacted"
+        safe_reason = reason if _SAFE_DIAGNOSTIC_TOKEN.fullmatch(reason) else "redacted"
+        counts[(safe_model, safe_reason)] += 1
+    return [
+        {
+            "model": model,
+            "reason": reason,
+            "count": count,
+        }
+        for (model, reason), count in sorted(counts.items())
+    ]
+
+
+def safe_job_error_summary(error) -> str:
+    """Expose only an exception classifier from a persisted core Job error."""
+    error = str(error or "")
+    match = re.fullmatch(
+        r"[^()\r\n]* failed \(([A-Za-z_][A-Za-z0-9_.]*)\)\.",
+        error,
+    )
+    if not match:
+        return REDACTED_DIAGNOSTIC if error else ""
+    return f"Job failed ({match.group(1)})."
 
 
 def diagnostic_shape(value):

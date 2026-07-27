@@ -1189,6 +1189,81 @@ def _skip_updates_missing_in_main_batched(collapsed_changes, change_logger):
             )
 
 
+def _add_destination_fk_release_dependencies(collapsed_changes, change_logger):
+    """Order destination FK releases before deletes even without a branch preimage.
+
+    Branch-native bulk UPDATE ObjectChanges can have an empty ``prechange_data``
+    when the destination row came from the direct first-baseline path.  The
+    Branching dependency graph then cannot see that an UPDATE releases a
+    protected FK and may attempt the referenced DELETE first.  Read the current
+    destination FK values in model batches and restore only the missing release
+    edges.  An UPDATE that retains the reference gets no edge, so the protected
+    DELETE still fails strictly instead of being silently skipped.
+    """
+    deletes_by_model = defaultdict(dict)
+    updates_by_model = defaultdict(list)
+    for collapsed in collapsed_changes.values():
+        if collapsed.final_action == ActionType.DELETE:
+            deletes_by_model[collapsed.model_class][collapsed.key[1]] = collapsed
+        elif collapsed.final_action == ActionType.UPDATE:
+            updates_by_model[collapsed.model_class].append(collapsed)
+
+    if not deletes_by_model or not updates_by_model:
+        return
+
+    for model_class, updates in updates_by_model.items():
+        release_fields = [
+            field
+            for field in model_class._meta.get_fields()
+            if isinstance(field, models.ForeignKey)
+            and field.related_model in deletes_by_model
+        ]
+        if not release_fields:
+            continue
+
+        updates_by_pk = {collapsed.key[1]: collapsed for collapsed in updates}
+        destination_values = {}
+        update_pks = list(updates_by_pk)
+        value_fields = [field.attname for field in release_fields]
+        for offset in range(0, len(update_pks), BULK_MERGE_FLUSH_THRESHOLD):
+            chunk = update_pks[offset : offset + BULK_MERGE_FLUSH_THRESHOLD]
+            destination_values.update(
+                {
+                    row["pk"]: row
+                    for row in model_class.objects.using(DEFAULT_DB_ALIAS)
+                    .filter(pk__in=chunk)
+                    .values("pk", *value_fields)
+                }
+            )
+
+        edge_count = 0
+        for pk, update in updates_by_pk.items():
+            current = destination_values.get(pk)
+            if current is None:
+                continue
+            for field in release_fields:
+                current_fk = current[field.attname]
+                delete = deletes_by_model[field.related_model].get(current_fk)
+                if delete is None:
+                    continue
+                if field.name not in (update.postchange_data or {}):
+                    continue
+                desired_fk = _serialized_fk_id(
+                    (update.postchange_data or {}).get(field.name)
+                )
+                if desired_fk == current_fk:
+                    continue
+                delete.depends_on.add(update.key)
+                update.depended_by.add(delete.key)
+                edge_count += 1
+        if edge_count:
+            change_logger.debug(
+                "Added %d destination FK-release dependency edge(s) for %s.",
+                edge_count,
+                model_class._meta.label_lower,
+            )
+
+
 def _order_collapsed_changes_fast(collapsed_changes, change_logger, operation):
     """O((V+E) log V) replacement for ``_order_collapsed_changes``.
 
@@ -1233,6 +1308,7 @@ def _order_collapsed_changes_fast(collapsed_changes, change_logger, operation):
     SquashMergeStrategy._build_fk_dependency_graph(
         deletes, updates, creates, change_logger
     )
+    _add_destination_fk_release_dependencies(to_process, change_logger)
     squash_dependency_graph_built.send(
         sender=SquashMergeStrategy,
         collapsed_changes=to_process,

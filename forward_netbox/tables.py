@@ -138,7 +138,7 @@ class ForwardIngestionTable(NetBoxTable):
         accessor="staged_changes",
         verbose_name=_("Number of Changes"),
     )
-    actions = columns.ActionsColumn(actions=("delete",))
+    actions = columns.ActionsColumn(actions=())
 
     def render_name(self, record):
         if getattr(record, "branch_name", None):
