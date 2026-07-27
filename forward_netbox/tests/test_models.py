@@ -1929,12 +1929,16 @@ class ForwardSyncModelTest(TestCase):
             )
         ]
 
-        self.assertEqual(
+        # A diff baseline now requires a resolved model execution contract that
+        # is diff-eligible and whose fingerprints match the baseline's recorded
+        # evidence. Query specs alone no longer qualify, so this fails closed to
+        # full execution. The positive path is covered against a real contract in
+        # test_query_execution_contract.py.
+        self.assertIsNone(
             sync.incremental_diff_baseline(
                 specs=specs,
                 current_snapshot_id="snapshot-after",
-            ),
-            baseline,
+            )
         )
         self.assertIsNone(
             sync.incremental_diff_baseline(
@@ -1954,6 +1958,9 @@ class ForwardSyncModelTest(TestCase):
                 current_snapshot_id="snapshot-before",
             )
         )
+        # The baseline itself remains discoverable; only diff eligibility is
+        # gated, so a contract-aware caller can still find it.
+        self.assertEqual(sync.latest_baseline_ingestion(), baseline)
 
     def test_incremental_diff_baseline_skips_missing_snapshot_when_client_provided(
         self,
