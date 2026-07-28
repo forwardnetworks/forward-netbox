@@ -1109,7 +1109,12 @@ def _interface_field_differs(existing, field, value) -> bool:
     return getattr(existing, field) != value
 
 
-def bulk_orm_apply_interface(runner, rows: list[dict[str, Any]]):
+def bulk_orm_apply_interface(
+    runner,
+    rows: list[dict[str, Any]],
+    *,
+    prechange_snapshots: dict[int, Any] | None = None,
+):
     """Batched apply for dcim.interface.
 
     Plain interfaces are resolved with adapter-parity semantics (device skip/
@@ -1179,13 +1184,19 @@ def bulk_orm_apply_interface(runner, rows: list[dict[str, Any]]):
     snapshotted_pks = set()
 
     def _snapshot_once(interface):
-        if (
-            branch_active
-            and getattr(interface, "pk", None) is not None
-            and interface.pk not in snapshotted_pks
-        ):
+        pk = getattr(interface, "pk", None)
+        if not branch_active or pk is None or pk in snapshotted_pks:
+            return
+        # A cabled row becoming a LAG was snapshotted by the caller while its
+        # cable was still attached. Reuse that snapshot so the staged update
+        # keeps the cable release; re-snapshotting here would capture the
+        # already-cleared cable and merge would drop it from the diff.
+        carried = (prechange_snapshots or {}).get(pk)
+        if carried is not None:
+            interface._prechange_snapshot = carried
+        else:
             interface.snapshot()
-            snapshotted_pks.add(interface.pk)
+        snapshotted_pks.add(pk)
 
     def _apply_cabled_lag_row(row, cabled_interface):
         # Keep cable deletion and the row's complete bulk mutation/evidence on
@@ -1200,6 +1211,13 @@ def bulk_orm_apply_interface(runner, rows: list[dict[str, Any]]):
                 cable = getattr(cabled_interface, "cable", None)
                 if cable is None:
                     return bulk_orm_apply_interface(runner, [row])
+                # Snapshot while the cable is still attached. The staged update
+                # only carries fields that differ from its prechange snapshot,
+                # so a snapshot taken after the delete hides the cable release
+                # and merge applies `type=lag` to a row main still shows cabled,
+                # which NetBox rejects.
+                _snapshot_once(cabled_interface)
+                cabled_snapshot = getattr(cabled_interface, "_prechange_snapshot", None)
                 if branch_active:
                     emit_branch_object_changes([], [], [cable])
                 request_token = current_request.set(None)
@@ -1210,7 +1228,13 @@ def bulk_orm_apply_interface(runner, rows: list[dict[str, Any]]):
                 cabled_interface.cable_id = None
                 cabled_interface._state.fields_cache.pop("cable", None)
                 forget_lookup_object(runner, cabled_interface)
-                return bulk_orm_apply_interface(runner, [row])
+                # Carry the still-cabled snapshot onto whichever instance the
+                # re-apply resolves, so the cable release stays in the diff.
+                return bulk_orm_apply_interface(
+                    runner,
+                    [row],
+                    prechange_snapshots={cabled_interface.pk: cabled_snapshot},
+                )
         except ForwardDependencySkipError as exc:
             runner.logger.increment_statistics("dcim.interface", outcome="skipped")
             runner._record_issue(
