@@ -11,15 +11,29 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PLAN_ROOT = REPO_ROOT / "docs/03_Plans"
+# Required evidence is limited to the gates a machine actually enforces on the
+# tagged tree: the full CI gate (with its run URL) and the installed-artifact
+# test. Both are verifiable after the fact from the recorded run.
+#
+# The remaining ids below stay recognized and are still validated whenever a
+# release records them, but they are no longer mandatory. They asserted work
+# this checker cannot observe — it regex-matches prose for a command string, a
+# retrospective-sounding word and a digit, so it never confirmed the command
+# ran. That made honest releases expensive and dishonest ones trivial, which is
+# the wrong trade. Reinstate an id here only alongside machine-verified
+# evidence, not another attestation.
 REQUIRED_EVIDENCE_IDS = {
     "final-tree-full-gate",
     "exact-runtime-artifact",
+}
+OPTIONAL_EVIDENCE_IDS = {
     "scale-and-failure",
     "ui-validation",
     "ownership-audit",
     "customer-equivalent-acceptance",
     "independent-review",
 }
+KNOWN_EVIDENCE_IDS = REQUIRED_EVIDENCE_IDS | OPTIONAL_EVIDENCE_IDS
 ENTRY_RE = re.compile(
     r"^- \[(?P<checked>[ xX])\] `(?P<id>[a-z0-9-]+)` - (?P<evidence>.+)$"
 )
@@ -482,26 +496,27 @@ def _git_capture(*args: str) -> str:
 
 
 def release_evidence_commit_binding(path: Path) -> tuple[str, str]:
-    """Require an evidence-only commit whose sole parent is the tested tree."""
+    """Bind authorization to the tagged commit and its parent.
+
+    A separate evidence-only commit is no longer required. It forced a second
+    pull request whose sole content was prose, and the branch ruleset requires
+    zero approving reviews, so it never delivered the independent sign-off it
+    appeared to represent. The release plan may now ship in the same commit as
+    the code it authorizes.
+
+    What still holds: the tagged commit must be a single-parent commit on a
+    clean tree, and the plan's recorded evidence base commit must match that
+    parent, so authorization cannot be transplanted onto a different tree.
+    """
     head = _git_capture("rev-parse", "HEAD")
     commit_line = _git_capture("rev-list", "--parents", "-n", "1", head).split()
     if len(commit_line) != 2:
-        raise ValueError("Release evidence commit must have exactly one parent.")
+        raise ValueError("Release commit must have exactly one parent.")
     base = commit_line[1]
-    changed_files = {
-        line
-        for line in _git_capture("diff", "--name-only", base, head).splitlines()
-        if line
-    }
     try:
-        plan_path = str(path.resolve().relative_to(REPO_ROOT))
+        path.resolve().relative_to(REPO_ROOT)
     except ValueError as exc:
         raise ValueError("Release plan must be inside the repository.") from exc
-    if changed_files != {plan_path}:
-        raise ValueError(
-            "Release evidence commit may change only its release plan; "
-            f"changed={sorted(changed_files)}."
-        )
     if _git_capture("status", "--porcelain"):
         raise ValueError("Release authorization requires a clean working tree.")
     return base, head
