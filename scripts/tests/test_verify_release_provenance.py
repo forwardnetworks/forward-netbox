@@ -524,7 +524,44 @@ class ReleaseProvenanceTest(unittest.TestCase):
                 return "forward_netbox/models.py"
             return result
 
-        with self.assertRaisesRegex(provenance.ProvenanceError, "unexpected path"):
+        with self.assertRaisesRegex(
+            provenance.ProvenanceError, "must change exactly one release-.* plan"
+        ):
+            self._verify(git=git)
+
+    def test_accepts_release_commit_carrying_code_beside_the_plan(self):
+        def git(*arguments):
+            result = self._git(*arguments)
+            if arguments == (
+                "diff",
+                "--name-only",
+                self.production_commit,
+                self.release_commit,
+            ):
+                return (
+                    "forward_netbox/models.py\n"
+                    "docs/03_Plans/active/"
+                    "2026-07-18-release-2.6.0-scope-convergence.md"
+                )
+            return result
+
+        self._verify(git=git)
+
+    def test_rejects_release_commit_without_a_matching_version_plan(self):
+        def git(*arguments):
+            result = self._git(*arguments)
+            if arguments == (
+                "diff",
+                "--name-only",
+                self.production_commit,
+                self.release_commit,
+            ):
+                return "docs/03_Plans/active/2020-01-01-release-9.9.9-other.md"
+            return result
+
+        with self.assertRaisesRegex(
+            provenance.ProvenanceError, "must change exactly one release-.* plan"
+        ):
             self._verify(git=git)
 
 

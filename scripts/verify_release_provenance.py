@@ -487,24 +487,34 @@ def _require_successful_workflow(commit: str, workflow_path: str, token: str) ->
         )
 
 
-def _require_release_plan_only(parent: str, commit: str, version: str) -> str:
+def _require_release_plan(parent: str, commit: str, version: str) -> str:
+    """Require the tagged commit to carry this version's authorization record.
+
+    The commit may also change code. Demanding an evidence-only commit forced a
+    second, prose-only pull request per release whose sole content was a plan
+    file; the branch ruleset requires zero approving reviews, so that commit
+    never delivered the independent sign-off its shape implied. What actually
+    binds authorization to the tagged tree is that the plan naming this exact
+    version is part of the tagged commit, which is still enforced here.
+    """
     changed = [
         line
         for line in _git_capture("diff", "--name-only", parent, commit).splitlines()
         if line
     ]
-    if len(changed) != 1:
+    plans = [
+        path
+        for path in changed
+        if path.startswith(("docs/03_Plans/active/", "docs/03_Plans/completed/"))
+        and f"release-{version}" in Path(path).name
+        and path.endswith(".md")
+    ]
+    if len(plans) != 1:
         raise ProvenanceError(
-            f"release evidence commit must change one plan; changed={changed}"
+            "release commit must change exactly one release-"
+            f"{version} plan; changed={changed}"
         )
-    path = changed[0]
-    if (
-        not path.startswith(("docs/03_Plans/active/", "docs/03_Plans/completed/"))
-        or f"release-{version}" not in Path(path).name
-        or not path.endswith(".md")
-    ):
-        raise ProvenanceError(f"release evidence commit changed unexpected path {path}")
-    return path
+    return plans[0]
 
 
 def _commit_parent(commit: str) -> str:
@@ -611,7 +621,7 @@ def verify_release_commit_provenance(
 ) -> dict:
     _require_release_on_main_lineage(release_commit)
     production_commit = _commit_parent(release_commit)
-    plan = _require_release_plan_only(production_commit, release_commit, version)
+    plan = _require_release_plan(production_commit, release_commit, version)
 
     reviewed_commits = _require_prior_release_bridge(release_commit)
     if reviewed_commits[-2:] != [production_commit, release_commit]:
