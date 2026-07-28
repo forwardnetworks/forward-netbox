@@ -1498,7 +1498,19 @@ class ForwardClient:
                 has_source = any(
                     indexed_query.get(key) for key in ("sourceCode", "source", "query")
                 )
-                if not require_source_code or has_source:
+                # The directory listing carries no commit for org queries, only
+                # intent/path/queryId/repository. Returning such a row leaves the
+                # caller with an empty commit, which the execution contract
+                # rejects as unresolved_full_commit - so every org-bound map was
+                # refused and whole syncs fetched nothing. Fall through to the
+                # commits endpoint, which does report lastCommitId.
+                indexed_commit = str(
+                    indexed_query.get("commitId")
+                    or indexed_query.get("lastCommitId")
+                    or (indexed_query.get("lastCommit") or {}).get("id")
+                    or ""
+                ).strip()
+                if indexed_commit and (not require_source_code or has_source):
                     query = dict(indexed_query)
                     query.setdefault("repository", repository)
                     query.setdefault("intent", "")

@@ -1346,7 +1346,51 @@ def _finalize_resolved_spec(
             client,
             preferred_commit_id=preferred_commit_id,
         )
+        spec = _resolve_unpinned_customer_full_revision(spec, client)
     return _hydrate_diff_contract_sources(spec, client)
+
+
+def _resolve_unpinned_customer_full_revision(spec: QuerySpec, client) -> QuerySpec:
+    """Resolve head for a customer map bound to a query ID without a pin.
+
+    Only built-in specs had unpinned head resolution, so a customer map bound
+    by query ID kept an empty commit, the execution contract refused it as
+    `unresolved_full_commit`, and every such model was skipped. Diff execution
+    is query-ID-only, so this is the primary binding, not an edge case.
+
+    Source verification is unchanged: `_hydrate_diff_contract_sources` still
+    loads the committed source for the resolved commit, and a lookup failure or
+    identity mismatch leaves the contract closed.
+    """
+    if spec.built_in or not spec.run_query_id:
+        return spec
+    if str(spec.commit_id or "").strip() not in ("", "head"):
+        return spec
+    query_path = str(spec.resolved_query_path or spec.query_path or "").strip()
+    if not query_path:
+        return spec
+    try:
+        resolved = client.get_committed_nqe_query(
+            repository=spec.query_repository or "org",
+            query_path=query_path,
+            commit_id="head",
+        )
+    except JobTimeoutException:
+        raise
+    except Exception:
+        return spec
+    if str(resolved.get("queryId") or "").strip() != str(spec.run_query_id).strip():
+        # The path now resolves to a different query; its head is not ours.
+        return spec
+    commit_id = str(
+        resolved.get("commitId")
+        or resolved.get("lastCommitId")
+        or (resolved.get("lastCommit") or {}).get("id")
+        or ""
+    ).strip()
+    if not commit_id or commit_id == "head":
+        return spec
+    return replace(spec, commit_id=commit_id)
 
 
 def _hydrate_diff_contract_sources(spec: QuerySpec, client) -> QuerySpec:
