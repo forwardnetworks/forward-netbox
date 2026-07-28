@@ -1557,25 +1557,51 @@ class ForwardQueryFetcher:
         return issues
 
     def _report_contract_compatibility_issues(self, model_string, contracts):
-        issue_rows = [
-            (
-                contract.query_name or model_string,
-                contract.map_id,
-                "; ".join(self._model_contract_issue_rows(contract)),
+        # A full-contract issue skips the model outright; a diff-contract issue
+        # is inert unless diffs are required. Reporting both as warnings buried
+        # the blocking ones under routine diff noise, so they are split by
+        # whether they actually stop this run.
+        def _rows(predicate, issue_selector):
+            return [
+                (
+                    contract.query_name or model_string,
+                    contract.map_id,
+                    issue_selector(contract),
+                )
+                for contract in contracts
+                if predicate(contract)
+            ]
+
+        def _render(rows):
+            return "; ".join(
+                f"{name}[{map_id}]: {issues}" for name, map_id, issues in rows
             )
-            for contract in contracts
-            if not contract.full_eligible or not contract.diff_eligible
-        ]
-        if not issue_rows:
-            return
-        self.logger.log_warning(
-            f"Execution contract preflight found {len(issue_rows)} incompatible map(s) for "
-            f"{model_string}: "
-            + "; ".join(
-                f"{name}[{map_id}]: {issues}" for name, map_id, issues in issue_rows
-            ),
-            obj=self.sync,
+
+        blocking = _rows(
+            lambda contract: not contract.full_eligible,
+            lambda contract: f"full:{contract.full_reason_code}",
         )
+        if blocking:
+            self.logger.log_warning(
+                f"Execution contract preflight found {len(blocking)} rejected "
+                f"map(s) for {model_string}, so this model will be skipped and "
+                "its data will not be synced: " + _render(blocking),
+                obj=self.sync,
+            )
+
+        # Still a warning: a map that cannot diff silently falls back to a full
+        # fetch, which the operator should know about even in a full-only run.
+        diff_only = _rows(
+            lambda contract: contract.full_eligible and not contract.diff_eligible,
+            lambda contract: f"diff:{contract.diff_reason_code}",
+        )
+        if diff_only:
+            self.logger.log_warning(
+                f"Execution contract preflight found {len(diff_only)} map(s) for "
+                f"{model_string} that cannot run a diff; this model still syncs "
+                "in full: " + _render(diff_only),
+                obj=self.sync,
+            )
 
     def _resolve_query_specs(self, model_string: str, specs):
         resolved_specs = resolve_query_specs_for_client(specs, self.client)

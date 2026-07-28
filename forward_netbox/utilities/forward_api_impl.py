@@ -1425,6 +1425,47 @@ class ForwardClient:
         self._shared_read_cache_set(shared_cache_key, index)
         return index
 
+    def resolve_nqe_query_head_commit(
+        self,
+        *,
+        query_id,
+        repository="org",
+        query_index: dict | None = None,
+    ) -> str:
+        """Return the current head commit for a query bound only by its ID.
+
+        A map may store a query ID with no path at all, and the committed-query
+        lookup is path-based. Without this the execution contract can never
+        resolve a commit for such a map and refuses to run it at all.
+
+        Returns an empty string when the ID is unknown or ambiguous; an
+        ambiguous ID must not be resolved to an arbitrary revision.
+        """
+        query_id = str(query_id or "").strip()
+        if not query_id:
+            return ""
+        repository = _normalize_nqe_repository(repository)
+        if query_index is None:
+            try:
+                query_index = self.get_nqe_repository_query_index(
+                    repository=repository,
+                    directory="/",
+                )
+            except JobTimeoutException:
+                raise
+            except Exception:
+                return ""
+        rows = (query_index.get("by_query_id") or {}).get(query_id) or []
+        if len(rows) != 1:
+            return ""
+        row = rows[0]
+        return str(
+            row.get("commitId")
+            or row.get("lastCommitId")
+            or (row.get("lastCommit") or {}).get("id")
+            or ""
+        ).strip()
+
     def get_committed_nqe_query(
         self,
         *,
