@@ -36,6 +36,14 @@ whenever a release records them — the concreteness, command-binding and
 retrospective-outcome rules are unchanged. They are simply no longer mandatory
 for every release.
 
+**`final-tree-full-gate` no longer requires URL variables.** It demanded that
+the recorded command name `FORWARD_NETBOX_HOST_PORT` and `NETBOX_URL`, but
+`invoke ci` never binds an HTTP port and does not read either variable. The
+rule therefore forced evidence to describe a command shape nobody runs, which
+is the exact failure this change exists to remove. The pairing stays required
+for `ui-validation`, whose Playwright run does serve over HTTP, and
+`_rtk_parts` still rejects a port/URL mismatch wherever either appears.
+
 **The evidence-only commit requirement is removed.**
 `release_evidence_commit_binding` no longer demands that the tagged commit
 change only the release plan. The plan may ship in the same commit as the code

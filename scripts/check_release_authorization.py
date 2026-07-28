@@ -341,11 +341,16 @@ def _is_ownership_audit_command(command: list[str]) -> bool:
 
 def _commands_satisfy(evidence_id: str, commands: list[list[str]]) -> bool:
     if evidence_id == "final-tree-full-gate":
+        # No require_url: `invoke ci` never binds an HTTP port, so demanding
+        # FORWARD_NETBOX_HOST_PORT/NETBOX_URL here forced the evidence to name
+        # variables the command does not read. The pairing is still enforced
+        # for `ui-validation`, whose Playwright run does serve over HTTP, and
+        # `_rtk_parts` still rejects an inconsistent port/URL wherever either
+        # appears.
         return _has_exact_invoke_task(
             commands,
             "ci",
             environment=RELEASE_RUNTIME_ENVIRONMENT,
-            require_url=True,
         )
     if evidence_id == "exact-runtime-artifact":
         return _has_exact_invoke_task(
