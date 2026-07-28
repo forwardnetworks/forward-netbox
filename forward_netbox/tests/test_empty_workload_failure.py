@@ -47,7 +47,9 @@ class FailedModelStringsTest(SimpleTestCase):
             _Result("dcim.interface", failure_count=2),
             _Result("dcim.cable", failure_count=1),
         ]
-        self.assertEqual(failed_model_strings(results), ["dcim.cable", "dcim.interface"])
+        self.assertEqual(
+            failed_model_strings(results), ["dcim.cable", "dcim.interface"]
+        )
 
     def test_unnamed_models_are_dropped_rather_than_reported_blank(self):
         results = [_Result("", failure_count=1), _Result("dcim.site", failure_count=1)]

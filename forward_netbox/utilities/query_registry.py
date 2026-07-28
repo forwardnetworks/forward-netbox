@@ -18,6 +18,35 @@ from .query_execution_contract import query_source_sha256
 from .sync_contracts import normalize_coalesce_fields
 
 
+def _resolve_head_commit_for_query_id(
+    client,
+    *,
+    query_id,
+    repository,
+    query_index,
+) -> str:
+    """Head commit for an ID-only binding, or "" when it cannot be resolved.
+
+    Never raises: an unresolvable head leaves the spec unchanged so the existing
+    contract reporting explains the refusal, rather than failing the whole fetch
+    on a repository lookup.
+    """
+    resolver = getattr(client, "resolve_nqe_query_head_commit", None)
+    if resolver is None:
+        return ""
+    try:
+        return str(
+            resolver(
+                query_id=query_id,
+                repository=repository,
+                query_index=query_index,
+            )
+            or ""
+        ).strip()
+    except Exception:
+        return ""
+
+
 @dataclass(frozen=True)
 class QuerySpec:
     model_string: str
@@ -84,20 +113,52 @@ class QuerySpec:
         return self.run_query_id if self.diff_commit_id else None
 
     def resolve(self, client, query_index: dict | None = None) -> "QuerySpec":
-        if not self.query_path:
-            return self
+        # A map bound by query ID keeps its path in resolved_query_path only, so
+        # resolving on query_path alone left every ID-bound map without a commit.
+        # The execution contract then rejected it as unresolved_full_commit and
+        # skipped the model, which silently emptied a whole sync.
+        lookup_query_path = self.query_path or self.resolved_query_path
+        if not lookup_query_path:
+            # Bound by query ID with no path at all. Resolve head from the
+            # repository index instead, so an ID-only binding is still runnable.
+            if self.commit_id or not self.query_id:
+                return self
+            head_commit_id = _resolve_head_commit_for_query_id(
+                client,
+                query_id=self.query_id,
+                repository=self.query_repository or "org",
+                query_index=query_index,
+            )
+            if not head_commit_id:
+                return self
+            return replace(self, commit_id=head_commit_id)
         resolved = client.get_committed_nqe_query(
             repository=self.query_repository or "org",
-            query_path=self.query_path,
+            query_path=lookup_query_path,
             commit_id=self.commit_id or "head",
             query_index=query_index,
         )
         resolved_query_id = str(resolved.get("queryId") or "").strip()
+        # Only adopt a commit the bound query actually owns. If the path now
+        # resolves to a different query, the head commit belongs to that other
+        # query and grafting it here would execute the wrong revision.
+        bound_query_id = str(self.query_id or "").strip()
+        commit_belongs_to_bound_query = (
+            not bound_query_id
+            or not resolved_query_id
+            or bound_query_id == resolved_query_id
+        )
         resolved_commit_id = str(
             self.commit_id
-            or resolved.get("commitId")
-            or resolved.get("lastCommitId")
-            or (resolved.get("lastCommit") or {}).get("id")
+            or (
+                (
+                    resolved.get("commitId")
+                    or resolved.get("lastCommitId")
+                    or (resolved.get("lastCommit") or {}).get("id")
+                )
+                if commit_belongs_to_bound_query
+                else ""
+            )
             or ""
         ).strip()
         resolved_query_path = str(
