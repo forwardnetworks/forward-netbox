@@ -45,6 +45,13 @@ Still enforced: the tagged commit must have exactly one parent, the working tree
 must be clean, and the plan's recorded evidence base commit must equal that
 parent.
 
+**Optional does not mean unvalidated.** Only presence is optional. Any recorded
+known id is still held to the full concreteness, command-binding and
+retrospective-outcome standard, because an id recorded with hollow evidence
+reads as a claim the work was done and is worse than an absent one. The harness
+rejection cases build plans from every known id so they cover the optional ones
+as well.
+
 ## Rejected alternatives
 
 - **Leave the gate as-is.** It regex-matches prose for a command string, a
