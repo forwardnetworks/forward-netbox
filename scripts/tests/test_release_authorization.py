@@ -20,7 +20,6 @@ class ReleaseAuthorizationTest(unittest.TestCase):
             "`rtk env FORWARD_NETBOX_DOCKER_PROJECT=forward-netbox-release-gate "
             "FORWARD_NETBOX_POSTGRES_DATA_PATH=netbox-postgres-data "
             "FORWARD_NETBOX_WORKER_AUTORELOAD=0 NETBOX_VER=v4.6.5 "
-            "FORWARD_NETBOX_HOST_PORT=18080 NETBOX_URL=http://127.0.0.1:18080 "
             "invoke ci` passed: 1343 tests, 0 failures."
         ),
         "exact-runtime-artifact": (
@@ -221,9 +220,20 @@ class ReleaseAuthorizationTest(unittest.TestCase):
                 )
 
     def test_rejects_mismatched_release_ports(self):
-        evidence = self.VALID_EVIDENCE["final-tree-full-gate"].replace(
-            "NETBOX_URL=http://127.0.0.1:18080",
+        evidence = self.VALID_EVIDENCE["ui-validation"].replace(
             "NETBOX_URL=http://127.0.0.1:18081",
+            "NETBOX_URL=http://127.0.0.1:18082",
+        )
+        with self.assertRaisesRegex(ValueError, "placeholder_evidence"):
+            release_authorization.check_release_authorization(
+                self._plan(evidence_overrides={"ui-validation": evidence})
+            )
+
+    def test_rejects_full_gate_evidence_naming_unused_url_variables(self):
+        evidence = self.VALID_EVIDENCE["final-tree-full-gate"].replace(
+            "invoke ci`",
+            "FORWARD_NETBOX_HOST_PORT=18080 NETBOX_URL=http://127.0.0.1:18080 "
+            "invoke ci`",
         )
         with self.assertRaisesRegex(ValueError, "placeholder_evidence"):
             release_authorization.check_release_authorization(
