@@ -70,6 +70,13 @@ Still enforced: the tagged commit must have exactly one parent, the working tree
 must be clean, and the plan's recorded evidence base commit must equal that
 parent.
 
+**Provenance harness coverage.** `test_rejects_non_plan_evidence_commit` now
+asserts the current message and keeps proving that a tagged commit carrying no
+release plan is rejected. Two cases are added: a release commit that changes
+code *and* its version's plan is accepted, and one that changes only a plan for
+a different version is rejected. Together these pin the intended new rule from
+both sides, so the relaxation cannot silently widen to "any plan" or "no plan".
+
 **Optional does not mean unvalidated.** Only presence is optional. Any recorded
 known id is still held to the full concreteness, command-binding and
 retrospective-outcome standard, because an id recorded with hollow evidence

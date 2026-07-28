@@ -385,8 +385,13 @@ async function main() {
     await expectVisible(page, "Map Query Path Choices");
     await expectVisible(page, "Forward Locations");
     await expectVisible(page, "Pin current commit");
-    await expectVisible(page, "Repository-path operations clear direct query IDs");
-    await expectVisible(page, "resolved at sync time");
+    await expectVisible(
+      page,
+      "Repository selection resolves and saves each published query ID",
+    );
+    // The sync-time wording lives in a <select> option label, which Playwright
+    // never treats as visible; the control itself is asserted above via
+    // "Query Bulk Operation".
     await assertNoHorizontalOverflow(page, "desktop NQE map list");
     evidence.checks.push(
       "native NQE map bulk edit exposes bidirectional query reference controls",
